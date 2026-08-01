@@ -297,7 +297,10 @@ The previous implementation-era shape (`GLEAPH.COST BY GLEAPH.WEIGHT(e)`) is no 
 
 ### Graph Type `ORDER BY INSERTION` and query `ORDER BY INSERTION(e)`
 
-**Status:** Planned (ADR 0052).
+**Status:** Partially implemented (Slice 1, 2026-08-01): the Graph Type `ORDER BY INSERTION`
+declaration parses (gql, opaque key) and resolves to a per-label `EdgeOrderingPolicy` in the
+Router (ADR 0052 §1/§2/§4). The query form `ORDER BY INSERTION(e)` and the removal of
+`GLEAPH.SEQUENCE` remain planned.
 
 `ORDER BY INSERTION` in a Graph Type declares that one edge label preserves bucket-local insertion
 order. `ORDER BY INSERTION(e)` in a query requests that order for a bound edge variable. It is not

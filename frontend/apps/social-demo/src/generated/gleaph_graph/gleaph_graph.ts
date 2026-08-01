@@ -592,6 +592,12 @@ export interface ResolvedEdgeLabel {
      */
     inline_property_profile: EdgeInlinePropertyProfile;
     /**
+     * Per-label ordering policy resolved by the Router from the Graph Type declaration
+     * (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
+     * bucket-local live order is the semantic insertion order.
+     */
+    ordering: EdgeOrderingPolicy;
+    /**
      * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
      * `None` for labels with no named inline slot; otherwise a scalar or struct projection.
      * Graph receives this as a plan-scoped projection and must not persist or infer it.
@@ -947,6 +953,10 @@ export interface IndexedEmbeddingSpec {
     embedding_name_id: number;
     index_id: number;
 }
+export enum EdgeOrderingPolicy {
+    Unordered = "Unordered",
+    Insertion = "Insertion"
+}
 export enum ExecutePlanBatchMode {
     Dynamic = "Dynamic",
     Fixed = "Fixed"
@@ -1040,7 +1050,7 @@ export interface gleaph_graphInterface {
     retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_13>;
     retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_14>;
 }
-import type { BulkIngestFinalizeResult as _BulkIngestFinalizeResult, ClaimId as _ClaimId, ConstrainedPropertyDispatch as _ConstrainedPropertyDispatch, EdgeInlinePropertyEncoding as _EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile as _EdgeInlinePropertyProfile, EdgePostingBackfillArgs as _EdgePostingBackfillArgs, EdgePostingBackfillResult as _EdgePostingBackfillResult, EdgePropertyBackfillRequest as _EdgePropertyBackfillRequest, EffectId as _EffectId, EmbeddingBackfillResult as _EmbeddingBackfillResult, ExecutePlanArgs as _ExecutePlanArgs, ExecutePlanBatchArgs as _ExecutePlanBatchArgs, ExecutePlanBatchMode as _ExecutePlanBatchMode, ExecutePlanBatchResult as _ExecutePlanBatchResult, ExecutePlanBatchSharedV2 as _ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args as _ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs as _ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared as _ExecutePlanBatchTypedShared, ExecutePlanBulkBatch as _ExecutePlanBulkBatch, ExecutePlanResult as _ExecutePlanResult, ExecutePlanSharedV2Op as _ExecutePlanSharedV2Op, ExecutePlanTypedOp as _ExecutePlanTypedOp, GetMutationJournalEntriesResult as _GetMutationJournalEntriesResult, GqlExecutionMode as _GqlExecutionMode, GraphBulkMutationProgress as _GraphBulkMutationProgress, GraphBulkMutationProgressV1 as _GraphBulkMutationProgressV1, GraphMutationJournalEntryWire as _GraphMutationJournalEntryWire, GraphMutationJournalEntryWireV1 as _GraphMutationJournalEntryWireV1, GraphMutationRequestIdentityV1 as _GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1 as _GraphMutationRetirementWireV1, GraphOrderedEdgeBatchReceiptV1 as _GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult as _GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1 as _GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1 as _GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult as _GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1 as _GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1 as _GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult as _GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1 as _GraphOrderedVertexBatchResultV1, IndexedEmbeddingCatalog as _IndexedEmbeddingCatalog, IndexedEmbeddingSpec as _IndexedEmbeddingSpec, IndexedPropertyCatalog as _IndexedPropertyCatalog, MutationJournalState as _MutationJournalState, OrderedEdgeBatchGraphArgs as _OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1 as _OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1 as _OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest as _OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1 as _OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs as _OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1 as _OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest as _OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1 as _OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1 as _OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1 as _OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1 as _OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck as _OrderedMixedMutationRetirementAck, OrderedMixedMutationRetirementAckV1 as _OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck as _OrderedMutationRetirementAck, OrderedMutationRetirementAckV1 as _OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs as _OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1 as _OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs as _OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1 as _OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1 as _OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest as _OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1 as _OrderedVertexBatchGraphRequestV1, OrderedVertexMutationRetirementAck as _OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1 as _OrderedVertexMutationRetirementAckV1, PostingBackfillArgs as _PostingBackfillArgs, PostingBackfillResult as _PostingBackfillResult, ResolvedEdgeLabel as _ResolvedEdgeLabel, ResolvedInlineSchema as _ResolvedInlineSchema, ResolvedInlineStructField as _ResolvedInlineStructField, ResolvedLabelTable as _ResolvedLabelTable, ResolvedOrderedEdgePropertyV1 as _ResolvedOrderedEdgePropertyV1, ResolvedPropertyTable as _ResolvedPropertyTable, ResolvedVertexLabel as _ResolvedVertexLabel, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_2 as _Result_2, Result_3 as _Result_3, Result_4 as _Result_4, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, UniqueAcquireEvidence as _UniqueAcquireEvidence, UniqueAcquireProof as _UniqueAcquireProof, UniqueClaimDispatch as _UniqueClaimDispatch, UniqueEffectOp as _UniqueEffectOp, UniqueEffectReceipt as _UniqueEffectReceipt, VectorEncoding as _VectorEncoding, VectorIndexKind as _VectorIndexKind, VectorMetric as _VectorMetric, VertexEmbeddingBackfillRequest as _VertexEmbeddingBackfillRequest, VertexEmbeddingIngestionArgs as _VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_graph.did";
+import type { BulkIngestFinalizeResult as _BulkIngestFinalizeResult, ClaimId as _ClaimId, ConstrainedPropertyDispatch as _ConstrainedPropertyDispatch, EdgeInlinePropertyEncoding as _EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile as _EdgeInlinePropertyProfile, EdgeOrderingPolicy as _EdgeOrderingPolicy, EdgePostingBackfillArgs as _EdgePostingBackfillArgs, EdgePostingBackfillResult as _EdgePostingBackfillResult, EdgePropertyBackfillRequest as _EdgePropertyBackfillRequest, EffectId as _EffectId, EmbeddingBackfillResult as _EmbeddingBackfillResult, ExecutePlanArgs as _ExecutePlanArgs, ExecutePlanBatchArgs as _ExecutePlanBatchArgs, ExecutePlanBatchMode as _ExecutePlanBatchMode, ExecutePlanBatchResult as _ExecutePlanBatchResult, ExecutePlanBatchSharedV2 as _ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args as _ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs as _ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared as _ExecutePlanBatchTypedShared, ExecutePlanBulkBatch as _ExecutePlanBulkBatch, ExecutePlanResult as _ExecutePlanResult, ExecutePlanSharedV2Op as _ExecutePlanSharedV2Op, ExecutePlanTypedOp as _ExecutePlanTypedOp, GetMutationJournalEntriesResult as _GetMutationJournalEntriesResult, GqlExecutionMode as _GqlExecutionMode, GraphBulkMutationProgress as _GraphBulkMutationProgress, GraphBulkMutationProgressV1 as _GraphBulkMutationProgressV1, GraphMutationJournalEntryWire as _GraphMutationJournalEntryWire, GraphMutationJournalEntryWireV1 as _GraphMutationJournalEntryWireV1, GraphMutationRequestIdentityV1 as _GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1 as _GraphMutationRetirementWireV1, GraphOrderedEdgeBatchReceiptV1 as _GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult as _GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1 as _GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1 as _GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult as _GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1 as _GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1 as _GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult as _GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1 as _GraphOrderedVertexBatchResultV1, IndexedEmbeddingCatalog as _IndexedEmbeddingCatalog, IndexedEmbeddingSpec as _IndexedEmbeddingSpec, IndexedPropertyCatalog as _IndexedPropertyCatalog, MutationJournalState as _MutationJournalState, OrderedEdgeBatchGraphArgs as _OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1 as _OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1 as _OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest as _OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1 as _OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs as _OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1 as _OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest as _OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1 as _OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1 as _OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1 as _OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1 as _OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck as _OrderedMixedMutationRetirementAck, OrderedMixedMutationRetirementAckV1 as _OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck as _OrderedMutationRetirementAck, OrderedMutationRetirementAckV1 as _OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs as _OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1 as _OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs as _OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1 as _OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1 as _OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest as _OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1 as _OrderedVertexBatchGraphRequestV1, OrderedVertexMutationRetirementAck as _OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1 as _OrderedVertexMutationRetirementAckV1, PostingBackfillArgs as _PostingBackfillArgs, PostingBackfillResult as _PostingBackfillResult, ResolvedEdgeLabel as _ResolvedEdgeLabel, ResolvedInlineSchema as _ResolvedInlineSchema, ResolvedInlineStructField as _ResolvedInlineStructField, ResolvedLabelTable as _ResolvedLabelTable, ResolvedOrderedEdgePropertyV1 as _ResolvedOrderedEdgePropertyV1, ResolvedPropertyTable as _ResolvedPropertyTable, ResolvedVertexLabel as _ResolvedVertexLabel, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_2 as _Result_2, Result_3 as _Result_3, Result_4 as _Result_4, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, UniqueAcquireEvidence as _UniqueAcquireEvidence, UniqueAcquireProof as _UniqueAcquireProof, UniqueClaimDispatch as _UniqueClaimDispatch, UniqueEffectOp as _UniqueEffectOp, UniqueEffectReceipt as _UniqueEffectReceipt, VectorEncoding as _VectorEncoding, VectorIndexKind as _VectorIndexKind, VectorMetric as _VectorMetric, VertexEmbeddingBackfillRequest as _VertexEmbeddingBackfillRequest, VertexEmbeddingIngestionArgs as _VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_graph.did";
 export class Gleaph_graph implements gleaph_graphInterface {
     constructor(private actor: ActorSubclass<_SERVICE>){}
     async ack_label_stats_deltas_through(arg0: bigint): Promise<void> {
@@ -1085,47 +1095,47 @@ export class Gleaph_graph implements gleaph_graphInterface {
     }
     async execute_ordered_edge_batch(arg0: OrderedEdgeBatchGraphArgs): Promise<Result_6> {
         const result = await this.actor.execute_ordered_edge_batch(to_candid_OrderedEdgeBatchGraphArgs_n41(arg0));
-        return from_candid_Result_6_n67(result);
+        return from_candid_Result_6_n69(result);
     }
     async execute_ordered_mixed_batch(arg0: OrderedMixedBatchGraphArgs): Promise<Result_7> {
-        const result = await this.actor.execute_ordered_mixed_batch(to_candid_OrderedMixedBatchGraphArgs_n76(arg0));
-        return from_candid_Result_7_n91(result);
+        const result = await this.actor.execute_ordered_mixed_batch(to_candid_OrderedMixedBatchGraphArgs_n78(arg0));
+        return from_candid_Result_7_n93(result);
     }
     async execute_ordered_vertex_batch(arg0: OrderedVertexBatchGraphArgs): Promise<Result_8> {
-        const result = await this.actor.execute_ordered_vertex_batch(to_candid_OrderedVertexBatchGraphArgs_n99(arg0));
-        return from_candid_Result_8_n107(result);
+        const result = await this.actor.execute_ordered_vertex_batch(to_candid_OrderedVertexBatchGraphArgs_n101(arg0));
+        return from_candid_Result_8_n109(result);
     }
     async execute_plan_query(arg0: ExecutePlanArgs): Promise<Result_9> {
-        const result = await this.actor.execute_plan_query(to_candid_ExecutePlanArgs_n115(arg0));
-        return from_candid_Result_9_n119(result);
+        const result = await this.actor.execute_plan_query(to_candid_ExecutePlanArgs_n117(arg0));
+        return from_candid_Result_9_n121(result);
     }
     async execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_9> {
-        const result = await this.actor.execute_plan_update(to_candid_ExecutePlanArgs_n115(arg0));
-        return from_candid_Result_9_n119(result);
+        const result = await this.actor.execute_plan_update(to_candid_ExecutePlanArgs_n117(arg0));
+        return from_candid_Result_9_n121(result);
     }
     async execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_10> {
-        const result = await this.actor.execute_plan_update_batch(to_candid_ExecutePlanBatchArgs_n123(arg0));
-        return from_candid_Result_10_n128(result);
+        const result = await this.actor.execute_plan_update_batch(to_candid_ExecutePlanBatchArgs_n125(arg0));
+        return from_candid_Result_10_n130(result);
     }
     async execute_plan_update_batch_bulk(arg0: ExecutePlanBulkBatch): Promise<Result_10> {
-        const result = await this.actor.execute_plan_update_batch_bulk(to_candid_ExecutePlanBulkBatch_n134(arg0));
-        return from_candid_Result_10_n128(result);
+        const result = await this.actor.execute_plan_update_batch_bulk(to_candid_ExecutePlanBulkBatch_n136(arg0));
+        return from_candid_Result_10_n130(result);
     }
     async finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_11> {
         const result = await this.actor.finalize_bulk_ingest(arg0);
-        return from_candid_Result_11_n144(result);
+        return from_candid_Result_11_n146(result);
     }
     async get_mutation_journal_entries(arg0: GetMutationJournalEntriesArgs): Promise<GetMutationJournalEntriesResult> {
         const result = await this.actor.get_mutation_journal_entries(arg0);
-        return from_candid_GetMutationJournalEntriesResult_n146(result);
+        return from_candid_GetMutationJournalEntriesResult_n148(result);
     }
     async get_mutation_journal_entry(arg0: bigint): Promise<GraphMutationJournalEntryWire | null> {
         const result = await this.actor.get_mutation_journal_entry(arg0);
-        return from_candid_opt_n149(result);
+        return from_candid_opt_n151(result);
     }
     async index_pending_min_mutation_id(): Promise<bigint | null> {
         const result = await this.actor.index_pending_min_mutation_id();
-        return from_candid_opt_n75(result);
+        return from_candid_opt_n77(result);
     }
     async index_sync_status(): Promise<IndexSyncStatus> {
         const result = await this.actor.index_sync_status();
@@ -1141,118 +1151,118 @@ export class Gleaph_graph implements gleaph_graphInterface {
     }
     async read_unique_effect_proof(arg0: Array<ClaimId>): Promise<Array<UniqueAcquireProof>> {
         const result = await this.actor.read_unique_effect_proof(arg0);
-        return from_candid_vec_n163(result);
+        return from_candid_vec_n165(result);
     }
     async read_unique_mutation_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>> {
-        const result = await this.actor.read_unique_mutation_effects(arg0, to_candid_opt_n167(arg1), arg2);
-        return from_candid_vec_n168(result);
+        const result = await this.actor.read_unique_mutation_effects(arg0, to_candid_opt_n169(arg1), arg2);
+        return from_candid_vec_n170(result);
     }
     async read_unique_release_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>> {
-        const result = await this.actor.read_unique_release_effects(arg0, to_candid_opt_n167(arg1), arg2);
-        return from_candid_vec_n168(result);
+        const result = await this.actor.read_unique_release_effects(arg0, to_candid_opt_n169(arg1), arg2);
+        return from_candid_vec_n170(result);
     }
     async retire_ordered_mixed_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_12> {
-        const result = await this.actor.retire_ordered_mixed_mutation(to_candid_OrderedMutationRetirementArgs_n174(arg0));
-        return from_candid_Result_12_n176(result);
+        const result = await this.actor.retire_ordered_mixed_mutation(to_candid_OrderedMutationRetirementArgs_n176(arg0));
+        return from_candid_Result_12_n178(result);
     }
     async retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_13> {
-        const result = await this.actor.retire_ordered_mutation(to_candid_OrderedMutationRetirementArgs_n174(arg0));
-        return from_candid_Result_13_n182(result);
+        const result = await this.actor.retire_ordered_mutation(to_candid_OrderedMutationRetirementArgs_n176(arg0));
+        return from_candid_Result_13_n184(result);
     }
     async retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_14> {
-        const result = await this.actor.retire_ordered_vertex_mutation(to_candid_OrderedMutationRetirementArgs_n174(arg0));
-        return from_candid_Result_14_n188(result);
+        const result = await this.actor.retire_ordered_vertex_mutation(to_candid_OrderedMutationRetirementArgs_n176(arg0));
+        return from_candid_Result_14_n190(result);
     }
 }
 function from_candid_EdgePostingBackfillResult_n29(value: _EdgePostingBackfillResult): EdgePostingBackfillResult {
     return from_candid_record_n30(value);
 }
-function from_candid_ExecutePlanBatchResult_n130(value: _ExecutePlanBatchResult): ExecutePlanBatchResult {
-    return from_candid_record_n131(value);
+function from_candid_ExecutePlanBatchResult_n132(value: _ExecutePlanBatchResult): ExecutePlanBatchResult {
+    return from_candid_record_n133(value);
 }
-function from_candid_ExecutePlanResult_n121(value: _ExecutePlanResult): ExecutePlanResult {
-    return from_candid_record_n122(value);
+function from_candid_ExecutePlanResult_n123(value: _ExecutePlanResult): ExecutePlanResult {
+    return from_candid_record_n124(value);
 }
-function from_candid_GetMutationJournalEntriesResult_n146(value: _GetMutationJournalEntriesResult): GetMutationJournalEntriesResult {
-    return from_candid_record_n147(value);
+function from_candid_GetMutationJournalEntriesResult_n148(value: _GetMutationJournalEntriesResult): GetMutationJournalEntriesResult {
+    return from_candid_record_n149(value);
 }
-function from_candid_GraphBulkMutationProgress_n157(value: _GraphBulkMutationProgress): GraphBulkMutationProgress {
-    return from_candid_variant_n158(value);
-}
-function from_candid_GraphMutationJournalEntryWireV1_n152(value: _GraphMutationJournalEntryWireV1): GraphMutationJournalEntryWireV1 {
-    return from_candid_record_n153(value);
-}
-function from_candid_GraphMutationJournalEntryWire_n150(value: _GraphMutationJournalEntryWire): GraphMutationJournalEntryWire {
-    return from_candid_variant_n151(value);
-}
-function from_candid_GraphMutationRequestIdentityV1_n154(value: _GraphMutationRequestIdentityV1): GraphMutationRequestIdentityV1 {
-    return from_candid_variant_n155(value);
-}
-function from_candid_GraphMutationRetirementWireV1_n161(value: _GraphMutationRetirementWireV1): GraphMutationRetirementWireV1 {
-    return from_candid_variant_n162(value);
-}
-function from_candid_GraphOrderedEdgeBatchReceiptV1_n73(value: _GraphOrderedEdgeBatchReceiptV1): GraphOrderedEdgeBatchReceiptV1 {
-    return from_candid_record_n74(value);
-}
-function from_candid_GraphOrderedEdgeBatchResultV1_n71(value: _GraphOrderedEdgeBatchResultV1): GraphOrderedEdgeBatchResultV1 {
-    return from_candid_variant_n72(value);
-}
-function from_candid_GraphOrderedEdgeBatchResult_n69(value: _GraphOrderedEdgeBatchResult): GraphOrderedEdgeBatchResult {
-    return from_candid_variant_n70(value);
-}
-function from_candid_GraphOrderedMixedBatchReceiptV1_n97(value: _GraphOrderedMixedBatchReceiptV1): GraphOrderedMixedBatchReceiptV1 {
-    return from_candid_record_n98(value);
-}
-function from_candid_GraphOrderedMixedBatchResultV1_n95(value: _GraphOrderedMixedBatchResultV1): GraphOrderedMixedBatchResultV1 {
-    return from_candid_variant_n96(value);
-}
-function from_candid_GraphOrderedMixedBatchResult_n93(value: _GraphOrderedMixedBatchResult): GraphOrderedMixedBatchResult {
-    return from_candid_variant_n94(value);
-}
-function from_candid_GraphOrderedVertexBatchReceiptV1_n113(value: _GraphOrderedVertexBatchReceiptV1): GraphOrderedVertexBatchReceiptV1 {
-    return from_candid_record_n114(value);
-}
-function from_candid_GraphOrderedVertexBatchResultV1_n111(value: _GraphOrderedVertexBatchResultV1): GraphOrderedVertexBatchResultV1 {
-    return from_candid_variant_n112(value);
-}
-function from_candid_GraphOrderedVertexBatchResult_n109(value: _GraphOrderedVertexBatchResult): GraphOrderedVertexBatchResult {
-    return from_candid_variant_n110(value);
-}
-function from_candid_MutationJournalState_n159(value: _MutationJournalState): MutationJournalState {
+function from_candid_GraphBulkMutationProgress_n159(value: _GraphBulkMutationProgress): GraphBulkMutationProgress {
     return from_candid_variant_n160(value);
 }
-function from_candid_OrderedMixedMutationRetirementAckV1_n180(value: _OrderedMixedMutationRetirementAckV1): OrderedMixedMutationRetirementAckV1 {
-    return from_candid_record_n181(value);
+function from_candid_GraphMutationJournalEntryWireV1_n154(value: _GraphMutationJournalEntryWireV1): GraphMutationJournalEntryWireV1 {
+    return from_candid_record_n155(value);
 }
-function from_candid_OrderedMixedMutationRetirementAck_n178(value: _OrderedMixedMutationRetirementAck): OrderedMixedMutationRetirementAck {
+function from_candid_GraphMutationJournalEntryWire_n152(value: _GraphMutationJournalEntryWire): GraphMutationJournalEntryWire {
+    return from_candid_variant_n153(value);
+}
+function from_candid_GraphMutationRequestIdentityV1_n156(value: _GraphMutationRequestIdentityV1): GraphMutationRequestIdentityV1 {
+    return from_candid_variant_n157(value);
+}
+function from_candid_GraphMutationRetirementWireV1_n163(value: _GraphMutationRetirementWireV1): GraphMutationRetirementWireV1 {
+    return from_candid_variant_n164(value);
+}
+function from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value: _GraphOrderedEdgeBatchReceiptV1): GraphOrderedEdgeBatchReceiptV1 {
+    return from_candid_record_n76(value);
+}
+function from_candid_GraphOrderedEdgeBatchResultV1_n73(value: _GraphOrderedEdgeBatchResultV1): GraphOrderedEdgeBatchResultV1 {
+    return from_candid_variant_n74(value);
+}
+function from_candid_GraphOrderedEdgeBatchResult_n71(value: _GraphOrderedEdgeBatchResult): GraphOrderedEdgeBatchResult {
+    return from_candid_variant_n72(value);
+}
+function from_candid_GraphOrderedMixedBatchReceiptV1_n99(value: _GraphOrderedMixedBatchReceiptV1): GraphOrderedMixedBatchReceiptV1 {
+    return from_candid_record_n100(value);
+}
+function from_candid_GraphOrderedMixedBatchResultV1_n97(value: _GraphOrderedMixedBatchResultV1): GraphOrderedMixedBatchResultV1 {
+    return from_candid_variant_n98(value);
+}
+function from_candid_GraphOrderedMixedBatchResult_n95(value: _GraphOrderedMixedBatchResult): GraphOrderedMixedBatchResult {
+    return from_candid_variant_n96(value);
+}
+function from_candid_GraphOrderedVertexBatchReceiptV1_n115(value: _GraphOrderedVertexBatchReceiptV1): GraphOrderedVertexBatchReceiptV1 {
+    return from_candid_record_n116(value);
+}
+function from_candid_GraphOrderedVertexBatchResultV1_n113(value: _GraphOrderedVertexBatchResultV1): GraphOrderedVertexBatchResultV1 {
+    return from_candid_variant_n114(value);
+}
+function from_candid_GraphOrderedVertexBatchResult_n111(value: _GraphOrderedVertexBatchResult): GraphOrderedVertexBatchResult {
+    return from_candid_variant_n112(value);
+}
+function from_candid_MutationJournalState_n161(value: _MutationJournalState): MutationJournalState {
+    return from_candid_variant_n162(value);
+}
+function from_candid_OrderedMixedMutationRetirementAckV1_n182(value: _OrderedMixedMutationRetirementAckV1): OrderedMixedMutationRetirementAckV1 {
+    return from_candid_record_n183(value);
+}
+function from_candid_OrderedMixedMutationRetirementAck_n180(value: _OrderedMixedMutationRetirementAck): OrderedMixedMutationRetirementAck {
+    return from_candid_variant_n181(value);
+}
+function from_candid_OrderedMutationRetirementAckV1_n188(value: _OrderedMutationRetirementAckV1): OrderedMutationRetirementAckV1 {
+    return from_candid_record_n189(value);
+}
+function from_candid_OrderedMutationRetirementAck_n186(value: _OrderedMutationRetirementAck): OrderedMutationRetirementAck {
+    return from_candid_variant_n187(value);
+}
+function from_candid_OrderedVertexMutationRetirementAckV1_n194(value: _OrderedVertexMutationRetirementAckV1): OrderedVertexMutationRetirementAckV1 {
+    return from_candid_record_n195(value);
+}
+function from_candid_OrderedVertexMutationRetirementAck_n192(value: _OrderedVertexMutationRetirementAck): OrderedVertexMutationRetirementAck {
+    return from_candid_variant_n193(value);
+}
+function from_candid_Result_10_n130(value: _Result_10): Result_10 {
+    return from_candid_variant_n131(value);
+}
+function from_candid_Result_11_n146(value: _Result_11): Result_11 {
+    return from_candid_variant_n147(value);
+}
+function from_candid_Result_12_n178(value: _Result_12): Result_12 {
     return from_candid_variant_n179(value);
 }
-function from_candid_OrderedMutationRetirementAckV1_n186(value: _OrderedMutationRetirementAckV1): OrderedMutationRetirementAckV1 {
-    return from_candid_record_n187(value);
-}
-function from_candid_OrderedMutationRetirementAck_n184(value: _OrderedMutationRetirementAck): OrderedMutationRetirementAck {
+function from_candid_Result_13_n184(value: _Result_13): Result_13 {
     return from_candid_variant_n185(value);
 }
-function from_candid_OrderedVertexMutationRetirementAckV1_n192(value: _OrderedVertexMutationRetirementAckV1): OrderedVertexMutationRetirementAckV1 {
-    return from_candid_record_n193(value);
-}
-function from_candid_OrderedVertexMutationRetirementAck_n190(value: _OrderedVertexMutationRetirementAck): OrderedVertexMutationRetirementAck {
+function from_candid_Result_14_n190(value: _Result_14): Result_14 {
     return from_candid_variant_n191(value);
-}
-function from_candid_Result_10_n128(value: _Result_10): Result_10 {
-    return from_candid_variant_n129(value);
-}
-function from_candid_Result_11_n144(value: _Result_11): Result_11 {
-    return from_candid_variant_n145(value);
-}
-function from_candid_Result_12_n176(value: _Result_12): Result_12 {
-    return from_candid_variant_n177(value);
-}
-function from_candid_Result_13_n182(value: _Result_13): Result_13 {
-    return from_candid_variant_n183(value);
-}
-function from_candid_Result_14_n188(value: _Result_14): Result_14 {
-    return from_candid_variant_n189(value);
 }
 function from_candid_Result_1_n18(value: _Result_1): Result_1 {
     return from_candid_variant_n19(value);
@@ -1269,29 +1279,29 @@ function from_candid_Result_4_n32(value: _Result_4): Result_4 {
 function from_candid_Result_5_n39(value: _Result_5): Result_5 {
     return from_candid_variant_n40(value);
 }
-function from_candid_Result_6_n67(value: _Result_6): Result_6 {
-    return from_candid_variant_n68(value);
+function from_candid_Result_6_n69(value: _Result_6): Result_6 {
+    return from_candid_variant_n70(value);
 }
-function from_candid_Result_7_n91(value: _Result_7): Result_7 {
-    return from_candid_variant_n92(value);
+function from_candid_Result_7_n93(value: _Result_7): Result_7 {
+    return from_candid_variant_n94(value);
 }
-function from_candid_Result_8_n107(value: _Result_8): Result_8 {
-    return from_candid_variant_n108(value);
+function from_candid_Result_8_n109(value: _Result_8): Result_8 {
+    return from_candid_variant_n110(value);
 }
-function from_candid_Result_9_n119(value: _Result_9): Result_9 {
-    return from_candid_variant_n120(value);
+function from_candid_Result_9_n121(value: _Result_9): Result_9 {
+    return from_candid_variant_n122(value);
 }
 function from_candid_Result_n11(value: _Result): Result {
     return from_candid_variant_n12(value);
 }
-function from_candid_UniqueAcquireProof_n164(value: _UniqueAcquireProof): UniqueAcquireProof {
-    return from_candid_record_n165(value);
+function from_candid_UniqueAcquireProof_n166(value: _UniqueAcquireProof): UniqueAcquireProof {
+    return from_candid_record_n167(value);
 }
-function from_candid_UniqueEffectOp_n171(value: _UniqueEffectOp): UniqueEffectOp {
-    return from_candid_variant_n172(value);
+function from_candid_UniqueEffectOp_n173(value: _UniqueEffectOp): UniqueEffectOp {
+    return from_candid_variant_n174(value);
 }
-function from_candid_UniqueEffectReceipt_n169(value: _UniqueEffectReceipt): UniqueEffectReceipt {
-    return from_candid_record_n170(value);
+function from_candid_UniqueEffectReceipt_n171(value: _UniqueEffectReceipt): UniqueEffectReceipt {
+    return from_candid_record_n172(value);
 }
 function from_candid_VertexEmbeddingIngestionResult_n13(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
     return from_candid_record_n14(value);
@@ -1299,28 +1309,52 @@ function from_candid_VertexEmbeddingIngestionResult_n13(value: _VertexEmbeddingI
 function from_candid_VertexEmbeddingProjectionOutcome_n15(value: _VertexEmbeddingProjectionOutcome): VertexEmbeddingProjectionOutcome {
     return from_candid_variant_n16(value);
 }
-function from_candid_opt_n132(value: [] | [number]): number | null {
+function from_candid_opt_n134(value: [] | [number]): number | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n149(value: [] | [_GraphMutationJournalEntryWire]): GraphMutationJournalEntryWire | null {
-    return value.length === 0 ? null : from_candid_GraphMutationJournalEntryWire_n150(value[0]);
+function from_candid_opt_n151(value: [] | [_GraphMutationJournalEntryWire]): GraphMutationJournalEntryWire | null {
+    return value.length === 0 ? null : from_candid_GraphMutationJournalEntryWire_n152(value[0]);
 }
-function from_candid_opt_n156(value: [] | [_GraphBulkMutationProgress]): GraphBulkMutationProgress | null {
-    return value.length === 0 ? null : from_candid_GraphBulkMutationProgress_n157(value[0]);
+function from_candid_opt_n158(value: [] | [_GraphBulkMutationProgress]): GraphBulkMutationProgress | null {
+    return value.length === 0 ? null : from_candid_GraphBulkMutationProgress_n159(value[0]);
 }
-function from_candid_opt_n166(value: [] | [_UniqueAcquireEvidence]): UniqueAcquireEvidence | null {
+function from_candid_opt_n168(value: [] | [_UniqueAcquireEvidence]): UniqueAcquireEvidence | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n173(value: [] | [_ClaimId]): ClaimId | null {
+function from_candid_opt_n175(value: [] | [_ClaimId]): ClaimId | null {
     return value.length === 0 ? null : value[0];
 }
 function from_candid_opt_n31(value: [] | [Uint8Array]): Uint8Array | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n75(value: [] | [bigint]): bigint | null {
+function from_candid_opt_n77(value: [] | [bigint]): bigint | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_record_n114(value: {
+function from_candid_record_n100(value: {
+    logical_edge_count: bigint;
+    emitted_delta_last_seq: [] | [bigint];
+    emitted_delta_first_seq: [] | [bigint];
+    logical_vertex_count: bigint;
+    logical_operation_count: bigint;
+    hot_forward_vertices: Uint32Array;
+}): {
+    logical_edge_count: bigint;
+    emitted_delta_last_seq?: bigint;
+    emitted_delta_first_seq?: bigint;
+    logical_vertex_count: bigint;
+    logical_operation_count: bigint;
+    hot_forward_vertices: Uint32Array;
+} {
+    return {
+        logical_edge_count: value.logical_edge_count,
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
+        logical_vertex_count: value.logical_vertex_count,
+        logical_operation_count: value.logical_operation_count,
+        hot_forward_vertices: value.hot_forward_vertices
+    };
+}
+function from_candid_record_n116(value: {
     emitted_delta_last_seq: [] | [bigint];
     emitted_delta_first_seq: [] | [bigint];
     logical_vertex_count: bigint;
@@ -1332,13 +1366,13 @@ function from_candid_record_n114(value: {
     hot_forward_vertices: Uint32Array;
 } {
     return {
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_last_seq)),
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_first_seq)),
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
         logical_vertex_count: value.logical_vertex_count,
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n122(value: {
+function from_candid_record_n124(value: {
     rows_blob: [] | [Uint8Array];
     row_count: bigint;
     hot_forward_vertices: Uint32Array;
@@ -1353,7 +1387,7 @@ function from_candid_record_n122(value: {
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n131(value: {
+function from_candid_record_n133(value: {
     next_index: [] | [number];
     results: Array<_Result_9>;
 }): {
@@ -1361,8 +1395,8 @@ function from_candid_record_n131(value: {
     results: Array<Result_9>;
 } {
     return {
-        next_index: record_opt_to_undefined(from_candid_opt_n132(value.next_index)),
-        results: from_candid_vec_n133(value.results)
+        next_index: record_opt_to_undefined(from_candid_opt_n134(value.next_index)),
+        results: from_candid_vec_n135(value.results)
     };
 }
 function from_candid_record_n14(value: {
@@ -1377,7 +1411,7 @@ function from_candid_record_n14(value: {
         projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n15(value.projection_outcome)
     };
 }
-function from_candid_record_n147(value: {
+function from_candid_record_n149(value: {
     next: [] | [bigint];
     entries: Array<[] | [_GraphMutationJournalEntryWire]>;
 }): {
@@ -1385,11 +1419,11 @@ function from_candid_record_n147(value: {
     entries: Array<GraphMutationJournalEntryWire | null>;
 } {
     return {
-        next: record_opt_to_undefined(from_candid_opt_n75(value.next)),
-        entries: from_candid_vec_n148(value.entries)
+        next: record_opt_to_undefined(from_candid_opt_n77(value.next)),
+        entries: from_candid_vec_n150(value.entries)
     };
 }
-function from_candid_record_n153(value: {
+function from_candid_record_n155(value: {
     mutation_id: bigint;
     emitted_delta_last_seq: [] | [bigint];
     next_index: [] | [number];
@@ -1414,18 +1448,18 @@ function from_candid_record_n153(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_last_seq)),
-        next_index: record_opt_to_undefined(from_candid_opt_n132(value.next_index)),
-        request_identity: from_candid_GraphMutationRequestIdentityV1_n154(value.request_identity),
-        bulk_progress: record_opt_to_undefined(from_candid_opt_n156(value.bulk_progress)),
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
+        next_index: record_opt_to_undefined(from_candid_opt_n134(value.next_index)),
+        request_identity: from_candid_GraphMutationRequestIdentityV1_n156(value.request_identity),
+        bulk_progress: record_opt_to_undefined(from_candid_opt_n158(value.bulk_progress)),
         row_count: value.row_count,
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_first_seq)),
-        state: from_candid_MutationJournalState_n159(value.state),
-        retirement: from_candid_GraphMutationRetirementWireV1_n161(value.retirement),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
+        state: from_candid_MutationJournalState_n161(value.state),
+        retirement: from_candid_GraphMutationRetirementWireV1_n163(value.retirement),
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n165(value: {
+function from_candid_record_n167(value: {
     claim_id: _ClaimId;
     acquire: [] | [_UniqueAcquireEvidence];
 }): {
@@ -1434,10 +1468,10 @@ function from_candid_record_n165(value: {
 } {
     return {
         claim_id: value.claim_id,
-        acquire: record_opt_to_undefined(from_candid_opt_n166(value.acquire))
+        acquire: record_opt_to_undefined(from_candid_opt_n168(value.acquire))
     };
 }
-function from_candid_record_n170(value: {
+function from_candid_record_n172(value: {
     op: _UniqueEffectOp;
     owner_element_id: Uint8Array;
     claim_id: [] | [_ClaimId];
@@ -1453,15 +1487,15 @@ function from_candid_record_n170(value: {
     constraint_id: number;
 } {
     return {
-        op: from_candid_UniqueEffectOp_n171(value.op),
+        op: from_candid_UniqueEffectOp_n173(value.op),
         owner_element_id: value.owner_element_id,
-        claim_id: record_opt_to_undefined(from_candid_opt_n173(value.claim_id)),
+        claim_id: record_opt_to_undefined(from_candid_opt_n175(value.claim_id)),
         effect_id: value.effect_id,
         encoded_value: value.encoded_value,
         constraint_id: value.constraint_id
     };
 }
-function from_candid_record_n181(value: {
+function from_candid_record_n183(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedMixedBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1472,11 +1506,11 @@ function from_candid_record_n181(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        receipt: from_candid_GraphOrderedMixedBatchReceiptV1_n97(value.receipt),
+        receipt: from_candid_GraphOrderedMixedBatchReceiptV1_n99(value.receipt),
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n187(value: {
+function from_candid_record_n189(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedEdgeBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1487,11 +1521,11 @@ function from_candid_record_n187(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        receipt: from_candid_GraphOrderedEdgeBatchReceiptV1_n73(value.receipt),
+        receipt: from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value.receipt),
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n193(value: {
+function from_candid_record_n195(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedVertexBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1502,7 +1536,7 @@ function from_candid_record_n193(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        receipt: from_candid_GraphOrderedVertexBatchReceiptV1_n113(value.receipt),
+        receipt: from_candid_GraphOrderedVertexBatchReceiptV1_n115(value.receipt),
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
@@ -1524,7 +1558,7 @@ function from_candid_record_n30(value: {
         next_after_key: record_opt_to_undefined(from_candid_opt_n31(value.next_after_key))
     };
 }
-function from_candid_record_n74(value: {
+function from_candid_record_n76(value: {
     logical_edge_count: bigint;
     emitted_delta_last_seq: [] | [bigint];
     emitted_delta_first_seq: [] | [bigint];
@@ -1537,36 +1571,12 @@ function from_candid_record_n74(value: {
 } {
     return {
         logical_edge_count: value.logical_edge_count,
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_last_seq)),
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_first_seq)),
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n98(value: {
-    logical_edge_count: bigint;
-    emitted_delta_last_seq: [] | [bigint];
-    emitted_delta_first_seq: [] | [bigint];
-    logical_vertex_count: bigint;
-    logical_operation_count: bigint;
-    hot_forward_vertices: Uint32Array;
-}): {
-    logical_edge_count: bigint;
-    emitted_delta_last_seq?: bigint;
-    emitted_delta_first_seq?: bigint;
-    logical_vertex_count: bigint;
-    logical_operation_count: bigint;
-    hot_forward_vertices: Uint32Array;
-} {
-    return {
-        logical_edge_count: value.logical_edge_count,
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_last_seq)),
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n75(value.emitted_delta_first_seq)),
-        logical_vertex_count: value.logical_vertex_count,
-        logical_operation_count: value.logical_operation_count,
-        hot_forward_vertices: value.hot_forward_vertices
-    };
-}
-function from_candid_variant_n108(value: {
+function from_candid_variant_n110(value: {
     Ok: _GraphOrderedVertexBatchResult;
 } | {
     Err: string;
@@ -1579,13 +1589,13 @@ function from_candid_variant_n108(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_GraphOrderedVertexBatchResult_n109(value.Ok)
+        Ok: from_candid_GraphOrderedVertexBatchResult_n111(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n110(value: {
+function from_candid_variant_n112(value: {
     V1: _GraphOrderedVertexBatchResultV1;
 }): {
     __kind__: "V1";
@@ -1593,10 +1603,10 @@ function from_candid_variant_n110(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphOrderedVertexBatchResultV1_n111(value.V1)
+        V1: from_candid_GraphOrderedVertexBatchResultV1_n113(value.V1)
     } : value;
 }
-function from_candid_variant_n112(value: {
+function from_candid_variant_n114(value: {
     MutationRetired: {
         mutation_id: bigint;
         graph_request_fingerprint: Uint8Array;
@@ -1618,7 +1628,7 @@ function from_candid_variant_n112(value: {
         MutationRetired: value.MutationRetired
     } : "Completed" in value ? {
         __kind__: "Completed",
-        Completed: from_candid_GraphOrderedVertexBatchReceiptV1_n113(value.Completed)
+        Completed: from_candid_GraphOrderedVertexBatchReceiptV1_n115(value.Completed)
     } : value;
 }
 function from_candid_variant_n12(value: {
@@ -1640,7 +1650,7 @@ function from_candid_variant_n12(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n120(value: {
+function from_candid_variant_n122(value: {
     Ok: _ExecutePlanResult;
 } | {
     Err: string;
@@ -1653,13 +1663,13 @@ function from_candid_variant_n120(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_ExecutePlanResult_n121(value.Ok)
+        Ok: from_candid_ExecutePlanResult_n123(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n129(value: {
+function from_candid_variant_n131(value: {
     Ok: _ExecutePlanBatchResult;
 } | {
     Err: string;
@@ -1672,13 +1682,13 @@ function from_candid_variant_n129(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_ExecutePlanBatchResult_n130(value.Ok)
+        Ok: from_candid_ExecutePlanBatchResult_n132(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n145(value: {
+function from_candid_variant_n147(value: {
     Ok: _BulkIngestFinalizeResult;
 } | {
     Err: string;
@@ -1697,7 +1707,7 @@ function from_candid_variant_n145(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n151(value: {
+function from_candid_variant_n153(value: {
     V1: _GraphMutationJournalEntryWireV1;
 }): {
     __kind__: "V1";
@@ -1705,10 +1715,10 @@ function from_candid_variant_n151(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphMutationJournalEntryWireV1_n152(value.V1)
+        V1: from_candid_GraphMutationJournalEntryWireV1_n154(value.V1)
     } : value;
 }
-function from_candid_variant_n155(value: {
+function from_candid_variant_n157(value: {
     OrderedVertexBatch: {
         logical_item_count: number;
         canonical_encoding_version: number;
@@ -1771,7 +1781,14 @@ function from_candid_variant_n155(value: {
         PlanExecution: value.PlanExecution
     } : value;
 }
-function from_candid_variant_n158(value: {
+function from_candid_variant_n16(value: {
+    DeferredForRepair: null;
+} | {
+    Applied: null;
+}): VertexEmbeddingProjectionOutcome {
+    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
+}
+function from_candid_variant_n160(value: {
     V1: _GraphBulkMutationProgressV1;
 }): {
     __kind__: "V1";
@@ -1782,21 +1799,14 @@ function from_candid_variant_n158(value: {
         V1: value.V1
     } : value;
 }
-function from_candid_variant_n16(value: {
-    DeferredForRepair: null;
-} | {
-    Applied: null;
-}): VertexEmbeddingProjectionOutcome {
-    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
-}
-function from_candid_variant_n160(value: {
+function from_candid_variant_n162(value: {
     Completed: null;
 } | {
     Incomplete: null;
 }): MutationJournalState {
     return "Completed" in value ? MutationJournalState.Completed : "Incomplete" in value ? MutationJournalState.Incomplete : value;
 }
-function from_candid_variant_n162(value: {
+function from_candid_variant_n164(value: {
     NotApplicable: null;
 } | {
     Active: null;
@@ -1805,14 +1815,14 @@ function from_candid_variant_n162(value: {
 }): GraphMutationRetirementWireV1 {
     return "NotApplicable" in value ? GraphMutationRetirementWireV1.NotApplicable : "Active" in value ? GraphMutationRetirementWireV1.Active : "Retired" in value ? GraphMutationRetirementWireV1.Retired : value;
 }
-function from_candid_variant_n172(value: {
+function from_candid_variant_n174(value: {
     Release: null;
 } | {
     Acquire: null;
 }): UniqueEffectOp {
     return "Release" in value ? UniqueEffectOp.Release : "Acquire" in value ? UniqueEffectOp.Acquire : value;
 }
-function from_candid_variant_n177(value: {
+function from_candid_variant_n179(value: {
     Ok: _OrderedMixedMutationRetirementAck;
 } | {
     Err: string;
@@ -1825,13 +1835,13 @@ function from_candid_variant_n177(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedMixedMutationRetirementAck_n178(value.Ok)
+        Ok: from_candid_OrderedMixedMutationRetirementAck_n180(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n179(value: {
+function from_candid_variant_n181(value: {
     V1: _OrderedMixedMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1839,10 +1849,10 @@ function from_candid_variant_n179(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedMixedMutationRetirementAckV1_n180(value.V1)
+        V1: from_candid_OrderedMixedMutationRetirementAckV1_n182(value.V1)
     } : value;
 }
-function from_candid_variant_n183(value: {
+function from_candid_variant_n185(value: {
     Ok: _OrderedMutationRetirementAck;
 } | {
     Err: string;
@@ -1855,13 +1865,13 @@ function from_candid_variant_n183(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedMutationRetirementAck_n184(value.Ok)
+        Ok: from_candid_OrderedMutationRetirementAck_n186(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n185(value: {
+function from_candid_variant_n187(value: {
     V1: _OrderedMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1869,26 +1879,7 @@ function from_candid_variant_n185(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedMutationRetirementAckV1_n186(value.V1)
-    } : value;
-}
-function from_candid_variant_n189(value: {
-    Ok: _OrderedVertexMutationRetirementAck;
-} | {
-    Err: string;
-}): {
-    __kind__: "Ok";
-    Ok: OrderedVertexMutationRetirementAck;
-} | {
-    __kind__: "Err";
-    Err: string;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_OrderedVertexMutationRetirementAck_n190(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: value.Err
+        V1: from_candid_OrderedMutationRetirementAckV1_n188(value.V1)
     } : value;
 }
 function from_candid_variant_n19(value: {
@@ -1911,6 +1902,25 @@ function from_candid_variant_n19(value: {
     } : value;
 }
 function from_candid_variant_n191(value: {
+    Ok: _OrderedVertexMutationRetirementAck;
+} | {
+    Err: string;
+}): {
+    __kind__: "Ok";
+    Ok: OrderedVertexMutationRetirementAck;
+} | {
+    __kind__: "Err";
+    Err: string;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_OrderedVertexMutationRetirementAck_n192(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: value.Err
+    } : value;
+}
+function from_candid_variant_n193(value: {
     V1: _OrderedVertexMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1918,7 +1928,7 @@ function from_candid_variant_n191(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedVertexMutationRetirementAckV1_n192(value.V1)
+        V1: from_candid_OrderedVertexMutationRetirementAckV1_n194(value.V1)
     } : value;
 }
 function from_candid_variant_n22(value: {
@@ -1997,7 +2007,7 @@ function from_candid_variant_n40(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n68(value: {
+function from_candid_variant_n70(value: {
     Ok: _GraphOrderedEdgeBatchResult;
 } | {
     Err: string;
@@ -2010,13 +2020,13 @@ function from_candid_variant_n68(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_GraphOrderedEdgeBatchResult_n69(value.Ok)
+        Ok: from_candid_GraphOrderedEdgeBatchResult_n71(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n70(value: {
+function from_candid_variant_n72(value: {
     V1: _GraphOrderedEdgeBatchResultV1;
 }): {
     __kind__: "V1";
@@ -2024,10 +2034,10 @@ function from_candid_variant_n70(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphOrderedEdgeBatchResultV1_n71(value.V1)
+        V1: from_candid_GraphOrderedEdgeBatchResultV1_n73(value.V1)
     } : value;
 }
-function from_candid_variant_n72(value: {
+function from_candid_variant_n74(value: {
     MutationRetired: {
         mutation_id: bigint;
         graph_request_fingerprint: Uint8Array;
@@ -2049,10 +2059,10 @@ function from_candid_variant_n72(value: {
         MutationRetired: value.MutationRetired
     } : "Completed" in value ? {
         __kind__: "Completed",
-        Completed: from_candid_GraphOrderedEdgeBatchReceiptV1_n73(value.Completed)
+        Completed: from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value.Completed)
     } : value;
 }
-function from_candid_variant_n92(value: {
+function from_candid_variant_n94(value: {
     Ok: _GraphOrderedMixedBatchResult;
 } | {
     Err: string;
@@ -2065,13 +2075,13 @@ function from_candid_variant_n92(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_GraphOrderedMixedBatchResult_n93(value.Ok)
+        Ok: from_candid_GraphOrderedMixedBatchResult_n95(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n94(value: {
+function from_candid_variant_n96(value: {
     V1: _GraphOrderedMixedBatchResultV1;
 }): {
     __kind__: "V1";
@@ -2079,10 +2089,10 @@ function from_candid_variant_n94(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphOrderedMixedBatchResultV1_n95(value.V1)
+        V1: from_candid_GraphOrderedMixedBatchResultV1_n97(value.V1)
     } : value;
 }
-function from_candid_variant_n96(value: {
+function from_candid_variant_n98(value: {
     MutationRetired: {
         mutation_id: bigint;
         graph_request_fingerprint: Uint8Array;
@@ -2104,20 +2114,20 @@ function from_candid_variant_n96(value: {
         MutationRetired: value.MutationRetired
     } : "Completed" in value ? {
         __kind__: "Completed",
-        Completed: from_candid_GraphOrderedMixedBatchReceiptV1_n97(value.Completed)
+        Completed: from_candid_GraphOrderedMixedBatchReceiptV1_n99(value.Completed)
     } : value;
 }
-function from_candid_vec_n133(value: Array<_Result_9>): Array<Result_9> {
-    return value.map((x)=>from_candid_Result_9_n119(x));
+function from_candid_vec_n135(value: Array<_Result_9>): Array<Result_9> {
+    return value.map((x)=>from_candid_Result_9_n121(x));
 }
-function from_candid_vec_n148(value: Array<[] | [_GraphMutationJournalEntryWire]>): Array<GraphMutationJournalEntryWire | null> {
-    return value.map((x)=>from_candid_opt_n149(x));
+function from_candid_vec_n150(value: Array<[] | [_GraphMutationJournalEntryWire]>): Array<GraphMutationJournalEntryWire | null> {
+    return value.map((x)=>from_candid_opt_n151(x));
 }
-function from_candid_vec_n163(value: Array<_UniqueAcquireProof>): Array<UniqueAcquireProof> {
-    return value.map((x)=>from_candid_UniqueAcquireProof_n164(x));
+function from_candid_vec_n165(value: Array<_UniqueAcquireProof>): Array<UniqueAcquireProof> {
+    return value.map((x)=>from_candid_UniqueAcquireProof_n166(x));
 }
-function from_candid_vec_n168(value: Array<_UniqueEffectReceipt>): Array<UniqueEffectReceipt> {
-    return value.map((x)=>from_candid_UniqueEffectReceipt_n169(x));
+function from_candid_vec_n170(value: Array<_UniqueEffectReceipt>): Array<UniqueEffectReceipt> {
+    return value.map((x)=>from_candid_UniqueEffectReceipt_n171(x));
 }
 function from_candid_vec_n20(value: Array<_Result>): Array<Result> {
     return value.map((x)=>from_candid_Result_n11(x));
@@ -2128,38 +2138,41 @@ function to_candid_EdgeInlinePropertyEncoding_n56(value: EdgeInlinePropertyEncod
 function to_candid_EdgeInlinePropertyProfile_n54(value: EdgeInlinePropertyProfile): _EdgeInlinePropertyProfile {
     return to_candid_record_n55(value);
 }
+function to_candid_EdgeOrderingPolicy_n58(value: EdgeOrderingPolicy): _EdgeOrderingPolicy {
+    return to_candid_variant_n59(value);
+}
 function to_candid_EdgePostingBackfillArgs_n25(value: EdgePostingBackfillArgs): _EdgePostingBackfillArgs {
     return to_candid_record_n26(value);
 }
 function to_candid_EdgePropertyBackfillRequest_n23(value: EdgePropertyBackfillRequest): _EdgePropertyBackfillRequest {
     return to_candid_record_n24(value);
 }
-function to_candid_ExecutePlanArgs_n115(value: ExecutePlanArgs): _ExecutePlanArgs {
-    return to_candid_record_n116(value);
+function to_candid_ExecutePlanArgs_n117(value: ExecutePlanArgs): _ExecutePlanArgs {
+    return to_candid_record_n118(value);
 }
-function to_candid_ExecutePlanBatchArgs_n123(value: ExecutePlanBatchArgs): _ExecutePlanBatchArgs {
-    return to_candid_record_n124(value);
+function to_candid_ExecutePlanBatchArgs_n125(value: ExecutePlanBatchArgs): _ExecutePlanBatchArgs {
+    return to_candid_record_n126(value);
 }
-function to_candid_ExecutePlanBatchMode_n125(value: ExecutePlanBatchMode): _ExecutePlanBatchMode {
-    return to_candid_variant_n126(value);
+function to_candid_ExecutePlanBatchMode_n127(value: ExecutePlanBatchMode): _ExecutePlanBatchMode {
+    return to_candid_variant_n128(value);
 }
-function to_candid_ExecutePlanBatchSharedV2Args_n140(value: ExecutePlanBatchSharedV2Args): _ExecutePlanBatchSharedV2Args {
-    return to_candid_record_n141(value);
-}
-function to_candid_ExecutePlanBatchSharedV2_n142(value: ExecutePlanBatchSharedV2): _ExecutePlanBatchSharedV2 {
+function to_candid_ExecutePlanBatchSharedV2Args_n142(value: ExecutePlanBatchSharedV2Args): _ExecutePlanBatchSharedV2Args {
     return to_candid_record_n143(value);
 }
-function to_candid_ExecutePlanBatchTypedArgs_n136(value: ExecutePlanBatchTypedArgs): _ExecutePlanBatchTypedArgs {
-    return to_candid_record_n137(value);
+function to_candid_ExecutePlanBatchSharedV2_n144(value: ExecutePlanBatchSharedV2): _ExecutePlanBatchSharedV2 {
+    return to_candid_record_n145(value);
 }
-function to_candid_ExecutePlanBatchTypedShared_n138(value: ExecutePlanBatchTypedShared): _ExecutePlanBatchTypedShared {
+function to_candid_ExecutePlanBatchTypedArgs_n138(value: ExecutePlanBatchTypedArgs): _ExecutePlanBatchTypedArgs {
     return to_candid_record_n139(value);
 }
-function to_candid_ExecutePlanBulkBatch_n134(value: ExecutePlanBulkBatch): _ExecutePlanBulkBatch {
-    return to_candid_variant_n135(value);
+function to_candid_ExecutePlanBatchTypedShared_n140(value: ExecutePlanBatchTypedShared): _ExecutePlanBatchTypedShared {
+    return to_candid_record_n141(value);
 }
-function to_candid_GqlExecutionMode_n117(value: GqlExecutionMode): _GqlExecutionMode {
-    return to_candid_variant_n118(value);
+function to_candid_ExecutePlanBulkBatch_n136(value: ExecutePlanBulkBatch): _ExecutePlanBulkBatch {
+    return to_candid_variant_n137(value);
+}
+function to_candid_GqlExecutionMode_n119(value: GqlExecutionMode): _GqlExecutionMode {
+    return to_candid_variant_n120(value);
 }
 function to_candid_IndexedEmbeddingCatalog_n36(value: IndexedEmbeddingCatalog): _IndexedEmbeddingCatalog {
     return to_candid_record_n37(value);
@@ -2173,8 +2186,8 @@ function to_candid_OrderedEdgeBatchGraphArgsV1_n43(value: OrderedEdgeBatchGraphA
 function to_candid_OrderedEdgeBatchGraphArgs_n41(value: OrderedEdgeBatchGraphArgs): _OrderedEdgeBatchGraphArgs {
     return to_candid_variant_n42(value);
 }
-function to_candid_OrderedEdgeBatchGraphItemV1_n65(value: OrderedEdgeBatchGraphItemV1): _OrderedEdgeBatchGraphItemV1 {
-    return to_candid_record_n66(value);
+function to_candid_OrderedEdgeBatchGraphItemV1_n67(value: OrderedEdgeBatchGraphItemV1): _OrderedEdgeBatchGraphItemV1 {
+    return to_candid_record_n68(value);
 }
 function to_candid_OrderedEdgeBatchGraphRequestV1_n47(value: OrderedEdgeBatchGraphRequestV1): _OrderedEdgeBatchGraphRequestV1 {
     return to_candid_record_n48(value);
@@ -2182,50 +2195,50 @@ function to_candid_OrderedEdgeBatchGraphRequestV1_n47(value: OrderedEdgeBatchGra
 function to_candid_OrderedEdgeBatchGraphRequest_n45(value: OrderedEdgeBatchGraphRequest): _OrderedEdgeBatchGraphRequest {
     return to_candid_variant_n46(value);
 }
-function to_candid_OrderedMixedBatchGraphArgsV1_n78(value: OrderedMixedBatchGraphArgsV1): _OrderedMixedBatchGraphArgsV1 {
-    return to_candid_record_n79(value);
+function to_candid_OrderedMixedBatchGraphArgsV1_n80(value: OrderedMixedBatchGraphArgsV1): _OrderedMixedBatchGraphArgsV1 {
+    return to_candid_record_n81(value);
 }
-function to_candid_OrderedMixedBatchGraphArgs_n76(value: OrderedMixedBatchGraphArgs): _OrderedMixedBatchGraphArgs {
-    return to_candid_variant_n77(value);
+function to_candid_OrderedMixedBatchGraphArgs_n78(value: OrderedMixedBatchGraphArgs): _OrderedMixedBatchGraphArgs {
+    return to_candid_variant_n79(value);
 }
-function to_candid_OrderedMixedBatchGraphRequestV1_n82(value: OrderedMixedBatchGraphRequestV1): _OrderedMixedBatchGraphRequestV1 {
-    return to_candid_record_n83(value);
+function to_candid_OrderedMixedBatchGraphRequestV1_n84(value: OrderedMixedBatchGraphRequestV1): _OrderedMixedBatchGraphRequestV1 {
+    return to_candid_record_n85(value);
 }
-function to_candid_OrderedMixedBatchGraphRequest_n80(value: OrderedMixedBatchGraphRequest): _OrderedMixedBatchGraphRequest {
-    return to_candid_variant_n81(value);
+function to_candid_OrderedMixedBatchGraphRequest_n82(value: OrderedMixedBatchGraphRequest): _OrderedMixedBatchGraphRequest {
+    return to_candid_variant_n83(value);
 }
-function to_candid_OrderedMixedGraphEdgeItemV1_n87(value: OrderedMixedGraphEdgeItemV1): _OrderedMixedGraphEdgeItemV1 {
-    return to_candid_record_n88(value);
+function to_candid_OrderedMixedGraphEdgeItemV1_n89(value: OrderedMixedGraphEdgeItemV1): _OrderedMixedGraphEdgeItemV1 {
+    return to_candid_record_n90(value);
 }
-function to_candid_OrderedMixedGraphEndpointV1_n89(value: OrderedMixedGraphEndpointV1): _OrderedMixedGraphEndpointV1 {
-    return to_candid_variant_n90(value);
+function to_candid_OrderedMixedGraphEndpointV1_n91(value: OrderedMixedGraphEndpointV1): _OrderedMixedGraphEndpointV1 {
+    return to_candid_variant_n92(value);
 }
-function to_candid_OrderedMixedGraphOperationV1_n85(value: OrderedMixedGraphOperationV1): _OrderedMixedGraphOperationV1 {
-    return to_candid_variant_n86(value);
+function to_candid_OrderedMixedGraphOperationV1_n87(value: OrderedMixedGraphOperationV1): _OrderedMixedGraphOperationV1 {
+    return to_candid_variant_n88(value);
 }
-function to_candid_OrderedMutationRetirementArgs_n174(value: OrderedMutationRetirementArgs): _OrderedMutationRetirementArgs {
-    return to_candid_variant_n175(value);
+function to_candid_OrderedMutationRetirementArgs_n176(value: OrderedMutationRetirementArgs): _OrderedMutationRetirementArgs {
+    return to_candid_variant_n177(value);
 }
-function to_candid_OrderedVertexBatchGraphArgsV1_n101(value: OrderedVertexBatchGraphArgsV1): _OrderedVertexBatchGraphArgsV1 {
-    return to_candid_record_n102(value);
+function to_candid_OrderedVertexBatchGraphArgsV1_n103(value: OrderedVertexBatchGraphArgsV1): _OrderedVertexBatchGraphArgsV1 {
+    return to_candid_record_n104(value);
 }
-function to_candid_OrderedVertexBatchGraphArgs_n99(value: OrderedVertexBatchGraphArgs): _OrderedVertexBatchGraphArgs {
-    return to_candid_variant_n100(value);
+function to_candid_OrderedVertexBatchGraphArgs_n101(value: OrderedVertexBatchGraphArgs): _OrderedVertexBatchGraphArgs {
+    return to_candid_variant_n102(value);
 }
-function to_candid_OrderedVertexBatchGraphRequestV1_n105(value: OrderedVertexBatchGraphRequestV1): _OrderedVertexBatchGraphRequestV1 {
-    return to_candid_record_n106(value);
+function to_candid_OrderedVertexBatchGraphRequestV1_n107(value: OrderedVertexBatchGraphRequestV1): _OrderedVertexBatchGraphRequestV1 {
+    return to_candid_record_n108(value);
 }
-function to_candid_OrderedVertexBatchGraphRequest_n103(value: OrderedVertexBatchGraphRequest): _OrderedVertexBatchGraphRequest {
-    return to_candid_variant_n104(value);
+function to_candid_OrderedVertexBatchGraphRequest_n105(value: OrderedVertexBatchGraphRequest): _OrderedVertexBatchGraphRequest {
+    return to_candid_variant_n106(value);
 }
 function to_candid_ResolvedEdgeLabel_n52(value: ResolvedEdgeLabel): _ResolvedEdgeLabel {
     return to_candid_record_n53(value);
 }
-function to_candid_ResolvedInlineSchema_n58(value: ResolvedInlineSchema): _ResolvedInlineSchema {
-    return to_candid_variant_n59(value);
+function to_candid_ResolvedInlineSchema_n60(value: ResolvedInlineSchema): _ResolvedInlineSchema {
+    return to_candid_variant_n61(value);
 }
-function to_candid_ResolvedInlineStructField_n62(value: ResolvedInlineStructField): _ResolvedInlineStructField {
-    return to_candid_record_n63(value);
+function to_candid_ResolvedInlineStructField_n64(value: ResolvedInlineStructField): _ResolvedInlineStructField {
+    return to_candid_record_n65(value);
 }
 function to_candid_ResolvedLabelTable_n49(value: ResolvedLabelTable): _ResolvedLabelTable {
     return to_candid_record_n50(value);
@@ -2245,10 +2258,10 @@ function to_candid_VertexEmbeddingBackfillRequest_n34(value: VertexEmbeddingBack
 function to_candid_VertexEmbeddingIngestionArgs_n1(value: VertexEmbeddingIngestionArgs): _VertexEmbeddingIngestionArgs {
     return to_candid_record_n2(value);
 }
-function to_candid_opt_n167(value: number | null): [] | [number] {
+function to_candid_opt_n169(value: number | null): [] | [number] {
     return value === null ? candid_none() : candid_some(value);
 }
-function to_candid_record_n102(value: {
+function to_candid_record_n104(value: {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
     request: OrderedVertexBatchGraphRequest;
@@ -2260,10 +2273,10 @@ function to_candid_record_n102(value: {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
-        request: to_candid_OrderedVertexBatchGraphRequest_n103(value.request)
+        request: to_candid_OrderedVertexBatchGraphRequest_n105(value.request)
     };
 }
-function to_candid_record_n106(value: {
+function to_candid_record_n108(value: {
     graph_id: number;
     resolved_labels: ResolvedLabelTable;
     target_shard_id: number;
@@ -2287,7 +2300,7 @@ function to_candid_record_n106(value: {
         target_graph_canister: value.target_graph_canister
     };
 }
-function to_candid_record_n116(value: {
+function to_candid_record_n118(value: {
     mutation_id?: bigint;
     indexed_properties?: IndexedPropertyCatalog;
     plan_blob: Uint8Array;
@@ -2327,7 +2340,7 @@ function to_candid_record_n116(value: {
         indexed_properties: value.indexed_properties ? candid_some(value.indexed_properties) : candid_none(),
         plan_blob: value.plan_blob,
         resolved_labels: value.resolved_labels ? candid_some(to_candid_ResolvedLabelTable_n49(value.resolved_labels)) : candid_none(),
-        mode: to_candid_GqlExecutionMode_n117(value.mode),
+        mode: to_candid_GqlExecutionMode_n119(value.mode),
         unique_claims: value.unique_claims ? candid_some(value.unique_claims) : candid_none(),
         target_shard_id: value.target_shard_id,
         params_blob: value.params_blob,
@@ -2341,7 +2354,7 @@ function to_candid_record_n116(value: {
         seed_bindings_blob: value.seed_bindings_blob ? candid_some(value.seed_bindings_blob) : candid_none()
     };
 }
-function to_candid_record_n124(value: {
+function to_candid_record_n126(value: {
     mode: ExecutePlanBatchMode;
     operations: Array<ExecutePlanArgs>;
 }): {
@@ -2349,11 +2362,11 @@ function to_candid_record_n124(value: {
     operations: Array<_ExecutePlanArgs>;
 } {
     return {
-        mode: to_candid_ExecutePlanBatchMode_n125(value.mode),
-        operations: to_candid_vec_n127(value.operations)
+        mode: to_candid_ExecutePlanBatchMode_n127(value.mode),
+        operations: to_candid_vec_n129(value.operations)
     };
 }
-function to_candid_record_n137(value: {
+function to_candid_record_n139(value: {
     batch_mode: ExecutePlanBatchMode;
     shared: ExecutePlanBatchTypedShared;
     operations: Array<ExecutePlanTypedOp>;
@@ -2363,12 +2376,12 @@ function to_candid_record_n137(value: {
     operations: Array<_ExecutePlanTypedOp>;
 } {
     return {
-        batch_mode: to_candid_ExecutePlanBatchMode_n125(value.batch_mode),
-        shared: to_candid_ExecutePlanBatchTypedShared_n138(value.shared),
+        batch_mode: to_candid_ExecutePlanBatchMode_n127(value.batch_mode),
+        shared: to_candid_ExecutePlanBatchTypedShared_n140(value.shared),
         operations: value.operations
     };
 }
-function to_candid_record_n139(value: {
+function to_candid_record_n141(value: {
     mutation_id: bigint;
     indexed_properties?: IndexedPropertyCatalog;
     plan_blob: Uint8Array;
@@ -2395,7 +2408,7 @@ function to_candid_record_n139(value: {
         element_id_encoding_key: value.element_id_encoding_key
     };
 }
-function to_candid_record_n141(value: {
+function to_candid_record_n143(value: {
     batch_mode: ExecutePlanBatchMode;
     shared: ExecutePlanBatchSharedV2;
     operations: Array<ExecutePlanSharedV2Op>;
@@ -2405,12 +2418,12 @@ function to_candid_record_n141(value: {
     operations: Array<_ExecutePlanSharedV2Op>;
 } {
     return {
-        batch_mode: to_candid_ExecutePlanBatchMode_n125(value.batch_mode),
-        shared: to_candid_ExecutePlanBatchSharedV2_n142(value.shared),
+        batch_mode: to_candid_ExecutePlanBatchMode_n127(value.batch_mode),
+        shared: to_candid_ExecutePlanBatchSharedV2_n144(value.shared),
         operations: value.operations
     };
 }
-function to_candid_record_n143(value: {
+function to_candid_record_n145(value: {
     mutation_id: bigint;
     indexed_properties?: IndexedPropertyCatalog;
     plan_blob: Uint8Array;
@@ -2565,7 +2578,7 @@ function to_candid_record_n48(value: {
         resolved_labels: to_candid_ResolvedLabelTable_n49(value.resolved_labels),
         target_shard_id: value.target_shard_id,
         resolved_properties: value.resolved_properties,
-        items: to_candid_vec_n64(value.items),
+        items: to_candid_vec_n66(value.items),
         target_graph_canister: value.target_graph_canister
     };
 }
@@ -2585,18 +2598,21 @@ function to_candid_record_n53(value: {
     id: number;
     name: string;
     inline_property_profile: EdgeInlinePropertyProfile;
+    ordering: EdgeOrderingPolicy;
     inline_schema?: ResolvedInlineSchema;
 }): {
     id: number;
     name: string;
     inline_property_profile: _EdgeInlinePropertyProfile;
+    ordering: _EdgeOrderingPolicy;
     inline_schema: [] | [_ResolvedInlineSchema];
 } {
     return {
         id: value.id,
         name: value.name,
         inline_property_profile: to_candid_EdgeInlinePropertyProfile_n54(value.inline_property_profile),
-        inline_schema: value.inline_schema ? candid_some(to_candid_ResolvedInlineSchema_n58(value.inline_schema)) : candid_none()
+        ordering: to_candid_EdgeOrderingPolicy_n58(value.ordering),
+        inline_schema: value.inline_schema ? candid_some(to_candid_ResolvedInlineSchema_n60(value.inline_schema)) : candid_none()
     };
 }
 function to_candid_record_n55(value: {
@@ -2611,7 +2627,7 @@ function to_candid_record_n55(value: {
         byte_width: value.byte_width
     };
 }
-function to_candid_record_n60(value: {
+function to_candid_record_n62(value: {
     fields: Array<ResolvedInlineStructField>;
     property_id: number;
 }): {
@@ -2619,11 +2635,11 @@ function to_candid_record_n60(value: {
     property_id: number;
 } {
     return {
-        fields: to_candid_vec_n61(value.fields),
+        fields: to_candid_vec_n63(value.fields),
         property_id: value.property_id
     };
 }
-function to_candid_record_n63(value: {
+function to_candid_record_n65(value: {
     byte_offset: number;
     name: string;
     profile: EdgeInlinePropertyProfile;
@@ -2638,7 +2654,7 @@ function to_candid_record_n63(value: {
         profile: to_candid_EdgeInlinePropertyProfile_n54(value.profile)
     };
 }
-function to_candid_record_n66(value: {
+function to_candid_record_n68(value: {
     directed: boolean;
     inline_property_bytes: Uint8Array;
     resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
@@ -2662,7 +2678,7 @@ function to_candid_record_n66(value: {
         source_local_vertex_id: value.source_local_vertex_id
     };
 }
-function to_candid_record_n79(value: {
+function to_candid_record_n81(value: {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
     request: OrderedMixedBatchGraphRequest;
@@ -2674,10 +2690,10 @@ function to_candid_record_n79(value: {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
-        request: to_candid_OrderedMixedBatchGraphRequest_n80(value.request)
+        request: to_candid_OrderedMixedBatchGraphRequest_n82(value.request)
     };
 }
-function to_candid_record_n83(value: {
+function to_candid_record_n85(value: {
     graph_id: number;
     resolved_labels: ResolvedLabelTable;
     target_shard_id: number;
@@ -2696,12 +2712,12 @@ function to_candid_record_n83(value: {
         graph_id: value.graph_id,
         resolved_labels: to_candid_ResolvedLabelTable_n49(value.resolved_labels),
         target_shard_id: value.target_shard_id,
-        operations: to_candid_vec_n84(value.operations),
+        operations: to_candid_vec_n86(value.operations),
         resolved_properties: value.resolved_properties,
         target_graph_canister: value.target_graph_canister
     };
 }
-function to_candid_record_n88(value: {
+function to_candid_record_n90(value: {
     source: OrderedMixedGraphEndpointV1;
     directed: boolean;
     inline_property_bytes: Uint8Array;
@@ -2717,10 +2733,10 @@ function to_candid_record_n88(value: {
     catalog_edge_label_id: [] | [number];
 } {
     return {
-        source: to_candid_OrderedMixedGraphEndpointV1_n89(value.source),
+        source: to_candid_OrderedMixedGraphEndpointV1_n91(value.source),
         directed: value.directed,
         inline_property_bytes: value.inline_property_bytes,
-        target: to_candid_OrderedMixedGraphEndpointV1_n89(value.target),
+        target: to_candid_OrderedMixedGraphEndpointV1_n91(value.target),
         resolved_initial_edge_properties: value.resolved_initial_edge_properties,
         catalog_edge_label_id: value.catalog_edge_label_id ? candid_some(value.catalog_edge_label_id) : candid_none()
     };
@@ -2732,27 +2748,27 @@ function to_candid_variant_n10(value: VectorIndexKind): {
         IvfFlat: null
     } : value;
 }
-function to_candid_variant_n100(value: {
+function to_candid_variant_n102(value: {
     __kind__: "V1";
     V1: OrderedVertexBatchGraphArgsV1;
 }): {
     V1: _OrderedVertexBatchGraphArgsV1;
 } {
     return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedVertexBatchGraphArgsV1_n101(value.V1)
+        V1: to_candid_OrderedVertexBatchGraphArgsV1_n103(value.V1)
     } : value;
 }
-function to_candid_variant_n104(value: {
+function to_candid_variant_n106(value: {
     __kind__: "V1";
     V1: OrderedVertexBatchGraphRequestV1;
 }): {
     V1: _OrderedVertexBatchGraphRequestV1;
 } {
     return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedVertexBatchGraphRequestV1_n105(value.V1)
+        V1: to_candid_OrderedVertexBatchGraphRequestV1_n107(value.V1)
     } : value;
 }
-function to_candid_variant_n118(value: GqlExecutionMode): {
+function to_candid_variant_n120(value: GqlExecutionMode): {
     Update: null;
 } | {
     Query: null;
@@ -2763,7 +2779,7 @@ function to_candid_variant_n118(value: GqlExecutionMode): {
         Query: null
     } : value;
 }
-function to_candid_variant_n126(value: ExecutePlanBatchMode): {
+function to_candid_variant_n128(value: ExecutePlanBatchMode): {
     Dynamic: null;
 } | {
     Fixed: null;
@@ -2774,7 +2790,7 @@ function to_candid_variant_n126(value: ExecutePlanBatchMode): {
         Fixed: null
     } : value;
 }
-function to_candid_variant_n135(value: {
+function to_candid_variant_n137(value: {
     __kind__: "SharedSeed";
     SharedSeed: ExecutePlanBatchSharedV2Args;
 } | {
@@ -2786,12 +2802,12 @@ function to_candid_variant_n135(value: {
     PerItemSeed: _ExecutePlanBatchTypedArgs;
 } {
     return value.__kind__ === "SharedSeed" ? {
-        SharedSeed: to_candid_ExecutePlanBatchSharedV2Args_n140(value.SharedSeed)
+        SharedSeed: to_candid_ExecutePlanBatchSharedV2Args_n142(value.SharedSeed)
     } : value.__kind__ === "PerItemSeed" ? {
-        PerItemSeed: to_candid_ExecutePlanBatchTypedArgs_n136(value.PerItemSeed)
+        PerItemSeed: to_candid_ExecutePlanBatchTypedArgs_n138(value.PerItemSeed)
     } : value;
 }
-function to_candid_variant_n175(value: {
+function to_candid_variant_n177(value: {
     __kind__: "V1";
     V1: OrderedMutationRetirementArgsV1;
 }): {
@@ -2947,7 +2963,29 @@ function to_candid_variant_n57(value: {
         RawBytes: value.RawBytes
     } : value;
 }
-function to_candid_variant_n59(value: {
+function to_candid_variant_n59(value: EdgeOrderingPolicy): {
+    Unordered: null;
+} | {
+    Insertion: null;
+} {
+    return value == EdgeOrderingPolicy.Unordered ? {
+        Unordered: null
+    } : value == EdgeOrderingPolicy.Insertion ? {
+        Insertion: null
+    } : value;
+}
+function to_candid_variant_n6(value: VectorMetric): {
+    L2Squared: null;
+} | {
+    Cosine: null;
+} {
+    return value == VectorMetric.L2Squared ? {
+        L2Squared: null
+    } : value == VectorMetric.Cosine ? {
+        Cosine: null
+    } : value;
+}
+function to_candid_variant_n61(value: {
     __kind__: "struct";
     struct: {
         fields: Array<ResolvedInlineStructField>;
@@ -2969,30 +3007,19 @@ function to_candid_variant_n59(value: {
     };
 } {
     return value.__kind__ === "struct" ? {
-        struct: to_candid_record_n60(value.struct)
+        struct: to_candid_record_n62(value.struct)
     } : value.__kind__ === "scalar" ? {
         scalar: value.scalar
     } : value;
 }
-function to_candid_variant_n6(value: VectorMetric): {
-    L2Squared: null;
-} | {
-    Cosine: null;
-} {
-    return value == VectorMetric.L2Squared ? {
-        L2Squared: null
-    } : value == VectorMetric.Cosine ? {
-        Cosine: null
-    } : value;
-}
-function to_candid_variant_n77(value: {
+function to_candid_variant_n79(value: {
     __kind__: "V1";
     V1: OrderedMixedBatchGraphArgsV1;
 }): {
     V1: _OrderedMixedBatchGraphArgsV1;
 } {
     return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedMixedBatchGraphArgsV1_n78(value.V1)
+        V1: to_candid_OrderedMixedBatchGraphArgsV1_n80(value.V1)
     } : value;
 }
 function to_candid_variant_n8(value: VectorEncoding): {
@@ -3002,17 +3029,17 @@ function to_candid_variant_n8(value: VectorEncoding): {
         F32: null
     } : value;
 }
-function to_candid_variant_n81(value: {
+function to_candid_variant_n83(value: {
     __kind__: "V1";
     V1: OrderedMixedBatchGraphRequestV1;
 }): {
     V1: _OrderedMixedBatchGraphRequestV1;
 } {
     return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedMixedBatchGraphRequestV1_n82(value.V1)
+        V1: to_candid_OrderedMixedBatchGraphRequestV1_n84(value.V1)
     } : value;
 }
-function to_candid_variant_n86(value: {
+function to_candid_variant_n88(value: {
     __kind__: "Edge";
     Edge: OrderedMixedGraphEdgeItemV1;
 } | {
@@ -3024,12 +3051,12 @@ function to_candid_variant_n86(value: {
     Vertex: _OrderedVertexBatchGraphItemV1;
 } {
     return value.__kind__ === "Edge" ? {
-        Edge: to_candid_OrderedMixedGraphEdgeItemV1_n87(value.Edge)
+        Edge: to_candid_OrderedMixedGraphEdgeItemV1_n89(value.Edge)
     } : value.__kind__ === "Vertex" ? {
         Vertex: value.Vertex
     } : value;
 }
-function to_candid_variant_n90(value: {
+function to_candid_variant_n92(value: {
     __kind__: "NewVertexOrdinal";
     NewVertexOrdinal: number;
 } | {
@@ -3046,8 +3073,8 @@ function to_candid_variant_n90(value: {
         Existing: value.Existing
     } : value;
 }
-function to_candid_vec_n127(value: Array<ExecutePlanArgs>): Array<_ExecutePlanArgs> {
-    return value.map((x)=>to_candid_ExecutePlanArgs_n115(x));
+function to_candid_vec_n129(value: Array<ExecutePlanArgs>): Array<_ExecutePlanArgs> {
+    return value.map((x)=>to_candid_ExecutePlanArgs_n117(x));
 }
 function to_candid_vec_n17(value: Array<VertexEmbeddingIngestionArgs>): Array<_VertexEmbeddingIngestionArgs> {
     return value.map((x)=>to_candid_VertexEmbeddingIngestionArgs_n1(x));
@@ -3058,14 +3085,14 @@ function to_candid_vec_n38(value: Array<IndexedEmbeddingSpec>): Array<_IndexedEm
 function to_candid_vec_n51(value: Array<ResolvedEdgeLabel>): Array<_ResolvedEdgeLabel> {
     return value.map((x)=>to_candid_ResolvedEdgeLabel_n52(x));
 }
-function to_candid_vec_n61(value: Array<ResolvedInlineStructField>): Array<_ResolvedInlineStructField> {
-    return value.map((x)=>to_candid_ResolvedInlineStructField_n62(x));
+function to_candid_vec_n63(value: Array<ResolvedInlineStructField>): Array<_ResolvedInlineStructField> {
+    return value.map((x)=>to_candid_ResolvedInlineStructField_n64(x));
 }
-function to_candid_vec_n64(value: Array<OrderedEdgeBatchGraphItemV1>): Array<_OrderedEdgeBatchGraphItemV1> {
-    return value.map((x)=>to_candid_OrderedEdgeBatchGraphItemV1_n65(x));
+function to_candid_vec_n66(value: Array<OrderedEdgeBatchGraphItemV1>): Array<_OrderedEdgeBatchGraphItemV1> {
+    return value.map((x)=>to_candid_OrderedEdgeBatchGraphItemV1_n67(x));
 }
-function to_candid_vec_n84(value: Array<OrderedMixedGraphOperationV1>): Array<_OrderedMixedGraphOperationV1> {
-    return value.map((x)=>to_candid_OrderedMixedGraphOperationV1_n85(x));
+function to_candid_vec_n86(value: Array<OrderedMixedGraphOperationV1>): Array<_OrderedMixedGraphOperationV1> {
+    return value.map((x)=>to_candid_OrderedMixedGraphOperationV1_n87(x));
 }
 export interface CreateActorOptions {
     agent?: Agent;

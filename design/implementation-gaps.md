@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-01
-Anchor timestamp: 2026-08-01 01:23:28 UTC +0000
+Anchor timestamp: 2026-08-01 11:44:56 UTC +0000
 
 ## Status
 
@@ -540,6 +540,32 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
   range/equality results incomplete across index canisters.
 - **Next decision:** Keep both capabilities out of the public contract until their owner boundary,
   atomicity, routing, and rebuild semantics receive separate design decisions.
+
+### GAP-2026-08-01-001 — gleaph-gql test harness: default-feature integration build broken, all-features suite hangs, clippy test lint fails
+
+- **Status:** Open
+- **Severity:** P3 test-harness
+- **Owner:** `gleaph-gql` crate test harness
+- **Observed behavior:**
+  1. `cargo test -p gleaph-gql` (default features) fails to compile the `tests/parser_tests.rs`
+     integration binary: `create_graph_type_nested_record_inline_property_ast` reads
+     `PropertyDef.inline`, a `#[cfg(feature = "gleaph")]` field, without gating the test
+     (parser_tests.rs L1378-1402).
+  2. `cargo test -p gleaph-gql --all-features` does not terminate within the observation budget
+     (10 minutes); `cargo test -p gleaph-gql --features cypher --lib` alone reproduces the hang,
+     so the `cypher` feature's tests are the trigger.
+  3. `cargo clippy -p gleaph-gql --all-targets --all-features -- -D warnings` fails on
+     `clippy::items_after_test_module` in `type_check/phase_b.rs` (a `mod parameter_inference_tests`
+     placed mid-file, followed by `pub fn infer_linear_query_binding_kinds`).
+- **Expected or needed behavior:** the default-feature test build compiles; the all-features suite
+  terminates; clippy `--all-targets --all-features -- -D warnings` passes.
+- **Evidence:** the three commands above; `crates/gql/tests/parser_tests.rs` L1378-1402;
+  `crates/gql/src/type_check/phase_b.rs` L56; `crates/gql/Cargo.toml` features.
+- **Impact:** default-feature test builds of the crate are broken; the all-features hang blocks
+  broad validation of the crate; test-target clippy cannot gate with `-D warnings`.
+- **Next decision:** gate the `.inline` test behind `#[cfg(feature = "gleaph")]` (one-line fix,
+  land with the query-syntax slice or a small housekeeping slice); investigate and fix the
+  `cypher`-feature test hang; move the `phase_b` test module below the module's items.
 
 ## Review cadence
 

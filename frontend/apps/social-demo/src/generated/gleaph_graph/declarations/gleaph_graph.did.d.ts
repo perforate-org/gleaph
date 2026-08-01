@@ -97,6 +97,14 @@ export interface EdgeInlinePropertyProfile {
   'byte_width' : number,
 }
 /**
+ * Per-label edge ordering policy resolved by the Router from the Graph Type
+ * declaration (ADR 0052 §1). The default is `Unordered`; `Insertion` labels
+ * preserve bucket-local insertion order. This is a resolved schema projection:
+ * Graph must not persist or re-derive it from physical state.
+ */
+export type EdgeOrderingPolicy = { 'Unordered' : null } |
+  { 'Insertion' : null };
+/**
  * Resume cursor: lexicographic [`EdgePropertyKey`] wire bytes (14 bytes on graph shard).
  */
 export interface EdgePostingBackfillArgs {
@@ -844,6 +852,12 @@ export interface ResolvedEdgeLabel {
    * Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
    */
   'inline_property_profile' : EdgeInlinePropertyProfile,
+  /**
+   * Per-label ordering policy resolved by the Router from the Graph Type declaration
+   * (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
+   * bucket-local live order is the semantic insertion order.
+   */
+  'ordering' : EdgeOrderingPolicy,
   /**
    * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
    * `None` for labels with no named inline slot; otherwise a scalar or struct projection.

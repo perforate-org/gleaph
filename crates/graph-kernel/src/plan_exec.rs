@@ -1832,6 +1832,26 @@ pub struct ResolvedEdgeLabel {
     /// `None` for labels with no named inline slot; otherwise a scalar or struct projection.
     /// Graph receives this as a plan-scoped projection and must not persist or infer it.
     pub inline_schema: Option<ResolvedInlineSchema>,
+    /// Per-label ordering policy resolved by the Router from the Graph Type declaration
+    /// (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
+    /// bucket-local live order is the semantic insertion order.
+    pub ordering: EdgeOrderingPolicy,
+}
+
+/// Per-label edge ordering policy resolved by the Router from the Graph Type
+/// declaration (ADR 0052 §1). The default is `Unordered`; `Insertion` labels
+/// preserve bucket-local insertion order. This is a resolved schema projection:
+/// Graph must not persist or re-derive it from physical state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, CandidType, Serialize, Deserialize)]
+pub enum EdgeOrderingPolicy {
+    Unordered,
+    Insertion,
+}
+
+impl EdgeOrderingPolicy {
+    pub fn is_insertion(self) -> bool {
+        matches!(self, Self::Insertion)
+    }
 }
 
 impl ResolvedEdgeLabel {
@@ -1854,7 +1874,14 @@ impl ResolvedEdgeLabel {
             id,
             inline_property_profile,
             inline_schema,
+            ordering: EdgeOrderingPolicy::Unordered,
         }
+    }
+
+    /// Sets the resolved ordering policy (ADR 0052 §4).
+    pub fn with_ordering(mut self, ordering: EdgeOrderingPolicy) -> Self {
+        self.ordering = ordering;
+        self
     }
 
     /// Scalar convenience constructor: builds a `Scalar { property_id }` resolved inline schema.
@@ -2900,6 +2927,35 @@ mod tests {
             Some(ResolvedInlineSchema::Scalar { property_id })
             if property_id == PropertyId::from_raw(42)
         ));
+    }
+
+    #[test]
+    fn edge_ordering_policy_candid_roundtrip() {
+        for policy in [EdgeOrderingPolicy::Unordered, EdgeOrderingPolicy::Insertion] {
+            let bytes = Encode!(&policy).expect("encode edge ordering policy");
+            let decoded: EdgeOrderingPolicy = Decode!(&bytes, EdgeOrderingPolicy).expect("decode");
+            assert_eq!(decoded, policy);
+        }
+    }
+
+    #[test]
+    fn resolved_edge_label_ordering_roundtrip_and_default() {
+        let defaulted = ResolvedEdgeLabel::with_inline_property(
+            "ROAD".to_string(),
+            EdgeLabelId::from_raw(7),
+            EdgeInlinePropertyProfile::no_inline_property(),
+            None,
+        );
+        assert_eq!(defaulted.ordering, EdgeOrderingPolicy::Unordered);
+        assert!(!defaulted.ordering.is_insertion());
+
+        let insertion = defaulted
+            .clone()
+            .with_ordering(EdgeOrderingPolicy::Insertion);
+        assert!(insertion.ordering.is_insertion());
+        let bytes = Encode!(&insertion).expect("encode resolved edge label with ordering");
+        let decoded: ResolvedEdgeLabel = Decode!(&bytes, ResolvedEdgeLabel).expect("decode");
+        assert_eq!(decoded.ordering, EdgeOrderingPolicy::Insertion);
     }
 
     #[test]

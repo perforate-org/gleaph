@@ -1,5 +1,7 @@
 //! GQL graph type catalog on router stable memory (ADR 0013).
 
+use std::collections::BTreeMap;
+
 use gleaph_gql::ast::{Statement, StatementBlock};
 use gleaph_gql::type_check::{GraphTypePropertySchema, NoSchema, PropertySchema};
 use gleaph_gql::validate::SessionGraphSeed;
@@ -56,10 +58,18 @@ pub(crate) fn apply_catalog_statement_block(
     source: &str,
 ) -> Result<(), RouterError> {
     for stmt in block.iter_statements() {
-        if let Statement::CreateGraph(create) = stmt
-            && let Some(gleaph_gql::ast::GraphTypeSpec::Inline(definition)) = &create.graph_type
-        {
-            validate_inline_graph_type_schemas(definition)?;
+        match stmt {
+            Statement::CreateGraph(create) => {
+                if let Some(gleaph_gql::ast::GraphTypeSpec::Inline(definition)) = &create.graph_type
+                {
+                    validate_inline_graph_type_schemas(definition)?;
+                    validate_edge_ordering_policies(definition)?;
+                }
+            }
+            Statement::CreateGraphType(create) => {
+                validate_edge_ordering_policies(&create.definition)?;
+            }
+            _ => {}
         }
     }
     ROUTER_GRAPH_TYPE_CATALOG.with_borrow_mut(|type_catalog| {
@@ -82,6 +92,64 @@ pub(crate) fn apply_catalog_statement_block(
             }
             Ok(())
         })
+    })
+}
+
+/// Validates the per-label ordering policy declarations of a Graph Type definition
+/// (ADR 0052 §1/§4): every `ORDER BY` key must be `INSERTION`, and a runtime label
+/// declared by multiple edge elements must not carry conflicting policies. Runs
+/// before any catalog mutation so an invalid definition fails closed without
+/// partial state.
+pub(crate) fn validate_edge_ordering_policies(
+    definition: &gleaph_gql::ast::GraphTypeDefinition,
+) -> Result<(), RouterError> {
+    let mut declared: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    for element in &definition.elements {
+        let gleaph_gql::ast::GraphTypeElement::Edge(edge) = element else {
+            continue;
+        };
+        let Some(label_set) = edge.label_set.as_ref() else {
+            if edge.storage_order.is_some() {
+                return Err(RouterError::InvalidArgument(
+                    "edge ORDER BY clause requires LABEL(S) in the same declaration".into(),
+                ));
+            }
+            continue;
+        };
+        let key = edge
+            .storage_order
+            .as_ref()
+            .map(|clause| clause.key.as_str());
+        for label in &label_set.labels {
+            if let Some(prev) = declared.insert(label.as_str(), key)
+                && prev != key
+            {
+                return Err(RouterError::InvalidArgument(format!(
+                    "edge label '{label}' is declared with conflicting ORDER BY policies"
+                )));
+            }
+            if let Some(k) = key
+                && k != "INSERTION"
+            {
+                return Err(RouterError::InvalidArgument(format!(
+                    "edge label '{label}' declares unsupported ORDER BY key '{k}'"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns the parsed Graph Type definition bound to the graph, if any.
+/// Parsed definitions are heap caches rebuilt from source strings (ADR 0013);
+/// this is derived state and never a second source of truth.
+pub(crate) fn parsed_graph_type_definition_for_graph_id(
+    graph_id: GraphId,
+) -> Result<Option<gleaph_gql::ast::GraphTypeDefinition>, RouterError> {
+    ROUTER_GQL_GRAPH_CATALOG.with_borrow(|catalog| {
+        catalog
+            .graph_type_definition_for_graph_id(graph_id)
+            .map_err(catalog_error_to_router)
     })
 }
 

@@ -4,7 +4,7 @@ use crate::ast::{
     CreateGraphStatement, CreateGraphTypeStatement, CreateSchemaStatement, DropGraphStatement,
     DropGraphTypeStatement, DropSchemaStatement, EdgeEndpoint, EdgeTypeDef, GraphTypeDefinition,
     GraphTypeElement, GraphTypeSpec, KeyLabelSet, Keyword, NodeTypeDef, PropertyDef, Statement,
-    ValueType,
+    StorageOrderClause, ValueType,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -432,6 +432,10 @@ impl Parser<'_> {
         } else {
             None
         };
+        let storage_order = self.parse_optional_storage_order_clause()?;
+        if storage_order.is_some() && label_set.is_none() {
+            return Err(self.expected("LABEL(S) before ORDER BY"));
+        }
         let properties = if self.at_token(&Token::LBrace) {
             self.parse_graph_type_property_defs(true)?
         } else {
@@ -464,6 +468,7 @@ impl Parser<'_> {
             source,
             destination,
             label_set,
+            storage_order,
             properties,
         })
     }
@@ -527,6 +532,10 @@ impl Parser<'_> {
         } else {
             None
         };
+        let storage_order = self.parse_optional_storage_order_clause()?;
+        if storage_order.is_some() && label_set.is_none() {
+            return Err(self.expected("LABEL(S) before ORDER BY"));
+        }
         let properties = if self.at_token(&Token::LBrace) {
             self.parse_graph_type_property_defs(true)?
         } else {
@@ -542,6 +551,7 @@ impl Parser<'_> {
             source,
             destination,
             label_set,
+            storage_order,
             properties,
         })
     }
@@ -597,6 +607,25 @@ impl Parser<'_> {
             label_keyword_plural,
             labels,
         })
+    }
+
+    /// Parses an optional `ORDER BY <key>` storage-order clause on an edge type
+    /// declaration. The clause reuses the standard `ORDER`/`BY` keywords; the key
+    /// is captured opaquely and not interpreted by this crate.
+    fn parse_optional_storage_order_clause(
+        &mut self,
+    ) -> Result<Option<StorageOrderClause>, GqlError> {
+        if !self.at_keyword("ORDER") {
+            return Ok(None);
+        }
+        let start = self.save();
+        self.eat_keyword("ORDER");
+        self.expect_keyword("BY")?;
+        let key = self.expect_ident()?;
+        Ok(Some(StorageOrderClause {
+            span: self.span_since(start),
+            key,
+        }))
     }
 
     fn parse_graph_type_property_defs(

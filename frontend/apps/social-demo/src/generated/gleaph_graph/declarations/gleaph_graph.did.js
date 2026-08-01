@@ -156,6 +156,10 @@ export const idlFactory = ({ IDL }) => {
     'encoding' : EdgeInlinePropertyEncoding,
     'byte_width' : IDL.Nat16,
   });
+  const EdgeOrderingPolicy = IDL.Variant({
+    'Unordered' : IDL.Null,
+    'Insertion' : IDL.Null,
+  });
   const ResolvedInlineStructField = IDL.Record({
     'byte_offset' : IDL.Nat16,
     'name' : IDL.Text,
@@ -172,6 +176,7 @@ export const idlFactory = ({ IDL }) => {
     'id' : IDL.Nat16,
     'name' : IDL.Text,
     'inline_property_profile' : EdgeInlinePropertyProfile,
+    'ordering' : EdgeOrderingPolicy,
     'inline_schema' : IDL.Opt(ResolvedInlineSchema),
   });
   const ResolvedVertexLabel = IDL.Record({

@@ -63,6 +63,15 @@ pub(super) fn validate_graph_type_definition(def: &GraphTypeDefinition) -> VResu
                         validate_label_name(label).map_err(|e| verr(&e.to_string()))?;
                     }
                 }
+                if let Some(ref storage_order) = edge.storage_order {
+                    if edge.label_set.is_none() {
+                        return Err(verr(
+                            "edge ORDER BY clause requires LABEL(S) in the same declaration",
+                        ));
+                    }
+                    validate_graph_type_identifier(&storage_order.key)
+                        .map_err(|e| verr(&e.to_string()))?;
+                }
             }
         }
     }

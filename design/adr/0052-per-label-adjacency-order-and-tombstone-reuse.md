@@ -2,8 +2,12 @@
 
 Date: 2026-07-29
 Status: planned
-Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 19:35:39 UTC +0000
+Last revised: 2026-08-01
+Anchor timestamp: 2026-08-01 11:44:56 UTC +0000
+Implementation status: Slice 1 (2026-08-01, Plan 0196) implements the Graph Type `ORDER BY
+INSERTION` declaration and the Router-side per-label `EdgeOrderingPolicy` resolution end-to-end
+(see below). The query syntax `ORDER BY INSERTION(e)` (replacing `GLEAPH.SEQUENCE`), LARA
+unordered placement, tombstone reuse, and compaction reordering remain planned.
 
 ## Context
 
@@ -41,8 +45,14 @@ descending as an explicit opt-in.
   and `gleaph_sequence_sort`'s no-direction case are ascending (SQL `ORDER BY` convention);
   `ORDER BY GLEAPH.SEQUENCE(e) DESC` remains the explicit descending path.
 
-The ADR body below (unordered/insertion policy, `ORDER BY INSERTION` syntax, tombstone reuse,
-compaction reordering) remains **planned**; this prerequisite only fixes the default direction.
+The ADR body below remains **planned** except for the parts implemented by Slice 1 (Plan 0196,
+2026-08-01): §1/§4's `EdgeOrderingPolicy` (Unordered default / Insertion) now exists as a resolved
+wire field on `ResolvedEdgeLabel`, and §2's Graph Type `ORDER BY INSERTION` declaration parses
+(gql, opaque key) and resolves per label in the Router from the canonical Graph Type definition,
+fail-closed on unknown keys and conflicting declarations. The query syntax `ORDER BY INSERTION(e)`
+(§3), unordered insertion/batch placement (§5), insertion-ordered placement (§6), policy-specific
+compaction (§7), and policy-change enforcement (§10) remain planned; no placement or query
+behavior changes yet.
 
 ## Problem
 

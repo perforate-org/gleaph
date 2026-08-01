@@ -465,6 +465,73 @@ fn valid_create_graph_type_with_structured_body() {
         );
 }
 
+fn first_edge_storage_order_key(input: &str) -> Option<String> {
+    let program = parser::parse(input).expect("parse graph type");
+    let body = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|tx| tx.body.as_ref())
+        .expect("statement block");
+    let Statement::CreateGraphType(create) = &body.first else {
+        panic!("expected CREATE GRAPH TYPE");
+    };
+    let edge = create
+        .definition
+        .elements
+        .iter()
+        .find_map(|el| match el {
+            GraphTypeElement::Edge(edge) => Some(edge),
+            GraphTypeElement::Node(_) => None,
+        })
+        .expect("edge element");
+    edge.storage_order.as_ref().map(|clause| clause.key.clone())
+}
+
+#[test]
+fn valid_graph_type_phrase_edge_order_by_insertion() {
+    let input = "CREATE GRAPH TYPE myType { NODE Person, NODE Post, DIRECTED EDGE FeedMembership LABEL IN_PUBLIC_FEED ORDER BY INSERTION CONNECTING (Person -> Post) }";
+    assert_eq!(
+        first_edge_storage_order_key(input).as_deref(),
+        Some("INSERTION")
+    );
+    assert!(parse_and_validate(input).is_ok());
+}
+
+#[test]
+fn valid_graph_type_pattern_edge_order_by_insertion() {
+    let input =
+        "CREATE GRAPH TYPE myType { (Person)-[:IN_PUBLIC_FEED ORDER BY INSERTION]->(Post) }";
+    assert_eq!(
+        first_edge_storage_order_key(input).as_deref(),
+        Some("INSERTION")
+    );
+    assert!(parse_and_validate(input).is_ok());
+}
+
+#[test]
+fn gql_does_not_interpret_storage_order_key() {
+    // Any identifier is accepted at the syntax level; interpretation is the
+    // caller's (Router) responsibility.
+    let input = "CREATE GRAPH TYPE myType { NODE A, NODE B, DIRECTED EDGE E LABEL L ORDER BY SOMETHING_ELSE CONNECTING (A -> B) }";
+    assert_eq!(
+        first_edge_storage_order_key(input).as_deref(),
+        Some("SOMETHING_ELSE")
+    );
+    assert!(parse_and_validate(input).is_ok());
+}
+
+#[test]
+fn order_by_requires_label_set_in_edge_declaration() {
+    let result = parser::parse(
+        "CREATE GRAPH TYPE myType { NODE A, NODE B, DIRECTED EDGE E ORDER BY INSERTION CONNECTING (A -> B) }",
+    );
+    let err = result.expect_err("ORDER BY without LABEL must fail");
+    assert!(
+        err.to_string().contains("LABEL"),
+        "expected LABEL mention: {err}"
+    );
+}
+
 #[test]
 fn invalid_create_graph_type_duplicate_property_name() {
     let err = parse_and_validate(
@@ -1254,6 +1321,7 @@ fn invalid_create_graph_type_edge_endpoint_missing_ref() {
                 keyword: Keyword::new("EDGE"),
                 name: Some("Knows".into()),
                 label_set: None,
+                storage_order: None,
                 direction: crate::types::EdgeDirection::PointingRight,
                 source: EdgeEndpoint {
                     span: Span::DUMMY,
@@ -1321,6 +1389,7 @@ fn invalid_graph_type_conflicting_edge_label_directedness() {
                     type_name: Some("B".into()),
                 },
                 label_set: Some(label_r.clone()),
+                storage_order: None,
                 properties: vec![],
             }),
             GraphTypeElement::Edge(EdgeTypeDef {
@@ -1339,6 +1408,7 @@ fn invalid_graph_type_conflicting_edge_label_directedness() {
                     type_name: Some("B".into()),
                 },
                 label_set: Some(label_r),
+                storage_order: None,
                 properties: vec![],
             }),
         ],
@@ -2266,6 +2336,7 @@ fn valid_graph_type_with_only_edges() {
             keyword: Keyword::new("EDGE"),
             name: Some("Knows".into()),
             label_set: None,
+            storage_order: None,
             direction: crate::types::EdgeDirection::PointingRight,
             source: EdgeEndpoint {
                 span: Span::DUMMY,

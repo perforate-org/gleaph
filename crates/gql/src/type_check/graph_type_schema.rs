@@ -264,6 +264,7 @@ mod tests {
                         label_keyword_plural: false,
                         labels: vec!["R".to_string()],
                     }),
+                    storage_order: None,
                     properties: vec![],
                 }),
                 GraphTypeElement::Edge(EdgeTypeDef {
@@ -286,6 +287,7 @@ mod tests {
                         label_keyword_plural: false,
                         labels: vec!["R".to_string()],
                     }),
+                    storage_order: None,
                     properties: vec![],
                 }),
             ],
@@ -330,6 +332,7 @@ mod tests {
                         label_keyword_plural: false,
                         labels: vec!["KNOWS".to_string()],
                     }),
+                    storage_order: None,
                     properties: vec![],
                 }),
             ],

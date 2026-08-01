@@ -2681,6 +2681,7 @@ mod tests {
                         id: EdgeLabelId::from_raw(1),
                         inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
                         inline_schema: None,
+                        ordering: gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered,
                     }],
                 }),
                 resolved_properties: None,

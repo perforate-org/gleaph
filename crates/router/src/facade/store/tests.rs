@@ -3165,6 +3165,89 @@ pub(crate) mod graph_type_catalog_vocabulary {
     }
 
     #[test]
+    fn graph_type_order_by_insertion_resolves_label_policy() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        let ddl = "CREATE GRAPH g { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED ORDER BY INSERTION CONNECTING (Person -> Person) }";
+        apply_catalog_statement_block(&catalog_block_from(ddl), ddl).expect("apply ddl");
+
+        assert_eq!(
+            store
+                .lookup_edge_ordering_policy(graph_id, "IN_FEED")
+                .expect("policy"),
+            gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Insertion
+        );
+        // Labels not declared in the Graph Type resolve to the Unordered default.
+        assert_eq!(
+            store
+                .lookup_edge_ordering_policy(graph_id, "UNDECLARED")
+                .expect("policy"),
+            gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered
+        );
+    }
+
+    #[test]
+    fn graph_type_order_by_insertion_applies_to_all_declared_labels() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        let ddl = "CREATE GRAPH g { NODE Person, DIRECTED EDGE Feed LABEL IN_FEED & IN_TOP_FEED ORDER BY INSERTION CONNECTING (Person -> Person) }";
+        apply_catalog_statement_block(&catalog_block_from(ddl), ddl).expect("apply ddl");
+
+        for label in ["IN_FEED", "IN_TOP_FEED"] {
+            assert_eq!(
+                store
+                    .lookup_edge_ordering_policy(graph_id, label)
+                    .expect("policy"),
+                gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Insertion
+            );
+        }
+    }
+
+    #[test]
+    fn graph_type_unknown_order_by_key_rejected_at_ddl() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+
+        let ddl = "CREATE GRAPH g { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED ORDER BY SOMETHING CONNECTING (Person -> Person) }";
+        let err = apply_catalog_statement_block(&catalog_block_from(ddl), ddl)
+            .expect_err("unsupported ORDER BY key must fail at DDL");
+        let msg = err.to_string();
+        assert!(msg.contains("ORDER BY"), "expected ORDER BY mention: {msg}");
+        assert!(msg.contains("SOMETHING"), "expected key mention: {msg}");
+    }
+
+    #[test]
+    fn graph_type_conflicting_order_by_declarations_rejected_at_ddl() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+
+        let ddl = "CREATE GRAPH g { NODE Person, DIRECTED EDGE A LABEL L ORDER BY INSERTION CONNECTING (Person -> Person), DIRECTED EDGE B LABEL L CONNECTING (Person -> Person) }";
+        let err = apply_catalog_statement_block(&catalog_block_from(ddl), ddl)
+            .expect_err("conflicting per-label policies must fail at DDL");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("conflicting"),
+            "expected conflict mention: {msg}"
+        );
+    }
+
+    #[test]
     fn create_graph_typed_ddl_auto_interns_vocabulary() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());

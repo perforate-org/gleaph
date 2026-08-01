@@ -22,9 +22,9 @@ use gleaph_graph_kernel::plan_exec::{
     SeedVertexBinding,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, SOURCE_SHARD, ensure_edge_label, ensure_vertex_label,
-    e2e_insert_vertex_with_label, federation_graph_element_id_encoding_key_bytes,
-    gql_query_as_admin, install_single_shard_federation, update_as_router,
+    FederationEnv, SOURCE_SHARD, e2e_insert_vertex_with_label, ensure_edge_label,
+    ensure_vertex_label, federation_graph_element_id_encoding_key_bytes, gql_query_as_admin,
+    install_single_shard_federation, update_as_router,
 };
 use std::rc::Rc;
 
@@ -114,6 +114,7 @@ fn make_typed_batch_args(
                     id: gleaph_graph_kernel::entry::EdgeLabelId::from_raw(posted_edge_label_id),
                     inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
                     inline_schema: None,
+                    ordering: gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered,
                 }],
             }),
             resolved_properties: None,
@@ -366,6 +367,7 @@ fn graph_typed_bulk_executes_complete_rows_for_multiple_leading_anchors() {
                     id: gleaph_graph_kernel::entry::EdgeLabelId::from_raw(follows_edge_label.raw()),
                     inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
                     inline_schema: None,
+                    ordering: gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered,
                 }],
             }),
             resolved_properties: None,

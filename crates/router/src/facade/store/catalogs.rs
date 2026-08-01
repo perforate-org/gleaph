@@ -28,8 +28,8 @@ use gleaph_gql::type_check::collect_graph_type_vocabulary;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan, PropertyUseIntent};
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, GraphId};
 use gleaph_graph_kernel::plan_exec::{
-    ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedLabelTable, ResolvedProperty,
-    ResolvedPropertyTable, ResolvedVertexLabel,
+    EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedLabelTable,
+    ResolvedProperty, ResolvedPropertyTable, ResolvedVertexLabel,
 };
 
 use super::{RouterStore, validate_metadata_name};
@@ -147,12 +147,11 @@ impl RouterStore {
             let id = self.lookup_edge_label_id(graph_id, &name)?;
             let (profile, inline_schema) =
                 self.lookup_edge_inline_property_profile_and_inline_schema(graph_id, id);
-            labels.edge.push(ResolvedEdgeLabel::with_inline_schema(
-                name,
-                id,
-                profile,
-                inline_schema,
-            ));
+            let ordering = self.lookup_edge_ordering_policy(graph_id, &name)?;
+            labels.edge.push(
+                ResolvedEdgeLabel::with_inline_schema(name, id, profile, inline_schema)
+                    .with_ordering(ordering),
+            );
         }
 
         let mut properties = ResolvedPropertyTable::default();
@@ -237,10 +236,69 @@ impl RouterStore {
         Ok((labels, properties))
     }
 
+    /// Resolves the per-label ordering policy (ADR 0052 §1/§4) from the graph's
+    /// canonical Graph Type definition. Labels declared with `ORDER BY INSERTION`
+    /// resolve to `Insertion`; undeclared or clause-less labels resolve to
+    /// `Unordered`. An unsupported `ORDER BY` key or conflicting per-label
+    /// declarations fail closed here and at DDL commit, so a resolved policy is
+    /// never invented from partial declarations.
+    pub(crate) fn lookup_edge_ordering_policy(
+        &self,
+        graph_id: GraphId,
+        edge_label_name: &str,
+    ) -> Result<EdgeOrderingPolicy, RouterError> {
+        let Some(definition) =
+            crate::facade::stable::graph_type_catalog::parsed_graph_type_definition_for_graph_id(
+                graph_id,
+            )?
+        else {
+            return Ok(EdgeOrderingPolicy::Unordered);
+        };
+        let mut found: Option<EdgeOrderingPolicy> = None;
+        for element in &definition.elements {
+            let GraphTypeElement::Edge(edge) = element else {
+                continue;
+            };
+            let Some(label_set) = edge.label_set.as_ref() else {
+                continue;
+            };
+            if !label_set
+                .labels
+                .iter()
+                .any(|label| label == edge_label_name)
+            {
+                continue;
+            }
+            let policy = match edge
+                .storage_order
+                .as_ref()
+                .map(|clause| clause.key.as_str())
+            {
+                Some("INSERTION") => EdgeOrderingPolicy::Insertion,
+                Some(other) => {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "edge label '{edge_label_name}' declares unsupported ORDER BY key '{other}'"
+                    )));
+                }
+                None => EdgeOrderingPolicy::Unordered,
+            };
+            if let Some(prev) = found
+                && prev != policy
+            {
+                return Err(RouterError::InvalidArgument(format!(
+                    "edge label '{edge_label_name}' is declared with conflicting ORDER BY policies"
+                )));
+            }
+            found = Some(policy);
+        }
+        Ok(found.unwrap_or(EdgeOrderingPolicy::Unordered))
+    }
+
     pub(crate) fn commit_intern_graph_type_vocabulary(
         graph_id: GraphId,
         def: &gleaph_gql::ast::GraphTypeDefinition,
     ) -> Result<(), RouterError> {
+        crate::facade::stable::graph_type_catalog::validate_edge_ordering_policies(def)?;
         let vocabulary = collect_graph_type_vocabulary(def);
         for name in &vocabulary.vertex_labels {
             validate_metadata_name(name)?;
@@ -824,12 +882,16 @@ impl RouterStore {
                 if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
                     let (profile, inline_schema) =
                         self.lookup_edge_inline_property_profile_and_inline_schema(graph_id, id);
-                    out.edge.push(ResolvedEdgeLabel::with_inline_schema(
-                        name.to_string(),
-                        id,
-                        profile,
-                        inline_schema,
-                    ));
+                    let ordering = self.lookup_edge_ordering_policy(graph_id, name.as_ref())?;
+                    out.edge.push(
+                        ResolvedEdgeLabel::with_inline_schema(
+                            name.to_string(),
+                            id,
+                            profile,
+                            inline_schema,
+                        )
+                        .with_ordering(ordering),
+                    );
                 }
             }
         }
@@ -851,12 +913,11 @@ impl RouterStore {
             let name = self.reverse_edge_label_name(graph_id, id)?;
             let (profile, inline_schema) =
                 self.lookup_edge_inline_property_profile_and_inline_schema(graph_id, id);
-            table.edge.push(ResolvedEdgeLabel::with_inline_schema(
-                name,
-                id,
-                profile,
-                inline_schema,
-            ));
+            let ordering = self.lookup_edge_ordering_policy(graph_id, &name)?;
+            table.edge.push(
+                ResolvedEdgeLabel::with_inline_schema(name, id, profile, inline_schema)
+                    .with_ordering(ordering),
+            );
         }
         Ok(())
     }

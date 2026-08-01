@@ -83,7 +83,29 @@ pub struct EdgeTypeDef {
     pub source: EdgeEndpoint,
     pub destination: EdgeEndpoint,
     pub label_set: Option<KeyLabelSet>,
+    /// Storage-order capability declaration (`ORDER BY <key>`), captured opaquely
+    /// and uninterpreted by this crate. The GQL standard does not define `ORDER BY`
+    /// inside edge declarations; this crate reuses the standard `ORDER`/`BY` keywords
+    /// and leaves the key's meaning to the caller.
+    pub storage_order: Option<StorageOrderClause>,
     pub properties: Vec<PropertyDef>,
+}
+
+/// A storage-order clause on an edge type definition (`ORDER BY <key>`).
+///
+/// The node only records that the declaration carried a storage-order capability
+/// request; interpreting the key (for example `INSERTION`) is the caller's
+/// responsibility, not this crate's.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct StorageOrderClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    /// The uninterpreted storage-order key identifier (for example `INSERTION`).
+    pub key: String,
 }
 
 /// An endpoint reference in an edge type definition.
