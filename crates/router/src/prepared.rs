@@ -146,49 +146,16 @@ fn plan_prepared_program(
     Ok((plan, graph_id, requires_write_path))
 }
 
-pub fn prepared_upsert(name: String, query: String) -> Result<(), RouterError> {
-    authorize_prepared_catalog_change(&msg_caller())?;
-    let caller = msg_caller();
-    prepared_upsert_core(&name, &query, caller, None)
-}
-
-/// Upsert a prepared operation together with its graph-scoped metadata.
-pub fn prepared_upsert_with_metadata(
+/// Register or replace one named prepared operation (idempotent upsert) together with optional
+/// graph-scoped metadata.
+pub fn prepare(
     name: String,
     query: String,
-    metadata: PreparedOperation,
+    metadata: Option<PreparedOperation>,
 ) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let caller = msg_caller();
-    prepared_upsert_core(&name, &query, caller, Some(metadata))
-}
-
-/// Batch variant of [`prepared_upsert`]. All items are authorized by the same caller and
-/// registered independently; failures are reported per item so one duplicate does not abort the
-/// whole social-demo scenario catalog.
-pub fn prepared_upsert_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
-    let caller = msg_caller();
-    if let Err(e) = authorize_prepared_catalog_change(&caller) {
-        return queries.into_iter().map(|_| Err(e.clone())).collect();
-    }
-    queries
-        .into_iter()
-        .map(|(name, query)| prepared_upsert_core(&name, &query, caller, None))
-        .collect()
-}
-
-/// Batch upsert variant carrying one metadata record per prepared operation.
-pub fn prepared_upsert_batch_with_metadata(
-    queries: Vec<(String, String, PreparedOperation)>,
-) -> Vec<Result<(), RouterError>> {
-    let caller = msg_caller();
-    if let Err(e) = authorize_prepared_catalog_change(&caller) {
-        return queries.into_iter().map(|_| Err(e.clone())).collect();
-    }
-    queries
-        .into_iter()
-        .map(|(name, query, metadata)| prepared_upsert_core(&name, &query, caller, Some(metadata)))
-        .collect()
+    prepared_upsert_core(&name, &query, caller, metadata)
 }
 
 fn prepared_upsert_core(
@@ -354,7 +321,7 @@ pub(crate) fn rebuild_prepared_caches_after_upgrade() {
 }
 
 /// Return the metadata snapshot for one authorized logical graph.
-pub fn prepared_manifest(graph_name: String) -> Result<PreparedManifest, RouterError> {
+pub fn list_prepared(graph_name: String) -> Result<PreparedManifest, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
     let caller = msg_caller();
     let store = RouterStore::new();
@@ -382,7 +349,7 @@ pub fn prepared_manifest(graph_name: String) -> Result<PreparedManifest, RouterE
     })
 }
 
-pub fn prepared_delete(name: &str) -> Result<(), RouterError> {
+pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let store = RouterStore::new();
     let graph_id = resolve_prepared_graph_id(&store, msg_caller(), name)?;
@@ -390,26 +357,10 @@ pub fn prepared_delete(name: &str) -> Result<(), RouterError> {
     Ok(())
 }
 
-pub async fn prepared_query(
-    name: String,
-    params: Vec<u8>,
-    sort: Option<Vec<PreparedSortSpec>>,
-) -> Result<GqlQueryResult, RouterError> {
-    prepared_run(
-        name,
-        params,
-        GqlExecutionMode::Query,
-        "prepared_query",
-        false,
-        None,
-        sort.as_deref(),
-        ReadMode::Eventual,
-    )
-    .await
-}
-
-/// Run a prepared read with an explicit ADR 0029 §5 consistency contract (Phase 3).
-pub async fn prepared_query_with_consistency(
+/// Read-only prepared execution with an explicit ADR 0029 §5 consistency contract (Phase 3).
+/// `ReadMode::Eventual` is the default contract; `ReadMode::AtLeast(token)` enforces the
+/// read-your-writes barrier.
+pub async fn execute_prepared(
     name: String,
     params: Vec<u8>,
     sort: Option<Vec<PreparedSortSpec>>,
@@ -419,7 +370,7 @@ pub async fn prepared_query_with_consistency(
         name,
         params,
         GqlExecutionMode::Query,
-        "prepared_query_with_consistency",
+        "execute_prepared",
         false,
         None,
         sort.as_deref(),
@@ -428,22 +379,7 @@ pub async fn prepared_query_with_consistency(
     .await
 }
 
-pub async fn prepared_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    Ok(prepared_run(
-        name,
-        params,
-        GqlExecutionMode::Update,
-        "prepared_update",
-        false,
-        None,
-        None,
-        ReadMode::Eventual,
-    )
-    .await?
-    .row_count)
-}
-
-pub async fn prepared_update_idempotent(
+pub async fn execute_prepared_update(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
@@ -452,7 +388,7 @@ pub async fn prepared_update_idempotent(
         name,
         params,
         GqlExecutionMode::Update,
-        "prepared_update_idempotent",
+        "execute_prepared_update",
         false,
         Some(&client_mutation_key),
         None,
@@ -463,22 +399,6 @@ pub async fn prepared_update_idempotent(
     // committed, projection incomplete) converges without a client retry.
     crate::recovery::arm_if_needed();
     result
-}
-
-/// Run a read-only prepared plan on the **update** path (escape hatch only).
-pub async fn prepared_query_as_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    Ok(prepared_run(
-        name,
-        params,
-        GqlExecutionMode::Update,
-        "prepared_query_as_update",
-        true,
-        None,
-        None,
-        ReadMode::Eventual,
-    )
-    .await?
-    .row_count)
 }
 
 #[allow(clippy::too_many_arguments)]

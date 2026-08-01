@@ -1265,28 +1265,13 @@ async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
     Ok(Some(counts))
 }
 
-pub async fn gql_query(query: String, params: Vec<u8>) -> Result<GqlQueryResult, RouterError> {
-    run_gql(
-        &query,
-        &params,
-        GqlExecutionMode::Query,
-        "gql_query",
-        false,
-        None,
-        ReadMode::Eventual,
-        None,
-    )
-    .await
-}
-
 /// Read with an explicit ADR 0029 §5 consistency contract (Phase 3).
 ///
-/// `ReadMode::Eventual` matches [`gql_query`]. `ReadMode::AtLeast(token)` enforces the
+/// `ReadMode::Eventual` is the default contract. `ReadMode::AtLeast(token)` enforces the
 /// read-your-writes barrier: the read is served only once every shard in the token has
 /// reached its label-stats and graph-index watermarks, otherwise a retryable
 /// `RouterError::ProjectionLag` is returned without serving stale state.
-/// `ReadMode::Canonical` is deferred and rejected.
-pub async fn gql_query_with_consistency(
+pub async fn gql_query(
     query: String,
     params: Vec<u8>,
     read_mode: ReadMode,
@@ -1295,28 +1280,13 @@ pub async fn gql_query_with_consistency(
         &query,
         &params,
         GqlExecutionMode::Query,
-        "gql_query_with_consistency",
+        "gql_query",
         false,
         None,
         read_mode,
         None,
     )
     .await
-}
-
-pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    Ok(run_gql(
-        &query,
-        &params,
-        GqlExecutionMode::Update,
-        "gql_execute",
-        false,
-        None,
-        ReadMode::Eventual,
-        None,
-    )
-    .await?
-    .row_count)
 }
 
 pub async fn gql_execute_idempotent(
@@ -2136,30 +2106,13 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
     }
 }
 
-/// Run a read-only program on the **update** path (higher cost; escape hatch only).
-pub async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    Ok(run_gql(
-        &query,
-        &params,
-        GqlExecutionMode::Update,
-        "force_gql_execute",
-        true,
-        None,
-        ReadMode::Eventual,
-        None,
-    )
-    .await?
-    .row_count)
-}
-
 /// ADR 0029 §5 (Phase 3) read barrier.
 ///
 /// For `AtLeast(token)`, verify every shard named in the token has reached both its
 /// label-stats projection cursor and its graph-index repair watermark before any read
 /// shape is served. If any watermark is unmet, return a retryable
 /// [`RouterError::ProjectionLag`] instead of serving a stale projection. `Eventual` is a
-/// no-op; `Canonical` is deferred (Phase 3) and rejected so callers never silently get
-/// `Eventual` semantics under a stronger label.
+/// no-op.
 pub(crate) async fn enforce_read_consistency(
     store: &RouterStore,
     graph_id: GraphId,
@@ -2207,13 +2160,6 @@ where
 {
     let token = match read_mode {
         ReadMode::Eventual => return Ok(()),
-        ReadMode::Canonical => {
-            return Err(RouterError::InvalidArgument(
-                "Canonical read mode is not yet implemented (ADR 0029 Phase 3 deferred); \
-                 use Eventual or AtLeast(token)"
-                    .into(),
-            ));
-        }
         ReadMode::AtLeast(token) => token,
     };
 
@@ -8106,7 +8052,7 @@ mod tests {
     // ADR 0029 §5 (Phase 3) read barrier decision logic. Production uses the real
     // inter-canister pending-mutation lookup; the private `enforce_read_consistency_with_lookup`
     // seam makes the graph-index branch host-testable. These host tests pin every local
-    // decision: `Eventual` no-op, `Canonical` rejection, label-stats short-circuit,
+    // decision: `Eventual` no-op, label-stats short-circuit,
     // graph-index lag and drain, and multi-shard lookup identity/order.
     #[test]
     fn read_barrier_eventual_is_noop() {
@@ -8118,19 +8064,6 @@ mod tests {
             &ReadMode::Eventual,
         ))
         .expect("eventual never blocks");
-    }
-
-    #[test]
-    fn read_barrier_canonical_is_rejected() {
-        let store = store_with_shards();
-        let graph_id = tenant_main_graph_id();
-        let err = futures::executor::block_on(enforce_read_consistency(
-            &store,
-            graph_id,
-            &ReadMode::Canonical,
-        ))
-        .expect_err("canonical is deferred");
-        assert!(matches!(err, RouterError::InvalidArgument(_)));
     }
 
     #[test]

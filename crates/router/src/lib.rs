@@ -279,32 +279,16 @@ fn admin_intern_property(
     canister::admin_intern_property(logical_graph_name, name)
 }
 
-/// Read-only GQL: composite query (calls index + graph query endpoints).
+/// Read-only GQL: composite query (calls index + graph query endpoints) with an explicit
+/// ADR 0029 §5 read-consistency contract. `Eventual` is the default contract; `AtLeast(token)`
+/// enforces a retryable read-your-writes barrier against the token's per-shard watermarks.
 #[query(composite = true)]
 async fn gql_query(
     query: String,
     params: Vec<u8>,
-) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    gql::gql_query(query, params).await
-}
-
-/// Read-only GQL with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
-///
-/// `Eventual` matches [`gql_query`]; `AtLeast(token)` enforces a retryable read-your-writes
-/// barrier against the token's per-shard watermarks; `Canonical` is deferred and rejected.
-#[query(composite = true)]
-async fn gql_query_with_consistency(
-    query: String,
-    params: Vec<u8>,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    gql::gql_query_with_consistency(query, params, read_mode).await
-}
-
-/// Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
-#[update]
-async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    gql::gql_execute(query, params).await
+    gql::gql_query(query, params, read_mode).await
 }
 
 /// Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
@@ -313,7 +297,7 @@ async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError>
 /// clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
 /// durable canonical commit from full cross-canister projection convergence.
 #[update]
-async fn gql_execute_idempotent(
+async fn gql_execute(
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
@@ -338,24 +322,22 @@ fn log_batch_phase(_phase: &str, _cost: u64) {}
 /// its original client mutation key.
 #[update]
 #[allow(unused_variables, unused_assignments)]
-async fn gql_execute_idempotent_batch(
+async fn gql_execute_batch(
     args: types::GqlExecuteIdempotentBatchArgs,
 ) -> Result<types::GqlExecuteIdempotentBatchResult, RouterError> {
     let request_bytes = Encode!(&args).map_err(|error| {
-        RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent_batch request encode failed: {error}"
-        ))
+        RouterError::InvalidArgument(format!("gql_execute_batch request encode failed: {error}"))
     })?;
     if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent_batch request exceeds the safe payload limit of {} bytes",
+            "gql_execute_batch request exceeds the safe payload limit of {} bytes",
             gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
     }
     let total = args.mutations.len() as u32;
     if total == 0 {
         return Err(RouterError::InvalidArgument(
-            "gql_execute_idempotent_batch requires mutations".into(),
+            "gql_execute_batch requires mutations".into(),
         ));
     }
     if args.start_index >= total {
@@ -470,13 +452,11 @@ async fn gql_execute_idempotent_batch(
         instruction_counter,
     };
     let response_bytes = Encode!(&result).map_err(|error| {
-        RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent_batch response encode failed: {error}"
-        ))
+        RouterError::InvalidArgument(format!("gql_execute_batch response encode failed: {error}"))
     })?;
     if response_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent_batch response exceeds the safe payload limit of {} bytes",
+            "gql_execute_batch response exceeds the safe payload limit of {} bytes",
             gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
     }
@@ -485,7 +465,7 @@ async fn gql_execute_idempotent_batch(
 
 /// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
 #[query]
-fn mutation_status(
+fn get_mutation_status(
     logical_graph_name: String,
     client_mutation_key: String,
 ) -> Result<types::MutationStatus, RouterError> {
@@ -494,7 +474,7 @@ fn mutation_status(
 
 /// ADR 0049: classify and execute one order-preserving public batch.
 #[update]
-async fn batch(request: types::BatchRequest) -> Result<types::BatchResponse, RouterError> {
+async fn batch_insert(request: types::BatchRequest) -> Result<types::BatchResponse, RouterError> {
     canister::batch(request).await
 }
 
@@ -567,90 +547,49 @@ fn test_force_reclaiming(
     canister::test_force_reclaiming(logical_graph_name, label, property, value)
 }
 
-/// Read-only GQL on the update path only (no composite-query savings; bypasses path check).
 #[update]
-async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    gql::force_gql_execute(query, params).await
-}
-
-#[update]
-fn prepared_upsert(name: String, query: String) -> Result<(), RouterError> {
-    prepared::prepared_upsert(name, query)
-}
-
-#[update]
-fn prepared_upsert_with_metadata(
+/// Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
+fn prepare(
     name: String,
     query: String,
-    metadata: gleaph_prepared_api::PreparedOperation,
+    metadata: Option<gleaph_prepared_api::PreparedOperation>,
 ) -> Result<(), RouterError> {
-    prepared::prepared_upsert_with_metadata(name, query, metadata)
+    prepared::prepare(name, query, metadata)
 }
 
+/// Remove one named prepared operation.
 #[update]
-fn prepared_upsert_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
-    prepared::prepared_upsert_batch(queries)
+fn drop_prepared(name: String) -> Result<(), RouterError> {
+    prepared::drop_prepared(&name)
 }
 
-#[update]
-fn prepared_upsert_batch_with_metadata(
-    queries: Vec<(String, String, gleaph_prepared_api::PreparedOperation)>,
-) -> Vec<Result<(), RouterError>> {
-    prepared::prepared_upsert_batch_with_metadata(queries)
-}
-
-#[update]
-fn prepared_delete(name: String) -> Result<(), RouterError> {
-    prepared::prepared_delete(&name)
-}
-
+/// The full prepared-operation manifest for one graph.
 #[query]
-fn prepared_manifest(
-    graph_name: String,
-) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
-    prepared::prepared_manifest(graph_name)
+fn list_prepared(graph_name: String) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
+    prepared::list_prepared(graph_name)
 }
 
+/// Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
 #[query(composite = true)]
-async fn prepared_query(
-    name: String,
-    params: Vec<u8>,
-    sort: Option<Vec<gleaph_prepared_api::PreparedSortSpec>>,
-) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_query(name, params, sort).await
-}
-
-/// Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
-#[query(composite = true)]
-async fn prepared_query_with_consistency(
+async fn execute_prepared(
     name: String,
     params: Vec<u8>,
     sort: Option<Vec<gleaph_prepared_api::PreparedSortSpec>>,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_query_with_consistency(name, params, sort, read_mode).await
-}
-
-#[update]
-async fn prepared_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    prepared::prepared_update(name, params).await
+    prepared::execute_prepared(name, params, sort, read_mode).await
 }
 
 /// Idempotent prepared update. Returns the richer
 /// [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
 /// federated mutation lifecycle `phase`.
 #[update]
-async fn prepared_update_idempotent(
+async fn execute_prepared_update(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_update_idempotent(name, params, client_mutation_key).await
-}
-
-#[update]
-async fn prepared_query_as_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    prepared::prepared_query_as_update(name, params).await
+    prepared::execute_prepared_update(name, params, client_mutation_key).await
 }
 
 #[update]
@@ -768,14 +707,18 @@ async fn admin_ingest_vertex_embedding_batch(
     canister::admin_ingest_vertex_embedding_batch(args).await
 }
 
-/// Read-only exact `ivf_flat` vector search: composite query that resolves the activated target and
-/// forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
-/// Slice 4 activation gate is satisfied.
+/// Read-only exact `ivf_flat` vector search: composite query that resolves the named vector index
+/// and forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
+/// Slice 4 activation gate is satisfied. `query` is the encoded F32 vector (dims are inferred from
+/// the registered index definition).
 #[query(composite = true)]
 async fn vector_search(
-    req: types::RouterVectorSearchRequest,
+    graph_name: String,
+    index_name: String,
+    query: Vec<u8>,
+    top_k: u32,
 ) -> Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError> {
-    canister::vector_search(req).await
+    canister::vector_search(graph_name, index_name, query, top_k).await
 }
 
 // --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface (Admin only) ---

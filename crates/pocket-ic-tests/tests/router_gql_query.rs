@@ -658,15 +658,6 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
         "unmet watermark returns ProjectionLag, got {err:?}"
     );
 
-    // Canonical is deferred (Phase 3) and explicitly rejected.
-    let err =
-        gql_query_with_consistency_as_admin(&env, "MATCH (n:Person) RETURN n", ReadMode::Canonical)
-            .expect_err("Canonical read mode is deferred");
-    assert!(
-        matches!(err, RouterError::InvalidArgument(_)),
-        "Canonical is rejected, got {err:?}"
-    );
-
     // Eventual remains non-blocking and serves the same data.
     let eventual =
         gql_query_with_consistency_as_admin(&env, "MATCH (n:Person) RETURN n", ReadMode::Eventual)

@@ -26,6 +26,58 @@ use sha2::{Digest, Sha256};
 pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
 use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRecord;
 
+/// Registry-local summary row for one logical graph (ADR 0056 §7). Computed from Router stable
+/// state only; no cross-canister calls, so `list_graphs` stays cheap for UI/CLI polling.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct GraphSummary {
+    pub graph_id: GraphId,
+    pub graph_name: String,
+    pub status: GraphStatus,
+    pub provisioning_state: ProvisioningState,
+    pub shard_count: u32,
+    pub updated_at_ns: u64,
+}
+
+/// Best-effort graph-level operational snapshot (ADR 0056 §7). Composite query; bounded and
+/// partial results are reported in `notes` rather than failing the call.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct GraphHealthView {
+    pub graph: GraphSummary,
+    /// Shards that answered a liveness check.
+    pub reachable_shard_count: u32,
+    /// All shards' index-sync converged.
+    pub index_sync_converged: bool,
+    pub vector_index_count: u32,
+    /// Unhealthy vector-index names only; detail lives at the L3 surface.
+    pub unhealthy_vector_indexes: Vec<String>,
+    /// Bounded, best-effort repair guidance.
+    pub notes: Vec<String>,
+}
+
+/// Which graph-index repair driver `advance_backfill` advances (ADR 0056 §4). The Router
+/// interprets `max_work` per kind (vertices / entries / deltas) and iterates shards internally.
+/// The enum itself is shared with the in-flight backfill claim machinery; `LabelStats` covers
+/// the label-stats projection driver.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct RegisterGraphArgs {
+    pub graph_name: String,
+    pub owner: Principal,
+    pub admins: BTreeSet<Principal>,
+    /// Dev mode: the caller-installed shard canisters (one graph + index canister per shard).
+    pub shards: Vec<RegisterGraphShard>,
+    /// Provisioned mode: resources requested from the configured Provision canister.
+    pub requested_resources: Vec<ProvisionableResource>,
+}
+
+/// One dev-mode shard placement, mirroring `AdminRegisterShardArgs`. The Router validates
+/// `shard_id` against its graph-local dense allocation (mismatch is `Conflict`).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct RegisterGraphShard {
+    pub shard_id: ShardId,
+    pub graph_canister: Principal,
+    pub index_canister: Principal,
+}
+
 /// Operator/SDK-facing status of a federated mutation (ADR 0029 Phase 4).
 ///
 /// Pull-based observability for the autonomous recovery driver: a caller polls this to learn
@@ -1339,7 +1391,8 @@ pub struct EdgeBackfillShardStatus {
     pub done: bool,
 }
 
-/// Which posting-backfill cursor a reset targets.
+/// Which posting-backfill cursor a reset (and `advance_backfill`, ADR 0056 §4) targets.
+/// `LabelStats` drives the label-stats projection drain.
 #[derive(
     CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord,
 )]
@@ -1347,6 +1400,7 @@ pub enum BackfillKind {
     Label,
     VertexProperty,
     Edge,
+    LabelStats,
 }
 
 /// Operator recovery: clear a stuck `in_progress` claim on one shard's backfill

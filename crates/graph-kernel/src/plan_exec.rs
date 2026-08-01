@@ -1075,9 +1075,6 @@ pub struct MutationToken {
 /// - [`ReadMode::AtLeast`] enforces a read barrier: the read is served only once every
 ///   shard in the token has caught its label-stats and graph-index watermarks; otherwise
 ///   the router returns a retryable projection-lag error without serving stale state.
-/// - [`ReadMode::Canonical`] requests owner-served truth for every shape. It is **not yet
-///   implemented** (Phase 3 deferred); the router rejects it so callers do not silently
-///   receive `Eventual` semantics under a stronger label.
 #[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Serialize, Deserialize)]
 pub enum ReadMode {
     /// Non-blocking; may observe documented projection lag.
@@ -1085,8 +1082,6 @@ pub enum ReadMode {
     Eventual,
     /// Block (retryable) until every shard reaches the token's watermarks.
     AtLeast(MutationToken),
-    /// Owner-served truth for every shape (deferred; rejected by the router for now).
-    Canonical,
 }
 
 /// Per-shard watermarks a read must reach for read-your-writes against one mutation.
@@ -2556,7 +2551,6 @@ mod tests {
     fn read_mode_candid_roundtrip_all_variants() {
         for mode in [
             ReadMode::Eventual,
-            ReadMode::Canonical,
             ReadMode::AtLeast(MutationToken {
                 mutation_id: 11,
                 shards: vec![MutationTokenShard {

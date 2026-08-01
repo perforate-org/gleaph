@@ -6,12 +6,11 @@ use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
 use crate::state::RouterError;
 
 pub(crate) const REMEDY_WRITE_ON_QUERY: &str =
-    "use gql_execute_idempotent (update call with client_mutation_key)";
-const REMEDY_READ_ON_UPDATE: &str = "use gql_query (composite query call) or force_gql_execute";
+    "use gql_execute (update call with client_mutation_key)";
+const REMEDY_READ_ON_UPDATE: &str = "use gql_query (composite query call)";
 const REMEDY_PREPARED_WRITE_ON_QUERY: &str =
-    "use prepared_update_idempotent (update call with client_mutation_key)";
-const REMEDY_PREPARED_READ_ON_UPDATE: &str =
-    "use prepared_query (composite query call) or prepared_query_as_update";
+    "use execute_prepared_update (update call with client_mutation_key)";
+const REMEDY_PREPARED_READ_ON_UPDATE: &str = "use execute_prepared (composite query call)";
 
 /// Returns whether the program requires the update (write) canister path.
 pub fn program_requires_write_path(flags: ProgramModificationFlags) -> bool {
