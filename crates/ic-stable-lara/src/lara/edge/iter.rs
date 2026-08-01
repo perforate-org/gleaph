@@ -525,8 +525,12 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// Slab slot indices (within this row's slab prefix) targeted by overflow-log delete entries;
     /// skipped during the slab phase without decoding.
     deleted_slab_offsets: Vec<u32>,
-    /// Reserved overflow-log entries replayed old→new (head→tail); `None` marks deleted slots.
-    inserted_log_entries: std::vec::IntoIter<Option<E>>,
+    /// Reserved overflow-log entries in head-first chain order (newest→oldest); `None` marks
+    /// deleted slots. The iterator walks this list backward so the yielded order is the
+    /// materialization order (oldest→newest).
+    inserted_log_entries: Vec<Option<E>>,
+    /// Index of the next reserved log entry to yield, walked from the end of the list.
+    inserted_log_pos: usize,
     /// Logical slot assigned to the next replayed log entry (starts at `slab_slots`).
     next_inserted_log_slot: u32,
 }
@@ -562,7 +566,7 @@ where
         slab_slots: u32,
         remaining: u32,
         deleted_slab_offsets: Vec<u32>,
-        inserted_log_edges: Vec<E>,
+        inserted_log_entries: Vec<Option<E>>,
     ) -> Self {
         let nbytes = (slab_slots as usize).saturating_mul(E::BYTES);
         let slab_chunk = if nbytes >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
@@ -582,11 +586,8 @@ where
             remaining,
             slab_chunk,
             deleted_slab_offsets,
-            inserted_log_entries: inserted_log_edges
-                .into_iter()
-                .map(Some)
-                .collect::<Vec<_>>()
-                .into_iter(),
+            inserted_log_pos: inserted_log_entries.len(),
+            inserted_log_entries,
             next_inserted_log_slot: slab_slots,
         }
     }
@@ -599,19 +600,22 @@ where
         deleted_slab_offsets: Vec<u32>,
         inserted_log_entries: Vec<Option<E>>,
     ) -> Self {
-        let mut iter = Self::with_log_replay(
+        Self::with_log_replay(
             store,
             base_slot_start,
             slab_slots,
             remaining,
             deleted_slab_offsets,
-            Vec::new(),
-        );
-        iter.inserted_log_entries = inserted_log_entries.into_iter();
-        iter
+            inserted_log_entries,
+        )
     }
 
     fn consume_deleted_slab_offset(&mut self, offset: u32) -> bool {
+        // The ascending default never populates deleted-slab offsets; keep the empty
+        // case a single comparison instead of a `position` scan over an empty slice.
+        if self.deleted_slab_offsets.is_empty() {
+            return false;
+        }
         if let Some(index) = self
             .deleted_slab_offsets
             .iter()
@@ -637,7 +641,7 @@ where
 
     pub(crate) fn into_overflow_asc_parts(self) -> OutOverflowAscParts<E> {
         OutOverflowAscParts {
-            inserted_log_entries: self.inserted_log_entries.collect(),
+            inserted_log_entries: self.inserted_log_entries,
             deleted_slab_offsets: self.deleted_slab_offsets,
             slab_slots: self.slab_slots,
             next_inserted_log_slot: self.next_inserted_log_slot,
@@ -657,7 +661,7 @@ where
         }
         while self.next_slot < self.slab_slots {
             let slot_idx = self.next_slot;
-            self.next_slot = self.next_slot.checked_add(1)?;
+            self.next_slot += 1;
             if self.consume_deleted_slab_offset(slot_idx) {
                 continue;
             }
@@ -665,14 +669,16 @@ where
             if edge.is_deleted_slot() {
                 continue;
             }
-            self.remaining = self.remaining.checked_sub(1)?;
+            self.remaining -= 1;
             return Some((slot_idx, edge.with_slot_index(slot_idx)));
         }
-        for edge in self.inserted_log_entries.by_ref() {
+        while self.inserted_log_pos > 0 {
+            self.inserted_log_pos -= 1;
+            let edge = self.inserted_log_entries[self.inserted_log_pos].clone();
             let slot = self.next_inserted_log_slot;
-            self.next_inserted_log_slot = self.next_inserted_log_slot.checked_add(1)?;
+            self.next_inserted_log_slot += 1;
             if let Some(edge) = edge {
-                self.remaining = self.remaining.checked_sub(1)?;
+                self.remaining -= 1;
                 return Some((slot, edge.with_slot_index(slot)));
             }
         }
@@ -690,7 +696,35 @@ where
     type Item = E;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_with_slot().map(|(_, edge)| edge)
+        if self.remaining == 0 {
+            return None;
+        }
+        while self.next_slot < self.slab_slots {
+            let slot_idx = self.next_slot;
+            self.next_slot += 1;
+            if self.consume_deleted_slab_offset(slot_idx) {
+                continue;
+            }
+            let edge = self.decode_slab_slot(slot_idx);
+            if edge.is_deleted_slot() {
+                continue;
+            }
+            self.remaining -= 1;
+            return Some(edge.with_slot_index(slot_idx));
+        }
+        while self.inserted_log_pos > 0 {
+            self.inserted_log_pos -= 1;
+            let edge = self.inserted_log_entries[self.inserted_log_pos].clone();
+            let slot = self.next_inserted_log_slot;
+            self.next_inserted_log_slot += 1;
+            if let Some(edge) = edge {
+                self.remaining -= 1;
+                return Some(edge.with_slot_index(slot));
+            }
+        }
+        debug_assert_eq!(self.remaining, 0);
+        self.remaining = 0;
+        None
     }
 
     fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {

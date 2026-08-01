@@ -161,9 +161,9 @@ fn bench_lara_edge_store_out_edges_iter_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// Measures iteration over a log-backed row. The iterator follows the overflow
-/// chain first, then walks the slab tail without allocating the collected edge
-/// vector.
+/// Measures iteration over a log-backed row. The default ascending iterator walks the
+/// slab prefix first, then replays the overflow chain in materialization order without
+/// allocating the collected edge vector.
 #[bench(raw)]
 fn bench_lara_edge_store_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
@@ -177,6 +177,31 @@ fn bench_lara_edge_store_out_edges_iter_log_backed_128() -> canbench_rs::BenchRe
         let mut count = 0usize;
         for edge in edges
             .out_edges_iter(&vertices, VertexId::from(black_box(0u32)))
+            .expect("iterate edges")
+        {
+            black_box(edge);
+            count += 1;
+        }
+        black_box(count);
+    })
+}
+
+/// Measures the explicit descending iterator over the same log-backed row. Kept as the
+/// explicit-DESC counterpart to [`bench_lara_edge_store_out_edges_iter_log_backed_128`]
+/// so the hot-path iteration cost can be compared against the ascending default directly.
+#[bench(raw)]
+fn bench_lara_edge_store_desc_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices(1, 1);
+    for i in 0..128 {
+        edges
+            .insert_edge(&vertices, VertexId::from(0), helper::test_edge(i))
+            .expect("insert edge");
+    }
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_edge_store_desc_out_edges_iter_log_backed");
+        let mut count = 0usize;
+        for edge in edges
+            .desc_out_edges_iter(&vertices, VertexId::from(black_box(0u32)))
             .expect("iterate edges")
         {
             black_box(edge);

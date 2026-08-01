@@ -108,7 +108,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.read_log_edge_from_table_or_store(&h, leaf, entry_idx, None)
     }
 
-    pub(super) fn prefetch_descending_log_entries(
+    pub(super) fn prefetch_log_entries_head_first(
         &self,
         log_h: &LogHeaderV1,
         leaf: u32,

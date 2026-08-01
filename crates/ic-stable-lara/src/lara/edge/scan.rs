@@ -9,8 +9,7 @@ use ic_stable_structures::Memory;
 
 use super::iter::{OutEdgeSlabChunk, leaf_segment};
 use super::{
-    DeleteTarget, DescOutEdgesIter, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES,
-    OutEdgeVisitWindow, OutEdgesIter,
+    DescOutEdgesIter, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -193,7 +192,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let log_header = self.log.header();
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let (log_entries, mut deleted_slab_offsets) =
-            self.prefetch_descending_log_entries(&log_header, leaf, v.log_head())?;
+            self.prefetch_log_entries_head_first(&log_header, leaf, v.log_head())?;
         deleted_slab_offsets.sort_unstable();
         let reserved_log_slots =
             u32::try_from(log_entries.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
@@ -245,37 +244,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
 
-        let mut log_table_buf = Vec::new();
-        self.log
-            .read_segment_entry_table_into(&log_h, leaf, &mut log_table_buf);
-        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
-
-        let mut entries = Vec::new();
-        let mut log_i = v.log_head();
-        let mut steps = 0u32;
-        while log_i >= 0 {
-            if steps >= log_h.max_log_entries {
-                return Err(LaraOperationError::LogChainShort);
-            }
-            let (prev, edge) =
-                self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, edge));
-            log_i = prev;
-            steps = steps
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        }
-        entries.reverse();
-
-        let mut inserted = Vec::new();
-        let deleted_slab_offsets: Vec<u32> = Vec::new();
-        for (log_idx, edge) in entries {
-            if edge.is_deleted_slot() {
-                inserted.push((DeleteTarget::Log(log_idx), None));
-            } else {
-                inserted.push((DeleteTarget::Log(log_idx), Some(edge)));
-            }
-        }
+        // Head-first (newest→oldest) chain replay; the ascending iterator walks the list
+        // backward so the yielded order is the materialization order (oldest→newest).
+        let (inserted, deleted_slab_offsets) =
+            self.prefetch_log_entries_head_first(&log_h, leaf, v.log_head())?;
 
         Ok(OutEdgesIter::with_reserved_log_replay(
             self,
@@ -283,7 +255,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             slab_count,
             v.degree(),
             deleted_slab_offsets,
-            inserted.into_iter().map(|(_, edge)| edge).collect(),
+            inserted,
         ))
     }
 
