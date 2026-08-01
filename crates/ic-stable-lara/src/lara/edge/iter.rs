@@ -331,6 +331,11 @@ where
 
     #[inline]
     fn slab_slot_deleted(&self, slot_idx: u32) -> bool {
+        // The descending iterator only populates deleted-slab offsets for log-backed rows;
+        // slab-only rows keep the empty case a single comparison instead of a binary search.
+        if self.deleted_slab_offsets.is_empty() {
+            return false;
+        }
         self.deleted_slab_offsets.binary_search(&slot_idx).is_ok()
     }
 

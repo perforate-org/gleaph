@@ -397,7 +397,7 @@ fn bench_traverse_next_visit_edges_window() -> canbench_rs::BenchResult {
     })
 }
 
-/// Descending dense scan, matching the default hot-path order.
+/// Explicit descending dense scan (opt-in order, counterpart to the ascending default).
 #[bench(raw)]
 fn bench_traverse_next_visit_edges_dense_desc() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096, BucketLabelKey::from_raw(1));

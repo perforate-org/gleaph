@@ -276,6 +276,9 @@ concepts.
 ### 4. Order is an argument
 
 Ascending and descending traversal use `OutEdgeOrder`. Direction is not encoded in method names.
+(Amended by Plan 0195, ascending-default: unsuffixed traversal methods are ascending by default, and
+only the explicit descending opt-in encodes direction in its name (`desc_out_edges_iter` /
+`OutEdgeOrder::Descending`); the former `asc_*` aliases were removed.)
 
 The order applies to `BucketEntryPosition`, including edges whose bytes currently reside in an overflow
 log. For a Graph Type `ORDER BY INSERTION` label, ascending/descending traversal is the semantic

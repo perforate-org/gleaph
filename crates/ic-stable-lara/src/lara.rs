@@ -327,18 +327,10 @@ where
         self.edges.has_out_edges(&self.vertices, src)
     }
 
-    /// All outgoing edges in ascending materialization order (see [`Self::visit_out_edges`]).
+    /// All outgoing edges in ascending materialization order (same sequence as
+    /// [`Self::visit_out_edges`], collected via the bulk slot-order reader).
     pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LaraOperationError> {
-        let mut out = Vec::new();
-        self.visit_out_edges(
-            src,
-            None,
-            None,
-            None::<&mut dyn FnMut(&[u8]) -> bool>,
-            |_| true,
-            |e| out.push(e),
-        )?;
-        Ok(out)
+        self.edges.collect_out_edges_slot_order(&self.vertices, src)
     }
 
     /// Walks outgoing edges in ascending materialization order without building a full adjacency

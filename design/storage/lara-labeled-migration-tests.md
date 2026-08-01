@@ -34,7 +34,7 @@ These must pass after every phase PR.
 | `mixed_label_hub_33_labels_span_release_regression` | `compact.rs` | No span-release cliff (~33 labels × 50 edges) |
 | `mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log` | `compact.rs` | Log integrity under parallel edges |
 | `labeled_insert_and_iter_by_label` | `insert.rs` | Scan matches materialized edges |
-| `labeled_desc_and_asc_out_edges_iters_match_materialized_rows` | `traverse.rs` | Iterator contract |
+| `labeled_desc_out_edges_iter_matches_reversed_materialized_rows` | `traverse.rs` | Iterator contract |
 | `labeled_out_edges_iter_advance_by_and_nth_match_scan` | `traverse.rs` | Iterator indexing |
 | `unchecked_label_iteration_matches_checked_for_valid_vertices` | `traverse.rs` | Unchecked fast path |
 | `labeled_vertex_wire_bytes_golden` | `labeled/record.rs` | On-disk row layout (update only if layout version bumps) |

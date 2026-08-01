@@ -120,7 +120,7 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
 /// This protects the clean scan contract at the `EdgeStore` layer, including
 /// decoding fixed-width edge records into a caller-owned vector.
 #[bench(raw)]
-fn bench_lara_edge_store_asc_out_edges_1024() -> canbench_rs::BenchResult {
+fn bench_lara_edge_store_out_edges_collect_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         edges
@@ -128,7 +128,7 @@ fn bench_lara_edge_store_asc_out_edges_1024() -> canbench_rs::BenchResult {
             .expect("insert edge");
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_asc_out_edges");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_out_edges_collect");
         black_box(
             edges
                 .collect_out_edges_slot_order(&vertices, VertexId::from(black_box(0u32)))
