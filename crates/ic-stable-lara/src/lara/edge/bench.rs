@@ -131,7 +131,7 @@ fn bench_lara_edge_store_asc_out_edges_1024() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("lara_edge_store_asc_out_edges");
         black_box(
             edges
-                .asc_out_edges(&vertices, VertexId::from(black_box(0u32)))
+                .collect_out_edges_slot_order(&vertices, VertexId::from(black_box(0u32)))
                 .expect("collect edges"),
         );
     })

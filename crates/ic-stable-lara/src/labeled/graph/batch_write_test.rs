@@ -460,7 +460,7 @@ mod tests {
         // The first three scalar edges stay in slab order, the batch edges follow
         // in logical ordinal order inside the overflow log, and ascending
         // traversal replays the log oldest-to-newest after the slab prefix.
-        assert_eq!(targets, vec![12, 11, 10, 3, 2, 1]);
+        assert_eq!(targets, vec![1, 2, 3, 10, 11, 12]);
     }
 
     #[test]
@@ -1048,7 +1048,7 @@ mod tests {
             .unwrap();
         let out = graph.out_edges(VertexId::from(0)).unwrap();
         let targets: Vec<u32> = out.iter().map(|e| e.target).collect();
-        assert_eq!(targets, vec![201, 200, 13, 12, 11, 101, 100, 3, 2, 1]);
+        assert_eq!(targets, vec![1, 2, 3, 100, 101, 11, 12, 13, 200, 201]);
     }
 
     #[test]

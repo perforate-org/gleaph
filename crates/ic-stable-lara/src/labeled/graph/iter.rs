@@ -6,7 +6,7 @@ use crate::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::edge::{AscOutEdgesIter, OutEdgesIter},
+    lara::edge::{DescOutEdgesIter, OutEdgesIter},
     traits::{CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -226,8 +226,8 @@ pub struct LabeledBucketScan<'a, E: CsrEdgeTombstone, M: Memory> {
 }
 
 pub(super) enum LabeledBucketScanKind<'a, E: CsrEdgeTombstone, M: Memory> {
-    Desc { iter: OutEdgesIter<'a, E, M> },
-    Asc { iter: AscOutEdgesIter<'a, E, M> },
+    Desc { iter: DescOutEdgesIter<'a, E, M> },
+    Asc { iter: OutEdgesIter<'a, E, M> },
 }
 
 pub enum LabeledSpanIter<'a, E: CsrEdgeTombstone, M: Memory> {
@@ -536,7 +536,7 @@ where
         label_id: BucketLabelKey,
         log_chains: Option<Vec<u32>>,
         attach_inline_property_bytes: bool,
-        iter: OutEdgesIter<'a, E, M>,
+        iter: DescOutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
         LabeledSpanIter::Scan(LabeledBucketScan {
             graph,
@@ -561,7 +561,7 @@ where
         label_id: BucketLabelKey,
         log_chains: Option<Vec<u32>>,
         attach_inline_property_bytes: bool,
-        iter: AscOutEdgesIter<'a, E, M>,
+        iter: OutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
         LabeledSpanIter::Scan(LabeledBucketScan {
             graph,

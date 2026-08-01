@@ -92,7 +92,7 @@ impl GraphStore {
         let canonical = if let Some(location) = locations.forward {
             EdgeHandle::at_slot(source_vertex_id, label, location.logical_slot)
         } else {
-            self.find_first_forward_handle_descending(source_vertex_id, label, |edge| {
+            self.find_first_forward_handle(source_vertex_id, label, |edge| {
                 edge_matches_local_neighbor(edge, target_vertex_id, inline_property_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {
@@ -171,7 +171,7 @@ impl GraphStore {
         let canonical = if let Some(location) = canonical_location {
             EdgeHandle::at_slot(owner_vertex_id, label, location.logical_slot)
         } else {
-            self.find_first_forward_handle_descending(owner_vertex_id, label, |edge| {
+            self.find_first_forward_handle(owner_vertex_id, label, |edge| {
                 edge_matches_local_neighbor(edge, target, inline_property_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {

@@ -2108,7 +2108,7 @@ mod tests {
             Some(Value::Int64(907))
         );
         let reverse = store
-            .find_first_reverse_handle_descending(
+            .find_first_reverse_handle(
                 target,
                 lara_label(label.pack(EdgeDirectedness::Directed)),
                 |edge| edge.neighbor_vid() == second_source,
@@ -2177,7 +2177,7 @@ mod tests {
             Some(Value::Int64(908))
         );
         let alias = store
-            .find_first_forward_handle_descending(
+            .find_first_forward_handle(
                 low,
                 lara_label(label.pack(EdgeDirectedness::Undirected)),
                 |edge| edge.neighbor_vid() == high,

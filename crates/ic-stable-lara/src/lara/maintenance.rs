@@ -7,7 +7,7 @@ use crate::{
     GrowFailed as GraphGrowFailed, SegmentId, VertexId,
     lara::{
         InitError as GraphInitError, LaraGraph, MarkPriority,
-        edge::{AscOutEdgesIter, OutEdgesIter},
+        edge::{DescOutEdgesIter, OutEdgesIter},
         operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -557,15 +557,15 @@ where
         self.graph.has_out_edges(src)
     }
 
-    /// Collects outgoing edges in slab slot order.
-    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LaraOperationError> {
-        self.graph.asc_out_edges(src)
+    /// Collects outgoing edges in ascending materialization order.
+    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LaraOperationError> {
+        self.graph.out_edges(src)
     }
 
-    /// Iterates outgoing edges in the store's standard scan order.
+    /// Iterates outgoing edges in the store's default ascending materialization order.
     ///
-    /// This order is deterministic for the committed store state, but it is not
-    /// guaranteed to be insertion order or slab slot order.
+    /// This order is deterministic for the committed store state: slab slots low→high, then
+    /// reserved overflow-log entries replayed oldest-to-newest.
     pub fn out_edges_iter(
         &self,
         src: VertexId,
@@ -573,20 +573,13 @@ where
         self.graph.out_edges_iter(src)
     }
 
-    /// Descending-scan iterator (same as [`Self::out_edges_iter`]).
+    /// Explicit descending-scan iterator (overflow log from the chain head, then slab slots
+    /// high→low).
     pub fn desc_out_edges_iter(
         &self,
         src: VertexId,
-    ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError> {
+    ) -> Result<DescOutEdgesIter<'_, E, M>, LaraOperationError> {
         self.graph.desc_out_edges_iter(src)
-    }
-
-    /// Ascending CSR slot / materialization iterator (same sequence as [`Self::asc_out_edges`]).
-    pub fn asc_out_edges_iter(
-        &self,
-        src: VertexId,
-    ) -> Result<AscOutEdgesIter<'_, E, M>, LaraOperationError> {
-        self.graph.asc_out_edges_iter(src)
     }
 
     /// Inserts an edge without immediate rebalancing, enqueueing maintenance if needed.
@@ -863,7 +856,7 @@ mod tests {
         }
 
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
         assert_eq!(
@@ -871,7 +864,7 @@ mod tests {
                 .out_edges_iter(VertexId::from(0))
                 .unwrap()
                 .collect::<Vec<_>>(),
-            vec![TestEdge(12), TestEdge(11), TestEdge(10)]
+            vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
         assert!(graph.graph().vertices().get(VertexId::from(0)).log_head() >= 0);
         assert!(graph.maintenance_queue().is_dirty(SegmentId::from(0)));
@@ -894,7 +887,7 @@ mod tests {
             -1
         );
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
     }
@@ -917,7 +910,7 @@ mod tests {
         );
 
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.graph().vertices().get(VertexId::from(0)).degree(), 2);
@@ -974,7 +967,7 @@ mod tests {
 
         assert!(reopened.maintenance_queue().is_dirty(SegmentId::from(0)));
         assert_eq!(
-            reopened.asc_out_edges(VertexId::from(0)).unwrap(),
+            reopened.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
     }
@@ -1005,7 +998,7 @@ mod tests {
         assert!(pending_before > 0, "inserts should queue maintenance work");
         for v in 0..VERTICES {
             assert_eq!(
-                graph.asc_out_edges(VertexId::from(v)).unwrap(),
+                graph.out_edges(VertexId::from(v)).unwrap(),
                 expected[v as usize]
             );
         }
@@ -1023,7 +1016,7 @@ mod tests {
         );
         for v in 0..VERTICES {
             assert_eq!(
-                reopened.asc_out_edges(VertexId::from(v)).unwrap(),
+                reopened.out_edges(VertexId::from(v)).unwrap(),
                 expected[v as usize],
                 "reads must stay correct before post-upgrade maintenance runs"
             );
@@ -1052,7 +1045,7 @@ mod tests {
         );
         for v in 0..VERTICES {
             assert_eq!(
-                reopened.asc_out_edges(VertexId::from(v)).unwrap(),
+                reopened.out_edges(VertexId::from(v)).unwrap(),
                 expected[v as usize],
                 "post-maintenance adjacency must match the model"
             );
@@ -1080,7 +1073,7 @@ mod tests {
         assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
         assert_eq!(graph.maintenance_queue().len(), 0);
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10)]
         );
     }

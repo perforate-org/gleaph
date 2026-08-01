@@ -101,10 +101,9 @@ pub(super) fn out_edge_slab_decode_slot_asc<E: CsrEdge, M: Memory>(
     }
 }
 
-/// Iterator over **slab-resident** outgoing edges in [`EdgeStore`]'s default **descending** slot
-/// order (high index → low, skipping tombstoned slots). For rows with no overflow log
-/// (`log_head < 0`) and no overflow-log delete markers; same sequence as the slab phase of
-/// [`OutEdgesIter`].
+/// Iterator over **slab-resident** outgoing edges in **descending** slot order (high index → low,
+/// skipping tombstoned slots). For rows with no overflow log (`log_head < 0`) and no overflow-log
+/// delete markers; same sequence as the slab phase of [`DescOutEdgesIter`].
 pub(crate) struct OutEdgeSlabIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     base_slot_start: u64,
@@ -258,18 +257,18 @@ impl<E: CsrEdge, M: Memory> ExactSizeIterator for OutEdgeSlabIter<'_, E, M> {}
 
 impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 
-/// Iterator over outgoing edges in [`EdgeStore`]'s **default descending scan order**:
-/// overflow log from the chain head first (each step follows the `prev` link), then live slab
-/// slots **high index to low** (skipping tombstoned slots).
+/// Iterator over outgoing edges in **explicit descending scan order**: overflow log from the
+/// chain head first (each step follows the `prev` link), then live slab slots **high index to
+/// low** (skipping tombstoned slots).
 ///
 /// Log-backed rows **prefetch** the overflow chain at construction: live log edges are buffered in
 /// head-first order, and log delete entries populate a sorted slab-offset list so the slab phase
 /// can skip masked slots without decoding them. This is the single canonical descending path;
 /// there is no separate log-backed iterator with different read semantics.
 ///
-/// This is **not** the same order as [`EdgeStore::asc_out_edges`] (slot /
-/// materialization order). Prefer this iterator for hot contiguous reads; use `asc_out_edges`
-/// or reverse the collected vector when you need ascending slot layout (e.g. rebalance packing).
+/// This is **not** the same order as [`EdgeStore::out_edges_iter`] (the ascending default /
+/// materialization order). Use this iterator only for the explicit descending hot path; default
+/// callers should use [`EdgeStore::out_edges_iter`].
 ///
 /// For slab-only rows (`log_head < 0`), only the descending slab phase runs.
 ///
@@ -277,7 +276,7 @@ impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 /// `slab_chunk` prefetches a backward window of up to `OUT_EDGE_SLAB_CHUNK_SLOTS` consecutive slab
 /// slots so [`Iterator::next`] can issue one stable read per chunk instead of per edge. Decode
 /// logic is shared with [`OutEdgeSlabIter`].
-pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
+pub struct DescOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) store: &'a EdgeStore<E, M>,
     pub(super) base_slot_start: u64,
     /// Count of slab prefix slots still to scan; slots are visited `remaining_slab - 1` down to `0`.
@@ -310,7 +309,7 @@ pub(crate) struct OutOverflowAscParts<E> {
     pub next_inserted_log_slot: u32,
 }
 
-impl<'a, E, M> OutEdgesIter<'a, E, M>
+impl<'a, E, M> DescOutEdgesIter<'a, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -355,7 +354,7 @@ where
     }
 }
 
-impl<E, M> OutEdgesIter<'_, E, M>
+impl<E, M> DescOutEdgesIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -400,7 +399,7 @@ where
     }
 }
 
-impl<E, M> Iterator for OutEdgesIter<'_, E, M>
+impl<E, M> Iterator for DescOutEdgesIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -492,40 +491,47 @@ where
     }
 }
 
-impl<E, M> ExactSizeIterator for OutEdgesIter<'_, E, M>
+impl<E, M> ExactSizeIterator for DescOutEdgesIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
 {
 }
 
-impl<E, M> FusedIterator for OutEdgesIter<'_, E, M>
+impl<E, M> FusedIterator for DescOutEdgesIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
 {
 }
 
-/// Iterator over outgoing edges in **ascending** CSR slot / materialization order (matches
-/// [`EdgeStore::asc_out_edges`]).
+/// Iterator over outgoing edges in the **default ascending** CSR slot / materialization order
+/// (same sequence as [`EdgeStore::collect_out_edges_slot_order`]).
 ///
 /// Slab slots scan low→high with fixed-size forward prefetch chunks. When a row has an overflow
 /// log, the constructor validates and folds log entries old→new into insertion/deletion caches;
 /// iteration then streams live slab slots first and cached inserted log edges last. The same
 /// iterator type is used by labeled and unlabeled callers, so slot metadata and order stay aligned.
-pub struct AscOutEdgesIter<'a, E: CsrEdge, M: Memory> {
+pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) store: &'a EdgeStore<E, M>,
     pub(super) base_slot_start: u64,
+    /// Next slab slot to visit (low→high within the row's slab prefix).
     next_slot: u32,
+    /// Count of slab prefix slots to scan.
     slab_slots: u32,
+    /// Live edges not yet yielded (matches [`ExactSizeIterator`] contract).
     remaining: u32,
     pub(super) slab_chunk: Option<OutEdgeSlabChunk>,
+    /// Slab slot indices (within this row's slab prefix) targeted by overflow-log delete entries;
+    /// skipped during the slab phase without decoding.
     deleted_slab_offsets: Vec<u32>,
+    /// Reserved overflow-log entries replayed old→new (head→tail); `None` marks deleted slots.
     inserted_log_entries: std::vec::IntoIter<Option<E>>,
+    /// Logical slot assigned to the next replayed log entry (starts at `slab_slots`).
     next_inserted_log_slot: u32,
 }
 
-impl<'a, E, M> AscOutEdgesIter<'a, E, M>
+impl<'a, E, M> OutEdgesIter<'a, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -639,7 +645,7 @@ where
     }
 }
 
-impl<E, M> AscOutEdgesIter<'_, E, M>
+impl<E, M> OutEdgesIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -676,7 +682,7 @@ where
     }
 }
 
-impl<'a, E, M> Iterator for AscOutEdgesIter<'a, E, M>
+impl<'a, E, M> Iterator for OutEdgesIter<'a, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -709,14 +715,14 @@ where
     }
 }
 
-impl<'a, E, M> ExactSizeIterator for AscOutEdgesIter<'a, E, M>
+impl<'a, E, M> ExactSizeIterator for OutEdgesIter<'a, E, M>
 where
     E: CsrEdge,
     M: Memory,
 {
 }
 
-impl<'a, E, M> FusedIterator for AscOutEdgesIter<'a, E, M>
+impl<'a, E, M> FusedIterator for OutEdgesIter<'a, E, M>
 where
     E: CsrEdge,
     M: Memory,

@@ -412,7 +412,7 @@ where
         let acc = LabelEdgeSpanAccess::with_bucket(&self.buckets, slot, *bucket, successor, src);
         let edges = self
             .edges
-            .asc_out_edges(&acc, VertexId::from(0))
+            .collect_out_edges_slot_order(&acc, VertexId::from(0))
             .map_err(LabeledOperationError::from)?;
         let log_chains = (bucket.inline_property_bytes_log_head() >= 0)
             .then(|| self.bucket_inline_property_bytes_log_chain(src, bucket));
@@ -683,7 +683,7 @@ where
             LabelEdgeSpanAccess::with_bucket(&self.buckets, bucket_slot, *bucket, successor, src);
         for (ordinal, edge) in self
             .edges
-            .asc_out_edges(&access, VertexId::from(0))?
+            .collect_out_edges_slot_order(&access, VertexId::from(0))?
             .into_iter()
             .enumerate()
         {
@@ -1068,7 +1068,10 @@ where
             self.bucket_slab_window_end_exclusive_after_bucket(vertex, bucket_index, bucket)?;
         let acc =
             LabelEdgeSpanAccess::with_bucket(&self.buckets, bucket_slot, *bucket, successor, src);
-        for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
+        for edge in self
+            .edges
+            .collect_out_edges_slot_order(&acc, VertexId::from(0))?
+        {
             if edge.edge_slot_index_raw() == slot_index {
                 return Ok(!edge.is_tombstone_edge());
             }
@@ -1256,7 +1259,7 @@ where
             let mut edge_slots = Vec::new();
             for edge in self
                 .edges
-                .asc_out_edges(&acc, VertexId::from(0))
+                .collect_out_edges_slot_order(&acc, VertexId::from(0))
                 .map_err(LabeledOperationError::from)?
             {
                 if edge.is_deleted_slot() || edge.is_tombstone_edge() {

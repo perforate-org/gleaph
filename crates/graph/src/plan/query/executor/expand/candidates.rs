@@ -724,6 +724,7 @@ pub(crate) fn expand_candidates_into(
             src_id,
             direction,
             edge_label_id,
+            sequence_order,
             property,
             scan_value,
             parameters,
@@ -975,6 +976,7 @@ fn expand_candidates_via_equality_index(
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<EdgeLabelId>,
+    sequence_order: EdgeSequenceOrder,
     property: &str,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
@@ -1013,7 +1015,7 @@ fn expand_candidates_via_equality_index(
         ));
     }
 
-    let order = OutEdgeOrder::Descending;
+    let order: OutEdgeOrder = sequence_order.into();
     let mut error = None;
     match direction {
         EdgeDirection::PointingRight => {
@@ -1054,7 +1056,7 @@ fn expand_candidates_via_equality_index(
                 src_id,
                 direction,
                 edge_label_id,
-                EdgeSequenceOrder::Descending,
+                sequence_order,
                 |edge| {
                     if error.is_some() {
                         return;
@@ -1086,7 +1088,7 @@ fn expand_candidates_via_equality_index(
                 src_id,
                 direction,
                 edge_label_id,
-                EdgeSequenceOrder::Descending,
+                sequence_order,
                 |edge| {
                     if error.is_some() {
                         return;

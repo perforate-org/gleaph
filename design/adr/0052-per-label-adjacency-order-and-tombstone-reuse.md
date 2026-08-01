@@ -24,6 +24,26 @@ allows Graph to select a cheaper unordered placement and maintenance policy.
 This ADR is a deliberate pre-production breaking design. Existing development stable snapshots,
 old query fixtures, and old GQL syntax do not require migration or compatibility decoding.
 
+## Prerequisite status
+
+Plan 0195 (implemented 2026-08-01) established the ordering foundation this ADR builds on: every
+layer's **default** traversal is now the stable materialization order (**ascending**), with
+descending as an explicit opt-in.
+
+- LARA: the unsuffixed `out_edges_iter` / `out_edges` / `visit_out_edges` and the `OutEdgeOrder`
+  enum default are ascending; `desc_out_edges_iter` / `OutEdgeOrder::Descending` are the explicit
+  descending path; the redundant `asc_*` aliases were removed; the iterator types were renamed
+  (`AscOutEdgesIter` → `OutEdgesIter`, `OutEdgesIter` → `DescOutEdgesIter`).
+- GraphStore facade: the direction-ambiguous `find_first_forward_handle_descending` /
+  `find_first_reverse_handle_descending` helpers became `find_first_forward_handle` /
+  `find_first_reverse_handle` (their slot/neighbor predicates are direction-neutral).
+- GQL planner: `EdgeSequenceOrder::default()`, the `gleaph_sequence_order_after_expand` fallback,
+  and `gleaph_sequence_sort`'s no-direction case are ascending (SQL `ORDER BY` convention);
+  `ORDER BY GLEAPH.SEQUENCE(e) DESC` remains the explicit descending path.
+
+The ADR body below (unordered/insertion policy, `ORDER BY INSERTION` syntax, tombstone reuse,
+compaction reordering) remains **planned**; this prerequisite only fixes the default direction.
+
 ## Problem
 
 Gleaph needs all of the following without introducing a second source of edge identity or a

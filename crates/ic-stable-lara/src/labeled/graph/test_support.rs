@@ -438,13 +438,7 @@ pub fn exercise_labeled_hub_scan_paths(
     use crate::labeled::BucketDirectedness;
 
     let vertex = graph.vertices().get(hub);
-    let _ = graph.asc_out_edges(hub).unwrap();
     let _ = graph.out_edges(hub).unwrap();
-    let _: Vec<_> = graph
-        .asc_out_edges_iter(hub)
-        .unwrap()
-        .collect::<Result<_, LabeledOperationError>>()
-        .unwrap();
     let _: Vec<_> = graph
         .desc_out_edges_iter(hub)
         .unwrap()

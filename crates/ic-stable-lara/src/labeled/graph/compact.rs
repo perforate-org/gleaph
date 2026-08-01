@@ -706,7 +706,7 @@ where
                     );
                     per_bucket.push(
                         self.edges
-                            .asc_out_edges(&acc, VertexId::from(0))
+                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
                             .map_err(LabeledOperationError::from)?,
                     );
                 }
@@ -802,7 +802,7 @@ where
                     );
                     per_bucket.push(
                         self.edges
-                            .asc_out_edges(&acc, VertexId::from(0))
+                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
                             .map_err(LabeledOperationError::from)?,
                     );
                 }
@@ -3016,7 +3016,7 @@ mod tests {
             graph.iter_edges_for_label(hub, label).unwrap().len(),
             EDGE_COUNT as usize
         );
-        assert_eq!(graph.asc_out_edges(hub).unwrap().len(), EDGE_COUNT as usize);
+        assert_eq!(graph.out_edges(hub).unwrap().len(), EDGE_COUNT as usize);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "single-label parallel insert took {:?}",
@@ -3399,7 +3399,7 @@ mod tests {
         );
         assert_eq!(
             graph.out_edges(VertexId::from(0)).unwrap(),
-            vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
+            vec![TestEdge { target: 10 }, TestEdge { target: 30 }]
         );
         assert_eq!(
             graph.out_edges(VertexId::from(31)).unwrap(),

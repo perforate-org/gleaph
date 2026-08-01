@@ -5,7 +5,7 @@ use crate::{
     LaraGraph, VertexId,
     labeled::OutEdgeOrder,
     lara::{
-        edge::{AscOutEdgesIter, OutEdgesIter},
+        edge::{DescOutEdgesIter, OutEdgesIter},
         operation_error::LaraOperationError,
     },
     traits::CsrEdge,
@@ -46,7 +46,7 @@ where
 {
     match order {
         OutEdgeOrder::Ascending => {
-            let iter = store.asc_out_edges_iter(src)?;
+            let iter = store.out_edges_iter(src)?;
             for edge in iter {
                 if edge_matches_filter(&edge, filter) {
                     visit(edge);
@@ -54,14 +54,12 @@ where
             }
         }
         OutEdgeOrder::Descending => {
-            store.visit_out_edges(
-                src,
-                None,
-                None,
-                None::<&mut dyn FnMut(&[u8]) -> bool>,
-                |edge| edge_matches_filter(edge, filter),
-                visit,
-            )?;
+            let iter = store.desc_out_edges_iter(src)?;
+            for edge in iter {
+                if edge_matches_filter(&edge, filter) {
+                    visit(edge);
+                }
+            }
         }
     }
     Ok(())
@@ -70,9 +68,9 @@ where
 /// Iterator over one unlabeled store row, filtered by edge-inline-property-bytes directedness.
 pub enum FilteredOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// Ascending slot-order iterator with a directedness filter.
-    Ascending(AscOutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),
+    Ascending(OutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),
     /// Descending hot-path iterator with a directedness filter.
-    Descending(OutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),
+    Descending(DescOutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),
 }
 
 impl<'a, E, M> Iterator for FilteredOutEdgesIter<'a, E, M>
@@ -113,10 +111,10 @@ where
 {
     Ok(match order {
         OutEdgeOrder::Ascending => {
-            FilteredOutEdgesIter::Ascending(store.asc_out_edges_iter(src)?, filter)
+            FilteredOutEdgesIter::Ascending(store.out_edges_iter(src)?, filter)
         }
         OutEdgeOrder::Descending => {
-            FilteredOutEdgesIter::Descending(store.out_edges_iter(src)?, filter)
+            FilteredOutEdgesIter::Descending(store.desc_out_edges_iter(src)?, filter)
         }
     })
 }

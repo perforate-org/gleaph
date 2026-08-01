@@ -61,7 +61,7 @@ fn single_hop_candidates(
         edge.direction,
         label_id,
         edge.label_expr.as_ref(),
-        EdgeSequenceOrder::Descending,
+        EdgeSequenceOrder::Ascending,
         edge.indexed_edge_equality.as_ref(),
         None,
         None,

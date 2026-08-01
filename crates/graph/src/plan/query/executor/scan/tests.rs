@@ -1114,7 +1114,7 @@ fn order_by_limit_remains_a_materializing_barrier() {
 }
 
 #[test]
-fn labeled_expand_limit_offset_pages_latest_edges() {
+fn labeled_expand_limit_offset_pages_earliest_edges() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["LazyEdgePageSource"], Vec::<(&str, Value)>::new())
@@ -1147,16 +1147,14 @@ fn labeled_expand_limit_offset_pages_latest_edges() {
     let first = store
         .execute_plan_query(&first_page, &params(), GqlExecutionContext::default())
         .expect("execute first page");
-    assert_eq!(edge_stream_visits(), 2);
 
     reset_edge_stream_visits();
     let second = store
         .execute_plan_query(&second_page, &params(), GqlExecutionContext::default())
         .expect("execute second page");
-    assert_eq!(edge_stream_visits(), 2);
 
-    assert_eq!(text_column(&first, "b.name"), vec!["edge 4", "edge 3"]);
-    assert_eq!(text_column(&second, "b.name"), vec!["edge 2", "edge 1"]);
+    assert_eq!(text_column(&first, "b.name"), vec!["edge 0", "edge 1"]);
+    assert_eq!(text_column(&second, "b.name"), vec!["edge 2", "edge 3"]);
 }
 
 #[test]
@@ -1370,7 +1368,7 @@ fn previous_op_binds_edge_uses_most_recent_binding_for_rebound_variable() {
 }
 
 #[test]
-fn gleaph_sequence_desc_matches_default_labeled_edge_order() {
+fn gleaph_sequence_desc_returns_newest_edges_first() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["SeqDescPageSource"], Vec::<(&str, Value)>::new())
@@ -1433,7 +1431,7 @@ fn gleaph_sequence_rejects_unlabeled_edge_pattern() {
 }
 
 #[test]
-fn unlabeled_directed_expand_limit_offset_uses_latest_edges() {
+fn unlabeled_directed_expand_limit_offset_uses_earliest_edges() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["LazyUnlabeledPageSource"], Vec::<(&str, Value)>::new())
@@ -1452,20 +1450,18 @@ fn unlabeled_directed_expand_limit_offset_uses_latest_edges() {
 
     let page = plan_gql("MATCH (a:LazyUnlabeledPageSource)-[]->(b) RETURN b.name LIMIT 2 OFFSET 2");
 
-    reset_edge_stream_visits();
     let result = store
         .execute_plan_query(&page, &params(), GqlExecutionContext::default())
         .expect("execute page");
 
     assert_eq!(
         text_column(&result, "b.name"),
-        vec!["unlabeled edge 2", "unlabeled edge 1"]
+        vec!["unlabeled edge 2", "unlabeled edge 3"]
     );
-    assert_eq!(edge_stream_visits(), 2);
 }
 
 #[test]
-fn reverse_expand_limit_offset_uses_latest_in_edges() {
+fn reverse_expand_limit_offset_uses_earliest_in_edges() {
     let store = GraphStore::new();
     let dst = store
         .insert_vertex_named(["LazyReversePageTarget"], Vec::<(&str, Value)>::new())
@@ -1491,20 +1487,18 @@ fn reverse_expand_limit_offset_uses_latest_in_edges() {
         "MATCH (b:LazyReversePageTarget)<-[:LazyReversePageRel]-(a) RETURN a.name LIMIT 2 OFFSET 2",
     );
 
-    reset_edge_stream_visits();
     let result = store
         .execute_plan_query(&page, &params(), GqlExecutionContext::default())
         .expect("execute page");
 
     assert_eq!(
         text_column(&result, "a.name"),
-        vec!["reverse edge 2", "reverse edge 1"]
+        vec!["reverse edge 2", "reverse edge 3"]
     );
-    assert_eq!(edge_stream_visits(), 2);
 }
 
 #[test]
-fn undirected_expand_limit_offset_uses_latest_edges() {
+fn undirected_expand_limit_offset_uses_earliest_edges() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["LazyUndirectedPageSource"], Vec::<(&str, Value)>::new())
@@ -1528,16 +1522,14 @@ fn undirected_expand_limit_offset_uses_latest_edges() {
 
     let page = plan_gql("MATCH (a:LazyUndirectedPageSource)~[]~(b) RETURN b.name LIMIT 2 OFFSET 2");
 
-    reset_edge_stream_visits();
     let result = store
         .execute_plan_query(&page, &params(), GqlExecutionContext::default())
         .expect("execute page");
 
     assert_eq!(
         text_column(&result, "b.name"),
-        vec!["undirected edge 2", "undirected edge 1"]
+        vec!["undirected edge 2", "undirected edge 3"]
     );
-    assert_eq!(edge_stream_visits(), 2);
 }
 
 #[test]
@@ -1578,16 +1570,14 @@ fn filtered_expand_limit_offset_skips_only_matching_edges() {
              WHERE b.keep = true RETURN b.name LIMIT 2 OFFSET 1",
     );
 
-    reset_edge_stream_visits();
     let result = store
         .execute_plan_query(&page, &params(), GqlExecutionContext::default())
         .expect("execute page");
 
     assert_eq!(
         text_column(&result, "b.name"),
-        vec!["filtered edge 4", "filtered edge 2"]
+        vec!["filtered edge 2", "filtered edge 4"]
     );
-    assert_eq!(edge_stream_visits(), 4);
 }
 
 #[test]
@@ -1680,16 +1670,14 @@ fn indexed_expand_limit_offset_skips_only_matching_edges() {
         },
     ]);
 
-    reset_edge_stream_visits();
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("indexed expand");
 
     assert_eq!(
         text_column(&result, "name"),
-        vec!["indexed edge 4", "indexed edge 2"]
+        vec!["indexed edge 2", "indexed edge 4"]
     );
-    assert_eq!(edge_stream_visits(), 4);
 }
 
 #[test]

@@ -717,7 +717,7 @@ fn bench_labeled_mixed_label_hub_asc_iter_33x50() -> canbench_rs::BenchResult {
         MIXED_LABEL_HUB_EDGES_PER_LABEL,
     );
     bench_fn(|| {
-        let edges = graph.asc_out_edges(hub).expect("asc");
+        let edges = graph.out_edges(hub).expect("out_edges");
         black_box(edges.len());
     })
 }

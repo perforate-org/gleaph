@@ -3945,7 +3945,7 @@ mod tests {
         assert_eq!(result.edge_log_entries_written, 1);
         assert_eq!(result.inline_property_bytes_slots_written, 0);
 
-        let out = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let out = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(
             out.len(),
             4,
@@ -4042,7 +4042,7 @@ mod tests {
             .filter(|target| *target != slab_prefix + 1)
             .chain([100])
             .collect::<Vec<_>>();
-        let edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let edges = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(
             edges.iter().map(|edge| edge.target).collect::<Vec<_>>(),
             expected_targets,
@@ -4113,7 +4113,7 @@ mod tests {
 
         assert_eq!(
             graph
-                .asc_out_edges(VertexId::from(0))
+                .out_edges(VertexId::from(0))
                 .unwrap()
                 .into_iter()
                 .map(|edge| edge.target)
@@ -4159,7 +4159,7 @@ mod tests {
             .expect("append after interior tombstone");
 
         let live_targets = graph
-            .asc_out_edges(VertexId::from(0))
+            .out_edges(VertexId::from(0))
             .unwrap()
             .into_iter()
             .map(|edge| edge.target)
@@ -4226,7 +4226,7 @@ mod tests {
             }],
         };
 
-        let before_edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let before_edges = graph.out_edges(VertexId::from(0)).unwrap();
         let (old_start, _) = graph
             .labeled_leaf_physical_range(VertexId::from(0))
             .expect("leaf must be pinned before batch relocation");
@@ -4237,7 +4237,7 @@ mod tests {
             .labeled_leaf_physical_range(VertexId::from(0))
             .expect("leaf must remain pinned after batch relocation");
         assert_ne!(new_start, old_start);
-        let after_edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let after_edges = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(after_edges.len(), before_edges.len() + 1);
         assert_eq!(after_edges.last().map(|edge| edge.target), Some(10));
     }
@@ -4560,7 +4560,7 @@ mod tests {
         assert_eq!(bucket.stored_slots, expected_slots);
         assert!(bucket.overflow_log_head() < 0);
 
-        let edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let edges = graph.out_edges(VertexId::from(0)).unwrap();
         let pending = edges
             .iter()
             .find(|edge| edge.target == 3000)

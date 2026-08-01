@@ -740,9 +740,9 @@ mod tests {
         assert_eq!(
             graph.out_edges(VertexId::from(0)).unwrap(),
             vec![
-                TestEdge { target: 20 },
-                TestEdge { target: 11 },
                 TestEdge { target: 10 },
+                TestEdge { target: 11 },
+                TestEdge { target: 20 },
             ]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
@@ -977,7 +977,7 @@ mod tests {
                 .insert_edge(hub, default, TestEdge { target })
                 .unwrap();
         }
-        assert_eq!(graph.asc_out_edges(hub).unwrap().len(), 10);
+        assert_eq!(graph.out_edges(hub).unwrap().len(), 10);
         assert!(graph.vertices().get(hub).is_default_edge_labeled());
     }
 }

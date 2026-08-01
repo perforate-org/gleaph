@@ -752,8 +752,8 @@ where
 
     /// Returns `true` if `vid` has any incident edge (forward out-adjacency or reverse out-adjacency).
     ///
-    /// Equivalent to treating [`Self::asc_out_edges`] and
-    /// [`Self::asc_in_edges`] as non-empty OR, without allocating edge vectors.
+    /// Equivalent to treating the forward `out_edges` and the reverse `out_edges` as non-empty
+    /// OR, without allocating edge vectors.
     pub fn has_incident_edges(
         &self,
         vid: VertexId,

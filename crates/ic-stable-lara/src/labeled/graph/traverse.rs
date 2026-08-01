@@ -372,7 +372,7 @@ where
                 return Ok(0);
             }
             let mut count = 0u32;
-            let mut iter = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+            let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
             while let Some((slot, edge)) = iter.next_with_slot() {
                 if slot >= before_slot.raw() {
                     break;
@@ -459,7 +459,7 @@ where
                 return Ok(None);
             }
             let mut matching = 0u32;
-            let mut iter = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+            let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
             while let Some((slot, edge)) = iter.next_with_slot() {
                 if edge.neighbor_vid() != neighbor {
                     continue;
@@ -703,7 +703,7 @@ where
         };
         match order {
             OutEdgeOrder::Descending => {
-                let iter = self.edges.out_edges_iter(&acc, VertexId::from(0))?;
+                let iter = self.edges.desc_out_edges_iter(&acc, VertexId::from(0))?;
                 Ok(super::iter::LabeledSpanIter::desc(
                     self,
                     src,
@@ -717,7 +717,7 @@ where
                 ))
             }
             OutEdgeOrder::Ascending => {
-                let iter = self.edges.asc_out_edges_iter(&acc, VertexId::from(0))?;
+                let iter = self.edges.out_edges_iter(&acc, VertexId::from(0))?;
                 Ok(super::iter::LabeledSpanIter::asc(
                     self,
                     src,
@@ -751,7 +751,7 @@ where
             }
             return match order {
                 OutEdgeOrder::Ascending => {
-                    let mut edges = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
                     let indexed = std::iter::from_fn(move || {
                         edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
                     });
@@ -760,7 +760,7 @@ where
                     })
                 }
                 OutEdgeOrder::Descending => {
-                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
+                    let mut edges = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
                     let indexed = std::iter::from_fn(move || {
                         edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
                     });
@@ -1073,7 +1073,10 @@ where
             let label = self.bypass_storage_label_for(&vertex);
             return match order {
                 OutEdgeOrder::Ascending => {
-                    for edge in self.edges.asc_out_edges(&self.vertices, owner)? {
+                    for edge in self
+                        .edges
+                        .collect_out_edges_slot_order(&self.vertices, owner)?
+                    {
                         if let ControlFlow::Break(value) = visit(edge.with_label_id(label.raw())) {
                             return Ok(ControlFlow::Break(value));
                         }
@@ -1489,7 +1492,7 @@ where
             let mut remaining = window.limit;
             return match order {
                 OutEdgeOrder::Ascending => {
-                    let mut iter = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+                    let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
                     while let Some((slot, edge)) = iter.next_with_slot() {
                         if offset != 0 {
                             offset -= 1;
@@ -1510,7 +1513,7 @@ where
                     Ok(ControlFlow::Continue(()))
                 }
                 OutEdgeOrder::Descending => {
-                    let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
+                    let mut iter = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
                     while let Some((slot, edge)) = iter.next_with_slot() {
                         if offset != 0 {
                             offset -= 1;
@@ -1703,7 +1706,7 @@ where
             let empty = InlinePropertyBytesRef::from_parts(0, &[]);
             return match order {
                 OutEdgeOrder::Ascending => {
-                    let mut edges = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
                     let indexed = std::iter::from_fn(move || {
                         edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
                     });
@@ -1718,7 +1721,7 @@ where
                     })
                 }
                 OutEdgeOrder::Descending => {
-                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
+                    let mut edges = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
                     let indexed = std::iter::from_fn(move || {
                         edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
                     });
@@ -1874,23 +1877,21 @@ where
             }
             return match order {
                 OutEdgeOrder::Ascending => {
-                    for edge in self.edges.asc_out_edges(&self.vertices, owner)? {
+                    for edge in self
+                        .edges
+                        .collect_out_edges_slot_order(&self.vertices, owner)?
+                    {
                         visit(edge.with_label_id(label.raw()));
                     }
                     Ok(())
                 }
-                OutEdgeOrder::Descending => self
-                    .edges
-                    .visit_out_edges(
-                        &self.vertices,
-                        owner,
-                        None,
-                        None,
-                        None::<&mut dyn FnMut(&[u8]) -> bool>,
-                        |_| true,
-                        |edge| visit(edge.with_label_id(label.raw())),
-                    )
-                    .map_err(Into::into),
+                OutEdgeOrder::Descending => {
+                    let iter = self.edges.desc_out_edges_iter(&self.vertices, owner)?;
+                    for edge in iter {
+                        visit(edge.with_label_id(label.raw()));
+                    }
+                    Ok(())
+                }
             };
         }
 
@@ -3979,7 +3980,6 @@ where
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
-        ascending: bool,
         offset: Option<usize>,
         limit: Option<usize>,
         mut raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
@@ -3992,24 +3992,20 @@ where
         Visit: FnMut(E),
     {
         let mut window = OutEdgeVisitWindow::new(offset, limit);
-        let order = if ascending {
-            OutEdgeOrder::Ascending
-        } else {
-            OutEdgeOrder::Descending
-        };
-        let _ = self.visit_all_labels_with_inline_property(src, order, |edge| {
-            let passes = if let Some(raw_m) = raw_matches.as_mut() {
-                let mut buf = vec![0u8; E::BYTES];
-                edge.write_to(&mut buf);
-                raw_m(&buf) && matches(&edge)
-            } else {
-                matches(&edge)
-            };
-            if passes && !window.emit_edge(edge, visit) {
-                return ControlFlow::<()>::Break(());
-            }
-            ControlFlow::<()>::Continue(())
-        })?;
+        let _ =
+            self.visit_all_labels_with_inline_property(src, OutEdgeOrder::Ascending, |edge| {
+                let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                    let mut buf = vec![0u8; E::BYTES];
+                    edge.write_to(&mut buf);
+                    raw_m(&buf) && matches(&edge)
+                } else {
+                    matches(&edge)
+                };
+                if passes && !window.emit_edge(edge, visit) {
+                    return ControlFlow::<()>::Break(());
+                }
+                ControlFlow::<()>::Continue(())
+            })?;
         Ok(())
     }
 
@@ -4181,7 +4177,8 @@ where
         Ok(())
     }
 
-    /// Visits matching outgoing edges in descending scan order with optional offset and limit.
+    /// Visits matching outgoing edges in ascending materialization order with optional offset and
+    /// limit.
     pub fn visit_out_edges<Match, Visit>(
         &self,
         src: VertexId,
@@ -4201,7 +4198,6 @@ where
         self.visit_label_out_edges_inner(
             src,
             &vertex,
-            false,
             offset,
             limit,
             raw_matches,
@@ -4210,7 +4206,7 @@ where
         )
     }
 
-    /// Visits all outgoing edges in descending scan order with optional offset and limit.
+    /// Visits all outgoing edges in ascending materialization order with optional offset and limit.
     pub fn visit_out_edges_unfiltered<Visit>(
         &self,
         src: VertexId,
@@ -4226,52 +4222,7 @@ where
         self.visit_out_edges(src, offset, limit, raw_matches, |_| true, visit)
     }
 
-    /// Visits matching outgoing edges in ascending slot order with optional offset and limit.
-    pub fn visit_asc_out_edges<Match, Visit>(
-        &self,
-        src: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
-        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
-        mut matches: Match,
-        mut visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Match: FnMut(&E) -> bool,
-        Visit: FnMut(E),
-    {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        self.visit_label_out_edges_inner(
-            src,
-            &vertex,
-            true,
-            offset,
-            limit,
-            raw_matches,
-            &mut matches,
-            &mut visit,
-        )
-    }
-
-    /// Visits all outgoing edges in ascending slot order with optional offset and limit.
-    pub fn visit_asc_out_edges_unfiltered<Visit>(
-        &self,
-        src: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
-        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
-        visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(E),
-    {
-        self.visit_asc_out_edges(src, offset, limit, raw_matches, |_| true, visit)
-    }
-
-    /// Collects outgoing edges for `src` in descending scan order.
+    /// Collects outgoing edges for `src` in ascending materialization order.
     pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -4282,7 +4233,6 @@ where
         self.visit_label_out_edges_inner(
             src,
             &vertex,
-            false,
             None,
             None,
             None,
@@ -4292,41 +4242,12 @@ where
         Ok(out)
     }
 
-    /// Collects outgoing edges for `src` in ascending slot order.
-    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        let mut out = Vec::new();
-        self.visit_label_out_edges_inner(
-            src,
-            &vertex,
-            true,
-            None,
-            None,
-            None,
-            &mut |_| true,
-            &mut |e| out.push(e),
-        )?;
-        Ok(out)
-    }
-
-    /// Returns an iterator over outgoing edges in descending scan order.
+    /// Returns an iterator over outgoing edges in explicit descending scan order.
     pub fn desc_out_edges_iter(
         &self,
         src: VertexId,
     ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
         self.labeled_out_edges_iter(src, OutEdgeOrder::Descending, None)
-    }
-
-    /// Returns an iterator over outgoing edges in ascending slot order.
-    pub fn asc_out_edges_iter(
-        &self,
-        src: VertexId,
-    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
-        self.labeled_out_edges_iter(src, OutEdgeOrder::Ascending, None)
     }
 
     /// Finds the first outgoing edge matching `pred`, returning its label when available.
@@ -5325,7 +5246,8 @@ mod tests {
             .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
             .unwrap();
 
-        let expected = graph.out_edges(VertexId::from(0)).unwrap();
+        let mut expected = graph.out_edges(VertexId::from(0)).unwrap();
+        expected.reverse();
         let lazy: Vec<_> = graph
             .desc_out_edges_iter(VertexId::from(0))
             .unwrap()
@@ -5335,7 +5257,7 @@ mod tests {
     }
 
     #[test]
-    fn labeled_desc_and_asc_out_edges_iters_match_materialized_rows() {
+    fn labeled_desc_out_edges_iter_matches_reversed_materialized_rows() {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
         graph
@@ -5345,23 +5267,15 @@ mod tests {
             .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
             .unwrap();
 
-        let desc = graph.out_edges(VertexId::from(0)).unwrap();
-        let asc = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let mut expected = graph.out_edges(VertexId::from(0)).unwrap();
+        expected.reverse();
         assert_eq!(
             graph
                 .desc_out_edges_iter(VertexId::from(0))
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap(),
-            desc
-        );
-        assert_eq!(
-            graph
-                .asc_out_edges_iter(VertexId::from(0))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap(),
-            asc
+            expected
         );
     }
 
@@ -5606,10 +5520,10 @@ mod tests {
             assert_eq!(&asc, expected_targets, "label {label:?}");
         }
         let total: usize = materialized.iter().map(|(_, targets)| targets.len()).sum();
-        assert_eq!(graph.asc_out_edges(hub).unwrap().len(), total);
+        assert_eq!(graph.out_edges(hub).unwrap().len(), total);
         assert_eq!(
             graph
-                .asc_out_edges_iter(hub)
+                .desc_out_edges_iter(hub)
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap()

@@ -541,7 +541,10 @@ where
                 }
                 true => {
                     let label = self.bypass_storage_label_for(vertex).raw();
-                    for edge in self.edges.asc_out_edges(&self.vertices, src)? {
+                    for edge in self
+                        .edges
+                        .collect_out_edges_slot_order(&self.vertices, src)?
+                    {
                         if let ControlFlow::Break(value) = visit(edge.with_label_id(label)) {
                             return Ok(ControlFlow::Break(value));
                         }
@@ -733,7 +736,10 @@ where
                         successor,
                         src,
                     );
-                    for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
+                    for edge in self
+                        .edges
+                        .collect_out_edges_slot_order(&acc, VertexId::from(0))?
+                    {
                         let slot_index = edge.edge_slot_index_raw();
                         if let ControlFlow::Break(value) = visit(self.attach_edge_inline_property(
                             src,
@@ -1268,7 +1274,7 @@ mod tests {
             vec![TestEdge { target: 12 }, TestEdge { target: 10 }]
         );
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge { target: 10 }, TestEdge { target: 12 }]
         );
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -1290,7 +1296,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![
                 TestEdge { target: 10 },
                 TestEdge { target: 12 },

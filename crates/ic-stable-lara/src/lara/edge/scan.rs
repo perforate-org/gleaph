@@ -7,13 +7,14 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::iter::{AscOutEdgesIter, OutEdgeSlabChunk, OutEdgeSlabIter, leaf_segment};
+use super::iter::{OutEdgeSlabChunk, leaf_segment};
 use super::{
-    DeleteTarget, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
+    DeleteTarget, DescOutEdgesIter, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES,
+    OutEdgeVisitWindow, OutEdgesIter,
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
-    pub(crate) fn asc_out_edges<V, A>(
+    pub(crate) fn collect_out_edges_slot_order<V, A>(
         &self,
         vertices: &A,
         vid: VertexId,
@@ -50,25 +51,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(());
         }
-        if v.log_head() < 0 {
-            let mut it =
-                OutEdgeSlabIter::try_new(self, v.base_slot_start(), v.stored_degree(), v.degree())?;
-            let has_raw = raw_matches.is_some();
-            while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
-                if has_raw {
-                    if matches(&edge) && !window.emit_edge(edge, &mut visit) {
-                        return Ok(());
-                    }
-                } else if matches(&edge) && !window.emit_edge(edge, &mut visit) {
-                    return Ok(());
-                }
-            }
-            return Ok(());
-        }
-
         let walk = self.out_edges_iter(vertices, vid)?;
         for edge in walk {
-            if matches(&edge) && !window.emit_edge(edge, &mut visit) {
+            let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                let mut buf = vec![0u8; E::BYTES];
+                edge.write_to(&mut buf);
+                raw_m(&buf) && matches(&edge)
+            } else {
+                matches(&edge)
+            };
+            if passes && !window.emit_edge(edge, &mut visit) {
                 return Ok(());
             }
         }
@@ -91,20 +83,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(None);
         }
-        if v.log_head() < 0 {
-            let mut it =
-                OutEdgeSlabIter::try_new(self, v.base_slot_start(), v.stored_degree(), v.degree())?;
-            while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
-                if matches(&edge) {
-                    return Ok(Some(edge));
-                }
-            }
-            return Ok(None);
-        }
-
         let walk = self.out_edges_iter(vertices, vid)?;
         for edge in walk {
-            if matches(&edge) {
+            let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                let mut buf = vec![0u8; E::BYTES];
+                edge.write_to(&mut buf);
+                raw_m(&buf) && matches(&edge)
+            } else {
+                matches(&edge)
+            };
+            if passes {
                 return Ok(Some(edge));
             }
         }
@@ -124,21 +112,23 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(v.degree() > 0)
     }
 
+    /// Explicit descending-scan iterator (overflow log from the chain head first, then slab slots
+    /// high→low).
     #[inline]
-    pub(crate) fn out_edges_iter<V, A>(
+    pub(crate) fn desc_out_edges_iter<V, A>(
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError>
+    ) -> Result<DescOutEdgesIter<'_, E, M>, LaraOperationError>
     where
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        // See `asc_out_edges`: allow enumeration for tombstones that
+        // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
         // still have pending edge material (rebalance during vertex delete).
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
-            return Ok(OutEdgesIter {
+            return Ok(DescOutEdgesIter {
                 store: self,
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: 0,
@@ -168,7 +158,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             } else {
                 None
             };
-            return Ok(OutEdgesIter {
+            return Ok(DescOutEdgesIter {
                 store: self,
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: stored,
@@ -207,7 +197,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         deleted_slab_offsets.sort_unstable();
         let reserved_log_slots =
             u32::try_from(log_entries.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-        Ok(OutEdgesIter {
+        Ok(DescOutEdgesIter {
             store: self,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
@@ -222,7 +212,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         })
     }
 
-    pub(crate) fn desc_out_edges_iter<V, A>(
+    /// Default ascending iterator over outgoing edges in materialization (slot) order: slab slots
+    /// low→high, then reserved overflow-log entries replayed old→new.
+    #[inline]
+    pub(crate) fn out_edges_iter<V, A>(
         &self,
         vertices: &A,
         vid: VertexId,
@@ -231,25 +224,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
-        self.out_edges_iter(vertices, vid)
-    }
-
-    #[inline]
-    pub(crate) fn asc_out_edges_iter<V, A>(
-        &self,
-        vertices: &A,
-        vid: VertexId,
-    ) -> Result<AscOutEdgesIter<'_, E, M>, LaraOperationError>
-    where
-        V: CsrVertex + CsrVertexTombstoneScan,
-        A: VertexAccess<V>,
-    {
         let v = vertices.get_in_range(vid)?;
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
-            return Ok(AscOutEdgesIter::empty(self));
+            return Ok(OutEdgesIter::empty(self));
         }
         if v.log_head() < 0 {
-            return Ok(AscOutEdgesIter::slab_only(
+            return Ok(OutEdgesIter::slab_only(
                 self,
                 v.base_slot_start(),
                 v.stored_degree(),
@@ -297,7 +277,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             }
         }
 
-        Ok(AscOutEdgesIter::with_reserved_log_replay(
+        Ok(OutEdgesIter::with_reserved_log_replay(
             self,
             v.base_slot_start(),
             slab_count,
@@ -374,7 +354,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            edges.asc_out_edges(&vertices, VertexId::from(0)).unwrap(),
+            edges
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(
@@ -382,7 +364,7 @@ mod tests {
                 .out_edges_iter(&vertices, VertexId::from(0))
                 .unwrap()
                 .collect::<Vec<_>>(),
-            vec![TestEdge(11), TestEdge(10)]
+            vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(
             edges
@@ -390,13 +372,6 @@ mod tests {
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![TestEdge(11), TestEdge(10)]
-        );
-        assert_eq!(
-            edges
-                .asc_out_edges_iter(&vertices, VertexId::from(0))
-                .unwrap()
-                .collect::<Vec<_>>(),
-            vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
         assert!(vertices.get(VertexId::from(0)).log_head() >= 0);
@@ -443,13 +418,15 @@ mod tests {
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
         assert_eq!(vertices.get(VertexId::from(0)).log_head(), -1);
         assert_eq!(
-            edges.asc_out_edges(&vertices, VertexId::from(0)).unwrap(),
+            edges
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
     }
 
     #[test]
-    fn out_edges_iter_nth_pure_slab_matches_scan_order() {
+    fn out_edges_iter_nth_pure_slab_matches_ascending_scan() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -490,12 +467,12 @@ mod tests {
             .out_edges_iter(&vertices, VertexId::from(0))
             .unwrap()
             .collect::<Vec<_>>();
-        assert_eq!(scan, vec![TestEdge(11), TestEdge(10)]);
+        assert_eq!(scan, vec![TestEdge(10), TestEdge(11)]);
 
         let mut it = edges.out_edges_iter(&vertices, VertexId::from(0)).unwrap();
-        assert_eq!(it.next(), Some(TestEdge(11)));
+        assert_eq!(it.next(), Some(TestEdge(10)));
         let mut it = edges.out_edges_iter(&vertices, VertexId::from(0)).unwrap();
-        assert_eq!(it.nth(1), Some(TestEdge(10)));
+        assert_eq!(it.nth(1), Some(TestEdge(11)));
         let mut it = edges.out_edges_iter(&vertices, VertexId::from(0)).unwrap();
         assert_eq!(it.nth(2), None);
     }
@@ -528,7 +505,9 @@ mod tests {
         edges.write_slot(1, TestEdge(11)).unwrap();
 
         assert_eq!(
-            edges.asc_out_edges(&vertices, VertexId::from(0)).unwrap(),
+            edges
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
     }

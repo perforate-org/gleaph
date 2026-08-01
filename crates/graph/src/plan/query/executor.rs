@@ -240,8 +240,8 @@ pub async fn execute_plan_query(
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum EdgeSequenceOrder {
-    Ascending,
     #[default]
+    Ascending,
     Descending,
 }
 
@@ -452,7 +452,7 @@ pub(crate) fn gleaph_sequence_order_after_expand(
             _ => {}
         }
     }
-    Ok(EdgeSequenceOrder::Descending)
+    Ok(EdgeSequenceOrder::Ascending)
 }
 
 fn previous_op_binds_edge(ops: &[PlanOp], op_idx: usize, edge_var: &str) -> bool {
@@ -537,9 +537,8 @@ pub(crate) fn gleaph_sequence_sort(
     }
     let order = match item.direction {
         Some(SortDirection::Asc | SortDirection::Ascending) => EdgeSequenceOrder::Ascending,
-        Some(SortDirection::Desc | SortDirection::Descending) | None => {
-            EdgeSequenceOrder::Descending
-        }
+        Some(SortDirection::Desc | SortDirection::Descending) => EdgeSequenceOrder::Descending,
+        None => EdgeSequenceOrder::Ascending,
     };
     let ExprKind::FunctionCall {
         name,

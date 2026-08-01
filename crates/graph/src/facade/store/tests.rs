@@ -436,9 +436,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
         .expect("edge");
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
     let reverse = store
-        .find_first_reverse_handle_descending(target, wire_label, |edge| {
-            edge.neighbor_vid() == source
-        })
+        .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == source)
         .expect("reverse lookup")
         .expect("reverse edge");
 
@@ -871,9 +869,7 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_counterpart() {
 
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
     let reverse = store
-        .find_first_reverse_handle_descending(target, wire_label, |edge| {
-            edge.neighbor_vid() == source
-        })
+        .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == source)
         .expect("reverse lookup")
         .expect("remaining reverse edge");
     let canonical = store.canonical_reverse_in_edge_handle(reverse);
@@ -907,9 +903,7 @@ fn directed_reverse_counterpart_does_not_require_matching_slot_index() {
 
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
     let reverse = store
-        .find_first_reverse_handle_descending(target, wire_label, |edge| {
-            edge.neighbor_vid() == source
-        })
+        .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == source)
         .expect("reverse lookup")
         .expect("reverse edge");
     assert_ne!(
@@ -958,7 +952,7 @@ fn delete_valued_undirected_edge_by_handle_removes_counterpart_slot() {
 
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Undirected));
     let counterpart = store
-        .find_first_forward_handle_descending(low, wire_label, |edge| edge.neighbor_vid() == high)
+        .find_first_forward_handle(low, wire_label, |edge| edge.neighbor_vid() == high)
         .expect("counterpart lookup")
         .expect("remaining counterpart half");
     let canonical = store.canonical_edge_handle(counterpart);
@@ -1240,9 +1234,7 @@ fn scan_only_canonical_lookup_uses_lara_counterpart_resolution() {
         .expect("directed edge");
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
     let reverse = store
-        .find_first_reverse_handle_descending(target, wire_label, |edge| {
-            edge.neighbor_vid() == source
-        })
+        .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == source)
         .expect("reverse scan")
         .expect("reverse half");
     let scan_from_forward =
@@ -1412,9 +1404,7 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
     );
 
     let reverse_third = store
-        .find_first_reverse_handle_descending(target, wire_label, |edge| {
-            edge.neighbor_vid() == third
-        })
+        .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == third)
         .expect("reverse lookup after compaction")
         .expect("third reverse edge after compaction");
     assert_eq!(
@@ -1518,9 +1508,7 @@ fn edge_property_counterpart_scan_reads_reverse_directed_edge() -> Result<(), Gr
         .expect("set");
 
     let reverse = store
-        .find_first_reverse_handle_descending(target, wire_label, |edge| {
-            edge.neighbor_vid() == source
-        })
+        .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == source)
         .expect("reverse scan")
         .expect("reverse half");
 
@@ -1551,9 +1539,7 @@ fn edge_property_counterpart_scan_reads_directed_self_loop_from_both_orientation
         .expect("set");
 
     let reverse = store
-        .find_first_reverse_handle_descending(vertex, wire_label, |edge| {
-            edge.neighbor_vid() == vertex
-        })
+        .find_first_reverse_handle(vertex, wire_label, |edge| edge.neighbor_vid() == vertex)
         .expect("reverse scan")
         .expect("reverse half");
 

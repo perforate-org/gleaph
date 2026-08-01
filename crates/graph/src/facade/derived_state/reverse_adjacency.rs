@@ -641,9 +641,7 @@ mod tests {
             .expect("edge");
 
         let before = store
-            .find_first_reverse_handle_descending(target, label, |edge| {
-                edge.neighbor_vid() == source
-            })
+            .find_first_reverse_handle(target, label, |edge| edge.neighbor_vid() == source)
             .expect("lookup")
             .expect("reverse half");
 
@@ -651,9 +649,7 @@ mod tests {
 
         check_reverse_adjacency(&store).expect("still consistent");
         let after = store
-            .find_first_reverse_handle_descending(target, label, |edge| {
-                edge.neighbor_vid() == source
-            })
+            .find_first_reverse_handle(target, label, |edge| edge.neighbor_vid() == source)
             .expect("lookup")
             .expect("reverse half");
         assert_eq!(
@@ -676,9 +672,7 @@ mod tests {
             .insert_directed_edge(keep_source, target, Some(label_id))
             .expect("kept edge");
         let kept_before = store
-            .find_first_reverse_handle_descending(target, label, |edge| {
-                edge.neighbor_vid() == keep_source
-            })
+            .find_first_reverse_handle(target, label, |edge| edge.neighbor_vid() == keep_source)
             .expect("lookup")
             .expect("kept reverse half");
         let kept_canonical_before = store.canonical_reverse_in_edge_handle(kept_before);
@@ -700,9 +694,7 @@ mod tests {
 
         check_reverse_adjacency(&store).expect("repair restores the diverged key");
         let kept_after = store
-            .find_first_reverse_handle_descending(target, label, |edge| {
-                edge.neighbor_vid() == keep_source
-            })
+            .find_first_reverse_handle(target, label, |edge| edge.neighbor_vid() == keep_source)
             .expect("lookup")
             .expect("kept reverse half survives");
         assert_eq!(

@@ -82,7 +82,7 @@ pub use labeled::{
 pub use lara::{
     LaraGraph,
     edge::{
-        AscOutEdgesIter, EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
+        DescOutEdgesIter, EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
         OutEdgesIter,
         free_span::{FreeSpan, FreeSpanError, FreeSpanStore, InitError as FreeSpanInitError},
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},

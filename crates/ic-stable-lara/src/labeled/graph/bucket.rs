@@ -1073,7 +1073,7 @@ mod tests {
 
         assert_eq!(
             visited.iter().map(|e| e.target).collect::<Vec<_>>(),
-            vec![32, 30]
+            vec![2, 4]
         );
         for edge in &visited {
             assert_eq!(edge.inline_property_len, 2);
@@ -1193,10 +1193,10 @@ mod tests {
         assert_eq!(
             graph.out_edges(VertexId::from(0)).unwrap(),
             vec![
-                TestEdge { target: 100 },
-                TestEdge { target: 70 },
-                TestEdge { target: 21 },
                 TestEdge { target: 20 },
+                TestEdge { target: 21 },
+                TestEdge { target: 70 },
+                TestEdge { target: 100 },
             ]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
@@ -1282,7 +1282,7 @@ mod tests {
         );
         assert_eq!(
             graph.out_edges(VertexId::from(0)).unwrap(),
-            vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
+            vec![TestEdge { target: 10 }, TestEdge { target: 30 }]
         );
 
         let mut raw_scanned = Vec::new();
@@ -1298,7 +1298,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             raw_scanned,
-            vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
+            vec![TestEdge { target: 10 }, TestEdge { target: 30 }]
         );
 
         let vertex = graph.vertices().get(VertexId::from(0));

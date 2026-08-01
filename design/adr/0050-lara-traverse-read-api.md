@@ -632,10 +632,13 @@ The following remain private:
 - `labeled_bucket_span_iter`; and
 - dense/hybrid/sparse implementation selection.
 
-The LARA edge layer has one canonical descending iterator, `OutEdgesIter`, for both labeled and
-unlabeled callers. It reads overflow-log entries newest-first and then scans the slab in descending
-chunks. A separate log-backed descending iterator is not maintained. Ascending callers use the
-shared `AscOutEdgesIter`, which preserves slab/log slot metadata and materialization order.
+The LARA edge layer has one canonical **ascending** iterator, `OutEdgesIter`, for both labeled and
+unlabeled callers. It is the default traversal (stable materialization order): slab slots low→high,
+then reserved overflow-log entries replayed oldest-to-newest. The explicit descending path
+(`DescOutEdgesIter`, via `desc_out_edges_iter` / `OutEdgeOrder::Descending`) walks the overflow log
+from the chain head first, then live slab slots high→low. The `asc_*`-named aliases were merged
+into the unsuffixed defaults and removed (Plan 0195); the legacy `OutEdgeSlabIter` remains the
+internal descending slab-only helper for maintenance paths.
 
 ### 9a. Raw storage locations have one explicit internal reader
 

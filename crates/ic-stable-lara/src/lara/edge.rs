@@ -10,20 +10,20 @@
 //! - segment span metadata for locally relocated physical spans;
 //! - free span metadata for retired physical ranges.
 //!
-//! [`EdgeStore::asc_out_edges`] materializes the row in **slot order**
+//! [`EdgeStore::collect_out_edges_slot_order`] materializes the row in **slot order**
 //! (ascending slab indices, skipping tombstoned slots,
 //! then overflow-log edges oldest-to-newest). Use this when you need the exact CSR
 //! / insertion layout.
 //!
 //! **Default contiguous read contract:** [`EdgeStore::out_edges_iter`] (see [`OutEdgesIter`])
-//! walks the overflow log from the chain head first, then live slab slots **high index to low**
-//! (still skipping tombstoned slots). Log-backed rows prefetch the log chain at iterator
-//! construction so slab scans can skip tombstoned log entries without decoding masked slab slots.
-//! Labeled compact rows normally avoid this log-backed
-//! path by rewriting rows into slab tombstones before deletion. The descending scan is the preferred
-//! hot path (cache- and prefetch-friendly, newest log entries first). Callers that need slot order should use
-//! `asc_out_edges` instead, or reverse the vector produced by `out_edges_iter` when
-//! packing rows contiguously (e.g. segment rebalance snapshots).
+//! walks live slab slots **low index to high**, then reserved overflow-log entries replayed
+//! oldest-to-newest (still skipping tombstoned slots). This is the stable materialization order
+//! and the default for all unsuffixed traversal APIs. The explicit descending path
+//! ([`EdgeStore::desc_out_edges_iter`], see [`DescOutEdgesIter`]) walks the overflow log from the
+//! chain head first, then live slab slots **high index to low**; it is the cache- and
+//! prefetch-friendly hot path for callers that opt into newest-first ordering.
+//! Labeled compact rows normally avoid the log-backed path by rewriting rows into slab tombstones
+//! before deletion.
 //! The log, counts, span metadata, and free span index are update-side structures.
 //! They may be read while inserting, folding logs, resizing, or relocating, but they
 //! are not part of the clean scan contract.
@@ -82,6 +82,7 @@ pub(super) const INLINE_EDGE_BYTES: usize = 64;
 
 /// When a clean slab row is at least this many bytes, [`OutEdgesIter`] and [`OutEdgeSlabIter`]
 /// read the slab in fixed-size **descending** slot chunks instead of one stable read per edge.
+/// The ascending default iterator (`[OutEdgesIter]`) uses forward (ascending) chunks.
 pub(super) const OUT_EDGE_SLAB_PREFETCH_MIN_BYTES: usize = 64;
 /// Number of consecutive slab slots loaded per chunk when prefetch chunking is enabled.
 pub(super) const OUT_EDGE_SLAB_CHUNK_SLOTS: u32 = 32;
@@ -102,7 +103,7 @@ mod visit_window;
 
 pub use error::InitError;
 pub(crate) use iter::OutEdgeSlabIter;
-pub use iter::{AscOutEdgesIter, OutEdgesIter};
+pub use iter::{DescOutEdgesIter, OutEdgesIter};
 pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation};
 pub(crate) use visit_window::OutEdgeVisitWindow;
 

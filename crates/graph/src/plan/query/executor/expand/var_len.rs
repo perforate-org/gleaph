@@ -215,7 +215,7 @@ pub(crate) fn collect_var_len_expand_rows(
             direction,
             label_id,
             label_expr,
-            EdgeSequenceOrder::Descending,
+            EdgeSequenceOrder::Ascending,
             indexed_edge_equality,
             edge_inline_property_predicate,
             edge_inline_vector_predicate,

@@ -190,16 +190,17 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Outgoing-edge scan order for APIs that expose both the hot descending walk and the stable
-/// ascending materialization order.
+/// Outgoing-edge scan order for APIs that expose both the stable ascending materialization order
+/// and the explicit hot descending walk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum OutEdgeOrder {
-    /// Default hot-path order: label buckets high→low; within each span, overflow log head first
-    /// and then slab slots high→low.
+    /// Default stable materialization order: label buckets low→high; within each span, CSR slots
+    /// low→high.
     #[default]
-    Descending,
-    /// Stable materialization order: label buckets low→high; within each span, CSR slots low→high.
     Ascending,
+    /// Explicit hot-path order: label buckets high→low; within each span, overflow log head first
+    /// and then slab slots high→low.
+    Descending,
 }
 
 impl OutEdgeOrder {
