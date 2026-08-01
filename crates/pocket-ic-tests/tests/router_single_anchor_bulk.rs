@@ -9,7 +9,7 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::encode_gql_params_blob;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    admin_intern_property, create_vertex_property_index, gql_execute_idempotent_as_admin,
+    ensure_property, create_vertex_property_index, gql_execute_as_admin,
     gql_query_as_admin, graph_mutation_journal_len, install_single_shard_federation,
 };
 use gleaph_router::types::{GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchItem};
@@ -45,7 +45,7 @@ fn decode_rows(
         .expect("convert wire rows to value rows")
 }
 
-fn execute_batch_as_admin(
+fn batch_insert_as_admin(
     env: &gleaph_pocket_ic_tests::FederationEnv,
     mutations: Vec<GqlExecuteIdempotentBatchItem>,
 ) -> Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult> {
@@ -59,17 +59,17 @@ fn execute_batch_as_admin(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute_idempotent_batch",
-            Encode!(&args).expect("encode gql_execute_idempotent_batch"),
+            "gql_execute_batch",
+            Encode!(&args).expect("encode gql_execute_batch"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute_idempotent_batch on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_execute_batch on router: {e:?}"));
     match Decode!(
         &bytes,
         Result<gleaph_router::types::GqlExecuteIdempotentBatchResult, RouterError>
     ) {
         Ok(Ok(result)) => result.results,
-        Ok(Err(err)) => panic!("gql_execute_idempotent_batch rejected: {err:?}"),
-        Err(err) => panic!("decode gql_execute_idempotent_batch: {err}"),
+        Ok(Err(err)) => panic!("gql_execute_batch rejected: {err:?}"),
+        Err(err) => panic!("decode gql_execute_batch: {err}"),
     }
 }
 
@@ -78,8 +78,8 @@ fn single_variable_anchor_bulk_resolves_per_item_seed_and_creates_one_journal_en
     let env = install_single_shard_federation();
 
     // Ensure all properties used in the test are interned.
-    admin_intern_property(&env, "demo_graph");
-    admin_intern_property(&env, "demo_id");
+    ensure_property(&env, "demo_graph");
+    ensure_property(&env, "demo_id");
 
     create_vertex_property_index(
         &env,
@@ -90,8 +90,8 @@ fn single_variable_anchor_bulk_resolves_per_item_seed_and_creates_one_journal_en
     );
 
     // Seed two distinct users.
-    gql_execute_idempotent_as_admin(&env, USER_ALICE, "single_anchor_insert_alice");
-    gql_execute_idempotent_as_admin(&env, USER_BOB, "single_anchor_insert_bob");
+    gql_execute_as_admin(&env, USER_ALICE, "single_anchor_insert_alice");
+    gql_execute_as_admin(&env, USER_BOB, "single_anchor_insert_bob");
 
     let journal_before = graph_mutation_journal_len(&env, env.graph_source);
 
@@ -119,7 +119,7 @@ fn single_variable_anchor_bulk_resolves_per_item_seed_and_creates_one_journal_en
 
     // The unified bulk path is always active: the group dispatches through a single Graph
     // mutation-journal entry rather than falling back to per-item scalar execution.
-    let results = execute_batch_as_admin(&env, mutations);
+    let results = batch_insert_as_admin(&env, mutations);
     assert_eq!(
         results.len(),
         2,

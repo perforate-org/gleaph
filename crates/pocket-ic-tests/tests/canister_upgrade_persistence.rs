@@ -17,15 +17,13 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation, PostingHit};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
-    gql_query_as_admin, install_single_shard_federation, prepared_manifest_as_admin,
-    prepared_query_with_params_as, prepared_upsert_as_admin, seed_upgrade_fixture_graph,
-    upgrade_fixture_query, wasm_bytes,
+    FederationEnv, GRAPH_NAME, create_vertex_property_index, execute_prepared_with_params_as,
+    gql_execute_as_admin, gql_query_as_admin, install_single_shard_federation,
+    list_prepared_as_admin, prepare_as_admin, seed_upgrade_fixture_graph, upgrade_fixture_query,
+    wasm_bytes,
 };
 use gleaph_prepared_api::{OperationKind, PreparedOperation, ResultSchema};
-use gleaph_router::types::{
-    AdminVertexPropertyBackfillStepArgs, VertexPropertyBackfillShardStatus,
-};
+use gleaph_router::types::BackfillKind;
 use std::collections::BTreeSet;
 
 /// Distinct `edge_id` values returned by the upgrade fixture query.
@@ -115,15 +113,15 @@ fn prepared_query_survives_router_upgrade_cache_rebuild() {
     seed_upgrade_fixture_graph(&env);
 
     let query_name = "upgrade-prepared-cache-rebuild";
-    prepared_upsert_as_admin(&env, query_name, upgrade_fixture_query());
-    let before = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
+    prepare_as_admin(&env, query_name, upgrade_fixture_query());
+    let before = execute_prepared_with_params_as(&env, env.admin, query_name, Vec::new());
 
     upgrade_all(&env);
 
     // The Router stable record contains source, while the parsed AST and plan are rebuilt by
     // post_upgrade. Successful execution after upgrade proves the cache was reconstructed and
     // the Graph still received the prepared plan through the normal dispatch boundary.
-    let after = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
+    let after = execute_prepared_with_params_as(&env, env.admin, query_name, Vec::new());
     assert_eq!(after.row_count, before.row_count);
     assert_eq!(edge_ids(&after), edge_ids(&before));
 }
@@ -152,19 +150,18 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
         .update_call(
             env.router,
             env.admin,
-            "prepared_upsert_with_metadata",
-            Encode!(&name.to_owned(), &query.to_owned(), &metadata)
-                .expect("encode prepared_upsert_with_metadata"),
+            "prepare",
+            Encode!(&name.to_owned(), &query.to_owned(), &Some(metadata)).expect("encode prepare"),
         )
-        .expect("prepared_upsert_with_metadata call");
+        .expect("prepare call");
     let result = candid::Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
-        .expect("decode prepared_upsert_with_metadata");
+        .expect("decode prepare");
     assert!(
         result.is_ok(),
         "prepared metadata registration failed: {result:?}"
     );
 
-    let manifest = prepared_manifest_as_admin(&env, GRAPH_NAME);
+    let manifest = list_prepared_as_admin(&env, GRAPH_NAME);
     assert_eq!(manifest.manifest_version, 1);
     let operation = manifest
         .operations
@@ -211,7 +208,7 @@ fn canister_upgrade_repeated_is_stable() {
     let new_edge_ddl = "MATCH (a:UpgradeSource {fixture_id: 'source'}) RETURN a \
 NEXT INSERT (a)-[:UPGRADE_EDGE {fixture_edge_id: 'edge-post-upgrade', fixture_kind: 'verify'}]\
 ->(:UpgradeTarget {fixture_id: 'target-post-upgrade', fixture_kind: 'upgrade'})";
-    let _ = gql_execute_idempotent_as_admin(&env, new_edge_ddl, "post_upgrade_new_edge");
+    let _ = gql_execute_as_admin(&env, new_edge_ddl, "post_upgrade_new_edge");
     let after_write = edge_ids(&gql_query_as_admin(&env, upgrade_fixture_query()));
     assert!(
         after_write.contains("edge-post-upgrade"),
@@ -286,28 +283,32 @@ fn router_backfill_cursor_survives_router_upgrade() {
         "age",
         "upgrade_backfill_create_index",
     );
-    gql_execute_idempotent_as_admin(&env, "INSERT (:Person {age: 1})", "upgrade_backfill_v1");
-    gql_execute_idempotent_as_admin(&env, "INSERT (:Person {age: 2})", "upgrade_backfill_v2");
+    gql_execute_as_admin(&env, "INSERT (:Person {age: 1})", "upgrade_backfill_v1");
+    gql_execute_as_admin(&env, "INSERT (:Person {age: 2})", "upgrade_backfill_v2");
 
-    let args = AdminVertexPropertyBackfillStepArgs {
-        logical_graph_name: GRAPH_NAME.into(),
-        shard_id: ShardId::new(0),
-        max_vertices: 1,
-    };
+    // The Router iterates shards internally; `advance_backfill` with kind `VertexProperty` and
+    // `max_work = 1` processes one vertex, leaving the shard not yet done.
     let first_bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "admin_vertex_property_backfill_step",
-            Encode!(&args).expect("encode backfill step"),
+            "advance_backfill",
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &BackfillKind::VertexProperty,
+                &1u32
+            )
+            .expect("encode backfill step"),
         )
         .expect("first backfill step");
-    let first: Result<gleaph_router::types::AdminVertexPropertyBackfillStepResult, _> =
+    let first: Result<gleaph_router::types::AdvanceBackfillResult, _> =
         Decode!(&first_bytes, Result<_, gleaph_graph_kernel::federation::RouterError>)
             .expect("decode first backfill step");
     let first = first.expect("first backfill step succeeds");
-    assert_eq!(first.vertices_processed, 1);
+    assert!(!first.all_done, "one of two vertices is processed");
+    assert_eq!(first.shards.len(), 1);
+    assert!(!first.shards[0].done);
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
@@ -319,18 +320,22 @@ fn router_backfill_cursor_survives_router_upgrade() {
         .query_call(
             env.router,
             env.admin,
-            "admin_list_vertex_property_backfill_status",
+            "list_backfill_status",
             Encode!(&GRAPH_NAME.to_string()).expect("encode status query"),
         )
         .expect("backfill status after upgrade");
-    let status: Result<Vec<VertexPropertyBackfillShardStatus>, _> = Decode!(
+    let status: Result<Vec<gleaph_router::types::BackfillShardStatus>, _> = Decode!(
         &status_bytes,
         Result<
-            Vec<VertexPropertyBackfillShardStatus>,
+            Vec<gleaph_router::types::BackfillShardStatus>,
             gleaph_graph_kernel::federation::RouterError,
         >
     )
     .expect("decode status");
     let status = status.expect("status succeeds");
-    assert_eq!(status[0].next_vertex_id, first.next_vertex_id);
+    let vertex_property = status
+        .iter()
+        .find(|s| s.kind == BackfillKind::VertexProperty && s.shard_id == ShardId::new(0))
+        .expect("vertex-property backfill status survives upgrade");
+    assert!(!vertex_property.done);
 }

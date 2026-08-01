@@ -9,9 +9,9 @@ use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, admin_intern_vertex_label,
+    FederationEnv, ensure_edge_label, ensure_vertex_label,
     e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex_with_label,
-    gql_execute_idempotent_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
+    gql_execute_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
     install_single_shard_federation,
 };
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
 
 fn setup() -> FederationEnv {
     let env = install_single_shard_federation();
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &format!(
             "CREATE GRAPH TYPE IF NOT EXISTS road_type {{ NODE City AS city, DIRECTED EDGE Road LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }} CONNECTING (city -> city) }} NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type"
@@ -69,10 +69,10 @@ fn vertex_element_id(env: &FederationEnv, label: &str) -> IcWireValue {
 }
 
 fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
-    let edge_label_id = admin_intern_edge_label(env, EDGE_LABEL);
-    let src_label_id = admin_intern_vertex_label(env, SRC_LABEL);
-    let mid_label_id = admin_intern_vertex_label(env, MID_LABEL);
-    let dst_label_id = admin_intern_vertex_label(env, DST_LABEL);
+    let edge_label_id = ensure_edge_label(env, EDGE_LABEL);
+    let src_label_id = ensure_vertex_label(env, SRC_LABEL);
+    let mid_label_id = ensure_vertex_label(env, MID_LABEL);
+    let dst_label_id = ensure_vertex_label(env, DST_LABEL);
 
     let a = e2e_insert_vertex_with_label(env, env.graph_source, src_label_id.raw());
     let b = e2e_insert_vertex_with_label(env, env.graph_source, mid_label_id.raw());
@@ -160,7 +160,7 @@ fn scenario_missing_cost_property_rejects_and_leaves_graph_unchanged(
 
 fn scenario_mutation_switches_to_direct_path(env: &FederationEnv, dst_id: &IcWireValue) {
     // Former contract: inline_cost_by_observes_mutation.
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         env,
         "MATCH (a:CitySrc)-[e:ROAD {distance: 1}]->(b) SET e.distance = 200 RETURN e",
         "adr0034_inline_cost_by_lifecycle_mutation",
@@ -229,9 +229,9 @@ fn assert_directed_cost_by_path(
 #[test]
 fn inline_cost_by_symmetric_directed_reads_same_inline_property() {
     let env = setup();
-    let edge_label_id = admin_intern_edge_label(&env, EDGE_LABEL);
-    let src_label_id = admin_intern_vertex_label(&env, SRC_LABEL);
-    let mid_label_id = admin_intern_vertex_label(&env, MID_LABEL);
+    let edge_label_id = ensure_edge_label(&env, EDGE_LABEL);
+    let src_label_id = ensure_vertex_label(&env, SRC_LABEL);
+    let mid_label_id = ensure_vertex_label(&env, MID_LABEL);
 
     let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
     let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());

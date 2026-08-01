@@ -392,6 +392,89 @@ impl RouterStore {
             .map_err(RouterError::Internal)
     }
 
+    /// Best-effort graph-level operational snapshot (ADR 0056 §7): shard reachability +
+    /// index-sync convergence + vector-index health summary. Composite-style orchestration that
+    /// probes every shard's index-sync status through `call_status`; per-shard and physical detail
+    /// stay at L3. Failures are reported in `notes`, never as errors.
+    pub(crate) async fn graph_health_view<F, Fut>(
+        &self,
+        caller: Principal,
+        graph_name: &str,
+        call_status: F,
+    ) -> Result<crate::types::GraphHealthView, RouterError>
+    where
+        F: Fn(Principal) -> Fut,
+        Fut: Future<Output = Result<IndexSyncStatus, String>>,
+    {
+        use crate::facade::stable::{embedding_name_catalog, graph_catalog, vector_index_catalog};
+        use crate::types::{GraphHealthView, GraphSummary};
+
+        auth::require_admin(&caller)?;
+        let graph_id = self.resolve_graph_id(graph_name)?;
+        let entry = graph_catalog::graph_entry(graph_id)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        let shards = self.list_shards_for_graph_id(graph_id)?;
+        let summary = GraphSummary {
+            graph_id,
+            graph_name: entry.graph_name.clone(),
+            status: entry.status,
+            provisioning_state: entry.provisioning_state,
+            shard_count: shards.len() as u32,
+            updated_at_ns: entry.updated_at_ns,
+        };
+
+        let mut notes = Vec::new();
+        let mut reachable = 0u32;
+        let mut converged_shards = 0u32;
+        for shard in &shards {
+            match self
+                .admin_index_sync_status(
+                    caller,
+                    AdminIndexSyncStatusArgs {
+                        logical_graph_name: graph_name.to_owned(),
+                        shard_id: shard.shard_id,
+                    },
+                    &call_status,
+                )
+                .await
+            {
+                Ok(status) => {
+                    reachable += 1;
+                    if status.converged {
+                        converged_shards += 1;
+                    }
+                }
+                Err(_) => notes.push(format!("shard {} unreachable", shard.shard_id.raw())),
+            }
+        }
+        let index_sync_converged = !shards.is_empty() && converged_shards == shards.len() as u32;
+
+        let defs = vector_index_catalog::list_vector_indexes(graph_id);
+        let unhealthy_vector_indexes = defs
+            .iter()
+            .filter(|def| def.target.is_none())
+            .map(|def| {
+                embedding_name_catalog::embedding_name(graph_id, def.embedding_name_id)
+                    .unwrap_or_else(|| format!("index {}", def.index_id))
+            })
+            .collect::<Vec<_>>();
+        if !unhealthy_vector_indexes.is_empty() {
+            notes.push(format!(
+                "{} vector index(es) have no dispatch target",
+                unhealthy_vector_indexes.len()
+            ));
+        }
+
+        Ok(GraphHealthView {
+            graph: summary,
+            reachable_shard_count: reachable,
+            index_sync_converged,
+            vector_index_count: defs.len() as u32,
+            unhealthy_vector_indexes,
+            notes,
+        })
+    }
+
     fn resolve_shard_for_backfill(
         &self,
         logical_graph_name: &str,

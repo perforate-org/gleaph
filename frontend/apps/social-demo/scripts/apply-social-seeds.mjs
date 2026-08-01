@@ -12,13 +12,15 @@ const seedsPath = process.argv[2]
   ? resolve(process.argv[2])
   : join(root, "seeds/social-seeds.json");
 const canisterName = process.argv[3] ?? "gleaph-router";
-const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
+const methodName = process.argv[4] ?? "gql_execute_batch";
 const pageSizeInput = process.env.SEED_PAGE_SIZE ?? process.argv[5];
-const pageSize = pageSizeInput === undefined ? undefined : Number(pageSizeInput);
+const pageSize =
+  pageSizeInput === undefined ? undefined : Number(pageSizeInput);
 
 let adaptiveInterCanisterPrefix;
-if (methodName === "gql_execute_idempotent_batch") {
-  const formatter = await import("../src/generated/gql_formatter/gql_formatter.js");
+if (methodName === "gql_execute_batch") {
+  const formatter =
+    await import("../src/generated/gql_formatter/gql_formatter.js");
   formatter.initSync({
     module: readFileSync(
       join(root, "src/generated/gql_formatter/gql_formatter_bg.wasm"),
@@ -28,27 +30,29 @@ if (methodName === "gql_execute_idempotent_batch") {
 }
 
 if (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize <= 0)) {
-  throw new Error("SEED_PAGE_SIZE/page size must be a positive integer when specified");
+  throw new Error(
+    "SEED_PAGE_SIZE/page size must be a positive integer when specified",
+  );
 }
 
 const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;
 
 // Map a seed GQL statement to a dependency wave.  Seeds in the same wave are
-// independent and can be dispatched inside one gql_execute_idempotent_batch
+// independent and can be dispatched inside one gql_execute_batch
 // call.  Waves are executed in numeric order so parent/dependent entities
 // (vertices before referencing edges) exist before a later wave needs them.
 function seedWave(gql) {
-  if (gql.includes('INSERT (n:User')) return 1;
-  if (gql.includes('INSERT (n:Community')) return 1;
-  if (gql.includes('INSERT (n:Topic')) return 1;
-  if (gql.includes('INSERT (n:Feed')) return 1;
-  if (gql.includes('-[:FOLLOWS')) return 2;
-  if (gql.includes('-[:MEMBER_OF')) return 2;
-  if (gql.includes('-[:POSTED')) return 3;
-  if (gql.includes('-[:REPLY_TO')) return 4;
-  if (gql.includes('-[:IN_TOPIC')) return 5;
-  if (gql.includes('-[:IN_PUBLIC_FEED')) return 6;
-  if (gql.includes('-[:IN_HOME')) return 6;
+  if (gql.includes("INSERT (n:User")) return 1;
+  if (gql.includes("INSERT (n:Community")) return 1;
+  if (gql.includes("INSERT (n:Topic")) return 1;
+  if (gql.includes("INSERT (n:Feed")) return 1;
+  if (gql.includes("-[:FOLLOWS")) return 2;
+  if (gql.includes("-[:MEMBER_OF")) return 2;
+  if (gql.includes("-[:POSTED")) return 3;
+  if (gql.includes("-[:REPLY_TO")) return 4;
+  if (gql.includes("-[:IN_TOPIC")) return 5;
+  if (gql.includes("-[:IN_PUBLIC_FEED")) return 6;
+  if (gql.includes("-[:IN_HOME")) return 6;
   // Fallback: assume unrecognised statements depend on everything and place
   // them after all structured waves.
   return 7;
@@ -157,7 +161,7 @@ const waitForIndexConvergence = async () => {
   const deadline = Date.now() + INDEX_CONVERGENCE_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const output = callRouter(
-      "admin_index_sync_status",
+      "get_graph_sync_status",
       `(record { logical_graph_name = "${escapeCandidText(graphName)}"; shard_id = 0 : nat32 })`,
     );
     if (output.includes("converged = true")) return;
@@ -165,7 +169,7 @@ const waitForIndexConvergence = async () => {
   }
   throw new Error(
     `graph-index did not converge within ${INDEX_CONVERGENCE_TIMEOUT_MS}ms for ${graphName}; ` +
-      "run admin_vertex_property_backfill_step / admin_label_backfill_step and check the index canister",
+      "run advance_backfill (kind = VertexProperty) and check the index canister",
   );
 };
 
@@ -173,10 +177,10 @@ const backfillVertexPropertyPostings = async () => {
   const graphName = process.env.GLEAPH_DEMO_GRAPH_NAME ?? "gleaph.pocket_ic";
   while (true) {
     const output = callRouter(
-      "admin_vertex_property_backfill_step",
-      `(record { logical_graph_name = "${escapeCandidText(graphName)}"; shard_id = 0 : nat32; max_vertices = 1000 : nat32 })`,
+      "advance_backfill",
+      `("${escapeCandidText(graphName)}", variant { VertexProperty }, 1000 : nat32)`,
     );
-    if (output.includes("done = true")) return;
+    if (output.includes("all_done = true")) return;
   }
 };
 
@@ -213,17 +217,15 @@ const encodeBatchBytes = (seeds) => encodeBatchArgs(seeds).byteLength;
 
 const adaptivePayloadPageSize = (waveSeeds, offset, hint) => {
   const remaining = waveSeeds.length - offset;
-  const measure = (count) => encodeBatchBytes(waveSeeds.slice(offset, offset + count));
+  const measure = (count) =>
+    encodeBatchBytes(waveSeeds.slice(offset, offset + count));
   return adaptiveInterCanisterPrefix(remaining, hint, measure);
 };
 
 const runBatchPage = (page, onProgress) => {
   let startIndex = 0;
   while (startIndex < page.length) {
-    const output = callRouter(
-      methodName,
-      encodeBatchArgs(page, startIndex),
-    );
+    const output = callRouter(methodName, encodeBatchArgs(page, startIndex));
     const nextIndex = nextIndexFrom(output);
     if (nextIndex === undefined) {
       // Router applied all items in this page in a single call.
@@ -241,16 +243,18 @@ const runBatchPage = (page, onProgress) => {
 };
 
 const RETRYABLE_PAGE_ERRORS = [
-  'insufficient liquid cycles balance',
-  'instruction budget was exhausted before the next mutation could start',
-  'call perform failed',
-  'payload_too_large',
-  'payload is too large',
-  'status 413',
+  "insufficient liquid cycles balance",
+  "instruction budget was exhausted before the next mutation could start",
+  "call perform failed",
+  "payload_too_large",
+  "payload is too large",
+  "status 413",
 ];
 
 const isRetryablePageError = (error) =>
-  RETRYABLE_PAGE_ERRORS.some((marker) => error.message.toLowerCase().includes(marker));
+  RETRYABLE_PAGE_ERRORS.some((marker) =>
+    error.message.toLowerCase().includes(marker),
+  );
 
 const runBatchPageRetryable = (page, onProgress) => {
   let attempt = page;
@@ -271,7 +275,7 @@ const runBatchPageRetryable = (page, onProgress) => {
   return 0;
 };
 
-if (methodName !== "gql_execute_idempotent_batch") {
+if (methodName !== "gql_execute_batch") {
   for (const seed of seeds) {
     const params = encodeGqlParamsBlob(seed.params);
     const candid = `("${escapeCandidText(seed.gql)}", ${candidVecBytes(params)}, "${escapeCandidText(seed.key)}")`;
@@ -281,7 +285,7 @@ if (methodName !== "gql_execute_idempotent_batch") {
 } else {
   const explicitPageSize = pageSize ?? Number.POSITIVE_INFINITY;
   // Group seeds into dependency waves so each wave can safely run inside one
-  // gql_execute_idempotent_batch call.  The caller is responsible for seed order.
+  // gql_execute_batch call.  The caller is responsible for seed order.
   const waves = new Map();
   for (const seed of seeds) {
     const wave = seedWave(seed.gql);
@@ -301,7 +305,9 @@ if (methodName !== "gql_execute_idempotent_batch") {
     const waveSeeds = Array.from(planGroups.values()).flat();
     if (waveSeeds.length === 0) continue;
     if (wave > 1) {
-      process.stderr.write(`[seeds] Waiting for graph-index convergence before wave ${wave}\n`);
+      process.stderr.write(
+        `[seeds] Waiting for graph-index convergence before wave ${wave}\n`,
+      );
       await waitForIndexConvergence();
     }
     renderProgress(wave, 0, waveSeeds.length);
@@ -343,7 +349,9 @@ if (methodName !== "gql_execute_idempotent_batch") {
     if (wave === 1) {
       // Replay canonical vertex properties into graph-index so every later MATCH anchor
       // resolves, independent of the batch drain's synchronous flush.
-      process.stderr.write("[seeds] Backfilling vertex property postings before dependent edge waves\n");
+      process.stderr.write(
+        "[seeds] Backfilling vertex property postings before dependent edge waves\n",
+      );
       await backfillVertexPropertyPostings();
     }
   }

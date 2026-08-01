@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn init_preflight_rejects_invalid_bootstrap_before_elevating_valid_admin() {
-        // Mirrors the order in `canister::init`: the auth-owned preflight runs before any Router
+        // Mirrors the order in `lib.rs::init`: the auth-owned preflight runs before any Router
         // stable state is cleared/written, so an anonymous issuer is rejected even when a valid
         // initial admin is supplied — without relying on IC trap rollback.
         let valid = Principal::from_slice(&[0xA4; 29]);

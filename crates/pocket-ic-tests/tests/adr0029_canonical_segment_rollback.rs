@@ -23,11 +23,11 @@ use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, admin_intern_vertex_label,
-    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
+    FederationEnv, ensure_edge_label, ensure_vertex_label,
+    gql_execute_as_admin, gql_query_as_admin, install_single_shard_federation,
 };
 
-/// Issue a router `gql_execute_idempotent` that must NOT commit because the graph
+/// Issue a router `gql_execute` that must NOT commit because the graph
 /// shard traps inside its DML atomic section. Asserting the surfaced error carries
 /// the "DML atomic section" marker proves execution actually entered the canonical
 /// segment (a mid-segment trap), not a pre-execution parse/plan rejection that
@@ -36,13 +36,13 @@ fn gql_execute_expect_segment_trap(env: &FederationEnv, query: &str, client_muta
     let outcome = env.pic.update_call(
         env.router,
         env.admin,
-        "gql_execute_idempotent",
+        "gql_execute",
         Encode!(
             &query.to_string(),
             &Vec::<u8>::new(),
             &client_mutation_key.to_string()
         )
-        .expect("encode gql_execute_idempotent"),
+        .expect("encode gql_execute"),
     );
     let message = match outcome {
         Ok(reply) => match Decode!(&reply, Result<GqlQueryResult, RouterError>) {
@@ -51,7 +51,7 @@ fn gql_execute_expect_segment_trap(env: &FederationEnv, query: &str, client_muta
                 "trapping DML must not commit, got row_count {}",
                 result.row_count
             ),
-            Err(err) => panic!("decode gql_execute_idempotent: {err}"),
+            Err(err) => panic!("decode gql_execute: {err}"),
         },
         // A graph trap that propagates as a raw call rejection also carries the
         // canister trap message.
@@ -74,15 +74,15 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // Pre-intern the orphan label whose only writer is the rolled-back segment.
     // Catalog interning lives in the router independently of the graph shard's
     // canonical state, so the verification query stays resolvable after rollback.
-    admin_intern_vertex_label(&env, "AttachedHub");
-    admin_intern_vertex_label(&env, "TrapSink");
-    admin_intern_edge_label(&env, "TrapRel");
-    admin_intern_vertex_label(&env, "RollbackOrphan");
-    admin_intern_vertex_label(&env, "CtrlOrphan");
+    ensure_vertex_label(&env, "AttachedHub");
+    ensure_vertex_label(&env, "TrapSink");
+    ensure_edge_label(&env, "TrapRel");
+    ensure_vertex_label(&env, "RollbackOrphan");
+    ensure_vertex_label(&env, "CtrlOrphan");
 
     // Setup: an attached hub (a vertex with an out-edge), so a plain `DELETE` of
     // it traps inside the segment.
-    let _ = gql_execute_idempotent_as_admin(
+    let _ = gql_execute_as_admin(
         &env,
         "INSERT (:AttachedHub)-[:TrapRel]->(:TrapSink)",
         "adr0029_setup_attached",
@@ -93,7 +93,7 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // Vacuity guard: a committed INSERT of the same orphan label persists and is
     // observable by label scan. This proves the write mechanism is real, so the
     // trap case's empty-after result is attributable to rollback.
-    let _ = gql_execute_idempotent_as_admin(&env, "INSERT (:CtrlOrphan)", "adr0029_ctrl_commit");
+    let _ = gql_execute_as_admin(&env, "INSERT (:CtrlOrphan)", "adr0029_ctrl_commit");
     assert_eq!(
         count(&env, "MATCH (n:CtrlOrphan) RETURN n"),
         1,

@@ -42,7 +42,7 @@ fn router_graph_id(env: &FederationEnv) -> GraphId {
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&GRAPH_NAME.to_string()).expect("encode lookup_graph_id"),
         )
         .expect("lookup_graph_id call");
@@ -127,7 +127,7 @@ fn partition_health_summary(
         .query_call(
             vector,
             env.router,
-            "admin_vector_partition_health",
+            "get_vector_partition_health",
             Encode!(&INDEX_ID).expect("encode health args"),
         )
         .expect("partition health call");
@@ -147,7 +147,7 @@ fn health_step(
         .query_call(
             vector,
             env.router,
-            "admin_vector_partition_health_step",
+            "scan_partition_health",
             Encode!(&INDEX_ID, &cursor, &max_pages).expect("encode step args"),
         )
         .expect("health step call");
@@ -203,7 +203,7 @@ fn rebuild_status(env: &FederationEnv, vector: Principal) -> VectorRebuildStatus
         .query_call(
             vector,
             env.router,
-            "admin_vector_rebuild_status",
+            "get_vector_rebuild_status",
             Encode!(&INDEX_ID).expect("encode status args"),
         )
         .expect("status call");
@@ -289,7 +289,7 @@ fn centroid_cache_endpoints_roundtrip_and_guard() {
             .query_call(
                 vector,
                 env.router,
-                "admin_vector_centroid_cache_status",
+                "get_vector_centroid_cache",
                 Encode!().expect("encode status"),
             )
             .expect("cache status call");
@@ -310,7 +310,7 @@ fn centroid_cache_endpoints_roundtrip_and_guard() {
             .update_call(
                 vector,
                 env.router,
-                "admin_vector_centroid_cache_warmup",
+                "warm_vector_centroid_cache",
                 Encode!(&INDEX_ID).expect("encode warmup"),
             )
             .expect("cache warmup call");
@@ -333,7 +333,7 @@ fn centroid_cache_endpoints_roundtrip_and_guard() {
             .update_call(
                 vector,
                 env.router,
-                "admin_vector_centroid_cache_clear",
+                "clear_vector_centroid_cache",
                 Encode!().expect("encode clear"),
             )
             .expect("cache clear call");
@@ -350,7 +350,7 @@ fn centroid_cache_endpoints_roundtrip_and_guard() {
     let rejected = env.pic.query_call(
         vector,
         env.admin,
-        "admin_vector_centroid_cache_status",
+        "get_vector_centroid_cache",
         Encode!().expect("encode status"),
     );
     assert!(

@@ -23,11 +23,11 @@ use std::collections::BTreeSet;
 use crate::facade::stable::graph_catalog::lookup_graph_id;
 use crate::facade::store::registry_invariants::assert_registry_invariants;
 
-fn graph_principal(byte: u8) -> Principal {
+pub(crate) fn graph_principal(byte: u8) -> Principal {
     Principal::self_authenticating([byte; 32])
 }
 
-fn test_init_args() -> RouterInitArgs {
+pub(crate) fn test_init_args() -> RouterInitArgs {
     RouterInitArgs {
         issuing_principal: Principal::anonymous(),
         initial_admins: vec![],
@@ -3130,7 +3130,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
         .expect("terminal replay projection is idempotent");
 }
 
-mod graph_type_catalog_vocabulary {
+pub(crate) mod graph_type_catalog_vocabulary {
     use super::*;
     use crate::facade::stable::graph_type_catalog::apply_catalog_statement_block;
     use gleaph_gql::ast::StatementBlock;
@@ -3255,7 +3255,7 @@ mod graph_type_catalog_vocabulary {
 
     // --- ADR 0031 Slice 4: vector dispatch activation + per-graph readiness ---
 
-    fn setup_one_shard_graph(store: &RouterStore, admin: Principal) -> GraphId {
+    pub(crate) fn setup_one_shard_graph(store: &RouterStore, admin: Principal) -> GraphId {
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(store, admin, "tenant.main");
         futures::executor::block_on(store.admin_register_shard(
@@ -3274,7 +3274,7 @@ mod graph_type_catalog_vocabulary {
     /// Register a vector-index def for `tenant.main` pointing at `target` so the readiness predicate
     /// has a resolved graph target to match shard attachments against (ADR 0031 Slice 4). The
     /// embedding name `vec{index_id}` is interned so the public `vector_search` can resolve by name.
-    fn register_vector_def(graph_id: GraphId, index_id: u32, target: Principal) {
+    pub(crate) fn register_vector_def(graph_id: GraphId, index_id: u32, target: Principal) {
         let name = format!("vec{index_id}");
         let name_id =
             crate::facade::stable::embedding_name_catalog::intern_embedding_name(graph_id, &name)
@@ -3341,139 +3341,6 @@ mod graph_type_catalog_vocabulary {
         // Flipping the flag back off re-closes the gate (reversible).
         crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(false);
         assert!(!store.graph_vector_dispatch_ready(graph_id));
-    }
-
-    fn router_search_args(index_name: &str, top_k: u32) -> (String, String, Vec<u8>, u32) {
-        (
-            "tenant.main".into(),
-            index_name.into(),
-            vec![0u8; 16 * 4],
-            top_k,
-        )
-    }
-
-    #[test]
-    fn router_vector_search_index_name_is_graph_scoped() {
-        let store = RouterStore::new();
-        store.init_from_args(&test_init_args());
-        let admin = Principal::from_slice(&[1; 29]);
-        let graph_a = setup_one_shard_graph(&store, admin);
-        // register_vector_def interns the embedding name "vec1" under graph A only.
-        register_vector_def(graph_a, 1, graph_principal(7));
-
-        // A second graph exists but never registers the name: the same name must not resolve
-        // from it. A global (graph-agnostic) name lookup would wrongly succeed here.
-        register_test_graph(&store, admin, "tenant.b");
-        let err = futures::executor::block_on(crate::canister::vector_search(
-            "tenant.b".into(),
-            "vec1".into(),
-            vec![0u8; 16 * 4],
-            10,
-        ))
-        .expect_err("name must not leak across graphs");
-        assert!(matches!(err, RouterError::NotFound(_)));
-    }
-
-    #[test]
-    fn router_vector_search_blocks_until_activation_ready() {
-        let store = RouterStore::new();
-        store.init_from_args(&test_init_args());
-        let admin = Principal::from_slice(&[1; 29]);
-        let graph_id = setup_one_shard_graph(&store, admin);
-        register_vector_def(graph_id, 1, graph_principal(7));
-
-        // Activation off: the public read path fails closed even though a target exists.
-        let (graph, name, query, top_k) = router_search_args("vec1", 10);
-        let err =
-            futures::executor::block_on(crate::canister::vector_search(graph, name, query, top_k))
-                .expect_err("blocked while not activated");
-        assert!(matches!(
-            err,
-            RouterError::VectorDispatchActivationBlocked(_)
-        ));
-
-        // Enable the global flag and vector-attach the shard to the def target -> gate satisfied. The
-        // native `vector_sync` stub returns empty hits; the point is that gating passed and the call
-        // needs no graph shard-local state beyond the readiness gate.
-        crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(true);
-        futures::executor::block_on(store.admin_attach_vector_index_shard(
-            admin,
-            AdminAttachVectorIndexShardArgs {
-                logical_graph_name: "tenant.main".into(),
-                shard_id: ShardId::new(0),
-                vector_index_canister: graph_principal(7),
-            },
-        ))
-        .expect("attach vector index shard");
-        let (graph, name, query, top_k) = router_search_args("vec1", 10);
-        let result =
-            futures::executor::block_on(crate::canister::vector_search(graph, name, query, top_k))
-                .expect("ready search routes to target");
-        assert!(result.hits.is_empty());
-    }
-
-    #[test]
-    fn router_vector_search_rejects_missing_index_and_target() {
-        let store = RouterStore::new();
-        store.init_from_args(&test_init_args());
-        let admin = Principal::from_slice(&[1; 29]);
-        let graph_id = setup_one_shard_graph(&store, admin);
-
-        // No definition for the requested index name -> NotFound.
-        let (graph, name, query, top_k) = router_search_args("vec9", 10);
-        let err =
-            futures::executor::block_on(crate::canister::vector_search(graph, name, query, top_k))
-                .expect_err("missing index");
-        assert!(matches!(err, RouterError::NotFound(_)));
-
-        // A registered definition with no target can never dispatch -> Conflict.
-        let name_id =
-            crate::facade::stable::embedding_name_catalog::intern_embedding_name(graph_id, "vec5")
-                .expect("intern embedding name");
-        crate::facade::stable::vector_index_catalog::register_vector_index(
-            graph_id,
-            5,
-            name_id,
-            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
-            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
-            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
-            16,
-            None,
-            false,
-        )
-        .expect("register targetless def");
-        let (graph, name, query, top_k) = router_search_args("vec5", 10);
-        let err =
-            futures::executor::block_on(crate::canister::vector_search(graph, name, query, top_k))
-                .expect_err("no target");
-        assert!(matches!(err, RouterError::Conflict(_)));
-    }
-
-    #[test]
-    fn router_vector_search_prevalidates_request_shape() {
-        let store = RouterStore::new();
-        store.init_from_args(&test_init_args());
-        let admin = Principal::from_slice(&[1; 29]);
-        let graph_id = setup_one_shard_graph(&store, admin);
-        // register_vector_def registers dims = 16, so the F32 stride is 64 bytes.
-        register_vector_def(graph_id, 1, graph_principal(7));
-
-        // top_k = 0 -> InvalidArgument (not a downstream Internal).
-        let (graph, name, query, top_k) = router_search_args("vec1", 0);
-        let err =
-            futures::executor::block_on(crate::canister::vector_search(graph, name, query, top_k))
-                .expect_err("top_k 0");
-        assert!(matches!(err, RouterError::InvalidArgument(_)));
-
-        // Wrong byte length (dims are inferred from the def) -> InvalidArgument.
-        let err = futures::executor::block_on(crate::canister::vector_search(
-            "tenant.main".into(),
-            "vec1".into(),
-            vec![0u8; 16 * 4 - 4],
-            10,
-        ))
-        .expect_err("byte length mismatch");
-        assert!(matches!(err, RouterError::InvalidArgument(_)));
     }
 
     #[test]
@@ -4914,7 +4781,9 @@ mod register_graph_provisioning_guard {
         register_test_graph(&store, admin, "tenant.main");
 
         // None -> data-plane resolution succeeds.
-        store.resolve_graph_id("tenant.main").expect("None resolves");
+        store
+            .resolve_graph_id("tenant.main")
+            .expect("None resolves");
         store
             .resolve_graph_id_authorized("tenant.main", admin)
             .expect("None resolves authorized");
@@ -4929,7 +4798,9 @@ mod register_graph_provisioning_guard {
                 },
             )
             .expect("set pending");
-        let err = store.resolve_graph_id("tenant.main").expect_err("pending blocked");
+        let err = store
+            .resolve_graph_id("tenant.main")
+            .expect_err("pending blocked");
         assert!(matches!(err, RouterError::GraphUnavailable));
         let err = store
             .resolve_graph_id_authorized("tenant.main", admin)
@@ -4947,14 +4818,18 @@ mod register_graph_provisioning_guard {
                 },
             )
             .expect("set failed");
-        let err = store.resolve_graph_id("tenant.main").expect_err("failed blocked");
+        let err = store
+            .resolve_graph_id("tenant.main")
+            .expect_err("failed blocked");
         assert!(matches!(err, RouterError::GraphUnavailable));
 
         // Pending -> None transition restores resolvability (the Slice B ack path).
         store
             .admin_set_graph_provisioning_state(admin, "tenant.main", ProvisioningState::None)
             .expect("set none");
-        store.resolve_graph_id("tenant.main").expect("None resolves again");
+        store
+            .resolve_graph_id("tenant.main")
+            .expect("None resolves again");
 
         // Operators still see the entry while blocked (get_graph path is not gated).
         store
@@ -5010,7 +4885,10 @@ mod register_graph_provisioning_guard {
             .expect("original entry survives");
         assert_eq!(entry.canister_id, Principal::management_canister());
         assert_eq!(
-            store.list_shards_for_graph("tenant.main").expect("shards").len(),
+            store
+                .list_shards_for_graph("tenant.main")
+                .expect("shards")
+                .len(),
             1,
             "the original shard registration survives the rejected duplicate"
         );
@@ -5035,8 +4913,93 @@ mod register_graph_provisioning_guard {
         .expect_err("wrong shard id rejected");
         assert!(matches!(err, RouterError::Conflict(_)));
         assert!(
-            store.list_shards_for_graph("tenant.main").expect("shards").is_empty(),
+            store
+                .list_shards_for_graph("tenant.main")
+                .expect("shards")
+                .is_empty(),
             "no shard is registered when allocation does not match"
         );
+    }
+}
+
+mod graph_summary_views {
+    use super::*;
+    use gleaph_graph_kernel::federation::IndexSyncStatus;
+
+    fn setup_one_shard(store: &RouterStore, admin: Principal) {
+        register_test_graph(store, admin, "tenant.main");
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_principal(1),
+                index_canister: graph_principal(2),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard 0");
+    }
+
+    #[test]
+    fn list_graph_summaries_are_registry_local() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        setup_one_shard(&store, admin);
+        register_test_graph(&store, admin, "tenant.b");
+
+        let summaries = store
+            .list_graph_summaries(admin)
+            .expect("registry-local summaries");
+        assert_eq!(summaries.len(), 2);
+        let main = summaries
+            .iter()
+            .find(|s| s.graph_name == "tenant.main")
+            .expect("tenant.main summary");
+        assert_eq!(main.shard_count, 1);
+        assert_eq!(main.status, GraphStatus::Active);
+        assert_eq!(main.provisioning_state, ProvisioningState::None);
+        let b = summaries
+            .iter()
+            .find(|s| s.graph_name == "tenant.b")
+            .expect("tenant.b summary");
+        assert_eq!(b.shard_count, 0);
+    }
+
+    #[test]
+    fn graph_health_view_is_best_effort_with_notes_and_summary() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        setup_one_shard(&store, admin);
+
+        // Native builds: the per-shard status forward fails closed -> an unreachable note, not an
+        // error, and the summary rows are still populated.
+        let health = futures::executor::block_on(store.graph_health_view(
+            admin,
+            "tenant.main",
+            crate::graph_client::index_sync_status,
+        ))
+        .expect("health view is best-effort");
+        assert_eq!(health.graph.graph_name, "tenant.main");
+        assert_eq!(health.graph.shard_count, 1);
+        assert_eq!(health.reachable_shard_count, 0);
+        assert!(!health.index_sync_converged);
+        assert_eq!(health.vector_index_count, 0);
+        assert!(health.unhealthy_vector_indexes.is_empty());
+        assert_eq!(health.notes.len(), 1);
+        assert!(health.notes[0].contains("unreachable"));
+
+        // A converging forward reports reachable + converged with no notes.
+        let health =
+            futures::executor::block_on(store.graph_health_view(admin, "tenant.main", |_| async {
+                Ok(IndexSyncStatus::new(0, 0))
+            }))
+            .expect("health view with converging shard");
+        assert_eq!(health.reachable_shard_count, 1);
+        assert!(health.index_sync_converged);
+        assert!(health.notes.is_empty());
     }
 }

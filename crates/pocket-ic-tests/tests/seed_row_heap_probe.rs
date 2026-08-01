@@ -14,7 +14,7 @@ use gleaph_graph_kernel::plan_exec::{
     SeedVertexBinding,
 };
 use gleaph_pocket_ic_tests::{
-    SOURCE_SHARD, admin_intern_property, e2e_insert_vertex_with_property,
+    SOURCE_SHARD, ensure_property, e2e_insert_vertex_with_property,
     federation_graph_element_id_encoding_key_bytes, install_single_shard_federation,
 };
 use std::rc::Rc;
@@ -71,7 +71,7 @@ fn complete_seed_rows_stop_at_message_or_heap_boundary() {
     let env = install_single_shard_federation();
     let plan_blob = probe_plan_blob();
     let element_id_encoding_key = federation_graph_element_id_encoding_key_bytes(&env);
-    let property_id = admin_intern_property(&env, "probe_key");
+    let property_id = ensure_property(&env, "probe_key");
     let vertex = e2e_insert_vertex_with_property(&env, env.graph_source, property_id.raw(), 1);
 
     // The final sizes intentionally approach the IC message ceiling. If message admission stops

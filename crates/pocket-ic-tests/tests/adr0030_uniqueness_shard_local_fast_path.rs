@@ -4,7 +4,7 @@
 //! `ShardLocalGlobal` strategy and enforced entirely inside that owning shard's local unique table
 //! (`GRAPH_LOCAL_UNIQUE_VALUES`), bypassing the federated Router reservation / unique-effect outbox
 //! path while keeping graph-wide semantics. These tests drive the real public ingress (Candid →
-//! `gql_execute_idempotent` / `gql_query`) and prove the end-to-end fast-path behaviour the
+//! `gql_execute` / `gql_query`) and prove the end-to-end fast-path behaviour the
 //! library unit tests cannot:
 //!   - a constrained INSERT is enforced and a same-value duplicate is rejected;
 //!   - a DELETE frees the value by owner match, so the same value inserts again (and re-duplicates);
@@ -15,8 +15,8 @@
 use candid::Encode;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_execute_idempotent_result_as_admin, gql_query_as_admin, install_single_shard_federation,
+    FederationEnv, gql_execute_as_admin, gql_execute_as_admin_expect_err,
+    gql_execute_result_as_admin, gql_query_as_admin, install_single_shard_federation,
     run_router_recovery_timer, wasm_bytes,
 };
 
@@ -60,12 +60,12 @@ fn upgrade_federation(env: &FederationEnv) {
 fn shard_local_global_enforces_and_frees_on_delete() {
     let env = install_single_shard_federation();
 
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &create_for(CONSTRAINT, LABEL, PROPERTY),
         "s10-en-create",
     );
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-en-ins",
@@ -77,7 +77,7 @@ fn shard_local_global_enforces_and_frees_on_delete() {
     );
 
     // The local fast path enforces graph-wide uniqueness: a same-value duplicate is rejected.
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-en-dup",
@@ -88,7 +88,7 @@ fn shard_local_global_enforces_and_frees_on_delete() {
     );
 
     // Deleting the owner frees its value in the local table (owner-matched release).
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &delete(LABEL, PROPERTY, "a@example.com"),
         "s10-en-del",
@@ -100,12 +100,12 @@ fn shard_local_global_enforces_and_frees_on_delete() {
     );
 
     // The freed value is reusable, and re-claiming it re-arms enforcement.
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-en-reins",
     );
-    let redup = gql_execute_idempotent_as_admin_expect_err(
+    let redup = gql_execute_as_admin_expect_err(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-en-redup",
@@ -123,21 +123,21 @@ fn shard_local_global_enforces_and_frees_on_delete() {
 fn shard_local_global_drop_drains_local_table_and_allows_recreate() {
     let env = install_single_shard_federation();
 
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &create_for(CONSTRAINT, LABEL, PROPERTY),
         "s10-dr-create",
     );
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-dr-ins",
     );
 
-    gql_execute_idempotent_as_admin(&env, &drop_for(CONSTRAINT), "s10-dr-drop");
+    gql_execute_as_admin(&env, &drop_for(CONSTRAINT), "s10-dr-drop");
 
     // Before the drain completes the tombstone holds: re-CREATE is rejected (Dropping).
-    let blocked = gql_execute_idempotent_as_admin_expect_err(
+    let blocked = gql_execute_as_admin_expect_err(
         &env,
         &create_for(CONSTRAINT, OTHER_LABEL, "code"),
         "s10-dr-recreate-blocked",
@@ -150,7 +150,7 @@ fn shard_local_global_drop_drains_local_table_and_allows_recreate() {
     // The drain purges the owning shard's local table; once empty, the record reaches Removed.
     run_router_recovery_timer(&env);
 
-    let recreated = gql_execute_idempotent_result_as_admin(
+    let recreated = gql_execute_result_as_admin(
         &env,
         &create_for(CONSTRAINT, OTHER_LABEL, "code"),
         "s10-dr-recreate-ok",
@@ -161,8 +161,8 @@ fn shard_local_global_drop_drains_local_table_and_allows_recreate() {
     );
 
     // The re-created constraint enforces independently.
-    gql_execute_idempotent_as_admin(&env, &insert(OTHER_LABEL, "code", "x"), "s10-dr-new-ins");
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    gql_execute_as_admin(&env, &insert(OTHER_LABEL, "code", "x"), "s10-dr-new-ins");
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert(OTHER_LABEL, "code", "x"),
         "s10-dr-new-dup",
@@ -179,12 +179,12 @@ fn shard_local_global_drop_drains_local_table_and_allows_recreate() {
 fn shard_local_global_survives_upgrade() {
     let env = install_single_shard_federation();
 
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &create_for(CONSTRAINT, LABEL, PROPERTY),
         "s10-up-create",
     );
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-up-ins",
@@ -193,7 +193,7 @@ fn shard_local_global_survives_upgrade() {
     upgrade_federation(&env);
 
     // The local value survived the upgrade: a duplicate is still rejected.
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-up-dup",
@@ -204,17 +204,17 @@ fn shard_local_global_survives_upgrade() {
     );
 
     // Release still works post-upgrade: delete frees the value, which is then insertable again.
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &delete(LABEL, PROPERTY, "a@example.com"),
         "s10-up-del",
     );
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-up-reins",
     );
-    let redup = gql_execute_idempotent_as_admin_expect_err(
+    let redup = gql_execute_as_admin_expect_err(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-up-redup",

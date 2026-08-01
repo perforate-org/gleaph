@@ -63,6 +63,10 @@ pub struct RegisterGraphArgs {
     pub graph_name: String,
     pub owner: Principal,
     pub admins: BTreeSet<Principal>,
+    /// Dev mode: whether this graph is the HOME graph for callers without an explicit `USE GRAPH`
+    /// (ADR 0011). The legacy home designation is a client-visible graph property, so it stays in
+    /// the intent; federation topology (shards, canister ids) stays internal.
+    pub is_home: bool,
     /// Dev mode: the caller-installed shard canisters (one graph + index canister per shard).
     pub shards: Vec<RegisterGraphShard>,
     /// Provisioned mode: resources requested from the configured Provision canister.
@@ -1401,6 +1405,29 @@ pub enum BackfillKind {
     VertexProperty,
     Edge,
     LabelStats,
+}
+
+/// One shard's advance outcome within `advance_backfill` (ADR 0056 §4).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct BackfillShardAdvance {
+    pub shard_id: ShardId,
+    pub done: bool,
+}
+
+/// Graph-level result of one `advance_backfill` call (one bounded unit per shard; the Router
+/// iterates shards internally, so shard ids are not exposed at L2 as arguments).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct AdvanceBackfillResult {
+    pub all_done: bool,
+    pub shards: Vec<BackfillShardAdvance>,
+}
+
+/// One shard's backfill status in the kind-keyed `list_backfill_status` view (ADR 0056 §4).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub struct BackfillShardStatus {
+    pub kind: BackfillKind,
+    pub shard_id: ShardId,
+    pub done: bool,
 }
 
 /// Operator recovery: clear a stuck `in_progress` claim on one shard's backfill

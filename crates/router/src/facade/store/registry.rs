@@ -725,6 +725,33 @@ impl RouterStore {
         Ok(out)
     }
 
+    /// Registry-local `GraphSummary` rows for every graph visible to `caller` (ADR 0056 §7).
+    /// No cross-canister calls, so UI/CLI polling stays cheap.
+    pub(crate) fn list_graph_summaries(
+        &self,
+        caller: Principal,
+    ) -> Result<Vec<crate::types::GraphSummary>, RouterError> {
+        use crate::types::GraphSummary;
+
+        let graph_ids = self.list_visible_graph_ids(caller)?;
+        let mut out = Vec::with_capacity(graph_ids.len());
+        for graph_id in graph_ids {
+            let entry = graph_catalog::graph_entry(graph_id).ok_or_else(|| {
+                RouterError::InvalidState(format!("graph {graph_id:?} missing registry entry"))
+            })?;
+            let shard_count = graph_catalog::list_shards_for_graph_id(graph_id)?.len() as u32;
+            out.push(GraphSummary {
+                graph_id,
+                graph_name: entry.graph_name,
+                status: entry.status,
+                provisioning_state: entry.provisioning_state,
+                shard_count,
+                updated_at_ns: entry.updated_at_ns,
+            });
+        }
+        Ok(out)
+    }
+
     /// Resolve HOME graph for `caller` (ADR 0011 §1.3).
     ///
     /// Prefer exactly one visible graph with `is_home`; otherwise fall back to the sole

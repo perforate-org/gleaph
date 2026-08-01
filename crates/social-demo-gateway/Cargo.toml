@@ -11,9 +11,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 candid.workspace = true
 gleaph-gql.workspace = true
-gleaph-cdk.workspace = true
 gleaph-gql-ic.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-prepared-api.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 serde.workspace = true

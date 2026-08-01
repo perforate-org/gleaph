@@ -1,4 +1,8 @@
 //! Gleaph router canister — federation control plane (graph registry, shard registry).
+//!
+//! This crate root keeps only canister bootstrap (`init` / `post_upgrade`), the module
+//! declarations, and the Candid export. The public surface lives in the [`api`] layer modules
+//! (`client` / `control` / `federation`) per ADR 0056 §1.
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -6,9 +10,9 @@ mod bench;
 #[cfg(feature = "pocket-ic-e2e")]
 mod test_fault;
 
+mod api;
 mod batch_wave;
 mod bulk_ingest_finalize;
-mod canister;
 mod constraint_ddl;
 mod constraint_drop;
 mod edge_backfill;
@@ -65,11 +69,12 @@ pub use facade::store::RouterStore;
 pub use init::{RouterInitArgs, RouterUpgradeArgs};
 pub use state::RouterError;
 
-use candid::{Encode, Principal};
-use ic_cdk_macros::{init, post_upgrade, query, update};
+#[cfg(test)]
+use candid::Decode;
+use candid::Principal;
+use ic_cdk_macros::{init, post_upgrade};
 
-use crate::provisioning::sender::send_accept_envelope;
-use crate::types::RouterOutboundError;
+use crate::facade::auth;
 
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
@@ -83,1439 +88,206 @@ fn current_instruction_counter() -> u64 {
 
 #[init]
 fn init(args: RouterInitArgs) {
-    canister::init(args);
+    // Preflight: reject invalid bootstrap principals before clearing/writing any Router stable
+    // state, so a failed init never mutates state and never depends on IC trap rollback.
+    if let Err(e) =
+        auth::validate_bootstrap_principals(args.issuing_principal, &args.initial_admins)
+    {
+        ic_cdk::trap(e.to_string());
+    }
+    RouterStore::new().init_from_args(&args);
+    if let Err(e) = auth::bootstrap_canister_auth(args.issuing_principal, &args.initial_admins) {
+        ic_cdk::trap(e.to_string());
+    }
+    if let Err(e) = crate::init::validate_provision_principal(&args.provision_canister) {
+        ic_cdk::trap(format!("init: {e}"));
+    }
+    crate::provisioning::config::set(args.provision_canister);
+    crate::facade::stable::provision_config::save_provision_runtime_config(
+        &crate::provisioning::config::ProvisionRuntimeConfig {
+            provision_canister: args.provision_canister,
+        },
+    );
     // ADR 0029 Phase 4: arm the autonomous saga recovery driver (no-op until there is work).
-    recovery::arm_if_needed();
+    crate::recovery::arm_if_needed();
 }
 
 #[post_upgrade]
 fn post_upgrade(args: Option<RouterUpgradeArgs>) {
-    canister::post_upgrade(args.unwrap_or_default());
+    let args = args.unwrap_or_default();
+    let durable = crate::facade::stable::provision_config::load_provision_runtime_config();
+    let provision_canister =
+        match resolve_provision_canister_for_upgrade(args.provision_canister, &durable) {
+            Ok(p) => p,
+            Err(e) => ic_cdk::trap(format!("post_upgrade: {e}")),
+        };
+    crate::provisioning::config::set(provision_canister);
+
+    // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
+    // persisted across the upgrade still converge (ADR 0029 Phase 4).
+    crate::recovery::arm_if_needed();
     facade::stable::graph_type_catalog::rebuild_caches_after_upgrade();
     prepared::rebuild_prepared_caches_after_upgrade();
 }
 
-#[query]
-fn whoami() -> Principal {
-    canister::whoami()
-}
-
-#[query]
-fn my_role() -> Result<String, RouterError> {
-    canister::my_role()
-}
-
-#[update]
-fn grant_role(args: types::GrantRoleArgs) -> Result<(), RouterError> {
-    canister::grant_role(args)
-}
-
-#[query]
-fn get_graph(
-    graph_name: String,
-) -> Result<gleaph_gql_ic::graph_registry::GraphRegistryEntry, RouterError> {
-    canister::get_graph(graph_name)
-}
-
-/// Registry-local summary rows for every graph visible to the caller (ADR 0056 §7).
-#[query]
-fn list_graphs() -> Result<Vec<types::GraphSummary>, RouterError> {
-    canister::list_graphs()
-}
-
-/// Intent-based graph creation (ADR 0056 §6 Slice A): dev mode registers the graph and its
-/// shards synchronously; provisioned mode is `NotImplemented` until Slice B.
-#[update]
-async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterError> {
-    canister::register_graph(args).await
-}
-
-#[query]
-fn resolve_shard(
-    logical_graph_name: String,
-    shard_id: types::ShardId,
-) -> Result<types::ShardRegistryEntry, RouterError> {
-    canister::resolve_shard(logical_graph_name, shard_id)
-}
-
-#[query]
-fn lookup_graph_id(graph_name: String) -> Result<gleaph_graph_kernel::entry::GraphId, RouterError> {
-    canister::lookup_graph_id(graph_name)
-}
-
-#[query]
-fn graph_element_id_encoding_key(logical_graph_name: String) -> Result<[u8; 16], RouterError> {
-    canister::graph_element_id_encoding_key(logical_graph_name)
-}
-
-#[query]
-fn list_shards_for_graph(
-    logical_graph_name: String,
-) -> Result<Vec<types::ShardRegistryEntry>, RouterError> {
-    canister::list_shards_for_graph(logical_graph_name)
-}
-
-#[query]
-fn indexed_property_catalog(
-    logical_graph_name: String,
-) -> Result<gleaph_graph_kernel::index::IndexedPropertyCatalog, RouterError> {
-    canister::indexed_property_catalog(logical_graph_name)
-}
-
-#[query]
-fn lookup_vertex_label_id(
-    logical_graph_name: String,
-    name: String,
-) -> Result<types::VertexLabelId, RouterError> {
-    canister::lookup_vertex_label_id(logical_graph_name, name)
-}
-
-#[query]
-fn lookup_edge_label_id(
-    logical_graph_name: String,
-    name: String,
-) -> Result<types::EdgeLabelId, RouterError> {
-    canister::lookup_edge_label_id(logical_graph_name, name)
-}
-
-#[query]
-fn lookup_property_id(
-    logical_graph_name: String,
-    name: String,
-) -> Result<types::PropertyId, RouterError> {
-    canister::lookup_property_id(logical_graph_name, name)
-}
-
-#[query]
-fn reverse_vertex_label_name(
-    logical_graph_name: String,
-    label_id: types::VertexLabelId,
-) -> Result<String, RouterError> {
-    canister::reverse_vertex_label_name(logical_graph_name, label_id)
-}
-
-#[query]
-fn reverse_edge_label_name(
-    logical_graph_name: String,
-    label_id: types::EdgeLabelId,
-) -> Result<String, RouterError> {
-    canister::reverse_edge_label_name(logical_graph_name, label_id)
-}
-
-#[query]
-fn reverse_property_name(
-    logical_graph_name: String,
-    property_id: types::PropertyId,
-) -> Result<String, RouterError> {
-    canister::reverse_property_name(logical_graph_name, property_id)
-}
-
-#[update]
-fn admin_update_graph_status(
-    graph_name: String,
-    status: gleaph_gql_ic::graph_registry::GraphStatus,
-    version: u64,
-) -> Result<(), RouterError> {
-    canister::admin_update_graph_status(graph_name, status, version)
-}
-
-#[update]
-fn unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
-    canister::unregister_graph(logical_graph_name)
-}
-
-#[update]
-async fn admin_register_shard(args: types::AdminRegisterShardArgs) -> Result<(), RouterError> {
-    canister::admin_register_shard(args).await
-}
-
-#[update]
-async fn admin_unregister_shard(
-    logical_graph_name: String,
-    shard_id: types::ShardId,
-) -> Result<(), RouterError> {
-    canister::admin_unregister_shard(logical_graph_name, shard_id).await
-}
-
-/// Read-only oracle: verify router registry denormalization invariants (`Role::Admin`).
-#[query]
-fn admin_check_registry_invariants() -> Result<(), RouterError> {
-    canister::admin_check_registry_invariants()
-}
-
-/// Evict expired client-mutation idempotency records (`Role::Admin`; call in a loop).
-#[update]
-fn admin_sweep_expired_client_mutation_keys(
-    args: types::AdminSweepMutationKeysStepArgs,
-) -> Result<types::AdminSweepMutationKeysStepResult, RouterError> {
-    canister::admin_sweep_expired_client_mutation_keys(args)
-}
-
-/// Debug-only: dump the in-memory batch instruction log. Requires `batch-instr-log` feature.
-#[query]
-fn admin_take_batch_instr_log(offset: u32, limit: u32) -> Vec<String> {
-    crate::instr_log::dump()
-        .into_iter()
-        .skip(offset as usize)
-        .take(limit.clamp(1, 10_000) as usize)
-        .collect()
-}
-
-#[update]
-fn ensure_vertex_label(
-    logical_graph_name: String,
-    name: String,
-) -> Result<types::VertexLabelId, RouterError> {
-    canister::ensure_vertex_label(logical_graph_name, name)
-}
-
-#[update]
-fn ensure_edge_label(
-    logical_graph_name: String,
-    name: String,
-) -> Result<types::EdgeLabelId, RouterError> {
-    canister::ensure_edge_label(logical_graph_name, name)
-}
-
-#[update]
-fn ensure_property(
-    logical_graph_name: String,
-    name: String,
-) -> Result<types::PropertyId, RouterError> {
-    canister::ensure_property(logical_graph_name, name)
-}
-
-/// Read-only GQL: composite query (calls index + graph query endpoints) with an explicit
-/// ADR 0029 §5 read-consistency contract. `Eventual` is the default contract; `AtLeast(token)`
-/// enforces a retryable read-your-writes barrier against the token's per-shard watermarks.
-#[query(composite = true)]
-async fn gql_query(
-    query: String,
-    params: Vec<u8>,
-    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
-) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    gql::gql_query(query, params, read_mode).await
-}
-
-/// Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
+/// Decode Router upgrade args from Candid bytes.
 ///
-/// Returns the richer [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) so
-/// clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
-/// durable canonical commit from full cross-canister projection convergence.
-#[update]
-async fn gql_execute(
-    query: String,
-    params: Vec<u8>,
-    client_mutation_key: String,
-) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    gql::gql_execute_idempotent(query, params, client_mutation_key).await
+/// Empty arg data is accepted as the stable "preserve durable configuration" form.
+/// A non-empty payload must decode as [`RouterUpgradeArgs`]; anything else traps so
+/// an operator cannot accidentally feed init args into an upgrade (ADR 0039).
+#[cfg(test)]
+pub(crate) fn decode_upgrade_args(arg_data: &[u8]) -> Option<RouterUpgradeArgs> {
+    if arg_data.is_empty() {
+        return None;
+    }
+    match candid::Decode!(arg_data, RouterUpgradeArgs) {
+        Ok(args) => Some(args),
+        Err(_) => ic_cdk::trap("post_upgrade: invalid upgrade args"),
+    }
 }
 
-#[cfg(feature = "batch-instr-log")]
-fn log_batch_phase(phase: &str, cost: u64) {
-    crate::instr_log::push(format!("GLEAPH_ROUTER_BATCH phase={} cost={}", phase, cost));
-}
-
-#[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
-#[inline]
-fn log_batch_phase(_phase: &str, _cost: u64) {}
-
-/// Execute cursor-based idempotent mutations until the Router instruction budget is reached.
-///
-/// Mutations are prepared and executed sequentially within one ingress. A returned `next_index`
-/// is the only continuation signal; retrying the same cursor is safe because every item retains
-/// its original client mutation key.
-#[update]
-#[allow(unused_variables, unused_assignments)]
-async fn gql_execute_batch(
-    args: types::GqlExecuteIdempotentBatchArgs,
-) -> Result<types::GqlExecuteIdempotentBatchResult, RouterError> {
-    let request_bytes = Encode!(&args).map_err(|error| {
-        RouterError::InvalidArgument(format!("gql_execute_batch request encode failed: {error}"))
-    })?;
-    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_batch request exceeds the safe payload limit of {} bytes",
-            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    }
-    let total = args.mutations.len() as u32;
-    if total == 0 {
-        return Err(RouterError::InvalidArgument(
-            "gql_execute_batch requires mutations".into(),
-        ));
-    }
-    if args.start_index >= total {
-        return Err(RouterError::InvalidArgument(format!(
-            "start_index {} is outside mutation list of length {total}",
-            args.start_index
-        )));
-    }
-    let budget = match args.instruction_budget {
-        None => gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS,
-        Some(value) if value <= gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS => value,
-        value => {
-            return Err(RouterError::InvalidArgument(format!(
-                "instruction_budget {:?} exceeds safe maximum {}",
-                value,
-                gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
-            )));
-        }
-    };
-
-    let start_cursor = args.start_index as usize;
-    let mut cursor = start_cursor;
-    let end = args.mutations.len();
-    let mut results = Vec::new();
-    #[cfg(feature = "batch-instr-log")]
-    let ingress_start_instr = current_instruction_counter();
-    let preflight = gql::PreflightContext::new();
-    let caller = ic_cdk::api::msg_caller();
-    while cursor < end {
-        let stop_threshold =
-            budget.saturating_sub(gleaph_graph_kernel::ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM);
-        if current_instruction_counter() >= stop_threshold {
-            break;
-        }
-        let mutation = &args.mutations[cursor];
-
-        // ADR 0044: try to coalesce consecutive mutations that share the same query plan into
-        // one bulk group with a single mutation id / saga record.
-        let mut group_end = cursor + 1;
-        while group_end < end && args.mutations[group_end].gql_query == mutation.gql_query {
-            group_end += 1;
-        }
-        let mut bulk_group_end = group_end;
-        let mut bulk_applied = false;
-        let mut stop_after_bulk = false;
-        while bulk_group_end - cursor >= 2 {
-            let group_key = format!(
-                "{}#bulk-{}-{}",
-                mutation.mutation_key, cursor, bulk_group_end
+pub(crate) fn resolve_provision_canister_for_upgrade(
+    override_arg: Option<Principal>,
+    durable: &crate::provisioning::config::ProvisionRuntimeConfig,
+) -> Result<Option<Principal>, &'static str> {
+    // The durable ROUTER_PROVISION_CONFIG stable region is the SSOT for the provision-canister
+    // binding. Upgrade args with `provision_canister: Some(p)` are an explicit operator override;
+    // `None` means "preserve the durable binding". An invalid override is rejected with an
+    // error and the durable binding is preserved.
+    match override_arg {
+        Some(p) => {
+            crate::init::validate_provision_principal(&Some(p))?;
+            crate::facade::stable::provision_config::save_provision_runtime_config(
+                &crate::provisioning::config::ProvisionRuntimeConfig {
+                    provision_canister: Some(p),
+                },
             );
-            match gql::execute_bulk_group(
-                caller,
-                &group_key,
-                &args.mutations[cursor..bulk_group_end],
-                gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update,
-                Some(&preflight),
-            )
-            .await?
-            {
-                gql::BulkGroupExecution::Applied(bulk_results) => {
-                    results.extend(bulk_results);
-                    cursor = bulk_group_end;
-                    bulk_applied = true;
-                    stop_after_bulk = bulk_group_end < group_end;
-                    break;
-                }
-                gql::BulkGroupExecution::Unsupported => break,
-                gql::BulkGroupExecution::SharedRequestTooLarge => {
-                    bulk_group_end = cursor + (bulk_group_end - cursor).div_ceil(2);
-                }
-            }
+            Ok(Some(p))
         }
-        if bulk_applied {
-            if stop_after_bulk {
-                break;
-            }
-            continue;
-        }
-
-        let result = gql::gql_execute_idempotent_with_batch_outcome(
-            mutation.gql_query.clone(),
-            mutation.params.clone(),
-            mutation.mutation_key.clone(),
-            Some(&preflight),
-        )
-        .await?;
-        let result = result.ok_or_else(|| {
-            RouterError::InvalidArgument(
-                "unexpected deferred mutation in sequential batch ingress".into(),
-            )
-        })?;
-        results.push(result);
-        cursor += 1;
+        None => Ok(durable.provision_canister),
     }
-    if cursor == start_cursor {
-        return Err(RouterError::InvalidArgument(
-            "instruction budget is already exhausted; increase instruction_budget or retry".into(),
-        ));
-    }
-    #[cfg(feature = "batch-instr-log")]
-    {
-        let ingress_total = current_instruction_counter().saturating_sub(ingress_start_instr);
-        log_batch_phase(
-            &format!("ingress_summary items={} total", cursor - start_cursor),
-            ingress_total,
-        );
-    }
-    let instruction_counter = current_instruction_counter();
-    let result = types::GqlExecuteIdempotentBatchResult {
-        results,
-        next_index: (cursor < args.mutations.len()).then_some(cursor as u32),
-        instruction_counter,
-    };
-    let response_bytes = Encode!(&result).map_err(|error| {
-        RouterError::InvalidArgument(format!("gql_execute_batch response encode failed: {error}"))
-    })?;
-    if response_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_batch response exceeds the safe payload limit of {} bytes",
-            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    }
-    Ok(result)
-}
-
-/// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
-#[query]
-fn get_mutation_status(
-    logical_graph_name: String,
-    client_mutation_key: String,
-) -> Result<types::MutationStatus, RouterError> {
-    canister::mutation_status(logical_graph_name, client_mutation_key)
-}
-
-/// ADR 0049: classify and execute one order-preserving public batch.
-#[update]
-async fn batch_insert(request: types::BatchRequest) -> Result<types::BatchResponse, RouterError> {
-    canister::batch(request).await
-}
-
-/// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga referencing an
-/// already-committed `mutation_id`, then arm the recovery timer. Lets the E2E suite drive the
-/// autonomous recovery driver from `ProjectionPending` to `Completed` without a client retry.
-#[cfg(feature = "pocket-ic-e2e")]
-#[update]
-fn test_inject_projection_pending_saga(
-    logical_graph_name: String,
-    client_mutation_key: String,
-    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
-    row_count: u64,
-) -> Result<(), RouterError> {
-    canister::test_inject_projection_pending_saga(
-        logical_graph_name,
-        client_mutation_key,
-        mutation_id,
-        row_count,
-    )
-}
-
-/// Test-only (`pocket-ic-e2e`): declare a uniqueness constraint (admin-authorized, declare-on-empty)
-/// so the E2E suite can exercise the ADR 0030 write-path lifecycle. Public `CREATE`/`DROP CONSTRAINT`
-/// DDL remains `NotImplemented` (CREATE pending the publication decision, DROP pending a dedicated
-/// lifecycle slice — ADR 0030 Revisions #14–#15).
-#[cfg(feature = "pocket-ic-e2e")]
-#[update]
-fn test_declare_unique_constraint(
-    logical_graph_name: String,
-    constraint_name: String,
-    label: String,
-    property: String,
-) -> Result<(), RouterError> {
-    canister::test_declare_unique_constraint(logical_graph_name, constraint_name, label, property)
-}
-
-/// Test-only (`pocket-ic-e2e`): arm (or clear, with `0`) a Router write-path fault injection so
-/// E2E suites can reproduce canonical commit / Router callback trap boundaries.
-/// Admin-authorized. See [`crate::test_fault`].
-#[cfg(feature = "pocket-ic-e2e")]
-#[update]
-fn test_arm_fault(code: u8) -> Result<(), RouterError> {
-    canister::test_arm_fault(code)
-}
-
-/// Test-only (`pocket-ic-e2e`): report the last typed-admission stage for transport assertions.
-#[cfg(feature = "pocket-ic-e2e")]
-#[query]
-fn test_typed_batch_trace() -> Result<String, RouterError> {
-    canister::test_typed_batch_trace()
-}
-
-#[cfg(feature = "pocket-ic-e2e")]
-#[query]
-fn test_typed_batch_prepare_count() -> Result<u64, RouterError> {
-    canister::test_typed_batch_prepare_count()
-}
-
-/// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin), so the
-/// failure-injection suite can prove a same-`ClaimId` retry is fenced during a reclaim proof.
-#[cfg(feature = "pocket-ic-e2e")]
-#[update]
-fn test_force_reclaiming(
-    logical_graph_name: String,
-    label: String,
-    property: String,
-    value: String,
-) -> Result<bool, RouterError> {
-    canister::test_force_reclaiming(logical_graph_name, label, property, value)
-}
-
-#[update]
-/// Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
-fn prepare(
-    name: String,
-    query: String,
-    metadata: Option<gleaph_prepared_api::PreparedOperation>,
-) -> Result<(), RouterError> {
-    prepared::prepare(name, query, metadata)
-}
-
-/// Remove one named prepared operation.
-#[update]
-fn drop_prepared(name: String) -> Result<(), RouterError> {
-    prepared::drop_prepared(&name)
-}
-
-/// The full prepared-operation manifest for one graph.
-#[query]
-fn list_prepared(graph_name: String) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
-    prepared::list_prepared(graph_name)
-}
-
-/// Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
-#[query(composite = true)]
-async fn execute_prepared(
-    name: String,
-    params: Vec<u8>,
-    sort: Option<Vec<gleaph_prepared_api::PreparedSortSpec>>,
-    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
-) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::execute_prepared(name, params, sort, read_mode).await
-}
-
-/// Idempotent prepared update. Returns the richer
-/// [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
-/// federated mutation lifecycle `phase`.
-#[update]
-async fn execute_prepared_update(
-    name: String,
-    params: Vec<u8>,
-    client_mutation_key: String,
-) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::execute_prepared_update(name, params, client_mutation_key).await
-}
-
-#[update]
-async fn index_vertex_property(
-    logical_graph_name: String,
-    vertex_label: String,
-    property: String,
-) -> Result<(), RouterError> {
-    canister::index_vertex_property(logical_graph_name, vertex_label, property).await
-}
-
-#[update]
-async fn index_edge_property(
-    logical_graph_name: String,
-    edge_label: String,
-    property: String,
-) -> Result<(), RouterError> {
-    canister::index_edge_property(logical_graph_name, edge_label, property).await
-}
-
-/// Register a derived vector index (ADR 0031 Slice 3; `authorize_index_ddl`). Returns whether the
-/// definition was newly created. Production dispatch stays fail-closed until incarnation fencing.
-#[update]
-fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<bool, RouterError> {
-    canister::admin_register_vector_index(args)
-}
-
-/// Set (or replace) the single dispatch target of a vector index (ADR 0031 Slice 3;
-/// `authorize_index_ddl`). Slice 3 stores the target as inspect-only metadata.
-#[update]
-fn admin_set_vector_index_target(args: types::SetVectorIndexTargetArgs) -> Result<(), RouterError> {
-    canister::admin_set_vector_index_target(args)
-}
-
-/// List the derived vector-index definitions registered for a logical graph (ADR 0031 Slice 3).
-#[query]
-fn list_vector_indexes(
-    logical_graph_name: String,
-) -> Result<Vec<types::VectorIndexInfo>, RouterError> {
-    canister::list_vector_indexes(logical_graph_name)
-}
-
-/// Resolve a vector index's single dispatch target principal (ADR 0031 Slice 3, inspect-only).
-#[query]
-fn resolve_vector_index_target(
-    logical_graph_name: String,
-    index_id: u32,
-) -> Result<Principal, RouterError> {
-    canister::resolve_vector_index_target(logical_graph_name, index_id)
-}
-
-/// Report a vector index's activation state and, while fail-closed, the blocking reason
-/// (ADR 0031 Slice 3).
-#[query]
-fn vector_index_activation_status(
-    logical_graph_name: String,
-    index_id: u32,
-) -> Result<types::VectorIndexActivationStatus, RouterError> {
-    canister::vector_index_activation_status(logical_graph_name, index_id)
-}
-
-/// Request a derived vector-index backfill step (ADR 0031; `authorize_index_ddl`). Fails closed with
-/// `VectorDispatchActivationBlocked` until the global flag is on and the graph's shards are
-/// vector-attached; the bounded production driver itself lands in Slice 5.
-#[update]
-async fn admin_vector_index_backfill_step(
-    args: types::AdminVectorIndexBackfillStepArgs,
-) -> Result<types::AdminVectorIndexBackfillStepResult, RouterError> {
-    canister::admin_vector_index_backfill_step(args).await
-}
-
-/// Flip the global vector-dispatch activation flag (ADR 0031 Slice 4; Admin only). `false` keeps
-/// production dispatch/backfill fail-closed across all graphs. Reversible.
-#[update]
-fn admin_set_vector_dispatch_activation(enabled: bool) -> Result<(), RouterError> {
-    canister::admin_set_vector_dispatch_activation(enabled)
-}
-
-/// Read the global vector-dispatch activation flag (ADR 0031 Slice 4).
-#[query]
-fn vector_dispatch_activation_enabled() -> bool {
-    canister::vector_dispatch_activation_enabled()
-}
-
-/// Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
-/// attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
-#[update]
-async fn admin_attach_vector_index_shard(
-    args: types::AdminAttachVectorIndexShardArgs,
-) -> Result<(), RouterError> {
-    canister::admin_attach_vector_index_shard(args).await
-}
-
-/// Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
-/// (plan 0048). Resolves the opaque graph-scoped vertex id, validates the registered embedding
-/// definition, and dispatches a single canonical write. The result reports the canonical embedding
-/// version and whether the derived vector projection was applied or deferred for repair.
-#[update]
-async fn admin_ingest_vertex_embedding(
-    args: types::AdminIngestVertexEmbeddingArgs,
-) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, RouterError> {
-    canister::admin_ingest_vertex_embedding(args).await
-}
-
-/// Admin (plan 0048 extension): ingest many finite F32 vertex embeddings in one call. Items are
-/// grouped by target graph canister and dispatched in bounded chunks so the social-demo seed pays
-/// one Router→Graph call and one Graph→Vector call.
-#[update]
-async fn admin_ingest_vertex_embedding_batch(
-    args: types::AdminIngestVertexEmbeddingBatchArgs,
-) -> Result<
-    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
-    RouterError,
-> {
-    canister::admin_ingest_vertex_embedding_batch(args).await
-}
-
-/// Read-only exact `ivf_flat` vector search: composite query that resolves the named vector index
-/// and forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
-/// Slice 4 activation gate is satisfied. `query` is the encoded F32 vector (dims are inferred from
-/// the registered index definition).
-#[query(composite = true)]
-async fn vector_search(
-    graph_name: String,
-    index_name: String,
-    query: Vec<u8>,
-    top_k: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError> {
-    canister::vector_search(graph_name, index_name, query, top_k).await
-}
-
-// --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface (Admin only) ---
-//
-// Reads are composite queries; mutators/drivers are updates. Each resolves the graph/index to its
-// activated vector target and fails closed on missing target/readiness. The vector canister stays
-// router-guarded, so these are the only operator entry points.
-
-/// Head-only O(`nlist`) partition-health summary, forwarded to the activated vector target.
-#[query(composite = true)]
-async fn admin_vector_partition_health(
-    graph_name: String,
-    index_id: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorPartitionHealthSummary, RouterError> {
-    canister::admin_vector_partition_health(graph_name, index_id).await
-}
-
-/// Admin-only physical stable-memory inventory for every shard in a graph.
-#[query(composite = true)]
-async fn get_stable_memory_stats(
-    graph_name: String,
-) -> Result<Vec<types::GraphStableMemoryStats>, RouterError> {
-    canister::get_stable_memory_stats(graph_name).await
-}
-
-#[cfg(feature = "batch-instr-log")]
-/// Admin-only proxy: per-shard batch instruction logs from the Graph shard.
-#[query(composite = true)]
-async fn admin_graph_batch_instr_log(
-    graph_name: String,
-    offset: u32,
-    limit: u32,
-) -> Result<Vec<types::GraphBatchInstrLogPage>, RouterError> {
-    canister::admin_graph_batch_instr_log(graph_name, offset, limit).await
-}
-
-/// Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
-#[query(composite = true)]
-async fn admin_vector_partition_health_step(
-    graph_name: String,
-    index_id: u32,
-    cursor: Option<Vec<u8>>,
-    max_pages: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorPartitionHealthStep, RouterError> {
-    canister::admin_vector_partition_health_step(graph_name, index_id, cursor, max_pages).await
-}
-
-/// O(1) rebuild status, forwarded to the activated vector target.
-#[query(composite = true)]
-async fn admin_vector_rebuild_status(
-    graph_name: String,
-    index_id: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorRebuildStatus, RouterError> {
-    canister::admin_vector_rebuild_status(graph_name, index_id).await
-}
-
-/// Derived slab-space observability, forwarded to the graph's vector target (`index_id` scopes the
-/// logical counters; the slab physical facts are whole-slab global).
-#[query(composite = true)]
-async fn admin_vector_slab_stats(
-    graph_name: String,
-    index_id: Option<u32>,
-) -> Result<gleaph_graph_kernel::vector_index::VectorSlabStats, RouterError> {
-    canister::admin_vector_slab_stats(graph_name, index_id).await
-}
-
-/// Cursor/budgeted slab-stats scan step, forwarded to the graph's vector target.
-#[query(composite = true)]
-async fn admin_vector_slab_stats_step(
-    graph_name: String,
-    cursor: Option<Vec<u8>>,
-    max_pages: u32,
-    index_id: Option<u32>,
-) -> Result<gleaph_graph_kernel::vector_index::VectorSlabStatsStep, RouterError> {
-    canister::admin_vector_slab_stats_step(graph_name, cursor, max_pages, index_id).await
-}
-
-/// Heap centroid cache status, forwarded to the graph's vector target.
-#[query(composite = true)]
-async fn admin_vector_centroid_cache_status(
-    graph_name: String,
-) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
-    canister::admin_vector_centroid_cache_status(graph_name).await
-}
-
-/// Vector-canister-owned maintenance execution state, forwarded to the activated vector target.
-#[query(composite = true)]
-async fn admin_vector_maintenance_status(
-    graph_name: String,
-    index_id: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorMaintenanceState, RouterError> {
-    canister::admin_vector_maintenance_status(graph_name, index_id).await
-}
-
-/// Begin a shadow-version rebuild on the activated vector target.
-#[update]
-async fn admin_start_vector_rebuild(
-    graph_name: String,
-    index_id: u32,
-    nlist: u32,
-    sample_limit: u32,
-) -> Result<(), RouterError> {
-    canister::admin_start_vector_rebuild(graph_name, index_id, nlist, sample_limit).await
-}
-
-/// Begin a rebuild only if attested partition health crosses the supplied policy, on the activated
-/// vector target.
-#[update]
-async fn admin_start_vector_rebuild_if_recommended(
-    graph_name: String,
-    index_id: u32,
-    attested_page_health: gleaph_graph_kernel::vector_index::VectorPartitionPageHealth,
-    policy: gleaph_graph_kernel::vector_index::VectorMaintenancePolicy,
-    target_nlist: Option<u32>,
-    sample_limit: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorMaintenanceRecommendation, RouterError> {
-    canister::admin_start_vector_rebuild_if_recommended(
-        graph_name,
-        index_id,
-        attested_page_health,
-        policy,
-        target_nlist,
-        sample_limit,
-    )
-    .await
-}
-
-/// Drive one bounded rebuild step on the activated vector target.
-#[update]
-async fn admin_vector_rebuild_step(
-    graph_name: String,
-    index_id: u32,
-    max_subjects: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorRebuildStatus, RouterError> {
-    canister::admin_vector_rebuild_step(graph_name, index_id, max_subjects).await
-}
-
-/// Publish a `ReadyToPublish` rebuild on the activated vector target.
-#[update]
-async fn admin_publish_vector_rebuild(
-    graph_name: String,
-    index_id: u32,
-) -> Result<(), RouterError> {
-    canister::admin_publish_vector_rebuild(graph_name, index_id).await
-}
-
-/// Abort an in-flight rebuild on the activated vector target.
-#[update]
-async fn admin_abort_vector_rebuild(graph_name: String, index_id: u32) -> Result<(), RouterError> {
-    canister::admin_abort_vector_rebuild(graph_name, index_id).await
-}
-
-/// Drive one bounded cleanup/abort teardown step on the activated vector target.
-#[update]
-async fn admin_vector_rebuild_cleanup_step(
-    graph_name: String,
-    index_id: u32,
-    max_work: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorRebuildStatus, RouterError> {
-    canister::admin_vector_rebuild_cleanup_step(graph_name, index_id, max_work).await
-}
-
-/// Warm the heap centroid cache on the activated vector target.
-#[update]
-async fn admin_vector_centroid_cache_warmup(
-    graph_name: String,
-    index_id: u32,
-) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
-    canister::admin_vector_centroid_cache_warmup(graph_name, index_id).await
-}
-
-/// Clear the entire heap centroid cache on the graph's vector target.
-#[update]
-async fn admin_vector_centroid_cache_clear(
-    graph_name: String,
-) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
-    canister::admin_vector_centroid_cache_clear(graph_name).await
-}
-
-/// Reset the maintenance execution state to `Idle` (incl. `Failed`) on the activated vector target.
-/// Does not abort an in-flight rebuild (use `admin_abort_vector_rebuild`) or change Router policy.
-#[update]
-async fn admin_vector_maintenance_reset(
-    graph_name: String,
-    index_id: u32,
-) -> Result<(), RouterError> {
-    canister::admin_vector_maintenance_reset(graph_name, index_id).await
-}
-
-// --- ADR 0031 Slice 10: Router-owned maintenance policy catalog + push step ---
-
-/// Create or replace the Router-owned maintenance policy for one vector index (DDL admin).
-#[update]
-fn admin_set_vector_maintenance_policy(
-    args: types::SetVectorMaintenancePolicyArgs,
-) -> Result<(), RouterError> {
-    canister::admin_set_vector_maintenance_policy(args)
-}
-
-/// Disable (but keep) the maintenance policy for one vector index (DDL admin).
-#[update]
-fn admin_disable_vector_maintenance_policy(
-    graph_name: String,
-    index_id: u32,
-) -> Result<(), RouterError> {
-    canister::admin_disable_vector_maintenance_policy(graph_name, index_id)
-}
-
-/// Delete the maintenance policy for one vector index (DDL admin). Returns whether one existed.
-#[update]
-fn admin_delete_vector_maintenance_policy(
-    graph_name: String,
-    index_id: u32,
-) -> Result<bool, RouterError> {
-    canister::admin_delete_vector_maintenance_policy(graph_name, index_id)
-}
-
-/// The maintenance policy for one vector index, if any.
-#[query]
-fn vector_maintenance_policy(
-    graph_name: String,
-    index_id: u32,
-) -> Result<Option<types::VectorMaintenancePolicyView>, RouterError> {
-    canister::vector_maintenance_policy(graph_name, index_id)
-}
-
-/// All maintenance policies in a graph.
-#[query]
-fn list_vector_maintenance_policies(
-    graph_name: String,
-) -> Result<Vec<types::VectorMaintenancePolicyView>, RouterError> {
-    canister::list_vector_maintenance_policies(graph_name)
-}
-
-/// Advance one bounded maintenance unit for an enabled policy; `Disabled` no-op otherwise.
-#[update]
-async fn admin_vector_maintenance_step(
-    graph_name: String,
-    index_id: u32,
-) -> Result<types::VectorMaintenanceStepOutcome, RouterError> {
-    canister::admin_vector_maintenance_step(graph_name, index_id).await
-}
-
-/// Router policy/readiness plus forwarded vector-canister maintenance + rebuild state.
-#[query(composite = true)]
-async fn vector_maintenance_status(
-    graph_name: String,
-    index_id: u32,
-) -> Result<types::VectorMaintenanceStatusView, RouterError> {
-    canister::vector_maintenance_status(graph_name, index_id).await
-}
-
-/// Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).
-#[update]
-async fn admin_label_backfill_step(
-    args: types::AdminLabelBackfillStepArgs,
-) -> Result<types::AdminLabelBackfillStepResult, RouterError> {
-    canister::admin_label_backfill_step(args).await
-}
-
-/// Operator recovery: clear a stuck `in_progress` claim on a shard's backfill
-/// cursor (`Role::Admin`). Use only when no step is in flight for the shard.
-#[update]
-fn reset_backfill_claim(args: types::AdminResetBackfillClaimArgs) -> Result<(), RouterError> {
-    canister::reset_backfill_claim(args)
-}
-
-/// List router-stable backfill cursors for all shards of a logical graph.
-#[query]
-fn admin_list_label_backfill_status(
-    logical_graph_name: String,
-) -> Result<Vec<types::LabelBackfillShardStatus>, RouterError> {
-    canister::admin_list_label_backfill_status(logical_graph_name)
-}
-
-/// Advance vertex property posting backfill for one graph shard (`Role::Admin`; call in a loop).
-#[update]
-async fn admin_vertex_property_backfill_step(
-    args: types::AdminVertexPropertyBackfillStepArgs,
-) -> Result<types::AdminVertexPropertyBackfillStepResult, RouterError> {
-    canister::admin_vertex_property_backfill_step(args).await
-}
-
-/// List router-stable vertex property backfill cursors for all shards of a logical graph.
-#[query]
-fn admin_list_vertex_property_backfill_status(
-    logical_graph_name: String,
-) -> Result<Vec<types::VertexPropertyBackfillShardStatus>, RouterError> {
-    canister::admin_list_vertex_property_backfill_status(logical_graph_name)
-}
-
-/// Graph-index convergence snapshot for one graph shard (`Role::Admin`). Poll
-/// `converged` before dispatching index-dependent waves; the backfill steps repair
-/// convergence when it stalls.
-#[update]
-async fn get_graph_sync_status(
-    args: types::AdminIndexSyncStatusArgs,
-) -> Result<gleaph_graph_kernel::federation::IndexSyncStatus, RouterError> {
-    canister::get_graph_sync_status(args).await
-}
-
-/// Advance edge property posting backfill for one graph shard (`Role::Admin`; call in a loop).
-#[update]
-async fn admin_edge_backfill_step(
-    args: types::AdminEdgeBackfillStepArgs,
-) -> Result<types::AdminEdgeBackfillStepResult, RouterError> {
-    canister::admin_edge_backfill_step(args).await
-}
-
-/// List router-stable edge backfill cursors for all shards of a logical graph.
-#[query]
-fn admin_list_edge_backfill_status(
-    logical_graph_name: String,
-) -> Result<Vec<types::EdgeBackfillShardStatus>, RouterError> {
-    canister::admin_list_edge_backfill_status(logical_graph_name)
-}
-
-/// Advance label stats projection for one graph shard (`Role::Admin`; call in a loop).
-#[update]
-async fn admin_label_stats_projection_step(
-    args: types::AdminLabelStatsProjectionStepArgs,
-) -> Result<types::AdminLabelStatsProjectionStepResult, RouterError> {
-    canister::admin_label_stats_projection_step(args).await
-}
-
-/// **Internal seam (ADR 0056 §6 Slice A): not a client API.** Sends a provisioning envelope to
-/// the configured Provision canister and records the `RouterProvisioningRequest`. `register_graph`
-/// is the public graph-creation surface; this endpoint is superseded by the `register_graph`
-/// provisioning fold in Slice B and is retained only so the `adr0035` outbound/ack E2E coverage
-/// keeps running. Admin-only.
-#[update]
-async fn provision_graph(
-    args: types::ProvisionGraphArgs,
-) -> Result<types::ProvisionGraphResponse, RouterError> {
-    use crate::facade::auth;
-    use crate::facade::store::provisioning::{InsertError, RouterProvisioningRequestStore};
-    use crate::types::{
-        ProvisionableResourceKind, ProvisioningIntentKey, ProvisioningRequestKey,
-        RouterProvisioningRequest, RouterProvisioningRequestState,
-    };
-
-    let caller = ic_cdk::api::msg_caller();
-    auth::require_admin(&caller)?;
-
-    let provision_canister = crate::provisioning::config::get().ok_or_else(|| {
-        RouterError::NotImplemented("provision_canister not configured".to_owned())
-    })?;
-
-    // Validate requested_resources non-empty and canonical intent present.
-    if args.requested_resources.is_empty() {
-        return Err(RouterError::InvalidArgument(
-            "requested_resources is empty".to_owned(),
-        ));
-    }
-    let canonical = args
-        .requested_resources
-        .iter()
-        .find(|r| r.kind == ProvisionableResourceKind::GraphShard)
-        .ok_or_else(|| {
-            RouterError::InvalidArgument(
-                "requested_resources must contain at least one GraphShard resource".to_owned(),
-            )
-        })?;
-    let intent_key = ProvisioningIntentKey::new(
-        &args.deployment_id,
-        canonical.kind,
-        &canonical.logical_resource_key,
-    );
-
-    // Seed the Router-side provisioning-request catalog before the outbound send so the
-    // ack callback has a canonical record to advance. We need deployment_id for the key, so
-    // clone it before moving fields into the ProvisionRequest wire struct.
-    let deployment_id = args.deployment_id.clone();
-    let request_id = format!("{}-{}", args.graph_name, args.request_fingerprint);
-    let request_key = ProvisioningRequestKey::new(&request_id, &deployment_id);
-    let store = RouterProvisioningRequestStore::new();
-    let seed_record = RouterProvisioningRequest {
-        request_id: request_id.clone(),
-        request_fingerprint: args.request_fingerprint.clone(),
-        caller: ic_cdk::api::msg_caller(),
-        graph_name: args.graph_name.clone(),
-        reserved_graph_id: None,
-        requested_resources: args.requested_resources.clone(),
-        state: RouterProvisioningRequestState::AwaitingAck,
-        provision_receipt: None,
-        accepted_registry_version: None,
-        created_at_ns: ic_cdk::api::time(),
-    };
-    let outcome = store
-        .insert(&deployment_id, seed_record)
-        .map_err(|err| match err {
-            InsertError::Conflict => {
-                RouterError::Conflict("provisioning request fingerprint conflict".to_owned())
-            }
-            InsertError::IntentConflict => {
-                RouterError::Conflict("provisioning intent already locked".to_owned())
-            }
-            InsertError::InvalidDuplicateIntent => {
-                RouterError::InvalidArgument("duplicate requested resources".to_owned())
-            }
-        })?;
-
-    let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-        deployment_id,
-        request_id,
-        request_fingerprint: args.request_fingerprint,
-        intent_key,
-        reserved_graph_id: None,
-        graph_name: args.graph_name,
-        requested_resources: args.requested_resources,
-        authorized_caller: args.authorized_caller,
-        release_id: args.release_id,
-        // Sender will overwrite this with ic_cdk::api::canister_self() before encoding.
-        router_callback_principal: candid::Principal::anonymous(),
-    };
-
-    dispatch_provision_send(request_key, outcome, store, || {
-        send_accept_envelope(provision_canister, request)
-    })
-    .await
-}
-
-/// Maps a Provision outbound error to the Router ingress error returned by `provision_graph`.
-fn map_provision_outbound_error(err: RouterOutboundError) -> RouterError {
-    match err {
-        RouterOutboundError::CallFailed(s) => RouterError::ProvisionCallFailed(s),
-        RouterOutboundError::UnknownDeployment => {
-            RouterError::UnknownDeployment("deployment not bound".to_owned())
-        }
-        RouterOutboundError::Conflict => RouterError::ProvisionConflict("conflict".to_owned()),
-        RouterOutboundError::IngressRejected(s) => RouterError::ProvisionRejected(s),
-        RouterOutboundError::EncodingFailed(s) => RouterError::ProvisionEncodingFailed(s),
-    }
-}
-
-/// Maps a successful `accept_envelope` response to the Router ingress response.
-fn build_provision_graph_response(
-    accept_response: gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse,
-) -> types::ProvisionGraphResponse {
-    match accept_response {
-        gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Accepted {
-            job_view,
-            intent_lock_count,
-        } => types::ProvisionGraphResponse::Accepted {
-            job_view,
-            intent_lock_count,
-        },
-        gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Replay {
-            job_view,
-            intent_lock_count,
-        } => types::ProvisionGraphResponse::Replay {
-            job_view,
-            intent_lock_count,
-        },
-    }
-}
-
-/// Dispatches the outbound `accept_envelope` send according to the `InsertionOutcome`.
-///
-/// Four branches:
-/// 1. `Inserted(AwaitingAck)` or `Existing(AwaitingAck)` → call `send`. On failure,
-///    rollback ONLY if the current operation inserted the record.
-/// 2. `Existing(Completed)` → do not resend; return the durable accepted version.
-/// 3. `Existing(Pending | Submitted | Failed)` → reject as `InvalidState`.
-async fn dispatch_provision_send<F, Fut>(
-    request_key: types::ProvisioningRequestKey,
-    outcome: crate::facade::store::provisioning::InsertionOutcome,
-    store: crate::facade::store::provisioning::RouterProvisioningRequestStore,
-    send: F,
-) -> Result<types::ProvisionGraphResponse, RouterError>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<
-            Output = Result<
-                gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse,
-                RouterOutboundError,
-            >,
-        >,
-{
-    use crate::facade::store::provisioning::InsertionOutcome;
-    use types::RouterProvisioningRequestState;
-
-    let is_inserted = matches!(outcome, InsertionOutcome::Inserted(_));
-
-    match &outcome {
-        InsertionOutcome::Inserted(record) | InsertionOutcome::Existing(record)
-            if matches!(record.state, RouterProvisioningRequestState::AwaitingAck) =>
-        {
-            let accept_response = match send().await {
-                Ok(response) => response,
-                Err(e) => {
-                    if is_inserted {
-                        // Invocation-owned rollback: only remove the record if the current
-                        // operation inserted it AND it is still in AwaitingAck. Pre-existing
-                        // records from any prior invocation must survive a transient send
-                        // failure on a retry.
-                        store.rollback_if_inserted_and_awaiting(&request_key, &outcome);
-                    }
-                    return Err(map_provision_outbound_error(e));
-                }
-            };
-            Ok(build_provision_graph_response(accept_response))
-        }
-        InsertionOutcome::Existing(record)
-            if matches!(record.state, RouterProvisioningRequestState::Completed) =>
-        {
-            let version = record.accepted_registry_version.ok_or_else(|| {
-                RouterError::InvalidState(
-                    "completed record missing accepted_registry_version".to_owned(),
-                )
-            })?;
-            Ok(types::ProvisionGraphResponse::Completed {
-                accepted_registry_version: version,
-            })
-        }
-        InsertionOutcome::Existing(record) => Err(RouterError::InvalidState(format!(
-            "request in non-terminal state {:?}",
-            record.state
-        ))),
-        // `Inserted` for a non-AwaitingAck state is impossible because `insert` always seeds
-        // `AwaitingAck`; kept as a defensive match arm.
-        InsertionOutcome::Inserted(record) => Err(RouterError::InvalidState(format!(
-            "freshly inserted request in unexpected state {:?}",
-            record.state
-        ))),
-    }
-}
-
-/// Internal callback: the configured Provision canister acknowledges a completed
-/// provisioning job and asks the Router to commit the terminal catalog state.
-#[update]
-fn router_ack(
-    ack: gleaph_graph_kernel::provisioning::wire::RouterProvisionAck,
-) -> Result<gleaph_graph_kernel::provisioning::wire::RouterAckResponse, RouterError> {
-    use crate::provisioning::ack_handler::handle_router_ack;
-    handle_router_ack(ic_cdk::api::msg_caller(), ack)
 }
 
 ic_cdk::export_candid!();
 
 #[cfg(test)]
-mod provision_graph_tests {
-    use candid::Principal;
-    use gleaph_graph_kernel::provisioning::wire::{ProvisionAcceptResponse, ProvisionJobSummary};
-
-    use crate::facade::store::provisioning::{InsertionOutcome, RouterProvisioningRequestStore};
-    use crate::types::{
-        ProvisionGraphResponse, ProvisionableResource, ProvisionableResourceKind,
-        ProvisioningRequestKey, RouterOutboundError, RouterProvisioningRequest,
-        RouterProvisioningRequestState,
+mod provision_config_upgrade_tests {
+    use super::*;
+    use crate::facade::stable::provision_config::{
+        load_provision_runtime_config, save_provision_runtime_config,
     };
+    use crate::init::validate_provision_principal;
+    use crate::provisioning::config::ProvisionRuntimeConfig;
 
-    fn sample_record(
-        request_id: &str,
-        _deployment_id: &str,
-        fingerprint: &str,
-        state: RouterProvisioningRequestState,
-        version: Option<u64>,
-    ) -> RouterProvisioningRequest {
-        RouterProvisioningRequest {
-            request_id: request_id.to_owned(),
-            request_fingerprint: fingerprint.to_owned(),
-            caller: Principal::anonymous(),
-            graph_name: "tenant.main".to_owned(),
-            reserved_graph_id: None,
-            requested_resources: vec![ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "shard-0".to_owned(),
-            }],
-            state,
-            provision_receipt: None,
-            accepted_registry_version: version,
-            created_at_ns: 0,
+    fn canonical_principal() -> Principal {
+        Principal::self_authenticating([1; 32])
+    }
+
+    #[test]
+    fn test_validate_provision_principal_accepts_none_and_non_anonymous() {
+        assert!(validate_provision_principal(&None).is_ok());
+        assert!(
+            validate_provision_principal(&Some(Principal::self_authenticating([2; 32]))).is_ok()
+        );
+        assert_eq!(
+            validate_provision_principal(&Some(Principal::anonymous())),
+            Err("provision_canister cannot be anonymous")
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_anonymous_override_rejected_preserves_canonical() {
+        // Seed a canonical durable binding.
+        let canonical = canonical_principal();
+        let canonical_config = ProvisionRuntimeConfig {
+            provision_canister: Some(canonical),
+        };
+        save_provision_runtime_config(&canonical_config);
+        let durable = load_provision_runtime_config();
+
+        // An anonymous override must be rejected: the resolver returns Err, the durable
+        // record is preserved, and post_upgrade would trap.
+        let result = resolve_provision_canister_for_upgrade(Some(Principal::anonymous()), &durable);
+        assert_eq!(result, Err("provision_canister cannot be anonymous"));
+        assert_eq!(
+            load_provision_runtime_config(),
+            durable,
+            "durable record must not be overwritten by an invalid override"
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_valid_override_updates_canonical() {
+        let canonical = canonical_principal();
+        let replacement = Principal::self_authenticating([7; 32]);
+        save_provision_runtime_config(&ProvisionRuntimeConfig {
+            provision_canister: Some(canonical),
+        });
+
+        let durable = load_provision_runtime_config();
+        let result = resolve_provision_canister_for_upgrade(Some(replacement), &durable).unwrap();
+        assert_eq!(result, Some(replacement));
+        assert_eq!(
+            load_provision_runtime_config(),
+            ProvisionRuntimeConfig {
+                provision_canister: Some(replacement),
+            }
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_none_override_uses_durable() {
+        let canonical = canonical_principal();
+        save_provision_runtime_config(&ProvisionRuntimeConfig {
+            provision_canister: Some(canonical),
+        });
+
+        let result =
+            resolve_provision_canister_for_upgrade(None, &load_provision_runtime_config()).unwrap();
+        assert_eq!(result, Some(canonical));
+    }
+
+    mod upgrade_arg_decode_tests {
+        use super::*;
+        use crate::init::RouterInitArgs;
+        use candid::Encode;
+
+        #[test]
+        fn valid_upgrade_args_decodes() {
+            let principal = Principal::self_authenticating([1; 32]);
+            let bytes = Encode!(&RouterUpgradeArgs {
+                provision_canister: Some(principal),
+            })
+            .expect("encode");
+            let decoded = decode_upgrade_args(&bytes).expect("decoded");
+            assert_eq!(decoded.provision_canister, Some(principal));
         }
-    }
 
-    fn job_view() -> ProvisionJobSummary {
-        ProvisionJobSummary {
-            request_id: "req".to_owned(),
-            deployment_id: "deploy".to_owned(),
-            state: "AwaitingAck".to_owned(),
-            active_resource_index: 0,
-            completed_effect_count: 0,
-            accepted_registry_version: None,
+        #[test]
+        fn absent_provision_decodes_to_none_override() {
+            let bytes = Encode!(&RouterUpgradeArgs {
+                provision_canister: None,
+            })
+            .expect("encode");
+            let decoded = decode_upgrade_args(&bytes).expect("decoded");
+            assert_eq!(decoded.provision_canister, None);
         }
-    }
 
-    fn store() -> RouterProvisioningRequestStore {
-        RouterProvisioningRequestStore::new()
-    }
-
-    #[test]
-    fn existing_completed_does_not_resend_and_returns_version() {
-        futures::executor::block_on(async {
-            let deployment_id = "deploy-completed";
-            let request_id = "req-completed";
-            let s = store();
-            let record = sample_record(
-                request_id,
-                deployment_id,
-                "fp-completed",
-                RouterProvisioningRequestState::Completed,
-                Some(7),
-            );
-            s.insert(deployment_id, record.clone())
-                .expect("insert completed");
-
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
-            let outcome = InsertionOutcome::Existing(record);
-
-            let result = super::dispatch_provision_send(
-                request_key.clone(),
-                outcome,
-                s,
-                // Sender must not be called for a Completed record.
-                || async { panic!("send must not be called for Completed record") },
-            )
-            .await
-            .expect("completed returns ok");
-
-            assert_eq!(
-                result,
-                ProvisionGraphResponse::Completed {
-                    accepted_registry_version: 7
-                }
-            );
-            let stored = store()
-                .get_by_request_id(&request_key)
-                .expect("record survives");
-            assert_eq!(stored.state, RouterProvisioningRequestState::Completed);
-        });
-    }
-
-    #[test]
-    fn existing_awaiting_ack_keeps_record_on_send_failure() {
-        futures::executor::block_on(async {
-            let deployment_id = "deploy-existing-awaiting";
-            let request_id = "req-existing-awaiting";
-            let s = store();
-            let record = sample_record(
-                request_id,
-                deployment_id,
-                "fp-existing-awaiting",
-                RouterProvisioningRequestState::AwaitingAck,
-                None,
-            );
-            s.insert(deployment_id, record.clone())
-                .expect("insert awaiting");
-
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
-            let outcome = InsertionOutcome::Existing(record);
-
-            let result =
-                super::dispatch_provision_send(request_key.clone(), outcome, s, || async {
-                    Err(RouterOutboundError::CallFailed("simulated".to_owned()))
-                })
-                .await;
-
-            assert!(
-                matches!(result, Err(super::RouterError::ProvisionCallFailed(_))),
-                "expected ProvisionCallFailed, got {result:?}"
-            );
-            let stored = store()
-                .get_by_request_id(&request_key)
-                .expect("record survives");
-            assert_eq!(stored.state, RouterProvisioningRequestState::AwaitingAck);
-        });
-    }
-
-    #[test]
-    fn existing_pending_returns_invalid_state() {
-        futures::executor::block_on(async {
-            let deployment_id = "deploy-pending";
-            let request_id = "req-pending";
-            let s = store();
-            let record = sample_record(
-                request_id,
-                deployment_id,
-                "fp-pending",
-                RouterProvisioningRequestState::Pending,
-                None,
-            );
-            s.insert(deployment_id, record).expect("insert pending");
-
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
-            let outcome = InsertionOutcome::Existing(s.get_by_request_id(&request_key).unwrap());
-
-            let result = super::dispatch_provision_send(request_key, outcome, s, || async {
-                panic!("send must not be called for non-terminal record")
+        #[test]
+        fn router_init_args_decode_ignores_init_only_fields() {
+            // Candid record subtyping lets a RouterInitArgs payload decode as
+            // RouterUpgradeArgs: extra fields (issuing_principal, initial_admins)
+            // are ignored. Only the provision_canister override matters.
+            let admin = Principal::self_authenticating([2; 32]);
+            let provision = Principal::self_authenticating([3; 32]);
+            let bytes = Encode!(&RouterInitArgs {
+                issuing_principal: admin,
+                initial_admins: vec![],
+                provision_canister: Some(provision),
             })
-            .await;
-
-            assert!(
-                matches!(result, Err(super::RouterError::InvalidState(_))),
-                "expected InvalidState, got {result:?}"
-            );
-        });
-    }
-
-    #[test]
-    fn existing_failed_returns_invalid_state() {
-        futures::executor::block_on(async {
-            let deployment_id = "deploy-failed";
-            let request_id = "req-failed";
-            let s = store();
-            let record = sample_record(
-                request_id,
-                deployment_id,
-                "fp-failed",
-                RouterProvisioningRequestState::Failed {
-                    reason: "boom".to_owned(),
-                },
-                None,
-            );
-            s.insert(deployment_id, record.clone())
-                .expect("insert failed");
-
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
-            let outcome = InsertionOutcome::Existing(record);
-
-            let result = super::dispatch_provision_send(request_key, outcome, s, || async {
-                panic!("send must not be called for non-terminal record")
-            })
-            .await;
-
-            assert!(
-                matches!(result, Err(super::RouterError::InvalidState(_))),
-                "expected InvalidState, got {result:?}"
-            );
-        });
-    }
-
-    #[test]
-    fn inserted_awaiting_ack_rolls_back_on_send_failure() {
-        futures::executor::block_on(async {
-            let deployment_id = "deploy-fresh-awaiting";
-            let request_id = "req-fresh-awaiting";
-            let s = store();
-            let record = sample_record(
-                request_id,
-                deployment_id,
-                "fp-fresh-awaiting",
-                RouterProvisioningRequestState::AwaitingAck,
-                None,
-            );
-            let outcome = InsertionOutcome::Inserted(record);
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
-
-            let result =
-                super::dispatch_provision_send(request_key.clone(), outcome, s, || async {
-                    Err(RouterOutboundError::CallFailed("simulated".to_owned()))
-                })
-                .await;
-
-            assert!(
-                matches!(result, Err(super::RouterError::ProvisionCallFailed(_))),
-                "expected ProvisionCallFailed, got {result:?}"
-            );
-            assert!(store().get_by_request_id(&request_key).is_none());
-        });
-    }
-
-    #[test]
-    fn inserted_awaiting_ack_returns_accepted_on_send_success() {
-        futures::executor::block_on(async {
-            let deployment_id = "deploy-fresh-success";
-            let request_id = "req-fresh-success";
-            let s = store();
-            let record = sample_record(
-                request_id,
-                deployment_id,
-                "fp-fresh-success",
-                RouterProvisioningRequestState::AwaitingAck,
-                None,
-            );
-            let outcome = InsertionOutcome::Inserted(record);
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
-
-            let result = super::dispatch_provision_send(request_key, outcome, s, || async {
-                Ok(ProvisionAcceptResponse::Accepted {
-                    job_view: job_view(),
-                    intent_lock_count: 1,
-                })
-            })
-            .await
-            .expect("fresh send succeeds");
-
-            assert!(
-                matches!(result, ProvisionGraphResponse::Accepted { .. }),
-                "expected Accepted, got {result:?}"
-            );
-        });
+            .expect("encode");
+            let decoded = decode_upgrade_args(&bytes).expect("decoded");
+            assert_eq!(decoded.provision_canister, Some(provision));
+        }
     }
 }

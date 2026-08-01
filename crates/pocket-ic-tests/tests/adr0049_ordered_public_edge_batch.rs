@@ -4,11 +4,11 @@ use gleaph_gql::Value;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_global_vertex_id};
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
+    FederationEnv, ensure_edge_label, ensure_property, ensure_vertex_label,
     arm_router_fault, e2e_insert_vertex, e2e_reverse_resolved_edge_property,
-    evict_graph_mutation_journal, execute_batch_as_admin,
-    federation_graph_element_id_encoding_key_bytes, gql_execute_idempotent_as_admin,
-    gql_query_as_admin, install_single_shard_federation, mutation_status_as_admin,
+    evict_graph_mutation_journal, batch_insert_as_admin,
+    federation_graph_element_id_encoding_key_bytes, gql_execute_as_admin,
+    gql_query_as_admin, install_single_shard_federation, get_mutation_status_as_admin,
     run_router_recovery_timer,
 };
 use gleaph_router::types::{
@@ -103,13 +103,13 @@ fn ordered_public_edge_batch_commits_and_replays_exactly() {
     let request = ordered_request(&env);
 
     let first =
-        execute_batch_as_admin(&env, request.clone()).expect("ordered public batch must commit");
+        batch_insert_as_admin(&env, request.clone()).expect("ordered public batch must commit");
     assert_eq!(first.status.phase, MutationLifecyclePhase::Completed);
     let mutation_id = first.status.mutation_id;
     let receipt = first.receipt.clone().expect("completed batch receipt");
     assert_eq!(receipt.logical_edge_count, 1);
 
-    let replay = execute_batch_as_admin(&env, request)
+    let replay = batch_insert_as_admin(&env, request)
         .expect("exact ordered public retry must be idempotent");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, mutation_id);
@@ -134,20 +134,20 @@ fn ordered_public_edge_batch_rejects_missing_catalog_name_before_reservation() {
             initial_edge_properties: Vec::new(),
         })],
     });
-    let error = execute_batch_as_admin(&env, request).unwrap_err();
+    let error = batch_insert_as_admin(&env, request).unwrap_err();
     assert!(matches!(error, RouterError::NotFound(name) if name == "MISSING"));
 }
 
 #[test]
 fn ordered_public_edge_batch_persists_property_and_inline_values() {
     let env = install_single_shard_federation();
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type",
         "adr0049-inline-schema",
     );
-    let edge_label = admin_intern_edge_label(&env, "ROAD");
-    let score = admin_intern_property(&env, "score");
+    let edge_label = ensure_edge_label(&env, "ROAD");
+    let score = ensure_property(&env, "score");
     let source = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let target = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
@@ -167,7 +167,7 @@ fn ordered_public_edge_batch_persists_property_and_inline_values() {
         })],
     });
 
-    let status = execute_batch_as_admin(&env, request)
+    let status = batch_insert_as_admin(&env, request)
         .expect("property and inline ordered batch must commit");
     assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
     assert!(edge_label.raw() > 0);
@@ -192,8 +192,8 @@ fn ordered_public_edge_batch_persists_property_and_inline_values() {
 #[test]
 fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
     let env = install_single_shard_federation();
-    admin_intern_edge_label(&env, "ROAD");
-    let score = admin_intern_property(&env, "score");
+    ensure_edge_label(&env, "ROAD");
+    let score = ensure_property(&env, "score");
 
     let source_result = e2e_insert_vertex(&env, env.graph_source);
     let source = source_result.global_vertex_id;
@@ -249,9 +249,9 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
     });
 
     let status =
-        execute_batch_as_admin(&env, request.clone()).expect("mixed ordered batch must commit");
+        batch_insert_as_admin(&env, request.clone()).expect("mixed ordered batch must commit");
     assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
-    let replay = execute_batch_as_admin(&env, request)
+    let replay = batch_insert_as_admin(&env, request)
         .expect("mixed ordered batch replay must be idempotent");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, status.status.mutation_id);
@@ -308,13 +308,13 @@ fn ordered_public_edge_batch_recovers_after_canonical_receipt_failure() {
     let env = install_single_shard_federation();
     let request = ordered_request(&env);
     arm_router_fault(&env, 4);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(
         matches!(error, RouterError::Internal(message) if message.contains("canonical commit fault"))
     );
 
     arm_router_fault(&env, 0);
-    let before_recovery = mutation_status_as_admin(
+    let before_recovery = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-replay",
@@ -325,7 +325,7 @@ fn ordered_public_edge_batch_recovers_after_canonical_receipt_failure() {
         MutationLifecyclePhase::CanonicalCommitted
     );
     run_router_recovery_timer(&env);
-    let status = mutation_status_as_admin(
+    let status = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-replay",
@@ -342,7 +342,7 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
     // Graph has already retired the journal entry when Router loses the callback. The durable
     // Router record must remain RetirementPending, never be treated as a fresh canonical write.
     arm_router_fault(&env, 5);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message)
@@ -350,7 +350,7 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
     ));
 
     arm_router_fault(&env, 0);
-    let pending = mutation_status_as_admin(
+    let pending = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-replay",
@@ -361,7 +361,7 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
     assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
 
     run_router_recovery_timer(&env);
-    let completed = mutation_status_as_admin(
+    let completed = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-replay",
@@ -371,7 +371,7 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
 
     // An exact retry after recovery returns the same mutation rather than adding another edge.
     let replay =
-        execute_batch_as_admin(&env, request).expect("completed ordered retry must replay");
+        batch_insert_as_admin(&env, request).expect("completed ordered retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
@@ -386,7 +386,7 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     // Graph retires the mutation, but Router loses the acknowledgement before recording its
     // terminal state.
     arm_router_fault(&env, 5);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message)
@@ -394,7 +394,7 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     ));
     arm_router_fault(&env, 0);
 
-    let pending = mutation_status_as_admin(
+    let pending = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-replay",
@@ -409,7 +409,7 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     assert_eq!(evict_graph_mutation_journal(&env, env.graph_source), 0);
     run_router_recovery_timer(&env);
 
-    let after_absent = mutation_status_as_admin(
+    let after_absent = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-replay",
@@ -422,7 +422,7 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     assert_eq!(after_absent.mutation_id, pending.mutation_id);
 
     // The exact retry observes the same durable Router record; it does not create another edge.
-    let retry = execute_batch_as_admin(&env, request)
+    let retry = batch_insert_as_admin(&env, request)
         .expect("exact retry must remain a repairable pending mutation");
     assert_eq!(
         retry.status.phase,
@@ -434,11 +434,11 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
 #[test]
 fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_receipt_failure() {
     let env = install_single_shard_federation();
-    admin_intern_vertex_label(&env, "Person");
+    ensure_vertex_label(&env, "Person");
     let request = ordered_vertex_request("adr0049-public-vertex-replay");
 
     arm_router_fault(&env, 4);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         gleaph_graph_kernel::federation::RouterError::Internal(message)
@@ -446,7 +446,7 @@ fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_rece
     ));
 
     arm_router_fault(&env, 0);
-    let pending = mutation_status_as_admin(
+    let pending = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-vertex-replay",
@@ -455,7 +455,7 @@ fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_rece
     assert_eq!(pending.phase, MutationLifecyclePhase::CanonicalCommitted);
 
     run_router_recovery_timer(&env);
-    let completed = mutation_status_as_admin(
+    let completed = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-vertex-replay",
@@ -464,7 +464,7 @@ fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_rece
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
     let replay =
-        execute_batch_as_admin(&env, request).expect("completed ordered vertex retry must replay");
+        batch_insert_as_admin(&env, request).expect("completed ordered vertex retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
@@ -472,11 +472,11 @@ fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_rece
 #[test]
 fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() {
     let env = install_single_shard_federation();
-    admin_intern_vertex_label(&env, "Person");
+    ensure_vertex_label(&env, "Person");
     let request = ordered_vertex_request("adr0049-public-vertex-retirement");
 
     arm_router_fault(&env, 5);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         gleaph_graph_kernel::federation::RouterError::Internal(message)
@@ -484,7 +484,7 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
     ));
 
     arm_router_fault(&env, 0);
-    let pending = mutation_status_as_admin(
+    let pending = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-vertex-retirement",
@@ -493,7 +493,7 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
     assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
 
     run_router_recovery_timer(&env);
-    let completed = mutation_status_as_admin(
+    let completed = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-vertex-retirement",
@@ -502,7 +502,7 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
     let replay =
-        execute_batch_as_admin(&env, request).expect("completed ordered vertex retry must replay");
+        batch_insert_as_admin(&env, request).expect("completed ordered vertex retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
@@ -510,18 +510,18 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
 #[test]
 fn ordered_public_mixed_batch_recovers_after_canonical_receipt_failure() {
     let env = install_single_shard_federation();
-    admin_intern_vertex_label(&env, "Person");
+    ensure_vertex_label(&env, "Person");
     let request = ordered_mixed_request(&env, "adr0049-public-mixed-replay");
 
     arm_router_fault(&env, 4);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message) if message.contains("canonical commit fault")
     ));
 
     arm_router_fault(&env, 0);
-    let pending = mutation_status_as_admin(
+    let pending = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-mixed-replay",
@@ -530,7 +530,7 @@ fn ordered_public_mixed_batch_recovers_after_canonical_receipt_failure() {
     assert_eq!(pending.phase, MutationLifecyclePhase::CanonicalCommitted);
 
     run_router_recovery_timer(&env);
-    let completed = mutation_status_as_admin(
+    let completed = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-mixed-replay",
@@ -542,11 +542,11 @@ fn ordered_public_mixed_batch_recovers_after_canonical_receipt_failure() {
 #[test]
 fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
     let env = install_single_shard_federation();
-    admin_intern_vertex_label(&env, "Person");
+    ensure_vertex_label(&env, "Person");
     let request = ordered_mixed_request(&env, "adr0049-public-mixed-retirement");
 
     arm_router_fault(&env, 5);
-    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = batch_insert_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message)
@@ -554,7 +554,7 @@ fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
     ));
 
     arm_router_fault(&env, 0);
-    let pending = mutation_status_as_admin(
+    let pending = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-mixed-retirement",
@@ -563,7 +563,7 @@ fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
     assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
 
     run_router_recovery_timer(&env);
-    let completed = mutation_status_as_admin(
+    let completed = get_mutation_status_as_admin(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         "adr0049-public-mixed-retirement",
@@ -571,7 +571,7 @@ fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
     .expect("recovered mixed retirement status");
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
-    let replay = execute_batch_as_admin(&env, request).expect("completed mixed retry must replay");
+    let replay = batch_insert_as_admin(&env, request).expect("completed mixed retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }

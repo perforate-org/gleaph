@@ -17,7 +17,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, admin_intern_property, admin_intern_vertex_label,
+    FederationEnv, GRAPH_NAME, ensure_property, ensure_vertex_label,
     create_vertex_property_index, e2e_insert_vertex_with_label_and_property,
     gql_query_with_params_as_admin, install_federation, install_vector_canister,
 };
@@ -65,7 +65,7 @@ fn set_dispatch_activation(env: &FederationEnv, enabled: bool) {
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&enabled).expect("encode activation"),
         )
         .expect("admin_set_vector_dispatch_activation call");
@@ -121,7 +121,7 @@ fn attach_shard(env: &FederationEnv, shard_id: ShardId, vector: Principal) {
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&args).expect("encode attach"),
         )
         .expect("admin_attach_vector_index_shard call");
@@ -136,7 +136,7 @@ fn router_graph_id(env: &FederationEnv) -> GraphId {
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&GRAPH_NAME.to_string()).expect("encode lookup"),
         )
         .expect("lookup_graph_id call");
@@ -230,8 +230,8 @@ fn setup_search_where_env(env: &FederationEnv, vector: Principal) {
     register_vector_index(env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(env, vector);
 
-    let doc_label_id = admin_intern_vertex_label(env, "Document");
-    let cat_id = admin_intern_property(env, "cat_id");
+    let doc_label_id = ensure_vertex_label(env, "Document");
+    let cat_id = ensure_property(env, "cat_id");
     create_vertex_property_index(
         env,
         "document_cat_id_idx",
@@ -382,8 +382,8 @@ fn search_where_equality_rejects_missing_exact_index() {
     register_vector_index(&env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(&env, vector);
 
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let cat_id = admin_intern_property(&env, "cat_id");
+    let doc_label_id = ensure_vertex_label(&env, "Document");
+    let cat_id = ensure_property(&env, "cat_id");
 
     // No property index is created for Document.cat_id.
     let v = e2e_insert_vertex_with_label_and_property(
@@ -425,9 +425,9 @@ fn search_where_equality_rejects_wrong_label_index() {
     register_vector_index(&env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(&env, vector);
 
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let _other_label_id = admin_intern_vertex_label(&env, "Other");
-    let cat_id = admin_intern_property(&env, "cat_id");
+    let doc_label_id = ensure_vertex_label(&env, "Document");
+    let _other_label_id = ensure_vertex_label(&env, "Other");
+    let cat_id = ensure_property(&env, "cat_id");
 
     // Index covers Other.cat_id, not Document.cat_id.
     create_vertex_property_index(
@@ -477,9 +477,9 @@ fn search_where_equality_label_filter_wins_over_closer_other_vertex() {
     register_vector_index(&env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(&env, vector);
 
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let other_label_id = admin_intern_vertex_label(&env, "Other");
-    let cat_id = admin_intern_property(&env, "cat_id");
+    let doc_label_id = ensure_vertex_label(&env, "Document");
+    let other_label_id = ensure_vertex_label(&env, "Other");
+    let cat_id = ensure_property(&env, "cat_id");
 
     // Exact index covers Document.cat_id.
     create_vertex_property_index(

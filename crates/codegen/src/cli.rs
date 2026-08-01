@@ -168,11 +168,11 @@ async fn fetch_manifest(
     let args =
         Encode!(&graph.to_string()).map_err(|error| format!("encode graph name: {error}"))?;
     let response = agent
-        .query(&canister_id, "prepared_manifest")
+        .query(&canister_id, "list_prepared")
         .with_arg(args)
         .call()
         .await
-        .map_err(|error| format!("query prepared_manifest: {error}"))?;
+        .map_err(|error| format!("query list_prepared: {error}"))?;
     decode_manifest_response(&response)
 }
 
@@ -197,19 +197,19 @@ fn resolve_network(network: &str, fetch_root_key_flag: bool) -> Result<(&str, bo
 
 fn decode_manifest_response(response: &[u8]) -> Result<String, String> {
     let args = IDLArgs::from_bytes(response)
-        .map_err(|error| format!("decode prepared_manifest response: {error}"))?;
+        .map_err(|error| format!("decode list_prepared response: {error}"))?;
     let Some(IDLValue::Variant(result)) = args.args.first() else {
-        return Err("decode prepared_manifest response: expected Result variant".into());
+        return Err("decode list_prepared response: expected Result variant".into());
     };
     let value = &result.0.val;
     if result.0.id.get_id() != candid::idl_hash("Ok") {
-        return Err(format!("Router rejected prepared_manifest: {value:?}"));
+        return Err(format!("Router rejected list_prepared: {value:?}"));
     }
     let payload = IDLArgs::new(std::slice::from_ref(value))
         .to_bytes()
-        .map_err(|error| format!("decode prepared_manifest payload: {error}"))?;
+        .map_err(|error| format!("decode list_prepared payload: {error}"))?;
     let manifest = Decode!(&payload, gleaph_prepared_api::PreparedManifest)
-        .map_err(|error| format!("decode prepared_manifest payload: {error}"))?;
+        .map_err(|error| format!("decode list_prepared payload: {error}"))?;
     serde_json::to_string(&manifest)
         .map_err(|error| format!("serialize prepared manifest: {error}"))
 }

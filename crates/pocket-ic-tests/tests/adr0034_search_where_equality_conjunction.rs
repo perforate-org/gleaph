@@ -19,8 +19,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, admin_intern_edge_label, admin_intern_property,
-    admin_intern_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
+    FederationEnv, GRAPH_NAME, ensure_edge_label, ensure_property,
+    ensure_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
     e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_two_properties,
     e2e_set_vertex_property, gql_query_with_params_as_admin, install_federation,
     install_vector_canister,
@@ -69,7 +69,7 @@ fn set_dispatch_activation(env: &FederationEnv, enabled: bool) {
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&enabled).expect("encode activation"),
         )
         .expect("admin_set_vector_dispatch_activation call");
@@ -125,7 +125,7 @@ fn attach_shard(env: &FederationEnv, shard_id: ShardId, vector: Principal) {
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&args).expect("encode attach"),
         )
         .expect("admin_attach_vector_index_shard call");
@@ -140,7 +140,7 @@ fn router_graph_id(env: &FederationEnv) -> GraphId {
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&GRAPH_NAME.to_string()).expect("encode lookup"),
         )
         .expect("lookup_graph_id call");
@@ -254,9 +254,9 @@ impl<'a> CommonConjunctionFixture<'a> {
         register_vector_index(env, VectorMetric::L2Squared, vector);
         enable_vector_dispatch(env, vector);
 
-        let doc_label_id = admin_intern_vertex_label(env, "Document");
-        let cat_id = admin_intern_property(env, "cat_id");
-        let tenant_id = admin_intern_property(env, "tenant_id");
+        let doc_label_id = ensure_vertex_label(env, "Document");
+        let cat_id = ensure_property(env, "cat_id");
+        let tenant_id = ensure_property(env, "tenant_id");
         create_vertex_property_index(
             env,
             "document_cat_id_idx",
@@ -424,9 +424,9 @@ impl<'a> EightWayConjunctionFixture<'a> {
         register_vector_index(env, VectorMetric::L2Squared, vector);
         enable_vector_dispatch(env, vector);
 
-        let doc_label_id = admin_intern_vertex_label(env, "Document");
+        let doc_label_id = ensure_vertex_label(env, "Document");
         let property_ids: Vec<_> = (0..8)
-            .map(|i| admin_intern_property(env, &format!("filter_p{i}")))
+            .map(|i| ensure_property(env, &format!("filter_p{i}")))
             .collect();
         for i in 0..8 {
             create_vertex_property_index(
@@ -557,9 +557,9 @@ impl<'a> MissingIndexFixture<'a> {
         register_vector_index(env, VectorMetric::L2Squared, vector);
         enable_vector_dispatch(env, vector);
 
-        let doc_label_id = admin_intern_vertex_label(env, "Document");
-        let cat_id = admin_intern_property(env, "cat_id");
-        let tenant_id = admin_intern_property(env, "tenant_id");
+        let doc_label_id = ensure_vertex_label(env, "Document");
+        let cat_id = ensure_property(env, "cat_id");
+        let tenant_id = ensure_property(env, "tenant_id");
         // Only cat_id has an active index for Document; tenant_id does not.
         create_vertex_property_index(
             env,
@@ -621,11 +621,11 @@ impl<'a> NonLeadingConjunctionFixture<'a> {
         register_vector_index(env, VectorMetric::L2Squared, vector);
         enable_vector_dispatch(env, vector);
 
-        let author_label_id = admin_intern_vertex_label(env, "Author").raw();
-        let doc_label_id = admin_intern_vertex_label(env, "Document").raw();
-        let wrote_label_id = admin_intern_edge_label(env, "WROTE").raw();
-        let cat_id = admin_intern_property(env, "cat_id");
-        let tenant_id = admin_intern_property(env, "tenant_id");
+        let author_label_id = ensure_vertex_label(env, "Author").raw();
+        let doc_label_id = ensure_vertex_label(env, "Document").raw();
+        let wrote_label_id = ensure_edge_label(env, "WROTE").raw();
+        let cat_id = ensure_property(env, "cat_id");
+        let tenant_id = ensure_property(env, "tenant_id");
 
         create_vertex_property_index(
             env,

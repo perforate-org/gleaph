@@ -17,9 +17,8 @@ const _: &str =
     include_str!("../../../frontend/apps/social-demo/src/data/scenarios.generated.json");
 
 use candid::{CandidType, Deserialize, Principal};
-use gleaph_cdk::call_prepared_query;
 use gleaph_graph_kernel::federation::RouterError;
-use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use ic_cdk_macros::{init, post_upgrade, query};
 use std::cell::RefCell;
 
@@ -195,13 +194,29 @@ fn scenario_to_request(scenario: SocialDemoScenario) -> (&'static str, Vec<u8>) 
 async fn execute_social_demo_scenario(
     scenario: SocialDemoScenario,
 ) -> Result<GqlQueryResult, SocialDemoGatewayError> {
+    use ic_cdk::call::{CallFailed, Response};
+
     let router = router_canister()?;
     let (name, params) = scenario_to_request(scenario);
 
-    let router_result: Result<GqlQueryResult, RouterError> =
-        call_prepared_query(router, name, params)
-            .await
-            .map_err(|e| SocialDemoGatewayError::CallFailed(e.to_string()))?;
+    // Router L1 `execute_prepared` (ADR 0056): bounded-wait composite query with an Eventual
+    // read-consistency contract and no caller-selected sort. The Gateway never supplies GQL,
+    // query names, graph names, or parameters beyond the fixed scenario blob.
+    let args = candid::utils::encode_args((
+        name,
+        params,
+        Option::<Vec<gleaph_prepared_api::PreparedSortSpec>>::None,
+        ReadMode::Eventual,
+    ))
+    .expect("Candid encode execute_prepared arguments");
+    let response: Result<Response, CallFailed> =
+        ic_cdk::call::Call::bounded_wait(router, "execute_prepared")
+            .with_raw_args(&args)
+            .await;
+    let router_result: Result<GqlQueryResult, RouterError> = response
+        .map_err(|e| SocialDemoGatewayError::CallFailed(format!("execute_prepared call: {e:?}")))?
+        .candid::<Result<GqlQueryResult, RouterError>>()
+        .map_err(|e| SocialDemoGatewayError::CallFailed(format!("decode execute_prepared: {e}")))?;
     router_result.map_err(SocialDemoGatewayError::Router)
 }
 

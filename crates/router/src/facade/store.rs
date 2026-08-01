@@ -19,7 +19,7 @@ mod registry_invariants;
 pub(crate) mod uniqueness;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use super::stable::{
     ROUTER_CONSTRAINT_NAME_CATALOG, ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD,

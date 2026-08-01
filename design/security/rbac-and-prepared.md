@@ -23,7 +23,7 @@ Five levels (each includes lower):
 | **Manager** | Same as Write | Yes | Capability bits (e.g. `PREPARE_REGISTER`) |
 | **Admin** | Full | Yes | Grant roles |
 
-Default: unknown principals are **Executor** until `admin_grant_role`.
+Default: unknown principals are **Executor** until `grant_role`.
 
 ## Anonymous-principal invariant
 
@@ -35,7 +35,7 @@ Default: unknown principals are **Executor** until `admin_grant_role`.
 |-------|----------------------------|----------|
 | `crates/auth` | `AuthState::upsert_record`, `AuthState::bootstrap_admins` | Reject anonymous before any mutation; bootstrap is **all-or-nothing** (anonymous issuer or any anonymous initial admin inserts no rows). Returns `AuthWriteError::AnonymousPrincipal`. |
 | `crates/auth` (read) | `AuthState::role_of` | Defense in depth: anonymous always resolves to `Executor` even if a legacy/corrupt anonymous row exists, so effective authorization is never elevated. |
-| Router | `canister::init` (traps), `admin_grant_role` → `admin_upsert_principal` | Route bootstrap/grant through the checked auth API; anonymous target surfaces `RouterError::InvalidArgument`. |
+| Router | `canister::init` (traps), `grant_role` → `admin_upsert_principal` | Route bootstrap/grant through the checked auth API; anonymous target surfaces `RouterError::InvalidArgument`. |
 | Graph metadata | `GraphMetadata::validate_for_store` | Reject `FederationRouting` whose `router_canister` or `index_canister` is anonymous (`GraphMetadataError::AnonymousFederationPrincipal`). Shared by install-time `GraphInitArgs` and `set_federation_routing`; there is no post-install graph wiring endpoint (PocketIC fixtures wire routing through install-time `GraphInitArgs`). |
 | Graph router guard | `guard_router_canister` (graph) | Defense in depth: reject anonymous caller. |
 | Graph Index | `IndexStore::init_from_args` | Reject anonymous `router_canister` **before** clearing/writing any stable state (`IndexError::AnonymousRouter`); a failed init leaves catalog/postings/router untouched. |
@@ -65,8 +65,8 @@ GQL catalog statements set `has_catalog_modification` in [`ProgramModificationFl
 | **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program` | **Write** (includes `has_catalog_modification`) |
 | **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path) | `authorize_index_ddl` | **Admin** or Manager with **`PREPARE_REGISTER`** |
 | **Prepared plan registry** | `authorize_prepared_catalog_change` | Admin or Manager with **`PREPARE_REGISTER`** |
-| **Federation graph registration** | `admin_register_graph` | **Admin** (`Role::Admin` in auth store) |
-| **Shard registry / catalog intern / backfill** | `admin_*` Candid APIs | **Admin** |
+| **Federation graph registration** | `register_graph` | **Admin** (`Role::Admin` in auth store) |
+| **Shard registry / catalog intern / backfill** | `register_shard` / `ensure_*` / `advance_backfill` | **Admin** |
 
 Graph type catalog DDL runs on the main GQL path **before** ingress dispatch when the transaction block contains catalog statements ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)). Catalog-only blocks return zero rows without dispatching DML/query ops.
 

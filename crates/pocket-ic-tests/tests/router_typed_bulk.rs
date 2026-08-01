@@ -10,8 +10,8 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::encode_gql_params_blob;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    create_vertex_property_index, gql_execute_idempotent_as_admin, gql_query_as_admin,
+    ensure_edge_label, ensure_property, ensure_vertex_label,
+    create_vertex_property_index, gql_execute_as_admin, gql_query_as_admin,
     install_single_shard_federation,
 };
 use gleaph_router::types::{
@@ -38,7 +38,7 @@ fn params_blob(items: Vec<(&str, Value)>) -> Vec<u8> {
         .expect("encode params")
 }
 
-fn execute_batch_as_admin(
+fn batch_insert_as_admin(
     env: &gleaph_pocket_ic_tests::FederationEnv,
     mutations: Vec<GqlExecuteIdempotentBatchItem>,
 ) -> Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult> {
@@ -52,17 +52,17 @@ fn execute_batch_as_admin(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute_idempotent_batch",
-            Encode!(&args).expect("encode gql_execute_idempotent_batch"),
+            "gql_execute_batch",
+            Encode!(&args).expect("encode gql_execute_batch"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute_idempotent_batch on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_execute_batch on router: {e:?}"));
     match Decode!(
         &bytes,
         Result<GqlExecuteIdempotentBatchResult, RouterError>
     ) {
         Ok(Ok(result)) => result.results,
-        Ok(Err(err)) => panic!("gql_execute_idempotent_batch rejected: {err:?}"),
-        Err(err) => panic!("decode gql_execute_idempotent_batch: {err}"),
+        Ok(Err(err)) => panic!("gql_execute_batch rejected: {err:?}"),
+        Err(err) => panic!("decode gql_execute_batch: {err}"),
     }
 }
 
@@ -119,17 +119,17 @@ fn social_posted_mutations(
 fn social_demo_posted_shape_uses_unified_bulk_path() {
     let env = install_single_shard_federation();
 
-    admin_intern_property(&env, "demo_graph");
-    admin_intern_property(&env, "demo_id");
-    admin_intern_property(&env, "user_id");
-    admin_intern_property(&env, "demo_edge_id");
-    admin_intern_property(&env, "demo_kind");
-    admin_intern_property(&env, "body");
-    admin_intern_property(&env, "created_at");
-    admin_intern_property(&env, "is_public");
-    admin_intern_vertex_label(&env, "User");
-    admin_intern_vertex_label(&env, "Post");
-    admin_intern_edge_label(&env, "POSTED");
+    ensure_property(&env, "demo_graph");
+    ensure_property(&env, "demo_id");
+    ensure_property(&env, "user_id");
+    ensure_property(&env, "demo_edge_id");
+    ensure_property(&env, "demo_kind");
+    ensure_property(&env, "body");
+    ensure_property(&env, "created_at");
+    ensure_property(&env, "is_public");
+    ensure_vertex_label(&env, "User");
+    ensure_vertex_label(&env, "Post");
+    ensure_edge_label(&env, "POSTED");
     create_vertex_property_index(
         &env,
         "social_user_user_id",
@@ -145,13 +145,13 @@ fn social_demo_posted_shape_uses_unified_bulk_path() {
         "social_typed_post_demo_id_index",
     );
 
-    gql_execute_idempotent_as_admin(&env, USER_ALICE, "social_insert_alice");
-    gql_execute_idempotent_as_admin(&env, USER_BOB, "social_insert_bob");
-    gql_execute_idempotent_as_admin(&env, USER_CAROL, "social_insert_carol");
+    gql_execute_as_admin(&env, USER_ALICE, "social_insert_alice");
+    gql_execute_as_admin(&env, USER_BOB, "social_insert_bob");
+    gql_execute_as_admin(&env, USER_CAROL, "social_insert_carol");
 
     // The unified bulk path is always active: no admin capability activation is needed.
     let posts = social_posted_mutations(&["alice", "bob"], 1);
-    let results = execute_batch_as_admin(&env, posts);
+    let results = batch_insert_as_admin(&env, posts);
     assert_eq!(
         results.len(),
         2,

@@ -1907,10 +1907,10 @@ name = "gleaph-social-demo-gateway"
 version = "0.1.0"
 dependencies = [
  "candid",
- "gleaph-cdk",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-graph-kernel",
+ "gleaph-prepared-api",
  "ic-cdk",
  "ic-cdk-macros",
  "serde",

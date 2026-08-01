@@ -15,10 +15,10 @@ fn lookup_graph_id(env: &gleaph_pocket_ic_tests::TwoGraphTwoIndexEnv, graph_name
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&graph_name.to_string()).expect("encode lookup_graph_id"),
         )
-        .expect("lookup_graph_id");
+        .expect("get_graph_id");
     match Decode!(&bytes, Result<GraphId, RouterError>) {
         Ok(Ok(graph_id)) => graph_id,
         Ok(Err(err)) => panic!("lookup_graph_id rejected: {err:?}"),

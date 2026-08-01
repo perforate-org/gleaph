@@ -1,7 +1,7 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-07-02 UTC
-Status: Phases 0-4 done (Phase 3 `Canonical` deferred; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
+Status: Phases 0-4 done (Phase 3 `Canonical` removed by ADR 0056; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
 Anchor timestamp: 2026-07-02 09:56:23 UTC +0000
 
 ## Purpose
@@ -24,12 +24,12 @@ The governing decision is
 
 Verified against the repository at `2026-06-21 05:36:08 UTC +0000`.
 
-| ACID property | Implemented scope | Gap |
-|---------------|-------------------|-----|
-| Atomicity | One synchronous canonical mutation segment on one graph shard | Multi-DML, multi-shard, and graph-to-index work cross commit points |
-| Consistency | Graph owns canonical data; durable logs repair label stats and index projections | Public read paths can observe different projection ages |
-| Isolation | One canister message handler is serialized and atomic | No transaction-wide snapshot, revision validation, or cross-shard read timestamp |
-| Durability | IC replicated state, stable stores, mutation journals, delta log, repair journal | Recovery of federated partial progress depends on retry/admin activity and bounded retention |
+| ACID property | Implemented scope                                                                | Gap                                                                                          |
+| ------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Atomicity     | One synchronous canonical mutation segment on one graph shard                    | Multi-DML, multi-shard, and graph-to-index work cross commit points                          |
+| Consistency   | Graph owns canonical data; durable logs repair label stats and index projections | Public read paths can observe different projection ages                                      |
+| Isolation     | One canister message handler is serialized and atomic                            | No transaction-wide snapshot, revision validation, or cross-shard read timestamp             |
+| Durability    | IC replicated state, stable stores, mutation journals, delta log, repair journal | Recovery of federated partial progress depends on retry/admin activity and bounded retention |
 
 The target is not a single binary "ACID compliant" label. Every supported operation must name its
 atomicity scope, visibility boundary, retry behavior, and projection freshness contract.
@@ -80,15 +80,15 @@ The target read modes are:
 
 ## Sources of truth
 
-| Fact | Owner / source of truth |
-|------|-------------------------|
-| Vertex, edge, property, label membership | Graph shard canonical stores |
-| Shard-local mutation outcome | `GRAPH_MUTATION_JOURNAL` |
-| Label-stats projection payload | `LABEL_STATS_DELTA_LOG` |
-| Router label counts | Router projection maps, derived through `ROUTER_LABEL_STATS_PROJECTION` |
-| Property and label postings | graph-index, derived from graph state |
-| Failed posting propagation intent | Graph index repair journal |
-| Client request identity and federated progress | Router client mutation journal |
+| Fact                                           | Owner / source of truth                                                 |
+| ---------------------------------------------- | ----------------------------------------------------------------------- |
+| Vertex, edge, property, label membership       | Graph shard canonical stores                                            |
+| Shard-local mutation outcome                   | `GRAPH_MUTATION_JOURNAL`                                                |
+| Label-stats projection payload                 | `LABEL_STATS_DELTA_LOG`                                                 |
+| Router label counts                            | Router projection maps, derived through `ROUTER_LABEL_STATS_PROJECTION` |
+| Property and label postings                    | graph-index, derived from graph state                                   |
+| Failed posting propagation intent              | Graph index repair journal                                              |
+| Client request identity and federated progress | Router client mutation journal                                          |
 
 ## Phase 0: Contract and terminology
 
@@ -113,7 +113,7 @@ Deliverables:
   is deferred to Phase 2; only the lifecycle phase ships in Phase 0.
 - **Done.** Reconcile ADR 0023's completion invariant with ADR 0024's deferred-index
   success. Both ADRs carry the ADR 0029 vocabulary: a repair-journaled (deferred) flush
-  records the shard-local graph-journal `Completed` while the *distributed* mutation stays
+  records the shard-local graph-journal `Completed` while the _distributed_ mutation stays
   `ProjectionPending` until the index watermark is reached, and Router owns the final
   cross-canister `Completed` transition (ADR 0023 §"Interaction with the mutation journal
   (ADR 0024)" and INV section; ADR 0024 §"Consistency vocabulary (ADR 0029)").
@@ -155,7 +155,7 @@ Deliverables:
   The segment is extracted as the named `apply_canonical_mutation_segment` in
   `crates/graph/src/gql_run.rs`. It takes **no `PropertyIndexLookup` handle** and runs all CALL
   procedures synchronously, so it structurally cannot issue an inter-canister call. The missing
-  index parameter is the enforcement; index posting *delivery* is the separate `flush_pending`
+  index parameter is the enforcement; index posting _delivery_ is the separate `flush_pending`
   boundary that runs only after the segment.
 - **Done.** Commit canonical data, mutation outcome/progress, and required projection intent
   together. `apply_canonical_mutation_segment` performs the store mutation, the durable
@@ -179,10 +179,10 @@ once a peer-shard client exists.
 Tests:
 
 - **Done.** Reopen-equivalent / commit-together proof: `canonical_segment_commits_canonical_data_and_
-  projection_intent_together` (graph `gql_run` tests) shows canonical data, journal progress, and
-  projection intent are durable together while index *delivery* is deferred to the repair journal.
+projection_intent_together` (graph `gql_run` tests) shows canonical data, journal progress, and
+  projection intent are durable together while index _delivery_ is deferred to the repair journal.
 - **Done.** Interleaving / stale-precondition rejection: `wire_update_persists_label_stats_delta_and_
-  dedupes_retry` and `deferred_index_flush_completes_single_dml_mutation_journal` prove an already
+dedupes_retry` and `deferred_index_flush_completes_single_dml_mutation_journal` prove an already
   applied `mutation_id` returns the cached outcome instead of silently re-applying; a partial
   multi-DML bundle stays `Incomplete` (`deferred_index_flush_leaves_multi_dml_mutation_incomplete`).
 - **Done.** Trap injection proving whole-message rollback end to end:
@@ -216,8 +216,8 @@ Exit criteria:
 
 ## Phase 2: Mutation-linked projection watermarks
 
-**Status: Done (as of 2026-06-21 11:05:29 UTC +0000).** The mutation token is *issued* and
-the graph-index watermark is *exposed*; enforcing the `AtLeast(token)` read barrier remains
+**Status: Done (as of 2026-06-21 11:05:29 UTC +0000).** The mutation token is _issued_ and
+the graph-index watermark is _exposed_; enforcing the `AtLeast(token)` read barrier remains
 Phase 3 (issue-only scope).
 
 Goal: make derived-state freshness observable and usable as a read barrier.
@@ -230,7 +230,7 @@ Deliverables:
   (stable region 41, backward-incompatible repack — see
   [stable-memory-inventory.md](../storage/stable-memory-inventory.md)). `flush_pending`
   (vertex / edge / label) threads the federated `mutation_id` to the append site;
-  `mutation_id == 0` is the reserved *untracked* sentinel (e.g. maintenance-timer flushes).
+  `mutation_id == 0` is the reserved _untracked_ sentinel (e.g. maintenance-timer flushes).
 - **Done.** Expose whether graph-index work required by a mutation is pending or applied.
   Graph query `index_pending_min_mutation_id() -> Option<MutationId>` returns the smallest
   tracked unapplied mutation id (the mutation-linked index watermark); `None` means all
@@ -241,7 +241,7 @@ Deliverables:
   mutation token carries each shard's `emitted_delta_last_seq` as its label-stats watermark.
 - **Done.** Introduce a mutation token carrying the per-shard watermarks needed for
   read-your-writes. `gleaph_graph_kernel::plan_exec::MutationToken { mutation_id, shards:
-  [{ shard_id, label_stats_seq }] }`, returned on `GqlQueryResult.token` for idempotent DML.
+[{ shard_id, label_stats_seq }] }`, returned on `GqlQueryResult.token` for idempotent DML.
   The index barrier is keyed by the monotonic `mutation_id`; label-stats by each shard's seq.
 - **Done (by construction).** No global snapshot timestamp introduced; watermarks are per-shard
   seqs and a monotonic mutation id.
@@ -289,15 +289,16 @@ Goal: stop silently presenting a stale projection as read-your-writes.
 Deliverables:
 
 - **Done.** Read modes live at the Gleaph integration boundary, not in the generic GQL crates:
-  `gleaph_graph_kernel::plan_exec::ReadMode { Eventual, AtLeast(MutationToken), Canonical }`
-  (`Eventual` is the `Default`). New router composite-query entrypoints
-  `gql_query_with_consistency(query, params, ReadMode)` and
-  `prepared_query_with_consistency(name, params, ReadMode)` carry it; the existing
-  `gql_query` / `prepared_query` keep `Eventual` semantics (back-compatible).
+  `gleaph_graph_kernel::plan_exec::ReadMode { Eventual, AtLeast(MutationToken) }`
+  (`Eventual` is the `Default`; `Canonical` was removed in ADR 0056 — it was never implemented).
+  New router composite-query entrypoints
+  `gql_query(query, params, read_mode)` and
+  `execute_prepared(name, params, sort, read_mode)` carry it; the existing
+  `gql_query` / `execute_prepared` default to `Eventual` (back-compatible).
 - **Done.** Unmet watermarks return a retryable `RouterError::ProjectionLag { shard_id, watermark,
-  required, current }` **without serving stale state**; the caller retries after the projection
+required, current }` **without serving stale state**; the caller retries after the projection
   drains.
-- **Done.** The barrier is enforced once in `run_gql` (and the prepared path) before *any* read
+- **Done.** The barrier is enforced once in `run_gql` (and the prepared path) before _any_ read
   shape is dispatched, so the Router label-count fast path, graph-index seed, and graph-shard scan
   are all gated uniformly (no per-path gap). For `AtLeast(token)`, each token shard must satisfy
   both its label-stats projection cursor (`label_stats_projection_cursor`, resolved locally) and
@@ -306,17 +307,16 @@ Deliverables:
 
 Deferred:
 
-- **`Canonical` mode is deferred.** It is rejected at runtime (`InvalidArgument`) rather than
-  silently downgraded. Routing each shape to an owner-side scan (bypassing the label-count fast
-  path and index seed) and documenting which shapes cannot use `Canonical` without an owner scan
-  is left to a follow-up; the `ReadMode::Canonical` variant is reserved on the wire so adding it
-  later is backward-compatible.
+- **`Canonical` mode is removed (ADR 0056).** It was never implemented and is no longer part of
+  `ReadMode`; `Eventual` and `AtLeast(token)` remain. A future owner-scan read mode (routing each
+  shape to an owner-side scan, bypassing the label-count fast path and index seed) is left to a
+  follow-up and would add a new variant backward-compatibly.
 
 Tests:
 
 - **Done.** A successful idempotent DML followed by `AtLeast(token)` is served read-your-writes,
   while a token whose watermark is forced past the projection cursor returns retryable
-  `ProjectionLag`; `Canonical` is rejected and `Eventual` is non-blocking
+  `ProjectionLag`; `Eventual` is non-blocking
   (`single_shard_mutation_token_barrier_status_lifecycle`, PocketIC).
 - **Done.** Barrier decision logic host unit tests: `Eventual` no-op, `Canonical` rejected,
   label-stats lag short-circuit returns `ProjectionLag` with zero index calls, empty token
@@ -352,7 +352,7 @@ Scope decision (projection-only autonomous recovery): the background timer drive
 idempotent half of recovery — projection/index convergence for sagas whose canonical writes are
 already durable. It deliberately does **not** re-dispatch canonical DML, because autonomous shard
 re-execution is the single operation that risks double-apply. Unfinished canonical writes
-(`CanonicalPending`) are resumed by explicit idempotent retry, surfaced via `mutation_status`. Full
+(`CanonicalPending`) are resumed by explicit idempotent retry, surfaced via `get_mutation_status`. Full
 autonomous canonical re-dispatch can be added later without reworking the timer/lease/status
 machinery (it would add envelope `plan_blob`/`params` persistence plus a re-dispatch branch).
 
@@ -368,7 +368,7 @@ Deliverables:
 - Exclude non-terminal mutations from TTL eviction (terminal-only predicate). **Done** (ADR 0025
   revision; `evict_expired_client_mutation_keys`).
 - Operator/SDK inspection for stuck phase, last error, target shard, next retry action. **Done**
-  (`mutation_status` router query).
+  (`get_mutation_status` router query).
 - Bound work per timer message and avoid unsafe lease expiry. **Done** (per-tick scan budget;
   `routing_lease_ns` / `ROUTING_LEASE_TTL_NS` reclaim is safe only pre-envelope).
 
@@ -377,7 +377,7 @@ Tests:
 - Drop the original client after one shard commits; recovery completes remaining shards. **Done** —
   host tests cover the recovery decision logic (scan selection, projection convergence record
   mutations, lease reclaim, TTL retention, status derivation); a PocketIC test asserts the timer is
-  armed, runs, and is a safe no-op on a terminal saga, plus `mutation_status` wiring. A full
+  armed, runs, and is a safe no-op on a terminal saga, plus `get_mutation_status` wiring. A full
   end-to-end convergence test crashes one shard mid-saga, asserts the saga persists as
   `CanonicalPending`, that the autonomous timer leaves it pending without double-applying while the
   shard is down, and that restarting the shard plus an idempotent retry converges it to `Completed`
@@ -438,11 +438,11 @@ Immediate decision (implemented):
 
 Candidate future contracts:
 
-1. **One-shard atomic bundle** *(implemented — completely-new INSERT-only and anchored single-shard
-   subsets):* execute all canonical DML in one message segment on a single shard, with the shard's
+1. **One-shard atomic bundle** _(implemented — completely-new INSERT-only and anchored single-shard
+   subsets):_ execute all canonical DML in one message segment on a single shard, with the shard's
    existing single canonical segment providing read-your-own-writes between statements, then publish
    projection intent. Two qualifying subsets are admitted, both of which provably touch one shard:
-   - *Completely-new INSERT-only.* The plan is *pure-insert*: it contains at least one `INSERT` and
+   - _Completely-new INSERT-only._ The plan is _pure-insert_: it contains at least one `INSERT` and
      no operator that reads or binds existing graph state (no scan/index/expand/match and no
      `SET`/`REMOVE`/`DELETE`), so every edge endpoint is a freshly inserted vertex and the whole
      plan needs no anchor or seeds. Federated placement requires a target shard for these brand-new
@@ -452,7 +452,7 @@ Candidate future contracts:
      executed there atomically. This also enables a single unanchored `INSERT` on a federated graph
      (previously rejected with `no index anchor`).
      `detection: gleaph_gql_planner::PhysicalPlan::is_pure_insert`.
-   - *Anchored single-shard.* The plan is a *single-anchor threaded bundle*: it reads existing graph
+   - _Anchored single-shard._ The plan is a _single-anchor threaded bundle_: it reads existing graph
      state in exactly one place — a single leading index/label anchor the Router can resolve to a
      shard set — and every later operator only mutates threaded bindings, inserts new elements, or
      reshapes already-bound rows (no second scan, traversal, join, or sub-plan that reaches back
@@ -467,7 +467,8 @@ Candidate future contracts:
 
    MATCH-based bundles with a second scan, a traversal, or independent per-statement matches remain
    rejected, since their cross-shard reads have no defined partial-application contract.
-2. **Roll-forward bundle** *(implemented):* a single-anchor threaded bundle whose leading anchor
+
+2. **Roll-forward bundle** _(implemented):_ a single-anchor threaded bundle whose leading anchor
    resolves to **more than one shard** is dispatched per shard as a roll-forward saga, generalizing
    the contract-1 anchored subset (which required the anchor to resolve to one shard) and reusing the
    Phase 4 saga machinery that already fans a single DML statement across shards. Because the bundle
@@ -488,29 +489,27 @@ Candidate future contracts:
 
 Tests:
 
-- Router rejects unsupported multi-DML before any shard dispatch. *(Done:
+- Router rejects unsupported multi-DML before any shard dispatch. _(Done:
   `router_rejects_federated_match_based_multi_dml_bundle_before_dispatch`,
   `router_allows_multi_dml_bundle_on_single_shard`,
-  `program_modification::count_dml_statements_*`, and direct Router gate contracts
-  `multi_dml_gate_zero_or_one_dml_passes`,
-  `multi_dml_gate_single_shard_multi_dml_passes`, and
-  `multi_dml_gate_federated_multi_dml_rejects_with_exact_counts` host unit tests.)*
-- A supported one-shard bundle executes atomically on a single shard. *(Done for the completely-new
-  INSERT-only subset: `federated_pure_insert_placement_lifecycle`, `is_pure_insert_*`, and direct
-  latest-shard routing contracts
-  `latest_shard_routing_empty_input_returns_not_registered`,
-  `latest_shard_routing_one_shard_selects_it`, and
-  `latest_shard_routing_unordered_shards_chooses_greatest_id` host unit tests. Done for the anchored
-  single-shard subset:
-  `router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard` and
-  `is_single_anchor_threaded_bundle_*` host unit tests.)*
+  `program*modification::count_dml_statements*_`, and direct Router gate contracts
+`multi_dml_gate_zero_or_one_dml_passes`,
+`multi_dml_gate_single_shard_multi_dml_passes`, and
+`multi_dml_gate_federated_multi_dml_rejects_with_exact_counts` host unit tests.)\*
+- A supported one-shard bundle executes atomically on a single shard. _(Done for the completely-new
+  INSERT-only subset: `federated_pure_insert_placement_lifecycle`, `is*pure_insert*_`, and direct
+latest-shard routing contracts
+`latest*shard_routing_empty_input_returns_not_registered`,
+`latest_shard_routing_one_shard_selects_it`, and
+`latest_shard_routing_unordered_shards_chooses_greatest_id`host unit tests. Done for the anchored
+single-shard subset:`router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard`and`is_single_anchor_threaded_bundle*_` host unit tests.)_
 - A supported bundle that fans out to many shards runs per shard as a roll-forward saga, and a retry
-  resumes at the persisted per-shard boundary without being described as rollback atomicity. *(Done
+  resumes at the persisted per-shard boundary without being described as rollback atomicity. _(Done
   for the single-anchor threaded subset: `router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga`
   asserts both shards apply the bundle and the saga converges to `Completed`;
   `router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry` crashes a shard
   mid-bundle, asserts `CanonicalPending`, that the autonomous timer leaves the canonical write pending
-  without double-applying, and that restart plus idempotent retry converges to `Completed`.)*
+  without double-applying, and that restart plus idempotent retry converges to `Completed`.)_
 
 Benchmarks:
 
@@ -557,17 +556,17 @@ gate is met.
 
 ## Validation matrix
 
-| Failure point | Required outcome |
-|---------------|------------------|
-| Validation before canonical mutation | No canonical or projection state changes |
-| Trap inside canonical message segment | Whole segment rolls back |
-| Reject after canonical commit | Canonical outcome and projection intent remain recoverable |
-| Router trap after shard success | Retry discovers graph journal outcome |
-| Duplicate shard dispatch | Cached outcome; no duplicate canonical write |
-| Duplicate projection delivery | Idempotent no-op or same final state |
-| Gap in ordered projection stream | Cursor stops before the gap |
-| Graph/index/Router upgrade | Stable progress resumes from the same monotonic boundary |
-| Client abandonment | Router recovery driver continues or exposes a bounded operator action |
+| Failure point                         | Required outcome                                                      |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| Validation before canonical mutation  | No canonical or projection state changes                              |
+| Trap inside canonical message segment | Whole segment rolls back                                              |
+| Reject after canonical commit         | Canonical outcome and projection intent remain recoverable            |
+| Router trap after shard success       | Retry discovers graph journal outcome                                 |
+| Duplicate shard dispatch              | Cached outcome; no duplicate canonical write                          |
+| Duplicate projection delivery         | Idempotent no-op or same final state                                  |
+| Gap in ordered projection stream      | Cursor stops before the gap                                           |
+| Graph/index/Router upgrade            | Stable progress resumes from the same monotonic boundary              |
+| Client abandonment                    | Router recovery driver continues or exposes a bounded operator action |
 
 ## Required design synchronization
 

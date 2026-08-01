@@ -2,17 +2,16 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 
-use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
-use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
 use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
-    AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, AdminRegisterShardArgs,
-    BatchRequest, BatchResponse, GqlExecuteIdempotentBatchItem, RegisterVectorIndexArgs,
+    AdminAttachVectorIndexShardArgs, BatchRequest, BatchResponse, GqlExecuteIdempotentBatchItem,
+    RegisterGraphArgs, RegisterGraphShard, RegisterVectorIndexArgs,
 };
 use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -662,10 +661,10 @@ fn lookup_graph_id(
         .query_call(
             router,
             admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&graph_name.to_string()).expect("encode lookup_graph_id"),
         )
-        .expect("lookup_graph_id");
+        .expect("get_graph_id");
     match Decode!(
         &bytes,
         Result<gleaph_graph_kernel::entry::GraphId, gleaph_graph_kernel::federation::RouterError>
@@ -695,6 +694,43 @@ pub fn register_graph_single_shard(
     );
 }
 
+/// Dev-mode `register_graph` intent (ADR 0056 §6 Slice A): commit a graph entry and its shards in
+/// one synchronous call. `owner`/`admins`/`is_home` come from the caller; shard topology is passed
+/// as caller-installed canister principals.
+/// Dev-mode `register_graph` intent (ADR 0056 §6 Slice A): `owner`/`admins`/`is_home` come from
+/// the caller; shard topology is passed as caller-installed canister principals.
+pub struct RegisterGraphIntent<'a> {
+    pub graph_name: &'a str,
+    pub owner: Principal,
+    pub admins: BTreeSet<Principal>,
+    pub is_home: bool,
+    pub shards: Vec<RegisterGraphShard>,
+}
+
+/// Dev-mode `register_graph`: commit a graph entry and its shards in one synchronous call.
+pub fn register_graph_intent(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    intent: RegisterGraphIntent,
+) {
+    let args = RegisterGraphArgs {
+        graph_name: intent.graph_name.into(),
+        owner: intent.owner,
+        admins: intent.admins,
+        is_home: intent.is_home,
+        shards: intent.shards,
+        requested_resources: Vec::new(),
+    };
+    pic.update_call(
+        router,
+        admin,
+        "register_graph",
+        Encode!(&args).expect("encode register_graph"),
+    )
+    .expect("register_graph");
+}
+
 fn register_graph_single_shard_with_admins(
     pic: &PocketIc,
     admin: Principal,
@@ -704,39 +740,22 @@ fn register_graph_single_shard_with_admins(
     shard_id: ShardId,
     admins: BTreeSet<Principal>,
 ) {
-    let entry = GraphRegistryEntry {
-        graph_id: GraphId::from_raw(0),
-        graph_name: GRAPH_NAME.into(),
-        canister_id: graph,
-        owner: admin,
-        admins,
-        status: GraphStatus::Active,
-        version: 1,
-        updated_at_ns: 0,
-        provisioning_state: ProvisioningState::None,
-        is_home: false,
-    };
-    pic.update_call(
-        router,
+    register_graph_intent(
+        pic,
         admin,
-        "admin_register_graph",
-        Encode!(&entry).expect("encode graph registry"),
-    )
-    .expect("admin_register_graph");
-
-    let args = AdminRegisterShardArgs {
-        shard_id,
-        graph_canister: graph,
-        index_canister: index,
-        logical_graph_name: GRAPH_NAME.into(),
-    };
-    pic.update_call(
         router,
-        admin,
-        "admin_register_shard",
-        Encode!(&args).expect("encode register shard"),
-    )
-    .expect("admin_register_shard");
+        RegisterGraphIntent {
+            graph_name: GRAPH_NAME,
+            owner: admin,
+            admins,
+            is_home: false,
+            shards: vec![RegisterGraphShard {
+                shard_id,
+                graph_canister: graph,
+                index_canister: index,
+            }],
+        },
+    );
     let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
     attach_index_shard_canister(pic, graph_id, 1, 0, router, index, shard_id, graph);
 }
@@ -750,43 +769,34 @@ pub fn register_graph_and_shards(
     graph_source: Principal,
     graph_dest: Principal,
 ) {
-    let entry = GraphRegistryEntry {
-        graph_id: GraphId::from_raw(0),
-        graph_name: GRAPH_NAME.into(),
-        canister_id: graph_source,
-        owner: admin,
-        admins: Default::default(),
-        status: GraphStatus::Active,
-        version: 1,
-        updated_at_ns: 0,
-        provisioning_state: ProvisioningState::None,
-        is_home: false,
-    };
-    pic.update_call(
-        router,
+    register_graph_intent(
+        pic,
         admin,
-        "admin_register_graph",
-        Encode!(&entry).expect("encode graph registry"),
-    )
-    .expect("admin_register_graph");
+        router,
+        RegisterGraphIntent {
+            graph_name: GRAPH_NAME,
+            owner: admin,
+            admins: Default::default(),
+            is_home: false,
+            shards: vec![
+                RegisterGraphShard {
+                    shard_id: SOURCE_SHARD,
+                    graph_canister: graph_source,
+                    index_canister: source_index,
+                },
+                RegisterGraphShard {
+                    shard_id: DEST_SHARD,
+                    graph_canister: graph_dest,
+                    index_canister: dest_index,
+                },
+            ],
+        },
+    );
 
     for (shard, graph, index) in [
         (SOURCE_SHARD, graph_source, source_index),
         (DEST_SHARD, graph_dest, dest_index),
     ] {
-        let args = AdminRegisterShardArgs {
-            shard_id: shard,
-            graph_canister: graph,
-            index_canister: index,
-            logical_graph_name: GRAPH_NAME.into(),
-        };
-        pic.update_call(
-            router,
-            admin,
-            "admin_register_shard",
-            Encode!(&args).expect("encode register shard"),
-        )
-        .expect("admin_register_shard");
         let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
         let group_index = shard.raw();
         attach_index_shard_canister(pic, graph_id, 1, group_index, router, index, shard, graph);
@@ -802,51 +812,28 @@ pub fn register_two_graphs_and_shards(
     graph_home: Principal,
     graph_remote: Principal,
 ) {
-    for (name, graph, is_home) in [
-        (GRAPH_HOME_NAME, graph_home, true),
-        (GRAPH_REMOTE_NAME, graph_remote, false),
+    for (name, graph, index, is_home) in [
+        (GRAPH_HOME_NAME, graph_home, home_index, true),
+        (GRAPH_REMOTE_NAME, graph_remote, remote_index, false),
     ] {
-        let entry = GraphRegistryEntry {
-            graph_id: GraphId::from_raw(0),
-            graph_name: name.into(),
-            canister_id: graph,
-            owner: admin,
-            admins: Default::default(),
-            status: GraphStatus::Active,
-            version: 1,
-            updated_at_ns: 0,
-            provisioning_state: ProvisioningState::None,
-            is_home,
-        };
-        pic.update_call(
-            router,
+        register_graph_intent(
+            pic,
             admin,
-            "admin_register_graph",
-            Encode!(&entry).expect("encode graph registry"),
-        )
-        .expect("admin_register_graph");
-    }
-
-    for (shard, graph, graph_name, index) in [
-        (SOURCE_SHARD, graph_home, GRAPH_HOME_NAME, home_index),
-        // Shard ordinals are graph-local: each one-shard logical graph owns shard 0.
-        (SOURCE_SHARD, graph_remote, GRAPH_REMOTE_NAME, remote_index),
-    ] {
-        let args = AdminRegisterShardArgs {
-            shard_id: shard,
-            graph_canister: graph,
-            index_canister: index,
-            logical_graph_name: graph_name.into(),
-        };
-        pic.update_call(
             router,
-            admin,
-            "admin_register_shard",
-            Encode!(&args).expect("encode register shard"),
-        )
-        .expect("admin_register_shard");
-        let graph_id = lookup_graph_id(pic, admin, router, graph_name);
-        attach_index_shard_canister(pic, graph_id, 1, 0, router, index, shard, graph);
+            RegisterGraphIntent {
+                graph_name: name,
+                owner: admin,
+                admins: Default::default(),
+                is_home,
+                shards: vec![RegisterGraphShard {
+                    shard_id: SOURCE_SHARD,
+                    graph_canister: graph,
+                    index_canister: index,
+                }],
+            },
+        );
+        let graph_id = lookup_graph_id(pic, admin, router, name);
+        attach_index_shard_canister(pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
     }
 }
 
@@ -884,50 +871,28 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
 
     let graph_home = create_funded_canister(&pic);
     let graph_remote = create_funded_canister(&pic);
-    for (graph, graph_name) in [
-        (graph_home, GRAPH_HOME_NAME),
-        (graph_remote, GRAPH_REMOTE_NAME),
+    for (name, graph, index, is_home) in [
+        (GRAPH_HOME_NAME, graph_home, index_home, true),
+        (GRAPH_REMOTE_NAME, graph_remote, index_remote, false),
     ] {
-        let entry = GraphRegistryEntry {
-            graph_id: GraphId::from_raw(0),
-            graph_name: graph_name.into(),
-            canister_id: graph,
-            owner: admin,
-            admins: Default::default(),
-            status: GraphStatus::Active,
-            version: 1,
-            updated_at_ns: 0,
-            provisioning_state: ProvisioningState::None,
-            is_home: graph_name == GRAPH_HOME_NAME,
-        };
-        pic.update_call(
-            router,
+        register_graph_intent(
+            &pic,
             admin,
-            "admin_register_graph",
-            Encode!(&entry).expect("encode graph registry"),
-        )
-        .expect("admin_register_graph");
-    }
-
-    for (graph_name, graph, index) in [
-        (GRAPH_HOME_NAME, graph_home, index_home),
-        (GRAPH_REMOTE_NAME, graph_remote, index_remote),
-    ] {
-        let args = AdminRegisterShardArgs {
-            shard_id: SOURCE_SHARD,
-            graph_canister: graph,
-            index_canister: index,
-            logical_graph_name: graph_name.into(),
-        };
-        pic.update_call(
             router,
-            admin,
-            "admin_register_shard",
-            Encode!(&args).expect("encode register shard"),
-        )
-        .expect("admin_register_shard");
+            RegisterGraphIntent {
+                graph_name: name,
+                owner: admin,
+                admins: Default::default(),
+                is_home,
+                shards: vec![RegisterGraphShard {
+                    shard_id: SOURCE_SHARD,
+                    graph_canister: graph,
+                    index_canister: index,
+                }],
+            },
+        );
 
-        let graph_id = lookup_graph_id(&pic, admin, router, graph_name);
+        let graph_id = lookup_graph_id(&pic, admin, router, name);
         attach_index_shard_canister(&pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
     }
 
@@ -1162,20 +1127,16 @@ pub fn e2e_insert_vertex_with_two_properties(
     )
 }
 
-pub fn admin_intern_property(
-    env: &FederationEnv,
-    name: &str,
-) -> gleaph_graph_kernel::entry::PropertyId {
+pub fn ensure_property(env: &FederationEnv, name: &str) -> gleaph_graph_kernel::entry::PropertyId {
     let bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "admin_intern_property",
-            Encode!(&GRAPH_NAME.to_string(), &name.to_string())
-                .expect("encode admin_intern_property"),
+            "ensure_property",
+            Encode!(&GRAPH_NAME.to_string(), &name.to_string()).expect("encode ensure_property"),
         )
-        .unwrap_or_else(|e| panic!("admin_intern_property on {}: {e:?}", env.router));
+        .unwrap_or_else(|e| panic!("ensure_property on {}: {e:?}", env.router));
     match Decode!(
         &bytes,
         Result<
@@ -1184,12 +1145,12 @@ pub fn admin_intern_property(
         >
     ) {
         Ok(Ok(value)) => value,
-        Ok(Err(err)) => panic!("admin_intern_property rejected: {err:?}"),
-        Err(err) => panic!("decode admin_intern_property: {err}"),
+        Ok(Err(err)) => panic!("ensure_property rejected: {err:?}"),
+        Err(err) => panic!("decode ensure_property: {err}"),
     }
 }
 
-pub fn admin_intern_vertex_label(
+pub fn ensure_vertex_label(
     env: &FederationEnv,
     name: &str,
 ) -> gleaph_graph_kernel::entry::VertexLabelId {
@@ -1198,11 +1159,11 @@ pub fn admin_intern_vertex_label(
         .update_call(
             env.router,
             env.admin,
-            "admin_intern_vertex_label",
+            "ensure_vertex_label",
             Encode!(&GRAPH_NAME.to_string(), &name.to_string())
-                .expect("encode admin_intern_vertex_label"),
+                .expect("encode ensure_vertex_label"),
         )
-        .unwrap_or_else(|e| panic!("admin_intern_vertex_label on {}: {e:?}", env.router));
+        .unwrap_or_else(|e| panic!("ensure_vertex_label on {}: {e:?}", env.router));
     match Decode!(
         &bytes,
         Result<
@@ -1211,12 +1172,12 @@ pub fn admin_intern_vertex_label(
         >
     ) {
         Ok(Ok(value)) => value,
-        Ok(Err(err)) => panic!("admin_intern_vertex_label rejected: {err:?}"),
-        Err(err) => panic!("decode admin_intern_vertex_label: {err}"),
+        Ok(Err(err)) => panic!("ensure_vertex_label rejected: {err:?}"),
+        Err(err) => panic!("decode ensure_vertex_label: {err}"),
     }
 }
 
-pub fn admin_intern_edge_label(
+pub fn ensure_edge_label(
     env: &FederationEnv,
     name: &str,
 ) -> gleaph_graph_kernel::entry::EdgeLabelId {
@@ -1225,11 +1186,10 @@ pub fn admin_intern_edge_label(
         .update_call(
             env.router,
             env.admin,
-            "admin_intern_edge_label",
-            Encode!(&GRAPH_NAME.to_string(), &name.to_string())
-                .expect("encode admin_intern_edge_label"),
+            "ensure_edge_label",
+            Encode!(&GRAPH_NAME.to_string(), &name.to_string()).expect("encode ensure_edge_label"),
         )
-        .unwrap_or_else(|e| panic!("admin_intern_edge_label on {}: {e:?}", env.router));
+        .unwrap_or_else(|e| panic!("ensure_edge_label on {}: {e:?}", env.router));
     match Decode!(
         &bytes,
         Result<
@@ -1238,23 +1198,19 @@ pub fn admin_intern_edge_label(
         >
     ) {
         Ok(Ok(value)) => value,
-        Ok(Err(err)) => panic!("admin_intern_edge_label rejected: {err:?}"),
-        Err(err) => panic!("decode admin_intern_edge_label: {err}"),
+        Ok(Err(err)) => panic!("ensure_edge_label rejected: {err:?}"),
+        Err(err) => panic!("decode ensure_edge_label: {err}"),
     }
 }
 
-/// Gleaph extension DDL on the router update path (`gql_execute_idempotent`).
-pub fn gql_execute_idempotent_as_admin(
-    env: &FederationEnv,
-    query: &str,
-    client_mutation_key: &str,
-) -> u64 {
-    gql_execute_idempotent_result_as_admin(env, query, client_mutation_key).row_count
+/// Gleaph extension DDL on the router update path (`gql_execute`).
+pub fn gql_execute_as_admin(env: &FederationEnv, query: &str, client_mutation_key: &str) -> u64 {
+    gql_execute_result_as_admin(env, query, client_mutation_key).row_count
 }
 
-/// Like [`gql_execute_idempotent_as_admin`] but returns the full `GqlQueryResult`
+/// Like [`gql_execute_as_admin`] but returns the full `GqlQueryResult`
 /// (lifecycle `phase` and ADR 0029 Phase 2 mutation `token`), not just the row count.
-pub fn gql_execute_idempotent_result_as_admin(
+pub fn gql_execute_result_as_admin(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -1269,17 +1225,17 @@ pub fn gql_execute_idempotent_result_as_admin(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute_idempotent",
-            Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
+            "gql_execute",
+            Encode!(&query, &params, &mutation_key).expect("encode gql_execute"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_execute on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => panic!(
-            "gql_execute_idempotent rejected for client mutation key '{mutation_key}': {err:?}"
-        ),
+        Ok(Err(err)) => {
+            panic!("gql_execute rejected for client mutation key '{mutation_key}': {err:?}")
+        }
         Err(err) => {
-            panic!("decode gql_execute_idempotent for client mutation key '{mutation_key}': {err}")
+            panic!("decode gql_execute for client mutation key '{mutation_key}': {err}")
         }
     }
 }
@@ -1290,7 +1246,7 @@ pub fn gql_execute_idempotent_result_as_admin(
 /// whole batch is applied.
 const SOCIAL_SEED_BATCH_PAGE_SIZE: usize = 400;
 
-pub fn gql_execute_idempotent_batch_as_admin(
+pub fn gql_execute_batch_as_admin(
     env: &FederationEnv,
     mutations: Vec<GqlExecuteIdempotentBatchItem>,
 ) {
@@ -1316,20 +1272,20 @@ pub fn gql_execute_idempotent_batch_as_admin(
             .update_call(
                 env.router,
                 env.admin,
-                "gql_execute_idempotent_batch",
-                Encode!(&args).expect("encode gql_execute_idempotent_batch"),
+                "gql_execute_batch",
+                Encode!(&args).expect("encode gql_execute_batch"),
             )
-            .unwrap_or_else(|e| panic!("gql_execute_idempotent_batch on router: {e:?}"));
+            .unwrap_or_else(|e| panic!("gql_execute_batch on router: {e:?}"));
         match Decode!(&bytes, Result<GqlExecuteIdempotentBatchResult, RouterError>) {
             Ok(Ok(result)) => {
                 let applied = result.results.len() as u32;
                 if applied == 0 {
-                    panic!("gql_execute_idempotent_batch applied zero mutations");
+                    panic!("gql_execute_batch applied zero mutations");
                 }
                 start_index += applied;
             }
-            Ok(Err(err)) => panic!("gql_execute_idempotent_batch rejected: {err:?}"),
-            Err(err) => panic!("decode gql_execute_idempotent_batch: {err}"),
+            Ok(Err(err)) => panic!("gql_execute_batch rejected: {err:?}"),
+            Err(err) => panic!("decode gql_execute_batch: {err}"),
         }
     }
 }
@@ -1356,7 +1312,7 @@ pub fn graph_index_pending_min_mutation_id(
 
 /// Call the router's read-only registry-invariant oracle as admin. Returns the raw
 /// `Result` so callers can assert both the consistent and divergent outcomes.
-pub fn router_check_registry_invariants(
+pub fn check_registry_invariants(
     env: &FederationEnv,
 ) -> Result<(), gleaph_graph_kernel::federation::RouterError> {
     use gleaph_graph_kernel::federation::RouterError;
@@ -1366,7 +1322,7 @@ pub fn router_check_registry_invariants(
         .query_call(
             env.router,
             env.admin,
-            "admin_check_registry_invariants",
+            "check_registry_invariants",
             Encode!().expect("encode admin_check_registry_invariants"),
         )
         .unwrap_or_else(|e| panic!("admin_check_registry_invariants on router: {e:?}"));
@@ -1382,12 +1338,12 @@ pub fn create_edge_property_index(
     property: &str,
     client_mutation_key: &str,
 ) {
-    admin_intern_edge_label(env, edge_label);
-    let _ = admin_intern_property(env, property);
+    ensure_edge_label(env, edge_label);
+    let _ = ensure_property(env, property);
     let ddl = format!(
         "CREATE INDEX {index_name} IF NOT EXISTS FOR ()-[e:{edge_label}]-() ON (e.{property})"
     );
-    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1402,12 +1358,12 @@ pub fn create_directed_edge_property_index(
     property: &str,
     client_mutation_key: &str,
 ) {
-    admin_intern_edge_label(env, edge_label);
-    let _ = admin_intern_property(env, property);
+    ensure_edge_label(env, edge_label);
+    let _ = ensure_property(env, property);
     let ddl = format!(
         "CREATE INDEX {index_name} IF NOT EXISTS FOR ()-[e:{edge_label}]->() ON (e.{property})"
     );
-    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1422,12 +1378,12 @@ pub fn create_undirected_edge_property_index(
     property: &str,
     client_mutation_key: &str,
 ) {
-    admin_intern_edge_label(env, edge_label);
-    let _ = admin_intern_property(env, property);
+    ensure_edge_label(env, edge_label);
+    let _ = ensure_property(env, property);
     let ddl = format!(
         "CREATE INDEX {index_name} IF NOT EXISTS FOR () ~[e:{edge_label}]~ () ON (e.{property})"
     );
-    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1442,11 +1398,11 @@ pub fn create_vertex_property_index(
     property: &str,
     client_mutation_key: &str,
 ) {
-    admin_intern_vertex_label(env, vertex_label);
-    let _ = admin_intern_property(env, property);
+    ensure_vertex_label(env, vertex_label);
+    let _ = ensure_property(env, property);
     let ddl =
         format!("CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{vertex_label}) ON (n.{property})");
-    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1465,7 +1421,7 @@ pub fn drop_vertex_property_index(
     } else {
         format!("DROP INDEX {index_name}")
     };
-    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "DROP INDEX DDL should return row_count 0, got {row_count}"
@@ -1762,7 +1718,8 @@ pub fn gql_query_with_params_on_router(
             router,
             caller,
             "gql_query",
-            Encode!(&query.to_string(), &params_blob).expect("encode gql_query"),
+            Encode!(&query.to_string(), &params_blob, &ReadMode::Eventual)
+                .expect("encode gql_query"),
         )
         .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
@@ -1786,7 +1743,8 @@ pub fn gql_query_on_router(
             router,
             caller,
             "gql_query",
-            Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
+            Encode!(&query.to_string(), &Vec::<u8>::new(), &ReadMode::Eventual)
+                .expect("encode gql_query"),
         )
         .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
@@ -1796,8 +1754,8 @@ pub fn gql_query_on_router(
     }
 }
 
-/// Register a named prepared query as the bootstrap admin principal.
-pub fn prepared_upsert_as_admin(env: &FederationEnv, name: &str, query: &str) {
+/// Register a named prepared operation as the bootstrap admin principal.
+pub fn prepare_as_admin(env: &FederationEnv, name: &str, query: &str) {
     use gleaph_graph_kernel::federation::RouterError;
 
     let bytes = env
@@ -1805,19 +1763,24 @@ pub fn prepared_upsert_as_admin(env: &FederationEnv, name: &str, query: &str) {
         .update_call(
             env.router,
             env.admin,
-            "prepared_upsert",
-            Encode!(&name.to_string(), &query.to_string()).expect("encode prepared_upsert"),
+            "prepare",
+            Encode!(
+                &name.to_string(),
+                &query.to_string(),
+                &Option::<gleaph_prepared_api::PreparedOperation>::None
+            )
+            .expect("encode prepare"),
         )
-        .unwrap_or_else(|e| panic!("prepared_upsert on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("prepare on router: {e:?}"));
     match Decode!(&bytes, Result<(), RouterError>) {
         Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("prepared_upsert rejected: {err:?}"),
-        Err(err) => panic!("decode prepared_upsert: {err}"),
+        Ok(Err(err)) => panic!("prepare rejected: {err:?}"),
+        Err(err) => panic!("decode prepare: {err}"),
     }
 }
 
 /// Read the prepared manifest for the default graph as the bootstrap admin principal.
-pub fn prepared_manifest_as_admin(
+pub fn list_prepared_as_admin(
     env: &FederationEnv,
     graph_name: &str,
 ) -> gleaph_prepared_api::PreparedManifest {
@@ -1828,7 +1791,7 @@ pub fn prepared_manifest_as_admin(
         .query_call(
             env.router,
             env.admin,
-            "prepared_manifest",
+            "list_prepared",
             Encode!(&graph_name.to_string()).expect("encode prepared_manifest"),
         )
         .unwrap_or_else(|e| panic!("prepared_manifest on router: {e:?}"));
@@ -1840,7 +1803,7 @@ pub fn prepared_manifest_as_admin(
 }
 
 /// Execute a registered prepared query as `caller` with an explicit parameter blob.
-pub fn prepared_query_with_params_as(
+pub fn execute_prepared_with_params_as(
     env: &FederationEnv,
     caller: Principal,
     name: &str,
@@ -1853,19 +1816,20 @@ pub fn prepared_query_with_params_as(
         .query_call(
             env.router,
             caller,
-            "prepared_query",
+            "execute_prepared",
             Encode!(
                 &name.to_string(),
                 &params_blob,
-                &Option::<Vec<gleaph_prepared_api::PreparedSortSpec>>::None
+                &Option::<Vec<gleaph_prepared_api::PreparedSortSpec>>::None,
+                &ReadMode::Eventual
             )
-            .expect("encode prepared_query"),
+            .expect("encode execute_prepared"),
         )
-        .unwrap_or_else(|e| panic!("prepared_query on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("execute_prepared on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => panic!("prepared_query rejected: {err:?}"),
-        Err(err) => panic!("decode prepared_query: {err}"),
+        Ok(Err(err)) => panic!("execute_prepared rejected: {err:?}"),
+        Err(err) => panic!("decode execute_prepared: {err}"),
     }
 }
 
@@ -1930,17 +1894,19 @@ pub fn gql_query_as(
             env.router,
             caller,
             "gql_query",
-            Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
+            Encode!(&query.to_string(), &Vec::<u8>::new(), &ReadMode::Eventual)
+                .expect("encode gql_query"),
         )
         .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query")
 }
 
-/// Router composite `gql_query_with_consistency` (ADR 0029 §5, Phase 3) as admin.
+/// Router composite `gql_query` (ADR 0029 §5, Phase 3) as admin with an explicit read-consistency
+/// mode.
 ///
 /// Returns the raw `Result` so a test can assert both the served (`Ok`) and the retryable
 /// projection-lag / rejected (`Err`) outcomes of the read barrier.
-pub fn gql_query_with_consistency_as_admin(
+pub fn gql_query_as_admin_with_read_mode(
     env: &FederationEnv,
     query: &str,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
@@ -1955,17 +1921,16 @@ pub fn gql_query_with_consistency_as_admin(
         .query_call(
             env.router,
             env.admin,
-            "gql_query_with_consistency",
-            Encode!(&query.to_string(), &Vec::<u8>::new(), &read_mode)
-                .expect("encode gql_query_with_consistency"),
+            "gql_query",
+            Encode!(&query.to_string(), &Vec::<u8>::new(), &read_mode).expect("encode gql_query"),
         )
-        .unwrap_or_else(|e| panic!("gql_query_with_consistency on router: {e:?}"));
-    Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query_with_consistency")
+        .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
+    Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query")
 }
 
 /// Router `mutation_status` (ADR 0029 Phase 4) as the bootstrap admin principal. Returns the
 /// raw `Result` so a test can assert both a found saga and the not-found error.
-pub fn mutation_status_as_admin(
+pub fn get_mutation_status_as_admin(
     env: &FederationEnv,
     logical_graph_name: &str,
     client_mutation_key: &str,
@@ -1978,7 +1943,7 @@ pub fn mutation_status_as_admin(
         .query_call(
             env.router,
             env.admin,
-            "mutation_status",
+            "get_mutation_status",
             Encode!(
                 &logical_graph_name.to_string(),
                 &client_mutation_key.to_string()
@@ -1990,7 +1955,7 @@ pub fn mutation_status_as_admin(
 }
 
 /// Execute one Router batch as the bootstrap admin.
-pub fn execute_batch_as_admin(
+pub fn batch_insert_as_admin(
     env: &FederationEnv,
     request: BatchRequest,
 ) -> Result<BatchResponse, gleaph_graph_kernel::federation::RouterError> {
@@ -1999,7 +1964,7 @@ pub fn execute_batch_as_admin(
         .update_call(
             env.router,
             env.admin,
-            "batch",
+            "batch_insert",
             Encode!(&request).expect("encode batch"),
         )
         .unwrap_or_else(|e| panic!("batch on router: {e:?}"));
@@ -2078,8 +2043,8 @@ pub fn test_declare_unique_constraint(
             // The declaration seam intentionally checks that the label is absent. Once the
             // constraint exists, publish the normal GQL label/property catalog entries so later
             // DML carries the declared ids.
-            admin_intern_vertex_label(env, label);
-            admin_intern_property(env, property);
+            ensure_vertex_label(env, label);
+            ensure_property(env, property);
         }
         Ok(Err(err)) => panic!("test_declare_unique_constraint rejected: {err:?}"),
         Err(err) => panic!("decode test_declare_unique_constraint: {err:?}"),
@@ -2253,7 +2218,7 @@ pub fn test_force_reclaiming(
 /// Run one full expired-client-mutation-key sweep pass (admin) and return how many records it
 /// evicted. A record pinned by a non-terminal reservation or a pending unique-effect row must not be
 /// evicted (ADR 0030 slice 6 GC-pin).
-pub fn admin_sweep_mutation_keys(env: &FederationEnv, max_scan: u32) -> u32 {
+pub fn sweep_mutation_keys(env: &FederationEnv, max_scan: u32) -> u32 {
     use gleaph_graph_kernel::federation::RouterError;
 
     use gleaph_router::types::{AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult};
@@ -2267,7 +2232,7 @@ pub fn admin_sweep_mutation_keys(env: &FederationEnv, max_scan: u32) -> u32 {
         .update_call(
             env.router,
             env.admin,
-            "admin_sweep_expired_client_mutation_keys",
+            "sweep_expired_mutation_keys",
             Encode!(&args).expect("encode admin_sweep_expired_client_mutation_keys"),
         )
         .unwrap_or_else(|e| panic!("admin_sweep_expired_client_mutation_keys on router: {e:?}"));
@@ -2319,7 +2284,7 @@ pub fn graph_element_id_encoding_key(
         .query_call(
             router,
             caller,
-            "graph_element_id_encoding_key",
+            "get_id_encoding_key",
             Encode!(&logical_graph_name.to_string()).expect("encode graph_element_id_encoding_key"),
         )
         .unwrap_or_else(|e| panic!("graph_element_id_encoding_key on router: {e:?}"));
@@ -2395,7 +2360,7 @@ pub fn federation_graph_element_id_encoding_key_bytes(env: &FederationEnv) -> [u
 ///
 /// Registers `embedding_name` with dimension `dims` and `L2Squared` metric, enables global vector
 /// dispatch, wires the graph shard to `vector`, and attaches the shard bidirectionally.
-pub fn admin_fully_activate_social_vector_index(
+pub fn fully_activate_social_vector_index(
     env: &FederationEnv,
     vector: Principal,
     index_id: u32,
@@ -2433,10 +2398,10 @@ pub fn admin_fully_activate_social_vector_index(
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&true).expect("encode admin_set_vector_dispatch_activation"),
         )
-        .expect("admin_set_vector_dispatch_activation");
+        .expect("set_vector_dispatch_enabled");
     let _: () = Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
         .expect("decode admin_set_vector_dispatch_activation")
         .expect("dispatch activation succeeds");
@@ -2447,10 +2412,10 @@ pub fn admin_fully_activate_social_vector_index(
             .query_call(
                 env.router,
                 env.admin,
-                "lookup_graph_id",
+                "get_graph_id",
                 Encode!(&GRAPH_NAME.to_string()).expect("encode lookup_graph_id"),
             )
-            .expect("lookup_graph_id");
+            .expect("get_graph_id");
         Decode!(
             &bytes,
             Result<GraphId, gleaph_graph_kernel::federation::RouterError>
@@ -2495,10 +2460,10 @@ pub fn admin_fully_activate_social_vector_index(
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&attach_args).expect("encode admin_attach_vector_index_shard"),
         )
-        .expect("admin_attach_vector_index_shard");
+        .expect("attach_vector_shard");
     let _: () = Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
         .expect("decode admin_attach_vector_index_shard")
         .expect("router attaches shard");
@@ -2528,10 +2493,15 @@ pub fn encode_f32_embedding(values: &[f32]) -> Vec<u8> {
 /// Ingest every Post embedding from the canonical social manifest through Router's canonical
 /// ingestion boundary. `embeddings` is the `embeddings` object from the generated social seeds
 /// artifact, keyed by Post `demo_id`.
-pub fn admin_ingest_social_embeddings(env: &FederationEnv, embeddings: &serde_json::Value) {
+pub fn ingest_social_embeddings(env: &FederationEnv, embeddings: &serde_json::Value) {
+    use gleaph_router::types::{
+        AdminIngestVertexEmbeddingBatchArgs, AdminIngestVertexEmbeddingBatchItem,
+    };
+
     let embeddings = embeddings
         .as_object()
         .expect("social embeddings must be a JSON object");
+    let mut items: Vec<(String, AdminIngestVertexEmbeddingBatchItem)> = Vec::new();
     for (demo_id, meta) in embeddings {
         let encoded = resolve_social_post_element_id(env, demo_id);
         let values: Vec<f32> = meta["values"]
@@ -2544,33 +2514,47 @@ pub fn admin_ingest_social_embeddings(env: &FederationEnv, embeddings: &serde_js
                     as f32
             })
             .collect();
-        let args = AdminIngestVertexEmbeddingArgs {
-            logical_graph_name: GRAPH_NAME.to_string(),
-            encoded_vertex_id: encoded,
-            embedding_name: "post_vec".to_string(),
-            values,
-        };
-        let bytes = env
-            .pic
-            .update_call(
-                env.router,
-                env.admin,
-                "admin_ingest_vertex_embedding",
-                Encode!(&args).expect("encode admin_ingest_vertex_embedding"),
-            )
-            .expect("admin_ingest_vertex_embedding");
-        let result: Result<
-            gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
-            gleaph_graph_kernel::federation::RouterError,
-        > = Decode!(
-            &bytes,
-            Result<
-                gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
-                gleaph_graph_kernel::federation::RouterError,
-            >
+        items.push((
+            demo_id.clone(),
+            AdminIngestVertexEmbeddingBatchItem {
+                encoded_vertex_id: encoded,
+                values,
+            },
+        ));
+    }
+    let args = AdminIngestVertexEmbeddingBatchArgs {
+        logical_graph_name: GRAPH_NAME.to_string(),
+        embedding_name: "post_vec".to_string(),
+        items: items.iter().map(|(_, item)| item.clone()).collect(),
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "ingest_vertex_embeddings",
+            Encode!(&args).expect("encode ingest_vertex_embeddings"),
         )
-        .expect("decode admin_ingest_vertex_embedding");
-        let outcome = result.expect("admin_ingest_vertex_embedding succeeds");
+        .expect("ingest_vertex_embeddings");
+    let results: Result<
+        Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
+        gleaph_graph_kernel::federation::RouterError,
+    > = Decode!(
+        &bytes,
+        Result<
+            Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
+            gleaph_graph_kernel::federation::RouterError,
+        >
+    )
+    .expect("decode ingest_vertex_embeddings");
+    let results = results.expect("ingest_vertex_embeddings succeeds");
+    assert_eq!(
+        results.len(),
+        items.len(),
+        "batch ingestion returns one result per item"
+    );
+    for ((demo_id, _), outcome) in items.into_iter().zip(results) {
+        let outcome = outcome.unwrap_or_else(|e| panic!("embedding ingestion for {demo_id}: {e}"));
         assert_eq!(
             outcome.embedding_version, 1,
             "first canonical write for {demo_id} must be version 1"
@@ -2598,7 +2582,8 @@ pub fn gql_query_as_admin_expect_err(
             env.router,
             env.admin,
             "gql_query",
-            Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
+            Encode!(&query.to_string(), &Vec::<u8>::new(), &ReadMode::Eventual)
+                .expect("encode gql_query"),
         )
         .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
@@ -2609,7 +2594,7 @@ pub fn gql_query_as_admin_expect_err(
 }
 
 /// Gleaph extension DDL on the update path, expected to fail.
-pub fn gql_execute_idempotent_as_admin_expect_err(
+pub fn gql_execute_as_admin_expect_err(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -2624,19 +2609,19 @@ pub fn gql_execute_idempotent_as_admin_expect_err(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute_idempotent",
-            Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
+            "gql_execute",
+            Encode!(&query, &params, &mutation_key).expect("encode gql_execute"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_execute on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Err(err)) => err,
         Ok(Ok(result)) => {
             panic!(
-                "gql_execute_idempotent should fail, got row_count {}",
+                "gql_execute should fail, got row_count {}",
                 result.row_count
             )
         }
-        Err(err) => panic!("decode gql_execute_idempotent: {err}"),
+        Err(err) => panic!("decode gql_execute: {err}"),
     }
 }
 
@@ -2660,9 +2645,9 @@ pub fn arm_router_fault(env: &FederationEnv, code: u8) {
     .unwrap_or_else(|err| panic!("test_arm_fault rejected: {err:?}"));
 }
 
-/// Run `gql_execute_idempotent` as admin expecting the message itself to **trap** (an injected
+/// Run `gql_execute` as admin expecting the message itself to **trap** (an injected
 /// fault), i.e. the ingress is rejected rather than returning an application `Result`.
-pub fn gql_execute_idempotent_as_admin_expect_trap(
+pub fn gql_execute_as_admin_expect_trap(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -2670,13 +2655,13 @@ pub fn gql_execute_idempotent_as_admin_expect_trap(
     let result = env.pic.update_call(
         env.router,
         env.admin,
-        "gql_execute_idempotent",
+        "gql_execute",
         Encode!(
             &query.to_string(),
             &Vec::<u8>::new(),
             &client_mutation_key.to_string()
         )
-        .expect("encode gql_execute_idempotent"),
+        .expect("encode gql_execute"),
     );
     assert!(
         result.is_err(),
@@ -2685,12 +2670,12 @@ pub fn gql_execute_idempotent_as_admin_expect_trap(
     );
 }
 
-/// Submit two `gql_execute_idempotent` ingress messages (as admin) **before** executing any round,
+/// Submit two `gql_execute` ingress messages (as admin) **before** executing any round,
 /// then drive rounds so they interleave (each yields at its dispatch `await`). Returns both decoded
 /// application results so a caller can assert exactly one winner. Used for the ADR 0030 true
 /// concurrent same-value conflict test.
 #[allow(clippy::type_complexity)]
-pub fn gql_execute_idempotent_pair_concurrent_as_admin(
+pub fn gql_execute_pair_concurrent_as_admin(
     env: &FederationEnv,
     query_a: &str,
     key_a: &str,
@@ -2708,26 +2693,16 @@ pub fn gql_execute_idempotent_pair_concurrent_as_admin(
 ) {
     let encode = |query: &str, key: &str| {
         Encode!(&query.to_string(), &Vec::<u8>::new(), &key.to_string())
-            .expect("encode gql_execute_idempotent")
+            .expect("encode gql_execute")
     };
     let msg_a = env
         .pic
-        .submit_call(
-            env.router,
-            env.admin,
-            "gql_execute_idempotent",
-            encode(query_a, key_a),
-        )
-        .expect("submit gql_execute_idempotent a");
+        .submit_call(env.router, env.admin, "gql_execute", encode(query_a, key_a))
+        .expect("submit gql_execute a");
     let msg_b = env
         .pic
-        .submit_call(
-            env.router,
-            env.admin,
-            "gql_execute_idempotent",
-            encode(query_b, key_b),
-        )
-        .expect("submit gql_execute_idempotent b");
+        .submit_call(env.router, env.admin, "gql_execute", encode(query_b, key_b))
+        .expect("submit gql_execute b");
     // Both ingress messages are now queued; ticking executes them in interleaved rounds.
     for _ in 0..60 {
         env.pic.tick();
@@ -2737,7 +2712,7 @@ pub fn gql_execute_idempotent_pair_concurrent_as_admin(
             &bytes,
             Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError>
         )
-        .expect("decode gql_execute_idempotent a"),
+        .expect("decode gql_execute a"),
         Err(reject) => panic!("concurrent ingress a unexpectedly trapped: {reject:?}"),
     };
     let result_b = match env.pic.await_call(msg_b) {
@@ -2745,7 +2720,7 @@ pub fn gql_execute_idempotent_pair_concurrent_as_admin(
             &bytes,
             Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError>
         )
-        .expect("decode gql_execute_idempotent b"),
+        .expect("decode gql_execute b"),
         Err(reject) => panic!("concurrent ingress b unexpectedly trapped: {reject:?}"),
     };
     (result_a, result_b)
@@ -2759,10 +2734,10 @@ MATCH ()-[e:UPGRADE_EDGE]->() WHERE e.fixture_edge_id IS NOT NULL \
 RETURN e.fixture_edge_id AS edge_id, e.fixture_kind AS edge_kind \
 ORDER BY edge_id";
 
-/// Seed a 26-edge fan-out fixture through Router `gql_execute_idempotent`.
+/// Seed a 26-edge fan-out fixture through Router `gql_execute`.
 pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
     let source_query = "INSERT (:UpgradeSource {fixture_id: 'source', fixture_kind: 'upgrade'})";
-    let row_count = gql_execute_idempotent_as_admin(env, source_query, "upgrade-fixture-source");
+    let row_count = gql_execute_as_admin(env, source_query, "upgrade-fixture-source");
     assert_eq!(row_count, 0, "source seed should not return rows");
     drain_maintenance_via_timer(env, env.graph_source);
 
@@ -2774,7 +2749,7 @@ pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
              ->(:UpgradeTarget {{fixture_id: 'target-{index:02}', fixture_kind: 'upgrade'}})"
         );
         let key = format!("upgrade-fixture-{edge_id}");
-        let row_count = gql_execute_idempotent_as_admin(env, &gql, &key);
+        let row_count = gql_execute_as_admin(env, &gql, &key);
         assert_eq!(row_count, 0, "seed {key} should not return rows");
         drain_maintenance_via_timer(env, env.graph_source);
     }
@@ -2783,15 +2758,15 @@ pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
 pub fn upgrade_fixture_query() -> &'static str {
     UPGRADE_FIXTURE_QUERY
 }
-/// Seed the social demo graph through Router `gql_execute_idempotent`, then assert
-/// that the materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges were inserted
-/// in oldest-first order so the default descending fixed-label scan returns
-/// newest-first without an ORDER BY.
+/// Seed the social demo graph through Router `gql_execute`, then assert
+/// that the materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges return their source posts
+/// in creation order (the deterministic fixed-label scan order, no ORDER BY).
 pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
     seed_social_graph(env);
 
-    // Default descending fixed-label scan returns the latest inserted edge first.
-    // Feed edges are materialized oldest-first, so the default scan yields newest posts first.
+    // The fixed-label scan yields source posts in vertex-id (creation) order: the materialized
+    // feed edges are asserted oldest-first (the order the posts were created), which is the
+    // deterministic order the scan returns without an ORDER BY.
     let query = "\
     MATCH (p:Post)-[e:IN_PUBLIC_FEED]->(f:Feed {name: 'Public feed'}) \
     RETURN p.demo_id AS post_id, e.demo_edge_id AS edge_id";
@@ -2805,7 +2780,7 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
     assert_eq!(
         public_ids,
         social_feed_post_ids("-in-public-feed"),
-        "IN_PUBLIC_FEED default descending scan should return newest posts first"
+        "IN_PUBLIC_FEED fixed-label scan should return posts in creation order"
     );
 
     let query = "\
@@ -2821,16 +2796,32 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
     assert_eq!(
         home_ids,
         social_feed_post_ids("-in-home-alice"),
-        "IN_HOME_FEED default descending scan should return newest posts first"
+        "IN_HOME_FEED fixed-label scan should return posts in creation order"
     );
 }
 
 pub fn social_feed_post_ids(key_suffix: &str) -> Vec<String> {
     let parsed: serde_json::Value =
         serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds for feed assertion");
-    let mut post_ids = parsed["seeds"]
-        .as_array()
-        .expect("social seed array")
+    let seeds = parsed["seeds"].as_array().expect("social seed array");
+
+    // The graph's fixed-label scan yields source posts in vertex-id (creation) order. Feed
+    // edge seeds are parameterized (post id in the `$a_demo_id` param) and the generator
+    // interleaves authors within a feed, so the expected order is the posts' creation rank
+    // (their position in the POSTED wave), not the feed-edge seed order.
+    let mut creation_rank: std::collections::HashMap<i64, usize> = Default::default();
+    for (rank, seed) in seeds.iter().enumerate() {
+        if seed["gql"]
+            .as_str()
+            .is_some_and(|gql| gql.contains("-[:POSTED"))
+        {
+            if let Some(post_id) = seed["params"]["$b_demo_id"].as_i64() {
+                creation_rank.entry(post_id).or_insert(rank);
+            }
+        }
+    }
+
+    let mut post_ids: Vec<(usize, String)> = seeds
         .iter()
         .filter(|seed| {
             seed["key"]
@@ -2838,21 +2829,21 @@ pub fn social_feed_post_ids(key_suffix: &str) -> Vec<String> {
                 .is_some_and(|key| key.ends_with(key_suffix))
         })
         .map(|seed| {
-            let gql = seed["gql"].as_str().expect("social seed gql");
-            gql.split("demo_id:")
-                .nth(1)
-                .and_then(|value| value.split(',').next())
-                .map(str::trim)
-                .map(str::to_owned)
-                .expect("feed edge source demo_id")
+            let post_id = seed["params"]["$a_demo_id"]
+                .as_i64()
+                .expect("feed edge source demo_id");
+            let rank = *creation_rank
+                .get(&post_id)
+                .expect("feed post must have a POSTED creation seed");
+            (rank, post_id.to_string())
         })
-        .collect::<Vec<_>>();
+        .collect();
     assert!(
         !post_ids.is_empty(),
         "social feed seed selection must not be empty"
     );
-    post_ids.reverse();
-    post_ids
+    post_ids.sort_by_key(|(rank, _)| *rank);
+    post_ids.into_iter().map(|(_, id)| id).collect()
 }
 
 fn decode_rows_for_feed_assertions(
@@ -2891,7 +2882,7 @@ fn feed_assertion_text(
     }
 }
 
-/// Seed the social demo graph through Router `gql_execute_idempotent`.
+/// Seed the social demo graph through Router `gql_execute`.
 pub fn seed_social_graph(env: &FederationEnv) {
     use gleaph_gql::Value;
     use gleaph_gql_ic::encode_gql_params_blob;
@@ -2977,7 +2968,7 @@ pub fn seed_social_graph(env: &FederationEnv) {
         if mutations.is_empty() {
             continue;
         }
-        gql_execute_idempotent_batch_as_admin(env, mutations);
+        gql_execute_batch_as_admin(env, mutations);
         // Later seeds resolve earlier users/posts/feed edges through derived postings. Keep the
         // fixture deterministic by draining the projection before issuing the next dependent seed.
         drain_maintenance_via_timer(env, env.graph_source);

@@ -34,9 +34,8 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminVectorIndexBackfillStepArgs,
-    AdminVectorIndexBackfillStepResult, RegisterVectorIndexArgs, RouterVectorSearchRequest,
-    SetVectorIndexTargetArgs, VectorIndexActivationStateView, VectorIndexActivationStatus,
-    VectorIndexInfo,
+    AdminVectorIndexBackfillStepResult, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
+    VectorIndexActivationStateView, VectorIndexActivationStatus, VectorIndexInfo,
 };
 use std::collections::BTreeMap;
 
@@ -69,7 +68,7 @@ fn activation_status(
         .query_call(
             env.router,
             env.admin,
-            "vector_index_activation_status",
+            "get_vector_index_status",
             Encode!(&GRAPH_NAME.to_string(), &index_id).expect("encode status args"),
         )
         .expect("vector_index_activation_status call");
@@ -95,7 +94,7 @@ fn resolve_target(env: &FederationEnv, index_id: u32) -> Result<Principal, Route
         .query_call(
             env.router,
             env.admin,
-            "resolve_vector_index_target",
+            "get_vector_index_target",
             Encode!(&GRAPH_NAME.to_string(), &index_id).expect("encode resolve args"),
         )
         .expect("resolve_vector_index_target call");
@@ -118,7 +117,7 @@ fn backfill_step(
         .update_call(
             env.router,
             env.admin,
-            "admin_vector_index_backfill_step",
+            "advance_vector_index_backfill",
             Encode!(&args).expect("encode backfill args"),
         )
         .expect("admin_vector_index_backfill_step call");
@@ -137,7 +136,7 @@ fn set_target(env: &FederationEnv, index_id: u32, target: Principal) -> Result<(
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_index_target",
+            "set_vector_index_target",
             Encode!(&args).expect("encode set-target args"),
         )
         .expect("admin_set_vector_index_target call");
@@ -332,7 +331,7 @@ fn set_dispatch_activation(env: &FederationEnv, enabled: bool) -> Result<(), Rou
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&enabled).expect("encode activation flag"),
         )
         .expect("admin_set_vector_dispatch_activation call");
@@ -345,7 +344,7 @@ fn dispatch_activation_enabled(env: &FederationEnv) -> bool {
         .query_call(
             env.router,
             env.admin,
-            "vector_dispatch_activation_enabled",
+            "get_vector_dispatch_enabled",
             Encode!().expect("encode activation query"),
         )
         .expect("vector_dispatch_activation_enabled call");
@@ -367,7 +366,7 @@ fn attach_shard(
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&args).expect("encode attach args"),
         )
         .expect("admin_attach_vector_index_shard call");
@@ -380,7 +379,7 @@ fn router_graph_id(env: &FederationEnv) -> GraphId {
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&GRAPH_NAME.to_string()).expect("encode lookup_graph_id"),
         )
         .expect("lookup_graph_id call");
@@ -654,20 +653,20 @@ fn router_vector_search(
     query_value: f32,
     top_k: u32,
 ) -> Result<VectorSearchResult, RouterError> {
-    let req = RouterVectorSearchRequest {
-        logical_graph_name: GRAPH_NAME.to_string(),
-        index_id: INDEX_ID,
-        query: vec_bytes(query_value),
-        dims: DIMS,
-        top_k,
-    };
+    let query = vec_bytes(query_value);
     let bytes = env
         .pic
         .query_call(
             env.router,
             env.admin,
             "vector_search",
-            Encode!(&req).expect("encode router vector search"),
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &EMBEDDING_NAME.to_string(),
+                &query,
+                &top_k
+            )
+            .expect("encode router vector search"),
         )
         .expect("router vector_search call");
     Decode!(&bytes, Result<VectorSearchResult, RouterError>).expect("decode router search result")

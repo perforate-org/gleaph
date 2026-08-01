@@ -2087,7 +2087,7 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
         &query,
         &params,
         GqlExecutionMode::Update,
-        "gql_execute_idempotent",
+        "gql_execute",
         false,
         Some(&client_mutation_key),
         ReadMode::Eventual,

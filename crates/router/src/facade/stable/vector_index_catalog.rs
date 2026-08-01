@@ -455,6 +455,41 @@ pub(crate) fn list_vector_indexes(graph_id: GraphId) -> Vec<VectorIndexDefRecord
     })
 }
 
+/// Map a stored activation state to its public view (ADR 0056 §4; shared by the L2 catalog query
+/// and the L3 activation-status query).
+pub(crate) fn activation_state_view(
+    state: VectorIndexActivationState,
+) -> crate::types::VectorIndexActivationStateView {
+    match state {
+        VectorIndexActivationState::Registered => {
+            crate::types::VectorIndexActivationStateView::Registered
+        }
+        VectorIndexActivationState::DispatchBlocked => {
+            crate::types::VectorIndexActivationStateView::DispatchBlocked
+        }
+        VectorIndexActivationState::DispatchEnabled => {
+            crate::types::VectorIndexActivationStateView::DispatchEnabled
+        }
+    }
+}
+
+/// Router view row for one derived vector-index definition (ADR 0031 Slice 3; shared by the L2
+/// catalog query and the L3 activation-status query).
+pub(crate) fn vector_index_info(
+    def: &VectorIndexDefRecord,
+    dispatch_ready: bool,
+) -> crate::types::VectorIndexInfo {
+    let effective = effective_activation_state(def.activation_state, dispatch_ready);
+    crate::types::VectorIndexInfo {
+        index_id: def.index_id,
+        embedding_name_id: def.embedding_name_id.raw(),
+        dims: def.dims,
+        metric: def.metric,
+        target: def.target.map(|t| t.canister),
+        activation_state: activation_state_view(effective),
+    }
+}
+
 /// Build the ephemeral indexed-embedding catalog the Router stamps onto `ExecutePlanArgs` for a
 /// graph (ADR 0031), mirroring `to_indexed_property_catalog`.
 ///

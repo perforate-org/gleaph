@@ -1,7 +1,7 @@
 //! PocketIC: ADR 0030 slices 8–9 — public `CREATE`/`DROP CONSTRAINT` publication.
 //!
 //! Slice 8 published `CREATE CONSTRAINT` and slice 9 published `DROP CONSTRAINT` over the real
-//! ingress seam (Candid → `gql_execute_idempotent` / `gql_query`). The full enforcement lifecycle
+//! ingress seam (Candid → `gql_execute` / `gql_query`). The full enforcement lifecycle
 //! (Try/Acquire/Confirm, Release, recovery, failure-injection) shipped in slices 5–7. The dispatch
 //! must therefore:
 //!   1. require admin/manager authorization (before doing anything else),
@@ -16,8 +16,8 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_execute_idempotent_result_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
+    FederationEnv, gql_execute_as_admin, gql_execute_as_admin_expect_err,
+    gql_execute_result_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
     install_single_shard_federation,
 };
 
@@ -40,17 +40,17 @@ fn insert_user(label: &str, email: &str) -> String {
 fn create_constraint_publishes_and_enforces() {
     let env = install_single_shard_federation();
 
-    let created = gql_execute_idempotent_result_as_admin(&env, &create_for(LABEL), "s8-create");
+    let created = gql_execute_result_as_admin(&env, &create_for(LABEL), "s8-create");
     assert_eq!(
         created.row_count, 0,
         "CREATE CONSTRAINT is a write DDL that reports no rows"
     );
 
-    gql_execute_idempotent_as_admin(&env, &insert_user(LABEL, "a@example.com"), "s8-ins-1");
+    gql_execute_as_admin(&env, &insert_user(LABEL, "a@example.com"), "s8-ins-1");
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(live.row_count, 1, "the constrained vertex committed");
 
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert_user(LABEL, "a@example.com"),
         "s8-ins-dup",
@@ -66,16 +66,16 @@ fn create_constraint_publishes_and_enforces() {
 fn duplicate_create_constraint_conflicts_unless_if_not_exists() {
     let env = install_single_shard_federation();
 
-    gql_execute_idempotent_as_admin(&env, &create_for(LABEL), "s8-dup-1");
+    gql_execute_as_admin(&env, &create_for(LABEL), "s8-dup-1");
 
-    let again = gql_execute_idempotent_as_admin_expect_err(&env, &create_for(LABEL), "s8-dup-2");
+    let again = gql_execute_as_admin_expect_err(&env, &create_for(LABEL), "s8-dup-2");
     assert!(
         matches!(again, RouterError::Conflict(_)),
         "re-declaring an existing constraint must Conflict, got {again:?}"
     );
 
     // `IF NOT EXISTS` is idempotent: a second declaration of the same name is accepted as a no-op.
-    let idempotent = gql_execute_idempotent_result_as_admin(
+    let idempotent = gql_execute_result_as_admin(
         &env,
         &format!(
             "CREATE CONSTRAINT {CONSTRAINT} IF NOT EXISTS FOR (n:{LABEL}) REQUIRE n.{PROPERTY} IS UNIQUE"
@@ -95,14 +95,14 @@ fn create_constraint_on_existing_label_is_rejected() {
     let env = install_single_shard_federation();
 
     // Seed a vertex under `OTHER_LABEL` so the label is interned before the constraint is declared.
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert_user(OTHER_LABEL, "seed@example.com"),
         "s8-seed",
     );
 
     let err =
-        gql_execute_idempotent_as_admin_expect_err(&env, &create_for(OTHER_LABEL), "s8-nonempty");
+        gql_execute_as_admin_expect_err(&env, &create_for(OTHER_LABEL), "s8-nonempty");
     assert!(
         matches!(err, RouterError::Conflict(_)),
         "CREATE CONSTRAINT on an existing label must Conflict (declare-on-empty), got {err:?}"
@@ -114,7 +114,7 @@ fn create_constraint_on_existing_label_is_rejected() {
 fn malformed_create_constraint_is_invalid_argument() {
     let env = install_single_shard_federation();
     // REQUIRE variable does not match the FOR pattern variable.
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let err = gql_execute_as_admin_expect_err(
         &env,
         &format!("CREATE CONSTRAINT {CONSTRAINT} FOR (n:{LABEL}) REQUIRE m.{PROPERTY} IS UNIQUE"),
         "s8-malformed",
@@ -131,7 +131,7 @@ fn malformed_create_constraint_is_invalid_argument() {
 #[test]
 fn edge_create_constraint_is_invalid_argument() {
     let env = install_single_shard_federation();
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let err = gql_execute_as_admin_expect_err(
         &env,
         &format!("CREATE CONSTRAINT {CONSTRAINT} FOR ()-[r:KNOWS]-() REQUIRE r.weight IS UNIQUE"),
         "s8-edge",
@@ -165,7 +165,7 @@ fn create_constraint_requires_authorization() {
     let stranger = Principal::from_slice(&[0x11; 29]);
     assert_ne!(stranger, env.admin);
 
-    let err = gql_execute_idempotent_expect_err_as(&env, stranger, &create_for(LABEL), "s8-unauth");
+    let err = gql_execute_expect_err_as(&env, stranger, &create_for(LABEL), "s8-unauth");
     assert!(
         matches!(err, RouterError::Forbidden),
         "non-admin CREATE CONSTRAINT must be Forbidden, got {err:?}"
@@ -174,7 +174,7 @@ fn create_constraint_requires_authorization() {
     // The guard ran before any store mutation: the same admin CREATE now succeeds (no pre-existing
     // constraint to Conflict with), proving the rejected attempt registered no catalog state.
     let created =
-        gql_execute_idempotent_result_as_admin(&env, &create_for(LABEL), "s8-unauth-admin");
+        gql_execute_result_as_admin(&env, &create_for(LABEL), "s8-unauth-admin");
     assert_eq!(
         created.row_count, 0,
         "admin CREATE after a rejected non-admin attempt succeeds — no catalog state was left"
@@ -188,15 +188,15 @@ fn create_constraint_requires_authorization() {
 #[test]
 fn drop_constraint_is_published_and_stops_enforcing() {
     let env = install_single_shard_federation();
-    gql_execute_idempotent_as_admin(&env, &create_for(LABEL), "s9-drop-seed");
+    gql_execute_as_admin(&env, &create_for(LABEL), "s9-drop-seed");
 
     // Enforced while Active: a same-value duplicate is rejected non-retryably.
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert_user(LABEL, "drop@example.com"),
         "s9-drop-ins-1",
     );
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert_user(LABEL, "drop@example.com"),
         "s9-drop-ins-dup",
@@ -207,7 +207,7 @@ fn drop_constraint_is_published_and_stops_enforcing() {
     );
 
     // DROP is accepted and reports no rows.
-    let dropped = gql_execute_idempotent_result_as_admin(
+    let dropped = gql_execute_result_as_admin(
         &env,
         &format!("DROP CONSTRAINT {CONSTRAINT}"),
         "s9-drop",
@@ -218,7 +218,7 @@ fn drop_constraint_is_published_and_stops_enforcing() {
     );
 
     // Once Dropping, the constraint no longer enforces: the previously-rejected value now inserts.
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &insert_user(LABEL, "drop@example.com"),
         "s9-drop-ins-2",
@@ -230,8 +230,8 @@ fn drop_constraint_is_published_and_stops_enforcing() {
     );
 }
 
-/// `gql_execute_idempotent` as an arbitrary caller, expecting a `RouterError`.
-fn gql_execute_idempotent_expect_err_as(
+/// `gql_execute` as an arbitrary caller, expecting a `RouterError`.
+fn gql_execute_expect_err_as(
     env: &FederationEnv,
     caller: Principal,
     query: &str,
@@ -245,13 +245,13 @@ fn gql_execute_idempotent_expect_err_as(
         .update_call(
             env.router,
             caller,
-            "gql_execute_idempotent",
-            Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
+            "gql_execute",
+            Encode!(&query, &params, &mutation_key).expect("encode gql_execute"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_execute on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Err(err)) => err,
         Ok(Ok(result)) => panic!("expected rejection, got row_count {}", result.row_count),
-        Err(err) => panic!("decode gql_execute_idempotent: {err}"),
+        Err(err) => panic!("decode gql_execute: {err}"),
     }
 }

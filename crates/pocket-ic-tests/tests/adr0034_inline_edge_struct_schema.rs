@@ -8,7 +8,7 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    FederationEnv, gql_execute_as_admin, gql_execute_as_admin_expect_err,
     install_single_shard_federation,
 };
 
@@ -30,14 +30,14 @@ fn scenario_unauthorized_ddl_is_forbidden_before_creation(env: &FederationEnv) {
         .update_call(
             env.router,
             Principal::anonymous(),
-            "gql_execute_idempotent",
+            "gql_execute",
             Encode!(&query.to_string(), &params, &mutation_key)
-                .expect("encode gql_execute_idempotent"),
+                .expect("encode gql_execute"),
         )
         .expect("router update call");
     let result = Decode!(&bytes,
         Result<GqlQueryResult, RouterError>)
-    .expect("decode gql_execute_idempotent result");
+    .expect("decode gql_execute result");
     assert!(
         matches!(result, Err(RouterError::Forbidden)),
         "unauthorized scenario: anonymous caller should be forbidden before schema creation, got {result:?}"
@@ -45,7 +45,7 @@ fn scenario_unauthorized_ddl_is_forbidden_before_creation(env: &FederationEnv) {
 }
 
 fn scenario_admin_creates_canonical_schema(env: &FederationEnv) {
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         env,
         &inline_struct_ddl(),
         "adr0034_inline_struct_schema_create",
@@ -53,7 +53,7 @@ fn scenario_admin_creates_canonical_schema(env: &FederationEnv) {
 }
 
 fn scenario_exact_replay_is_idempotent(env: &FederationEnv) {
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         env,
         &inline_struct_ddl(),
         "adr0034_inline_struct_schema_replay",
@@ -61,7 +61,7 @@ fn scenario_exact_replay_is_idempotent(env: &FederationEnv) {
 }
 
 fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let err = gql_execute_as_admin_expect_err(
         env,
         "CREATE GRAPH TYPE IF NOT EXISTS affinity_type { NODE User AS user, DIRECTED EDGE Affinity LABEL AFFINITY { stats { score FLOAT64 } INLINE } CONNECTING (user -> user) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED affinity_type",
         "adr0034_inline_struct_schema_conflict",
@@ -73,7 +73,7 @@ fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
 }
 
 fn scenario_scalar_ddl_after_struct_is_rejected(env: &FederationEnv) {
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let err = gql_execute_as_admin_expect_err(
         env,
         "CREATE GRAPH TYPE IF NOT EXISTS affinity_type { NODE User AS user, DIRECTED EDGE Affinity LABEL AFFINITY { stats FLOAT32 INLINE } CONNECTING (user -> user) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED affinity_type",
         "adr0034_inline_struct_scalar_conflict",

@@ -19,8 +19,8 @@ use gleaph_pocket_ic_tests::{
     install_single_shard_federation, install_vector_canister, wasm_bytes,
 };
 use gleaph_router::types::{
-    AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, RegisterVectorIndexArgs,
-    RouterVectorSearchRequest,
+    AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingBatchArgs,
+    AdminIngestVertexEmbeddingBatchItem, RegisterVectorIndexArgs,
 };
 
 const EMBEDDING_NAME: &str = "ingest_title_vec";
@@ -61,7 +61,7 @@ fn set_dispatch_activation(env: &FederationEnv, enabled: bool) {
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&enabled).expect("encode"),
         )
         .expect("activation call");
@@ -110,7 +110,7 @@ fn attach_shard(env: &FederationEnv, vector: Principal) {
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&args).expect("encode"),
         )
         .expect("router attach");
@@ -126,7 +126,7 @@ fn fully_activate(env: &FederationEnv, vector: Principal) {
             .query_call(
                 env.router,
                 env.admin,
-                "lookup_graph_id",
+                "get_graph_id",
                 Encode!(&GRAPH_NAME.to_string()).expect("encode"),
             )
             .expect("lookup graph id");
@@ -146,7 +146,7 @@ fn encode_vertex(env: &FederationEnv, local: u32) -> Vec<u8> {
         .query_call(
             env.router,
             env.admin,
-            "graph_element_id_encoding_key",
+            "get_id_encoding_key",
             Encode!(&GRAPH_NAME.to_string()).expect("encode"),
         )
         .expect("encoding key");
@@ -171,50 +171,58 @@ fn ingest(
     encoded: Vec<u8>,
     values: Vec<f32>,
 ) -> gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
-    let args = AdminIngestVertexEmbeddingArgs {
+    let args = AdminIngestVertexEmbeddingBatchArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
-        encoded_vertex_id: encoded,
         embedding_name: EMBEDDING_NAME.to_string(),
-        values,
+        items: vec![AdminIngestVertexEmbeddingBatchItem {
+            encoded_vertex_id: encoded,
+            values,
+        }],
     };
     let bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "admin_ingest_vertex_embedding",
+            "ingest_vertex_embeddings",
             Encode!(&args).expect("encode"),
         )
         .expect("ingest call");
     let result: Result<
-        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+        Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
         gleaph_graph_kernel::federation::RouterError,
     > = Decode!(
         &bytes,
         Result<
-            gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+            Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
             gleaph_graph_kernel::federation::RouterError,
         >
     )
     .expect("decode");
-    result.expect("ingest succeeds")
+    let results = result.expect("ingest succeeds");
+    assert_eq!(results.len(), 1, "one item in, one result out");
+    results
+        .into_iter()
+        .next()
+        .expect("one result")
+        .expect("ingest succeeds")
 }
 
 fn router_vector_search(env: &FederationEnv, value: f32, top_k: u32) -> VectorSearchResult {
-    let req = RouterVectorSearchRequest {
-        logical_graph_name: GRAPH_NAME.to_string(),
-        index_id: INDEX_ID,
-        query: vec_bytes(value),
-        dims: DIMS,
-        top_k,
-    };
+    let query = vec_bytes(value);
     let bytes = env
         .pic
         .query_call(
             env.router,
             env.admin,
             "vector_search",
-            Encode!(&req).expect("encode"),
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &EMBEDDING_NAME.to_string(),
+                &query,
+                &top_k
+            )
+            .expect("encode"),
         )
         .expect("vector search call");
     let result: Result<VectorSearchResult, gleaph_graph_kernel::federation::RouterError> =
@@ -331,28 +339,30 @@ fn invalid_ingestion_fails_closed_before_graph_call() {
     let inserted = e2e_insert_vertex(&env, env.graph_source);
 
     // Dimension mismatch: values length 2 vs registered dims 16.
-    let args = AdminIngestVertexEmbeddingArgs {
+    let args = AdminIngestVertexEmbeddingBatchArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
-        encoded_vertex_id: encode_vertex(&env, inserted.local_vertex_id),
         embedding_name: EMBEDDING_NAME.to_string(),
-        values: vec![1.0, 2.0],
+        items: vec![AdminIngestVertexEmbeddingBatchItem {
+            encoded_vertex_id: encode_vertex(&env, inserted.local_vertex_id),
+            values: vec![1.0, 2.0],
+        }],
     };
     let bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "admin_ingest_vertex_embedding",
+            "ingest_vertex_embeddings",
             Encode!(&args).expect("encode"),
         )
         .expect("ingest call");
     let result: Result<
-        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+        Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
         gleaph_graph_kernel::federation::RouterError,
     > = Decode!(
         &bytes,
         Result<
-            gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+            Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
             gleaph_graph_kernel::federation::RouterError,
         >
     )

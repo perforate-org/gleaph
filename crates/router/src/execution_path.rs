@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn prepared_rejects_write_plan_on_query_call() {
         let err =
-            check_prepared_execution_path("prepared_query", GqlExecutionMode::Query, true, false)
+            check_prepared_execution_path("execute_prepared", GqlExecutionMode::Query, true, false)
                 .expect_err("write on query");
         assert!(matches!(
             err,
@@ -147,7 +147,7 @@ mod tests {
                 program_kind,
                 call_kind,
                 ..
-            } if entrypoint == "prepared_query"
+            } if entrypoint == "execute_prepared"
                 && program_kind == "write"
                 && call_kind == "query"
         ));
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn prepared_force_bypasses_read_on_update_mismatch() {
         check_prepared_execution_path(
-            "prepared_query_as_update",
+            "execute_prepared_update",
             GqlExecutionMode::Update,
             false,
             true,

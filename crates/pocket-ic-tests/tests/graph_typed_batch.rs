@@ -22,7 +22,7 @@ use gleaph_graph_kernel::plan_exec::{
     SeedVertexBinding,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, SOURCE_SHARD, admin_intern_edge_label, admin_intern_vertex_label,
+    FederationEnv, SOURCE_SHARD, ensure_edge_label, ensure_vertex_label,
     e2e_insert_vertex_with_label, federation_graph_element_id_encoding_key_bytes,
     gql_query_as_admin, install_single_shard_federation, update_as_router,
 };
@@ -156,9 +156,9 @@ fn journal_entries(env: &FederationEnv, mutation_ids: &[u64]) -> GetMutationJour
 fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
     let env = install_single_shard_federation();
 
-    let user_label = admin_intern_vertex_label(&env, "User");
-    let post_label = admin_intern_vertex_label(&env, "Post");
-    let posted_edge_label = admin_intern_edge_label(&env, "POSTED");
+    let user_label = ensure_vertex_label(&env, "User");
+    let post_label = ensure_vertex_label(&env, "Post");
+    let posted_edge_label = ensure_edge_label(&env, "POSTED");
 
     let user = e2e_insert_vertex_with_label(&env, env.graph_source, user_label.raw());
     let second_user = e2e_insert_vertex_with_label(&env, env.graph_source, user_label.raw());
@@ -345,8 +345,8 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
 #[test]
 fn graph_typed_bulk_executes_complete_rows_for_multiple_leading_anchors() {
     let env = install_single_shard_federation();
-    let user_label = admin_intern_vertex_label(&env, "User");
-    let follows_edge_label = admin_intern_edge_label(&env, "FOLLOWS");
+    let user_label = ensure_vertex_label(&env, "User");
+    let follows_edge_label = ensure_edge_label(&env, "FOLLOWS");
     let source = e2e_insert_vertex_with_label(&env, env.graph_source, user_label.raw());
     let target = e2e_insert_vertex_with_label(&env, env.graph_source, user_label.raw());
 

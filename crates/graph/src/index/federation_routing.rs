@@ -40,7 +40,7 @@ pub async fn list_shards_for_graph(
         let shards: Result<Vec<ShardRegistryEntry>, RouterError> =
             super::router_call::call_router1(
                 router_canister,
-                "list_shards_for_graph",
+                "list_shards",
                 logical_graph_name.to_string(),
             )
             .await
@@ -74,7 +74,7 @@ pub async fn fetch_indexed_catalog(
         let catalog: Result<IndexedPropertyCatalog, RouterError> =
             super::router_call::call_router1(
                 router_canister,
-                "indexed_property_catalog",
+                "get_indexed_property_catalog",
                 logical_graph_name.to_string(),
             )
             .await

@@ -357,13 +357,6 @@ pub async fn backfill_vertex_embeddings(
     call_graph_result(graph, "backfill_vertex_embeddings", req).await
 }
 
-pub async fn ingest_vertex_embedding(
-    graph: Principal,
-    args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
-) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String> {
-    call_graph_result(graph, "admin_ingest_vertex_embedding", args).await
-}
-
 pub async fn ingest_vertex_embedding_batch(
     graph: Principal,
     args: Vec<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs>,
@@ -388,8 +381,9 @@ pub async fn admin_stable_memory_stats(
     call_graph_args(graph, "admin_stable_memory_stats", &()).await
 }
 
-/// Forward a batch-instrumentation log page from the Graph shard to the Router.
-#[cfg_attr(feature = "canbench", allow(dead_code))]
+/// Forward a batch-instrumentation log page from the Graph shard to the Router. Only reachable
+/// when the Router's `batch-instr-log` feature gates `admin_graph_batch_instr_log`.
+#[cfg_attr(not(feature = "batch-instr-log"), allow(dead_code))]
 pub async fn admin_take_batch_instr_log(
     graph: Principal,
     offset: u32,

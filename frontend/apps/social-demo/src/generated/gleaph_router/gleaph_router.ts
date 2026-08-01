@@ -58,12 +58,6 @@ export type ReadMode = {
      */
     Eventual: null;
 } | {
-    __kind__: "Canonical";
-    /**
-     * Owner-served truth for every shape (deferred; rejected by the router for now).
-     */
-    Canonical: null;
-} | {
     __kind__: "AtLeast";
     /**
      * Block (retryable) until every shard reaches the token's watermarks.
@@ -72,14 +66,14 @@ export type ReadMode = {
 };
 export type Result_32 = {
     __kind__: "Ok";
-    Ok: Array<VectorIndexInfo>;
+    Ok: Array<ShardRegistryEntry>;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_2 = {
     __kind__: "Ok";
-    Ok: AdminEdgeBackfillStepResult;
+    Ok: AdvanceBackfillResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -166,30 +160,18 @@ export interface BatchPropertyV1 {
 }
 export type Result_4 = {
     __kind__: "Ok";
-    Ok: IndexSyncStatus;
+    Ok: VectorMaintenanceStepOutcome;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_40 = {
     __kind__: "Ok";
-    Ok: ShardRegistryEntry;
+    Ok: AdminSweepMutationKeysStepResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
-export interface AdminEdgeBackfillStepResult {
-    entries_processed: number;
-    postings_synced: number;
-    done: boolean;
-    shard_id: number;
-    next_after_key?: Uint8Array;
-}
-export interface EdgeBackfillShardStatus {
-    done: boolean;
-    shard_id: number;
-    after_key?: Uint8Array;
-}
 export interface VertexEmbeddingIngestionResult {
     embedding_version: bigint;
     projection_outcome: VertexEmbeddingProjectionOutcome;
@@ -234,17 +216,17 @@ export interface GraphIdentity {
 }
 export type Result_34 = {
     __kind__: "Ok";
-    Ok: number;
+    Ok: Array<VectorMaintenancePolicyView>;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_6 = {
     __kind__: "Ok";
-    Ok: VertexEmbeddingIngestionResult;
+    Ok: BatchResponse;
 } | {
     __kind__: "Err";
-    Err: string;
+    Err: RouterError;
 };
 export interface GqlExecuteIdempotentBatchItem {
     gql_query: string;
@@ -253,7 +235,7 @@ export interface GqlExecuteIdempotentBatchItem {
 }
 export type Result_12 = {
     __kind__: "Ok";
-    Ok: Array<EdgeBackfillShardStatus>;
+    Ok: GraphHealthView;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -291,7 +273,7 @@ export interface GraphRegistryEntry {
 }
 export type Result_26 = {
     __kind__: "Ok";
-    Ok: bigint;
+    Ok: GqlExecuteIdempotentBatchResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -340,32 +322,11 @@ export type Result = {
 };
 export type Result_10 = {
     __kind__: "Ok";
-    Ok: AdminLabelBackfillStepResult;
+    Ok: GqlQueryResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
-export interface AdminEdgeBackfillStepArgs {
-    shard_id: number;
-    /**
-     * Maximum edge property entries to scan on the shard in this step (must be > 0).
-     */
-    max_entries: number;
-    logical_graph_name: string;
-}
-export interface AdminLabelStatsProjectionStepArgs {
-    shard_id: number;
-    /**
-     * Maximum pending deltas to apply from the shard log in this step (must be > 0).
-     */
-    max_deltas: number;
-    logical_graph_name: string;
-}
-export interface BatchReceiptV1 {
-    logical_edge_count: bigint;
-    logical_vertex_count: bigint;
-    logical_operation_count: bigint;
-}
 export type Result_8 = {
     __kind__: "Ok";
     Ok: number;
@@ -373,10 +334,20 @@ export type Result_8 = {
     __kind__: "Err";
     Err: RouterError;
 };
+export interface BatchReceiptV1 {
+    logical_edge_count: bigint;
+    logical_vertex_count: bigint;
+    logical_operation_count: bigint;
+}
 export interface RouterProvisionAck {
     request_id: string;
     accepted_registry_version: bigint;
     deployment_id: string;
+}
+export interface RegisterGraphShard {
+    shard_id: number;
+    index_canister: Principal;
+    graph_canister: Principal;
 }
 export interface VectorPartitionHealthSummary {
     /**
@@ -463,21 +434,14 @@ export interface RecordField {
 }
 export type Result_13 = {
     __kind__: "Ok";
-    Ok: Array<LabelBackfillShardStatus>;
+    Ok: number;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_25 = {
     __kind__: "Ok";
-    Ok: BatchResponse;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-};
-export type Result_44 = {
-    __kind__: "Ok";
-    Ok: VectorMaintenancePolicyView | null;
+    Ok: VectorSlabStats;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -515,7 +479,7 @@ export interface GrantRoleArgs {
 }
 export type Result_39 = {
     __kind__: "Ok";
-    Ok: GraphRegistryEntry;
+    Ok: VectorSlabStatsStep;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -556,17 +520,17 @@ export interface GqlExecuteIdempotentBatchResult {
 }
 export type Result_11 = {
     __kind__: "Ok";
-    Ok: AdminLabelStatsProjectionStepResult;
+    Ok: GraphRegistryEntry;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_27 = {
     __kind__: "Ok";
-    Ok: GqlQueryResult;
+    Ok: VertexEmbeddingIngestionResult;
 } | {
     __kind__: "Err";
-    Err: RouterError;
+    Err: string;
 };
 export interface StableMemoryRegionStats {
     slack_pages: bigint;
@@ -577,13 +541,6 @@ export interface StableMemoryRegionStats {
     memory_id: number;
     bucket_pages: number;
 }
-export type Result_46 = {
-    __kind__: "Ok";
-    Ok: VectorSearchResult;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-};
 export interface VectorSearchHit {
     subject: VectorSubject;
     embedding_version: bigint;
@@ -646,12 +603,25 @@ export interface VectorSlabVersionStats {
      */
     index_id: number;
 }
-export interface AdminLabelBackfillStepResult {
-    postings_synced: number;
-    vertices_processed: number;
-    done: boolean;
-    shard_id: number;
-    next_vertex_id: number;
+export interface GraphHealthView {
+    /**
+     * Shards that answered a liveness check.
+     */
+    reachable_shard_count: number;
+    /**
+     * All shards' index-sync converged.
+     */
+    index_sync_converged: boolean;
+    /**
+     * Unhealthy vector-index names only; detail lives at the L3 surface.
+     */
+    unhealthy_vector_indexes: Array<string>;
+    graph: GraphSummary;
+    /**
+     * Bounded, best-effort repair guidance.
+     */
+    notes: Array<string>;
+    vector_index_count: number;
 }
 export interface VectorSearchResult {
     hits: Array<VectorSearchHit>;
@@ -668,7 +638,7 @@ export type VectorSubject = {
 };
 export type Result_21 = {
     __kind__: "Ok";
-    Ok: VectorPartitionHealthStep;
+    Ok: Principal;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -700,28 +670,21 @@ export interface VectorRebuildStatus {
 }
 export type Result_36 = {
     __kind__: "Ok";
-    Ok: string;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-};
-export type Result_42 = {
-    __kind__: "Ok";
-    Ok: RouterAckResponse;
+    Ok: ProvisionGraphResponse;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_18 = {
     __kind__: "Ok";
-    Ok: VectorMaintenanceState;
+    Ok: ShardRegistryEntry;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_3 = {
     __kind__: "Ok";
-    Ok: Array<GraphStableMemoryStats>;
+    Ok: AdminVectorIndexBackfillStepResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -985,21 +948,21 @@ export interface PreparedSortSpec {
 }
 export type Result_15 = {
     __kind__: "Ok";
-    Ok: AdminSweepMutationKeysStepResult;
+    Ok: Uint8Array;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_23 = {
     __kind__: "Ok";
-    Ok: VectorSlabStats;
+    Ok: VectorMaintenanceStatusView;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_38 = {
     __kind__: "Ok";
-    Ok: ProvisionGraphResponse;
+    Ok: VectorPartitionHealthStep;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1052,7 +1015,7 @@ export interface RouterInitArgs {
 }
 export type Result_5 = {
     __kind__: "Ok";
-    Ok: VertexEmbeddingIngestionResult;
+    Ok: VectorRebuildStatus;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1101,38 +1064,10 @@ export interface AdminResetBackfillClaimArgs {
     kind: BackfillKind;
     logical_graph_name: string;
 }
-export type VectorMaintenanceState = {
-    __kind__: "Scanning";
-    /**
-     * A bounded page-health scan is accumulating tombstone counters for the active version.
-     */
-    Scanning: {
-        /**
-         * Additive page-health accumulated so far, scoped by its `index_id`/`index_version`.
-         */
-        merged: VectorPartitionPageHealth;
-        /**
-         * Opaque resume cursor (`PageKey` bytes); `None` restarts the scan from the lower bound.
-         */
-        cursor?: Uint8Array;
-        /**
-         * `true` once the scan has covered every page of the scoped version.
-         */
-        exhausted: boolean;
-    };
-} | {
-    __kind__: "Failed";
-    /**
-     * A prior step failed; the step is a no-op until an explicit `admin_vector_maintenance_reset`.
-     */
-    Failed: VectorMaintenanceFailure;
-} | {
-    __kind__: "Idle";
-    /**
-     * No maintenance in progress.
-     */
-    Idle: null;
-};
+export interface AdvanceBackfillResult {
+    shards: Array<BackfillShardAdvance>;
+    all_done: boolean;
+}
 export type BatchEndpointV1 = {
     __kind__: "NewVertexOrdinal";
     /**
@@ -1145,28 +1080,28 @@ export type BatchEndpointV1 = {
 };
 export type Result_31 = {
     __kind__: "Ok";
-    Ok: Array<ShardRegistryEntry>;
+    Ok: PreparedManifest;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_7 = {
     __kind__: "Ok";
-    Ok: Array<Result_6>;
+    Ok: VectorCentroidCacheStatus;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_41 = {
     __kind__: "Ok";
-    Ok: Principal;
+    Ok: VectorSearchResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_28 = {
     __kind__: "Ok";
-    Ok: GqlExecuteIdempotentBatchResult;
+    Ok: Array<Result_27>;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1186,13 +1121,13 @@ export type BatchOperationV1 = {
     __kind__: "Vertex";
     Vertex: BatchVertexInsertV1;
 };
-export interface AdminLabelBackfillStepArgs {
-    shard_id: number;
-    /**
-     * Maximum local vertices to scan on the shard in this step (must be > 0).
-     */
-    max_vertices: number;
-    logical_graph_name: string;
+export interface GraphSummary {
+    status: GraphStatus;
+    graph_id: number;
+    updated_at_ns: bigint;
+    provisioning_state: ProvisioningState;
+    graph_name: string;
+    shard_count: number;
 }
 export interface VectorPartitionHealthStep {
     /**
@@ -1299,6 +1234,10 @@ export interface BatchVertexInsertV1 {
     initial_properties: Array<BatchPropertyV1>;
     vertex_labels: Array<string>;
 }
+export interface BackfillShardAdvance {
+    done: boolean;
+    shard_id: number;
+}
 export interface VectorIndexActivationStatus {
     /**
      * `Some(reason)` while production dispatch/backfill is fail-closed; `None` otherwise.
@@ -1309,7 +1248,7 @@ export interface VectorIndexActivationStatus {
 }
 export type Result_30 = {
     __kind__: "Ok";
-    Ok: IndexedPropertyCatalog;
+    Ok: Array<GraphSummary>;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1323,12 +1262,6 @@ export interface AdminVectorIndexBackfillStepArgs {
     start_vertex_id: number;
     index_id: number;
     logical_graph_name: string;
-}
-export interface AdminLabelStatsProjectionStepResult {
-    done: boolean;
-    shard_id: number;
-    deltas_drained: number;
-    deltas_applied: number;
 }
 export interface AdminVectorIndexBackfillStepResult {
     vertices_processed: number;
@@ -1347,26 +1280,21 @@ export interface StableMemoryStats {
 }
 export type Result_37 = {
     __kind__: "Ok";
-    Ok: PreparedManifest;
+    Ok: RouterAckResponse;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_17 = {
     __kind__: "Ok";
-    Ok: AdminVectorIndexBackfillStepResult;
+    Ok: MutationStatus;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
-export interface LabelBackfillShardStatus {
-    done: boolean;
-    shard_id: number;
-    next_vertex_id: number;
-}
 export type Result_16 = {
     __kind__: "Ok";
-    Ok: VectorCentroidCacheStatus;
+    Ok: IndexedPropertyCatalog;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1380,7 +1308,7 @@ export type Result_1 = {
 };
 export type Result_22 = {
     __kind__: "Ok";
-    Ok: VectorRebuildStatus;
+    Ok: VectorMaintenancePolicyView | null;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1418,31 +1346,36 @@ export type VectorMaintenanceStepOutcome = {
 };
 export type Result_19 = {
     __kind__: "Ok";
-    Ok: VectorMaintenanceStepOutcome;
+    Ok: Array<GraphStableMemoryStats>;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_29 = {
     __kind__: "Ok";
-    Ok: Uint8Array;
+    Ok: Array<BackfillShardStatus>;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
-export interface VectorSlabStatsStep {
+export interface RegisterGraphArgs {
     /**
-     * Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
+     * Dev mode: whether this graph is the HOME graph for callers without an explicit `USE GRAPH`
+     * (ADR 0011). The legacy home designation is a client-visible graph property, so it stays in
+     * the intent; federation topology (shards, canister ids) stays internal.
      */
-    cursor?: Uint8Array;
+    is_home: boolean;
     /**
-     * `true` once the whole page-meta map has been scanned.
+     * Provisioned mode: resources requested from the configured Provision canister.
      */
-    exhausted: boolean;
+    requested_resources: Array<ProvisionableResource>;
     /**
-     * This step's additive contribution (see the merge contract above).
+     * Dev mode: the caller-installed shard canisters (one graph + index canister per shard).
      */
-    partial: VectorSlabStats;
+    shards: Array<RegisterGraphShard>;
+    owner: Principal;
+    admins: Array<Principal>;
+    graph_name: string;
 }
 export interface AdminSweepMutationKeysStepArgs {
     /**
@@ -1473,24 +1406,31 @@ export interface MutationStatus {
 }
 export type Result_14 = {
     __kind__: "Ok";
-    Ok: VectorMaintenanceRecommendation;
+    Ok: IndexSyncStatus;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
 export type Result_24 = {
     __kind__: "Ok";
-    Ok: VectorSlabStatsStep;
+    Ok: VectorPartitionHealthSummary;
 } | {
     __kind__: "Err";
     Err: RouterError;
 };
-export interface RouterVectorSearchRequest {
-    top_k: number;
-    dims: number;
-    query: Uint8Array;
-    index_id: number;
-    logical_graph_name: string;
+export interface VectorSlabStatsStep {
+    /**
+     * Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
+     */
+    cursor?: Uint8Array;
+    /**
+     * `true` once the whole page-meta map has been scanned.
+     */
+    exhausted: boolean;
+    /**
+     * This step's additive contribution (see the merge contract above).
+     */
+    partial: VectorSlabStats;
 }
 export interface PreparedOperation {
     /**
@@ -1725,14 +1665,7 @@ export interface Column {
 }
 export type Result_33 = {
     __kind__: "Ok";
-    Ok: Array<VectorMaintenancePolicyView>;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-};
-export type Result_43 = {
-    __kind__: "Ok";
-    Ok: VectorIndexActivationStatus;
+    Ok: Array<VectorIndexInfo>;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1767,7 +1700,7 @@ export interface AdminIngestVertexEmbeddingBatchItem {
 }
 export type Result_35 = {
     __kind__: "Ok";
-    Ok: MutationStatus;
+    Ok: string;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1794,13 +1727,11 @@ export interface IndexedEdgeMembership {
     property_id: number;
     direction_tag: number;
 }
-export type Result_45 = {
-    __kind__: "Ok";
-    Ok: VectorMaintenanceStatusView;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-};
+export interface BackfillShardStatus {
+    done: boolean;
+    shard_id: number;
+    kind: BackfillKind;
+}
 export interface GqlExecuteIdempotentBatchArgs {
     /**
      * `None` selects the Router default safety budget below the IC update-call limit.
@@ -1809,18 +1740,9 @@ export interface GqlExecuteIdempotentBatchArgs {
     mutations: Array<GqlExecuteIdempotentBatchItem>;
     start_index: number;
 }
-export interface AdminIngestVertexEmbeddingArgs {
-    values: Array<number>;
-    /**
-     * Opaque 8-byte graph-scoped vertex id (`ELEMENT_ID(v)`).
-     */
-    encoded_vertex_id: Uint8Array;
-    embedding_name: string;
-    logical_graph_name: string;
-}
 export type Result_20 = {
     __kind__: "Ok";
-    Ok: VectorPartitionHealthSummary;
+    Ok: VectorIndexActivationStatus;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -1828,6 +1750,7 @@ export type Result_20 = {
 export enum BackfillKind {
     Label = "Label",
     Edge = "Edge",
+    LabelStats = "LabelStats",
     VertexProperty = "VertexProperty"
 }
 export enum GraphStatus {
@@ -2088,687 +2011,603 @@ export enum VertexEmbeddingProjectionOutcome {
     Applied = "Applied"
 }
 export interface gleaph_routerInterface {
-    admin_abort_vector_rebuild(arg0: string, arg1: number): Promise<Result>;
-    admin_attach_vector_index_shard(arg0: AdminAttachVectorIndexShardArgs): Promise<Result>;
-    admin_check_registry_invariants(): Promise<Result>;
-    admin_delete_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_1>;
-    admin_disable_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result>;
-    admin_edge_backfill_step(arg0: AdminEdgeBackfillStepArgs): Promise<Result_2>;
-    admin_grant_role(arg0: GrantRoleArgs): Promise<Result>;
-    admin_graph_stable_memory_stats(arg0: string): Promise<Result_3>;
-    admin_index_sync_status(arg0: AdminIndexSyncStatusArgs): Promise<Result_4>;
-    admin_ingest_vertex_embedding(arg0: AdminIngestVertexEmbeddingArgs): Promise<Result_5>;
-    admin_ingest_vertex_embedding_batch(arg0: AdminIngestVertexEmbeddingBatchArgs): Promise<Result_7>;
-    admin_intern_edge_label(arg0: string, arg1: string): Promise<Result_8>;
-    admin_intern_property(arg0: string, arg1: string): Promise<Result_9>;
-    admin_intern_vertex_label(arg0: string, arg1: string): Promise<Result_8>;
-    admin_label_backfill_step(arg0: AdminLabelBackfillStepArgs): Promise<Result_10>;
-    admin_label_stats_projection_step(arg0: AdminLabelStatsProjectionStepArgs): Promise<Result_11>;
-    admin_list_edge_backfill_status(arg0: string): Promise<Result_12>;
-    admin_list_label_backfill_status(arg0: string): Promise<Result_13>;
-    admin_list_vertex_property_backfill_status(arg0: string): Promise<Result_13>;
-    admin_publish_vector_rebuild(arg0: string, arg1: number): Promise<Result>;
-    admin_register_graph(arg0: GraphRegistryEntry): Promise<Result>;
-    admin_register_shard(arg0: AdminRegisterShardArgs): Promise<Result>;
+    abort_vector_rebuild(arg0: string, arg1: number): Promise<Result>;
     admin_register_vector_index(arg0: RegisterVectorIndexArgs): Promise<Result_1>;
-    admin_reset_backfill_claim(arg0: AdminResetBackfillClaimArgs): Promise<Result>;
-    admin_set_indexed_edge_property(arg0: string, arg1: string, arg2: string): Promise<Result>;
-    admin_set_indexed_vertex_property(arg0: string, arg1: string, arg2: string): Promise<Result>;
-    admin_set_vector_dispatch_activation(arg0: boolean): Promise<Result>;
-    admin_set_vector_index_target(arg0: SetVectorIndexTargetArgs): Promise<Result>;
-    admin_set_vector_maintenance_policy(arg0: SetVectorMaintenancePolicyArgs): Promise<Result>;
-    admin_start_vector_rebuild(arg0: string, arg1: number, arg2: number, arg3: number): Promise<Result>;
-    admin_start_vector_rebuild_if_recommended(arg0: string, arg1: number, arg2: VectorPartitionPageHealth, arg3: VectorMaintenancePolicy, arg4: number | null, arg5: number): Promise<Result_14>;
-    admin_sweep_expired_client_mutation_keys(arg0: AdminSweepMutationKeysStepArgs): Promise<Result_15>;
     admin_take_batch_instr_log(arg0: number, arg1: number): Promise<Array<string>>;
-    admin_unregister_graph(arg0: string): Promise<Result>;
-    admin_unregister_shard(arg0: string, arg1: number): Promise<Result>;
-    admin_update_graph_status(arg0: string, arg1: GraphStatus, arg2: bigint): Promise<Result>;
-    admin_vector_centroid_cache_clear(arg0: string): Promise<Result_16>;
-    admin_vector_centroid_cache_status(arg0: string): Promise<Result_16>;
-    admin_vector_centroid_cache_warmup(arg0: string, arg1: number): Promise<Result_16>;
-    admin_vector_index_backfill_step(arg0: AdminVectorIndexBackfillStepArgs): Promise<Result_17>;
-    admin_vector_maintenance_reset(arg0: string, arg1: number): Promise<Result>;
-    admin_vector_maintenance_status(arg0: string, arg1: number): Promise<Result_18>;
-    admin_vector_maintenance_step(arg0: string, arg1: number): Promise<Result_19>;
-    admin_vector_partition_health(arg0: string, arg1: number): Promise<Result_20>;
-    admin_vector_partition_health_step(arg0: string, arg1: number, arg2: Uint8Array | null, arg3: number): Promise<Result_21>;
-    admin_vector_rebuild_cleanup_step(arg0: string, arg1: number, arg2: number): Promise<Result_22>;
-    admin_vector_rebuild_status(arg0: string, arg1: number): Promise<Result_22>;
-    admin_vector_rebuild_step(arg0: string, arg1: number, arg2: number): Promise<Result_22>;
-    admin_vector_slab_stats(arg0: string, arg1: number | null): Promise<Result_23>;
-    admin_vector_slab_stats_step(arg0: string, arg1: Uint8Array | null, arg2: number, arg3: number | null): Promise<Result_24>;
-    admin_vertex_property_backfill_step(arg0: AdminLabelBackfillStepArgs): Promise<Result_10>;
-    batch(arg0: BatchRequest): Promise<Result_25>;
-    force_gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_26>;
-    gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_26>;
-    gql_execute_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_27>;
-    gql_execute_idempotent_batch(arg0: GqlExecuteIdempotentBatchArgs): Promise<Result_28>;
-    gql_query(arg0: string, arg1: Uint8Array): Promise<Result_27>;
-    gql_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_27>;
-    graph_element_id_encoding_key(arg0: string): Promise<Result_29>;
-    indexed_property_catalog(arg0: string): Promise<Result_30>;
-    list_shards_for_graph(arg0: string): Promise<Result_31>;
-    list_vector_indexes(arg0: string): Promise<Result_32>;
-    list_vector_maintenance_policies(arg0: string): Promise<Result_33>;
+    advance_backfill(arg0: string, arg1: BackfillKind, arg2: number): Promise<Result_2>;
+    advance_vector_index_backfill(arg0: AdminVectorIndexBackfillStepArgs): Promise<Result_3>;
+    advance_vector_maintenance(arg0: string, arg1: number): Promise<Result_4>;
+    advance_vector_rebuild(arg0: string, arg1: number, arg2: number): Promise<Result_5>;
+    advance_vector_rebuild_cleanup(arg0: string, arg1: number, arg2: number): Promise<Result_5>;
+    attach_vector_shard(arg0: AdminAttachVectorIndexShardArgs): Promise<Result>;
+    batch_insert(arg0: BatchRequest): Promise<Result_6>;
+    check_registry_invariants(): Promise<Result>;
+    clear_vector_centroid_cache(arg0: string): Promise<Result_7>;
+    delete_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_1>;
+    disable_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result>;
+    drop_prepared(arg0: string): Promise<Result>;
+    ensure_edge_label(arg0: string, arg1: string): Promise<Result_8>;
+    ensure_property(arg0: string, arg1: string): Promise<Result_9>;
+    ensure_vertex_label(arg0: string, arg1: string): Promise<Result_8>;
+    execute_prepared(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null, arg3: ReadMode): Promise<Result_10>;
+    execute_prepared_update(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_10>;
+    get_graph(arg0: string): Promise<Result_11>;
+    get_graph_health(arg0: string): Promise<Result_12>;
+    get_graph_id(arg0: string): Promise<Result_13>;
+    get_graph_sync_status(arg0: AdminIndexSyncStatusArgs): Promise<Result_14>;
+    get_id_encoding_key(arg0: string): Promise<Result_15>;
+    get_indexed_property_catalog(arg0: string): Promise<Result_16>;
+    get_mutation_status(arg0: string, arg1: string): Promise<Result_17>;
+    get_shard(arg0: string, arg1: number): Promise<Result_18>;
+    get_stable_memory_stats(arg0: string): Promise<Result_19>;
+    get_vector_centroid_cache(arg0: string): Promise<Result_7>;
+    get_vector_dispatch_enabled(): Promise<boolean>;
+    get_vector_index_status(arg0: string, arg1: number): Promise<Result_20>;
+    get_vector_index_target(arg0: string, arg1: number): Promise<Result_21>;
+    get_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_22>;
+    get_vector_maintenance_status(arg0: string, arg1: number): Promise<Result_23>;
+    get_vector_partition_health(arg0: string, arg1: number): Promise<Result_24>;
+    get_vector_rebuild_status(arg0: string, arg1: number): Promise<Result_5>;
+    get_vector_slab_stats(arg0: string, arg1: number | null): Promise<Result_25>;
+    gql_execute(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_10>;
+    gql_execute_batch(arg0: GqlExecuteIdempotentBatchArgs): Promise<Result_26>;
+    gql_query(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_10>;
+    grant_role(arg0: GrantRoleArgs): Promise<Result>;
+    index_edge_property(arg0: string, arg1: string, arg2: string): Promise<Result>;
+    index_vertex_property(arg0: string, arg1: string, arg2: string): Promise<Result>;
+    ingest_vertex_embeddings(arg0: AdminIngestVertexEmbeddingBatchArgs): Promise<Result_28>;
+    list_backfill_status(arg0: string): Promise<Result_29>;
+    list_graphs(): Promise<Result_30>;
+    list_prepared(arg0: string): Promise<Result_31>;
+    list_shards(arg0: string): Promise<Result_32>;
+    list_vector_indexes(arg0: string): Promise<Result_33>;
+    list_vector_maintenance_policies(arg0: string): Promise<Result_34>;
     lookup_edge_label_id(arg0: string, arg1: string): Promise<Result_8>;
-    lookup_graph_id(arg0: string): Promise<Result_34>;
-    lookup_property_id(arg0: string, arg1: string): Promise<Result_34>;
+    lookup_property_id(arg0: string, arg1: string): Promise<Result_13>;
     lookup_vertex_label_id(arg0: string, arg1: string): Promise<Result_8>;
-    mutation_status(arg0: string, arg1: string): Promise<Result_35>;
-    my_role(): Promise<Result_36>;
-    prepared_delete(arg0: string): Promise<Result>;
-    prepared_manifest(arg0: string): Promise<Result_37>;
-    prepared_query(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null): Promise<Result_27>;
-    prepared_query_as_update(arg0: string, arg1: Uint8Array): Promise<Result_26>;
-    prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null, arg3: ReadMode): Promise<Result_27>;
-    prepared_update(arg0: string, arg1: Uint8Array): Promise<Result_26>;
-    prepared_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_27>;
-    prepared_upsert(arg0: string, arg1: string): Promise<Result>;
-    prepared_upsert_batch(arg0: Array<[string, string]>): Promise<Array<Result>>;
-    prepared_upsert_batch_with_metadata(arg0: Array<[string, string, PreparedOperation]>): Promise<Array<Result>>;
-    prepared_upsert_with_metadata(arg0: string, arg1: string, arg2: PreparedOperation): Promise<Result>;
-    provision_graph(arg0: ProvisionGraphArgs): Promise<Result_38>;
-    resolve_graph(arg0: string): Promise<Result_39>;
-    resolve_shard(arg0: string, arg1: number): Promise<Result_40>;
-    resolve_vector_index_target(arg0: string, arg1: number): Promise<Result_41>;
-    reverse_edge_label_name(arg0: string, arg1: number): Promise<Result_36>;
-    reverse_property_name(arg0: string, arg1: number): Promise<Result_36>;
-    reverse_vertex_label_name(arg0: string, arg1: number): Promise<Result_36>;
-    router_ack(arg0: RouterProvisionAck): Promise<Result_42>;
-    vector_dispatch_activation_enabled(): Promise<boolean>;
-    vector_index_activation_status(arg0: string, arg1: number): Promise<Result_43>;
-    vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_44>;
-    vector_maintenance_status(arg0: string, arg1: number): Promise<Result_45>;
-    vector_search(arg0: RouterVectorSearchRequest): Promise<Result_46>;
+    my_role(): Promise<Result_35>;
+    prepare(arg0: string, arg1: string, arg2: PreparedOperation | null): Promise<Result>;
+    provision_graph(arg0: ProvisionGraphArgs): Promise<Result_36>;
+    publish_vector_rebuild(arg0: string, arg1: number): Promise<Result>;
+    register_graph(arg0: RegisterGraphArgs): Promise<Result>;
+    register_shard(arg0: AdminRegisterShardArgs): Promise<Result>;
+    reset_backfill_claim(arg0: AdminResetBackfillClaimArgs): Promise<Result>;
+    reset_vector_maintenance(arg0: string, arg1: number): Promise<Result>;
+    reverse_edge_label_name(arg0: string, arg1: number): Promise<Result_35>;
+    reverse_property_name(arg0: string, arg1: number): Promise<Result_35>;
+    reverse_vertex_label_name(arg0: string, arg1: number): Promise<Result_35>;
+    router_ack(arg0: RouterProvisionAck): Promise<Result_37>;
+    scan_partition_health(arg0: string, arg1: number, arg2: Uint8Array | null, arg3: number): Promise<Result_38>;
+    scan_slab_stats(arg0: string, arg1: Uint8Array | null, arg2: number, arg3: number | null): Promise<Result_39>;
+    set_vector_dispatch_enabled(arg0: boolean): Promise<Result>;
+    set_vector_index_target(arg0: SetVectorIndexTargetArgs): Promise<Result>;
+    set_vector_maintenance_policy(arg0: SetVectorMaintenancePolicyArgs): Promise<Result>;
+    start_vector_rebuild(arg0: string, arg1: number, arg2: number, arg3: number): Promise<Result>;
+    sweep_expired_mutation_keys(arg0: AdminSweepMutationKeysStepArgs): Promise<Result_40>;
+    unregister_graph(arg0: string): Promise<Result>;
+    unregister_shard(arg0: string, arg1: number): Promise<Result>;
+    update_graph_status(arg0: string, arg1: GraphStatus, arg2: bigint): Promise<Result>;
+    vector_search(arg0: string, arg1: string, arg2: Uint8Array, arg3: number): Promise<Result_41>;
+    warm_vector_centroid_cache(arg0: string, arg1: number): Promise<Result_7>;
     whoami(): Promise<Principal>;
 }
-import type { AdminEdgeBackfillStepResult as _AdminEdgeBackfillStepResult, AdminLabelBackfillStepResult as _AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepResult as _AdminLabelStatsProjectionStepResult, AdminResetBackfillClaimArgs as _AdminResetBackfillClaimArgs, AdminSweepMutationKeysStepArgs as _AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult as _AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepResult as _AdminVectorIndexBackfillStepResult, BackfillKind as _BackfillKind, BatchEdgeInsertV1 as _BatchEdgeInsertV1, BatchEndpointV1 as _BatchEndpointV1, BatchOperationV1 as _BatchOperationV1, BatchPropertyV1 as _BatchPropertyV1, BatchReceiptV1 as _BatchReceiptV1, BatchRequest as _BatchRequest, BatchRequestV1 as _BatchRequestV1, BatchResponse as _BatchResponse, BatchVertexInsertV1 as _BatchVertexInsertV1, ClientMutationKey as _ClientMutationKey, Column as _Column, EdgeBackfillShardStatus as _EdgeBackfillShardStatus, GqlExecuteIdempotentBatchArgs as _GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchItem as _GqlExecuteIdempotentBatchItem, GqlExecuteIdempotentBatchResult as _GqlExecuteIdempotentBatchResult, GqlQueryResult as _GqlQueryResult, GraphIdentity as _GraphIdentity, GraphRegistryEntry as _GraphRegistryEntry, GraphStableMemoryStats as _GraphStableMemoryStats, GraphStatus as _GraphStatus, IndexSyncStatus as _IndexSyncStatus, IndexedPropertyCatalog as _IndexedPropertyCatalog, LabelBackfillShardStatus as _LabelBackfillShardStatus, MutationLifecyclePhase as _MutationLifecyclePhase, MutationStatus as _MutationStatus, MutationToken as _MutationToken, MutationTokenShard as _MutationTokenShard, OperationKind as _OperationKind, Parameter as _Parameter, PreparedManifest as _PreparedManifest, PreparedOperation as _PreparedOperation, PreparedSortSpec as _PreparedSortSpec, ProvisionGraphArgs as _ProvisionGraphArgs, ProvisionGraphResponse as _ProvisionGraphResponse, ProvisionJobSummary as _ProvisionJobSummary, ProvisionableResource as _ProvisionableResource, ProvisionableResourceKind as _ProvisionableResourceKind, ProvisioningState as _ProvisioningState, ReadMode as _ReadMode, RecordField as _RecordField, RegisterVectorIndexArgs as _RegisterVectorIndexArgs, Result as _Result, ResultSchema as _ResultSchema, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_15 as _Result_15, Result_16 as _Result_16, Result_17 as _Result_17, Result_18 as _Result_18, Result_19 as _Result_19, Result_2 as _Result_2, Result_20 as _Result_20, Result_21 as _Result_21, Result_22 as _Result_22, Result_23 as _Result_23, Result_24 as _Result_24, Result_25 as _Result_25, Result_26 as _Result_26, Result_27 as _Result_27, Result_28 as _Result_28, Result_29 as _Result_29, Result_3 as _Result_3, Result_30 as _Result_30, Result_31 as _Result_31, Result_32 as _Result_32, Result_33 as _Result_33, Result_34 as _Result_34, Result_35 as _Result_35, Result_36 as _Result_36, Result_37 as _Result_37, Result_38 as _Result_38, Result_39 as _Result_39, Result_4 as _Result_4, Result_40 as _Result_40, Result_41 as _Result_41, Result_42 as _Result_42, Result_43 as _Result_43, Result_44 as _Result_44, Result_45 as _Result_45, Result_46 as _Result_46, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, RouterAckResponse as _RouterAckResponse, RouterError as _RouterError, SemanticType as _SemanticType, SetVectorMaintenancePolicyArgs as _SetVectorMaintenancePolicyArgs, ShardRegistryEntry as _ShardRegistryEntry, SortKey as _SortKey, VectorActivationBlockReason as _VectorActivationBlockReason, VectorCentroidCacheStatus as _VectorCentroidCacheStatus, VectorIndexActivationStateView as _VectorIndexActivationStateView, VectorIndexActivationStatus as _VectorIndexActivationStatus, VectorIndexError as _VectorIndexError, VectorIndexInfo as _VectorIndexInfo, VectorMaintenanceFailure as _VectorMaintenanceFailure, VectorMaintenancePolicy as _VectorMaintenancePolicy, VectorMaintenancePolicyView as _VectorMaintenancePolicyView, VectorMaintenanceRecommendation as _VectorMaintenanceRecommendation, VectorMaintenanceState as _VectorMaintenanceState, VectorMaintenanceStateView as _VectorMaintenanceStateView, VectorMaintenanceStatusView as _VectorMaintenanceStatusView, VectorMaintenanceStepOutcome as _VectorMaintenanceStepOutcome, VectorMaintenanceStepResult as _VectorMaintenanceStepResult, VectorMetric as _VectorMetric, VectorPartitionHealthStep as _VectorPartitionHealthStep, VectorPartitionHealthSummary as _VectorPartitionHealthSummary, VectorPartitionPageHealth as _VectorPartitionPageHealth, VectorRebuildPhase as _VectorRebuildPhase, VectorRebuildStatus as _VectorRebuildStatus, VectorSearchHit as _VectorSearchHit, VectorSearchResult as _VectorSearchResult, VectorSlabGlobalStats as _VectorSlabGlobalStats, VectorSlabScopeStats as _VectorSlabScopeStats, VectorSlabStats as _VectorSlabStats, VectorSlabStatsStep as _VectorSlabStatsStep, VectorSlabVersionStats as _VectorSlabVersionStats, VectorSubject as _VectorSubject, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_router.did";
+import type { AdminResetBackfillClaimArgs as _AdminResetBackfillClaimArgs, AdminSweepMutationKeysStepArgs as _AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult as _AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepResult as _AdminVectorIndexBackfillStepResult, AdvanceBackfillResult as _AdvanceBackfillResult, BackfillKind as _BackfillKind, BackfillShardStatus as _BackfillShardStatus, BatchEdgeInsertV1 as _BatchEdgeInsertV1, BatchEndpointV1 as _BatchEndpointV1, BatchOperationV1 as _BatchOperationV1, BatchPropertyV1 as _BatchPropertyV1, BatchReceiptV1 as _BatchReceiptV1, BatchRequest as _BatchRequest, BatchRequestV1 as _BatchRequestV1, BatchResponse as _BatchResponse, BatchVertexInsertV1 as _BatchVertexInsertV1, ClientMutationKey as _ClientMutationKey, Column as _Column, GqlExecuteIdempotentBatchArgs as _GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchItem as _GqlExecuteIdempotentBatchItem, GqlExecuteIdempotentBatchResult as _GqlExecuteIdempotentBatchResult, GqlQueryResult as _GqlQueryResult, GraphHealthView as _GraphHealthView, GraphIdentity as _GraphIdentity, GraphRegistryEntry as _GraphRegistryEntry, GraphStableMemoryStats as _GraphStableMemoryStats, GraphStatus as _GraphStatus, GraphSummary as _GraphSummary, IndexSyncStatus as _IndexSyncStatus, IndexedPropertyCatalog as _IndexedPropertyCatalog, MutationLifecyclePhase as _MutationLifecyclePhase, MutationStatus as _MutationStatus, MutationToken as _MutationToken, MutationTokenShard as _MutationTokenShard, OperationKind as _OperationKind, Parameter as _Parameter, PreparedManifest as _PreparedManifest, PreparedOperation as _PreparedOperation, PreparedSortSpec as _PreparedSortSpec, ProvisionGraphArgs as _ProvisionGraphArgs, ProvisionGraphResponse as _ProvisionGraphResponse, ProvisionJobSummary as _ProvisionJobSummary, ProvisionableResource as _ProvisionableResource, ProvisionableResourceKind as _ProvisionableResourceKind, ProvisioningState as _ProvisioningState, ReadMode as _ReadMode, RecordField as _RecordField, RegisterGraphArgs as _RegisterGraphArgs, RegisterGraphShard as _RegisterGraphShard, RegisterVectorIndexArgs as _RegisterVectorIndexArgs, Result as _Result, ResultSchema as _ResultSchema, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_15 as _Result_15, Result_16 as _Result_16, Result_17 as _Result_17, Result_18 as _Result_18, Result_19 as _Result_19, Result_2 as _Result_2, Result_20 as _Result_20, Result_21 as _Result_21, Result_22 as _Result_22, Result_23 as _Result_23, Result_24 as _Result_24, Result_25 as _Result_25, Result_26 as _Result_26, Result_27 as _Result_27, Result_28 as _Result_28, Result_29 as _Result_29, Result_3 as _Result_3, Result_30 as _Result_30, Result_31 as _Result_31, Result_32 as _Result_32, Result_33 as _Result_33, Result_34 as _Result_34, Result_35 as _Result_35, Result_36 as _Result_36, Result_37 as _Result_37, Result_38 as _Result_38, Result_39 as _Result_39, Result_4 as _Result_4, Result_40 as _Result_40, Result_41 as _Result_41, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, RouterAckResponse as _RouterAckResponse, RouterError as _RouterError, SemanticType as _SemanticType, SetVectorMaintenancePolicyArgs as _SetVectorMaintenancePolicyArgs, ShardRegistryEntry as _ShardRegistryEntry, SortKey as _SortKey, VectorActivationBlockReason as _VectorActivationBlockReason, VectorCentroidCacheStatus as _VectorCentroidCacheStatus, VectorIndexActivationStateView as _VectorIndexActivationStateView, VectorIndexActivationStatus as _VectorIndexActivationStatus, VectorIndexError as _VectorIndexError, VectorIndexInfo as _VectorIndexInfo, VectorMaintenanceFailure as _VectorMaintenanceFailure, VectorMaintenancePolicy as _VectorMaintenancePolicy, VectorMaintenancePolicyView as _VectorMaintenancePolicyView, VectorMaintenanceRecommendation as _VectorMaintenanceRecommendation, VectorMaintenanceStateView as _VectorMaintenanceStateView, VectorMaintenanceStatusView as _VectorMaintenanceStatusView, VectorMaintenanceStepOutcome as _VectorMaintenanceStepOutcome, VectorMaintenanceStepResult as _VectorMaintenanceStepResult, VectorMetric as _VectorMetric, VectorPartitionHealthStep as _VectorPartitionHealthStep, VectorPartitionHealthSummary as _VectorPartitionHealthSummary, VectorPartitionPageHealth as _VectorPartitionPageHealth, VectorRebuildPhase as _VectorRebuildPhase, VectorRebuildStatus as _VectorRebuildStatus, VectorSearchHit as _VectorSearchHit, VectorSearchResult as _VectorSearchResult, VectorSlabGlobalStats as _VectorSlabGlobalStats, VectorSlabScopeStats as _VectorSlabScopeStats, VectorSlabStats as _VectorSlabStats, VectorSlabStatsStep as _VectorSlabStatsStep, VectorSlabVersionStats as _VectorSlabVersionStats, VectorSubject as _VectorSubject, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_router.did";
 export class Gleaph_router implements gleaph_routerInterface {
     constructor(private actor: ActorSubclass<_SERVICE>){}
-    async admin_abort_vector_rebuild(arg0: string, arg1: number): Promise<Result> {
-        const result = await this.actor.admin_abort_vector_rebuild(arg0, arg1);
-        return from_candid_Result_n1(result);
-    }
-    async admin_attach_vector_index_shard(arg0: AdminAttachVectorIndexShardArgs): Promise<Result> {
-        const result = await this.actor.admin_attach_vector_index_shard(arg0);
-        return from_candid_Result_n1(result);
-    }
-    async admin_check_registry_invariants(): Promise<Result> {
-        const result = await this.actor.admin_check_registry_invariants();
-        return from_candid_Result_n1(result);
-    }
-    async admin_delete_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_1> {
-        const result = await this.actor.admin_delete_vector_maintenance_policy(arg0, arg1);
-        return from_candid_Result_1_n7(result);
-    }
-    async admin_disable_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result> {
-        const result = await this.actor.admin_disable_vector_maintenance_policy(arg0, arg1);
-        return from_candid_Result_n1(result);
-    }
-    async admin_edge_backfill_step(arg0: AdminEdgeBackfillStepArgs): Promise<Result_2> {
-        const result = await this.actor.admin_edge_backfill_step(arg0);
-        return from_candid_Result_2_n9(result);
-    }
-    async admin_grant_role(arg0: GrantRoleArgs): Promise<Result> {
-        const result = await this.actor.admin_grant_role(arg0);
-        return from_candid_Result_n1(result);
-    }
-    async admin_graph_stable_memory_stats(arg0: string): Promise<Result_3> {
-        const result = await this.actor.admin_graph_stable_memory_stats(arg0);
-        return from_candid_Result_3_n14(result);
-    }
-    async admin_index_sync_status(arg0: AdminIndexSyncStatusArgs): Promise<Result_4> {
-        const result = await this.actor.admin_index_sync_status(arg0);
-        return from_candid_Result_4_n16(result);
-    }
-    async admin_ingest_vertex_embedding(arg0: AdminIngestVertexEmbeddingArgs): Promise<Result_5> {
-        const result = await this.actor.admin_ingest_vertex_embedding(arg0);
-        return from_candid_Result_5_n18(result);
-    }
-    async admin_ingest_vertex_embedding_batch(arg0: AdminIngestVertexEmbeddingBatchArgs): Promise<Result_7> {
-        const result = await this.actor.admin_ingest_vertex_embedding_batch(arg0);
-        return from_candid_Result_7_n24(result);
-    }
-    async admin_intern_edge_label(arg0: string, arg1: string): Promise<Result_8> {
-        const result = await this.actor.admin_intern_edge_label(arg0, arg1);
-        return from_candid_Result_8_n29(result);
-    }
-    async admin_intern_property(arg0: string, arg1: string): Promise<Result_9> {
-        const result = await this.actor.admin_intern_property(arg0, arg1);
-        return from_candid_Result_9_n31(result);
-    }
-    async admin_intern_vertex_label(arg0: string, arg1: string): Promise<Result_8> {
-        const result = await this.actor.admin_intern_vertex_label(arg0, arg1);
-        return from_candid_Result_8_n29(result);
-    }
-    async admin_label_backfill_step(arg0: AdminLabelBackfillStepArgs): Promise<Result_10> {
-        const result = await this.actor.admin_label_backfill_step(arg0);
-        return from_candid_Result_10_n33(result);
-    }
-    async admin_label_stats_projection_step(arg0: AdminLabelStatsProjectionStepArgs): Promise<Result_11> {
-        const result = await this.actor.admin_label_stats_projection_step(arg0);
-        return from_candid_Result_11_n35(result);
-    }
-    async admin_list_edge_backfill_status(arg0: string): Promise<Result_12> {
-        const result = await this.actor.admin_list_edge_backfill_status(arg0);
-        return from_candid_Result_12_n37(result);
-    }
-    async admin_list_label_backfill_status(arg0: string): Promise<Result_13> {
-        const result = await this.actor.admin_list_label_backfill_status(arg0);
-        return from_candid_Result_13_n42(result);
-    }
-    async admin_list_vertex_property_backfill_status(arg0: string): Promise<Result_13> {
-        const result = await this.actor.admin_list_vertex_property_backfill_status(arg0);
-        return from_candid_Result_13_n42(result);
-    }
-    async admin_publish_vector_rebuild(arg0: string, arg1: number): Promise<Result> {
-        const result = await this.actor.admin_publish_vector_rebuild(arg0, arg1);
-        return from_candid_Result_n1(result);
-    }
-    async admin_register_graph(arg0: GraphRegistryEntry): Promise<Result> {
-        const result = await this.actor.admin_register_graph(to_candid_GraphRegistryEntry_n44(arg0));
-        return from_candid_Result_n1(result);
-    }
-    async admin_register_shard(arg0: AdminRegisterShardArgs): Promise<Result> {
-        const result = await this.actor.admin_register_shard(arg0);
+    async abort_vector_rebuild(arg0: string, arg1: number): Promise<Result> {
+        const result = await this.actor.abort_vector_rebuild(arg0, arg1);
         return from_candid_Result_n1(result);
     }
     async admin_register_vector_index(arg0: RegisterVectorIndexArgs): Promise<Result_1> {
-        const result = await this.actor.admin_register_vector_index(to_candid_RegisterVectorIndexArgs_n50(arg0));
-        return from_candid_Result_1_n7(result);
-    }
-    async admin_reset_backfill_claim(arg0: AdminResetBackfillClaimArgs): Promise<Result> {
-        const result = await this.actor.admin_reset_backfill_claim(to_candid_AdminResetBackfillClaimArgs_n54(arg0));
-        return from_candid_Result_n1(result);
-    }
-    async admin_set_indexed_edge_property(arg0: string, arg1: string, arg2: string): Promise<Result> {
-        const result = await this.actor.admin_set_indexed_edge_property(arg0, arg1, arg2);
-        return from_candid_Result_n1(result);
-    }
-    async admin_set_indexed_vertex_property(arg0: string, arg1: string, arg2: string): Promise<Result> {
-        const result = await this.actor.admin_set_indexed_vertex_property(arg0, arg1, arg2);
-        return from_candid_Result_n1(result);
-    }
-    async admin_set_vector_dispatch_activation(arg0: boolean): Promise<Result> {
-        const result = await this.actor.admin_set_vector_dispatch_activation(arg0);
-        return from_candid_Result_n1(result);
-    }
-    async admin_set_vector_index_target(arg0: SetVectorIndexTargetArgs): Promise<Result> {
-        const result = await this.actor.admin_set_vector_index_target(arg0);
-        return from_candid_Result_n1(result);
-    }
-    async admin_set_vector_maintenance_policy(arg0: SetVectorMaintenancePolicyArgs): Promise<Result> {
-        const result = await this.actor.admin_set_vector_maintenance_policy(to_candid_SetVectorMaintenancePolicyArgs_n58(arg0));
-        return from_candid_Result_n1(result);
-    }
-    async admin_start_vector_rebuild(arg0: string, arg1: number, arg2: number, arg3: number): Promise<Result> {
-        const result = await this.actor.admin_start_vector_rebuild(arg0, arg1, arg2, arg3);
-        return from_candid_Result_n1(result);
-    }
-    async admin_start_vector_rebuild_if_recommended(arg0: string, arg1: number, arg2: VectorPartitionPageHealth, arg3: VectorMaintenancePolicy, arg4: number | null, arg5: number): Promise<Result_14> {
-        const result = await this.actor.admin_start_vector_rebuild_if_recommended(arg0, arg1, arg2, arg3, to_candid_opt_n60(arg4), arg5);
-        return from_candid_Result_14_n61(result);
-    }
-    async admin_sweep_expired_client_mutation_keys(arg0: AdminSweepMutationKeysStepArgs): Promise<Result_15> {
-        const result = await this.actor.admin_sweep_expired_client_mutation_keys(to_candid_AdminSweepMutationKeysStepArgs_n65(arg0));
-        return from_candid_Result_15_n67(result);
+        const result = await this.actor.admin_register_vector_index(to_candid_RegisterVectorIndexArgs_n7(arg0));
+        return from_candid_Result_1_n11(result);
     }
     async admin_take_batch_instr_log(arg0: number, arg1: number): Promise<Array<string>> {
         const result = await this.actor.admin_take_batch_instr_log(arg0, arg1);
         return result;
     }
-    async admin_unregister_graph(arg0: string): Promise<Result> {
-        const result = await this.actor.admin_unregister_graph(arg0);
+    async advance_backfill(arg0: string, arg1: BackfillKind, arg2: number): Promise<Result_2> {
+        const result = await this.actor.advance_backfill(arg0, to_candid_BackfillKind_n13(arg1), arg2);
+        return from_candid_Result_2_n15(result);
+    }
+    async advance_vector_index_backfill(arg0: AdminVectorIndexBackfillStepArgs): Promise<Result_3> {
+        const result = await this.actor.advance_vector_index_backfill(arg0);
+        return from_candid_Result_3_n17(result);
+    }
+    async advance_vector_maintenance(arg0: string, arg1: number): Promise<Result_4> {
+        const result = await this.actor.advance_vector_maintenance(arg0, arg1);
+        return from_candid_Result_4_n19(result);
+    }
+    async advance_vector_rebuild(arg0: string, arg1: number, arg2: number): Promise<Result_5> {
+        const result = await this.actor.advance_vector_rebuild(arg0, arg1, arg2);
+        return from_candid_Result_5_n35(result);
+    }
+    async advance_vector_rebuild_cleanup(arg0: string, arg1: number, arg2: number): Promise<Result_5> {
+        const result = await this.actor.advance_vector_rebuild_cleanup(arg0, arg1, arg2);
+        return from_candid_Result_5_n35(result);
+    }
+    async attach_vector_shard(arg0: AdminAttachVectorIndexShardArgs): Promise<Result> {
+        const result = await this.actor.attach_vector_shard(arg0);
         return from_candid_Result_n1(result);
     }
-    async admin_unregister_shard(arg0: string, arg1: number): Promise<Result> {
-        const result = await this.actor.admin_unregister_shard(arg0, arg1);
+    async batch_insert(arg0: BatchRequest): Promise<Result_6> {
+        const result = await this.actor.batch_insert(to_candid_BatchRequest_n37(arg0));
+        return from_candid_Result_6_n48(result);
+    }
+    async check_registry_invariants(): Promise<Result> {
+        const result = await this.actor.check_registry_invariants();
         return from_candid_Result_n1(result);
     }
-    async admin_update_graph_status(arg0: string, arg1: GraphStatus, arg2: bigint): Promise<Result> {
-        const result = await this.actor.admin_update_graph_status(arg0, to_candid_GraphStatus_n46(arg1), arg2);
+    async clear_vector_centroid_cache(arg0: string): Promise<Result_7> {
+        const result = await this.actor.clear_vector_centroid_cache(arg0);
+        return from_candid_Result_7_n59(result);
+    }
+    async delete_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_1> {
+        const result = await this.actor.delete_vector_maintenance_policy(arg0, arg1);
+        return from_candid_Result_1_n11(result);
+    }
+    async disable_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result> {
+        const result = await this.actor.disable_vector_maintenance_policy(arg0, arg1);
         return from_candid_Result_n1(result);
     }
-    async admin_vector_centroid_cache_clear(arg0: string): Promise<Result_16> {
-        const result = await this.actor.admin_vector_centroid_cache_clear(arg0);
-        return from_candid_Result_16_n72(result);
-    }
-    async admin_vector_centroid_cache_status(arg0: string): Promise<Result_16> {
-        const result = await this.actor.admin_vector_centroid_cache_status(arg0);
-        return from_candid_Result_16_n72(result);
-    }
-    async admin_vector_centroid_cache_warmup(arg0: string, arg1: number): Promise<Result_16> {
-        const result = await this.actor.admin_vector_centroid_cache_warmup(arg0, arg1);
-        return from_candid_Result_16_n72(result);
-    }
-    async admin_vector_index_backfill_step(arg0: AdminVectorIndexBackfillStepArgs): Promise<Result_17> {
-        const result = await this.actor.admin_vector_index_backfill_step(arg0);
-        return from_candid_Result_17_n74(result);
-    }
-    async admin_vector_maintenance_reset(arg0: string, arg1: number): Promise<Result> {
-        const result = await this.actor.admin_vector_maintenance_reset(arg0, arg1);
+    async drop_prepared(arg0: string): Promise<Result> {
+        const result = await this.actor.drop_prepared(arg0);
         return from_candid_Result_n1(result);
     }
-    async admin_vector_maintenance_status(arg0: string, arg1: number): Promise<Result_18> {
-        const result = await this.actor.admin_vector_maintenance_status(arg0, arg1);
-        return from_candid_Result_18_n76(result);
+    async ensure_edge_label(arg0: string, arg1: string): Promise<Result_8> {
+        const result = await this.actor.ensure_edge_label(arg0, arg1);
+        return from_candid_Result_8_n61(result);
     }
-    async admin_vector_maintenance_step(arg0: string, arg1: number): Promise<Result_19> {
-        const result = await this.actor.admin_vector_maintenance_step(arg0, arg1);
-        return from_candid_Result_19_n85(result);
+    async ensure_property(arg0: string, arg1: string): Promise<Result_9> {
+        const result = await this.actor.ensure_property(arg0, arg1);
+        return from_candid_Result_9_n63(result);
     }
-    async admin_vector_partition_health(arg0: string, arg1: number): Promise<Result_20> {
-        const result = await this.actor.admin_vector_partition_health(arg0, arg1);
-        return from_candid_Result_20_n95(result);
+    async ensure_vertex_label(arg0: string, arg1: string): Promise<Result_8> {
+        const result = await this.actor.ensure_vertex_label(arg0, arg1);
+        return from_candid_Result_8_n61(result);
     }
-    async admin_vector_partition_health_step(arg0: string, arg1: number, arg2: Uint8Array | null, arg3: number): Promise<Result_21> {
-        const result = await this.actor.admin_vector_partition_health_step(arg0, arg1, to_candid_opt_n97(arg2), arg3);
-        return from_candid_Result_21_n98(result);
+    async execute_prepared(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null, arg3: ReadMode): Promise<Result_10> {
+        const result = await this.actor.execute_prepared(arg0, arg1, to_candid_opt_n65(arg2), to_candid_ReadMode_n66(arg3));
+        return from_candid_Result_10_n73(result);
     }
-    async admin_vector_rebuild_cleanup_step(arg0: string, arg1: number, arg2: number): Promise<Result_22> {
-        const result = await this.actor.admin_vector_rebuild_cleanup_step(arg0, arg1, arg2);
-        return from_candid_Result_22_n102(result);
+    async execute_prepared_update(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_10> {
+        const result = await this.actor.execute_prepared_update(arg0, arg1, arg2);
+        return from_candid_Result_10_n73(result);
     }
-    async admin_vector_rebuild_status(arg0: string, arg1: number): Promise<Result_22> {
-        const result = await this.actor.admin_vector_rebuild_status(arg0, arg1);
-        return from_candid_Result_22_n102(result);
+    async get_graph(arg0: string): Promise<Result_11> {
+        const result = await this.actor.get_graph(arg0);
+        return from_candid_Result_11_n86(result);
     }
-    async admin_vector_rebuild_step(arg0: string, arg1: number, arg2: number): Promise<Result_22> {
-        const result = await this.actor.admin_vector_rebuild_step(arg0, arg1, arg2);
-        return from_candid_Result_22_n102(result);
+    async get_graph_health(arg0: string): Promise<Result_12> {
+        const result = await this.actor.get_graph_health(arg0);
+        return from_candid_Result_12_n94(result);
     }
-    async admin_vector_slab_stats(arg0: string, arg1: number | null): Promise<Result_23> {
-        const result = await this.actor.admin_vector_slab_stats(arg0, to_candid_opt_n60(arg1));
-        return from_candid_Result_23_n104(result);
+    async get_graph_id(arg0: string): Promise<Result_13> {
+        const result = await this.actor.get_graph_id(arg0);
+        return from_candid_Result_13_n100(result);
     }
-    async admin_vector_slab_stats_step(arg0: string, arg1: Uint8Array | null, arg2: number, arg3: number | null): Promise<Result_24> {
-        const result = await this.actor.admin_vector_slab_stats_step(arg0, to_candid_opt_n97(arg1), arg2, to_candid_opt_n60(arg3));
-        return from_candid_Result_24_n111(result);
+    async get_graph_sync_status(arg0: AdminIndexSyncStatusArgs): Promise<Result_14> {
+        const result = await this.actor.get_graph_sync_status(arg0);
+        return from_candid_Result_14_n101(result);
     }
-    async admin_vertex_property_backfill_step(arg0: AdminLabelBackfillStepArgs): Promise<Result_10> {
-        const result = await this.actor.admin_vertex_property_backfill_step(arg0);
-        return from_candid_Result_10_n33(result);
+    async get_id_encoding_key(arg0: string): Promise<Result_15> {
+        const result = await this.actor.get_id_encoding_key(arg0);
+        return from_candid_Result_15_n103(result);
     }
-    async batch(arg0: BatchRequest): Promise<Result_25> {
-        const result = await this.actor.batch(to_candid_BatchRequest_n115(arg0));
-        return from_candid_Result_25_n126(result);
+    async get_indexed_property_catalog(arg0: string): Promise<Result_16> {
+        const result = await this.actor.get_indexed_property_catalog(arg0);
+        return from_candid_Result_16_n105(result);
     }
-    async force_gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_26> {
-        const result = await this.actor.force_gql_execute(arg0, arg1);
-        return from_candid_Result_26_n136(result);
+    async get_mutation_status(arg0: string, arg1: string): Promise<Result_17> {
+        const result = await this.actor.get_mutation_status(arg0, arg1);
+        return from_candid_Result_17_n107(result);
     }
-    async gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_26> {
-        const result = await this.actor.gql_execute(arg0, arg1);
-        return from_candid_Result_26_n136(result);
+    async get_shard(arg0: string, arg1: number): Promise<Result_18> {
+        const result = await this.actor.get_shard(arg0, arg1);
+        return from_candid_Result_18_n109(result);
     }
-    async gql_execute_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_27> {
-        const result = await this.actor.gql_execute_idempotent(arg0, arg1, arg2);
-        return from_candid_Result_27_n138(result);
+    async get_stable_memory_stats(arg0: string): Promise<Result_19> {
+        const result = await this.actor.get_stable_memory_stats(arg0);
+        return from_candid_Result_19_n114(result);
     }
-    async gql_execute_idempotent_batch(arg0: GqlExecuteIdempotentBatchArgs): Promise<Result_28> {
-        const result = await this.actor.gql_execute_idempotent_batch(to_candid_GqlExecuteIdempotentBatchArgs_n150(arg0));
-        return from_candid_Result_28_n152(result);
+    async get_vector_centroid_cache(arg0: string): Promise<Result_7> {
+        const result = await this.actor.get_vector_centroid_cache(arg0);
+        return from_candid_Result_7_n59(result);
     }
-    async gql_query(arg0: string, arg1: Uint8Array): Promise<Result_27> {
-        const result = await this.actor.gql_query(arg0, arg1);
-        return from_candid_Result_27_n138(result);
+    async get_vector_dispatch_enabled(): Promise<boolean> {
+        const result = await this.actor.get_vector_dispatch_enabled();
+        return result;
     }
-    async gql_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_27> {
-        const result = await this.actor.gql_query_with_consistency(arg0, arg1, to_candid_ReadMode_n157(arg2));
-        return from_candid_Result_27_n138(result);
+    async get_vector_index_status(arg0: string, arg1: number): Promise<Result_20> {
+        const result = await this.actor.get_vector_index_status(arg0, arg1);
+        return from_candid_Result_20_n116(result);
     }
-    async graph_element_id_encoding_key(arg0: string): Promise<Result_29> {
-        const result = await this.actor.graph_element_id_encoding_key(arg0);
-        return from_candid_Result_29_n164(result);
+    async get_vector_index_target(arg0: string, arg1: number): Promise<Result_21> {
+        const result = await this.actor.get_vector_index_target(arg0, arg1);
+        return from_candid_Result_21_n122(result);
     }
-    async indexed_property_catalog(arg0: string): Promise<Result_30> {
-        const result = await this.actor.indexed_property_catalog(arg0);
-        return from_candid_Result_30_n166(result);
+    async get_vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_22> {
+        const result = await this.actor.get_vector_maintenance_policy(arg0, arg1);
+        return from_candid_Result_22_n124(result);
     }
-    async list_shards_for_graph(arg0: string): Promise<Result_31> {
-        const result = await this.actor.list_shards_for_graph(arg0);
-        return from_candid_Result_31_n168(result);
+    async get_vector_maintenance_status(arg0: string, arg1: number): Promise<Result_23> {
+        const result = await this.actor.get_vector_maintenance_status(arg0, arg1);
+        return from_candid_Result_23_n129(result);
     }
-    async list_vector_indexes(arg0: string): Promise<Result_32> {
+    async get_vector_partition_health(arg0: string, arg1: number): Promise<Result_24> {
+        const result = await this.actor.get_vector_partition_health(arg0, arg1);
+        return from_candid_Result_24_n137(result);
+    }
+    async get_vector_rebuild_status(arg0: string, arg1: number): Promise<Result_5> {
+        const result = await this.actor.get_vector_rebuild_status(arg0, arg1);
+        return from_candid_Result_5_n35(result);
+    }
+    async get_vector_slab_stats(arg0: string, arg1: number | null): Promise<Result_25> {
+        const result = await this.actor.get_vector_slab_stats(arg0, to_candid_opt_n139(arg1));
+        return from_candid_Result_25_n140(result);
+    }
+    async gql_execute(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_10> {
+        const result = await this.actor.gql_execute(arg0, arg1, arg2);
+        return from_candid_Result_10_n73(result);
+    }
+    async gql_execute_batch(arg0: GqlExecuteIdempotentBatchArgs): Promise<Result_26> {
+        const result = await this.actor.gql_execute_batch(to_candid_GqlExecuteIdempotentBatchArgs_n146(arg0));
+        return from_candid_Result_26_n148(result);
+    }
+    async gql_query(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_10> {
+        const result = await this.actor.gql_query(arg0, arg1, to_candid_ReadMode_n66(arg2));
+        return from_candid_Result_10_n73(result);
+    }
+    async grant_role(arg0: GrantRoleArgs): Promise<Result> {
+        const result = await this.actor.grant_role(arg0);
+        return from_candid_Result_n1(result);
+    }
+    async index_edge_property(arg0: string, arg1: string, arg2: string): Promise<Result> {
+        const result = await this.actor.index_edge_property(arg0, arg1, arg2);
+        return from_candid_Result_n1(result);
+    }
+    async index_vertex_property(arg0: string, arg1: string, arg2: string): Promise<Result> {
+        const result = await this.actor.index_vertex_property(arg0, arg1, arg2);
+        return from_candid_Result_n1(result);
+    }
+    async ingest_vertex_embeddings(arg0: AdminIngestVertexEmbeddingBatchArgs): Promise<Result_28> {
+        const result = await this.actor.ingest_vertex_embeddings(arg0);
+        return from_candid_Result_28_n153(result);
+    }
+    async list_backfill_status(arg0: string): Promise<Result_29> {
+        const result = await this.actor.list_backfill_status(arg0);
+        return from_candid_Result_29_n162(result);
+    }
+    async list_graphs(): Promise<Result_30> {
+        const result = await this.actor.list_graphs();
+        return from_candid_Result_30_n169(result);
+    }
+    async list_prepared(arg0: string): Promise<Result_31> {
+        const result = await this.actor.list_prepared(arg0);
+        return from_candid_Result_31_n172(result);
+    }
+    async list_shards(arg0: string): Promise<Result_32> {
+        const result = await this.actor.list_shards(arg0);
+        return from_candid_Result_32_n200(result);
+    }
+    async list_vector_indexes(arg0: string): Promise<Result_33> {
         const result = await this.actor.list_vector_indexes(arg0);
-        return from_candid_Result_32_n174(result);
+        return from_candid_Result_33_n203(result);
     }
-    async list_vector_maintenance_policies(arg0: string): Promise<Result_33> {
+    async list_vector_maintenance_policies(arg0: string): Promise<Result_34> {
         const result = await this.actor.list_vector_maintenance_policies(arg0);
-        return from_candid_Result_33_n183(result);
+        return from_candid_Result_34_n210(result);
     }
     async lookup_edge_label_id(arg0: string, arg1: string): Promise<Result_8> {
         const result = await this.actor.lookup_edge_label_id(arg0, arg1);
-        return from_candid_Result_8_n29(result);
+        return from_candid_Result_8_n61(result);
     }
-    async lookup_graph_id(arg0: string): Promise<Result_34> {
-        const result = await this.actor.lookup_graph_id(arg0);
-        return from_candid_Result_34_n188(result);
-    }
-    async lookup_property_id(arg0: string, arg1: string): Promise<Result_34> {
+    async lookup_property_id(arg0: string, arg1: string): Promise<Result_13> {
         const result = await this.actor.lookup_property_id(arg0, arg1);
-        return from_candid_Result_34_n188(result);
+        return from_candid_Result_13_n100(result);
     }
     async lookup_vertex_label_id(arg0: string, arg1: string): Promise<Result_8> {
         const result = await this.actor.lookup_vertex_label_id(arg0, arg1);
-        return from_candid_Result_8_n29(result);
+        return from_candid_Result_8_n61(result);
     }
-    async mutation_status(arg0: string, arg1: string): Promise<Result_35> {
-        const result = await this.actor.mutation_status(arg0, arg1);
-        return from_candid_Result_35_n189(result);
-    }
-    async my_role(): Promise<Result_36> {
+    async my_role(): Promise<Result_35> {
         const result = await this.actor.my_role();
-        return from_candid_Result_36_n191(result);
+        return from_candid_Result_35_n213(result);
     }
-    async prepared_delete(arg0: string): Promise<Result> {
-        const result = await this.actor.prepared_delete(arg0);
+    async prepare(arg0: string, arg1: string, arg2: PreparedOperation | null): Promise<Result> {
+        const result = await this.actor.prepare(arg0, arg1, to_candid_opt_n215(arg2));
         return from_candid_Result_n1(result);
     }
-    async prepared_manifest(arg0: string): Promise<Result_37> {
-        const result = await this.actor.prepared_manifest(arg0);
-        return from_candid_Result_37_n193(result);
+    async provision_graph(arg0: ProvisionGraphArgs): Promise<Result_36> {
+        const result = await this.actor.provision_graph(to_candid_ProvisionGraphArgs_n237(arg0));
+        return from_candid_Result_36_n244(result);
     }
-    async prepared_query(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null): Promise<Result_27> {
-        const result = await this.actor.prepared_query(arg0, arg1, to_candid_opt_n221(arg2));
-        return from_candid_Result_27_n138(result);
-    }
-    async prepared_query_as_update(arg0: string, arg1: Uint8Array): Promise<Result_26> {
-        const result = await this.actor.prepared_query_as_update(arg0, arg1);
-        return from_candid_Result_26_n136(result);
-    }
-    async prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null, arg3: ReadMode): Promise<Result_27> {
-        const result = await this.actor.prepared_query_with_consistency(arg0, arg1, to_candid_opt_n221(arg2), to_candid_ReadMode_n157(arg3));
-        return from_candid_Result_27_n138(result);
-    }
-    async prepared_update(arg0: string, arg1: Uint8Array): Promise<Result_26> {
-        const result = await this.actor.prepared_update(arg0, arg1);
-        return from_candid_Result_26_n136(result);
-    }
-    async prepared_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_27> {
-        const result = await this.actor.prepared_update_idempotent(arg0, arg1, arg2);
-        return from_candid_Result_27_n138(result);
-    }
-    async prepared_upsert(arg0: string, arg1: string): Promise<Result> {
-        const result = await this.actor.prepared_upsert(arg0, arg1);
+    async publish_vector_rebuild(arg0: string, arg1: number): Promise<Result> {
+        const result = await this.actor.publish_vector_rebuild(arg0, arg1);
         return from_candid_Result_n1(result);
     }
-    async prepared_upsert_batch(arg0: Array<[string, string]>): Promise<Array<Result>> {
-        const result = await this.actor.prepared_upsert_batch(arg0);
-        return from_candid_vec_n222(result);
-    }
-    async prepared_upsert_batch_with_metadata(arg0: Array<[string, string, PreparedOperation]>): Promise<Array<Result>> {
-        const result = await this.actor.prepared_upsert_batch_with_metadata(to_candid_vec_n223(arg0));
-        return from_candid_vec_n222(result);
-    }
-    async prepared_upsert_with_metadata(arg0: string, arg1: string, arg2: PreparedOperation): Promise<Result> {
-        const result = await this.actor.prepared_upsert_with_metadata(arg0, arg1, to_candid_PreparedOperation_n225(arg2));
+    async register_graph(arg0: RegisterGraphArgs): Promise<Result> {
+        const result = await this.actor.register_graph(to_candid_RegisterGraphArgs_n251(arg0));
         return from_candid_Result_n1(result);
     }
-    async provision_graph(arg0: ProvisionGraphArgs): Promise<Result_38> {
-        const result = await this.actor.provision_graph(to_candid_ProvisionGraphArgs_n246(arg0));
-        return from_candid_Result_38_n253(result);
+    async register_shard(arg0: AdminRegisterShardArgs): Promise<Result> {
+        const result = await this.actor.register_shard(arg0);
+        return from_candid_Result_n1(result);
     }
-    async resolve_graph(arg0: string): Promise<Result_39> {
-        const result = await this.actor.resolve_graph(arg0);
-        return from_candid_Result_39_n260(result);
+    async reset_backfill_claim(arg0: AdminResetBackfillClaimArgs): Promise<Result> {
+        const result = await this.actor.reset_backfill_claim(to_candid_AdminResetBackfillClaimArgs_n253(arg0));
+        return from_candid_Result_n1(result);
     }
-    async resolve_shard(arg0: string, arg1: number): Promise<Result_40> {
-        const result = await this.actor.resolve_shard(arg0, arg1);
-        return from_candid_Result_40_n268(result);
+    async reset_vector_maintenance(arg0: string, arg1: number): Promise<Result> {
+        const result = await this.actor.reset_vector_maintenance(arg0, arg1);
+        return from_candid_Result_n1(result);
     }
-    async resolve_vector_index_target(arg0: string, arg1: number): Promise<Result_41> {
-        const result = await this.actor.resolve_vector_index_target(arg0, arg1);
-        return from_candid_Result_41_n270(result);
-    }
-    async reverse_edge_label_name(arg0: string, arg1: number): Promise<Result_36> {
+    async reverse_edge_label_name(arg0: string, arg1: number): Promise<Result_35> {
         const result = await this.actor.reverse_edge_label_name(arg0, arg1);
-        return from_candid_Result_36_n191(result);
+        return from_candid_Result_35_n213(result);
     }
-    async reverse_property_name(arg0: string, arg1: number): Promise<Result_36> {
+    async reverse_property_name(arg0: string, arg1: number): Promise<Result_35> {
         const result = await this.actor.reverse_property_name(arg0, arg1);
-        return from_candid_Result_36_n191(result);
+        return from_candid_Result_35_n213(result);
     }
-    async reverse_vertex_label_name(arg0: string, arg1: number): Promise<Result_36> {
+    async reverse_vertex_label_name(arg0: string, arg1: number): Promise<Result_35> {
         const result = await this.actor.reverse_vertex_label_name(arg0, arg1);
-        return from_candid_Result_36_n191(result);
+        return from_candid_Result_35_n213(result);
     }
-    async router_ack(arg0: RouterProvisionAck): Promise<Result_42> {
+    async router_ack(arg0: RouterProvisionAck): Promise<Result_37> {
         const result = await this.actor.router_ack(arg0);
-        return from_candid_Result_42_n272(result);
+        return from_candid_Result_37_n255(result);
     }
-    async vector_dispatch_activation_enabled(): Promise<boolean> {
-        const result = await this.actor.vector_dispatch_activation_enabled();
-        return result;
+    async scan_partition_health(arg0: string, arg1: number, arg2: Uint8Array | null, arg3: number): Promise<Result_38> {
+        const result = await this.actor.scan_partition_health(arg0, arg1, to_candid_opt_n257(arg2), arg3);
+        return from_candid_Result_38_n258(result);
     }
-    async vector_index_activation_status(arg0: string, arg1: number): Promise<Result_43> {
-        const result = await this.actor.vector_index_activation_status(arg0, arg1);
-        return from_candid_Result_43_n274(result);
+    async scan_slab_stats(arg0: string, arg1: Uint8Array | null, arg2: number, arg3: number | null): Promise<Result_39> {
+        const result = await this.actor.scan_slab_stats(arg0, to_candid_opt_n257(arg1), arg2, to_candid_opt_n139(arg3));
+        return from_candid_Result_39_n262(result);
     }
-    async vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_44> {
-        const result = await this.actor.vector_maintenance_policy(arg0, arg1);
-        return from_candid_Result_44_n278(result);
+    async set_vector_dispatch_enabled(arg0: boolean): Promise<Result> {
+        const result = await this.actor.set_vector_dispatch_enabled(arg0);
+        return from_candid_Result_n1(result);
     }
-    async vector_maintenance_status(arg0: string, arg1: number): Promise<Result_45> {
-        const result = await this.actor.vector_maintenance_status(arg0, arg1);
-        return from_candid_Result_45_n281(result);
+    async set_vector_index_target(arg0: SetVectorIndexTargetArgs): Promise<Result> {
+        const result = await this.actor.set_vector_index_target(arg0);
+        return from_candid_Result_n1(result);
     }
-    async vector_search(arg0: RouterVectorSearchRequest): Promise<Result_46> {
-        const result = await this.actor.vector_search(arg0);
-        return from_candid_Result_46_n289(result);
+    async set_vector_maintenance_policy(arg0: SetVectorMaintenancePolicyArgs): Promise<Result> {
+        const result = await this.actor.set_vector_maintenance_policy(to_candid_SetVectorMaintenancePolicyArgs_n266(arg0));
+        return from_candid_Result_n1(result);
+    }
+    async start_vector_rebuild(arg0: string, arg1: number, arg2: number, arg3: number): Promise<Result> {
+        const result = await this.actor.start_vector_rebuild(arg0, arg1, arg2, arg3);
+        return from_candid_Result_n1(result);
+    }
+    async sweep_expired_mutation_keys(arg0: AdminSweepMutationKeysStepArgs): Promise<Result_40> {
+        const result = await this.actor.sweep_expired_mutation_keys(to_candid_AdminSweepMutationKeysStepArgs_n268(arg0));
+        return from_candid_Result_40_n270(result);
+    }
+    async unregister_graph(arg0: string): Promise<Result> {
+        const result = await this.actor.unregister_graph(arg0);
+        return from_candid_Result_n1(result);
+    }
+    async unregister_shard(arg0: string, arg1: number): Promise<Result> {
+        const result = await this.actor.unregister_shard(arg0, arg1);
+        return from_candid_Result_n1(result);
+    }
+    async update_graph_status(arg0: string, arg1: GraphStatus, arg2: bigint): Promise<Result> {
+        const result = await this.actor.update_graph_status(arg0, to_candid_GraphStatus_n275(arg1), arg2);
+        return from_candid_Result_n1(result);
+    }
+    async vector_search(arg0: string, arg1: string, arg2: Uint8Array, arg3: number): Promise<Result_41> {
+        const result = await this.actor.vector_search(arg0, arg1, arg2, arg3);
+        return from_candid_Result_41_n277(result);
+    }
+    async warm_vector_centroid_cache(arg0: string, arg1: number): Promise<Result_7> {
+        const result = await this.actor.warm_vector_centroid_cache(arg0, arg1);
+        return from_candid_Result_7_n59(result);
     }
     async whoami(): Promise<Principal> {
         const result = await this.actor.whoami();
         return result;
     }
 }
-function from_candid_AdminEdgeBackfillStepResult_n11(value: _AdminEdgeBackfillStepResult): AdminEdgeBackfillStepResult {
-    return from_candid_record_n12(value);
+function from_candid_AdminSweepMutationKeysStepResult_n272(value: _AdminSweepMutationKeysStepResult): AdminSweepMutationKeysStepResult {
+    return from_candid_record_n273(value);
 }
-function from_candid_AdminSweepMutationKeysStepResult_n69(value: _AdminSweepMutationKeysStepResult): AdminSweepMutationKeysStepResult {
-    return from_candid_record_n70(value);
+function from_candid_BackfillKind_n167(value: _BackfillKind): BackfillKind {
+    return from_candid_variant_n168(value);
 }
-function from_candid_BatchResponse_n128(value: _BatchResponse): BatchResponse {
-    return from_candid_record_n129(value);
+function from_candid_BackfillShardStatus_n165(value: _BackfillShardStatus): BackfillShardStatus {
+    return from_candid_record_n166(value);
 }
-function from_candid_Column_n203(value: _Column): Column {
-    return from_candid_record_n204(value);
+function from_candid_BatchResponse_n50(value: _BatchResponse): BatchResponse {
+    return from_candid_record_n51(value);
 }
-function from_candid_EdgeBackfillShardStatus_n40(value: _EdgeBackfillShardStatus): EdgeBackfillShardStatus {
-    return from_candid_record_n41(value);
+function from_candid_Column_n182(value: _Column): Column {
+    return from_candid_record_n183(value);
 }
-function from_candid_GqlExecuteIdempotentBatchResult_n154(value: _GqlExecuteIdempotentBatchResult): GqlExecuteIdempotentBatchResult {
-    return from_candid_record_n155(value);
+function from_candid_GqlExecuteIdempotentBatchResult_n150(value: _GqlExecuteIdempotentBatchResult): GqlExecuteIdempotentBatchResult {
+    return from_candid_record_n151(value);
 }
-function from_candid_GqlQueryResult_n140(value: _GqlQueryResult): GqlQueryResult {
-    return from_candid_record_n141(value);
+function from_candid_GqlQueryResult_n75(value: _GqlQueryResult): GqlQueryResult {
+    return from_candid_record_n76(value);
 }
-function from_candid_GraphIdentity_n219(value: _GraphIdentity): GraphIdentity {
-    return from_candid_record_n220(value);
+function from_candid_GraphHealthView_n96(value: _GraphHealthView): GraphHealthView {
+    return from_candid_record_n97(value);
 }
-function from_candid_GraphRegistryEntry_n262(value: _GraphRegistryEntry): GraphRegistryEntry {
-    return from_candid_record_n263(value);
-}
-function from_candid_GraphStatus_n264(value: _GraphStatus): GraphStatus {
-    return from_candid_variant_n265(value);
-}
-function from_candid_MutationLifecyclePhase_n133(value: _MutationLifecyclePhase): MutationLifecyclePhase {
-    return from_candid_variant_n134(value);
-}
-function from_candid_MutationStatus_n130(value: _MutationStatus): MutationStatus {
-    return from_candid_record_n131(value);
-}
-function from_candid_MutationTokenShard_n146(value: _MutationTokenShard): MutationTokenShard {
-    return from_candid_record_n147(value);
-}
-function from_candid_MutationToken_n143(value: _MutationToken): MutationToken {
-    return from_candid_record_n144(value);
-}
-function from_candid_OperationKind_n214(value: _OperationKind): OperationKind {
-    return from_candid_variant_n215(value);
-}
-function from_candid_Parameter_n217(value: _Parameter): Parameter {
-    return from_candid_record_n218(value);
-}
-function from_candid_PreparedManifest_n195(value: _PreparedManifest): PreparedManifest {
-    return from_candid_record_n196(value);
-}
-function from_candid_PreparedOperation_n198(value: _PreparedOperation): PreparedOperation {
+function from_candid_GraphIdentity_n198(value: _GraphIdentity): GraphIdentity {
     return from_candid_record_n199(value);
 }
-function from_candid_ProvisionGraphResponse_n255(value: _ProvisionGraphResponse): ProvisionGraphResponse {
-    return from_candid_variant_n256(value);
+function from_candid_GraphRegistryEntry_n88(value: _GraphRegistryEntry): GraphRegistryEntry {
+    return from_candid_record_n89(value);
 }
-function from_candid_ProvisionJobSummary_n258(value: _ProvisionJobSummary): ProvisionJobSummary {
-    return from_candid_record_n259(value);
+function from_candid_GraphStatus_n90(value: _GraphStatus): GraphStatus {
+    return from_candid_variant_n91(value);
 }
-function from_candid_ProvisioningState_n266(value: _ProvisioningState): ProvisioningState {
-    return from_candid_variant_n267(value);
+function from_candid_GraphSummary_n98(value: _GraphSummary): GraphSummary {
+    return from_candid_record_n99(value);
 }
-function from_candid_RecordField_n209(value: _RecordField): RecordField {
-    return from_candid_record_n204(value);
+function from_candid_MutationLifecyclePhase_n55(value: _MutationLifecyclePhase): MutationLifecyclePhase {
+    return from_candid_variant_n56(value);
 }
-function from_candid_ResultSchema_n200(value: _ResultSchema): ResultSchema {
-    return from_candid_record_n201(value);
+function from_candid_MutationStatus_n52(value: _MutationStatus): MutationStatus {
+    return from_candid_record_n53(value);
 }
-function from_candid_Result_10_n33(value: _Result_10): Result_10 {
-    return from_candid_variant_n34(value);
+function from_candid_MutationTokenShard_n82(value: _MutationTokenShard): MutationTokenShard {
+    return from_candid_record_n83(value);
 }
-function from_candid_Result_11_n35(value: _Result_11): Result_11 {
-    return from_candid_variant_n36(value);
+function from_candid_MutationToken_n79(value: _MutationToken): MutationToken {
+    return from_candid_record_n80(value);
 }
-function from_candid_Result_12_n37(value: _Result_12): Result_12 {
-    return from_candid_variant_n38(value);
-}
-function from_candid_Result_13_n42(value: _Result_13): Result_13 {
-    return from_candid_variant_n43(value);
-}
-function from_candid_Result_14_n61(value: _Result_14): Result_14 {
-    return from_candid_variant_n62(value);
-}
-function from_candid_Result_15_n67(value: _Result_15): Result_15 {
-    return from_candid_variant_n68(value);
-}
-function from_candid_Result_16_n72(value: _Result_16): Result_16 {
-    return from_candid_variant_n73(value);
-}
-function from_candid_Result_17_n74(value: _Result_17): Result_17 {
-    return from_candid_variant_n75(value);
-}
-function from_candid_Result_18_n76(value: _Result_18): Result_18 {
-    return from_candid_variant_n77(value);
-}
-function from_candid_Result_19_n85(value: _Result_19): Result_19 {
-    return from_candid_variant_n86(value);
-}
-function from_candid_Result_1_n7(value: _Result_1): Result_1 {
-    return from_candid_variant_n8(value);
-}
-function from_candid_Result_20_n95(value: _Result_20): Result_20 {
-    return from_candid_variant_n96(value);
-}
-function from_candid_Result_21_n98(value: _Result_21): Result_21 {
-    return from_candid_variant_n99(value);
-}
-function from_candid_Result_22_n102(value: _Result_22): Result_22 {
-    return from_candid_variant_n103(value);
-}
-function from_candid_Result_23_n104(value: _Result_23): Result_23 {
-    return from_candid_variant_n105(value);
-}
-function from_candid_Result_24_n111(value: _Result_24): Result_24 {
-    return from_candid_variant_n112(value);
-}
-function from_candid_Result_25_n126(value: _Result_25): Result_25 {
-    return from_candid_variant_n127(value);
-}
-function from_candid_Result_26_n136(value: _Result_26): Result_26 {
-    return from_candid_variant_n137(value);
-}
-function from_candid_Result_27_n138(value: _Result_27): Result_27 {
-    return from_candid_variant_n139(value);
-}
-function from_candid_Result_28_n152(value: _Result_28): Result_28 {
-    return from_candid_variant_n153(value);
-}
-function from_candid_Result_29_n164(value: _Result_29): Result_29 {
-    return from_candid_variant_n165(value);
-}
-function from_candid_Result_2_n9(value: _Result_2): Result_2 {
-    return from_candid_variant_n10(value);
-}
-function from_candid_Result_30_n166(value: _Result_30): Result_30 {
-    return from_candid_variant_n167(value);
-}
-function from_candid_Result_31_n168(value: _Result_31): Result_31 {
-    return from_candid_variant_n169(value);
-}
-function from_candid_Result_32_n174(value: _Result_32): Result_32 {
-    return from_candid_variant_n175(value);
-}
-function from_candid_Result_33_n183(value: _Result_33): Result_33 {
-    return from_candid_variant_n184(value);
-}
-function from_candid_Result_34_n188(value: _Result_34): Result_34 {
-    return from_candid_variant_n32(value);
-}
-function from_candid_Result_35_n189(value: _Result_35): Result_35 {
-    return from_candid_variant_n190(value);
-}
-function from_candid_Result_36_n191(value: _Result_36): Result_36 {
-    return from_candid_variant_n192(value);
-}
-function from_candid_Result_37_n193(value: _Result_37): Result_37 {
+function from_candid_OperationKind_n193(value: _OperationKind): OperationKind {
     return from_candid_variant_n194(value);
 }
-function from_candid_Result_38_n253(value: _Result_38): Result_38 {
-    return from_candid_variant_n254(value);
+function from_candid_Parameter_n196(value: _Parameter): Parameter {
+    return from_candid_record_n197(value);
 }
-function from_candid_Result_39_n260(value: _Result_39): Result_39 {
-    return from_candid_variant_n261(value);
+function from_candid_PreparedManifest_n174(value: _PreparedManifest): PreparedManifest {
+    return from_candid_record_n175(value);
 }
-function from_candid_Result_3_n14(value: _Result_3): Result_3 {
-    return from_candid_variant_n15(value);
+function from_candid_PreparedOperation_n177(value: _PreparedOperation): PreparedOperation {
+    return from_candid_record_n178(value);
 }
-function from_candid_Result_40_n268(value: _Result_40): Result_40 {
-    return from_candid_variant_n269(value);
+function from_candid_ProvisionGraphResponse_n246(value: _ProvisionGraphResponse): ProvisionGraphResponse {
+    return from_candid_variant_n247(value);
 }
-function from_candid_Result_41_n270(value: _Result_41): Result_41 {
+function from_candid_ProvisionJobSummary_n249(value: _ProvisionJobSummary): ProvisionJobSummary {
+    return from_candid_record_n250(value);
+}
+function from_candid_ProvisioningState_n92(value: _ProvisioningState): ProvisioningState {
+    return from_candid_variant_n93(value);
+}
+function from_candid_RecordField_n188(value: _RecordField): RecordField {
+    return from_candid_record_n183(value);
+}
+function from_candid_ResultSchema_n179(value: _ResultSchema): ResultSchema {
+    return from_candid_record_n180(value);
+}
+function from_candid_Result_10_n73(value: _Result_10): Result_10 {
+    return from_candid_variant_n74(value);
+}
+function from_candid_Result_11_n86(value: _Result_11): Result_11 {
+    return from_candid_variant_n87(value);
+}
+function from_candid_Result_12_n94(value: _Result_12): Result_12 {
+    return from_candid_variant_n95(value);
+}
+function from_candid_Result_13_n100(value: _Result_13): Result_13 {
+    return from_candid_variant_n64(value);
+}
+function from_candid_Result_14_n101(value: _Result_14): Result_14 {
+    return from_candid_variant_n102(value);
+}
+function from_candid_Result_15_n103(value: _Result_15): Result_15 {
+    return from_candid_variant_n104(value);
+}
+function from_candid_Result_16_n105(value: _Result_16): Result_16 {
+    return from_candid_variant_n106(value);
+}
+function from_candid_Result_17_n107(value: _Result_17): Result_17 {
+    return from_candid_variant_n108(value);
+}
+function from_candid_Result_18_n109(value: _Result_18): Result_18 {
+    return from_candid_variant_n110(value);
+}
+function from_candid_Result_19_n114(value: _Result_19): Result_19 {
+    return from_candid_variant_n115(value);
+}
+function from_candid_Result_1_n11(value: _Result_1): Result_1 {
+    return from_candid_variant_n12(value);
+}
+function from_candid_Result_20_n116(value: _Result_20): Result_20 {
+    return from_candid_variant_n117(value);
+}
+function from_candid_Result_21_n122(value: _Result_21): Result_21 {
+    return from_candid_variant_n123(value);
+}
+function from_candid_Result_22_n124(value: _Result_22): Result_22 {
+    return from_candid_variant_n125(value);
+}
+function from_candid_Result_23_n129(value: _Result_23): Result_23 {
+    return from_candid_variant_n130(value);
+}
+function from_candid_Result_24_n137(value: _Result_24): Result_24 {
+    return from_candid_variant_n138(value);
+}
+function from_candid_Result_25_n140(value: _Result_25): Result_25 {
+    return from_candid_variant_n141(value);
+}
+function from_candid_Result_26_n148(value: _Result_26): Result_26 {
+    return from_candid_variant_n149(value);
+}
+function from_candid_Result_27_n156(value: _Result_27): Result_27 {
+    return from_candid_variant_n157(value);
+}
+function from_candid_Result_28_n153(value: _Result_28): Result_28 {
+    return from_candid_variant_n154(value);
+}
+function from_candid_Result_29_n162(value: _Result_29): Result_29 {
+    return from_candid_variant_n163(value);
+}
+function from_candid_Result_2_n15(value: _Result_2): Result_2 {
+    return from_candid_variant_n16(value);
+}
+function from_candid_Result_30_n169(value: _Result_30): Result_30 {
+    return from_candid_variant_n170(value);
+}
+function from_candid_Result_31_n172(value: _Result_31): Result_31 {
+    return from_candid_variant_n173(value);
+}
+function from_candid_Result_32_n200(value: _Result_32): Result_32 {
+    return from_candid_variant_n201(value);
+}
+function from_candid_Result_33_n203(value: _Result_33): Result_33 {
+    return from_candid_variant_n204(value);
+}
+function from_candid_Result_34_n210(value: _Result_34): Result_34 {
+    return from_candid_variant_n211(value);
+}
+function from_candid_Result_35_n213(value: _Result_35): Result_35 {
+    return from_candid_variant_n214(value);
+}
+function from_candid_Result_36_n244(value: _Result_36): Result_36 {
+    return from_candid_variant_n245(value);
+}
+function from_candid_Result_37_n255(value: _Result_37): Result_37 {
+    return from_candid_variant_n256(value);
+}
+function from_candid_Result_38_n258(value: _Result_38): Result_38 {
+    return from_candid_variant_n259(value);
+}
+function from_candid_Result_39_n262(value: _Result_39): Result_39 {
+    return from_candid_variant_n263(value);
+}
+function from_candid_Result_3_n17(value: _Result_3): Result_3 {
+    return from_candid_variant_n18(value);
+}
+function from_candid_Result_40_n270(value: _Result_40): Result_40 {
     return from_candid_variant_n271(value);
 }
-function from_candid_Result_42_n272(value: _Result_42): Result_42 {
-    return from_candid_variant_n273(value);
+function from_candid_Result_41_n277(value: _Result_41): Result_41 {
+    return from_candid_variant_n278(value);
 }
-function from_candid_Result_43_n274(value: _Result_43): Result_43 {
-    return from_candid_variant_n275(value);
+function from_candid_Result_4_n19(value: _Result_4): Result_4 {
+    return from_candid_variant_n20(value);
 }
-function from_candid_Result_44_n278(value: _Result_44): Result_44 {
-    return from_candid_variant_n279(value);
+function from_candid_Result_5_n35(value: _Result_5): Result_5 {
+    return from_candid_variant_n36(value);
 }
-function from_candid_Result_45_n281(value: _Result_45): Result_45 {
-    return from_candid_variant_n282(value);
+function from_candid_Result_6_n48(value: _Result_6): Result_6 {
+    return from_candid_variant_n49(value);
 }
-function from_candid_Result_46_n289(value: _Result_46): Result_46 {
-    return from_candid_variant_n290(value);
+function from_candid_Result_7_n59(value: _Result_7): Result_7 {
+    return from_candid_variant_n60(value);
 }
-function from_candid_Result_4_n16(value: _Result_4): Result_4 {
-    return from_candid_variant_n17(value);
+function from_candid_Result_8_n61(value: _Result_8): Result_8 {
+    return from_candid_variant_n62(value);
 }
-function from_candid_Result_5_n18(value: _Result_5): Result_5 {
-    return from_candid_variant_n19(value);
-}
-function from_candid_Result_6_n27(value: _Result_6): Result_6 {
-    return from_candid_variant_n28(value);
-}
-function from_candid_Result_7_n24(value: _Result_7): Result_7 {
-    return from_candid_variant_n25(value);
-}
-function from_candid_Result_8_n29(value: _Result_8): Result_8 {
-    return from_candid_variant_n30(value);
-}
-function from_candid_Result_9_n31(value: _Result_9): Result_9 {
-    return from_candid_variant_n32(value);
+function from_candid_Result_9_n63(value: _Result_9): Result_9 {
+    return from_candid_variant_n64(value);
 }
 function from_candid_Result_n1(value: _Result): Result {
     return from_candid_variant_n2(value);
@@ -2776,307 +2615,124 @@ function from_candid_Result_n1(value: _Result): Result {
 function from_candid_RouterError_n3(value: _RouterError): RouterError {
     return from_candid_variant_n4(value);
 }
-function from_candid_SemanticType_n205(value: _SemanticType): SemanticType {
-    return from_candid_variant_n206(value);
+function from_candid_SemanticType_n184(value: _SemanticType): SemanticType {
+    return from_candid_variant_n185(value);
 }
-function from_candid_ShardRegistryEntry_n171(value: _ShardRegistryEntry): ShardRegistryEntry {
-    return from_candid_record_n172(value);
+function from_candid_ShardRegistryEntry_n111(value: _ShardRegistryEntry): ShardRegistryEntry {
+    return from_candid_record_n112(value);
 }
-function from_candid_SortKey_n212(value: _SortKey): SortKey {
-    return from_candid_record_n213(value);
+function from_candid_SortKey_n191(value: _SortKey): SortKey {
+    return from_candid_record_n192(value);
 }
 function from_candid_VectorActivationBlockReason_n5(value: _VectorActivationBlockReason): VectorActivationBlockReason {
     return from_candid_variant_n6(value);
 }
-function from_candid_VectorIndexActivationStateView_n181(value: _VectorIndexActivationStateView): VectorIndexActivationStateView {
-    return from_candid_variant_n182(value);
+function from_candid_VectorIndexActivationStateView_n120(value: _VectorIndexActivationStateView): VectorIndexActivationStateView {
+    return from_candid_variant_n121(value);
 }
-function from_candid_VectorIndexActivationStatus_n276(value: _VectorIndexActivationStatus): VectorIndexActivationStatus {
-    return from_candid_record_n277(value);
+function from_candid_VectorIndexActivationStatus_n118(value: _VectorIndexActivationStatus): VectorIndexActivationStatus {
+    return from_candid_record_n119(value);
 }
-function from_candid_VectorIndexError_n83(value: _VectorIndexError): VectorIndexError {
-    return from_candid_variant_n84(value);
+function from_candid_VectorIndexError_n27(value: _VectorIndexError): VectorIndexError {
+    return from_candid_variant_n28(value);
 }
-function from_candid_VectorIndexInfo_n177(value: _VectorIndexInfo): VectorIndexInfo {
-    return from_candid_record_n178(value);
+function from_candid_VectorIndexInfo_n206(value: _VectorIndexInfo): VectorIndexInfo {
+    return from_candid_record_n207(value);
 }
-function from_candid_VectorMaintenanceFailure_n81(value: _VectorMaintenanceFailure): VectorMaintenanceFailure {
-    return from_candid_record_n82(value);
+function from_candid_VectorMaintenanceFailure_n25(value: _VectorMaintenanceFailure): VectorMaintenanceFailure {
+    return from_candid_record_n26(value);
 }
-function from_candid_VectorMaintenancePolicyView_n186(value: _VectorMaintenancePolicyView): VectorMaintenancePolicyView {
-    return from_candid_record_n187(value);
+function from_candid_VectorMaintenancePolicyView_n127(value: _VectorMaintenancePolicyView): VectorMaintenancePolicyView {
+    return from_candid_record_n128(value);
 }
-function from_candid_VectorMaintenanceRecommendation_n63(value: _VectorMaintenanceRecommendation): VectorMaintenanceRecommendation {
-    return from_candid_variant_n64(value);
+function from_candid_VectorMaintenanceRecommendation_n33(value: _VectorMaintenanceRecommendation): VectorMaintenanceRecommendation {
+    return from_candid_variant_n34(value);
 }
-function from_candid_VectorMaintenanceStateView_n286(value: _VectorMaintenanceStateView): VectorMaintenanceStateView {
-    return from_candid_variant_n287(value);
+function from_candid_VectorMaintenanceStateView_n134(value: _VectorMaintenanceStateView): VectorMaintenanceStateView {
+    return from_candid_variant_n135(value);
 }
-function from_candid_VectorMaintenanceState_n78(value: _VectorMaintenanceState): VectorMaintenanceState {
-    return from_candid_variant_n79(value);
+function from_candid_VectorMaintenanceStatusView_n131(value: _VectorMaintenanceStatusView): VectorMaintenanceStatusView {
+    return from_candid_record_n132(value);
 }
-function from_candid_VectorMaintenanceStatusView_n283(value: _VectorMaintenanceStatusView): VectorMaintenanceStatusView {
-    return from_candid_record_n284(value);
+function from_candid_VectorMaintenanceStepOutcome_n21(value: _VectorMaintenanceStepOutcome): VectorMaintenanceStepOutcome {
+    return from_candid_variant_n22(value);
 }
-function from_candid_VectorMaintenanceStepOutcome_n87(value: _VectorMaintenanceStepOutcome): VectorMaintenanceStepOutcome {
-    return from_candid_variant_n88(value);
+function from_candid_VectorMaintenanceStepResult_n23(value: _VectorMaintenanceStepResult): VectorMaintenanceStepResult {
+    return from_candid_variant_n24(value);
 }
-function from_candid_VectorMaintenanceStepResult_n89(value: _VectorMaintenanceStepResult): VectorMaintenanceStepResult {
-    return from_candid_variant_n90(value);
+function from_candid_VectorMetric_n208(value: _VectorMetric): VectorMetric {
+    return from_candid_variant_n209(value);
 }
-function from_candid_VectorMetric_n179(value: _VectorMetric): VectorMetric {
-    return from_candid_variant_n180(value);
+function from_candid_VectorPartitionHealthStep_n260(value: _VectorPartitionHealthStep): VectorPartitionHealthStep {
+    return from_candid_record_n261(value);
 }
-function from_candid_VectorPartitionHealthStep_n100(value: _VectorPartitionHealthStep): VectorPartitionHealthStep {
-    return from_candid_record_n101(value);
+function from_candid_VectorRebuildPhase_n31(value: _VectorRebuildPhase): VectorRebuildPhase {
+    return from_candid_variant_n32(value);
 }
-function from_candid_VectorRebuildPhase_n93(value: _VectorRebuildPhase): VectorRebuildPhase {
-    return from_candid_variant_n94(value);
+function from_candid_VectorRebuildStatus_n29(value: _VectorRebuildStatus): VectorRebuildStatus {
+    return from_candid_record_n30(value);
 }
-function from_candid_VectorRebuildStatus_n91(value: _VectorRebuildStatus): VectorRebuildStatus {
-    return from_candid_record_n92(value);
+function from_candid_VectorSearchHit_n282(value: _VectorSearchHit): VectorSearchHit {
+    return from_candid_record_n283(value);
 }
-function from_candid_VectorSearchHit_n294(value: _VectorSearchHit): VectorSearchHit {
-    return from_candid_record_n295(value);
+function from_candid_VectorSearchResult_n279(value: _VectorSearchResult): VectorSearchResult {
+    return from_candid_record_n280(value);
 }
-function from_candid_VectorSearchResult_n291(value: _VectorSearchResult): VectorSearchResult {
-    return from_candid_record_n292(value);
+function from_candid_VectorSlabScopeStats_n144(value: _VectorSlabScopeStats): VectorSlabScopeStats {
+    return from_candid_record_n145(value);
 }
-function from_candid_VectorSlabScopeStats_n108(value: _VectorSlabScopeStats): VectorSlabScopeStats {
-    return from_candid_record_n109(value);
+function from_candid_VectorSlabStatsStep_n264(value: _VectorSlabStatsStep): VectorSlabStatsStep {
+    return from_candid_record_n265(value);
 }
-function from_candid_VectorSlabStatsStep_n113(value: _VectorSlabStatsStep): VectorSlabStatsStep {
-    return from_candid_record_n114(value);
+function from_candid_VectorSlabStats_n142(value: _VectorSlabStats): VectorSlabStats {
+    return from_candid_record_n143(value);
 }
-function from_candid_VectorSlabStats_n106(value: _VectorSlabStats): VectorSlabStats {
-    return from_candid_record_n107(value);
+function from_candid_VectorSubject_n284(value: _VectorSubject): VectorSubject {
+    return from_candid_variant_n285(value);
 }
-function from_candid_VectorSubject_n296(value: _VectorSubject): VectorSubject {
-    return from_candid_variant_n297(value);
+function from_candid_VertexEmbeddingIngestionResult_n158(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
+    return from_candid_record_n159(value);
 }
-function from_candid_VertexEmbeddingIngestionResult_n20(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
-    return from_candid_record_n21(value);
+function from_candid_VertexEmbeddingProjectionOutcome_n160(value: _VertexEmbeddingProjectionOutcome): VertexEmbeddingProjectionOutcome {
+    return from_candid_variant_n161(value);
 }
-function from_candid_VertexEmbeddingProjectionOutcome_n22(value: _VertexEmbeddingProjectionOutcome): VertexEmbeddingProjectionOutcome {
-    return from_candid_variant_n23(value);
-}
-function from_candid_opt_n110(value: [] | [number]): number | null {
+function from_candid_opt_n113(value: [] | [Principal]): Principal | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n13(value: [] | [Uint8Array]): Uint8Array | null {
+function from_candid_opt_n126(value: [] | [_VectorMaintenancePolicyView]): VectorMaintenancePolicyView | null {
+    return value.length === 0 ? null : from_candid_VectorMaintenancePolicyView_n127(value[0]);
+}
+function from_candid_opt_n133(value: [] | [_VectorMaintenanceStateView]): VectorMaintenanceStateView | null {
+    return value.length === 0 ? null : from_candid_VectorMaintenanceStateView_n134(value[0]);
+}
+function from_candid_opt_n136(value: [] | [_VectorRebuildStatus]): VectorRebuildStatus | null {
+    return value.length === 0 ? null : from_candid_VectorRebuildStatus_n29(value[0]);
+}
+function from_candid_opt_n274(value: [] | [_ClientMutationKey]): ClientMutationKey | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n132(value: [] | [string]): string | null {
+function from_candid_opt_n54(value: [] | [string]): string | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n135(value: [] | [_BatchReceiptV1]): BatchReceiptV1 | null {
+function from_candid_opt_n57(value: [] | [number]): number | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n142(value: [] | [_MutationToken]): MutationToken | null {
-    return value.length === 0 ? null : from_candid_MutationToken_n143(value[0]);
-}
-function from_candid_opt_n148(value: [] | [bigint]): bigint | null {
+function from_candid_opt_n58(value: [] | [_BatchReceiptV1]): BatchReceiptV1 | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n149(value: [] | [_MutationLifecyclePhase]): MutationLifecyclePhase | null {
-    return value.length === 0 ? null : from_candid_MutationLifecyclePhase_n133(value[0]);
-}
-function from_candid_opt_n173(value: [] | [Principal]): Principal | null {
+function from_candid_opt_n77(value: [] | [Uint8Array]): Uint8Array | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n280(value: [] | [_VectorMaintenancePolicyView]): VectorMaintenancePolicyView | null {
-    return value.length === 0 ? null : from_candid_VectorMaintenancePolicyView_n186(value[0]);
+function from_candid_opt_n78(value: [] | [_MutationToken]): MutationToken | null {
+    return value.length === 0 ? null : from_candid_MutationToken_n79(value[0]);
 }
-function from_candid_opt_n285(value: [] | [_VectorMaintenanceStateView]): VectorMaintenanceStateView | null {
-    return value.length === 0 ? null : from_candid_VectorMaintenanceStateView_n286(value[0]);
-}
-function from_candid_opt_n288(value: [] | [_VectorRebuildStatus]): VectorRebuildStatus | null {
-    return value.length === 0 ? null : from_candid_VectorRebuildStatus_n91(value[0]);
-}
-function from_candid_opt_n71(value: [] | [_ClientMutationKey]): ClientMutationKey | null {
+function from_candid_opt_n84(value: [] | [bigint]): bigint | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_record_n101(value: {
-    cursor: [] | [Uint8Array];
-    exhausted: boolean;
-    partial: _VectorPartitionPageHealth;
-}): {
-    cursor?: Uint8Array;
-    exhausted: boolean;
-    partial: VectorPartitionPageHealth;
-} {
-    return {
-        cursor: record_opt_to_undefined(from_candid_opt_n13(value.cursor)),
-        exhausted: value.exhausted,
-        partial: value.partial
-    };
+function from_candid_opt_n85(value: [] | [_MutationLifecyclePhase]): MutationLifecyclePhase | null {
+    return value.length === 0 ? null : from_candid_MutationLifecyclePhase_n55(value[0]);
 }
-function from_candid_record_n107(value: {
-    slab: _VectorSlabGlobalStats;
-    scope: _VectorSlabScopeStats;
-    versions: Array<_VectorSlabVersionStats>;
-}): {
-    slab: VectorSlabGlobalStats;
-    scope: VectorSlabScopeStats;
-    versions: Array<VectorSlabVersionStats>;
-} {
-    return {
-        slab: value.slab,
-        scope: from_candid_VectorSlabScopeStats_n108(value.scope),
-        versions: value.versions
-    };
-}
-function from_candid_record_n109(value: {
-    physical_live_row_count: bigint;
-    referenced_page_bytes: bigint;
-    row_count: bigint;
-    tombstone_row_count: bigint;
-    page_count: bigint;
-    index_id: [] | [number];
-}): {
-    physical_live_row_count: bigint;
-    referenced_page_bytes: bigint;
-    row_count: bigint;
-    tombstone_row_count: bigint;
-    page_count: bigint;
-    index_id?: number;
-} {
-    return {
-        physical_live_row_count: value.physical_live_row_count,
-        referenced_page_bytes: value.referenced_page_bytes,
-        row_count: value.row_count,
-        tombstone_row_count: value.tombstone_row_count,
-        page_count: value.page_count,
-        index_id: record_opt_to_undefined(from_candid_opt_n110(value.index_id))
-    };
-}
-function from_candid_record_n114(value: {
-    cursor: [] | [Uint8Array];
-    exhausted: boolean;
-    partial: _VectorSlabStats;
-}): {
-    cursor?: Uint8Array;
-    exhausted: boolean;
-    partial: VectorSlabStats;
-} {
-    return {
-        cursor: record_opt_to_undefined(from_candid_opt_n13(value.cursor)),
-        exhausted: value.exhausted,
-        partial: from_candid_VectorSlabStats_n106(value.partial)
-    };
-}
-function from_candid_record_n12(value: {
-    entries_processed: number;
-    postings_synced: number;
-    done: boolean;
-    shard_id: number;
-    next_after_key: [] | [Uint8Array];
-}): {
-    entries_processed: number;
-    postings_synced: number;
-    done: boolean;
-    shard_id: number;
-    next_after_key?: Uint8Array;
-} {
-    return {
-        entries_processed: value.entries_processed,
-        postings_synced: value.postings_synced,
-        done: value.done,
-        shard_id: value.shard_id,
-        next_after_key: record_opt_to_undefined(from_candid_opt_n13(value.next_after_key))
-    };
-}
-function from_candid_record_n129(value: {
-    status: _MutationStatus;
-    receipt: [] | [_BatchReceiptV1];
-}): {
-    status: MutationStatus;
-    receipt?: BatchReceiptV1;
-} {
-    return {
-        status: from_candid_MutationStatus_n130(value.status),
-        receipt: record_opt_to_undefined(from_candid_opt_n135(value.receipt))
-    };
-}
-function from_candid_record_n131(value: {
-    last_error: [] | [string];
-    mutation_id: bigint;
-    next_action: string;
-    phase: _MutationLifecyclePhase;
-    target_shard: [] | [number];
-}): {
-    last_error?: string;
-    mutation_id: bigint;
-    next_action: string;
-    phase: MutationLifecyclePhase;
-    target_shard?: number;
-} {
-    return {
-        last_error: record_opt_to_undefined(from_candid_opt_n132(value.last_error)),
-        mutation_id: value.mutation_id,
-        next_action: value.next_action,
-        phase: from_candid_MutationLifecyclePhase_n133(value.phase),
-        target_shard: record_opt_to_undefined(from_candid_opt_n110(value.target_shard))
-    };
-}
-function from_candid_record_n141(value: {
-    rows_blob: [] | [Uint8Array];
-    token: [] | [_MutationToken];
-    row_count: bigint;
-    phase: [] | [_MutationLifecyclePhase];
-}): {
-    rows_blob?: Uint8Array;
-    token?: MutationToken;
-    row_count: bigint;
-    phase?: MutationLifecyclePhase;
-} {
-    return {
-        rows_blob: record_opt_to_undefined(from_candid_opt_n13(value.rows_blob)),
-        token: record_opt_to_undefined(from_candid_opt_n142(value.token)),
-        row_count: value.row_count,
-        phase: record_opt_to_undefined(from_candid_opt_n149(value.phase))
-    };
-}
-function from_candid_record_n144(value: {
-    mutation_id: bigint;
-    shards: Array<_MutationTokenShard>;
-}): {
-    mutation_id: bigint;
-    shards: Array<MutationTokenShard>;
-} {
-    return {
-        mutation_id: value.mutation_id,
-        shards: from_candid_vec_n145(value.shards)
-    };
-}
-function from_candid_record_n147(value: {
-    label_stats_seq: [] | [bigint];
-    shard_id: number;
-}): {
-    label_stats_seq?: bigint;
-    shard_id: number;
-} {
-    return {
-        label_stats_seq: record_opt_to_undefined(from_candid_opt_n148(value.label_stats_seq)),
-        shard_id: value.shard_id
-    };
-}
-function from_candid_record_n155(value: {
-    next_index: [] | [number];
-    instruction_counter: bigint;
-    results: Array<_GqlQueryResult>;
-}): {
-    next_index?: number;
-    instruction_counter: bigint;
-    results: Array<GqlQueryResult>;
-} {
-    return {
-        next_index: record_opt_to_undefined(from_candid_opt_n110(value.next_index)),
-        instruction_counter: value.instruction_counter,
-        results: from_candid_vec_n156(value.results)
-    };
-}
-function from_candid_record_n172(value: {
+function from_candid_record_n112(value: {
     graph_id: number;
     registered_at_ns: bigint;
     vector_index_attached: boolean;
@@ -3102,35 +2758,26 @@ function from_candid_record_n172(value: {
         shard_id: value.shard_id,
         index_canister: value.index_canister,
         graph_canister: value.graph_canister,
-        vector_index_canister: record_opt_to_undefined(from_candid_opt_n173(value.vector_index_canister)),
+        vector_index_canister: record_opt_to_undefined(from_candid_opt_n113(value.vector_index_canister)),
         index_attached: value.index_attached
     };
 }
-function from_candid_record_n178(value: {
-    metric: _VectorMetric;
-    dims: number;
-    embedding_name_id: number;
-    target: [] | [Principal];
+function from_candid_record_n119(value: {
+    blocked_reason: [] | [string];
     index_id: number;
     activation_state: _VectorIndexActivationStateView;
 }): {
-    metric: VectorMetric;
-    dims: number;
-    embedding_name_id: number;
-    target?: Principal;
+    blocked_reason?: string;
     index_id: number;
     activation_state: VectorIndexActivationStateView;
 } {
     return {
-        metric: from_candid_VectorMetric_n179(value.metric),
-        dims: value.dims,
-        embedding_name_id: value.embedding_name_id,
-        target: record_opt_to_undefined(from_candid_opt_n173(value.target)),
+        blocked_reason: record_opt_to_undefined(from_candid_opt_n54(value.blocked_reason)),
         index_id: value.index_id,
-        activation_state: from_candid_VectorIndexActivationStateView_n181(value.activation_state)
+        activation_state: from_candid_VectorIndexActivationStateView_n120(value.activation_state)
     };
 }
-function from_candid_record_n187(value: {
+function from_candid_record_n128(value: {
     graph_id: number;
     target_nlist: [] | [number];
     rebuild_max_subjects: number;
@@ -3153,7 +2800,7 @@ function from_candid_record_n187(value: {
 } {
     return {
         graph_id: value.graph_id,
-        target_nlist: record_opt_to_undefined(from_candid_opt_n110(value.target_nlist)),
+        target_nlist: record_opt_to_undefined(from_candid_opt_n57(value.target_nlist)),
         rebuild_max_subjects: value.rebuild_max_subjects,
         enabled: value.enabled,
         sample_limit: value.sample_limit,
@@ -3163,7 +2810,115 @@ function from_candid_record_n187(value: {
         policy: value.policy
     };
 }
-function from_candid_record_n196(value: {
+function from_candid_record_n132(value: {
+    maintenance_state: [] | [_VectorMaintenanceStateView];
+    target: [] | [Principal];
+    blocked_reason: [] | [string];
+    index_id: number;
+    policy_enabled: boolean;
+    dispatch_ready: boolean;
+    rebuild_status: [] | [_VectorRebuildStatus];
+}): {
+    maintenance_state?: VectorMaintenanceStateView;
+    target?: Principal;
+    blocked_reason?: string;
+    index_id: number;
+    policy_enabled: boolean;
+    dispatch_ready: boolean;
+    rebuild_status?: VectorRebuildStatus;
+} {
+    return {
+        maintenance_state: record_opt_to_undefined(from_candid_opt_n133(value.maintenance_state)),
+        target: record_opt_to_undefined(from_candid_opt_n113(value.target)),
+        blocked_reason: record_opt_to_undefined(from_candid_opt_n54(value.blocked_reason)),
+        index_id: value.index_id,
+        policy_enabled: value.policy_enabled,
+        dispatch_ready: value.dispatch_ready,
+        rebuild_status: record_opt_to_undefined(from_candid_opt_n136(value.rebuild_status))
+    };
+}
+function from_candid_record_n143(value: {
+    slab: _VectorSlabGlobalStats;
+    scope: _VectorSlabScopeStats;
+    versions: Array<_VectorSlabVersionStats>;
+}): {
+    slab: VectorSlabGlobalStats;
+    scope: VectorSlabScopeStats;
+    versions: Array<VectorSlabVersionStats>;
+} {
+    return {
+        slab: value.slab,
+        scope: from_candid_VectorSlabScopeStats_n144(value.scope),
+        versions: value.versions
+    };
+}
+function from_candid_record_n145(value: {
+    physical_live_row_count: bigint;
+    referenced_page_bytes: bigint;
+    row_count: bigint;
+    tombstone_row_count: bigint;
+    page_count: bigint;
+    index_id: [] | [number];
+}): {
+    physical_live_row_count: bigint;
+    referenced_page_bytes: bigint;
+    row_count: bigint;
+    tombstone_row_count: bigint;
+    page_count: bigint;
+    index_id?: number;
+} {
+    return {
+        physical_live_row_count: value.physical_live_row_count,
+        referenced_page_bytes: value.referenced_page_bytes,
+        row_count: value.row_count,
+        tombstone_row_count: value.tombstone_row_count,
+        page_count: value.page_count,
+        index_id: record_opt_to_undefined(from_candid_opt_n57(value.index_id))
+    };
+}
+function from_candid_record_n151(value: {
+    next_index: [] | [number];
+    instruction_counter: bigint;
+    results: Array<_GqlQueryResult>;
+}): {
+    next_index?: number;
+    instruction_counter: bigint;
+    results: Array<GqlQueryResult>;
+} {
+    return {
+        next_index: record_opt_to_undefined(from_candid_opt_n57(value.next_index)),
+        instruction_counter: value.instruction_counter,
+        results: from_candid_vec_n152(value.results)
+    };
+}
+function from_candid_record_n159(value: {
+    embedding_version: bigint;
+    projection_outcome: _VertexEmbeddingProjectionOutcome;
+}): {
+    embedding_version: bigint;
+    projection_outcome: VertexEmbeddingProjectionOutcome;
+} {
+    return {
+        embedding_version: value.embedding_version,
+        projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n160(value.projection_outcome)
+    };
+}
+function from_candid_record_n166(value: {
+    done: boolean;
+    shard_id: number;
+    kind: _BackfillKind;
+}): {
+    done: boolean;
+    shard_id: number;
+    kind: BackfillKind;
+} {
+    return {
+        done: value.done,
+        shard_id: value.shard_id,
+        kind: from_candid_BackfillKind_n167(value.kind)
+    };
+}
+function from_candid_record_n175(value: {
     manifest_version: number;
     operations: Array<_PreparedOperation>;
     graph: _GraphIdentity;
@@ -3174,11 +2929,11 @@ function from_candid_record_n196(value: {
 } {
     return {
         manifest_version: value.manifest_version,
-        operations: from_candid_vec_n197(value.operations),
-        graph: from_candid_GraphIdentity_n219(value.graph)
+        operations: from_candid_vec_n176(value.operations),
+        graph: from_candid_GraphIdentity_n198(value.graph)
     };
 }
-function from_candid_record_n199(value: {
+function from_candid_record_n178(value: {
     result: _ResultSchema;
     allowed_sorts: Array<_SortKey>;
     kind: _OperationKind;
@@ -3198,26 +2953,26 @@ function from_candid_record_n199(value: {
     supports_consistency: boolean;
 } {
     return {
-        result: from_candid_ResultSchema_n200(value.result),
-        allowed_sorts: from_candid_vec_n211(value.allowed_sorts),
-        kind: from_candid_OperationKind_n214(value.kind),
+        result: from_candid_ResultSchema_n179(value.result),
+        allowed_sorts: from_candid_vec_n190(value.allowed_sorts),
+        kind: from_candid_OperationKind_n193(value.kind),
         name: value.name,
-        parameters: from_candid_vec_n216(value.parameters),
-        description: record_opt_to_undefined(from_candid_opt_n132(value.description)),
+        parameters: from_candid_vec_n195(value.parameters),
+        description: record_opt_to_undefined(from_candid_opt_n54(value.description)),
         supports_idempotency: value.supports_idempotency,
         supports_consistency: value.supports_consistency
     };
 }
-function from_candid_record_n201(value: {
+function from_candid_record_n180(value: {
     columns: Array<_Column>;
 }): {
     columns: Array<Column>;
 } {
     return {
-        columns: from_candid_vec_n202(value.columns)
+        columns: from_candid_vec_n181(value.columns)
     };
 }
-function from_candid_record_n204(value: {
+function from_candid_record_n183(value: {
     nullable: boolean;
     name: string;
     type: _SemanticType;
@@ -3229,40 +2984,28 @@ function from_candid_record_n204(value: {
     return {
         nullable: value.nullable,
         name: value.name,
-        type: from_candid_SemanticType_n205(value.type)
+        type: from_candid_SemanticType_n184(value.type)
     };
 }
-function from_candid_record_n207(value: {
+function from_candid_record_n186(value: {
     fields: Array<_RecordField>;
 }): {
     fields: Array<RecordField>;
 } {
     return {
-        fields: from_candid_vec_n208(value.fields)
+        fields: from_candid_vec_n187(value.fields)
     };
 }
-function from_candid_record_n21(value: {
-    embedding_version: bigint;
-    projection_outcome: _VertexEmbeddingProjectionOutcome;
-}): {
-    embedding_version: bigint;
-    projection_outcome: VertexEmbeddingProjectionOutcome;
-} {
-    return {
-        embedding_version: value.embedding_version,
-        projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n22(value.projection_outcome)
-    };
-}
-function from_candid_record_n210(value: {
+function from_candid_record_n189(value: {
     element: _SemanticType;
 }): {
     element: SemanticType;
 } {
     return {
-        element: from_candid_SemanticType_n205(value.element)
+        element: from_candid_SemanticType_n184(value.element)
     };
 }
-function from_candid_record_n213(value: {
+function from_candid_record_n192(value: {
     key: string;
     label: [] | [string];
 }): {
@@ -3271,10 +3014,10 @@ function from_candid_record_n213(value: {
 } {
     return {
         key: value.key,
-        label: record_opt_to_undefined(from_candid_opt_n132(value.label))
+        label: record_opt_to_undefined(from_candid_opt_n54(value.label))
     };
 }
-function from_candid_record_n218(value: {
+function from_candid_record_n197(value: {
     nullable: boolean;
     name: string;
     type: _SemanticType;
@@ -3290,12 +3033,12 @@ function from_candid_record_n218(value: {
     return {
         nullable: value.nullable,
         name: value.name,
-        type: from_candid_SemanticType_n205(value.type),
-        description: record_opt_to_undefined(from_candid_opt_n132(value.description)),
+        type: from_candid_SemanticType_n184(value.type),
+        description: record_opt_to_undefined(from_candid_opt_n54(value.description)),
         required: value.required
     };
 }
-function from_candid_record_n220(value: {
+function from_candid_record_n199(value: {
     id: string;
     name: [] | [string];
 }): {
@@ -3304,10 +3047,34 @@ function from_candid_record_n220(value: {
 } {
     return {
         id: value.id,
-        name: record_opt_to_undefined(from_candid_opt_n132(value.name))
+        name: record_opt_to_undefined(from_candid_opt_n54(value.name))
     };
 }
-function from_candid_record_n257(value: {
+function from_candid_record_n207(value: {
+    metric: _VectorMetric;
+    dims: number;
+    embedding_name_id: number;
+    target: [] | [Principal];
+    index_id: number;
+    activation_state: _VectorIndexActivationStateView;
+}): {
+    metric: VectorMetric;
+    dims: number;
+    embedding_name_id: number;
+    target?: Principal;
+    index_id: number;
+    activation_state: VectorIndexActivationStateView;
+} {
+    return {
+        metric: from_candid_VectorMetric_n208(value.metric),
+        dims: value.dims,
+        embedding_name_id: value.embedding_name_id,
+        target: record_opt_to_undefined(from_candid_opt_n113(value.target)),
+        index_id: value.index_id,
+        activation_state: from_candid_VectorIndexActivationStateView_n120(value.activation_state)
+    };
+}
+function from_candid_record_n248(value: {
     intent_lock_count: number;
     job_view: _ProvisionJobSummary;
 }): {
@@ -3316,10 +3083,10 @@ function from_candid_record_n257(value: {
 } {
     return {
         intent_lock_count: value.intent_lock_count,
-        job_view: from_candid_ProvisionJobSummary_n258(value.job_view)
+        job_view: from_candid_ProvisionJobSummary_n249(value.job_view)
     };
 }
-function from_candid_record_n259(value: {
+function from_candid_record_n250(value: {
     request_id: string;
     active_resource_index: number;
     completed_effect_count: number;
@@ -3339,11 +3106,197 @@ function from_candid_record_n259(value: {
         active_resource_index: value.active_resource_index,
         completed_effect_count: value.completed_effect_count,
         state: value.state,
-        accepted_registry_version: record_opt_to_undefined(from_candid_opt_n148(value.accepted_registry_version)),
+        accepted_registry_version: record_opt_to_undefined(from_candid_opt_n84(value.accepted_registry_version)),
         deployment_id: value.deployment_id
     };
 }
-function from_candid_record_n263(value: {
+function from_candid_record_n26(value: {
+    code: _VectorIndexError;
+    message: string;
+}): {
+    code: VectorIndexError;
+    message: string;
+} {
+    return {
+        code: from_candid_VectorIndexError_n27(value.code),
+        message: value.message
+    };
+}
+function from_candid_record_n261(value: {
+    cursor: [] | [Uint8Array];
+    exhausted: boolean;
+    partial: _VectorPartitionPageHealth;
+}): {
+    cursor?: Uint8Array;
+    exhausted: boolean;
+    partial: VectorPartitionPageHealth;
+} {
+    return {
+        cursor: record_opt_to_undefined(from_candid_opt_n77(value.cursor)),
+        exhausted: value.exhausted,
+        partial: value.partial
+    };
+}
+function from_candid_record_n265(value: {
+    cursor: [] | [Uint8Array];
+    exhausted: boolean;
+    partial: _VectorSlabStats;
+}): {
+    cursor?: Uint8Array;
+    exhausted: boolean;
+    partial: VectorSlabStats;
+} {
+    return {
+        cursor: record_opt_to_undefined(from_candid_opt_n77(value.cursor)),
+        exhausted: value.exhausted,
+        partial: from_candid_VectorSlabStats_n142(value.partial)
+    };
+}
+function from_candid_record_n273(value: {
+    done: boolean;
+    scanned: number;
+    next_cursor: [] | [_ClientMutationKey];
+    removed: number;
+}): {
+    done: boolean;
+    scanned: number;
+    next_cursor?: ClientMutationKey;
+    removed: number;
+} {
+    return {
+        done: value.done,
+        scanned: value.scanned,
+        next_cursor: record_opt_to_undefined(from_candid_opt_n274(value.next_cursor)),
+        removed: value.removed
+    };
+}
+function from_candid_record_n280(value: {
+    hits: Array<_VectorSearchHit>;
+}): {
+    hits: Array<VectorSearchHit>;
+} {
+    return {
+        hits: from_candid_vec_n281(value.hits)
+    };
+}
+function from_candid_record_n283(value: {
+    subject: _VectorSubject;
+    embedding_version: bigint;
+    distance: number;
+    embedding_incarnation: bigint;
+}): {
+    subject: VectorSubject;
+    embedding_version: bigint;
+    distance: number;
+    embedding_incarnation: bigint;
+} {
+    return {
+        subject: from_candid_VectorSubject_n284(value.subject),
+        embedding_version: value.embedding_version,
+        distance: value.distance,
+        embedding_incarnation: value.embedding_incarnation
+    };
+}
+function from_candid_record_n30(value: {
+    target_index_version: bigint;
+    training_iteration: number;
+    candidates_collected: number;
+    nlist: number;
+    subjects_processed: bigint;
+    phase: _VectorRebuildPhase;
+}): {
+    target_index_version: bigint;
+    training_iteration: number;
+    candidates_collected: number;
+    nlist: number;
+    subjects_processed: bigint;
+    phase: VectorRebuildPhase;
+} {
+    return {
+        target_index_version: value.target_index_version,
+        training_iteration: value.training_iteration,
+        candidates_collected: value.candidates_collected,
+        nlist: value.nlist,
+        subjects_processed: value.subjects_processed,
+        phase: from_candid_VectorRebuildPhase_n31(value.phase)
+    };
+}
+function from_candid_record_n51(value: {
+    status: _MutationStatus;
+    receipt: [] | [_BatchReceiptV1];
+}): {
+    status: MutationStatus;
+    receipt?: BatchReceiptV1;
+} {
+    return {
+        status: from_candid_MutationStatus_n52(value.status),
+        receipt: record_opt_to_undefined(from_candid_opt_n58(value.receipt))
+    };
+}
+function from_candid_record_n53(value: {
+    last_error: [] | [string];
+    mutation_id: bigint;
+    next_action: string;
+    phase: _MutationLifecyclePhase;
+    target_shard: [] | [number];
+}): {
+    last_error?: string;
+    mutation_id: bigint;
+    next_action: string;
+    phase: MutationLifecyclePhase;
+    target_shard?: number;
+} {
+    return {
+        last_error: record_opt_to_undefined(from_candid_opt_n54(value.last_error)),
+        mutation_id: value.mutation_id,
+        next_action: value.next_action,
+        phase: from_candid_MutationLifecyclePhase_n55(value.phase),
+        target_shard: record_opt_to_undefined(from_candid_opt_n57(value.target_shard))
+    };
+}
+function from_candid_record_n76(value: {
+    rows_blob: [] | [Uint8Array];
+    token: [] | [_MutationToken];
+    row_count: bigint;
+    phase: [] | [_MutationLifecyclePhase];
+}): {
+    rows_blob?: Uint8Array;
+    token?: MutationToken;
+    row_count: bigint;
+    phase?: MutationLifecyclePhase;
+} {
+    return {
+        rows_blob: record_opt_to_undefined(from_candid_opt_n77(value.rows_blob)),
+        token: record_opt_to_undefined(from_candid_opt_n78(value.token)),
+        row_count: value.row_count,
+        phase: record_opt_to_undefined(from_candid_opt_n85(value.phase))
+    };
+}
+function from_candid_record_n80(value: {
+    mutation_id: bigint;
+    shards: Array<_MutationTokenShard>;
+}): {
+    mutation_id: bigint;
+    shards: Array<MutationTokenShard>;
+} {
+    return {
+        mutation_id: value.mutation_id,
+        shards: from_candid_vec_n81(value.shards)
+    };
+}
+function from_candid_record_n83(value: {
+    label_stats_seq: [] | [bigint];
+    shard_id: number;
+}): {
+    label_stats_seq?: bigint;
+    shard_id: number;
+} {
+    return {
+        label_stats_seq: record_opt_to_undefined(from_candid_opt_n84(value.label_stats_seq)),
+        shard_id: value.shard_id
+    };
+}
+function from_candid_record_n89(value: {
     is_home: boolean;
     status: _GraphStatus;
     graph_id: number;
@@ -3368,414 +3321,66 @@ function from_candid_record_n263(value: {
 } {
     return {
         is_home: value.is_home,
-        status: from_candid_GraphStatus_n264(value.status),
+        status: from_candid_GraphStatus_n90(value.status),
         graph_id: value.graph_id,
         owner: value.owner,
         canister_id: value.canister_id,
         updated_at_ns: value.updated_at_ns,
-        provisioning_state: from_candid_ProvisioningState_n266(value.provisioning_state),
+        provisioning_state: from_candid_ProvisioningState_n92(value.provisioning_state),
         version: value.version,
         admins: value.admins,
         graph_name: value.graph_name
     };
 }
-function from_candid_record_n277(value: {
-    blocked_reason: [] | [string];
-    index_id: number;
-    activation_state: _VectorIndexActivationStateView;
+function from_candid_record_n97(value: {
+    reachable_shard_count: number;
+    index_sync_converged: boolean;
+    unhealthy_vector_indexes: Array<string>;
+    graph: _GraphSummary;
+    notes: Array<string>;
+    vector_index_count: number;
 }): {
-    blocked_reason?: string;
-    index_id: number;
-    activation_state: VectorIndexActivationStateView;
+    reachable_shard_count: number;
+    index_sync_converged: boolean;
+    unhealthy_vector_indexes: Array<string>;
+    graph: GraphSummary;
+    notes: Array<string>;
+    vector_index_count: number;
 } {
     return {
-        blocked_reason: record_opt_to_undefined(from_candid_opt_n132(value.blocked_reason)),
-        index_id: value.index_id,
-        activation_state: from_candid_VectorIndexActivationStateView_n181(value.activation_state)
+        reachable_shard_count: value.reachable_shard_count,
+        index_sync_converged: value.index_sync_converged,
+        unhealthy_vector_indexes: value.unhealthy_vector_indexes,
+        graph: from_candid_GraphSummary_n98(value.graph),
+        notes: value.notes,
+        vector_index_count: value.vector_index_count
     };
 }
-function from_candid_record_n284(value: {
-    maintenance_state: [] | [_VectorMaintenanceStateView];
-    target: [] | [Principal];
-    blocked_reason: [] | [string];
-    index_id: number;
-    policy_enabled: boolean;
-    dispatch_ready: boolean;
-    rebuild_status: [] | [_VectorRebuildStatus];
+function from_candid_record_n99(value: {
+    status: _GraphStatus;
+    graph_id: number;
+    updated_at_ns: bigint;
+    provisioning_state: _ProvisioningState;
+    graph_name: string;
+    shard_count: number;
 }): {
-    maintenance_state?: VectorMaintenanceStateView;
-    target?: Principal;
-    blocked_reason?: string;
-    index_id: number;
-    policy_enabled: boolean;
-    dispatch_ready: boolean;
-    rebuild_status?: VectorRebuildStatus;
+    status: GraphStatus;
+    graph_id: number;
+    updated_at_ns: bigint;
+    provisioning_state: ProvisioningState;
+    graph_name: string;
+    shard_count: number;
 } {
     return {
-        maintenance_state: record_opt_to_undefined(from_candid_opt_n285(value.maintenance_state)),
-        target: record_opt_to_undefined(from_candid_opt_n173(value.target)),
-        blocked_reason: record_opt_to_undefined(from_candid_opt_n132(value.blocked_reason)),
-        index_id: value.index_id,
-        policy_enabled: value.policy_enabled,
-        dispatch_ready: value.dispatch_ready,
-        rebuild_status: record_opt_to_undefined(from_candid_opt_n288(value.rebuild_status))
+        status: from_candid_GraphStatus_n90(value.status),
+        graph_id: value.graph_id,
+        updated_at_ns: value.updated_at_ns,
+        provisioning_state: from_candid_ProvisioningState_n92(value.provisioning_state),
+        graph_name: value.graph_name,
+        shard_count: value.shard_count
     };
 }
-function from_candid_record_n292(value: {
-    hits: Array<_VectorSearchHit>;
-}): {
-    hits: Array<VectorSearchHit>;
-} {
-    return {
-        hits: from_candid_vec_n293(value.hits)
-    };
-}
-function from_candid_record_n295(value: {
-    subject: _VectorSubject;
-    embedding_version: bigint;
-    distance: number;
-    embedding_incarnation: bigint;
-}): {
-    subject: VectorSubject;
-    embedding_version: bigint;
-    distance: number;
-    embedding_incarnation: bigint;
-} {
-    return {
-        subject: from_candid_VectorSubject_n296(value.subject),
-        embedding_version: value.embedding_version,
-        distance: value.distance,
-        embedding_incarnation: value.embedding_incarnation
-    };
-}
-function from_candid_record_n41(value: {
-    done: boolean;
-    shard_id: number;
-    after_key: [] | [Uint8Array];
-}): {
-    done: boolean;
-    shard_id: number;
-    after_key?: Uint8Array;
-} {
-    return {
-        done: value.done,
-        shard_id: value.shard_id,
-        after_key: record_opt_to_undefined(from_candid_opt_n13(value.after_key))
-    };
-}
-function from_candid_record_n70(value: {
-    done: boolean;
-    scanned: number;
-    next_cursor: [] | [_ClientMutationKey];
-    removed: number;
-}): {
-    done: boolean;
-    scanned: number;
-    next_cursor?: ClientMutationKey;
-    removed: number;
-} {
-    return {
-        done: value.done,
-        scanned: value.scanned,
-        next_cursor: record_opt_to_undefined(from_candid_opt_n71(value.next_cursor)),
-        removed: value.removed
-    };
-}
-function from_candid_record_n80(value: {
-    merged: _VectorPartitionPageHealth;
-    cursor: [] | [Uint8Array];
-    exhausted: boolean;
-}): {
-    merged: VectorPartitionPageHealth;
-    cursor?: Uint8Array;
-    exhausted: boolean;
-} {
-    return {
-        merged: value.merged,
-        cursor: record_opt_to_undefined(from_candid_opt_n13(value.cursor)),
-        exhausted: value.exhausted
-    };
-}
-function from_candid_record_n82(value: {
-    code: _VectorIndexError;
-    message: string;
-}): {
-    code: VectorIndexError;
-    message: string;
-} {
-    return {
-        code: from_candid_VectorIndexError_n83(value.code),
-        message: value.message
-    };
-}
-function from_candid_record_n92(value: {
-    target_index_version: bigint;
-    training_iteration: number;
-    candidates_collected: number;
-    nlist: number;
-    subjects_processed: bigint;
-    phase: _VectorRebuildPhase;
-}): {
-    target_index_version: bigint;
-    training_iteration: number;
-    candidates_collected: number;
-    nlist: number;
-    subjects_processed: bigint;
-    phase: VectorRebuildPhase;
-} {
-    return {
-        target_index_version: value.target_index_version,
-        training_iteration: value.training_iteration,
-        candidates_collected: value.candidates_collected,
-        nlist: value.nlist,
-        subjects_processed: value.subjects_processed,
-        phase: from_candid_VectorRebuildPhase_n93(value.phase)
-    };
-}
-function from_candid_variant_n10(value: {
-    Ok: _AdminEdgeBackfillStepResult;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: AdminEdgeBackfillStepResult;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_AdminEdgeBackfillStepResult_n11(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n103(value: {
-    Ok: _VectorRebuildStatus;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorRebuildStatus;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VectorRebuildStatus_n91(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n105(value: {
-    Ok: _VectorSlabStats;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorSlabStats;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VectorSlabStats_n106(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n112(value: {
-    Ok: _VectorSlabStatsStep;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorSlabStatsStep;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VectorSlabStatsStep_n113(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n127(value: {
-    Ok: _BatchResponse;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: BatchResponse;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_BatchResponse_n128(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n134(value: {
-    ProjectionPending: null;
-} | {
-    Failed: null;
-} | {
-    CanonicalCommitted: null;
-} | {
-    Routing: null;
-} | {
-    Completed: null;
-} | {
-    CanonicalPending: null;
-}): MutationLifecyclePhase {
-    return "ProjectionPending" in value ? MutationLifecyclePhase.ProjectionPending : "Failed" in value ? MutationLifecyclePhase.Failed : "CanonicalCommitted" in value ? MutationLifecyclePhase.CanonicalCommitted : "Routing" in value ? MutationLifecyclePhase.Routing : "Completed" in value ? MutationLifecyclePhase.Completed : "CanonicalPending" in value ? MutationLifecyclePhase.CanonicalPending : value;
-}
-function from_candid_variant_n137(value: {
-    Ok: bigint;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: bigint;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n139(value: {
-    Ok: _GqlQueryResult;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: GqlQueryResult;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_GqlQueryResult_n140(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n15(value: {
-    Ok: Array<_GraphStableMemoryStats>;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: Array<GraphStableMemoryStats>;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n153(value: {
-    Ok: _GqlExecuteIdempotentBatchResult;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: GqlExecuteIdempotentBatchResult;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_GqlExecuteIdempotentBatchResult_n154(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n165(value: {
-    Ok: Uint8Array;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: Uint8Array;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n167(value: {
-    Ok: _IndexedPropertyCatalog;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: IndexedPropertyCatalog;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n169(value: {
-    Ok: Array<_ShardRegistryEntry>;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: Array<ShardRegistryEntry>;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_vec_n170(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n17(value: {
+function from_candid_variant_n102(value: {
     Ok: _IndexSyncStatus;
 } | {
     Err: _RouterError;
@@ -3794,80 +3399,45 @@ function from_candid_variant_n17(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n175(value: {
-    Ok: Array<_VectorIndexInfo>;
+function from_candid_variant_n104(value: {
+    Ok: Uint8Array;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: Array<VectorIndexInfo>;
+    Ok: Uint8Array;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_vec_n176(value.Ok)
+        Ok: value.Ok
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n180(value: {
-    L2Squared: null;
-} | {
-    Cosine: null;
-}): VectorMetric {
-    return "L2Squared" in value ? VectorMetric.L2Squared : "Cosine" in value ? VectorMetric.Cosine : value;
-}
-function from_candid_variant_n182(value: {
-    DispatchBlocked: null;
-} | {
-    DispatchEnabled: null;
-} | {
-    Registered: null;
-}): VectorIndexActivationStateView {
-    return "DispatchBlocked" in value ? VectorIndexActivationStateView.DispatchBlocked : "DispatchEnabled" in value ? VectorIndexActivationStateView.DispatchEnabled : "Registered" in value ? VectorIndexActivationStateView.Registered : value;
-}
-function from_candid_variant_n184(value: {
-    Ok: Array<_VectorMaintenancePolicyView>;
+function from_candid_variant_n106(value: {
+    Ok: _IndexedPropertyCatalog;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: Array<VectorMaintenancePolicyView>;
+    Ok: IndexedPropertyCatalog;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_vec_n185(value.Ok)
+        Ok: value.Ok
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n19(value: {
-    Ok: _VertexEmbeddingIngestionResult;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VertexEmbeddingIngestionResult;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VertexEmbeddingIngestionResult_n20(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n190(value: {
+function from_candid_variant_n108(value: {
     Ok: _MutationStatus;
 } | {
     Err: _RouterError;
@@ -3880,19 +3450,38 @@ function from_candid_variant_n190(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_MutationStatus_n130(value.Ok)
+        Ok: from_candid_MutationStatus_n52(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n192(value: {
-    Ok: string;
+function from_candid_variant_n110(value: {
+    Ok: _ShardRegistryEntry;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: string;
+    Ok: ShardRegistryEntry;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_ShardRegistryEntry_n111(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n115(value: {
+    Ok: Array<_GraphStableMemoryStats>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<GraphStableMemoryStats>;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -3905,7 +3494,316 @@ function from_candid_variant_n192(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n194(value: {
+function from_candid_variant_n117(value: {
+    Ok: _VectorIndexActivationStatus;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorIndexActivationStatus;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_VectorIndexActivationStatus_n118(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n12(value: {
+    Ok: boolean;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: boolean;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n121(value: {
+    DispatchBlocked: null;
+} | {
+    DispatchEnabled: null;
+} | {
+    Registered: null;
+}): VectorIndexActivationStateView {
+    return "DispatchBlocked" in value ? VectorIndexActivationStateView.DispatchBlocked : "DispatchEnabled" in value ? VectorIndexActivationStateView.DispatchEnabled : "Registered" in value ? VectorIndexActivationStateView.Registered : value;
+}
+function from_candid_variant_n123(value: {
+    Ok: Principal;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Principal;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n125(value: {
+    Ok: [] | [_VectorMaintenancePolicyView];
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorMaintenancePolicyView | null;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_opt_n126(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n130(value: {
+    Ok: _VectorMaintenanceStatusView;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorMaintenanceStatusView;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_VectorMaintenanceStatusView_n131(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n135(value: {
+    Scanning: {
+        merged: _VectorPartitionPageHealth;
+        cursor_present: boolean;
+        exhausted: boolean;
+    };
+} | {
+    Failed: _VectorMaintenanceFailure;
+} | {
+    Idle: null;
+}): {
+    __kind__: "Scanning";
+    Scanning: {
+        merged: VectorPartitionPageHealth;
+        cursor_present: boolean;
+        exhausted: boolean;
+    };
+} | {
+    __kind__: "Failed";
+    Failed: VectorMaintenanceFailure;
+} | {
+    __kind__: "Idle";
+    Idle: null;
+} {
+    return "Scanning" in value ? {
+        __kind__: "Scanning",
+        Scanning: value.Scanning
+    } : "Failed" in value ? {
+        __kind__: "Failed",
+        Failed: from_candid_VectorMaintenanceFailure_n25(value.Failed)
+    } : "Idle" in value ? {
+        __kind__: "Idle",
+        Idle: value.Idle
+    } : value;
+}
+function from_candid_variant_n138(value: {
+    Ok: _VectorPartitionHealthSummary;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorPartitionHealthSummary;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n141(value: {
+    Ok: _VectorSlabStats;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorSlabStats;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_VectorSlabStats_n142(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n149(value: {
+    Ok: _GqlExecuteIdempotentBatchResult;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: GqlExecuteIdempotentBatchResult;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_GqlExecuteIdempotentBatchResult_n150(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n154(value: {
+    Ok: Array<_Result_27>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<Result_27>;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n155(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n157(value: {
+    Ok: _VertexEmbeddingIngestionResult;
+} | {
+    Err: string;
+}): {
+    __kind__: "Ok";
+    Ok: VertexEmbeddingIngestionResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_VertexEmbeddingIngestionResult_n158(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: value.Err
+    } : value;
+}
+function from_candid_variant_n16(value: {
+    Ok: _AdvanceBackfillResult;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: AdvanceBackfillResult;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n161(value: {
+    DeferredForRepair: null;
+} | {
+    Applied: null;
+}): VertexEmbeddingProjectionOutcome {
+    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
+}
+function from_candid_variant_n163(value: {
+    Ok: Array<_BackfillShardStatus>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<BackfillShardStatus>;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n164(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n168(value: {
+    Label: null;
+} | {
+    Edge: null;
+} | {
+    LabelStats: null;
+} | {
+    VertexProperty: null;
+}): BackfillKind {
+    return "Label" in value ? BackfillKind.Label : "Edge" in value ? BackfillKind.Edge : "LabelStats" in value ? BackfillKind.LabelStats : "VertexProperty" in value ? BackfillKind.VertexProperty : value;
+}
+function from_candid_variant_n170(value: {
+    Ok: Array<_GraphSummary>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<GraphSummary>;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n171(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n173(value: {
     Ok: _PreparedManifest;
 } | {
     Err: _RouterError;
@@ -3918,19 +3816,19 @@ function from_candid_variant_n194(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_PreparedManifest_n195(value.Ok)
+        Ok: from_candid_PreparedManifest_n174(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n2(value: {
-    Ok: null;
+function from_candid_variant_n18(value: {
+    Ok: _AdminVectorIndexBackfillStepResult;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: null;
+    Ok: AdminVectorIndexBackfillStepResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -3943,7 +3841,7 @@ function from_candid_variant_n2(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n206(value: {
+function from_candid_variant_n185(value: {
     ZonedTime: null;
 } | {
     Bool: null;
@@ -4136,10 +4034,10 @@ function from_candid_variant_n206(value: {
         Int8: value.Int8
     } : "Record" in value ? {
         __kind__: "Record",
-        Record: from_candid_record_n207(value.Record)
+        Record: from_candid_record_n186(value.Record)
     } : "List" in value ? {
         __kind__: "List",
-        List: from_candid_record_n210(value.List)
+        List: from_candid_record_n189(value.List)
     } : "Null" in value ? {
         __kind__: "Null",
         Null: value.Null
@@ -4226,40 +4124,217 @@ function from_candid_variant_n206(value: {
         Duration: value.Duration
     } : value;
 }
-function from_candid_variant_n215(value: {
+function from_candid_variant_n194(value: {
     Update: null;
 } | {
     Query: null;
 }): OperationKind {
     return "Update" in value ? OperationKind.Update : "Query" in value ? OperationKind.Query : value;
 }
-function from_candid_variant_n23(value: {
-    DeferredForRepair: null;
-} | {
-    Applied: null;
-}): VertexEmbeddingProjectionOutcome {
-    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
-}
-function from_candid_variant_n25(value: {
-    Ok: Array<_Result_6>;
+function from_candid_variant_n2(value: {
+    Ok: null;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: Array<Result_6>;
+    Ok: null;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_vec_n26(value.Ok)
+        Ok: value.Ok
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n254(value: {
+function from_candid_variant_n20(value: {
+    Ok: _VectorMaintenanceStepOutcome;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorMaintenanceStepOutcome;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_VectorMaintenanceStepOutcome_n21(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n201(value: {
+    Ok: Array<_ShardRegistryEntry>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<ShardRegistryEntry>;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n202(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n204(value: {
+    Ok: Array<_VectorIndexInfo>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<VectorIndexInfo>;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n205(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n209(value: {
+    L2Squared: null;
+} | {
+    Cosine: null;
+}): VectorMetric {
+    return "L2Squared" in value ? VectorMetric.L2Squared : "Cosine" in value ? VectorMetric.Cosine : value;
+}
+function from_candid_variant_n211(value: {
+    Ok: Array<_VectorMaintenancePolicyView>;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: Array<VectorMaintenancePolicyView>;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n212(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n214(value: {
+    Ok: string;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: string;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n22(value: {
+    Stepped: _VectorMaintenanceStepResult;
+} | {
+    Disabled: null;
+}): {
+    __kind__: "Stepped";
+    Stepped: VectorMaintenanceStepResult;
+} | {
+    __kind__: "Disabled";
+    Disabled: null;
+} {
+    return "Stepped" in value ? {
+        __kind__: "Stepped",
+        Stepped: from_candid_VectorMaintenanceStepResult_n23(value.Stepped)
+    } : "Disabled" in value ? {
+        __kind__: "Disabled",
+        Disabled: value.Disabled
+    } : value;
+}
+function from_candid_variant_n24(value: {
+    Scanning: {
+        exhausted: boolean;
+    };
+} | {
+    Failed: _VectorMaintenanceFailure;
+} | {
+    AwaitingPublish: _VectorRebuildStatus;
+} | {
+    RebuildStarted: _VectorMaintenanceRecommendation;
+} | {
+    CleanupAdvanced: _VectorRebuildStatus;
+} | {
+    Healthy: null;
+} | {
+    RebuildAdvanced: _VectorRebuildStatus;
+}): {
+    __kind__: "Scanning";
+    Scanning: {
+        exhausted: boolean;
+    };
+} | {
+    __kind__: "Failed";
+    Failed: VectorMaintenanceFailure;
+} | {
+    __kind__: "AwaitingPublish";
+    AwaitingPublish: VectorRebuildStatus;
+} | {
+    __kind__: "RebuildStarted";
+    RebuildStarted: VectorMaintenanceRecommendation;
+} | {
+    __kind__: "CleanupAdvanced";
+    CleanupAdvanced: VectorRebuildStatus;
+} | {
+    __kind__: "Healthy";
+    Healthy: null;
+} | {
+    __kind__: "RebuildAdvanced";
+    RebuildAdvanced: VectorRebuildStatus;
+} {
+    return "Scanning" in value ? {
+        __kind__: "Scanning",
+        Scanning: value.Scanning
+    } : "Failed" in value ? {
+        __kind__: "Failed",
+        Failed: from_candid_VectorMaintenanceFailure_n25(value.Failed)
+    } : "AwaitingPublish" in value ? {
+        __kind__: "AwaitingPublish",
+        AwaitingPublish: from_candid_VectorRebuildStatus_n29(value.AwaitingPublish)
+    } : "RebuildStarted" in value ? {
+        __kind__: "RebuildStarted",
+        RebuildStarted: from_candid_VectorMaintenanceRecommendation_n33(value.RebuildStarted)
+    } : "CleanupAdvanced" in value ? {
+        __kind__: "CleanupAdvanced",
+        CleanupAdvanced: from_candid_VectorRebuildStatus_n29(value.CleanupAdvanced)
+    } : "Healthy" in value ? {
+        __kind__: "Healthy",
+        Healthy: value.Healthy
+    } : "RebuildAdvanced" in value ? {
+        __kind__: "RebuildAdvanced",
+        RebuildAdvanced: from_candid_VectorRebuildStatus_n29(value.RebuildAdvanced)
+    } : value;
+}
+function from_candid_variant_n245(value: {
     Ok: _ProvisionGraphResponse;
 } | {
     Err: _RouterError;
@@ -4272,13 +4347,13 @@ function from_candid_variant_n254(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_ProvisionGraphResponse_n255(value.Ok)
+        Ok: from_candid_ProvisionGraphResponse_n246(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n256(value: {
+function from_candid_variant_n247(value: {
     Replay: {
         intent_lock_count: number;
         job_view: _ProvisionJobSummary;
@@ -4312,121 +4387,16 @@ function from_candid_variant_n256(value: {
 } {
     return "Replay" in value ? {
         __kind__: "Replay",
-        Replay: from_candid_record_n257(value.Replay)
+        Replay: from_candid_record_n248(value.Replay)
     } : "Accepted" in value ? {
         __kind__: "Accepted",
-        Accepted: from_candid_record_n257(value.Accepted)
+        Accepted: from_candid_record_n248(value.Accepted)
     } : "Completed" in value ? {
         __kind__: "Completed",
         Completed: value.Completed
     } : value;
 }
-function from_candid_variant_n261(value: {
-    Ok: _GraphRegistryEntry;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: GraphRegistryEntry;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_GraphRegistryEntry_n262(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n265(value: {
-    Deleting: null;
-} | {
-    Active: null;
-} | {
-    ReadOnly: null;
-} | {
-    Deprecated: null;
-}): GraphStatus {
-    return "Deleting" in value ? GraphStatus.Deleting : "Active" in value ? GraphStatus.Active : "ReadOnly" in value ? GraphStatus.ReadOnly : "Deprecated" in value ? GraphStatus.Deprecated : value;
-}
-function from_candid_variant_n267(value: {
-    Failed: {
-        request_id: string;
-        reason: string;
-    };
-} | {
-    None: null;
-} | {
-    Pending: {
-        request_id: string;
-    };
-}): {
-    __kind__: "Failed";
-    Failed: {
-        request_id: string;
-        reason: string;
-    };
-} | {
-    __kind__: "None";
-    None: null;
-} | {
-    __kind__: "Pending";
-    Pending: {
-        request_id: string;
-    };
-} {
-    return "Failed" in value ? {
-        __kind__: "Failed",
-        Failed: value.Failed
-    } : "None" in value ? {
-        __kind__: "None",
-        None: value.None
-    } : "Pending" in value ? {
-        __kind__: "Pending",
-        Pending: value.Pending
-    } : value;
-}
-function from_candid_variant_n269(value: {
-    Ok: _ShardRegistryEntry;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: ShardRegistryEntry;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_ShardRegistryEntry_n171(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n271(value: {
-    Ok: Principal;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: Principal;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n273(value: {
+function from_candid_variant_n256(value: {
     Ok: _RouterAckResponse;
 } | {
     Err: _RouterError;
@@ -4445,118 +4415,64 @@ function from_candid_variant_n273(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n275(value: {
-    Ok: _VectorIndexActivationStatus;
+function from_candid_variant_n259(value: {
+    Ok: _VectorPartitionHealthStep;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: VectorIndexActivationStatus;
+    Ok: VectorPartitionHealthStep;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorIndexActivationStatus_n276(value.Ok)
+        Ok: from_candid_VectorPartitionHealthStep_n260(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n279(value: {
-    Ok: [] | [_VectorMaintenancePolicyView];
+function from_candid_variant_n263(value: {
+    Ok: _VectorSlabStatsStep;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: VectorMaintenancePolicyView | null;
+    Ok: VectorSlabStatsStep;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_opt_n280(value.Ok)
+        Ok: from_candid_VectorSlabStatsStep_n264(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n28(value: {
-    Ok: _VertexEmbeddingIngestionResult;
-} | {
-    Err: string;
-}): {
-    __kind__: "Ok";
-    Ok: VertexEmbeddingIngestionResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VertexEmbeddingIngestionResult_n20(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: value.Err
-    } : value;
-}
-function from_candid_variant_n282(value: {
-    Ok: _VectorMaintenanceStatusView;
+function from_candid_variant_n271(value: {
+    Ok: _AdminSweepMutationKeysStepResult;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: VectorMaintenanceStatusView;
+    Ok: AdminSweepMutationKeysStepResult;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorMaintenanceStatusView_n283(value.Ok)
+        Ok: from_candid_AdminSweepMutationKeysStepResult_n272(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n287(value: {
-    Scanning: {
-        merged: _VectorPartitionPageHealth;
-        cursor_present: boolean;
-        exhausted: boolean;
-    };
-} | {
-    Failed: _VectorMaintenanceFailure;
-} | {
-    Idle: null;
-}): {
-    __kind__: "Scanning";
-    Scanning: {
-        merged: VectorPartitionPageHealth;
-        cursor_present: boolean;
-        exhausted: boolean;
-    };
-} | {
-    __kind__: "Failed";
-    Failed: VectorMaintenanceFailure;
-} | {
-    __kind__: "Idle";
-    Idle: null;
-} {
-    return "Scanning" in value ? {
-        __kind__: "Scanning",
-        Scanning: value.Scanning
-    } : "Failed" in value ? {
-        __kind__: "Failed",
-        Failed: from_candid_VectorMaintenanceFailure_n81(value.Failed)
-    } : "Idle" in value ? {
-        __kind__: "Idle",
-        Idle: value.Idle
-    } : value;
-}
-function from_candid_variant_n290(value: {
+function from_candid_variant_n278(value: {
     Ok: _VectorSearchResult;
 } | {
     Err: _RouterError;
@@ -4569,13 +4485,78 @@ function from_candid_variant_n290(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorSearchResult_n291(value.Ok)
+        Ok: from_candid_VectorSearchResult_n279(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n297(value: {
+function from_candid_variant_n28(value: {
+    InvalidQueryVector: null;
+} | {
+    AnonymousRouter: null;
+} | {
+    InvalidStatsCursor: null;
+} | {
+    InvalidRebuildParams: null;
+} | {
+    RebuildAlreadyActive: null;
+} | {
+    RebuildIncomplete: null;
+} | {
+    RebuildNotReadyToPublish: null;
+} | {
+    MutationKindMismatch: null;
+} | {
+    AllocatorOverflow: null;
+} | {
+    MetricNotSupportedForPartitionScan: null;
+} | {
+    InvalidSearchCandidates: null;
+} | {
+    ByteWidthMismatch: null;
+} | {
+    DimensionMismatch: null;
+} | {
+    NoActiveRebuild: null;
+} | {
+    ShardMismatch: null;
+} | {
+    InvalidSearchTopK: null;
+} | {
+    Unauthorized: null;
+} | {
+    StaleMaintenanceHealth: null;
+} | {
+    InvalidPrincipalInRegistry: null;
+} | {
+    ShardCanisterAlreadyAttached: null;
+} | {
+    StableGrowFailed: null;
+} | {
+    UnknownIndex: null;
+} | {
+    ShardOutOfRangeForGroup: null;
+} | {
+    ShardNotAttached: null;
+} | {
+    InvalidMaintenancePolicy: null;
+} | {
+    InvalidPageCapacity: null;
+} | {
+    GraphOwnershipMismatch: null;
+} | {
+    InvalidIndexGroupConfig: null;
+} | {
+    WrongShardCanister: null;
+} | {
+    MetricMismatch: null;
+} | {
+    EmbeddingVersionConflict: null;
+}): VectorIndexError {
+    return "InvalidQueryVector" in value ? VectorIndexError.InvalidQueryVector : "AnonymousRouter" in value ? VectorIndexError.AnonymousRouter : "InvalidStatsCursor" in value ? VectorIndexError.InvalidStatsCursor : "InvalidRebuildParams" in value ? VectorIndexError.InvalidRebuildParams : "RebuildAlreadyActive" in value ? VectorIndexError.RebuildAlreadyActive : "RebuildIncomplete" in value ? VectorIndexError.RebuildIncomplete : "RebuildNotReadyToPublish" in value ? VectorIndexError.RebuildNotReadyToPublish : "MutationKindMismatch" in value ? VectorIndexError.MutationKindMismatch : "AllocatorOverflow" in value ? VectorIndexError.AllocatorOverflow : "MetricNotSupportedForPartitionScan" in value ? VectorIndexError.MetricNotSupportedForPartitionScan : "InvalidSearchCandidates" in value ? VectorIndexError.InvalidSearchCandidates : "ByteWidthMismatch" in value ? VectorIndexError.ByteWidthMismatch : "DimensionMismatch" in value ? VectorIndexError.DimensionMismatch : "NoActiveRebuild" in value ? VectorIndexError.NoActiveRebuild : "ShardMismatch" in value ? VectorIndexError.ShardMismatch : "InvalidSearchTopK" in value ? VectorIndexError.InvalidSearchTopK : "Unauthorized" in value ? VectorIndexError.Unauthorized : "StaleMaintenanceHealth" in value ? VectorIndexError.StaleMaintenanceHealth : "InvalidPrincipalInRegistry" in value ? VectorIndexError.InvalidPrincipalInRegistry : "ShardCanisterAlreadyAttached" in value ? VectorIndexError.ShardCanisterAlreadyAttached : "StableGrowFailed" in value ? VectorIndexError.StableGrowFailed : "UnknownIndex" in value ? VectorIndexError.UnknownIndex : "ShardOutOfRangeForGroup" in value ? VectorIndexError.ShardOutOfRangeForGroup : "ShardNotAttached" in value ? VectorIndexError.ShardNotAttached : "InvalidMaintenancePolicy" in value ? VectorIndexError.InvalidMaintenancePolicy : "InvalidPageCapacity" in value ? VectorIndexError.InvalidPageCapacity : "GraphOwnershipMismatch" in value ? VectorIndexError.GraphOwnershipMismatch : "InvalidIndexGroupConfig" in value ? VectorIndexError.InvalidIndexGroupConfig : "WrongShardCanister" in value ? VectorIndexError.WrongShardCanister : "MetricMismatch" in value ? VectorIndexError.MetricMismatch : "EmbeddingVersionConflict" in value ? VectorIndexError.EmbeddingVersionConflict : value;
+}
+function from_candid_variant_n285(value: {
     Vertex: {
         vertex_id: number;
         shard_id: number;
@@ -4592,96 +4573,48 @@ function from_candid_variant_n297(value: {
         Vertex: value.Vertex
     } : value;
 }
-function from_candid_variant_n30(value: {
-    Ok: number;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: number;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
 function from_candid_variant_n32(value: {
-    Ok: number;
+    Cleaning: null;
 } | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: number;
+    Failed: null;
 } | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
+    Building: null;
+} | {
+    Idle: null;
+} | {
+    ReadyToPublish: null;
+} | {
+    Sampling: null;
+} | {
+    Aborting: null;
+} | {
+    Training: null;
+}): VectorRebuildPhase {
+    return "Cleaning" in value ? VectorRebuildPhase.Cleaning : "Failed" in value ? VectorRebuildPhase.Failed : "Building" in value ? VectorRebuildPhase.Building : "Idle" in value ? VectorRebuildPhase.Idle : "ReadyToPublish" in value ? VectorRebuildPhase.ReadyToPublish : "Sampling" in value ? VectorRebuildPhase.Sampling : "Aborting" in value ? VectorRebuildPhase.Aborting : "Training" in value ? VectorRebuildPhase.Training : value;
 }
 function from_candid_variant_n34(value: {
-    Ok: _AdminLabelBackfillStepResult;
+    RebuildRecommended: null;
 } | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: AdminLabelBackfillStepResult;
+    RebuildRequired: null;
 } | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
+    Healthy: null;
+}): VectorMaintenanceRecommendation {
+    return "RebuildRecommended" in value ? VectorMaintenanceRecommendation.RebuildRecommended : "RebuildRequired" in value ? VectorMaintenanceRecommendation.RebuildRequired : "Healthy" in value ? VectorMaintenanceRecommendation.Healthy : value;
 }
 function from_candid_variant_n36(value: {
-    Ok: _AdminLabelStatsProjectionStepResult;
+    Ok: _VectorRebuildStatus;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: AdminLabelStatsProjectionStepResult;
+    Ok: VectorRebuildStatus;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n38(value: {
-    Ok: Array<_EdgeBackfillShardStatus>;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: Array<EdgeBackfillShardStatus>;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_vec_n39(value.Ok)
+        Ok: from_candid_VectorRebuildStatus_n29(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
@@ -4926,24 +4859,39 @@ function from_candid_variant_n4(value: {
         Conflict: value.Conflict
     } : value;
 }
-function from_candid_variant_n43(value: {
-    Ok: Array<_LabelBackfillShardStatus>;
+function from_candid_variant_n49(value: {
+    Ok: _BatchResponse;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: Array<LabelBackfillShardStatus>;
+    Ok: BatchResponse;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: value.Ok
+        Ok: from_candid_BatchResponse_n50(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
+}
+function from_candid_variant_n56(value: {
+    ProjectionPending: null;
+} | {
+    Failed: null;
+} | {
+    CanonicalCommitted: null;
+} | {
+    Routing: null;
+} | {
+    Completed: null;
+} | {
+    CanonicalPending: null;
+}): MutationLifecyclePhase {
+    return "ProjectionPending" in value ? MutationLifecyclePhase.ProjectionPending : "Failed" in value ? MutationLifecyclePhase.Failed : "CanonicalCommitted" in value ? MutationLifecyclePhase.CanonicalCommitted : "Routing" in value ? MutationLifecyclePhase.Routing : "Completed" in value ? MutationLifecyclePhase.Completed : "CanonicalPending" in value ? MutationLifecyclePhase.CanonicalPending : value;
 }
 function from_candid_variant_n6(value: {
     DispatchNotActivated: null;
@@ -4954,54 +4902,7 @@ function from_candid_variant_n6(value: {
 }): VectorActivationBlockReason {
     return "DispatchNotActivated" in value ? VectorActivationBlockReason.DispatchNotActivated : "ShardsNotVectorAttached" in value ? VectorActivationBlockReason.ShardsNotVectorAttached : "MissingEmbeddingIncarnationFence" in value ? VectorActivationBlockReason.MissingEmbeddingIncarnationFence : value;
 }
-function from_candid_variant_n62(value: {
-    Ok: _VectorMaintenanceRecommendation;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorMaintenanceRecommendation;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VectorMaintenanceRecommendation_n63(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n64(value: {
-    RebuildRecommended: null;
-} | {
-    RebuildRequired: null;
-} | {
-    Healthy: null;
-}): VectorMaintenanceRecommendation {
-    return "RebuildRecommended" in value ? VectorMaintenanceRecommendation.RebuildRecommended : "RebuildRequired" in value ? VectorMaintenanceRecommendation.RebuildRequired : "Healthy" in value ? VectorMaintenanceRecommendation.Healthy : value;
-}
-function from_candid_variant_n68(value: {
-    Ok: _AdminSweepMutationKeysStepResult;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: AdminSweepMutationKeysStepResult;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_AdminSweepMutationKeysStepResult_n69(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n73(value: {
+function from_candid_variant_n60(value: {
     Ok: _VectorCentroidCacheStatus;
 } | {
     Err: _RouterError;
@@ -5020,13 +4921,13 @@ function from_candid_variant_n73(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n75(value: {
-    Ok: _AdminVectorIndexBackfillStepResult;
+function from_candid_variant_n62(value: {
+    Ok: number;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: AdminVectorIndexBackfillStepResult;
+    Ok: number;
 } | {
     __kind__: "Err";
     Err: RouterError;
@@ -5039,480 +4940,269 @@ function from_candid_variant_n75(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n77(value: {
-    Ok: _VectorMaintenanceState;
+function from_candid_variant_n64(value: {
+    Ok: number;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: VectorMaintenanceState;
+    Ok: number;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorMaintenanceState_n78(value.Ok)
+        Ok: value.Ok
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n79(value: {
-    Scanning: {
-        merged: _VectorPartitionPageHealth;
-        cursor: [] | [Uint8Array];
-        exhausted: boolean;
-    };
+function from_candid_variant_n74(value: {
+    Ok: _GqlQueryResult;
 } | {
-    Failed: _VectorMaintenanceFailure;
-} | {
-    Idle: null;
+    Err: _RouterError;
 }): {
-    __kind__: "Scanning";
-    Scanning: {
-        merged: VectorPartitionPageHealth;
-        cursor?: Uint8Array;
-        exhausted: boolean;
+    __kind__: "Ok";
+    Ok: GqlQueryResult;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_GqlQueryResult_n75(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n87(value: {
+    Ok: _GraphRegistryEntry;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: GraphRegistryEntry;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_GraphRegistryEntry_n88(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n91(value: {
+    Deleting: null;
+} | {
+    Active: null;
+} | {
+    ReadOnly: null;
+} | {
+    Deprecated: null;
+}): GraphStatus {
+    return "Deleting" in value ? GraphStatus.Deleting : "Active" in value ? GraphStatus.Active : "ReadOnly" in value ? GraphStatus.ReadOnly : "Deprecated" in value ? GraphStatus.Deprecated : value;
+}
+function from_candid_variant_n93(value: {
+    Failed: {
+        request_id: string;
+        reason: string;
     };
 } | {
+    None: null;
+} | {
+    Pending: {
+        request_id: string;
+    };
+}): {
     __kind__: "Failed";
-    Failed: VectorMaintenanceFailure;
-} | {
-    __kind__: "Idle";
-    Idle: null;
-} {
-    return "Scanning" in value ? {
-        __kind__: "Scanning",
-        Scanning: from_candid_record_n80(value.Scanning)
-    } : "Failed" in value ? {
-        __kind__: "Failed",
-        Failed: from_candid_VectorMaintenanceFailure_n81(value.Failed)
-    } : "Idle" in value ? {
-        __kind__: "Idle",
-        Idle: value.Idle
-    } : value;
-}
-function from_candid_variant_n8(value: {
-    Ok: boolean;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: boolean;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: value.Ok
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n84(value: {
-    InvalidQueryVector: null;
-} | {
-    AnonymousRouter: null;
-} | {
-    InvalidStatsCursor: null;
-} | {
-    InvalidRebuildParams: null;
-} | {
-    RebuildAlreadyActive: null;
-} | {
-    RebuildIncomplete: null;
-} | {
-    RebuildNotReadyToPublish: null;
-} | {
-    MutationKindMismatch: null;
-} | {
-    AllocatorOverflow: null;
-} | {
-    MetricNotSupportedForPartitionScan: null;
-} | {
-    InvalidSearchCandidates: null;
-} | {
-    ByteWidthMismatch: null;
-} | {
-    DimensionMismatch: null;
-} | {
-    NoActiveRebuild: null;
-} | {
-    ShardMismatch: null;
-} | {
-    InvalidSearchTopK: null;
-} | {
-    Unauthorized: null;
-} | {
-    StaleMaintenanceHealth: null;
-} | {
-    InvalidPrincipalInRegistry: null;
-} | {
-    ShardCanisterAlreadyAttached: null;
-} | {
-    StableGrowFailed: null;
-} | {
-    UnknownIndex: null;
-} | {
-    ShardOutOfRangeForGroup: null;
-} | {
-    ShardNotAttached: null;
-} | {
-    InvalidMaintenancePolicy: null;
-} | {
-    InvalidPageCapacity: null;
-} | {
-    GraphOwnershipMismatch: null;
-} | {
-    InvalidIndexGroupConfig: null;
-} | {
-    WrongShardCanister: null;
-} | {
-    MetricMismatch: null;
-} | {
-    EmbeddingVersionConflict: null;
-}): VectorIndexError {
-    return "InvalidQueryVector" in value ? VectorIndexError.InvalidQueryVector : "AnonymousRouter" in value ? VectorIndexError.AnonymousRouter : "InvalidStatsCursor" in value ? VectorIndexError.InvalidStatsCursor : "InvalidRebuildParams" in value ? VectorIndexError.InvalidRebuildParams : "RebuildAlreadyActive" in value ? VectorIndexError.RebuildAlreadyActive : "RebuildIncomplete" in value ? VectorIndexError.RebuildIncomplete : "RebuildNotReadyToPublish" in value ? VectorIndexError.RebuildNotReadyToPublish : "MutationKindMismatch" in value ? VectorIndexError.MutationKindMismatch : "AllocatorOverflow" in value ? VectorIndexError.AllocatorOverflow : "MetricNotSupportedForPartitionScan" in value ? VectorIndexError.MetricNotSupportedForPartitionScan : "InvalidSearchCandidates" in value ? VectorIndexError.InvalidSearchCandidates : "ByteWidthMismatch" in value ? VectorIndexError.ByteWidthMismatch : "DimensionMismatch" in value ? VectorIndexError.DimensionMismatch : "NoActiveRebuild" in value ? VectorIndexError.NoActiveRebuild : "ShardMismatch" in value ? VectorIndexError.ShardMismatch : "InvalidSearchTopK" in value ? VectorIndexError.InvalidSearchTopK : "Unauthorized" in value ? VectorIndexError.Unauthorized : "StaleMaintenanceHealth" in value ? VectorIndexError.StaleMaintenanceHealth : "InvalidPrincipalInRegistry" in value ? VectorIndexError.InvalidPrincipalInRegistry : "ShardCanisterAlreadyAttached" in value ? VectorIndexError.ShardCanisterAlreadyAttached : "StableGrowFailed" in value ? VectorIndexError.StableGrowFailed : "UnknownIndex" in value ? VectorIndexError.UnknownIndex : "ShardOutOfRangeForGroup" in value ? VectorIndexError.ShardOutOfRangeForGroup : "ShardNotAttached" in value ? VectorIndexError.ShardNotAttached : "InvalidMaintenancePolicy" in value ? VectorIndexError.InvalidMaintenancePolicy : "InvalidPageCapacity" in value ? VectorIndexError.InvalidPageCapacity : "GraphOwnershipMismatch" in value ? VectorIndexError.GraphOwnershipMismatch : "InvalidIndexGroupConfig" in value ? VectorIndexError.InvalidIndexGroupConfig : "WrongShardCanister" in value ? VectorIndexError.WrongShardCanister : "MetricMismatch" in value ? VectorIndexError.MetricMismatch : "EmbeddingVersionConflict" in value ? VectorIndexError.EmbeddingVersionConflict : value;
-}
-function from_candid_variant_n86(value: {
-    Ok: _VectorMaintenanceStepOutcome;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorMaintenanceStepOutcome;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VectorMaintenanceStepOutcome_n87(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n88(value: {
-    Stepped: _VectorMaintenanceStepResult;
-} | {
-    Disabled: null;
-}): {
-    __kind__: "Stepped";
-    Stepped: VectorMaintenanceStepResult;
-} | {
-    __kind__: "Disabled";
-    Disabled: null;
-} {
-    return "Stepped" in value ? {
-        __kind__: "Stepped",
-        Stepped: from_candid_VectorMaintenanceStepResult_n89(value.Stepped)
-    } : "Disabled" in value ? {
-        __kind__: "Disabled",
-        Disabled: value.Disabled
-    } : value;
-}
-function from_candid_variant_n90(value: {
-    Scanning: {
-        exhausted: boolean;
+    Failed: {
+        request_id: string;
+        reason: string;
     };
 } | {
-    Failed: _VectorMaintenanceFailure;
+    __kind__: "None";
+    None: null;
 } | {
-    AwaitingPublish: _VectorRebuildStatus;
-} | {
-    RebuildStarted: _VectorMaintenanceRecommendation;
-} | {
-    CleanupAdvanced: _VectorRebuildStatus;
-} | {
-    Healthy: null;
-} | {
-    RebuildAdvanced: _VectorRebuildStatus;
-}): {
-    __kind__: "Scanning";
-    Scanning: {
-        exhausted: boolean;
+    __kind__: "Pending";
+    Pending: {
+        request_id: string;
     };
-} | {
-    __kind__: "Failed";
-    Failed: VectorMaintenanceFailure;
-} | {
-    __kind__: "AwaitingPublish";
-    AwaitingPublish: VectorRebuildStatus;
-} | {
-    __kind__: "RebuildStarted";
-    RebuildStarted: VectorMaintenanceRecommendation;
-} | {
-    __kind__: "CleanupAdvanced";
-    CleanupAdvanced: VectorRebuildStatus;
-} | {
-    __kind__: "Healthy";
-    Healthy: null;
-} | {
-    __kind__: "RebuildAdvanced";
-    RebuildAdvanced: VectorRebuildStatus;
 } {
-    return "Scanning" in value ? {
-        __kind__: "Scanning",
-        Scanning: value.Scanning
-    } : "Failed" in value ? {
+    return "Failed" in value ? {
         __kind__: "Failed",
-        Failed: from_candid_VectorMaintenanceFailure_n81(value.Failed)
-    } : "AwaitingPublish" in value ? {
-        __kind__: "AwaitingPublish",
-        AwaitingPublish: from_candid_VectorRebuildStatus_n91(value.AwaitingPublish)
-    } : "RebuildStarted" in value ? {
-        __kind__: "RebuildStarted",
-        RebuildStarted: from_candid_VectorMaintenanceRecommendation_n63(value.RebuildStarted)
-    } : "CleanupAdvanced" in value ? {
-        __kind__: "CleanupAdvanced",
-        CleanupAdvanced: from_candid_VectorRebuildStatus_n91(value.CleanupAdvanced)
-    } : "Healthy" in value ? {
-        __kind__: "Healthy",
-        Healthy: value.Healthy
-    } : "RebuildAdvanced" in value ? {
-        __kind__: "RebuildAdvanced",
-        RebuildAdvanced: from_candid_VectorRebuildStatus_n91(value.RebuildAdvanced)
+        Failed: value.Failed
+    } : "None" in value ? {
+        __kind__: "None",
+        None: value.None
+    } : "Pending" in value ? {
+        __kind__: "Pending",
+        Pending: value.Pending
     } : value;
 }
-function from_candid_variant_n94(value: {
-    Cleaning: null;
-} | {
-    Failed: null;
-} | {
-    Building: null;
-} | {
-    Idle: null;
-} | {
-    ReadyToPublish: null;
-} | {
-    Sampling: null;
-} | {
-    Aborting: null;
-} | {
-    Training: null;
-}): VectorRebuildPhase {
-    return "Cleaning" in value ? VectorRebuildPhase.Cleaning : "Failed" in value ? VectorRebuildPhase.Failed : "Building" in value ? VectorRebuildPhase.Building : "Idle" in value ? VectorRebuildPhase.Idle : "ReadyToPublish" in value ? VectorRebuildPhase.ReadyToPublish : "Sampling" in value ? VectorRebuildPhase.Sampling : "Aborting" in value ? VectorRebuildPhase.Aborting : "Training" in value ? VectorRebuildPhase.Training : value;
-}
-function from_candid_variant_n96(value: {
-    Ok: _VectorPartitionHealthSummary;
+function from_candid_variant_n95(value: {
+    Ok: _GraphHealthView;
 } | {
     Err: _RouterError;
 }): {
     __kind__: "Ok";
-    Ok: VectorPartitionHealthSummary;
+    Ok: GraphHealthView;
 } | {
     __kind__: "Err";
     Err: RouterError;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: value.Ok
+        Ok: from_candid_GraphHealthView_n96(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n99(value: {
-    Ok: _VectorPartitionHealthStep;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorPartitionHealthStep;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VectorPartitionHealthStep_n100(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
+function from_candid_vec_n152(value: Array<_GqlQueryResult>): Array<GqlQueryResult> {
+    return value.map((x)=>from_candid_GqlQueryResult_n75(x));
 }
-function from_candid_vec_n145(value: Array<_MutationTokenShard>): Array<MutationTokenShard> {
-    return value.map((x)=>from_candid_MutationTokenShard_n146(x));
+function from_candid_vec_n155(value: Array<_Result_27>): Array<Result_27> {
+    return value.map((x)=>from_candid_Result_27_n156(x));
 }
-function from_candid_vec_n156(value: Array<_GqlQueryResult>): Array<GqlQueryResult> {
-    return value.map((x)=>from_candid_GqlQueryResult_n140(x));
+function from_candid_vec_n164(value: Array<_BackfillShardStatus>): Array<BackfillShardStatus> {
+    return value.map((x)=>from_candid_BackfillShardStatus_n165(x));
 }
-function from_candid_vec_n170(value: Array<_ShardRegistryEntry>): Array<ShardRegistryEntry> {
-    return value.map((x)=>from_candid_ShardRegistryEntry_n171(x));
+function from_candid_vec_n171(value: Array<_GraphSummary>): Array<GraphSummary> {
+    return value.map((x)=>from_candid_GraphSummary_n98(x));
 }
-function from_candid_vec_n176(value: Array<_VectorIndexInfo>): Array<VectorIndexInfo> {
-    return value.map((x)=>from_candid_VectorIndexInfo_n177(x));
+function from_candid_vec_n176(value: Array<_PreparedOperation>): Array<PreparedOperation> {
+    return value.map((x)=>from_candid_PreparedOperation_n177(x));
 }
-function from_candid_vec_n185(value: Array<_VectorMaintenancePolicyView>): Array<VectorMaintenancePolicyView> {
-    return value.map((x)=>from_candid_VectorMaintenancePolicyView_n186(x));
+function from_candid_vec_n181(value: Array<_Column>): Array<Column> {
+    return value.map((x)=>from_candid_Column_n182(x));
 }
-function from_candid_vec_n197(value: Array<_PreparedOperation>): Array<PreparedOperation> {
-    return value.map((x)=>from_candid_PreparedOperation_n198(x));
+function from_candid_vec_n187(value: Array<_RecordField>): Array<RecordField> {
+    return value.map((x)=>from_candid_RecordField_n188(x));
 }
-function from_candid_vec_n202(value: Array<_Column>): Array<Column> {
-    return value.map((x)=>from_candid_Column_n203(x));
+function from_candid_vec_n190(value: Array<_SortKey>): Array<SortKey> {
+    return value.map((x)=>from_candid_SortKey_n191(x));
 }
-function from_candid_vec_n208(value: Array<_RecordField>): Array<RecordField> {
-    return value.map((x)=>from_candid_RecordField_n209(x));
+function from_candid_vec_n195(value: Array<_Parameter>): Array<Parameter> {
+    return value.map((x)=>from_candid_Parameter_n196(x));
 }
-function from_candid_vec_n211(value: Array<_SortKey>): Array<SortKey> {
-    return value.map((x)=>from_candid_SortKey_n212(x));
+function from_candid_vec_n202(value: Array<_ShardRegistryEntry>): Array<ShardRegistryEntry> {
+    return value.map((x)=>from_candid_ShardRegistryEntry_n111(x));
 }
-function from_candid_vec_n216(value: Array<_Parameter>): Array<Parameter> {
-    return value.map((x)=>from_candid_Parameter_n217(x));
+function from_candid_vec_n205(value: Array<_VectorIndexInfo>): Array<VectorIndexInfo> {
+    return value.map((x)=>from_candid_VectorIndexInfo_n206(x));
 }
-function from_candid_vec_n222(value: Array<_Result>): Array<Result> {
-    return value.map((x)=>from_candid_Result_n1(x));
+function from_candid_vec_n212(value: Array<_VectorMaintenancePolicyView>): Array<VectorMaintenancePolicyView> {
+    return value.map((x)=>from_candid_VectorMaintenancePolicyView_n127(x));
 }
-function from_candid_vec_n26(value: Array<_Result_6>): Array<Result_6> {
-    return value.map((x)=>from_candid_Result_6_n27(x));
+function from_candid_vec_n281(value: Array<_VectorSearchHit>): Array<VectorSearchHit> {
+    return value.map((x)=>from_candid_VectorSearchHit_n282(x));
 }
-function from_candid_vec_n293(value: Array<_VectorSearchHit>): Array<VectorSearchHit> {
-    return value.map((x)=>from_candid_VectorSearchHit_n294(x));
+function from_candid_vec_n81(value: Array<_MutationTokenShard>): Array<MutationTokenShard> {
+    return value.map((x)=>from_candid_MutationTokenShard_n82(x));
 }
-function from_candid_vec_n39(value: Array<_EdgeBackfillShardStatus>): Array<EdgeBackfillShardStatus> {
-    return value.map((x)=>from_candid_EdgeBackfillShardStatus_n40(x));
+function to_candid_AdminResetBackfillClaimArgs_n253(value: AdminResetBackfillClaimArgs): _AdminResetBackfillClaimArgs {
+    return to_candid_record_n254(value);
 }
-function to_candid_AdminResetBackfillClaimArgs_n54(value: AdminResetBackfillClaimArgs): _AdminResetBackfillClaimArgs {
-    return to_candid_record_n55(value);
+function to_candid_AdminSweepMutationKeysStepArgs_n268(value: AdminSweepMutationKeysStepArgs): _AdminSweepMutationKeysStepArgs {
+    return to_candid_record_n269(value);
 }
-function to_candid_AdminSweepMutationKeysStepArgs_n65(value: AdminSweepMutationKeysStepArgs): _AdminSweepMutationKeysStepArgs {
-    return to_candid_record_n66(value);
+function to_candid_BackfillKind_n13(value: BackfillKind): _BackfillKind {
+    return to_candid_variant_n14(value);
 }
-function to_candid_BackfillKind_n56(value: BackfillKind): _BackfillKind {
-    return to_candid_variant_n57(value);
-}
-function to_candid_BatchEdgeInsertV1_n122(value: BatchEdgeInsertV1): _BatchEdgeInsertV1 {
-    return to_candid_record_n123(value);
-}
-function to_candid_BatchEndpointV1_n124(value: BatchEndpointV1): _BatchEndpointV1 {
-    return to_candid_variant_n125(value);
-}
-function to_candid_BatchOperationV1_n120(value: BatchOperationV1): _BatchOperationV1 {
-    return to_candid_variant_n121(value);
-}
-function to_candid_BatchRequestV1_n117(value: BatchRequestV1): _BatchRequestV1 {
-    return to_candid_record_n118(value);
-}
-function to_candid_BatchRequest_n115(value: BatchRequest): _BatchRequest {
-    return to_candid_variant_n116(value);
-}
-function to_candid_Column_n230(value: Column): _Column {
-    return to_candid_record_n231(value);
-}
-function to_candid_GqlExecuteIdempotentBatchArgs_n150(value: GqlExecuteIdempotentBatchArgs): _GqlExecuteIdempotentBatchArgs {
-    return to_candid_record_n151(value);
-}
-function to_candid_GraphRegistryEntry_n44(value: GraphRegistryEntry): _GraphRegistryEntry {
+function to_candid_BatchEdgeInsertV1_n44(value: BatchEdgeInsertV1): _BatchEdgeInsertV1 {
     return to_candid_record_n45(value);
 }
-function to_candid_GraphStatus_n46(value: GraphStatus): _GraphStatus {
+function to_candid_BatchEndpointV1_n46(value: BatchEndpointV1): _BatchEndpointV1 {
     return to_candid_variant_n47(value);
 }
-function to_candid_MutationTokenShard_n162(value: MutationTokenShard): _MutationTokenShard {
-    return to_candid_record_n163(value);
+function to_candid_BatchOperationV1_n42(value: BatchOperationV1): _BatchOperationV1 {
+    return to_candid_variant_n43(value);
 }
-function to_candid_MutationToken_n159(value: MutationToken): _MutationToken {
-    return to_candid_record_n160(value);
+function to_candid_BatchRequestV1_n39(value: BatchRequestV1): _BatchRequestV1 {
+    return to_candid_record_n40(value);
 }
-function to_candid_OperationKind_n241(value: OperationKind): _OperationKind {
-    return to_candid_variant_n242(value);
+function to_candid_BatchRequest_n37(value: BatchRequest): _BatchRequest {
+    return to_candid_variant_n38(value);
 }
-function to_candid_Parameter_n244(value: Parameter): _Parameter {
-    return to_candid_record_n245(value);
+function to_candid_Column_n221(value: Column): _Column {
+    return to_candid_record_n222(value);
 }
-function to_candid_PreparedOperation_n225(value: PreparedOperation): _PreparedOperation {
-    return to_candid_record_n226(value);
+function to_candid_GqlExecuteIdempotentBatchArgs_n146(value: GqlExecuteIdempotentBatchArgs): _GqlExecuteIdempotentBatchArgs {
+    return to_candid_record_n147(value);
 }
-function to_candid_ProvisionGraphArgs_n246(value: ProvisionGraphArgs): _ProvisionGraphArgs {
-    return to_candid_record_n247(value);
+function to_candid_GraphStatus_n275(value: GraphStatus): _GraphStatus {
+    return to_candid_variant_n276(value);
 }
-function to_candid_ProvisionableResourceKind_n251(value: ProvisionableResourceKind): _ProvisionableResourceKind {
-    return to_candid_variant_n252(value);
+function to_candid_MutationTokenShard_n71(value: MutationTokenShard): _MutationTokenShard {
+    return to_candid_record_n72(value);
 }
-function to_candid_ProvisionableResource_n249(value: ProvisionableResource): _ProvisionableResource {
-    return to_candid_record_n250(value);
+function to_candid_MutationToken_n68(value: MutationToken): _MutationToken {
+    return to_candid_record_n69(value);
 }
-function to_candid_ProvisioningState_n48(value: ProvisioningState): _ProvisioningState {
-    return to_candid_variant_n49(value);
-}
-function to_candid_ReadMode_n157(value: ReadMode): _ReadMode {
-    return to_candid_variant_n158(value);
-}
-function to_candid_RecordField_n237(value: RecordField): _RecordField {
-    return to_candid_record_n231(value);
-}
-function to_candid_RegisterVectorIndexArgs_n50(value: RegisterVectorIndexArgs): _RegisterVectorIndexArgs {
-    return to_candid_record_n51(value);
-}
-function to_candid_ResultSchema_n227(value: ResultSchema): _ResultSchema {
-    return to_candid_record_n228(value);
-}
-function to_candid_SemanticType_n232(value: SemanticType): _SemanticType {
+function to_candid_OperationKind_n232(value: OperationKind): _OperationKind {
     return to_candid_variant_n233(value);
 }
-function to_candid_SetVectorMaintenancePolicyArgs_n58(value: SetVectorMaintenancePolicyArgs): _SetVectorMaintenancePolicyArgs {
-    return to_candid_record_n59(value);
+function to_candid_Parameter_n235(value: Parameter): _Parameter {
+    return to_candid_record_n236(value);
 }
-function to_candid_SortKey_n239(value: SortKey): _SortKey {
-    return to_candid_record_n240(value);
+function to_candid_PreparedOperation_n216(value: PreparedOperation): _PreparedOperation {
+    return to_candid_record_n217(value);
 }
-function to_candid_VectorMetric_n52(value: VectorMetric): _VectorMetric {
-    return to_candid_variant_n53(value);
+function to_candid_ProvisionGraphArgs_n237(value: ProvisionGraphArgs): _ProvisionGraphArgs {
+    return to_candid_record_n238(value);
 }
-function to_candid_opt_n221(value: Array<PreparedSortSpec> | null): [] | [Array<_PreparedSortSpec>] {
+function to_candid_ProvisionableResourceKind_n242(value: ProvisionableResourceKind): _ProvisionableResourceKind {
+    return to_candid_variant_n243(value);
+}
+function to_candid_ProvisionableResource_n240(value: ProvisionableResource): _ProvisionableResource {
+    return to_candid_record_n241(value);
+}
+function to_candid_ReadMode_n66(value: ReadMode): _ReadMode {
+    return to_candid_variant_n67(value);
+}
+function to_candid_RecordField_n228(value: RecordField): _RecordField {
+    return to_candid_record_n222(value);
+}
+function to_candid_RegisterGraphArgs_n251(value: RegisterGraphArgs): _RegisterGraphArgs {
+    return to_candid_record_n252(value);
+}
+function to_candid_RegisterVectorIndexArgs_n7(value: RegisterVectorIndexArgs): _RegisterVectorIndexArgs {
+    return to_candid_record_n8(value);
+}
+function to_candid_ResultSchema_n218(value: ResultSchema): _ResultSchema {
+    return to_candid_record_n219(value);
+}
+function to_candid_SemanticType_n223(value: SemanticType): _SemanticType {
+    return to_candid_variant_n224(value);
+}
+function to_candid_SetVectorMaintenancePolicyArgs_n266(value: SetVectorMaintenancePolicyArgs): _SetVectorMaintenancePolicyArgs {
+    return to_candid_record_n267(value);
+}
+function to_candid_SortKey_n230(value: SortKey): _SortKey {
+    return to_candid_record_n231(value);
+}
+function to_candid_VectorMetric_n9(value: VectorMetric): _VectorMetric {
+    return to_candid_variant_n10(value);
+}
+function to_candid_opt_n139(value: number | null): [] | [number] {
     return value === null ? candid_none() : candid_some(value);
 }
-function to_candid_opt_n60(value: number | null): [] | [number] {
+function to_candid_opt_n215(value: PreparedOperation | null): [] | [_PreparedOperation] {
+    return value === null ? candid_none() : candid_some(to_candid_PreparedOperation_n216(value));
+}
+function to_candid_opt_n257(value: Uint8Array | null): [] | [Uint8Array] {
     return value === null ? candid_none() : candid_some(value);
 }
-function to_candid_opt_n97(value: Uint8Array | null): [] | [Uint8Array] {
+function to_candid_opt_n65(value: Array<PreparedSortSpec> | null): [] | [Array<_PreparedSortSpec>] {
     return value === null ? candid_none() : candid_some(value);
 }
-function to_candid_record_n118(value: {
-    client_mutation_key: string;
-    operations: Array<BatchOperationV1>;
-    logical_graph_name: string;
-}): {
-    client_mutation_key: string;
-    operations: Array<_BatchOperationV1>;
-    logical_graph_name: string;
-} {
-    return {
-        client_mutation_key: value.client_mutation_key,
-        operations: to_candid_vec_n119(value.operations),
-        logical_graph_name: value.logical_graph_name
-    };
-}
-function to_candid_record_n123(value: {
-    edge_label_name?: string;
-    source: BatchEndpointV1;
-    inline_property?: Uint8Array;
-    directed: boolean;
-    target: BatchEndpointV1;
-    initial_edge_properties: Array<BatchPropertyV1>;
-}): {
-    edge_label_name: [] | [string];
-    source: _BatchEndpointV1;
-    inline_property: [] | [Uint8Array];
-    directed: boolean;
-    target: _BatchEndpointV1;
-    initial_edge_properties: Array<_BatchPropertyV1>;
-} {
-    return {
-        edge_label_name: value.edge_label_name ? candid_some(value.edge_label_name) : candid_none(),
-        source: to_candid_BatchEndpointV1_n124(value.source),
-        inline_property: value.inline_property ? candid_some(value.inline_property) : candid_none(),
-        directed: value.directed,
-        target: to_candid_BatchEndpointV1_n124(value.target),
-        initial_edge_properties: value.initial_edge_properties
-    };
-}
-function to_candid_record_n151(value: {
+function to_candid_record_n147(value: {
     instruction_budget?: bigint;
     mutations: Array<GqlExecuteIdempotentBatchItem>;
     start_index: number;
@@ -5527,31 +5217,7 @@ function to_candid_record_n151(value: {
         start_index: value.start_index
     };
 }
-function to_candid_record_n160(value: {
-    mutation_id: bigint;
-    shards: Array<MutationTokenShard>;
-}): {
-    mutation_id: bigint;
-    shards: Array<_MutationTokenShard>;
-} {
-    return {
-        mutation_id: value.mutation_id,
-        shards: to_candid_vec_n161(value.shards)
-    };
-}
-function to_candid_record_n163(value: {
-    label_stats_seq?: bigint;
-    shard_id: number;
-}): {
-    label_stats_seq: [] | [bigint];
-    shard_id: number;
-} {
-    return {
-        label_stats_seq: value.label_stats_seq ? candid_some(value.label_stats_seq) : candid_none(),
-        shard_id: value.shard_id
-    };
-}
-function to_candid_record_n226(value: {
+function to_candid_record_n217(value: {
     result: ResultSchema;
     allowed_sorts: Array<SortKey>;
     kind: OperationKind;
@@ -5571,26 +5237,26 @@ function to_candid_record_n226(value: {
     supports_consistency: boolean;
 } {
     return {
-        result: to_candid_ResultSchema_n227(value.result),
-        allowed_sorts: to_candid_vec_n238(value.allowed_sorts),
-        kind: to_candid_OperationKind_n241(value.kind),
+        result: to_candid_ResultSchema_n218(value.result),
+        allowed_sorts: to_candid_vec_n229(value.allowed_sorts),
+        kind: to_candid_OperationKind_n232(value.kind),
         name: value.name,
-        parameters: to_candid_vec_n243(value.parameters),
+        parameters: to_candid_vec_n234(value.parameters),
         description: value.description ? candid_some(value.description) : candid_none(),
         supports_idempotency: value.supports_idempotency,
         supports_consistency: value.supports_consistency
     };
 }
-function to_candid_record_n228(value: {
+function to_candid_record_n219(value: {
     columns: Array<Column>;
 }): {
     columns: Array<_Column>;
 } {
     return {
-        columns: to_candid_vec_n229(value.columns)
+        columns: to_candid_vec_n220(value.columns)
     };
 }
-function to_candid_record_n231(value: {
+function to_candid_record_n222(value: {
     nullable: boolean;
     name: string;
     type: SemanticType;
@@ -5602,28 +5268,28 @@ function to_candid_record_n231(value: {
     return {
         nullable: value.nullable,
         name: value.name,
-        type: to_candid_SemanticType_n232(value.type)
+        type: to_candid_SemanticType_n223(value.type)
     };
 }
-function to_candid_record_n234(value: {
+function to_candid_record_n225(value: {
     element: SemanticType;
 }): {
     element: _SemanticType;
 } {
     return {
-        element: to_candid_SemanticType_n232(value.element)
+        element: to_candid_SemanticType_n223(value.element)
     };
 }
-function to_candid_record_n235(value: {
+function to_candid_record_n226(value: {
     fields: Array<RecordField>;
 }): {
     fields: Array<_RecordField>;
 } {
     return {
-        fields: to_candid_vec_n236(value.fields)
+        fields: to_candid_vec_n227(value.fields)
     };
 }
-function to_candid_record_n240(value: {
+function to_candid_record_n231(value: {
     key: string;
     label?: string;
 }): {
@@ -5635,7 +5301,7 @@ function to_candid_record_n240(value: {
         label: value.label ? candid_some(value.label) : candid_none()
     };
 }
-function to_candid_record_n245(value: {
+function to_candid_record_n236(value: {
     nullable: boolean;
     name: string;
     type: SemanticType;
@@ -5651,12 +5317,12 @@ function to_candid_record_n245(value: {
     return {
         nullable: value.nullable,
         name: value.name,
-        type: to_candid_SemanticType_n232(value.type),
+        type: to_candid_SemanticType_n223(value.type),
         description: value.description ? candid_some(value.description) : candid_none(),
         required: value.required
     };
 }
-function to_candid_record_n247(value: {
+function to_candid_record_n238(value: {
     requested_resources: Array<ProvisionableResource>;
     request_fingerprint: string;
     release_id: string;
@@ -5672,7 +5338,7 @@ function to_candid_record_n247(value: {
     authorized_caller: Principal;
 } {
     return {
-        requested_resources: to_candid_vec_n248(value.requested_resources),
+        requested_resources: to_candid_vec_n239(value.requested_resources),
         request_fingerprint: value.request_fingerprint,
         release_id: value.release_id,
         graph_name: value.graph_name,
@@ -5680,7 +5346,7 @@ function to_candid_record_n247(value: {
         authorized_caller: value.authorized_caller
     };
 }
-function to_candid_record_n250(value: {
+function to_candid_record_n241(value: {
     kind: ProvisionableResourceKind;
     logical_resource_key: string;
 }): {
@@ -5688,74 +5354,35 @@ function to_candid_record_n250(value: {
     logical_resource_key: string;
 } {
     return {
-        kind: to_candid_ProvisionableResourceKind_n251(value.kind),
+        kind: to_candid_ProvisionableResourceKind_n242(value.kind),
         logical_resource_key: value.logical_resource_key
     };
 }
-function to_candid_record_n45(value: {
+function to_candid_record_n252(value: {
     is_home: boolean;
-    status: GraphStatus;
-    graph_id: number;
+    requested_resources: Array<ProvisionableResource>;
+    shards: Array<RegisterGraphShard>;
     owner: Principal;
-    canister_id: Principal;
-    updated_at_ns: bigint;
-    provisioning_state: ProvisioningState;
-    version: bigint;
     admins: Array<Principal>;
     graph_name: string;
 }): {
     is_home: boolean;
-    status: _GraphStatus;
-    graph_id: number;
+    requested_resources: Array<_ProvisionableResource>;
+    shards: Array<_RegisterGraphShard>;
     owner: Principal;
-    canister_id: Principal;
-    updated_at_ns: bigint;
-    provisioning_state: _ProvisioningState;
-    version: bigint;
     admins: Array<Principal>;
     graph_name: string;
 } {
     return {
         is_home: value.is_home,
-        status: to_candid_GraphStatus_n46(value.status),
-        graph_id: value.graph_id,
+        requested_resources: to_candid_vec_n239(value.requested_resources),
+        shards: value.shards,
         owner: value.owner,
-        canister_id: value.canister_id,
-        updated_at_ns: value.updated_at_ns,
-        provisioning_state: to_candid_ProvisioningState_n48(value.provisioning_state),
-        version: value.version,
         admins: value.admins,
         graph_name: value.graph_name
     };
 }
-function to_candid_record_n51(value: {
-    metric?: VectorMetric;
-    dims: number;
-    embedding_name: string;
-    target?: Principal;
-    index_id: number;
-    logical_graph_name: string;
-    if_not_exists: boolean;
-}): {
-    metric: [] | [_VectorMetric];
-    dims: number;
-    embedding_name: string;
-    target: [] | [Principal];
-    index_id: number;
-    logical_graph_name: string;
-    if_not_exists: boolean;
-} {
-    return {
-        metric: value.metric ? candid_some(to_candid_VectorMetric_n52(value.metric)) : candid_none(),
-        dims: value.dims,
-        embedding_name: value.embedding_name,
-        target: value.target ? candid_some(value.target) : candid_none(),
-        index_id: value.index_id,
-        logical_graph_name: value.logical_graph_name,
-        if_not_exists: value.if_not_exists
-    };
-}
-function to_candid_record_n55(value: {
+function to_candid_record_n254(value: {
     shard_id: number;
     kind: BackfillKind;
     logical_graph_name: string;
@@ -5766,11 +5393,11 @@ function to_candid_record_n55(value: {
 } {
     return {
         shard_id: value.shard_id,
-        kind: to_candid_BackfillKind_n56(value.kind),
+        kind: to_candid_BackfillKind_n13(value.kind),
         logical_graph_name: value.logical_graph_name
     };
 }
-function to_candid_record_n59(value: {
+function to_candid_record_n267(value: {
     target_nlist?: number;
     rebuild_max_subjects: number;
     enabled: boolean;
@@ -5803,7 +5430,7 @@ function to_candid_record_n59(value: {
         policy: value.policy
     };
 }
-function to_candid_record_n66(value: {
+function to_candid_record_n269(value: {
     max_scan: number;
     start_after?: ClientMutationKey;
 }): {
@@ -5815,82 +5442,127 @@ function to_candid_record_n66(value: {
         start_after: value.start_after ? candid_some(value.start_after) : candid_none()
     };
 }
-function to_candid_tuple_n224(value: [string, string, PreparedOperation]): [string, string, _PreparedOperation] {
-    return [
-        value[0],
-        value[1],
-        to_candid_PreparedOperation_n225(value[2])
-    ];
-}
-function to_candid_variant_n116(value: {
-    __kind__: "V1";
-    V1: BatchRequestV1;
+function to_candid_record_n40(value: {
+    client_mutation_key: string;
+    operations: Array<BatchOperationV1>;
+    logical_graph_name: string;
 }): {
-    V1: _BatchRequestV1;
+    client_mutation_key: string;
+    operations: Array<_BatchOperationV1>;
+    logical_graph_name: string;
 } {
-    return value.__kind__ === "V1" ? {
-        V1: to_candid_BatchRequestV1_n117(value.V1)
+    return {
+        client_mutation_key: value.client_mutation_key,
+        operations: to_candid_vec_n41(value.operations),
+        logical_graph_name: value.logical_graph_name
+    };
+}
+function to_candid_record_n45(value: {
+    edge_label_name?: string;
+    source: BatchEndpointV1;
+    inline_property?: Uint8Array;
+    directed: boolean;
+    target: BatchEndpointV1;
+    initial_edge_properties: Array<BatchPropertyV1>;
+}): {
+    edge_label_name: [] | [string];
+    source: _BatchEndpointV1;
+    inline_property: [] | [Uint8Array];
+    directed: boolean;
+    target: _BatchEndpointV1;
+    initial_edge_properties: Array<_BatchPropertyV1>;
+} {
+    return {
+        edge_label_name: value.edge_label_name ? candid_some(value.edge_label_name) : candid_none(),
+        source: to_candid_BatchEndpointV1_n46(value.source),
+        inline_property: value.inline_property ? candid_some(value.inline_property) : candid_none(),
+        directed: value.directed,
+        target: to_candid_BatchEndpointV1_n46(value.target),
+        initial_edge_properties: value.initial_edge_properties
+    };
+}
+function to_candid_record_n69(value: {
+    mutation_id: bigint;
+    shards: Array<MutationTokenShard>;
+}): {
+    mutation_id: bigint;
+    shards: Array<_MutationTokenShard>;
+} {
+    return {
+        mutation_id: value.mutation_id,
+        shards: to_candid_vec_n70(value.shards)
+    };
+}
+function to_candid_record_n72(value: {
+    label_stats_seq?: bigint;
+    shard_id: number;
+}): {
+    label_stats_seq: [] | [bigint];
+    shard_id: number;
+} {
+    return {
+        label_stats_seq: value.label_stats_seq ? candid_some(value.label_stats_seq) : candid_none(),
+        shard_id: value.shard_id
+    };
+}
+function to_candid_record_n8(value: {
+    metric?: VectorMetric;
+    dims: number;
+    embedding_name: string;
+    target?: Principal;
+    index_id: number;
+    logical_graph_name: string;
+    if_not_exists: boolean;
+}): {
+    metric: [] | [_VectorMetric];
+    dims: number;
+    embedding_name: string;
+    target: [] | [Principal];
+    index_id: number;
+    logical_graph_name: string;
+    if_not_exists: boolean;
+} {
+    return {
+        metric: value.metric ? candid_some(to_candid_VectorMetric_n9(value.metric)) : candid_none(),
+        dims: value.dims,
+        embedding_name: value.embedding_name,
+        target: value.target ? candid_some(value.target) : candid_none(),
+        index_id: value.index_id,
+        logical_graph_name: value.logical_graph_name,
+        if_not_exists: value.if_not_exists
+    };
+}
+function to_candid_variant_n10(value: VectorMetric): {
+    L2Squared: null;
+} | {
+    Cosine: null;
+} {
+    return value == VectorMetric.L2Squared ? {
+        L2Squared: null
+    } : value == VectorMetric.Cosine ? {
+        Cosine: null
     } : value;
 }
-function to_candid_variant_n121(value: {
-    __kind__: "Edge";
-    Edge: BatchEdgeInsertV1;
+function to_candid_variant_n14(value: BackfillKind): {
+    Label: null;
 } | {
-    __kind__: "Vertex";
-    Vertex: BatchVertexInsertV1;
-}): {
-    Edge: _BatchEdgeInsertV1;
+    Edge: null;
 } | {
-    Vertex: _BatchVertexInsertV1;
+    LabelStats: null;
+} | {
+    VertexProperty: null;
 } {
-    return value.__kind__ === "Edge" ? {
-        Edge: to_candid_BatchEdgeInsertV1_n122(value.Edge)
-    } : value.__kind__ === "Vertex" ? {
-        Vertex: value.Vertex
+    return value == BackfillKind.Label ? {
+        Label: null
+    } : value == BackfillKind.Edge ? {
+        Edge: null
+    } : value == BackfillKind.LabelStats ? {
+        LabelStats: null
+    } : value == BackfillKind.VertexProperty ? {
+        VertexProperty: null
     } : value;
 }
-function to_candid_variant_n125(value: {
-    __kind__: "NewVertexOrdinal";
-    NewVertexOrdinal: number;
-} | {
-    __kind__: "Existing";
-    Existing: Uint8Array;
-}): {
-    NewVertexOrdinal: number;
-} | {
-    Existing: Uint8Array;
-} {
-    return value.__kind__ === "NewVertexOrdinal" ? {
-        NewVertexOrdinal: value.NewVertexOrdinal
-    } : value.__kind__ === "Existing" ? {
-        Existing: value.Existing
-    } : value;
-}
-function to_candid_variant_n158(value: {
-    __kind__: "Eventual";
-    Eventual: null;
-} | {
-    __kind__: "Canonical";
-    Canonical: null;
-} | {
-    __kind__: "AtLeast";
-    AtLeast: MutationToken;
-}): {
-    Eventual: null;
-} | {
-    Canonical: null;
-} | {
-    AtLeast: _MutationToken;
-} {
-    return value.__kind__ === "Eventual" ? {
-        Eventual: value.Eventual
-    } : value.__kind__ === "Canonical" ? {
-        Canonical: value.Canonical
-    } : value.__kind__ === "AtLeast" ? {
-        AtLeast: to_candid_MutationToken_n159(value.AtLeast)
-    } : value;
-}
-function to_candid_variant_n233(value: {
+function to_candid_variant_n224(value: {
     __kind__: "ZonedTime";
     ZonedTime: null;
 } | {
@@ -6078,9 +5750,9 @@ function to_candid_variant_n233(value: {
     } : value.__kind__ === "Int8" ? {
         Int8: value.Int8
     } : value.__kind__ === "Record" ? {
-        Record: to_candid_record_n235(value.Record)
+        Record: to_candid_record_n226(value.Record)
     } : value.__kind__ === "List" ? {
-        List: to_candid_record_n234(value.List)
+        List: to_candid_record_n225(value.List)
     } : value.__kind__ === "Null" ? {
         Null: value.Null
     } : value.__kind__ === "Path" ? {
@@ -6139,7 +5811,7 @@ function to_candid_variant_n233(value: {
         Duration: value.Duration
     } : value;
 }
-function to_candid_variant_n242(value: OperationKind): {
+function to_candid_variant_n233(value: OperationKind): {
     Update: null;
 } | {
     Query: null;
@@ -6150,7 +5822,7 @@ function to_candid_variant_n242(value: OperationKind): {
         Query: null
     } : value;
 }
-function to_candid_variant_n252(value: ProvisionableResourceKind): {
+function to_candid_variant_n243(value: ProvisionableResourceKind): {
     PropertyIndex: null;
 } | {
     VectorIndex: null;
@@ -6165,7 +5837,7 @@ function to_candid_variant_n252(value: ProvisionableResourceKind): {
         GraphShard: null
     } : value;
 }
-function to_candid_variant_n47(value: GraphStatus): {
+function to_candid_variant_n276(value: GraphStatus): {
     Deleting: null;
 } | {
     Active: null;
@@ -6184,89 +5856,87 @@ function to_candid_variant_n47(value: GraphStatus): {
         Deprecated: null
     } : value;
 }
-function to_candid_variant_n49(value: {
-    __kind__: "Failed";
-    Failed: {
-        request_id: string;
-        reason: string;
-    };
-} | {
-    __kind__: "None";
-    None: null;
-} | {
-    __kind__: "Pending";
-    Pending: {
-        request_id: string;
-    };
+function to_candid_variant_n38(value: {
+    __kind__: "V1";
+    V1: BatchRequestV1;
 }): {
-    Failed: {
-        request_id: string;
-        reason: string;
-    };
-} | {
-    None: null;
-} | {
-    Pending: {
-        request_id: string;
-    };
+    V1: _BatchRequestV1;
 } {
-    return value.__kind__ === "Failed" ? {
-        Failed: value.Failed
-    } : value.__kind__ === "None" ? {
-        None: value.None
-    } : value.__kind__ === "Pending" ? {
-        Pending: value.Pending
+    return value.__kind__ === "V1" ? {
+        V1: to_candid_BatchRequestV1_n39(value.V1)
     } : value;
 }
-function to_candid_variant_n53(value: VectorMetric): {
-    L2Squared: null;
+function to_candid_variant_n43(value: {
+    __kind__: "Edge";
+    Edge: BatchEdgeInsertV1;
 } | {
-    Cosine: null;
+    __kind__: "Vertex";
+    Vertex: BatchVertexInsertV1;
+}): {
+    Edge: _BatchEdgeInsertV1;
+} | {
+    Vertex: _BatchVertexInsertV1;
 } {
-    return value == VectorMetric.L2Squared ? {
-        L2Squared: null
-    } : value == VectorMetric.Cosine ? {
-        Cosine: null
+    return value.__kind__ === "Edge" ? {
+        Edge: to_candid_BatchEdgeInsertV1_n44(value.Edge)
+    } : value.__kind__ === "Vertex" ? {
+        Vertex: value.Vertex
     } : value;
 }
-function to_candid_variant_n57(value: BackfillKind): {
-    Label: null;
+function to_candid_variant_n47(value: {
+    __kind__: "NewVertexOrdinal";
+    NewVertexOrdinal: number;
 } | {
-    Edge: null;
+    __kind__: "Existing";
+    Existing: Uint8Array;
+}): {
+    NewVertexOrdinal: number;
 } | {
-    VertexProperty: null;
+    Existing: Uint8Array;
 } {
-    return value == BackfillKind.Label ? {
-        Label: null
-    } : value == BackfillKind.Edge ? {
-        Edge: null
-    } : value == BackfillKind.VertexProperty ? {
-        VertexProperty: null
+    return value.__kind__ === "NewVertexOrdinal" ? {
+        NewVertexOrdinal: value.NewVertexOrdinal
+    } : value.__kind__ === "Existing" ? {
+        Existing: value.Existing
     } : value;
 }
-function to_candid_vec_n119(value: Array<BatchOperationV1>): Array<_BatchOperationV1> {
-    return value.map((x)=>to_candid_BatchOperationV1_n120(x));
+function to_candid_variant_n67(value: {
+    __kind__: "Eventual";
+    Eventual: null;
+} | {
+    __kind__: "AtLeast";
+    AtLeast: MutationToken;
+}): {
+    Eventual: null;
+} | {
+    AtLeast: _MutationToken;
+} {
+    return value.__kind__ === "Eventual" ? {
+        Eventual: value.Eventual
+    } : value.__kind__ === "AtLeast" ? {
+        AtLeast: to_candid_MutationToken_n68(value.AtLeast)
+    } : value;
 }
-function to_candid_vec_n161(value: Array<MutationTokenShard>): Array<_MutationTokenShard> {
-    return value.map((x)=>to_candid_MutationTokenShard_n162(x));
+function to_candid_vec_n220(value: Array<Column>): Array<_Column> {
+    return value.map((x)=>to_candid_Column_n221(x));
 }
-function to_candid_vec_n223(value: Array<[string, string, PreparedOperation]>): Array<[string, string, _PreparedOperation]> {
-    return value.map((x)=>to_candid_tuple_n224(x));
+function to_candid_vec_n227(value: Array<RecordField>): Array<_RecordField> {
+    return value.map((x)=>to_candid_RecordField_n228(x));
 }
-function to_candid_vec_n229(value: Array<Column>): Array<_Column> {
-    return value.map((x)=>to_candid_Column_n230(x));
+function to_candid_vec_n229(value: Array<SortKey>): Array<_SortKey> {
+    return value.map((x)=>to_candid_SortKey_n230(x));
 }
-function to_candid_vec_n236(value: Array<RecordField>): Array<_RecordField> {
-    return value.map((x)=>to_candid_RecordField_n237(x));
+function to_candid_vec_n234(value: Array<Parameter>): Array<_Parameter> {
+    return value.map((x)=>to_candid_Parameter_n235(x));
 }
-function to_candid_vec_n238(value: Array<SortKey>): Array<_SortKey> {
-    return value.map((x)=>to_candid_SortKey_n239(x));
+function to_candid_vec_n239(value: Array<ProvisionableResource>): Array<_ProvisionableResource> {
+    return value.map((x)=>to_candid_ProvisionableResource_n240(x));
 }
-function to_candid_vec_n243(value: Array<Parameter>): Array<_Parameter> {
-    return value.map((x)=>to_candid_Parameter_n244(x));
+function to_candid_vec_n41(value: Array<BatchOperationV1>): Array<_BatchOperationV1> {
+    return value.map((x)=>to_candid_BatchOperationV1_n42(x));
 }
-function to_candid_vec_n248(value: Array<ProvisionableResource>): Array<_ProvisionableResource> {
-    return value.map((x)=>to_candid_ProvisionableResource_n249(x));
+function to_candid_vec_n70(value: Array<MutationTokenShard>): Array<_MutationTokenShard> {
+    return value.map((x)=>to_candid_MutationTokenShard_n71(x));
 }
 export interface CreateActorOptions {
     agent?: Agent;

@@ -13,9 +13,8 @@ use gleaph_graph_kernel::entry::GraphId;
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorCentroidCacheStatus, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
-    VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
-    VectorPartitionHealthStep, VectorPartitionHealthSummary, VectorPartitionPageHealth,
+    VectorCentroidCacheStatus, VectorMaintenanceState, VectorMaintenanceStepRequest,
+    VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabStats,
     VectorSlabStatsStep,
 };
@@ -213,19 +212,6 @@ forward_vector!(
     unbounded_wait,
     (index_id: u32, nlist: u32, sample_limit: u32),
     ()
-);
-forward_vector!(
-    forward_admin_start_vector_rebuild_if_recommended,
-    "admin_start_vector_rebuild_if_recommended",
-    unbounded_wait,
-    (
-        index_id: u32,
-        attested_page_health: VectorPartitionPageHealth,
-        policy: VectorMaintenancePolicy,
-        target_nlist: Option<u32>,
-        sample_limit: u32,
-    ),
-    VectorMaintenanceRecommendation
 );
 forward_vector!(
     forward_admin_vector_rebuild_step,

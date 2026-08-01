@@ -41,7 +41,7 @@ fn router_graph_id(env: &FederationEnv) -> GraphId {
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&GRAPH_NAME.to_string()).expect("encode lookup_graph_id"),
         )
         .expect("lookup_graph_id call");
@@ -80,7 +80,7 @@ fn set_dispatch_activation(env: &FederationEnv, enabled: bool) {
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&enabled).expect("encode activation flag"),
         )
         .expect("admin_set_vector_dispatch_activation call");
@@ -137,7 +137,7 @@ fn attach_shard(env: &FederationEnv, shard_id: ShardId, vector: Principal) {
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&args).expect("encode attach args"),
         )
         .expect("admin_attach_vector_index_shard call");
@@ -239,7 +239,7 @@ fn set_policy(
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_maintenance_policy",
+            "set_vector_maintenance_policy",
             Encode!(args).expect("encode set policy"),
         )
         .expect("admin_set_vector_maintenance_policy call");
@@ -255,7 +255,7 @@ fn maintenance_step(
         .update_call(
             env.router,
             sender,
-            "admin_vector_maintenance_step",
+            "advance_vector_maintenance",
             Encode!(&GRAPH_NAME.to_string(), &INDEX_ID).expect("encode step args"),
         )
         .expect("admin_vector_maintenance_step call");
@@ -268,7 +268,7 @@ fn maintenance_status(env: &FederationEnv) -> VectorMaintenanceStatusView {
         .query_call(
             env.router,
             env.admin,
-            "vector_maintenance_status",
+            "get_vector_maintenance_status",
             Encode!(&GRAPH_NAME.to_string(), &INDEX_ID).expect("encode status args"),
         )
         .expect("vector_maintenance_status call");
@@ -283,7 +283,7 @@ fn publish(env: &FederationEnv) -> Result<(), RouterError> {
         .update_call(
             env.router,
             env.admin,
-            "admin_publish_vector_rebuild",
+            "publish_vector_rebuild",
             Encode!(&GRAPH_NAME.to_string(), &INDEX_ID).expect("encode publish args"),
         )
         .expect("admin_publish_vector_rebuild call");
@@ -296,7 +296,7 @@ fn reset(env: &FederationEnv) -> Result<(), RouterError> {
         .update_call(
             env.router,
             env.admin,
-            "admin_vector_maintenance_reset",
+            "reset_vector_maintenance",
             Encode!(&GRAPH_NAME.to_string(), &INDEX_ID).expect("encode reset args"),
         )
         .expect("admin_vector_maintenance_reset call");
@@ -304,21 +304,20 @@ fn reset(env: &FederationEnv) -> Result<(), RouterError> {
 }
 
 fn router_vector_search(env: &FederationEnv, query_value: f32, top_k: u32) -> VectorSearchResult {
-    use gleaph_router::types::RouterVectorSearchRequest;
-    let req = RouterVectorSearchRequest {
-        logical_graph_name: GRAPH_NAME.to_string(),
-        index_id: INDEX_ID,
-        query: vec_bytes(query_value),
-        dims: DIMS,
-        top_k,
-    };
+    let query = vec_bytes(query_value);
     let bytes = env
         .pic
         .query_call(
             env.router,
             env.admin,
             "vector_search",
-            Encode!(&req).expect("encode search"),
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &EMBEDDING_NAME.to_string(),
+                &query,
+                &top_k
+            )
+            .expect("encode search"),
         )
         .expect("vector_search call");
     Decode!(&bytes, Result<VectorSearchResult, RouterError>)

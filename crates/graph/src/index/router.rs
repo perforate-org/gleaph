@@ -34,7 +34,7 @@ pub async fn verify_shard_attachment(
     use ic_cdk::api::canister_self;
 
     let entry: Result<ShardRegistryEntry, RouterError> =
-        crate::index::router_call::call_router1(router_canister, "resolve_shard", shard_id)
+        crate::index::router_call::call_router1(router_canister, "get_shard", shard_id)
             .await
             .map_err(RouterInitError::Call)?;
 
@@ -50,7 +50,7 @@ pub async fn verify_shard_attachment(
     if let Some(expected) = expected_graph_name {
         let expected_id: Result<GraphId, RouterError> = crate::index::router_call::call_router1(
             router_canister,
-            "lookup_graph_id",
+            "get_graph_id",
             expected.to_string(),
         )
         .await

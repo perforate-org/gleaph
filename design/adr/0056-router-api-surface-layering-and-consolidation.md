@@ -1,9 +1,9 @@
 # 0056. Router API surface layering and consolidation
 
 Date: 2026-08-01
-Status: accepted
+Status: accepted (Slice A implemented)
 Last revised: 2026-08-01
-Anchor timestamp: 2026-08-01 02:44:10 UTC +0000
+Anchor timestamp: 2026-08-01 04:48:55 UTC +0000
 
 ## Context
 
@@ -170,11 +170,13 @@ an L3 callback. Implemented in two slices:
 **Slice A — dev-mode full registration + provisioning-state machine (no wire change).**
 
 - `register_graph(intent)` where the intent shape differs by mode:
-  - dev (no `provision_canister` configured): `{ graph_name, owner, admins, shards: vec record
-    { shard_id : nat32; graph_canister : principal; index_canister : principal } }` — the caller
-    installs the shard canisters and passes their principals (mirroring the existing
+  - dev (no `provision_canister` configured): `{ graph_name, owner, admins, is_home : bool, shards:
+vec record { shard_id : nat32; graph_canister : principal; index_canister : principal } }` — the
+    caller installs the shard canisters and passes their principals (mirroring the existing
     `AdminRegisterShardArgs` shape); the graph entry and its shards are committed synchronously in
-    one call.
+    one call. `is_home` is the legacy ADR 0011 home-graph designation (the default graph for
+    callers without an explicit `USE GRAPH`); it is a client-visible graph property, so it stays in
+    the intent while federation topology (shards, canister ids) stays internal.
     This is the main flow for E2E tests, CLI, and UI.
   - provisioned (`provision_canister` configured): `{ graph_name, owner, admins, requested_resources }`
     — returns `NotImplemented` until Slice B. The current provision flow never completes a graph, so
@@ -194,7 +196,7 @@ an L3 callback. Implemented in two slices:
 **Slice B — provisioning integration with topology transport (wire change).**
 
 - `RouterProvisionAck` gains the deployed topology: `shards: vec record { shard_id : nat32;
-  canister : principal }`. This changes `gleaph-graph-kernel::provisioning::wire` and the Provision
+canister : principal }`. This changes `gleaph-graph-kernel::provisioning::wire` and the Provision
   canister's ack send side (breaking, but nothing is deployed).
 - The ack handler links the ack to the graph entry via the already-reserved
   `ProvisionRequest.reserved_graph_id`, commits shard registry entries from the topology, and

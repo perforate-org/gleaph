@@ -18,8 +18,8 @@ use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, gql_execute_idempotent_as_admin,
-    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
+    FederationEnv, GRAPH_NAME, gql_execute_as_admin,
+    gql_execute_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation, run_router_recovery_after_reservation_ttl, start_graph_shard,
     stop_graph_shard, test_declare_unique_constraint, wasm_bytes,
 };
@@ -32,9 +32,9 @@ fn insert_account(email: &str) -> String {
     format!("INSERT (:{LABEL} {{{PROPERTY}: '{email}'}})")
 }
 
-/// `gql_execute_idempotent` as admin, returning the full `Result` so callers can assert either
+/// `gql_execute` as admin, returning the full `Result` so callers can assert either
 /// outcome (a roll-forward retry succeeds; an abandoned key keeps returning its terminal error).
-fn gql_execute_idempotent_result(
+fn gql_execute_result(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -44,16 +44,16 @@ fn gql_execute_idempotent_result(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute_idempotent",
+            "gql_execute",
             Encode!(
                 &query.to_string(),
                 &Vec::<u8>::new(),
                 &client_mutation_key.to_string()
             )
-            .expect("encode gql_execute_idempotent"),
+            .expect("encode gql_execute"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
-    Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_execute_idempotent")
+        .unwrap_or_else(|e| panic!("gql_execute on router: {e:?}"));
+    Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_execute")
 }
 
 fn upgrade_federation(env: &FederationEnv) {
@@ -73,7 +73,7 @@ fn upgrade_federation(env: &FederationEnv) {
 /// canonical dispatch fails. Returns once the failed insert has left the value `Reserved`.
 fn inject_held_reservation(env: &FederationEnv, email: &str, key: &str) {
     stop_graph_shard(env, env.graph_source);
-    let err = gql_execute_idempotent_as_admin_expect_err(env, &insert_account(email), key);
+    let err = gql_execute_as_admin_expect_err(env, &insert_account(email), key);
     // The dispatch to a stopped shard fails; the reservation is now held pending recovery.
     let _ = err;
 }
@@ -90,14 +90,14 @@ fn held_dispatch_recovered_by_idempotent_retry() {
 
     // Shard reachable again — the idempotent retry rolls the same saga forward to a commit.
     start_graph_shard(&env, env.graph_source);
-    let retried = gql_execute_idempotent_result(&env, &insert_account("g@example.com"), "rollfwd");
+    let retried = gql_execute_result(&env, &insert_account("g@example.com"), "rollfwd");
     retried.expect("idempotent retry rolls the held reservation forward to a commit");
 
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(live.row_count, 1, "the recovered vertex is committed");
 
     // The reservation is now Committed: a fresh same-value claim is non-retryable.
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert_account("g@example.com"),
         "rollfwd-dup",
@@ -124,10 +124,10 @@ fn abandoned_reservation_reclaimed_after_ttl() {
     run_router_recovery_after_reservation_ttl(&env);
 
     // The reclaimed value is reusable under a fresh key (verified by the live count below).
-    gql_execute_idempotent_as_admin(&env, &insert_account("h@example.com"), "reclaimed");
+    gql_execute_as_admin(&env, &insert_account("h@example.com"), "reclaimed");
 
     // The abandoned key is terminally failed and is never re-dispatched (no duplicate vertex).
-    let replay = gql_execute_idempotent_result(&env, &insert_account("h@example.com"), "abandoned");
+    let replay = gql_execute_result(&env, &insert_account("h@example.com"), "abandoned");
     assert!(
         replay.is_err(),
         "the terminally-failed key replays its stored error, got {replay:?}"
@@ -156,7 +156,7 @@ fn upgrade_reopen_reconciles_held_reservation() {
 
     run_router_recovery_after_reservation_ttl(&env);
 
-    gql_execute_idempotent_as_admin(&env, &insert_account("i@example.com"), "upgrade-reclaimed");
+    gql_execute_as_admin(&env, &insert_account("i@example.com"), "upgrade-reclaimed");
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         live.row_count, 1,

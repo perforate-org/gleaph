@@ -1,7 +1,7 @@
 //! PocketIC: ADR 0030 — cross-shard uniqueness write-path lifecycle (slice 7 gate).
 //!
 //! Exercises the *enforced* lifecycle end to end through the real ingress seam
-//! (Candid → `gql_execute_idempotent`), not just the store/parser units:
+//! (Candid → `gql_execute`), not just the store/parser units:
 //!   - a single-vertex `INSERT` under a declared constraint reserves (Try), commits canonically
 //!     (the shard pins an `Acquire`), and is Confirmed inline — and is then queryable;
 //!   - a second `INSERT` of the same value is refused **non-retryably** (`UniquenessViolation`);
@@ -18,7 +18,7 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    GRAPH_NAME, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    GRAPH_NAME, gql_execute_as_admin, gql_execute_as_admin_expect_err,
     gql_query_as_admin, install_federation, install_single_shard_federation,
     run_router_recovery_timer, start_graph_shards_all, stop_graph_shards_all,
     test_declare_unique_constraint, test_declare_unique_constraint_as,
@@ -48,8 +48,8 @@ fn declare_unique_constraint_rejects_non_admin() {
     );
 
     // The guard ran before any store mutation: no constraint exists, so duplicate values both commit.
-    gql_execute_idempotent_as_admin(&env, &insert_account("z@example.com"), "noguard-1");
-    gql_execute_idempotent_as_admin(&env, &insert_account("z@example.com"), "noguard-2");
+    gql_execute_as_admin(&env, &insert_account("z@example.com"), "noguard-1");
+    gql_execute_as_admin(&env, &insert_account("z@example.com"), "noguard-2");
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         live.row_count, 2,
@@ -65,12 +65,12 @@ fn constrained_insert_commits_and_rejects_duplicate() {
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     // A federated INSERT is RETURN-less: it reports row_count 0; the commit is verified by a MATCH.
-    gql_execute_idempotent_as_admin(&env, &insert_account("a@example.com"), "ins-1");
+    gql_execute_as_admin(&env, &insert_account("a@example.com"), "ins-1");
 
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(live.row_count, 1, "the committed vertex is visible");
 
-    let dup = gql_execute_idempotent_as_admin_expect_err(
+    let dup = gql_execute_as_admin_expect_err(
         &env,
         &insert_account("a@example.com"),
         "ins-dup",
@@ -87,7 +87,7 @@ fn constrained_insert_commits_and_rejects_duplicate() {
     );
 
     // A distinct value under the same constraint is admitted (two vertices now live).
-    gql_execute_idempotent_as_admin(&env, &insert_account("b@example.com"), "ins-2");
+    gql_execute_as_admin(&env, &insert_account("b@example.com"), "ins-2");
     let both = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         both.row_count, 2,
@@ -110,7 +110,7 @@ fn in_flight_reservation_refuses_competitor_retryably() {
     // then the dispatch to the stopped owning shard fails, leaving the value `Reserved` by a live
     // mutation. Both shards are stopped so the stall is agnostic to which one owns the value.
     stop_graph_shards_all(&env);
-    let stalled = gql_execute_idempotent_as_admin_expect_err(
+    let stalled = gql_execute_as_admin_expect_err(
         &env,
         &insert_account("c@example.com"),
         "inflight-winner",
@@ -118,7 +118,7 @@ fn in_flight_reservation_refuses_competitor_retryably() {
     // The exact variant is the dispatch failure; what matters is the reservation now exists.
     let _ = stalled;
 
-    let competitor = gql_execute_idempotent_as_admin_expect_err(
+    let competitor = gql_execute_as_admin_expect_err(
         &env,
         &insert_account("c@example.com"),
         "inflight-loser",
@@ -139,9 +139,9 @@ fn set_on_constrained_property_is_deferred() {
     let env = install_single_shard_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
-    gql_execute_idempotent_as_admin(&env, &insert_account("d@example.com"), "set-seed");
+    gql_execute_as_admin(&env, &insert_account("d@example.com"), "set-seed");
 
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let err = gql_execute_as_admin_expect_err(
         &env,
         &format!("MATCH (n:{LABEL}) SET n.{PROPERTY} = 'e@example.com'"),
         "set-attempt",
@@ -158,10 +158,10 @@ fn delete_releases_reservation_value_is_reusable() {
     let env = install_single_shard_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
-    gql_execute_idempotent_as_admin(&env, &insert_account("f@example.com"), "rel-ins");
+    gql_execute_as_admin(&env, &insert_account("f@example.com"), "rel-ins");
 
     // Re-using the value before release is rejected.
-    let blocked = gql_execute_idempotent_as_admin_expect_err(
+    let blocked = gql_execute_as_admin_expect_err(
         &env,
         &insert_account("f@example.com"),
         "rel-dup",
@@ -171,7 +171,7 @@ fn delete_releases_reservation_value_is_reusable() {
         "value is still reserved before delete, got {blocked:?}"
     );
 
-    gql_execute_idempotent_as_admin(
+    gql_execute_as_admin(
         &env,
         &format!("MATCH (n:{LABEL}) WHERE n.{PROPERTY} = 'f@example.com' DETACH DELETE n"),
         "rel-del",
@@ -182,7 +182,7 @@ fn delete_releases_reservation_value_is_reusable() {
     // Drain any held Release effect (the happy-path reconcile is inline, this is belt-and-braces).
     run_router_recovery_timer(&env);
 
-    gql_execute_idempotent_as_admin(&env, &insert_account("f@example.com"), "rel-reuse");
+    gql_execute_as_admin(&env, &insert_account("f@example.com"), "rel-reuse");
     let reused = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         reused.row_count, 1,

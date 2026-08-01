@@ -6,17 +6,17 @@
 //! in the full integration suite.
 
 use gleaph_pocket_ic_tests::{
-    admin_intern_property, create_vertex_property_index, e2e_insert_vertex_with_property,
-    gql_query_as_admin, install_federation, router_check_registry_invariants,
+    ensure_property, create_vertex_property_index, e2e_insert_vertex_with_property,
+    gql_query_as_admin, install_federation, check_registry_invariants,
 };
 
 #[test]
 fn smoke_router_registry_index_and_gql_dispatch() {
     let env = install_federation();
 
-    router_check_registry_invariants(&env).expect("fresh two-shard registry must be consistent");
+    check_registry_invariants(&env).expect("fresh two-shard registry must be consistent");
 
-    let age = admin_intern_property(&env, "age");
+    let age = ensure_property(&env, "age");
     create_vertex_property_index(
         &env,
         "smoke_vertex_age",

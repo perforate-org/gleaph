@@ -1,12 +1,12 @@
 //! PocketIC: social demo public-read Gateway contract.
 //!
-//! Seeds the canonical social demo graph through Router `gql_execute_idempotent` and proves that
+//! Seeds the canonical social demo graph through Router `gql_execute` and proves that
 //! an anonymous browser caller can execute only the fixed social-demo scenarios through the
 //! application-owned Gateway, while neither arbitrary ad-hoc `gql_query` nor arbitrary prepared
 //! names or parameters are expressible through the Gateway.
 //!
 //! The deterministic Post embeddings enter Graph canonical state through Router
-//! `admin_ingest_vertex_embedding`; the derived vector index is hydrated through that same Router
+//! `ingest_vertex_embeddings`; the derived vector index is hydrated through that same Router
 //! boundary, not by direct vector-canister seeding.
 //!
 //! The Gateway principal is registered as a graph administrator so Router can resolve the
@@ -19,11 +19,11 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    admin_fully_activate_social_vector_index, admin_ingest_social_embeddings,
-    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    create_vertex_property_index, execute_social_demo_scenario_as, gql_query_as,
-    install_single_shard_federation_with_gateway, install_vector_canister,
-    prepared_upsert_as_admin, seed_social_graph_and_assert_feed_edge_order, social_feed_post_ids,
+    create_vertex_property_index, ensure_edge_label, ensure_property, ensure_vertex_label,
+    execute_social_demo_scenario_as, fully_activate_social_vector_index, gql_query_as,
+    ingest_social_embeddings, install_single_shard_federation_with_gateway,
+    install_vector_canister, prepare_as_admin, seed_social_graph_and_assert_feed_edge_order,
+    social_feed_post_ids,
 };
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
@@ -71,9 +71,9 @@ fn social_graph_demo_gateway_contract() {
     intern_social_schema(&env);
     seed_social_graph_and_assert_feed_edge_order(&env);
 
-    prepared_upsert_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
-    prepared_upsert_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
-    prepared_upsert_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
+    prepare_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
+    prepare_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
+    prepare_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
 
     assert_public_timeline_through_gateway(&env, gateway);
     assert_alice_home_feed_through_gateway(&env, gateway);
@@ -85,8 +85,8 @@ fn social_graph_demo_gateway_contract() {
         SEMANTIC_EMBEDDING_NAME,
         SEMANTIC_DIMS,
     );
-    prepared_upsert_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
-    prepared_upsert_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
+    prepare_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
+    prepare_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
 
     assert_semantic_discovery_through_gateway(&env, gateway);
     assert_alice_semantic_feed_through_gateway(&env, gateway);
@@ -109,9 +109,9 @@ fn ingest_social_embeddings_through_router(
     );
 
     let vector = install_vector_canister(&env.pic, env.router);
-    admin_fully_activate_social_vector_index(env, vector, index_id, embedding_name, dims);
+    fully_activate_social_vector_index(env, vector, index_id, embedding_name, dims);
 
-    admin_ingest_social_embeddings(env, embeddings);
+    ingest_social_embeddings(env, embeddings);
 }
 
 fn assert_public_timeline_through_gateway(
@@ -453,10 +453,10 @@ fn assert_ad_hoc_gql_fail_closed(
 
 fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
     for label in ["User", "Post", "Topic", "Community"] {
-        admin_intern_vertex_label(env, label);
+        ensure_vertex_label(env, label);
     }
     for label in ["FOLLOWS", "POSTED", "REPLY_TO", "HAS_TOPIC", "MEMBER_OF"] {
-        admin_intern_edge_label(env, label);
+        ensure_edge_label(env, label);
     }
     for prop in [
         "demo_id",
@@ -468,7 +468,7 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
         "created_at",
         "is_public",
     ] {
-        admin_intern_property(env, prop);
+        ensure_property(env, prop);
     }
     // The production deploy script registers the seed anchor properties as vertex indexes
     // (`admin_set_indexed_vertex_property`). Without them the seed MATCH anchors plan as
@@ -588,9 +588,9 @@ fn alice_semantic_feed_body_regression() {
     intern_social_schema(&env);
     seed_social_graph_and_assert_feed_edge_order(&env);
 
-    prepared_upsert_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
-    prepared_upsert_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
-    prepared_upsert_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
+    prepare_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
+    prepare_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
+    prepare_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
 
     ingest_social_embeddings_through_router(
         &env,
@@ -598,8 +598,8 @@ fn alice_semantic_feed_body_regression() {
         SEMANTIC_EMBEDDING_NAME,
         SEMANTIC_DIMS,
     );
-    prepared_upsert_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
-    prepared_upsert_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
+    prepare_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
+    prepare_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
 
     let result = execute_social_demo_scenario_as(
         &env,

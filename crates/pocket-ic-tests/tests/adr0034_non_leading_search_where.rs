@@ -23,8 +23,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, admin_intern_edge_label, admin_intern_property,
-    admin_intern_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
+    FederationEnv, GRAPH_NAME, ensure_edge_label, ensure_property,
+    ensure_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
     e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_property,
     gql_query_with_params_as_admin, install_federation, install_vector_canister,
 };
@@ -73,7 +73,7 @@ fn set_dispatch_activation(env: &FederationEnv, enabled: bool) {
         .update_call(
             env.router,
             env.admin,
-            "admin_set_vector_dispatch_activation",
+            "set_vector_dispatch_enabled",
             Encode!(&enabled).expect("encode activation"),
         )
         .expect("admin_set_vector_dispatch_activation call");
@@ -129,7 +129,7 @@ fn attach_shard(env: &FederationEnv, shard_id: ShardId, vector: Principal) {
         .update_call(
             env.router,
             env.admin,
-            "admin_attach_vector_index_shard",
+            "attach_vector_shard",
             Encode!(&args).expect("encode attach"),
         )
         .expect("admin_attach_vector_index_shard call");
@@ -144,7 +144,7 @@ fn router_graph_id(env: &FederationEnv) -> GraphId {
         .query_call(
             env.router,
             env.admin,
-            "lookup_graph_id",
+            "get_graph_id",
             Encode!(&GRAPH_NAME.to_string()).expect("encode lookup"),
         )
         .expect("lookup_graph_id call");
@@ -233,10 +233,10 @@ fn setup_non_leading_search_where_env(env: &FederationEnv, vector: Principal) {
     register_vector_index(env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(env, vector);
 
-    let _author_label_id = admin_intern_vertex_label(env, "Author");
-    let _doc_label_id = admin_intern_vertex_label(env, "Document");
-    let _wrote_label_id = admin_intern_edge_label(env, "WROTE");
-    let _cat_id = admin_intern_property(env, "category");
+    let _author_label_id = ensure_vertex_label(env, "Author");
+    let _doc_label_id = ensure_vertex_label(env, "Document");
+    let _wrote_label_id = ensure_edge_label(env, "WROTE");
+    let _cat_id = ensure_property(env, "category");
 
     create_vertex_property_index(
         env,
@@ -254,10 +254,10 @@ fn non_leading_search_where_excludes_globally_nearer_wrong_category_vertex() {
     let vector = install_vector_canister(&env.pic, env.router);
     setup_non_leading_search_where_env(&env, vector);
 
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "category").raw();
+    let author_label_id = ensure_vertex_label(&env, "Author").raw();
+    let doc_label_id = ensure_vertex_label(&env, "Document").raw();
+    let wrote_label_id = ensure_edge_label(&env, "WROTE").raw();
+    let cat_id = ensure_property(&env, "category").raw();
 
     let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
     let d_qual =
@@ -314,10 +314,10 @@ fn non_leading_search_where_global_top_k_consumes_unlinked_qualifying_vertex() {
     let vector = install_vector_canister(&env.pic, env.router);
     setup_non_leading_search_where_env(&env, vector);
 
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "category").raw();
+    let author_label_id = ensure_vertex_label(&env, "Author").raw();
+    let doc_label_id = ensure_vertex_label(&env, "Document").raw();
+    let wrote_label_id = ensure_edge_label(&env, "WROTE").raw();
+    let cat_id = ensure_property(&env, "category").raw();
 
     let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
     let d_linked =
@@ -379,10 +379,10 @@ fn non_leading_search_where_preserves_prefix_row_multiplicity() {
     let vector = install_vector_canister(&env.pic, env.router);
     setup_non_leading_search_where_env(&env, vector);
 
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "category").raw();
+    let author_label_id = ensure_vertex_label(&env, "Author").raw();
+    let doc_label_id = ensure_vertex_label(&env, "Document").raw();
+    let wrote_label_id = ensure_edge_label(&env, "WROTE").raw();
+    let cat_id = ensure_property(&env, "category").raw();
 
     let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
     let a2 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
@@ -436,10 +436,10 @@ fn non_leading_search_where_empty_candidates_aggregate_returns_one_zero_row() {
     let vector = install_vector_canister(&env.pic, env.router);
     setup_non_leading_search_where_env(&env, vector);
 
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "category").raw();
+    let author_label_id = ensure_vertex_label(&env, "Author").raw();
+    let doc_label_id = ensure_vertex_label(&env, "Document").raw();
+    let wrote_label_id = ensure_edge_label(&env, "WROTE").raw();
+    let cat_id = ensure_property(&env, "category").raw();
 
     let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
     let d =
@@ -493,16 +493,16 @@ fn non_leading_search_where_rejects_missing_exact_index() {
     register_vector_index(&env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(&env, vector);
 
-    let _author_label_id = admin_intern_vertex_label(&env, "Author");
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE");
-    let cat_id = admin_intern_property(&env, "category");
+    let _author_label_id = ensure_vertex_label(&env, "Author");
+    let doc_label_id = ensure_vertex_label(&env, "Document");
+    let wrote_label_id = ensure_edge_label(&env, "WROTE");
+    let cat_id = ensure_property(&env, "category");
 
     // Intentionally do NOT create the exact vertex index.
     let a1 = e2e_insert_vertex_with_label(
         &env,
         env.graph_source,
-        admin_intern_vertex_label(&env, "Author").raw(),
+        ensure_vertex_label(&env, "Author").raw(),
     );
     let d = e2e_insert_vertex_with_label_and_property(
         &env,
@@ -552,10 +552,10 @@ fn non_leading_search_where_rejects_unlabeled_searched_binding() {
     register_vector_index(&env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(&env, vector);
 
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE");
-    let cat_id = admin_intern_property(&env, "category");
+    let author_label_id = ensure_vertex_label(&env, "Author").raw();
+    let doc_label_id = ensure_vertex_label(&env, "Document");
+    let wrote_label_id = ensure_edge_label(&env, "WROTE");
+    let cat_id = ensure_property(&env, "category");
 
     create_vertex_property_index(
         &env,

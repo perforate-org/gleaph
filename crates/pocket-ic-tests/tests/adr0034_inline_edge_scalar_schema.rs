@@ -16,8 +16,8 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, e2e_insert_directed_edge_with_inline_property,
-    e2e_insert_vertex, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    FederationEnv, ensure_edge_label, e2e_insert_directed_edge_with_inline_property,
+    e2e_insert_vertex, gql_execute_as_admin, gql_execute_as_admin_expect_err,
     gql_query_as_admin, install_single_shard_federation,
 };
 
@@ -58,13 +58,13 @@ fn scenario_unauthorized_ddl_is_forbidden_before_creation(env: &FederationEnv) {
         .update_call(
             env.router,
             Principal::anonymous(),
-            "gql_execute_idempotent",
+            "gql_execute",
             Encode!(&query.to_string(), &params, &mutation_key)
-                .expect("encode gql_execute_idempotent"),
+                .expect("encode gql_execute"),
         )
         .expect("router update call");
     let result = Decode!(&bytes, Result<GqlQueryResult, RouterError>)
-        .expect("decode gql_execute_idempotent result");
+        .expect("decode gql_execute result");
     assert!(
         matches!(result, Err(RouterError::Forbidden)),
         "unauthorized scenario: anonymous caller should be forbidden before schema creation, got {result:?}"
@@ -72,17 +72,17 @@ fn scenario_unauthorized_ddl_is_forbidden_before_creation(env: &FederationEnv) {
 }
 
 fn scenario_admin_creates_canonical_schema(env: &FederationEnv) {
-    gql_execute_idempotent_as_admin(env, &inline_ddl(), "adr0034_inline_scalar_schema_create");
-    let label_id = admin_intern_edge_label(env, EDGE_LABEL);
+    gql_execute_as_admin(env, &inline_ddl(), "adr0034_inline_scalar_schema_create");
+    let label_id = ensure_edge_label(env, EDGE_LABEL);
     assert_eq!(label_id, EdgeLabelId::from_raw(label_id.raw()));
 }
 
 fn scenario_exact_replay_is_idempotent(env: &FederationEnv) {
-    gql_execute_idempotent_as_admin(env, &inline_ddl(), "adr0034_inline_scalar_schema_replay");
+    gql_execute_as_admin(env, &inline_ddl(), "adr0034_inline_scalar_schema_replay");
 }
 
 fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let err = gql_execute_as_admin_expect_err(
         env,
         "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance FLOAT64 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type",
         "adr0034_inline_scalar_schema_conflict",
@@ -94,7 +94,7 @@ fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
 }
 
 fn scenario_derived_profile_feeds_inline_property_predicate(env: &FederationEnv) {
-    let label_id = admin_intern_edge_label(env, EDGE_LABEL);
+    let label_id = ensure_edge_label(env, EDGE_LABEL);
     let source = e2e_insert_vertex(env, env.graph_source);
     let target = e2e_insert_vertex(env, env.graph_source);
     e2e_insert_directed_edge_with_inline_property(
@@ -115,7 +115,7 @@ fn scenario_derived_profile_feeds_inline_property_predicate(env: &FederationEnv)
 }
 
 fn scenario_width_mismatch_rejects_insert(env: &FederationEnv) {
-    let label_id = admin_intern_edge_label(env, EDGE_LABEL);
+    let label_id = ensure_edge_label(env, EDGE_LABEL);
     let source = e2e_insert_vertex(env, env.graph_source);
     let target = e2e_insert_vertex(env, env.graph_source);
 

@@ -13,7 +13,7 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, install_federation, router_check_registry_invariants, wasm_bytes,
+    FederationEnv, install_federation, check_registry_invariants, wasm_bytes,
 };
 
 fn upgrade_router(env: &FederationEnv) {
@@ -27,7 +27,7 @@ fn upgrade_router(env: &FederationEnv) {
 fn registry_invariants_hold_across_router_upgrade() {
     let env = install_federation();
 
-    router_check_registry_invariants(&env)
+    check_registry_invariants(&env)
         .expect("registry invariants hold for the freshly registered two-shard graph");
 
     upgrade_router(&env);
@@ -36,13 +36,13 @@ fn registry_invariants_hold_across_router_upgrade() {
     // hook; the oracle must observe the exact same consistent registry after the
     // reinstall. A regression in stable layout, Storable encoding, or the derived
     // index commit-sync would diverge here instead of silently mis-routing later.
-    router_check_registry_invariants(&env)
+    check_registry_invariants(&env)
         .expect("registry invariants must still hold after the router upgrade");
 
     // A second upgrade must remain stable (guards against a layout that drifts on
     // each cycle).
     upgrade_router(&env);
-    router_check_registry_invariants(&env)
+    check_registry_invariants(&env)
         .expect("registry invariants must hold after a repeated router upgrade");
 }
 
@@ -56,7 +56,7 @@ fn registry_invariant_oracle_requires_admin() {
         .query_call(
             env.router,
             non_admin,
-            "admin_check_registry_invariants",
+            "check_registry_invariants",
             Encode!().expect("encode admin_check_registry_invariants"),
         )
         .expect("query call dispatch");
