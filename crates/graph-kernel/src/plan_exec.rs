@@ -179,6 +179,20 @@ pub struct ExecutePlanSharedV2Op {
     pub params_blob: Vec<u8>,
 }
 
+/// Router → Graph: the unified bulk execution envelope (ADR 0047).
+///
+/// One versionless entrypoint replaces the former `typed_v1` (per-operation complete-row seeds)
+/// and `shared_v2` (one shared seed relation) endpoints; the variant carries the seed placement
+/// while immutable plan/catalog context stays shared inside each arm. Future envelope shapes are
+/// added as new variants rather than new method-name versions.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum ExecutePlanBulkBatch {
+    /// Every operation carries its own already-decoded complete-row seed relation.
+    PerItemSeed(ExecutePlanBatchTypedArgs),
+    /// All operations share one encoded seed relation carried in the shared context.
+    SharedSeed(ExecutePlanBatchSharedV2Args),
+}
+
 /// Immutable context shared by every operation in a typed bulk group.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanBatchTypedShared {
@@ -974,34 +988,6 @@ impl ExecutePlanBatchSharedV2Args {
             ));
         }
         Ok(())
-    }
-}
-
-/// Graph canister execution capabilities advertised to the Router (ADR 0047).
-///
-/// This response is intentionally explicit: each capability is a named, versioned value
-/// so that Router activation remains fail-closed and future revisions are representable.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct GraphExecutionCapabilities {
-    pub typed_seed_batch: TypedSeedBatchCapability,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize, Default)]
-pub enum TypedSeedBatchCapability {
-    #[default]
-    Unsupported,
-    V1,
-    /// Supports typed V1 plus the shared seed-invariant V2 bulk envelope.
-    V2,
-}
-
-impl TypedSeedBatchCapability {
-    pub fn supports_typed_v1(self) -> bool {
-        matches!(self, Self::V1 | Self::V2)
-    }
-
-    pub fn supports_shared_v2(self) -> bool {
-        matches!(self, Self::V2)
     }
 }
 
@@ -2499,6 +2485,54 @@ mod tests {
     }
 
     #[test]
+    fn execute_plan_bulk_batch_candid_roundtrip_all_variants() {
+        let per_item = ExecutePlanBulkBatch::PerItemSeed(ExecutePlanBatchTypedArgs {
+            shared: ExecutePlanBatchTypedShared {
+                target_shard_id: ShardId(1),
+                element_id_encoding_key: [0u8; 16],
+                mutation_id: 42,
+                plan_blob: vec![1, 2, 3],
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![ExecutePlanTypedOp {
+                params_blob: vec![9],
+                seed: SeedBindingsWire {
+                    entries: Vec::new(),
+                    rows: Vec::new(),
+                    complete_prefix_rows: true,
+                },
+            }],
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        });
+        let shared = ExecutePlanBulkBatch::SharedSeed(ExecutePlanBatchSharedV2Args {
+            shared: ExecutePlanBatchSharedV2 {
+                target_shard_id: ShardId(1),
+                element_id_encoding_key: [0u8; 16],
+                mutation_id: 42,
+                plan_blob: vec![1, 2, 3],
+                seed_bindings_blob: None,
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+                indexed_embeddings: None,
+                resolved_search_blob: None,
+            },
+            operations: vec![ExecutePlanSharedV2Op {
+                params_blob: vec![9],
+            }],
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        });
+        for envelope in [per_item, shared] {
+            let bytes = Encode!(&envelope).expect("encode bulk envelope");
+            let decoded: ExecutePlanBulkBatch =
+                Decode!(&bytes, ExecutePlanBulkBatch).expect("decode bulk envelope");
+            assert_eq!(envelope, decoded);
+        }
+    }
+
+    #[test]
     fn mutation_token_candid_roundtrip() {
         let token = MutationToken {
             mutation_id: 42,
@@ -3026,43 +3060,5 @@ mod tests {
             batch_mode: ExecutePlanBatchMode::Fixed,
         };
         assert!(args.validate().is_err());
-    }
-}
-
-#[cfg(test)]
-mod graph_execution_capabilities_tests {
-    use super::{GraphExecutionCapabilities, TypedSeedBatchCapability};
-    use candid::{Decode, Encode};
-
-    #[test]
-    fn roundtrip_encodes_typed_seed_batch_capability() {
-        let caps = GraphExecutionCapabilities {
-            typed_seed_batch: TypedSeedBatchCapability::V2,
-        };
-        let bytes = Encode!(&caps).expect("encode capabilities");
-        let decoded: GraphExecutionCapabilities =
-            Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
-        assert_eq!(decoded.typed_seed_batch, TypedSeedBatchCapability::V2);
-        assert!(decoded.typed_seed_batch.supports_typed_v1());
-        assert!(decoded.typed_seed_batch.supports_shared_v2());
-        assert!(
-            !TypedSeedBatchCapability::V1.supports_shared_v2(),
-            "V1 Graph binaries do not expose the shared V2 endpoint"
-        );
-    }
-
-    #[test]
-    fn encodes_unsupported_typed_seed_batch_capability() {
-        // Candid decodes missing fields via serde default.
-        let bytes = Encode!(&GraphExecutionCapabilities {
-            typed_seed_batch: TypedSeedBatchCapability::Unsupported,
-        })
-        .expect("encode capabilities");
-        let decoded: GraphExecutionCapabilities =
-            Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
-        assert_eq!(
-            decoded.typed_seed_batch,
-            TypedSeedBatchCapability::Unsupported
-        );
     }
 }

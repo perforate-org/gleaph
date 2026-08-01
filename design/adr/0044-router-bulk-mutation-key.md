@@ -2,8 +2,8 @@
 
 Status: Implemented
 Date: 2026-07-19 15:12:46 UTC
-Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Last revised: 2026-08-01
+Anchor timestamp: 2026-08-01 01:23:28 UTC +0000
 
 ## Context
 
@@ -96,7 +96,7 @@ while typed completion retains only its bounded ordered operation row counts for
 satisfying the existing
 ADR 0025 mechanism-E contract. No Router V2 or stable migration is introduced. Initial installation
 and rollback to older Router Wasm require fresh install/reset. See ADR 0047 for the schema, bounds,
-capability activation, and reset procedure.
+rollout, and reset procedure.
 
 The following is the proposed replacement shape. Retaining the `V1` tag names the first launch
 schema; it does not promise decode compatibility with the superseded, never-deployed V1 bytes.
@@ -215,8 +215,10 @@ Parameterized index anchors that resolve to selective equality or index predicat
 item-specific `SeedBindingsWire` relation to each `ExecutePlanTypedOp`. Seed-invariant groups use
 the ADR 0047 shared V2 path, which encodes the common plan, catalogs, seed relation, and resolved
 search relation once and carries only `params_blob` per operation. Unsupported shapes (label-only
-anchors, edge anchors, correlated/optional seeds, constrained mutations, or shards that do not
-advertise the required capability) fall back to the existing sequential path.
+anchors, edge anchors, correlated/optional seeds, constrained mutations, or requests that exceed
+the safe inter-canister payload bound) fall back to the existing sequential path. Both seed
+placements travel through the single `execute_plan_update_batch_bulk` envelope (ADR 0047
+2026-08-01 revision); there is no capability gate.
 
 Because one bulk `MutationId` may then contain different seed relations for each operation, the
 current one-blob-per-shard `RouterMutationShard` representation is insufficient. The ADR 0046 path
@@ -311,7 +313,7 @@ objects whose semantics will evolve as bulk behavior matures.
   mode, operation count, and every operation's params blob in ordinal order. It is used both when
   reserving a new group and when matching a retry to an existing durable record.
 - Typed V1 recovery (`recover_typed_bulk_record`) redispatches the exact durable typed replay
-  payload without repeating Property Index lookup or consulting the current capability bit.
+  payload without repeating Property Index lookup.
 
 ## Consequences
 

@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Last updated: 2026-08-01
+Anchor timestamp: 2026-08-01 01:23:28 UTC +0000
 
 ## Purpose
 
@@ -14,13 +14,13 @@ Define the **contract** between `gleaph-gql-planner` and `gleaph-graph` executor
 
 ## Core types
 
-| Type | Crate | Role |
-|------|-------|------|
-| `PhysicalPlan` | `gql-planner` | `ops: Vec<PlanOp>` + metadata |
-| `PlanOp` | `gql-planner` | One execution step |
-| `PlanAnnotations` | `gql-planner` | Hints (CSE, live vars, etc.) |
-| `BindingLayout` | `gql-planner` | Dense column order for variables |
-| `ExecutePlanArgs` | `graph-kernel` | Router → graph transport |
+| Type              | Crate          | Role                             |
+| ----------------- | -------------- | -------------------------------- |
+| `PhysicalPlan`    | `gql-planner`  | `ops: Vec<PlanOp>` + metadata    |
+| `PlanOp`          | `gql-planner`  | One execution step               |
+| `PlanAnnotations` | `gql-planner`  | Hints (CSE, live vars, etc.)     |
+| `BindingLayout`   | `gql-planner`  | Dense column order for variables |
+| `ExecutePlanArgs` | `graph-kernel` | Router → graph transport         |
 
 Planner builds plans; graph decodes plan blobs and runs `execute_ops` (`crates/graph/src/plan/query/executor.rs`).
 
@@ -37,16 +37,16 @@ Executor optimizations (`PlanRow::try_merge_skip_one`, `QueryArena` slot pool) a
 
 See [execution/operators.md](../execution/operators.md) for the full list. Grouped by role:
 
-| Family | Examples | Executor module |
-|--------|----------|-----------------|
-| Scan | `NodeScan`, `IndexScan`, `EdgeIndexScan`, `ConditionalIndexScan` | `execute_*scan*` |
-| Filter | `PropertyFilter`, `Filter` | expr evaluator |
-| Traverse | `Expand`, `ExpandFilter`, `ShortestPath` | `execute_expand`, path search |
-| Join | `HashJoin`, `CartesianProduct`, `WorstCaseOptimalJoin` | join helpers |
-| GQL control | `Let`, `For`, `OptionalMatch`, `UseGraph` | control flow |
-| Vector search | `Search` | `execute_ops` resolved-search join |
-| Output | `Project`, `Sort`, `Limit`, `TopK`, `Aggregate`, `Materialize` | projection / agg |
-| DML | `InsertVertex`, `SetProperties`, `DeleteVertex`, … | mutation executor |
+| Family        | Examples                                                         | Executor module                    |
+| ------------- | ---------------------------------------------------------------- | ---------------------------------- |
+| Scan          | `NodeScan`, `IndexScan`, `EdgeIndexScan`, `ConditionalIndexScan` | `execute_*scan*`                   |
+| Filter        | `PropertyFilter`, `Filter`                                       | expr evaluator                     |
+| Traverse      | `Expand`, `ExpandFilter`, `ShortestPath`                         | `execute_expand`, path search      |
+| Join          | `HashJoin`, `CartesianProduct`, `WorstCaseOptimalJoin`           | join helpers                       |
+| GQL control   | `Let`, `For`, `OptionalMatch`, `UseGraph`                        | control flow                       |
+| Vector search | `Search`                                                         | `execute_ops` resolved-search join |
+| Output        | `Project`, `Sort`, `Limit`, `TopK`, `Aggregate`, `Materialize`   | projection / agg                   |
+| DML           | `InsertVertex`, `SetProperties`, `DeleteVertex`, …               | mutation executor                  |
 
 ## Router seed contract
 
@@ -93,19 +93,21 @@ contracts must be distinguished.
 - checked candidate, product, encoded-payload, and instruction bounds fail closed without
   truncation.
 
-**ADR 0047 Graph contract (implemented, exercised POSTED adoption passes the Plan 0113 gate):**
+**ADR 0047 Graph contract (implemented; 2026-08-01 revision removes the capability gate):**
 
-- Graph exposes `execute_plan_update_batch_typed_v1`, which accepts an eligible single-shard batch with a shared immutable
-  group header and required ordered per-operation complete-row seeds (`SeedBindingsWire`);
-- V1 rejects resolved-search and constraint/uniqueness dispatch and uses the existing
-  semantics-safe path for those groups;
-- V1 also rejects plans outside an exhaustive row-preserving DML allowlist or without a statically
-  bounded row-free response shape; request admission uses structural seed bounds, one full-request
-  encode, and a conservative complete-response proof, never one Candid encode per seed;
+- Graph exposes `execute_plan_update_batch_bulk`, which accepts one `ExecutePlanBulkBatch` envelope
+  and dispatches on its variant: `PerItemSeed(ExecutePlanBatchTypedArgs)` for an eligible
+  single-shard batch with a shared immutable group header and required ordered per-operation
+  complete-row seeds (`SeedBindingsWire`), and `SharedSeed(ExecutePlanBatchSharedV2Args)` for a
+  seed-invariant group whose shared plan/catalog/seed/search context is encoded once;
+- the bulk method rejects resolved-search and constraint/uniqueness dispatch for `PerItemSeed` and
+  uses the existing semantics-safe path for those groups;
+- the bulk method also rejects plans outside an exhaustive row-preserving DML allowlist or without a
+  statically bounded row-free response shape; request admission uses structural seed bounds, one
+  full-request encode, and a conservative complete-response proof, never one Candid encode per seed;
 - the scalar `ExecutePlanArgs.seed_bindings_blob` path and independent-operation batch method remain
   available; scalar is the fallback for unsupported distinct-seed groups, while seed-invariant
-  homogeneous bulk uses `execute_plan_update_batch_shared_v2`, which encodes the shared
-  plan/catalog/seed/search context once and carries only params per operation;
+  homogeneous bulk uses the `SharedSeed` variant;
 - the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`), while
   Graph journal bulk progress persists committed-prefix row counts so replay preserves those results;
 - typed update admission may retain plan output metadata because the update executor always returns
@@ -115,21 +117,19 @@ contracts must be distinguished.
   ordered replay relation without a parallel blob representation, and completed records discard the
   heavy replay envelope while retaining bounded ordered row counts for exact typed-batch retry per
   ADR 0025 mechanism E;
-- Router activation is implemented: typed V1 is selected when the durable shard-registry V2 entry
-  records `typed_seed_batch: V1` or `V2`; shared seed-invariant execution additionally requires
-  `V2`. Both values come from an admin-refreshed, post-await target-revalidated capability;
-  ambiguous typed-call outcomes retain typed durable replay under the same mutation id and
-  operation order;
+- the unified bulk path is always active: the former `execution_capabilities` query,
+  `TypedSeedBatchCapability`, and the `ShardRegistryEntry.typed_seed_batch` field were removed, so
+  there is no admin refresh/clear activation step. The Graph re-validates every envelope fail-closed
+  independent of the Router; ambiguous bulk-call outcomes retain typed durable replay under the
+  same mutation id and operation order;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
 - Plan 0113 observed a 71-item POSTED typed batch and measured approximately 115.5M fewer Router
   instructions/item than the capability-disabled legacy control. Plan 0114 quantified the remaining
   rejections (308 non-threaded plans, 2 non-selective seeds, and all indexed-embedding groups) and
-  decided not to expand the Typed V1 boundary. Plan 0116 added an early capability short-circuit for
-  single-shard selective complete-row seeds on incapable targets, removing the typed-attempt group
-  prepare overhead on the former repeated fallback path (0 instr/item on a fresh deploy versus the
-  Plan 0115 82,129,243 instr/item fallback tax). As of 2026-07-31, seed-invariant groups outside
-  typed V1 use shared V2 when supported; otherwise they fall back to scalar execution.
+  decided not to expand the typed boundary. As of 2026-07-31, seed-invariant groups outside
+  per-item-seed admission use the shared-seed variant when supported; otherwise they fall back to
+  scalar execution.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.
@@ -138,7 +138,7 @@ uniqueness is not a plan contract.
 
 ## NEXT / YIELD binding contract
 
-A `StatementBlock` chains statements with `NEXT`.  Two boundary shapes are supported:
+A `StatementBlock` chains statements with `NEXT`. Two boundary shapes are supported:
 
 - **Explicit `YIELD`**: the prior statement emits only the yielded columns; downstream statements
   receive those bindings under their aliases.
@@ -147,10 +147,10 @@ A `StatementBlock` chains statements with `NEXT`.  Two boundary shapes are suppo
   within a linear query. This is required for an update followed by a Graph-owned operational
   `CALL` in one shard-local mutation plan.
 - **No `YIELD`**: every typed graph binding (vertex, edge, path) that survived the previous
-  statement remains in scope for the next statement.  The planner must extend the boundary
+  statement remains in scope for the next statement. The planner must extend the boundary
   `Project`/`Materialize` with hidden columns for those bindings, and the executor must keep a
   plain variable column as the original typed `PlanBinding` rather than materializing it to
-  `Value`.  This is what lets a chained `INSERT (a)-[:L]->(b)` reuse matched vertices `a` and
+  `Value`. This is what lets a chained `INSERT (a)-[:L]->(b)` reuse matched vertices `a` and
   `b` as edge endpoints instead of creating new ones.
 
 Value bindings and computed projections are not silently retained across a no-YIELD boundary; they
@@ -168,7 +168,6 @@ For a non-leading `PlanOp::Search` the Router supplies `ExecutePlanArgs.resolved
 - The full non-leading plan is preserved even when the resolved relation is empty, so global aggregates and other downstream operators still run.
 
 For a leading `NodeScan + Search` prefix the Router strips the prefix and dispatches the tail plan with row-shaped `seed_bindings_blob`; the Graph executor never sees a raw `PlanOp::Search`.
-
 
 ### Filtered search contract
 
@@ -215,7 +214,7 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   global deduplication, label filtering before counting, and the 4096 candidate bound), a
   sequential union of up to eight paginated `lookup_range_page` streams for two to eight `OR`-connected
   same-property or cross-property range arms (each range arm resolves its own `(graph_id, label_id,
-  property_id)` tuple and its own finite half-open encoded interval; empty arms are dropped, the
+property_id)` tuple and its own finite half-open encoded interval; empty arms are dropped, the
   remaining intervals are grouped by property id, sorted and merged into disjoint encoded intervals
   within each group, and each merged interval is walked per index source through `lookup_range_page`),
   **or a sequential union of up to eight paginated `lookup_equal_page` and/or `lookup_range_page`

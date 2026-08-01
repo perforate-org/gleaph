@@ -1,7 +1,7 @@
-//! PocketIC: direct Graph typed V1 bulk endpoint and idempotent journal replay.
+//! PocketIC: direct Graph unified bulk endpoint and idempotent journal replay.
 //!
-//! This test exercises `execute_plan_update_batch_typed_v1` directly on a graph shard,
-//! without Router activation (Plan 0110 keeps the Router typed path dormant). It proves:
+//! This test exercises `execute_plan_update_batch_bulk` with the `PerItemSeed` envelope directly
+//! on a graph shard, without going through Router preparation. It proves:
 //!
 //! - the endpoint accepts a POSTED-shaped typed batch with complete-row seeds;
 //! - callers other than the configured Router are rejected;
@@ -16,9 +16,10 @@ use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanBatchMode, ExecutePlanBatchResult, ExecutePlanBatchTypedArgs,
-    ExecutePlanBatchTypedShared, ExecutePlanTypedOp, GetMutationJournalEntriesArgs,
-    GetMutationJournalEntriesResult, MutationJournalState, ResolvedEdgeLabel, ResolvedLabelTable,
-    ResolvedVertexLabel, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
+    ExecutePlanBatchTypedShared, ExecutePlanBulkBatch, ExecutePlanTypedOp,
+    GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, MutationJournalState,
+    ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel, SeedBindingsWire, SeedRowWire,
+    SeedVertexBinding,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, SOURCE_SHARD, admin_intern_edge_label, admin_intern_vertex_label,
@@ -130,6 +131,10 @@ fn make_typed_batch_args(
     }
 }
 
+fn bulk_per_item_seed(args: ExecutePlanBatchTypedArgs) -> ExecutePlanBulkBatch {
+    ExecutePlanBulkBatch::PerItemSeed(args)
+}
+
 fn journal_entries(env: &FederationEnv, mutation_ids: &[u64]) -> GetMutationJournalEntriesResult {
     use candid::Decode;
     let bytes = env
@@ -174,19 +179,19 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
     let unauthorized = env.pic.update_call(
         env.graph_source,
         env.admin,
-        "execute_plan_update_batch_typed_v1",
-        Encode!(&args).expect("encode unauthorized request"),
+        "execute_plan_update_batch_bulk",
+        Encode!(&bulk_per_item_seed(args.clone())).expect("encode unauthorized request"),
     );
     assert!(
         unauthorized.is_err(),
-        "only the configured Router may call the typed Graph endpoint"
+        "only the configured Router may call the Graph bulk endpoint"
     );
 
     let first: ExecutePlanBatchResult = update_as_router(
         &env,
         env.graph_source,
-        "execute_plan_update_batch_typed_v1",
-        args.clone(),
+        "execute_plan_update_batch_bulk",
+        bulk_per_item_seed(args.clone()),
     );
     assert_eq!(first.results.len(), 2, "first call must execute both ops");
     assert!(
@@ -232,8 +237,8 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
     let replay: ExecutePlanBatchResult = update_as_router(
         &env,
         env.graph_source,
-        "execute_plan_update_batch_typed_v1",
-        replay_args,
+        "execute_plan_update_batch_bulk",
+        bulk_per_item_seed(replay_args),
     );
     assert_eq!(replay.results.len(), 2, "replay must return both results");
     assert!(
@@ -324,10 +329,10 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
         .update_call(
             env.graph_source,
             env.router,
-            "execute_plan_update_batch_typed_v1",
-            Encode!(&args).expect("encode"),
+            "execute_plan_update_batch_bulk",
+            Encode!(&bulk_per_item_seed(args)).expect("encode"),
         )
-        .unwrap_or_else(|e| panic!("execute_plan_update_batch_typed_v1: {e:?}"));
+        .unwrap_or_else(|e| panic!("execute_plan_update_batch_bulk: {e:?}"));
     let result: Result<ExecutePlanBatchResult, String> =
         Decode!(&bytes, Result<ExecutePlanBatchResult, String>).expect("decode");
     let err = result.expect_err("query-only plan must be rejected");
@@ -338,7 +343,7 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
 }
 
 #[test]
-fn graph_typed_v1_executes_complete_rows_for_multiple_leading_anchors() {
+fn graph_typed_bulk_executes_complete_rows_for_multiple_leading_anchors() {
     let env = install_single_shard_federation();
     let user_label = admin_intern_vertex_label(&env, "User");
     let follows_edge_label = admin_intern_edge_label(&env, "FOLLOWS");
@@ -394,8 +399,8 @@ fn graph_typed_v1_executes_complete_rows_for_multiple_leading_anchors() {
     let result: ExecutePlanBatchResult = update_as_router(
         &env,
         env.graph_source,
-        "execute_plan_update_batch_typed_v1",
-        args,
+        "execute_plan_update_batch_bulk",
+        bulk_per_item_seed(args),
     );
     assert_eq!(result.results.len(), 1);
     assert!(

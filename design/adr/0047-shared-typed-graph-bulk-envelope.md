@@ -1,7 +1,7 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Implemented; typed V1 and seed-invariant shared V2 transports are active behind Graph capability advertisement
+Status: Implemented; versionless unified bulk envelope (`execute_plan_update_batch_bulk`) is always active, with no capability gate
 
 Implementation boundary as of 2026-07-22: the Graph endpoint, shared wire, exhaustive admission
 classifier, response-bound proof, Router capability activation, durable typed dispatch, and
@@ -19,8 +19,17 @@ group through the repeated `Vec<ExecutePlanArgs>` transport.
 On 2026-07-31, typed V1 was expanded in place to accept complete-row seeds for multiple
 contiguous leading anchors. This is a breaking change to the pre-production V1 contract; it does
 not add another V2 envelope or endpoint for multi-anchor plans.
-Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 08:23:23 UTC +0000
+On 2026-08-01, the two transport methods were unified into one versionless entrypoint,
+`execute_plan_update_batch_bulk(ExecutePlanBulkBatch)`, whose variants select the seed placement:
+`PerItemSeed(ExecutePlanBatchTypedArgs)` for per-operation complete-row seeds and
+`SharedSeed(ExecutePlanBatchSharedV2Args)` for one shared seed relation. The capability
+advertisement/refresh mechanism (`execution_capabilities`, `TypedSeedBatchCapability`, and the
+`ShardRegistryEntry.typed_seed_batch` field) was removed because Gleaph has no deployed Router
+registry state that must be negotiated: the unified path is always active and the Graph
+re-validates every envelope fail-closed. Future envelope shapes are added as new Candid variants,
+not as new method-name versions.
+Last revised: 2026-08-01
+Anchor timestamp: 2026-08-01 01:23:28 UTC +0000
 
 ## Context
 
@@ -133,32 +142,35 @@ per-operation seeds; it relies on the Router resending them.
 
 ## Decision
 
-### Selected alternative: typed V1 plus a seed-invariant shared V2 endpoint
+### Selected alternative: one versionless bulk envelope with seed-placement variants
 
-Add a **new Candid update method** and a corresponding new `ExecutePlanBatchTypedArgs` request
-shape. Keep `execute_plan_update` (scalar) and `execute_plan_update_batch` (legacy blob batch)
-unchanged. The new method is the only production path that carries typed per-operation seeds.
+Add a **single new Candid update method** `execute_plan_update_batch_bulk` taking one
+`ExecutePlanBulkBatch` envelope. The envelope is a variant: `PerItemSeed` carries
+`ExecutePlanBatchTypedArgs` (per-operation complete-row seeds), and `SharedSeed` carries
+`ExecutePlanBatchSharedV2Args` (one shared seed relation). Keep `execute_plan_update` (scalar) and
+`execute_plan_update_batch` (legacy blob batch) unchanged. The bulk method is the only production
+path that carries typed per-operation seeds.
 
 Rationale:
 
 - Changing `ExecutePlanArgs` in place would require proving Candid subtyping for every existing
   caller and would introduce the invalid blob-plus-typed-seed combination. A new request type
   avoids both problems.
-- A separately named method preserves Candid compatibility. Activation is an explicit durable
-  Router-registry decision after Graph advertises support; method rejection is not used as routine
-  feature negotiation.
+- A single versionless method keeps the transport surface small. Because Gleaph has no deployed
+  Router/Graph state that must be negotiated, no capability advertisement or refresh is needed:
+  the Graph re-validates every envelope fail-closed, and method rejection is never used as routine
+  feature negotiation. Future envelope shapes are added as new Candid variants of
+  `ExecutePlanBulkBatch`, not as new method-name versions.
 - The minimum-change alternative (keep nested blobs but use a cheaper inner codec) cannot retain
   the measured typed-vector saving without either a second seed schema or hand-written Candid
   patching, neither of which is acceptable.
 - The large-change alternative (a general versioned execution-envelope protocol) adds query/update
   generality we do not need and would couple unrelated surfaces. Rejected.
 
-The implemented seed-invariant extension adds
-`execute_plan_update_batch_shared_v2`. It is deliberately narrower than a general execution
-protocol: one target shard, one `MutationId`, one shared plan/catalog/seed/search context, and an
-ordered vector of per-operation params. The independent-operation
-`execute_plan_update_batch` method remains available, but homogeneous same-`MutationId` bulk no
-longer uses it.
+The `SharedSeed` variant is deliberately narrower than a general execution protocol: one target
+shard, one `MutationId`, one shared plan/catalog/seed/search context, and an ordered vector of
+per-operation params. The independent-operation `execute_plan_update_batch` method remains
+available, but homogeneous same-`MutationId` bulk no longer uses it.
 
 ### Wire ownership and crate placement
 
@@ -168,6 +180,14 @@ they do not define parallel copies.
 ### Request shape
 
 ```rust
+/// Router → Graph: the unified versionless bulk execution envelope (ADR 0047).
+pub enum ExecutePlanBulkBatch {
+    /// Every operation carries its own already-decoded complete-row seed relation.
+    PerItemSeed(ExecutePlanBatchTypedArgs),
+    /// All operations share one encoded seed relation carried in the shared context.
+    SharedSeed(ExecutePlanBatchSharedV2Args),
+}
+
 pub struct ExecutePlanBatchTypedArgs {
     /// Shared immutable context for the entire group.
     pub shared: ExecutePlanBatchTypedShared,
@@ -222,8 +242,8 @@ pub struct ExecutePlanSharedV2Op {
 }
 ```
 
-V2 is for groups where the seed and resolved-search relation are invariant across params. Router
-requires exactly one dispatch per Graph canister and a shard capability of `V2`. Graph validates
+The `SharedSeed` variant is for groups where the seed and resolved-search relation are invariant
+across params. Router requires exactly one dispatch per Graph canister. Graph validates
 the full encoded request, decodes the common seed relation once, and normalizes each params item
 into the existing execution core. Unique claims and constrained-property effects remain excluded
 by Router admission.
@@ -239,12 +259,13 @@ Notes:
   builder is responsible for not moving heterogeneous fields into the shared header.
 - The new method is an update method, so `GqlExecutionMode` is not carried. `batch_mode` retains the
   existing Fixed/Dynamic instruction-budget behavior.
-- Typed V1 admits complete-row seeded groups with no resolved-search relation and with all
-  federated/local uniqueness and constrained-property dispatch vectors empty. Other groups retain
-  their existing semantics-safe path. The V1 wire therefore carries no dormant claim/search fields.
-- Typed V1 also requires a mutation plan whose update-result shape has a conservative
-  encoded-response bound. Update execution never materializes `rows_blob`, regardless of plan
-  output metadata, and the execution shape has a finite per-operation bound for
+- The `PerItemSeed` variant admits complete-row seeded groups with no resolved-search relation and
+  with all federated/local uniqueness and constrained-property dispatch vectors empty. Other groups
+  retain their existing semantics-safe path. The variant wire therefore carries no dormant
+  claim/search fields.
+- The `PerItemSeed` variant also requires a mutation plan whose update-result shape has a
+  conservative encoded-response bound. Update execution never materializes `rows_blob`, regardless
+  of plan output metadata, and the execution shape has a finite per-operation bound for
   `hot_forward_vertices`. `gleaph-gql-integration::typed_batch` exhaustively classifies supported
   row-preserving operators, derives that bound from the plan once per group, and is used by both
   Router admission and Graph validation; `gleaph-graph-kernel` owns only the portable wire and byte
@@ -267,13 +288,13 @@ Reuse `ExecutePlanBatchResult`. It already returns ordered per-operation results
 
 ### Graph behavior
 
-1. The new method decodes `ExecutePlanBatchTypedArgs`.
+1. The new method decodes the `ExecutePlanBulkBatch` envelope and dispatches on its variant.
 2. Graph validates the single-shard target, non-empty bounded operation list, required complete-row
    seeds, and the actual encoded request size before executing an operation.
 3. The execution core accepts already-decoded `Option<SeedBindingsWire>` and
    `Option<ResolvedSearchWire>` values. Blob-based handlers decode at their boundary and call this
-   core; typed V1 passes `Some(op.seed)` directly, while shared V2 decodes its common seed once and
-   reuses the decoded relation for every params item.
+   core; `PerItemSeed` passes `Some(op.seed)` directly, while `SharedSeed` decodes its common seed
+   once and reuses the decoded relation for every params item.
 4. Bulk detection, journal resume, sequential execution, result ordering, partial failure, and
    journal commit use the existing batch machinery after this boundary normalization.
 5. The instruction-budget cutoff (`Dynamic` mode) continues to set `next_index` to the first
@@ -401,38 +422,33 @@ existing sequential scalar path when typed V1 admission is unavailable, because 
 record's one relation per shard cannot replay distinct seeds. A seed-invariant group may use shared
 V2 only when the complete ordered operation domain fits one request.
 
-### Capability and rollout
+### Rollout
 
-1. **Graph-first deployment.** Deploy a Graph canister build that exposes the typed V1 and shared V2
-   methods while keeping the scalar and independent batch methods. New methods are inert until a
-   Router calls them.
-2. **Capability advertisement and activation.** Graph exposes a read-only
-   `execution_capabilities` query containing an exhaustive `TypedSeedBatchCapability`. A
-   control-plane-admin Router refresh update captures the target `GraphShardKey` and Graph canister
-   principal, calls that query, then re-reads the registry after the `await`. It writes
-   the advertised capability only if the same registry key still names the same live Graph
-   principal; otherwise it returns an error without changing capability state. The field extends
-   `ShardRegistryEntry` and the current `ShardRegistryStableRecord::V2` write shape; the retained
-   decode-only V1 registry variant is not redefined. The durable registry field is the data-plane
-   source of truth; no heap cache or call rejection enables the path. Refresh failure does not
-   enable the capability, and an explicit guarded admin clear disables future typed admission.
-3. **Router cutover.** Once all target Graph canisters for a graph support the new method, the
-   Router uses it for eligible homogeneous bulk groups.
-4. **Capability-disabled fallback.** `Unsupported` selects scalar execution. `V1` enables the typed
-   complete-row seed path. `V2` enables typed V1 plus the shared seed-invariant V2 path. Capability
-   is checked before the shared replay envelope is persisted.
-5. **Ambiguous typed-call outcome.** Once typed V1 replay is durable, a reject, bounded-wait unknown
-   outcome, decode failure, or callback trap never converts that record to scalar or shared V2.
-   The Router leaves it `CanonicalPending` and retries the identical typed request under the same
-   `MutationId` and operation order after compatible Graph service is restored; Graph journal resume
-   remains the authority for the committed prefix. Clearing capability affects only new admission.
-6. **Incompatible V1 installation.** Before installing the Router implementation, stop the local or
+Gleaph has no deployed Router registry state that must be negotiated, so there is no capability
+advertisement or refresh step: `execute_plan_update_batch_bulk` is always active, and the Graph
+re-validates every envelope fail-closed. The remaining rollout constraints are:
+
+1. **Graph-first deployment.** Deploy a Graph canister build that exposes
+   `execute_plan_update_batch_bulk` while keeping the scalar and independent batch methods. The
+   new method is inert until a Router calls it.
+2. **Router cutover.** The Router uses the unified bulk method for eligible homogeneous bulk
+   groups, selecting the `PerItemSeed` variant for per-operation complete-row seeds and
+   `SharedSeed` for seed-invariant groups. Ineligible groups (multi-shard dispatch, effect
+   claims, unbounded response shapes, or requests that exceed the payload bound) fall back to the
+   existing scalar path. The Graph applies the same classification, so a Router admission bug
+   cannot mutate state through an unvalidated envelope.
+3. **Ambiguous typed-call outcome.** Once a bulk replay record is durable, a reject,
+   bounded-wait unknown outcome, decode failure, or callback trap never converts that record to
+   scalar or the other envelope variant. The Router leaves it `CanonicalPending` and retries the
+   identical bulk request under the same `MutationId` and operation order after compatible Graph
+   service is restored; Graph journal resume remains the authority for the committed prefix.
+4. **Incompatible V1 installation.** Before installing the Router implementation, stop the local or
    pre-production stack and fresh-install/reset Router stable state. The old and new V1 byte layouts
    are intentionally not mutually decodable; no migration or backward-decoder is provided.
-7. **Rollback boundary.** This pre-production decision does not provide data-preserving rollback to
+5. **Rollback boundary.** This pre-production decision does not provide data-preserving rollback to
    an older Router. Rolling the Router back requires another fresh install/reset. Before removing
-   the Graph method, disable the capability and stop/reset any Router that can still replay typed
-   records. Graph-first deployment still allows the new Graph method to be rolled out inertly.
+   the Graph method, stop/reset any Router that can still replay bulk records. Graph-first
+   deployment still allows the new Graph method to be rolled out inertly.
 
 ### Chunking and payload bounds
 
@@ -448,8 +464,8 @@ V2 only when the complete ordered operation domain fits one request.
   first unattempted operation when the instruction budget is exhausted.
 - The encoded size probe is performed before the inter-canister call, so no call is issued with an
   oversized payload.
-- Shared V2 does not send payload-sized suffixes under one `MutationId`. Its whole params vector
-  and shared header must fit one request and are resent unchanged when Graph returns
+- The `SharedSeed` variant does not send payload-sized suffixes under one `MutationId`. Its whole
+  params vector and shared header must fit one request and are resent unchanged when Graph returns
   `next_index`. If it does not fit, Router bisects the homogeneous client group before durable
   admission; each subgroup receives a distinct bulk key and `MutationId`, and the public batch
   returns continuation after the admitted subgroup.
@@ -462,16 +478,16 @@ V2 only when the complete ordered operation domain fits one request.
   stops at the first failure. Graph retains its final actual-response encode guard as defense in
   depth, not as the admission mechanism after mutations may already have committed. A plan without
   this proof uses the existing scalar path.
-> Ownership note: `gleaph-graph-kernel` continues to own portable wire types, while
-> `gleaph-message-sizing` owns encoded-message limits and adaptive prefix sizing. Neither crate
-> owns physical-plan classification because the kernel sits below
-> `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed
-> `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it owns the
-> `typed_batch` admission classifier. The Graph `execute_plan_update_batch_typed_v1` endpoint,
-> the shared `ExecutePlanBatchTypedArgs` wire types, the `typed_batch` classifier, Router
-> capability advertisement, durable typed dispatch, and recovery were implemented in Plans 0110
-> and 0111.
-
+  > Ownership note: `gleaph-graph-kernel` continues to own portable wire types, while
+  > `gleaph-message-sizing` owns encoded-message limits and adaptive prefix sizing. Neither crate
+  > owns physical-plan classification because the kernel sits below
+  > `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed
+  > `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it owns the
+  > `typed_batch` admission classifier. The Graph `execute_plan_update_batch_bulk` endpoint,
+  > the shared `ExecutePlanBulkBatch` wire types, the `typed_batch` classifier, durable typed
+  > dispatch, and recovery were implemented in Plans 0110 and 0111; the 2026-08-01 revision
+  > unified the two transport methods behind one envelope and removed the Router capability
+  > advertisement.
 
 ### Performance expectation
 
@@ -490,11 +506,14 @@ per-message overhead for every operation. A cheaper self-describing format would
 seed schema and duplicate `SeedBindingsWire` semantics; hand-written Candid byte patching is
 unacceptable because it depends on Candid LEB128 layout and can silently corrupt the wire.
 
-### 2. New shared typed batch endpoint
+### 2. Unified bulk envelope with seed-placement variants
 
-Selected for per-operation complete-row seeds. It prevents blob-plus-typed dual state and realizes
-the measured saving. Shared V2 extends the same shared-header principle to seed-invariant groups
-without turning it into a general execution-envelope protocol.
+Selected. One versionless `execute_plan_update_batch_bulk` entrypoint with `PerItemSeed` and
+`SharedSeed` variants prevents blob-plus-typed dual state, realizes the measured saving, and
+shares the shared-header principle across seed placements without turning the surface into a
+general versioned execution-envelope protocol. No capability advertisement is needed because
+Gleaph has no deployed Router registry state to negotiate; the Graph re-validates every envelope
+fail-closed.
 
 ### 3. Large change: general versioned execution-envelope protocol
 
@@ -503,31 +522,34 @@ introduce scope not justified by the measured POSTED problem.
 
 ## Consequences
 
-- A new public Candid method is added to Graph canisters. Router registry gains a capability flag
-  per graph canister.
+- A single new versionless Candid method `execute_plan_update_batch_bulk` is added to Graph
+  canisters, carrying the `ExecutePlanBulkBatch` variant envelope. The Router registry gains no
+  capability field: the unified path is always active and the Graph re-validates fail-closed.
 - `RouterMutationRecord::V1` is redefined incompatibly with exhaustive `Scalar`, `SharedSeedBulk`, and
   `TypedSeedBulk` payload variants. No Router V2 or stable migration is introduced.
-- Typed V1 is deliberately single-shard, complete-row seeded, unconstrained, search-free, and
-  limited to plans with a statically bounded row-free response shape. Its read prefix may contain
-  multiple contiguous seedable anchors, provided each seed row carries the complete combination.
-- The stable shard registry gains an explicit admin-refreshed `typed_seed_batch` capability with
-  `Unsupported`, `V1`, and `V2` states; `Unsupported` is the fail-closed default.
+- The `PerItemSeed` variant is deliberately single-shard, complete-row seeded, unconstrained,
+  search-free, and limited to plans with a statically bounded row-free response shape. Its read
+  prefix may contain multiple contiguous seedable anchors, provided each seed row carries the
+  complete combination.
+- The former `execution_capabilities` query, `TypedSeedBatchCapability`, and the
+  `ShardRegistryEntry.typed_seed_batch` field are removed. There is no admin refresh/clear step;
+  the deploy script and test harness no longer activate the path.
 - Recovery no longer needs to repeat Property Index lookup for bulk groups that used the typed
   path.
 - The scalar method remains the semantics-safe fallback for unsupported groups. The independent
   batch method remains available for transport aggregation, but same-`MutationId` homogeneous
-  bulk uses typed V1 or shared V2.
+  bulk uses the `PerItemSeed` or `SharedSeed` variant.
 - Initial Router rollout and rollback to older Router Wasm require fresh install/reset because the
   V1 stable layout is intentionally incompatible and Gleaph has no deployed state to migrate.
 - End-to-end adoption is gated on measured Router ingress savings. A workload that never enters the
-  typed method is an adoption failure for that workload, not evidence that the typed transport is
+  bulk method is an adoption failure for that workload, not evidence that the transport is
   intrinsically slower.
 - The new surface must be covered by focused PocketIC Router→Graph tests before production release.
 
 Required validation includes: the shared response classifier accepting the measured POSTED shape
-and rejecting row-returning or unbounded shapes; capability refresh refusing a target replaced
-during its `await`; typed rejection/unknown-outcome recovery retaining the same durable request and
-mutation id; response-bound failure selecting scalar before typed persistence or any Graph call; and
+and rejecting row-returning or unbounded shapes; both `ExecutePlanBulkBatch` variants round-tripping
+through Candid; bulk rejection/unknown-outcome recovery retaining the same durable request and
+mutation id; response-bound failure selecting scalar before bulk persistence or any Graph call; and
 a canbench/Router instruction check proving admission does not perform one seed encode per item.
 
 Measured memory/payload probe (2026-07-30 03:10 UTC +0000) for a complete-row query seed with one

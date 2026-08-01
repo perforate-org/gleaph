@@ -97,11 +97,23 @@ async fn call_graph_args<T, R: candid::CandidType>(
     Err(format!("graph {method} unavailable in native builds"))
 }
 
-/// Router → graph: read-only capability advertisement (ADR 0047).
-pub async fn execution_capabilities(
+/// Router → graph: the unified versionless bulk execution entrypoint (ADR 0047).
+///
+/// `PerItemSeed` carries per-operation complete-row seeds; `SharedSeed` carries one shared seed
+/// relation. The Graph re-validates the plan/seed shape fail-closed for every variant.
+pub async fn execute_plan_update_batch_bulk_on_graph(
     graph: Principal,
-) -> Result<gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities, String> {
-    call_graph_args(graph, "execution_capabilities", &()).await
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanBulkBatch,
+) -> Result<ExecutePlanBatchResult, String> {
+    match &args {
+        gleaph_graph_kernel::plan_exec::ExecutePlanBulkBatch::PerItemSeed(typed) => typed
+            .validate()
+            .map_err(|e| format!("bulk per_item_seed validation: {e}"))?,
+        gleaph_graph_kernel::plan_exec::ExecutePlanBulkBatch::SharedSeed(shared) => shared
+            .validate()
+            .map_err(|e| format!("bulk shared_seed validation: {e}"))?,
+    }
+    call_graph_result(graph, "execute_plan_update_batch_bulk", args).await
 }
 
 pub async fn execute_plan_on_graph(
@@ -126,24 +138,30 @@ pub async fn execute_plan_batch_on_graph(
     call_graph_result(graph, method, args).await
 }
 
-/// Router → graph: typed shared bulk envelope with decoded seeds (ADR 0047).
+/// Router → graph: typed per-operation-seed bulk envelope (ADR 0047).
+#[allow(dead_code)]
 pub async fn execute_plan_batch_typed_v1_on_graph(
     graph: Principal,
     args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchTypedArgs,
 ) -> Result<ExecutePlanBatchResult, String> {
-    args.validate()
-        .map_err(|e| format!("typed batch V1 validation: {e}"))?;
-    call_graph_result(graph, "execute_plan_update_batch_typed_v1", args).await
+    execute_plan_update_batch_bulk_on_graph(
+        graph,
+        gleaph_graph_kernel::plan_exec::ExecutePlanBulkBatch::PerItemSeed(args),
+    )
+    .await
 }
 
-/// Router → Graph: shared seed-invariant bulk envelope (ADR 0047 V2).
+/// Router → Graph: shared seed-invariant bulk envelope (ADR 0047).
+#[allow(dead_code)]
 pub async fn execute_plan_batch_shared_v2_on_graph(
     graph: Principal,
     args: ExecutePlanBatchSharedV2Args,
 ) -> Result<ExecutePlanBatchResult, String> {
-    args.validate()
-        .map_err(|e| format!("shared batch V2 validation: {e}"))?;
-    call_graph_result(graph, "execute_plan_update_batch_shared_v2", args).await
+    execute_plan_update_batch_bulk_on_graph(
+        graph,
+        gleaph_graph_kernel::plan_exec::ExecutePlanBulkBatch::SharedSeed(args),
+    )
+    .await
 }
 
 /// Router → Graph: journal-first ordered edge batch execution (ADR 0049).

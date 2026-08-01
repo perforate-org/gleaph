@@ -74,6 +74,7 @@ export const idlFactory = ({ IDL }) => {
     'after_key' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
   const IndexedEdgeMembership = IDL.Record({
+    'field_path' : IDL.Text,
     'label_id' : IDL.Nat16,
     'property_id' : IDL.Nat32,
     'direction_tag' : IDL.Nat8,
@@ -132,19 +133,13 @@ export const idlFactory = ({ IDL }) => {
     'args' : PostingBackfillArgs,
     'catalog' : IndexedPropertyCatalog,
   });
-  const EdgeInlineValueEncoding = IDL.Variant({
+  const EdgeInlinePropertyEncoding = IDL.Variant({
     'F16' : IDL.Null,
     'F32' : IDL.Null,
     'F64' : IDL.Null,
     'VectorF32' : IDL.Record({ 'dims' : IDL.Nat16 }),
-    'WeightBinary16' : IDL.Null,
-    'WeightLinearU16' : IDL.Record({
-      'max' : IDL.Float32,
-      'min' : IDL.Float32,
-    }),
     'RawI8' : IDL.Null,
     'RawU8' : IDL.Null,
-    'WeightLogU16' : IDL.Record({ 'max' : IDL.Float32, 'min' : IDL.Float32 }),
     'RawI128' : IDL.Null,
     'RawFixed32' : IDL.Null,
     'RawFixed64' : IDL.Null,
@@ -155,17 +150,16 @@ export const idlFactory = ({ IDL }) => {
     'RawU16' : IDL.Null,
     'RawU32' : IDL.Null,
     'RawU64' : IDL.Null,
-    'WeightRawU16' : IDL.Null,
     'RawBytes' : IDL.Null,
   });
-  const EdgeInlineValueProfile = IDL.Record({
-    'encoding' : EdgeInlineValueEncoding,
+  const EdgeInlinePropertyProfile = IDL.Record({
+    'encoding' : EdgeInlinePropertyEncoding,
     'byte_width' : IDL.Nat16,
   });
   const ResolvedInlineStructField = IDL.Record({
     'byte_offset' : IDL.Nat16,
     'name' : IDL.Text,
-    'profile' : EdgeInlineValueProfile,
+    'profile' : EdgeInlinePropertyProfile,
   });
   const ResolvedInlineSchema = IDL.Variant({
     'struct' : IDL.Record({
@@ -177,7 +171,7 @@ export const idlFactory = ({ IDL }) => {
   const ResolvedEdgeLabel = IDL.Record({
     'id' : IDL.Nat16,
     'name' : IDL.Text,
-    'inline_value_profile' : EdgeInlineValueProfile,
+    'inline_property_profile' : EdgeInlinePropertyProfile,
     'inline_schema' : IDL.Opt(ResolvedInlineSchema),
   });
   const ResolvedVertexLabel = IDL.Record({
@@ -187,6 +181,161 @@ export const idlFactory = ({ IDL }) => {
   const ResolvedLabelTable = IDL.Record({
     'edge' : IDL.Vec(ResolvedEdgeLabel),
     'vertex' : IDL.Vec(ResolvedVertexLabel),
+  });
+  const ResolvedProperty = IDL.Record({ 'id' : IDL.Nat32, 'name' : IDL.Text });
+  const ResolvedPropertyTable = IDL.Record({
+    'properties' : IDL.Vec(ResolvedProperty),
+  });
+  const ResolvedOrderedEdgePropertyV1 = IDL.Record({
+    'value' : IDL.Vec(IDL.Nat8),
+    'property_id' : IDL.Nat32,
+  });
+  const OrderedEdgeBatchGraphItemV1 = IDL.Record({
+    'directed' : IDL.Bool,
+    'inline_property_bytes' : IDL.Vec(IDL.Nat8),
+    'resolved_initial_edge_properties' : IDL.Vec(ResolvedOrderedEdgePropertyV1),
+    'catalog_edge_label_id' : IDL.Opt(IDL.Nat16),
+    'target_local_vertex_id' : IDL.Nat32,
+    'source_local_vertex_id' : IDL.Nat32,
+  });
+  const OrderedEdgeBatchGraphRequestV1 = IDL.Record({
+    'graph_id' : IDL.Nat32,
+    'resolved_labels' : ResolvedLabelTable,
+    'target_shard_id' : IDL.Nat32,
+    'resolved_properties' : ResolvedPropertyTable,
+    'items' : IDL.Vec(OrderedEdgeBatchGraphItemV1),
+    'target_graph_canister' : IDL.Principal,
+  });
+  const OrderedEdgeBatchGraphRequest = IDL.Variant({
+    'V1' : OrderedEdgeBatchGraphRequestV1,
+  });
+  const OrderedEdgeBatchGraphArgsV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'request' : OrderedEdgeBatchGraphRequest,
+  });
+  const OrderedEdgeBatchGraphArgs = IDL.Variant({
+    'V1' : OrderedEdgeBatchGraphArgsV1,
+  });
+  const GraphOrderedEdgeBatchReceiptV1 = IDL.Record({
+    'logical_edge_count' : IDL.Nat64,
+    'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
+    'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
+    'hot_forward_vertices' : IDL.Vec(IDL.Nat32),
+  });
+  const GraphOrderedEdgeBatchResultV1 = IDL.Variant({
+    'MutationRetired' : IDL.Record({
+      'mutation_id' : IDL.Nat64,
+      'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    }),
+    'Completed' : GraphOrderedEdgeBatchReceiptV1,
+  });
+  const GraphOrderedEdgeBatchResult = IDL.Variant({
+    'V1' : GraphOrderedEdgeBatchResultV1,
+  });
+  const Result_6 = IDL.Variant({
+    'Ok' : GraphOrderedEdgeBatchResult,
+    'Err' : IDL.Text,
+  });
+  const OrderedMixedGraphEndpointV1 = IDL.Variant({
+    'NewVertexOrdinal' : IDL.Nat32,
+    'Existing' : IDL.Nat32,
+  });
+  const OrderedMixedGraphEdgeItemV1 = IDL.Record({
+    'source' : OrderedMixedGraphEndpointV1,
+    'directed' : IDL.Bool,
+    'inline_property_bytes' : IDL.Vec(IDL.Nat8),
+    'target' : OrderedMixedGraphEndpointV1,
+    'resolved_initial_edge_properties' : IDL.Vec(ResolvedOrderedEdgePropertyV1),
+    'catalog_edge_label_id' : IDL.Opt(IDL.Nat16),
+  });
+  const OrderedVertexBatchGraphItemV1 = IDL.Record({
+    'resolved_initial_properties' : IDL.Vec(ResolvedOrderedEdgePropertyV1),
+    'resolved_vertex_labels' : IDL.Vec(IDL.Nat16),
+  });
+  const OrderedMixedGraphOperationV1 = IDL.Variant({
+    'Edge' : OrderedMixedGraphEdgeItemV1,
+    'Vertex' : OrderedVertexBatchGraphItemV1,
+  });
+  const OrderedMixedBatchGraphRequestV1 = IDL.Record({
+    'graph_id' : IDL.Nat32,
+    'resolved_labels' : ResolvedLabelTable,
+    'target_shard_id' : IDL.Nat32,
+    'operations' : IDL.Vec(OrderedMixedGraphOperationV1),
+    'resolved_properties' : ResolvedPropertyTable,
+    'target_graph_canister' : IDL.Principal,
+  });
+  const OrderedMixedBatchGraphRequest = IDL.Variant({
+    'V1' : OrderedMixedBatchGraphRequestV1,
+  });
+  const OrderedMixedBatchGraphArgsV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'request' : OrderedMixedBatchGraphRequest,
+  });
+  const OrderedMixedBatchGraphArgs = IDL.Variant({
+    'V1' : OrderedMixedBatchGraphArgsV1,
+  });
+  const GraphOrderedMixedBatchReceiptV1 = IDL.Record({
+    'logical_edge_count' : IDL.Nat64,
+    'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
+    'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
+    'logical_vertex_count' : IDL.Nat64,
+    'logical_operation_count' : IDL.Nat64,
+    'hot_forward_vertices' : IDL.Vec(IDL.Nat32),
+  });
+  const GraphOrderedMixedBatchResultV1 = IDL.Variant({
+    'MutationRetired' : IDL.Record({
+      'mutation_id' : IDL.Nat64,
+      'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    }),
+    'Completed' : GraphOrderedMixedBatchReceiptV1,
+  });
+  const GraphOrderedMixedBatchResult = IDL.Variant({
+    'V1' : GraphOrderedMixedBatchResultV1,
+  });
+  const Result_7 = IDL.Variant({
+    'Ok' : GraphOrderedMixedBatchResult,
+    'Err' : IDL.Text,
+  });
+  const OrderedVertexBatchGraphRequestV1 = IDL.Record({
+    'graph_id' : IDL.Nat32,
+    'resolved_labels' : ResolvedLabelTable,
+    'target_shard_id' : IDL.Nat32,
+    'resolved_properties' : ResolvedPropertyTable,
+    'items' : IDL.Vec(OrderedVertexBatchGraphItemV1),
+    'target_graph_canister' : IDL.Principal,
+  });
+  const OrderedVertexBatchGraphRequest = IDL.Variant({
+    'V1' : OrderedVertexBatchGraphRequestV1,
+  });
+  const OrderedVertexBatchGraphArgsV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'request' : OrderedVertexBatchGraphRequest,
+  });
+  const OrderedVertexBatchGraphArgs = IDL.Variant({
+    'V1' : OrderedVertexBatchGraphArgsV1,
+  });
+  const GraphOrderedVertexBatchReceiptV1 = IDL.Record({
+    'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
+    'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
+    'logical_vertex_count' : IDL.Nat64,
+    'hot_forward_vertices' : IDL.Vec(IDL.Nat32),
+  });
+  const GraphOrderedVertexBatchResultV1 = IDL.Variant({
+    'MutationRetired' : IDL.Record({
+      'mutation_id' : IDL.Nat64,
+      'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    }),
+    'Completed' : GraphOrderedVertexBatchReceiptV1,
+  });
+  const GraphOrderedVertexBatchResult = IDL.Variant({
+    'V1' : GraphOrderedVertexBatchResultV1,
+  });
+  const Result_8 = IDL.Variant({
+    'Ok' : GraphOrderedVertexBatchResult,
+    'Err' : IDL.Text,
   });
   const GqlExecutionMode = IDL.Variant({
     'Update' : IDL.Null,
@@ -201,10 +350,6 @@ export const idlFactory = ({ IDL }) => {
     'vertex_label_id' : IDL.Nat16,
     'property_id' : IDL.Nat32,
     'constraint_id' : IDL.Nat16,
-  });
-  const ResolvedProperty = IDL.Record({ 'id' : IDL.Nat32, 'name' : IDL.Text });
-  const ResolvedPropertyTable = IDL.Record({
-    'properties' : IDL.Vec(ResolvedProperty),
   });
   const ExecutePlanArgs = IDL.Record({
     'mutation_id' : IDL.Opt(IDL.Nat64),
@@ -231,7 +376,7 @@ export const idlFactory = ({ IDL }) => {
     'row_count' : IDL.Nat64,
     'hot_forward_vertices' : IDL.Vec(IDL.Nat32),
   });
-  const Result_6 = IDL.Variant({ 'Ok' : ExecutePlanResult, 'Err' : IDL.Text });
+  const Result_9 = IDL.Variant({ 'Ok' : ExecutePlanResult, 'Err' : IDL.Text });
   const ExecutePlanBatchMode = IDL.Variant({
     'Dynamic' : IDL.Null,
     'Fixed' : IDL.Null,
@@ -242,11 +387,31 @@ export const idlFactory = ({ IDL }) => {
   });
   const ExecutePlanBatchResult = IDL.Record({
     'next_index' : IDL.Opt(IDL.Nat32),
-    'results' : IDL.Vec(Result_6),
+    'results' : IDL.Vec(Result_9),
   });
-  const Result_7 = IDL.Variant({
+  const Result_10 = IDL.Variant({
     'Ok' : ExecutePlanBatchResult,
     'Err' : IDL.Text,
+  });
+  const ExecutePlanBatchSharedV2 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'indexed_properties' : IDL.Opt(IndexedPropertyCatalog),
+    'plan_blob' : IDL.Vec(IDL.Nat8),
+    'resolved_labels' : IDL.Opt(ResolvedLabelTable),
+    'target_shard_id' : IDL.Nat32,
+    'indexed_embeddings' : IDL.Opt(IndexedEmbeddingCatalog),
+    'resolved_search_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'resolved_properties' : IDL.Opt(ResolvedPropertyTable),
+    'element_id_encoding_key' : IDL.Vec(IDL.Nat8),
+    'seed_bindings_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+  });
+  const ExecutePlanSharedV2Op = IDL.Record({
+    'params_blob' : IDL.Vec(IDL.Nat8),
+  });
+  const ExecutePlanBatchSharedV2Args = IDL.Record({
+    'batch_mode' : ExecutePlanBatchMode,
+    'shared' : ExecutePlanBatchSharedV2,
+    'operations' : IDL.Vec(ExecutePlanSharedV2Op),
   });
   const ExecutePlanBatchTypedShared = IDL.Record({
     'mutation_id' : IDL.Nat64,
@@ -294,12 +459,9 @@ export const idlFactory = ({ IDL }) => {
     'shared' : ExecutePlanBatchTypedShared,
     'operations' : IDL.Vec(ExecutePlanTypedOp),
   });
-  const TypedSeedBatchCapability = IDL.Variant({
-    'V1' : IDL.Null,
-    'Unsupported' : IDL.Null,
-  });
-  const GraphExecutionCapabilities = IDL.Record({
-    'typed_seed_batch' : TypedSeedBatchCapability,
+  const ExecutePlanBulkBatch = IDL.Variant({
+    'SharedSeed' : ExecutePlanBatchSharedV2Args,
+    'PerItemSeed' : ExecutePlanBatchTypedArgs,
   });
   const BulkIngestFinalizeArgs = IDL.Record({
     'forward_vertices' : IDL.Vec(IDL.Nat32),
@@ -315,12 +477,32 @@ export const idlFactory = ({ IDL }) => {
     'instruction_budget_exhausted' : IDL.Bool,
     'instructions_used' : IDL.Nat64,
   });
-  const Result_8 = IDL.Variant({
+  const Result_11 = IDL.Variant({
     'Ok' : BulkIngestFinalizeResult,
     'Err' : IDL.Text,
   });
   const GetMutationJournalEntriesArgs = IDL.Record({
     'mutation_ids' : IDL.Vec(IDL.Nat64),
+  });
+  const GraphMutationRequestIdentityV1 = IDL.Variant({
+    'OrderedVertexBatch' : IDL.Record({
+      'logical_item_count' : IDL.Nat32,
+      'canonical_encoding_version' : IDL.Nat16,
+      'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    }),
+    'OrderedEdgeBatch' : IDL.Record({
+      'logical_item_count' : IDL.Nat32,
+      'canonical_encoding_version' : IDL.Nat16,
+      'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+    }),
+    'OrderedMixedBatch' : IDL.Record({
+      'logical_edge_count' : IDL.Nat32,
+      'canonical_encoding_version' : IDL.Nat16,
+      'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+      'logical_vertex_count' : IDL.Nat32,
+      'logical_operation_count' : IDL.Nat32,
+    }),
+    'PlanExecution' : IDL.Null,
   });
   const GraphBulkMutationProgressV1 = IDL.Record({
     'operation_row_counts' : IDL.Vec(IDL.Nat64),
@@ -334,14 +516,21 @@ export const idlFactory = ({ IDL }) => {
     'Completed' : IDL.Null,
     'Incomplete' : IDL.Null,
   });
+  const GraphMutationRetirementWireV1 = IDL.Variant({
+    'NotApplicable' : IDL.Null,
+    'Active' : IDL.Null,
+    'Retired' : IDL.Null,
+  });
   const GraphMutationJournalEntryWireV1 = IDL.Record({
     'mutation_id' : IDL.Nat64,
     'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
     'next_index' : IDL.Opt(IDL.Nat32),
+    'request_identity' : GraphMutationRequestIdentityV1,
     'bulk_progress' : IDL.Opt(GraphBulkMutationProgress),
     'row_count' : IDL.Nat64,
     'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
     'state' : MutationJournalState,
+    'retirement' : GraphMutationRetirementWireV1,
     'hot_forward_vertices' : IDL.Vec(IDL.Nat32),
   });
   const GraphMutationJournalEntryWire = IDL.Variant({
@@ -350,6 +539,11 @@ export const idlFactory = ({ IDL }) => {
   const GetMutationJournalEntriesResult = IDL.Record({
     'next' : IDL.Opt(IDL.Nat64),
     'entries' : IDL.Vec(IDL.Opt(GraphMutationJournalEntryWire)),
+  });
+  const IndexSyncStatus = IDL.Record({
+    'repair_journal_len' : IDL.Nat64,
+    'converged' : IDL.Bool,
+    'derived_index_outbox_len' : IDL.Nat64,
   });
   const LabelStatsDelta = IDL.Record({
     'edge' : IDL.Vec(IDL.Tuple(IDL.Nat16, IDL.Int64)),
@@ -383,6 +577,49 @@ export const idlFactory = ({ IDL }) => {
     'effect_id' : EffectId,
     'encoded_value' : IDL.Vec(IDL.Nat8),
     'constraint_id' : IDL.Nat16,
+  });
+  const OrderedMutationRetirementArgsV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+  });
+  const OrderedMutationRetirementArgs = IDL.Variant({
+    'V1' : OrderedMutationRetirementArgsV1,
+  });
+  const OrderedMixedMutationRetirementAckV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'receipt' : GraphOrderedMixedBatchReceiptV1,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+  });
+  const OrderedMixedMutationRetirementAck = IDL.Variant({
+    'V1' : OrderedMixedMutationRetirementAckV1,
+  });
+  const Result_12 = IDL.Variant({
+    'Ok' : OrderedMixedMutationRetirementAck,
+    'Err' : IDL.Text,
+  });
+  const OrderedMutationRetirementAckV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'receipt' : GraphOrderedEdgeBatchReceiptV1,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+  });
+  const OrderedMutationRetirementAck = IDL.Variant({
+    'V1' : OrderedMutationRetirementAckV1,
+  });
+  const Result_13 = IDL.Variant({
+    'Ok' : OrderedMutationRetirementAck,
+    'Err' : IDL.Text,
+  });
+  const OrderedVertexMutationRetirementAckV1 = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'receipt' : GraphOrderedVertexBatchReceiptV1,
+    'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
+  });
+  const OrderedVertexMutationRetirementAck = IDL.Variant({
+    'V1' : OrderedVertexMutationRetirementAckV1,
+  });
+  const Result_14 = IDL.Variant({
+    'Ok' : OrderedVertexMutationRetirementAck,
+    'Err' : IDL.Text,
   });
 
   return IDL.Service({
@@ -420,28 +657,42 @@ export const idlFactory = ({ IDL }) => {
         [Result_4],
         [],
       ),
+    'execute_ordered_edge_batch' : IDL.Func(
+        [OrderedEdgeBatchGraphArgs],
+        [Result_6],
+        [],
+      ),
+    'execute_ordered_mixed_batch' : IDL.Func(
+        [OrderedMixedBatchGraphArgs],
+        [Result_7],
+        [],
+      ),
+    'execute_ordered_vertex_batch' : IDL.Func(
+        [OrderedVertexBatchGraphArgs],
+        [Result_8],
+        [],
+      ),
     'execute_plan_query' : IDL.Func(
         [ExecutePlanArgs],
-        [Result_6],
+        [Result_9],
         ['composite_query'],
       ),
-    'execute_plan_update' : IDL.Func([ExecutePlanArgs], [Result_6], []),
+    'execute_plan_update' : IDL.Func([ExecutePlanArgs], [Result_9], []),
     'execute_plan_update_batch' : IDL.Func(
         [ExecutePlanBatchArgs],
-        [Result_7],
+        [Result_10],
         [],
       ),
-    'execute_plan_update_batch_typed_v1' : IDL.Func(
-        [ExecutePlanBatchTypedArgs],
-        [Result_7],
+    'execute_plan_update_batch_bulk' : IDL.Func(
+        [ExecutePlanBulkBatch],
+        [Result_10],
         [],
       ),
-    'execution_capabilities' : IDL.Func(
+    'finalize_bulk_ingest' : IDL.Func(
+        [BulkIngestFinalizeArgs],
+        [Result_11],
         [],
-        [GraphExecutionCapabilities],
-        ['query'],
       ),
-    'finalize_bulk_ingest' : IDL.Func([BulkIngestFinalizeArgs], [Result_8], []),
     'get_mutation_journal_entries' : IDL.Func(
         [GetMutationJournalEntriesArgs],
         [GetMutationJournalEntriesResult],
@@ -457,6 +708,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Opt(IDL.Nat64)],
         ['query'],
       ),
+    'index_sync_status' : IDL.Func([], [IndexSyncStatus], ['query']),
     'list_pending_label_stats_deltas' : IDL.Func(
         [IDL.Nat64, IDL.Nat32],
         [IDL.Vec(LabelStatsDeltaEventWire)],
@@ -480,6 +732,21 @@ export const idlFactory = ({ IDL }) => {
     'read_unique_release_effects' : IDL.Func(
         [IDL.Nat64, IDL.Opt(IDL.Nat32), IDL.Nat32],
         [IDL.Vec(UniqueEffectReceipt)],
+        [],
+      ),
+    'retire_ordered_mixed_mutation' : IDL.Func(
+        [OrderedMutationRetirementArgs],
+        [Result_12],
+        [],
+      ),
+    'retire_ordered_mutation' : IDL.Func(
+        [OrderedMutationRetirementArgs],
+        [Result_13],
+        [],
+      ),
+    'retire_ordered_vertex_mutation' : IDL.Func(
+        [OrderedMutationRetirementArgs],
+        [Result_14],
         [],
       ),
   });

@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-31
-Anchor timestamp: 2026-07-31 09:47:59 UTC +0000
+Last updated: 2026-08-01
+Anchor timestamp: 2026-08-01 01:23:28 UTC +0000
 
 ## Status
 
@@ -66,7 +66,7 @@ defect from being rediscovered without its prior reasoning.
   invariants.
 - **Evidence:** `crates/router/src/seed.rs` (`SeedAnchorSet::is_selective_complete_row_seed` and
   `hits_to_local_vertex_ids`), `crates/router/src/gql.rs`
-  (`plan_requires_per_item_seed_bindings` and `execute_prepared_bulk_group_typed`),
+  (`execute_prepared_bulk_group_typed`),
   `crates/gql-integration/src/typed_batch.rs` (`is_typed_seeded_bundle` and the exhaustive
   row-preserving operator classifier), and [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md)
   multi-anchor V1 contract.

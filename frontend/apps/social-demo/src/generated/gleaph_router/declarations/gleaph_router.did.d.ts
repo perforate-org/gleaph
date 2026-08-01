@@ -45,6 +45,13 @@ export interface AdminEdgeBackfillStepResult {
   'next_after_key' : [] | [Uint8Array],
 }
 /**
+ * One graph shard whose graph-index convergence is queried through the Router.
+ */
+export interface AdminIndexSyncStatusArgs {
+  'shard_id' : number,
+  'logical_graph_name' : string,
+}
+/**
  * Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
  * (plan 0048). The caller supplies only the logical graph name, the opaque encoded vertex id,
  * the registered embedding name, and the vector values; Router resolves ownership and the
@@ -381,6 +388,30 @@ export type GraphStatus = { 'Deleting' : null } |
   { 'Active' : null } |
   { 'ReadOnly' : null } |
   { 'Deprecated' : null };
+/**
+ * Graph-side snapshot of durable derived-index work not yet delivered to graph-index.
+ *
+ * The social-demo seeding orchestrator needs one observable "the index caught up" signal
+ * before dispatching dependent edge waves, whose `MATCH` anchors resolve through
+ * graph-index property postings. The existing [`crate::plan_exec::MutationId`] watermark
+ * (`index_pending_min_mutation_id`) covers only the repair journal (failed-flush
+ * re-application); the durable first-delivery outbox is a separate backlog that can also
+ * pin convergence, so this snapshot reports both queues and a derived `converged` flag.
+ */
+export interface IndexSyncStatus {
+  /**
+   * Failed-flush ops persisted in the repair journal awaiting re-application.
+   */
+  'repair_journal_len' : bigint,
+  /**
+   * `derived_index_outbox_len == 0 && repair_journal_len == 0`.
+   */
+  'converged' : boolean,
+  /**
+   * Derived-index ops still in the durable first-delivery outbox (never yet delivered).
+   */
+  'derived_index_outbox_len' : bigint,
+}
 /**
  * One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
  */
@@ -756,93 +787,95 @@ export interface ResultSchema {
 }
 export type Result_1 = { 'Ok' : boolean } |
   { 'Err' : RouterError };
-export type Result_10 = { 'Ok' : AdminLabelStatsProjectionStepResult } |
+export type Result_10 = { 'Ok' : AdminLabelBackfillStepResult } |
   { 'Err' : RouterError };
-export type Result_11 = { 'Ok' : Array<EdgeBackfillShardStatus> } |
+export type Result_11 = { 'Ok' : AdminLabelStatsProjectionStepResult } |
   { 'Err' : RouterError };
-export type Result_12 = { 'Ok' : Array<LabelBackfillShardStatus> } |
+export type Result_12 = { 'Ok' : Array<EdgeBackfillShardStatus> } |
   { 'Err' : RouterError };
-export type Result_13 = { 'Ok' : VectorMaintenanceRecommendation } |
+export type Result_13 = { 'Ok' : Array<LabelBackfillShardStatus> } |
   { 'Err' : RouterError };
-export type Result_14 = { 'Ok' : AdminSweepMutationKeysStepResult } |
+export type Result_14 = { 'Ok' : VectorMaintenanceRecommendation } |
   { 'Err' : RouterError };
-export type Result_15 = { 'Ok' : VectorCentroidCacheStatus } |
+export type Result_15 = { 'Ok' : AdminSweepMutationKeysStepResult } |
   { 'Err' : RouterError };
-export type Result_16 = { 'Ok' : AdminVectorIndexBackfillStepResult } |
+export type Result_16 = { 'Ok' : VectorCentroidCacheStatus } |
   { 'Err' : RouterError };
-export type Result_17 = { 'Ok' : VectorMaintenanceState } |
+export type Result_17 = { 'Ok' : AdminVectorIndexBackfillStepResult } |
   { 'Err' : RouterError };
-export type Result_18 = { 'Ok' : VectorMaintenanceStepOutcome } |
+export type Result_18 = { 'Ok' : VectorMaintenanceState } |
   { 'Err' : RouterError };
-export type Result_19 = { 'Ok' : VectorPartitionHealthSummary } |
+export type Result_19 = { 'Ok' : VectorMaintenanceStepOutcome } |
   { 'Err' : RouterError };
 export type Result_2 = { 'Ok' : AdminEdgeBackfillStepResult } |
   { 'Err' : RouterError };
-export type Result_20 = { 'Ok' : VectorPartitionHealthStep } |
+export type Result_20 = { 'Ok' : VectorPartitionHealthSummary } |
   { 'Err' : RouterError };
-export type Result_21 = { 'Ok' : VectorRebuildStatus } |
+export type Result_21 = { 'Ok' : VectorPartitionHealthStep } |
   { 'Err' : RouterError };
-export type Result_22 = { 'Ok' : VectorSlabStats } |
+export type Result_22 = { 'Ok' : VectorRebuildStatus } |
   { 'Err' : RouterError };
-export type Result_23 = { 'Ok' : VectorSlabStatsStep } |
+export type Result_23 = { 'Ok' : VectorSlabStats } |
   { 'Err' : RouterError };
-export type Result_24 = { 'Ok' : BatchResponse } |
+export type Result_24 = { 'Ok' : VectorSlabStatsStep } |
   { 'Err' : RouterError };
-export type Result_25 = { 'Ok' : bigint } |
+export type Result_25 = { 'Ok' : BatchResponse } |
   { 'Err' : RouterError };
-export type Result_26 = { 'Ok' : GqlQueryResult } |
+export type Result_26 = { 'Ok' : bigint } |
   { 'Err' : RouterError };
-export type Result_27 = { 'Ok' : GqlExecuteIdempotentBatchResult } |
+export type Result_27 = { 'Ok' : GqlQueryResult } |
   { 'Err' : RouterError };
-export type Result_28 = { 'Ok' : Uint8Array } |
+export type Result_28 = { 'Ok' : GqlExecuteIdempotentBatchResult } |
   { 'Err' : RouterError };
-export type Result_29 = { 'Ok' : IndexedPropertyCatalog } |
+export type Result_29 = { 'Ok' : Uint8Array } |
   { 'Err' : RouterError };
 export type Result_3 = { 'Ok' : Array<GraphStableMemoryStats> } |
   { 'Err' : RouterError };
-export type Result_30 = { 'Ok' : Array<ShardRegistryEntry> } |
+export type Result_30 = { 'Ok' : IndexedPropertyCatalog } |
   { 'Err' : RouterError };
-export type Result_31 = { 'Ok' : Array<VectorIndexInfo> } |
+export type Result_31 = { 'Ok' : Array<ShardRegistryEntry> } |
   { 'Err' : RouterError };
-export type Result_32 = { 'Ok' : Array<VectorMaintenancePolicyView> } |
+export type Result_32 = { 'Ok' : Array<VectorIndexInfo> } |
   { 'Err' : RouterError };
-export type Result_33 = { 'Ok' : number } |
+export type Result_33 = { 'Ok' : Array<VectorMaintenancePolicyView> } |
   { 'Err' : RouterError };
-export type Result_34 = { 'Ok' : MutationStatus } |
+export type Result_34 = { 'Ok' : number } |
   { 'Err' : RouterError };
-export type Result_35 = { 'Ok' : string } |
+export type Result_35 = { 'Ok' : MutationStatus } |
   { 'Err' : RouterError };
-export type Result_36 = { 'Ok' : PreparedManifest } |
+export type Result_36 = { 'Ok' : string } |
   { 'Err' : RouterError };
-export type Result_37 = { 'Ok' : ProvisionGraphResponse } |
+export type Result_37 = { 'Ok' : PreparedManifest } |
   { 'Err' : RouterError };
-export type Result_38 = { 'Ok' : GraphRegistryEntry } |
+export type Result_38 = { 'Ok' : ProvisionGraphResponse } |
   { 'Err' : RouterError };
-export type Result_39 = { 'Ok' : ShardRegistryEntry } |
+export type Result_39 = { 'Ok' : GraphRegistryEntry } |
   { 'Err' : RouterError };
-export type Result_4 = { 'Ok' : VertexEmbeddingIngestionResult } |
+export type Result_4 = { 'Ok' : IndexSyncStatus } |
   { 'Err' : RouterError };
-export type Result_40 = { 'Ok' : Principal } |
+export type Result_40 = { 'Ok' : ShardRegistryEntry } |
   { 'Err' : RouterError };
-export type Result_41 = { 'Ok' : RouterAckResponse } |
+export type Result_41 = { 'Ok' : Principal } |
   { 'Err' : RouterError };
-export type Result_42 = { 'Ok' : VectorIndexActivationStatus } |
+export type Result_42 = { 'Ok' : RouterAckResponse } |
   { 'Err' : RouterError };
-export type Result_43 = { 'Ok' : [] | [VectorMaintenancePolicyView] } |
+export type Result_43 = { 'Ok' : VectorIndexActivationStatus } |
   { 'Err' : RouterError };
-export type Result_44 = { 'Ok' : VectorMaintenanceStatusView } |
+export type Result_44 = { 'Ok' : [] | [VectorMaintenancePolicyView] } |
   { 'Err' : RouterError };
-export type Result_45 = { 'Ok' : VectorSearchResult } |
+export type Result_45 = { 'Ok' : VectorMaintenanceStatusView } |
+  { 'Err' : RouterError };
+export type Result_46 = { 'Ok' : VectorSearchResult } |
   { 'Err' : RouterError };
 export type Result_5 = { 'Ok' : VertexEmbeddingIngestionResult } |
-  { 'Err' : string };
-export type Result_6 = { 'Ok' : Array<Result_5> } |
   { 'Err' : RouterError };
-export type Result_7 = { 'Ok' : number } |
+export type Result_6 = { 'Ok' : VertexEmbeddingIngestionResult } |
+  { 'Err' : string };
+export type Result_7 = { 'Ok' : Array<Result_6> } |
   { 'Err' : RouterError };
 export type Result_8 = { 'Ok' : number } |
   { 'Err' : RouterError };
-export type Result_9 = { 'Ok' : AdminLabelBackfillStepResult } |
+export type Result_9 = { 'Ok' : number } |
   { 'Err' : RouterError };
 /**
  * Response returned by the Router canister `router_ack` callback.
@@ -1289,12 +1322,6 @@ export interface ShardRegistryEntry {
    * `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
    */
   'index_attached' : boolean,
-  /**
-   * `true` once the Router has durably verified that this exact registered Graph canister
-   * advertises `execution_capabilities.typed_seed_batch` (ADR 0047). Decodes as `Unsupported`
-   * for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
-   */
-  'typed_seed_batch' : TypedSeedBatchCapability,
 }
 /**
  * A caller-selectable sort key for a prepared operation.
@@ -1335,8 +1362,6 @@ export interface StableMemoryStats {
   'logical_total_pages' : bigint,
   'logical_total_bytes' : bigint,
 }
-export type TypedSeedBatchCapability = { 'V1' : null } |
-  { 'Unsupported' : null };
 /**
  * Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
  */
@@ -2297,10 +2322,6 @@ export interface _SERVICE {
    * Read-only oracle: verify router registry denormalization invariants (`Role::Admin`).
    */
   'admin_check_registry_invariants' : ActorMethod<[], Result>,
-  'admin_clear_shard_execution_capabilities' : ActorMethod<
-    [string, number],
-    Result
-  >,
   /**
    * Delete the maintenance policy for one vector index (DDL admin). Returns whether one existed.
    */
@@ -2328,6 +2349,12 @@ export interface _SERVICE {
    */
   'admin_graph_stable_memory_stats' : ActorMethod<[string], Result_3>,
   /**
+   * Graph-index convergence snapshot for one graph shard (`Role::Admin`). Poll
+   * `converged` before dispatching index-dependent waves; the backfill steps repair
+   * convergence when it stalls.
+   */
+  'admin_index_sync_status' : ActorMethod<[AdminIndexSyncStatusArgs], Result_4>,
+  /**
    * Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
    * (plan 0048). Resolves the opaque graph-scoped vertex id, validates the registered embedding
    * definition, and dispatches a single canonical write. The result reports the canonical embedding
@@ -2335,7 +2362,7 @@ export interface _SERVICE {
    */
   'admin_ingest_vertex_embedding' : ActorMethod<
     [AdminIngestVertexEmbeddingArgs],
-    Result_4
+    Result_5
   >,
   /**
    * Admin (plan 0048 extension): ingest many finite F32 vertex embeddings in one call. Items are
@@ -2344,48 +2371,44 @@ export interface _SERVICE {
    */
   'admin_ingest_vertex_embedding_batch' : ActorMethod<
     [AdminIngestVertexEmbeddingBatchArgs],
-    Result_6
+    Result_7
   >,
-  'admin_intern_edge_label' : ActorMethod<[string, string], Result_7>,
-  'admin_intern_property' : ActorMethod<[string, string], Result_8>,
-  'admin_intern_vertex_label' : ActorMethod<[string, string], Result_7>,
+  'admin_intern_edge_label' : ActorMethod<[string, string], Result_8>,
+  'admin_intern_property' : ActorMethod<[string, string], Result_9>,
+  'admin_intern_vertex_label' : ActorMethod<[string, string], Result_8>,
   /**
    * Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).
    */
   'admin_label_backfill_step' : ActorMethod<
     [AdminLabelBackfillStepArgs],
-    Result_9
+    Result_10
   >,
   /**
    * Advance label stats projection for one graph shard (`Role::Admin`; call in a loop).
    */
   'admin_label_stats_projection_step' : ActorMethod<
     [AdminLabelStatsProjectionStepArgs],
-    Result_10
+    Result_11
   >,
   /**
    * List router-stable edge backfill cursors for all shards of a logical graph.
    */
-  'admin_list_edge_backfill_status' : ActorMethod<[string], Result_11>,
+  'admin_list_edge_backfill_status' : ActorMethod<[string], Result_12>,
   /**
    * List router-stable backfill cursors for all shards of a logical graph.
    */
-  'admin_list_label_backfill_status' : ActorMethod<[string], Result_12>,
+  'admin_list_label_backfill_status' : ActorMethod<[string], Result_13>,
   /**
    * List router-stable vertex property backfill cursors for all shards of a logical graph.
    */
   'admin_list_vertex_property_backfill_status' : ActorMethod<
     [string],
-    Result_12
+    Result_13
   >,
   /**
    * Publish a `ReadyToPublish` rebuild on the activated vector target.
    */
   'admin_publish_vector_rebuild' : ActorMethod<[string, number], Result>,
-  'admin_refresh_shard_execution_capabilities' : ActorMethod<
-    [string, number],
-    Result_1
-  >,
   'admin_register_graph' : ActorMethod<[GraphRegistryEntry], Result>,
   'admin_register_shard' : ActorMethod<[AdminRegisterShardArgs], Result>,
   /**
@@ -2452,14 +2475,14 @@ export interface _SERVICE {
       [] | [number],
       number,
     ],
-    Result_13
+    Result_14
   >,
   /**
    * Evict expired client-mutation idempotency records (`Role::Admin`; call in a loop).
    */
   'admin_sweep_expired_client_mutation_keys' : ActorMethod<
     [AdminSweepMutationKeysStepArgs],
-    Result_14
+    Result_15
   >,
   /**
    * Debug-only: dump the in-memory batch instruction log. Requires `batch-instr-log` feature.
@@ -2474,17 +2497,17 @@ export interface _SERVICE {
   /**
    * Clear the entire heap centroid cache on the graph's vector target.
    */
-  'admin_vector_centroid_cache_clear' : ActorMethod<[string], Result_15>,
+  'admin_vector_centroid_cache_clear' : ActorMethod<[string], Result_16>,
   /**
    * Heap centroid cache status, forwarded to the graph's vector target.
    */
-  'admin_vector_centroid_cache_status' : ActorMethod<[string], Result_15>,
+  'admin_vector_centroid_cache_status' : ActorMethod<[string], Result_16>,
   /**
    * Warm the heap centroid cache on the activated vector target.
    */
   'admin_vector_centroid_cache_warmup' : ActorMethod<
     [string, number],
-    Result_15
+    Result_16
   >,
   /**
    * Request a derived vector-index backfill step (ADR 0031; `authorize_index_ddl`). Fails closed with
@@ -2493,7 +2516,7 @@ export interface _SERVICE {
    */
   'admin_vector_index_backfill_step' : ActorMethod<
     [AdminVectorIndexBackfillStepArgs],
-    Result_16
+    Result_17
   >,
   /**
    * Reset the maintenance execution state to `Idle` (incl. `Failed`) on the activated vector target.
@@ -2503,71 +2526,71 @@ export interface _SERVICE {
   /**
    * Vector-canister-owned maintenance execution state, forwarded to the activated vector target.
    */
-  'admin_vector_maintenance_status' : ActorMethod<[string, number], Result_17>,
+  'admin_vector_maintenance_status' : ActorMethod<[string, number], Result_18>,
   /**
    * Advance one bounded maintenance unit for an enabled policy; `Disabled` no-op otherwise.
    */
-  'admin_vector_maintenance_step' : ActorMethod<[string, number], Result_18>,
+  'admin_vector_maintenance_step' : ActorMethod<[string, number], Result_19>,
   /**
    * Head-only O(`nlist`) partition-health summary, forwarded to the activated vector target.
    */
-  'admin_vector_partition_health' : ActorMethod<[string, number], Result_19>,
+  'admin_vector_partition_health' : ActorMethod<[string, number], Result_20>,
   /**
    * Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
    */
   'admin_vector_partition_health_step' : ActorMethod<
     [string, number, [] | [Uint8Array], number],
-    Result_20
+    Result_21
   >,
   /**
    * Drive one bounded cleanup/abort teardown step on the activated vector target.
    */
   'admin_vector_rebuild_cleanup_step' : ActorMethod<
     [string, number, number],
-    Result_21
+    Result_22
   >,
   /**
    * O(1) rebuild status, forwarded to the activated vector target.
    */
-  'admin_vector_rebuild_status' : ActorMethod<[string, number], Result_21>,
+  'admin_vector_rebuild_status' : ActorMethod<[string, number], Result_22>,
   /**
    * Drive one bounded rebuild step on the activated vector target.
    */
   'admin_vector_rebuild_step' : ActorMethod<
     [string, number, number],
-    Result_21
+    Result_22
   >,
   /**
    * Derived slab-space observability, forwarded to the graph's vector target (`index_id` scopes the
    * logical counters; the slab physical facts are whole-slab global).
    */
-  'admin_vector_slab_stats' : ActorMethod<[string, [] | [number]], Result_22>,
+  'admin_vector_slab_stats' : ActorMethod<[string, [] | [number]], Result_23>,
   /**
    * Cursor/budgeted slab-stats scan step, forwarded to the graph's vector target.
    */
   'admin_vector_slab_stats_step' : ActorMethod<
     [string, [] | [Uint8Array], number, [] | [number]],
-    Result_23
+    Result_24
   >,
   /**
    * Advance vertex property posting backfill for one graph shard (`Role::Admin`; call in a loop).
    */
   'admin_vertex_property_backfill_step' : ActorMethod<
     [AdminLabelBackfillStepArgs],
-    Result_9
+    Result_10
   >,
   /**
    * ADR 0049: classify and execute one order-preserving public batch.
    */
-  'batch' : ActorMethod<[BatchRequest], Result_24>,
+  'batch' : ActorMethod<[BatchRequest], Result_25>,
   /**
    * Read-only GQL on the update path only (no composite-query savings; bypasses path check).
    */
-  'force_gql_execute' : ActorMethod<[string, Uint8Array], Result_25>,
+  'force_gql_execute' : ActorMethod<[string, Uint8Array], Result_26>,
   /**
    * Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
    */
-  'gql_execute' : ActorMethod<[string, Uint8Array], Result_25>,
+  'gql_execute' : ActorMethod<[string, Uint8Array], Result_26>,
   /**
    * Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
    *
@@ -2577,7 +2600,7 @@ export interface _SERVICE {
    */
   'gql_execute_idempotent' : ActorMethod<
     [string, Uint8Array, string],
-    Result_26
+    Result_27
   >,
   /**
    * Execute cursor-based idempotent mutations until the Router instruction budget is reached.
@@ -2588,12 +2611,12 @@ export interface _SERVICE {
    */
   'gql_execute_idempotent_batch' : ActorMethod<
     [GqlExecuteIdempotentBatchArgs],
-    Result_27
+    Result_28
   >,
   /**
    * Read-only GQL: composite query (calls index + graph query endpoints).
    */
-  'gql_query' : ActorMethod<[string, Uint8Array], Result_26>,
+  'gql_query' : ActorMethod<[string, Uint8Array], Result_27>,
   /**
    * Read-only GQL with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
    *
@@ -2602,43 +2625,43 @@ export interface _SERVICE {
    */
   'gql_query_with_consistency' : ActorMethod<
     [string, Uint8Array, ReadMode],
-    Result_26
+    Result_27
   >,
-  'graph_element_id_encoding_key' : ActorMethod<[string], Result_28>,
-  'indexed_property_catalog' : ActorMethod<[string], Result_29>,
-  'list_shards_for_graph' : ActorMethod<[string], Result_30>,
+  'graph_element_id_encoding_key' : ActorMethod<[string], Result_29>,
+  'indexed_property_catalog' : ActorMethod<[string], Result_30>,
+  'list_shards_for_graph' : ActorMethod<[string], Result_31>,
   /**
    * List the derived vector-index definitions registered for a logical graph (ADR 0031 Slice 3).
    */
-  'list_vector_indexes' : ActorMethod<[string], Result_31>,
+  'list_vector_indexes' : ActorMethod<[string], Result_32>,
   /**
    * All maintenance policies in a graph.
    */
-  'list_vector_maintenance_policies' : ActorMethod<[string], Result_32>,
-  'lookup_edge_label_id' : ActorMethod<[string, string], Result_7>,
-  'lookup_graph_id' : ActorMethod<[string], Result_33>,
-  'lookup_property_id' : ActorMethod<[string, string], Result_33>,
-  'lookup_vertex_label_id' : ActorMethod<[string, string], Result_7>,
+  'list_vector_maintenance_policies' : ActorMethod<[string], Result_33>,
+  'lookup_edge_label_id' : ActorMethod<[string, string], Result_8>,
+  'lookup_graph_id' : ActorMethod<[string], Result_34>,
+  'lookup_property_id' : ActorMethod<[string, string], Result_34>,
+  'lookup_vertex_label_id' : ActorMethod<[string, string], Result_8>,
   /**
    * ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
    */
-  'mutation_status' : ActorMethod<[string, string], Result_34>,
-  'my_role' : ActorMethod<[], Result_35>,
+  'mutation_status' : ActorMethod<[string, string], Result_35>,
+  'my_role' : ActorMethod<[], Result_36>,
   'prepared_delete' : ActorMethod<[string], Result>,
-  'prepared_manifest' : ActorMethod<[string], Result_36>,
+  'prepared_manifest' : ActorMethod<[string], Result_37>,
   'prepared_query' : ActorMethod<
     [string, Uint8Array, [] | [Array<PreparedSortSpec>]],
-    Result_26
+    Result_27
   >,
-  'prepared_query_as_update' : ActorMethod<[string, Uint8Array], Result_25>,
+  'prepared_query_as_update' : ActorMethod<[string, Uint8Array], Result_26>,
   /**
    * Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
    */
   'prepared_query_with_consistency' : ActorMethod<
     [string, Uint8Array, [] | [Array<PreparedSortSpec>], ReadMode],
-    Result_26
+    Result_27
   >,
-  'prepared_update' : ActorMethod<[string, Uint8Array], Result_25>,
+  'prepared_update' : ActorMethod<[string, Uint8Array], Result_26>,
   /**
    * Idempotent prepared update. Returns the richer
    * [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
@@ -2646,7 +2669,7 @@ export interface _SERVICE {
    */
   'prepared_update_idempotent' : ActorMethod<
     [string, Uint8Array, string],
-    Result_26
+    Result_27
   >,
   'prepared_upsert' : ActorMethod<[string, string], Result>,
   'prepared_upsert_batch' : ActorMethod<
@@ -2664,21 +2687,21 @@ export interface _SERVICE {
   /**
    * Admin-only: send a resolved provisioning envelope to the configured Provision canister.
    */
-  'provision_graph' : ActorMethod<[ProvisionGraphArgs], Result_37>,
-  'resolve_graph' : ActorMethod<[string], Result_38>,
-  'resolve_shard' : ActorMethod<[string, number], Result_39>,
+  'provision_graph' : ActorMethod<[ProvisionGraphArgs], Result_38>,
+  'resolve_graph' : ActorMethod<[string], Result_39>,
+  'resolve_shard' : ActorMethod<[string, number], Result_40>,
   /**
    * Resolve a vector index's single dispatch target principal (ADR 0031 Slice 3, inspect-only).
    */
-  'resolve_vector_index_target' : ActorMethod<[string, number], Result_40>,
-  'reverse_edge_label_name' : ActorMethod<[string, number], Result_35>,
-  'reverse_property_name' : ActorMethod<[string, number], Result_35>,
-  'reverse_vertex_label_name' : ActorMethod<[string, number], Result_35>,
+  'resolve_vector_index_target' : ActorMethod<[string, number], Result_41>,
+  'reverse_edge_label_name' : ActorMethod<[string, number], Result_36>,
+  'reverse_property_name' : ActorMethod<[string, number], Result_36>,
+  'reverse_vertex_label_name' : ActorMethod<[string, number], Result_36>,
   /**
    * Internal callback: the configured Provision canister acknowledges a completed
    * provisioning job and asks the Router to commit the terminal catalog state.
    */
-  'router_ack' : ActorMethod<[RouterProvisionAck], Result_41>,
+  'router_ack' : ActorMethod<[RouterProvisionAck], Result_42>,
   /**
    * Read the global vector-dispatch activation flag (ADR 0031 Slice 4).
    */
@@ -2687,21 +2710,21 @@ export interface _SERVICE {
    * Report a vector index's activation state and, while fail-closed, the blocking reason
    * (ADR 0031 Slice 3).
    */
-  'vector_index_activation_status' : ActorMethod<[string, number], Result_42>,
+  'vector_index_activation_status' : ActorMethod<[string, number], Result_43>,
   /**
    * The maintenance policy for one vector index, if any.
    */
-  'vector_maintenance_policy' : ActorMethod<[string, number], Result_43>,
+  'vector_maintenance_policy' : ActorMethod<[string, number], Result_44>,
   /**
    * Router policy/readiness plus forwarded vector-canister maintenance + rebuild state.
    */
-  'vector_maintenance_status' : ActorMethod<[string, number], Result_44>,
+  'vector_maintenance_status' : ActorMethod<[string, number], Result_45>,
   /**
    * Read-only exact `ivf_flat` vector search: composite query that resolves the activated target and
    * forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
    * Slice 4 activation gate is satisfied.
    */
-  'vector_search' : ActorMethod<[RouterVectorSearchRequest], Result_45>,
+  'vector_search' : ActorMethod<[RouterVectorSearchRequest], Result_46>,
   'whoami' : ActorMethod<[], Principal>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;

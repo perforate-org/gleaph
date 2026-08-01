@@ -65,17 +65,14 @@ export interface ConstrainedPropertyDispatch {
   'constraint_id' : number,
 }
 /**
- * Semantic interpretation of stored edge-inline-value bytes.
+ * Semantic interpretation of stored edge-inline-property-bytes bytes.
  */
-export type EdgeInlineValueEncoding = { 'F16' : null } |
+export type EdgeInlinePropertyEncoding = { 'F16' : null } |
   { 'F32' : null } |
   { 'F64' : null } |
   { 'VectorF32' : { 'dims' : number } } |
-  { 'WeightBinary16' : null } |
-  { 'WeightLinearU16' : { 'max' : number, 'min' : number } } |
   { 'RawI8' : null } |
   { 'RawU8' : null } |
-  { 'WeightLogU16' : { 'max' : number, 'min' : number } } |
   { 'RawI128' : null } |
   { 'RawFixed32' : null } |
   { 'RawFixed64' : null } |
@@ -86,18 +83,17 @@ export type EdgeInlineValueEncoding = { 'F16' : null } |
   { 'RawU16' : null } |
   { 'RawU32' : null } |
   { 'RawU64' : null } |
-  { 'WeightRawU16' : null } |
   {
     /**
-     * Opaque fixed-width inline value; [`EdgeInlineValueProfile::byte_width`] may be any positive width.
+     * Opaque fixed-width inline property bytes; [`EdgeInlinePropertyProfile::byte_width`] may be any positive width.
      */
     'RawBytes' : null
   };
 /**
- * Label-level edge inline value configuration.
+ * Label-level edge inline property bytes configuration.
  */
-export interface EdgeInlineValueProfile {
-  'encoding' : EdgeInlineValueEncoding,
+export interface EdgeInlinePropertyProfile {
+  'encoding' : EdgeInlinePropertyEncoding,
   'byte_width' : number,
 }
 /**
@@ -238,7 +234,35 @@ export interface ExecutePlanBatchResult {
    * Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
    */
   'next_index' : [] | [number],
-  'results' : Array<Result_6>,
+  'results' : Array<Result_9>,
+}
+/**
+ * Immutable context shared by every operation in a shared V2 bulk group.
+ */
+export interface ExecutePlanBatchSharedV2 {
+  'mutation_id' : bigint,
+  'indexed_properties' : [] | [IndexedPropertyCatalog],
+  'plan_blob' : Uint8Array,
+  'resolved_labels' : [] | [ResolvedLabelTable],
+  'target_shard_id' : number,
+  'indexed_embeddings' : [] | [IndexedEmbeddingCatalog],
+  'resolved_search_blob' : [] | [Uint8Array],
+  'resolved_properties' : [] | [ResolvedPropertyTable],
+  'element_id_encoding_key' : Uint8Array,
+  'seed_bindings_blob' : [] | [Uint8Array],
+}
+/**
+ * Router → Graph: shared execution envelope for seed-invariant homogeneous bulk groups.
+ *
+ * Unlike [`ExecutePlanBatchArgs`], immutable plan/catalog context and the common seed/search
+ * relation are encoded once. Per-operation data is only the parameter blob. The entire ordered
+ * operation domain belongs to one `mutation_id`; callers must resend this same domain when
+ * continuing from Graph journal progress.
+ */
+export interface ExecutePlanBatchSharedV2Args {
+  'batch_mode' : ExecutePlanBatchMode,
+  'shared' : ExecutePlanBatchSharedV2,
+  'operations' : Array<ExecutePlanSharedV2Op>,
 }
 /**
  * Router → graph: shared typed bulk execution envelope (ADR 0047).
@@ -279,6 +303,26 @@ export interface ExecutePlanBatchTypedShared {
    */
   'element_id_encoding_key' : Uint8Array,
 }
+/**
+ * Router → Graph: the unified bulk execution envelope (ADR 0047).
+ *
+ * One versionless entrypoint replaces the former `typed_v1` (per-operation complete-row seeds)
+ * and `shared_v2` (one shared seed relation) endpoints; the variant carries the seed placement
+ * while immutable plan/catalog context stays shared inside each arm. Future envelope shapes are
+ * added as new variants rather than new method-name versions.
+ */
+export type ExecutePlanBulkBatch = {
+    /**
+     * All operations share one encoded seed relation carried in the shared context.
+     */
+    'SharedSeed' : ExecutePlanBatchSharedV2Args
+  } |
+  {
+    /**
+     * Every operation carries its own already-decoded complete-row seed relation.
+     */
+    'PerItemSeed' : ExecutePlanBatchTypedArgs
+  };
 export interface ExecutePlanResult {
   /**
    * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
@@ -290,6 +334,10 @@ export interface ExecutePlanResult {
    */
   'hot_forward_vertices' : Uint32Array,
 }
+/**
+ * Per-operation data for a shared V2 bulk group.
+ */
+export interface ExecutePlanSharedV2Op { 'params_blob' : Uint8Array }
 /**
  * One typed bulk operation with an already-decoded complete-row seed.
  */
@@ -349,15 +397,6 @@ export interface GraphBulkMutationProgressV1 {
   'operation_count' : number,
 }
 /**
- * Graph canister execution capabilities advertised to the Router (ADR 0047).
- *
- * This response is intentionally explicit: each capability is a named, versioned value
- * so that Router activation remains fail-closed and future revisions are representable.
- */
-export interface GraphExecutionCapabilities {
-  'typed_seed_batch' : TypedSeedBatchCapability,
-}
-/**
  * Arguments supplied by the registry (or installer) on first `init`.
  */
 export interface GraphInitArgs {
@@ -389,6 +428,7 @@ export interface GraphMutationJournalEntryWireV1 {
    * operation index. For a single mutation it is `None`.
    */
   'next_index' : [] | [number],
+  'request_identity' : GraphMutationRequestIdentityV1,
   /**
    * Bulk-specific progress metadata; present only when `next_index` is used.
    */
@@ -396,15 +436,154 @@ export interface GraphMutationJournalEntryWireV1 {
   'row_count' : bigint,
   'emitted_delta_first_seq' : [] | [bigint],
   'state' : MutationJournalState,
+  'retirement' : GraphMutationRetirementWireV1,
   /**
    * Forward hubs observed during DML, persisted so router recovery can still finalize.
    */
   'hot_forward_vertices' : Uint32Array,
 }
 /**
+ * Graph-owned request identity for journal-first replay.
+ */
+export type GraphMutationRequestIdentityV1 = {
+    /**
+     * Order-sensitive identity for the ADR 0049 vertex bulk-placement envelope.
+     */
+    'OrderedVertexBatch' : {
+      'logical_item_count' : number,
+      'canonical_encoding_version' : number,
+      'graph_request_fingerprint' : Uint8Array,
+    }
+  } |
+  {
+    /**
+     * Order-sensitive identity for the ADR 0049 edge batch envelope.
+     */
+    'OrderedEdgeBatch' : {
+      'logical_item_count' : number,
+      'canonical_encoding_version' : number,
+      'graph_request_fingerprint' : Uint8Array,
+    }
+  } |
+  {
+    /**
+     * Order-sensitive identity for the mixed vertex/edge two-phase envelope.
+     */
+    'OrderedMixedBatch' : {
+      'logical_edge_count' : number,
+      'canonical_encoding_version' : number,
+      'graph_request_fingerprint' : Uint8Array,
+      'logical_vertex_count' : number,
+      'logical_operation_count' : number,
+    }
+  } |
+  {
+    /**
+     * Existing scalar and legacy/bulk plan execution identity.
+     */
+    'PlanExecution' : null
+  };
+/**
+ * Wire projection of [`GraphMutationRetirementV1`] without the stable timestamp.
+ */
+export type GraphMutationRetirementWireV1 = { 'NotApplicable' : null } |
+  { 'Active' : null } |
+  { 'Retired' : null };
+/**
+ * Durable aggregate receipt returned by a completed ordered Graph edge batch.
+ */
+export interface GraphOrderedEdgeBatchReceiptV1 {
+  'logical_edge_count' : bigint,
+  'emitted_delta_last_seq' : [] | [bigint],
+  'emitted_delta_first_seq' : [] | [bigint],
+  'hot_forward_vertices' : Uint32Array,
+}
+/**
+ * Graph-owned canonical response for the ordered edge-batch endpoint.
+ */
+export type GraphOrderedEdgeBatchResult = {
+    'V1' : GraphOrderedEdgeBatchResultV1
+  };
+export type GraphOrderedEdgeBatchResultV1 = {
+    'MutationRetired' : {
+      'mutation_id' : bigint,
+      'graph_request_fingerprint' : Uint8Array,
+    }
+  } |
+  { 'Completed' : GraphOrderedEdgeBatchReceiptV1 };
+/**
+ * Durable aggregate receipt returned by a completed mixed Graph batch.
+ */
+export interface GraphOrderedMixedBatchReceiptV1 {
+  'logical_edge_count' : bigint,
+  'emitted_delta_last_seq' : [] | [bigint],
+  'emitted_delta_first_seq' : [] | [bigint],
+  'logical_vertex_count' : bigint,
+  'logical_operation_count' : bigint,
+  'hot_forward_vertices' : Uint32Array,
+}
+export type GraphOrderedMixedBatchResult = {
+    'V1' : GraphOrderedMixedBatchResultV1
+  };
+export type GraphOrderedMixedBatchResultV1 = {
+    'MutationRetired' : {
+      'mutation_id' : bigint,
+      'graph_request_fingerprint' : Uint8Array,
+    }
+  } |
+  { 'Completed' : GraphOrderedMixedBatchReceiptV1 };
+/**
+ * Durable aggregate receipt returned by a completed ordered Graph vertex batch.
+ */
+export interface GraphOrderedVertexBatchReceiptV1 {
+  'emitted_delta_last_seq' : [] | [bigint],
+  'emitted_delta_first_seq' : [] | [bigint],
+  'logical_vertex_count' : bigint,
+  'hot_forward_vertices' : Uint32Array,
+}
+export type GraphOrderedVertexBatchResult = {
+    'V1' : GraphOrderedVertexBatchResultV1
+  };
+export type GraphOrderedVertexBatchResultV1 = {
+    'MutationRetired' : {
+      'mutation_id' : bigint,
+      'graph_request_fingerprint' : Uint8Array,
+    }
+  } |
+  { 'Completed' : GraphOrderedVertexBatchReceiptV1 };
+/**
+ * Graph-side snapshot of durable derived-index work not yet delivered to graph-index.
+ *
+ * The social-demo seeding orchestrator needs one observable "the index caught up" signal
+ * before dispatching dependent edge waves, whose `MATCH` anchors resolve through
+ * graph-index property postings. The existing [`crate::plan_exec::MutationId`] watermark
+ * (`index_pending_min_mutation_id`) covers only the repair journal (failed-flush
+ * re-application); the durable first-delivery outbox is a separate backlog that can also
+ * pin convergence, so this snapshot reports both queues and a derived `converged` flag.
+ */
+export interface IndexSyncStatus {
+  /**
+   * Failed-flush ops persisted in the repair journal awaiting re-application.
+   */
+  'repair_journal_len' : bigint,
+  /**
+   * `derived_index_outbox_len == 0 && repair_journal_len == 0`.
+   */
+  'converged' : boolean,
+  /**
+   * Derived-index ops still in the durable first-delivery outbox (never yet delivered).
+   */
+  'derived_index_outbox_len' : bigint,
+}
+/**
  * One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
  */
 export interface IndexedEdgeMembership {
+  /**
+   * Empty for a scalar/top-level edge property; the canonical dotted path for an inline
+   * struct leaf otherwise (for example, `stats.score`).
+   */
+  'field_path' : string,
   'label_id' : number,
   'property_id' : number,
   'direction_tag' : number,
@@ -478,6 +657,171 @@ export interface LocalEdgePosting {
 export type MutationJournalState = { 'Completed' : null } |
   { 'Incomplete' : null };
 /**
+ * Immutable Graph execution envelope. The transmitted fingerprint is integrity metadata; the
+ * Graph recomputes it from `request` before journal lookup.
+ */
+export type OrderedEdgeBatchGraphArgs = { 'V1' : OrderedEdgeBatchGraphArgsV1 };
+export interface OrderedEdgeBatchGraphArgsV1 {
+  'mutation_id' : bigint,
+  'graph_request_fingerprint' : Uint8Array,
+  'request' : OrderedEdgeBatchGraphRequest,
+}
+/**
+ * One logical edge in the immutable Router → Graph ordered request.
+ */
+export interface OrderedEdgeBatchGraphItemV1 {
+  'directed' : boolean,
+  'inline_property_bytes' : Uint8Array,
+  'resolved_initial_edge_properties' : Array<ResolvedOrderedEdgePropertyV1>,
+  'catalog_edge_label_id' : [] | [number],
+  'target_local_vertex_id' : number,
+  'source_local_vertex_id' : number,
+}
+/**
+ * Versioned immutable Router → Graph canonical request for ADR 0049.
+ */
+export type OrderedEdgeBatchGraphRequest = {
+    'V1' : OrderedEdgeBatchGraphRequestV1
+  };
+export interface OrderedEdgeBatchGraphRequestV1 {
+  'graph_id' : number,
+  'resolved_labels' : ResolvedLabelTable,
+  'target_shard_id' : number,
+  'resolved_properties' : ResolvedPropertyTable,
+  'items' : Array<OrderedEdgeBatchGraphItemV1>,
+  'target_graph_canister' : Principal,
+}
+/**
+ * Internal execution envelope for the mixed two-phase path. Execution is not
+ * active yet; this type exists so Router and Graph can agree on the immutable
+ * request before the durable phase/journal implementation lands.
+ */
+export type OrderedMixedBatchGraphArgs = {
+    'V1' : OrderedMixedBatchGraphArgsV1
+  };
+export interface OrderedMixedBatchGraphArgsV1 {
+  'mutation_id' : bigint,
+  'graph_request_fingerprint' : Uint8Array,
+  'request' : OrderedMixedBatchGraphRequest,
+}
+/**
+ * Versioned Graph envelope for a mixed vertex/edge batch.
+ */
+export type OrderedMixedBatchGraphRequest = {
+    'V1' : OrderedMixedBatchGraphRequestV1
+  };
+export interface OrderedMixedBatchGraphRequestV1 {
+  'graph_id' : number,
+  'resolved_labels' : ResolvedLabelTable,
+  'target_shard_id' : number,
+  'operations' : Array<OrderedMixedGraphOperationV1>,
+  'resolved_properties' : ResolvedPropertyTable,
+  'target_graph_canister' : Principal,
+}
+/**
+ * One logical edge in the Graph-owned mixed request.
+ */
+export interface OrderedMixedGraphEdgeItemV1 {
+  'source' : OrderedMixedGraphEndpointV1,
+  'directed' : boolean,
+  'inline_property_bytes' : Uint8Array,
+  'target' : OrderedMixedGraphEndpointV1,
+  'resolved_initial_edge_properties' : Array<ResolvedOrderedEdgePropertyV1>,
+  'catalog_edge_label_id' : [] | [number],
+}
+/**
+ * Endpoint of an edge in the request-local mixed vertex/edge operation table.
+ *
+ * `NewVertexOrdinal` is an ordinal among vertex operations, not an ordinal in the
+ * mixed operation array. Graph allocates the vertex phase first and resolves this
+ * reference before admitting the edge phase.
+ */
+export type OrderedMixedGraphEndpointV1 = { 'NewVertexOrdinal' : number } |
+  { 'Existing' : number };
+/**
+ * Input-order-preserving mixed operation. The array order remains the public
+ * logical order; Graph uses the variant to derive the two execution phases.
+ */
+export type OrderedMixedGraphOperationV1 = {
+    'Edge' : OrderedMixedGraphEdgeItemV1
+  } |
+  { 'Vertex' : OrderedVertexBatchGraphItemV1 };
+/**
+ * Graph-owned acknowledgement for mixed ordered mutation retirement.
+ */
+export type OrderedMixedMutationRetirementAck = {
+    'V1' : OrderedMixedMutationRetirementAckV1
+  };
+export interface OrderedMixedMutationRetirementAckV1 {
+  'mutation_id' : bigint,
+  'receipt' : GraphOrderedMixedBatchReceiptV1,
+  'graph_request_fingerprint' : Uint8Array,
+}
+/**
+ * Graph-owned acknowledgement for the internal Router-to-Graph retirement call.
+ */
+export type OrderedMutationRetirementAck = {
+    'V1' : OrderedMutationRetirementAckV1
+  };
+export interface OrderedMutationRetirementAckV1 {
+  'mutation_id' : bigint,
+  'receipt' : GraphOrderedEdgeBatchReceiptV1,
+  'graph_request_fingerprint' : Uint8Array,
+}
+/**
+ * Arguments for the internal Router-to-Graph ordered retirement call.
+ */
+export type OrderedMutationRetirementArgs = {
+    'V1' : OrderedMutationRetirementArgsV1
+  };
+export interface OrderedMutationRetirementArgsV1 {
+  'mutation_id' : bigint,
+  'graph_request_fingerprint' : Uint8Array,
+}
+/**
+ * Internal Graph execution envelope for the vertex-only bulk-placement slice.
+ */
+export type OrderedVertexBatchGraphArgs = {
+    'V1' : OrderedVertexBatchGraphArgsV1
+  };
+export interface OrderedVertexBatchGraphArgsV1 {
+  'mutation_id' : bigint,
+  'graph_request_fingerprint' : Uint8Array,
+  'request' : OrderedVertexBatchGraphRequest,
+}
+/**
+ * One logical vertex in the versioned Router → Graph vertex request.
+ */
+export interface OrderedVertexBatchGraphItemV1 {
+  'resolved_initial_properties' : Array<ResolvedOrderedEdgePropertyV1>,
+  'resolved_vertex_labels' : Uint16Array,
+}
+/**
+ * Versioned immutable Router → Graph canonical request for vertex bulk placement.
+ */
+export type OrderedVertexBatchGraphRequest = {
+    'V1' : OrderedVertexBatchGraphRequestV1
+  };
+export interface OrderedVertexBatchGraphRequestV1 {
+  'graph_id' : number,
+  'resolved_labels' : ResolvedLabelTable,
+  'target_shard_id' : number,
+  'resolved_properties' : ResolvedPropertyTable,
+  'items' : Array<OrderedVertexBatchGraphItemV1>,
+  'target_graph_canister' : Principal,
+}
+/**
+ * Graph-owned acknowledgement for vertex-only ordered mutation retirement.
+ */
+export type OrderedVertexMutationRetirementAck = {
+    'V1' : OrderedVertexMutationRetirementAckV1
+  };
+export interface OrderedVertexMutationRetirementAckV1 {
+  'mutation_id' : bigint,
+  'receipt' : GraphOrderedVertexBatchReceiptV1,
+  'graph_request_fingerprint' : Uint8Array,
+}
+/**
  * One batch of vertex-local posting replay from canonical shard state.
  */
 export interface PostingBackfillArgs {
@@ -497,9 +841,9 @@ export interface ResolvedEdgeLabel {
   'id' : number,
   'name' : string,
   /**
-   * Router-owned logical schema (ADR 0008). Default `no_inline_value` when omitted on legacy wire.
+   * Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
    */
-  'inline_value_profile' : EdgeInlineValueProfile,
+  'inline_property_profile' : EdgeInlinePropertyProfile,
   /**
    * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
    * `None` for labels with no named inline slot; otherwise a scalar or struct projection.
@@ -529,16 +873,23 @@ export type ResolvedInlineSchema = {
  *
  * Router derives this from the canonical declaration order; Graph receives it as a plan-scoped
  * projection and must not persist or infer it. Each descriptor carries only the data Graph needs
- * to validate and decode the payload slice: field name, byte offset, and exact scalar profile.
+ * to validate and decode the inline property bytes slice: field name, byte offset, and exact scalar profile.
  */
 export interface ResolvedInlineStructField {
   'byte_offset' : number,
   'name' : string,
-  'profile' : EdgeInlineValueProfile,
+  'profile' : EdgeInlinePropertyProfile,
 }
 export interface ResolvedLabelTable {
   'edge' : Array<ResolvedEdgeLabel>,
   'vertex' : Array<ResolvedVertexLabel>,
+}
+/**
+ * Router-resolved initial property assignment for one logical ordered edge.
+ */
+export interface ResolvedOrderedEdgePropertyV1 {
+  'value' : Uint8Array,
+  'property_id' : number,
 }
 export interface ResolvedProperty { 'id' : number, 'name' : string }
 export interface ResolvedPropertyTable {
@@ -549,6 +900,16 @@ export type Result = { 'Ok' : VertexEmbeddingIngestionResult } |
   { 'Err' : string };
 export type Result_1 = { 'Ok' : Array<Result> } |
   { 'Err' : string };
+export type Result_10 = { 'Ok' : ExecutePlanBatchResult } |
+  { 'Err' : string };
+export type Result_11 = { 'Ok' : BulkIngestFinalizeResult } |
+  { 'Err' : string };
+export type Result_12 = { 'Ok' : OrderedMixedMutationRetirementAck } |
+  { 'Err' : string };
+export type Result_13 = { 'Ok' : OrderedMutationRetirementAck } |
+  { 'Err' : string };
+export type Result_14 = { 'Ok' : OrderedVertexMutationRetirementAck } |
+  { 'Err' : string };
 export type Result_2 = { 'Ok' : null } |
   { 'Err' : string };
 export type Result_3 = { 'Ok' : EdgePostingBackfillResult } |
@@ -557,11 +918,13 @@ export type Result_4 = { 'Ok' : PostingBackfillResult } |
   { 'Err' : string };
 export type Result_5 = { 'Ok' : EmbeddingBackfillResult } |
   { 'Err' : string };
-export type Result_6 = { 'Ok' : ExecutePlanResult } |
+export type Result_6 = { 'Ok' : GraphOrderedEdgeBatchResult } |
   { 'Err' : string };
-export type Result_7 = { 'Ok' : ExecutePlanBatchResult } |
+export type Result_7 = { 'Ok' : GraphOrderedMixedBatchResult } |
   { 'Err' : string };
-export type Result_8 = { 'Ok' : BulkIngestFinalizeResult } |
+export type Result_8 = { 'Ok' : GraphOrderedVertexBatchResult } |
+  { 'Err' : string };
+export type Result_9 = { 'Ok' : ExecutePlanResult } |
   { 'Err' : string };
 /**
  * Router → graph seed bindings for a single variable on the target shard.
@@ -640,8 +1003,6 @@ export interface StableMemoryStats {
   'logical_total_pages' : bigint,
   'logical_total_bytes' : bigint,
 }
-export type TypedSeedBatchCapability = { 'V1' : null } |
-  { 'Unsupported' : null };
 /**
  * Evidence that a claim's `Acquire` is pinned: the matching effect's `EffectId` (so the Router can
  * ack *that* effect after Confirm — `claim_ordinal` and `effect_ordinal` are distinct concepts and
@@ -845,26 +1206,45 @@ export interface _SERVICE {
     Result_4
   >,
   /**
-   * Router → graph: read-only plan wire (may call index / federated expand).
+   * Router → graph: journal-first ordered edge batch execution (ADR 0049).
    */
-  'execute_plan_query' : ActorMethod<[ExecutePlanArgs], Result_6>,
+  'execute_ordered_edge_batch' : ActorMethod<
+    [OrderedEdgeBatchGraphArgs],
+    Result_6
+  >,
   /**
-   * Router → graph: plan wire with DML.
+   * Router → graph: journal-first mixed vertex/edge batch execution (ADR 0049).
    */
-  'execute_plan_update' : ActorMethod<[ExecutePlanArgs], Result_6>,
-  'execute_plan_update_batch' : ActorMethod<[ExecutePlanBatchArgs], Result_7>,
-  /**
-   * Router → graph: typed shared bulk envelope with decoded seeds (ADR 0047).
-   */
-  'execute_plan_update_batch_typed_v1' : ActorMethod<
-    [ExecutePlanBatchTypedArgs],
+  'execute_ordered_mixed_batch' : ActorMethod<
+    [OrderedMixedBatchGraphArgs],
     Result_7
   >,
   /**
-   * Router → graph: capability advertisement (ADR 0047).
+   * Router → graph: journal-first ordered vertex bulk placement (ADR 0049).
    */
-  'execution_capabilities' : ActorMethod<[], GraphExecutionCapabilities>,
-  'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_8>,
+  'execute_ordered_vertex_batch' : ActorMethod<
+    [OrderedVertexBatchGraphArgs],
+    Result_8
+  >,
+  /**
+   * Router → graph: read-only plan wire (may call index / federated expand).
+   */
+  'execute_plan_query' : ActorMethod<[ExecutePlanArgs], Result_9>,
+  /**
+   * Router → graph: plan wire with DML.
+   */
+  'execute_plan_update' : ActorMethod<[ExecutePlanArgs], Result_9>,
+  'execute_plan_update_batch' : ActorMethod<[ExecutePlanBatchArgs], Result_10>,
+  /**
+   * Router → graph: the unified versionless bulk execution entrypoint (ADR 0047).
+   *
+   * The envelope variant selects per-operation complete-row seeds or one shared seed relation.
+   */
+  'execute_plan_update_batch_bulk' : ActorMethod<
+    [ExecutePlanBulkBatch],
+    Result_10
+  >,
+  'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_11>,
   'get_mutation_journal_entries' : ActorMethod<
     [GetMutationJournalEntriesArgs],
     GetMutationJournalEntriesResult
@@ -878,6 +1258,12 @@ export interface _SERVICE {
    * `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
    */
   'index_pending_min_mutation_id' : ActorMethod<[], [] | [bigint]>,
+  /**
+   * Router → graph: index convergence snapshot (durable first-delivery outbox +
+   * failed-flush repair journal). Seeding orchestration polls `converged` before
+   * dispatching index-dependent edge waves.
+   */
+  'index_sync_status' : ActorMethod<[], IndexSyncStatus>,
   'list_pending_label_stats_deltas' : ActorMethod<
     [bigint, number],
     Array<LabelStatsDeltaEventWire>
@@ -913,6 +1299,27 @@ export interface _SERVICE {
   'read_unique_release_effects' : ActorMethod<
     [bigint, [] | [number], number],
     Array<UniqueEffectReceipt>
+  >,
+  /**
+   * Router → graph: fingerprint-bound ordered mixed mutation retirement (ADR 0049).
+   */
+  'retire_ordered_mixed_mutation' : ActorMethod<
+    [OrderedMutationRetirementArgs],
+    Result_12
+  >,
+  /**
+   * Router → graph: fingerprint-bound ordered mutation retirement (ADR 0049).
+   */
+  'retire_ordered_mutation' : ActorMethod<
+    [OrderedMutationRetirementArgs],
+    Result_13
+  >,
+  /**
+   * Router → graph: retire an exact ordered vertex mutation after projection convergence.
+   */
+  'retire_ordered_vertex_mutation' : ActorMethod<
+    [OrderedMutationRetirementArgs],
+    Result_14
   >,
 }
 export declare const idlFactory: IDL.InterfaceFactory;

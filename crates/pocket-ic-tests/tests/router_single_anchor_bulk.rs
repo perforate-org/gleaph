@@ -14,10 +14,6 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_router::types::{GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchItem};
 
-const GRAPH_NAME: &str = gleaph_pocket_ic_tests::GRAPH_NAME;
-const SOURCE_SHARD: gleaph_graph_kernel::federation::ShardId =
-    gleaph_graph_kernel::federation::ShardId::new(0);
-
 const USER_ALICE: &str = "INSERT (:User {user_id: 'alice', demo_graph: 'social'})";
 const USER_BOB: &str = "INSERT (:User {user_id: 'bob', demo_graph: 'social'})";
 
@@ -30,24 +26,6 @@ const POSTS_AND_AUTHORS: &str = "\
 MATCH (u:User)-[:POSTED]->(p:Post) \
 WHERE u.demo_graph = 'social' AND p.demo_graph = 'social' \
 RETURN u.user_id AS author, p.demo_id AS post_id ORDER BY p.demo_id";
-
-/// Refresh the Router's cached view of the Graph shard's execution capabilities.
-/// ADR 0047: a freshly installed single-shard Graph advertises typed seed batch V1,
-/// but the Router registry keeps the capability disabled until an admin refresh commits it.
-fn refresh_capability(env: &gleaph_pocket_ic_tests::FederationEnv) -> bool {
-    let bytes = env
-        .pic
-        .update_call(
-            env.router,
-            env.admin,
-            "admin_refresh_shard_execution_capabilities",
-            Encode!(&GRAPH_NAME.to_string(), &SOURCE_SHARD.raw()).expect("encode refresh"),
-        )
-        .unwrap_or_else(|e| panic!("admin_refresh_shard_execution_capabilities: {e:?}"));
-    let result: Result<bool, RouterError> =
-        Decode!(&bytes, Result<bool, RouterError>).expect("decode refresh result");
-    result.unwrap_or_else(|e| panic!("refresh rejected: {e:?}"))
-}
 
 fn params_blob(items: Vec<(&str, Value)>) -> Vec<u8> {
     encode_gql_params_blob(items.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
@@ -139,13 +117,8 @@ fn single_variable_anchor_bulk_resolves_per_item_seed_and_creates_one_journal_en
         },
     ];
 
-    // Enable the typed seed batch V1 path so the bulk group dispatches through a single
-    // Graph mutation-journal entry rather than falling back to per-item scalar execution.
-    assert!(
-        refresh_capability(&env),
-        "typed seed batch capability refresh must succeed"
-    );
-
+    // The unified bulk path is always active: the group dispatches through a single Graph
+    // mutation-journal entry rather than falling back to per-item scalar execution.
     let results = execute_batch_as_admin(&env, mutations);
     assert_eq!(
         results.len(),

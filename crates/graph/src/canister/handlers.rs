@@ -27,15 +27,15 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode,
-    GraphMutationRequestIdentityV1, GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult,
-    GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1, MutationId,
-    OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs,
-    OrderedMixedBatchGraphRequest, OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck,
-    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs,
-    OrderedVertexBatchGraphRequest, OrderedVertexMutationRetirementAck,
-    OrderedVertexMutationRetirementArgs, ResolvedSearchWire, SeedBindingsWire, ShardEventSeq,
-    bound_typed_batch_error,
+    ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs, ExecutePlanBulkBatch,
+    ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
+    GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
+    GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
+    OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphRequest,
+    OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck,
+    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
+    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
+    SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
 };
 
 use super::types::GraphInitArgs;
@@ -112,14 +112,6 @@ pub fn post_upgrade() {
 
 pub fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
     crate::facade::stable_memory_stats()
-}
-/// Router → graph: capability advertisement (ADR 0047).
-///
-/// The result is state-free and derived from the canister binary.
-pub fn execution_capabilities() -> gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
-    gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
-        typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2,
-    }
 }
 
 pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, Value>, String> {
@@ -634,19 +626,28 @@ pub async fn execute_plan_update_batch(
     execute_plan_batch(args, "execute_plan_update_batch").await
 }
 
-pub async fn execute_plan_update_batch_typed_v1(
-    args: ExecutePlanBatchTypedArgs,
+/// Router → Graph: the unified versionless bulk execution entrypoint (ADR 0047).
+///
+/// The envelope variant selects the seed placement: per-operation complete-row seeds
+/// ([`ExecutePlanBulkBatch::PerItemSeed`]) or one shared seed relation
+/// ([`ExecutePlanBulkBatch::SharedSeed`]). The Graph re-validates the plan/seed shape and
+/// response bound fail-closed for every variant, independent of the Router.
+pub async fn execute_plan_update_batch_bulk(
+    args: ExecutePlanBulkBatch,
 ) -> Result<ExecutePlanBatchResult, String> {
-    execute_plan_update_batch_typed_v1_impl(args)
-        .await
-        .map_err(bound_typed_batch_error)
+    match args {
+        ExecutePlanBulkBatch::PerItemSeed(args) => execute_plan_update_batch_typed_impl(args)
+            .await
+            .map_err(bound_typed_batch_error),
+        ExecutePlanBulkBatch::SharedSeed(args) => execute_plan_update_batch_shared_impl(args).await,
+    }
 }
 
-pub async fn execute_plan_update_batch_shared_v2(
+async fn execute_plan_update_batch_shared_impl(
     args: ExecutePlanBatchSharedV2Args,
 ) -> Result<ExecutePlanBatchResult, String> {
     args.validate()
-        .map_err(|e| format!("execute_plan_update_batch_shared_v2 validation: {e}"))?;
+        .map_err(|e| format!("execute_plan_update_batch_bulk(shared_seed) validation: {e}"))?;
     let ExecutePlanBatchSharedV2Args {
         shared,
         operations,
@@ -656,7 +657,7 @@ pub async fn execute_plan_update_batch_shared_v2(
     let seed = match shared.seed_bindings_blob {
         Some(blob) => Some(
             Decode!(&blob, SeedBindingsWire)
-                .map_err(|e| format!("shared batch V2 seed_bindings decode: {e}"))?,
+                .map_err(|e| format!("shared bulk seed_bindings decode: {e}"))?,
         ),
         None => None,
     };
@@ -690,18 +691,18 @@ pub async fn execute_plan_update_batch_shared_v2(
         operations,
         batch_mode,
         BatchResponseContract::TypedV1,
-        "execute_plan_update_batch_shared_v2",
+        "execute_plan_update_batch_bulk",
     )
     .await
 }
 
-async fn execute_plan_update_batch_typed_v1_impl(
+async fn execute_plan_update_batch_typed_impl(
     args: ExecutePlanBatchTypedArgs,
 ) -> Result<ExecutePlanBatchResult, String> {
     args.validate()
-        .map_err(|e| format!("execute_plan_update_batch_typed_v1 validation: {e}"))?;
+        .map_err(|e| format!("execute_plan_update_batch_bulk(per_item_seed) validation: {e}"))?;
     gleaph_gql_integration::typed_batch::validate_typed_batch_eligibility_for_graph(&args)
-        .map_err(|e| format!("execute_plan_update_batch_typed_v1 eligibility: {e}"))?;
+        .map_err(|e| format!("execute_plan_update_batch_bulk(per_item_seed) eligibility: {e}"))?;
     ensure_target_shard(args.shared.target_shard_id)?;
     let operations: Vec<PlanExecutionInput> = args
         .operations
@@ -734,7 +735,7 @@ async fn execute_plan_update_batch_typed_v1_impl(
         operations,
         args.batch_mode,
         BatchResponseContract::TypedV1,
-        "execute_plan_update_batch_typed_v1",
+        "execute_plan_update_batch_bulk(per_item_seed)",
     )
     .await
 }
@@ -2703,7 +2704,7 @@ mod tests {
             batch_mode: ExecutePlanBatchMode::Dynamic,
         };
 
-        let err = pollster::block_on(execute_plan_update_batch_typed_v1_impl(args))
+        let err = pollster::block_on(execute_plan_update_batch_typed_impl(args))
             .expect_err("wrong target shard must fail before dispatch");
         assert!(err.contains("does not match this graph shard"), "{err}");
         assert!(
@@ -2815,7 +2816,7 @@ mod tests {
             }],
             batch_mode: ExecutePlanBatchMode::Dynamic,
         };
-        let result = pollster::block_on(execute_plan_update_batch_typed_v1_impl(args))
+        let result = pollster::block_on(execute_plan_update_batch_typed_impl(args))
             .expect("typed V1 feed-edge bundle must execute");
         assert_eq!(result.results.len(), 1);
         assert_eq!(
@@ -3070,7 +3071,7 @@ mod tests {
             batch_mode: ExecutePlanBatchMode::Dynamic,
         };
 
-        let first = pollster::block_on(execute_plan_update_batch_shared_v2(args.clone()))
+        let first = pollster::block_on(execute_plan_update_batch_shared_impl(args.clone()))
             .expect("first shared V2 batch");
         assert_eq!(first.results.len(), 2);
         assert!(first.next_index.is_none());
@@ -3084,7 +3085,7 @@ mod tests {
         assert_eq!(progress.completed_count(), 2);
         assert_eq!(progress.operation_row_counts().len(), 2);
 
-        let replay = pollster::block_on(execute_plan_update_batch_shared_v2(args))
+        let replay = pollster::block_on(execute_plan_update_batch_shared_impl(args))
             .expect("shared V2 replay");
         assert_eq!(replay.results.len(), 2);
         assert!(replay.next_index.is_none());
@@ -3303,15 +3304,6 @@ mod tests {
         assert!(
             err.contains("vertex list too long"),
             "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn execution_capabilities_advertises_typed_seed_batch_capability() {
-        let caps = execution_capabilities();
-        assert_eq!(
-            caps.typed_seed_batch,
-            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2
         );
     }
 

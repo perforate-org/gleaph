@@ -457,7 +457,6 @@ pub fn configure_test_federation(store: &GraphStore) {
             index_attached: true,
             vector_index_canister: None,
             vector_index_attached: false,
-            typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported,
         },
     );
 }
