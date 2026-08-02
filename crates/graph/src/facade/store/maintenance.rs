@@ -47,7 +47,7 @@ impl GraphStore {
     /// defaults to `Unordered` for inserts but would reorder an `Insertion` bucket whose
     /// table is absent during a timer drain. Order-preserving compaction is a valid
     /// outcome for both policies (ADR 0052 §7 reordering is a permission).
-    fn maintenance_policy_for_label(label: BucketLabelKey) -> EdgePlacementPolicy {
+    pub(crate) fn maintenance_policy_for_label(label: BucketLabelKey) -> EdgePlacementPolicy {
         match catalog_edge_label_from_wire(label)
             .and_then(|l| resolved_edge_label_with(None, l).map(|entry| entry.ordering))
         {
@@ -67,12 +67,7 @@ impl GraphStore {
         let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
         let report = GRAPH
             .with_borrow(|graph| {
-                graph.maintenance_with_observers(
-                    budget,
-                    &mut move_observer,
-                    &mut delete_observer,
-                    &Self::maintenance_policy_for_label,
-                )
+                graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
             })
             .map_err(GraphStoreError::from)?;
         for (owner_vertex_id, moved) in move_observer.inline_moves {
@@ -178,13 +173,23 @@ impl GraphStore {
         self.with_graph_mut(|graph| {
             for vid in forward_vertices {
                 graph
-                    .mark_compact_vertex_edge_span(LabeledOrientation::Forward, vid, 0)
+                    .mark_compact_vertex_edge_span(
+                        LabeledOrientation::Forward,
+                        vid,
+                        0,
+                        &Self::maintenance_policy_for_label,
+                    )
                     .map_err(GraphStoreError::from)?;
                 queued_forward += 1;
             }
             for vid in reverse_vertices {
                 graph
-                    .mark_compact_vertex_edge_span(LabeledOrientation::Reverse, vid, 0)
+                    .mark_compact_vertex_edge_span(
+                        LabeledOrientation::Reverse,
+                        vid,
+                        0,
+                        &Self::maintenance_policy_for_label,
+                    )
                     .map_err(GraphStoreError::from)?;
                 queued_reverse += 1;
             }

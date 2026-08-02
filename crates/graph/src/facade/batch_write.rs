@@ -2203,7 +2203,12 @@ mod tests {
             .expect("delete first edge");
         store.with_graph_mut(|graph| {
             graph
-                .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+                .mark_compact_vertex_edge_span(
+                    LabeledOrientation::Forward,
+                    source,
+                    0,
+                    &super::GraphStore::maintenance_policy_for_label,
+                )
                 .expect("mark forward compaction");
         });
         store
@@ -2276,7 +2281,11 @@ mod tests {
             .expect("delete first edge");
         store.with_graph_mut(|graph| {
             graph
-                .mark_compact_dense_labeled_vertex_maintenance(LabeledOrientation::Reverse, target)
+                .mark_compact_dense_labeled_vertex_maintenance(
+                    LabeledOrientation::Reverse,
+                    target,
+                    &super::GraphStore::maintenance_policy_for_label,
+                )
                 .expect("mark reverse compaction");
         });
         store
@@ -2345,7 +2354,12 @@ mod tests {
             .expect("delete first edge");
         store.with_graph_mut(|graph| {
             graph
-                .mark_compact_vertex_edge_span(LabeledOrientation::Forward, low, 0)
+                .mark_compact_vertex_edge_span(
+                    LabeledOrientation::Forward,
+                    low,
+                    0,
+                    &super::GraphStore::maintenance_policy_for_label,
+                )
                 .expect("mark alias compaction");
         });
         store

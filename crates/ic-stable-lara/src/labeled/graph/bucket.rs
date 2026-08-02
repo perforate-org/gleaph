@@ -625,6 +625,29 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow)?)
     }
 
+    /// Resolves every label bucket of one vertex through `resolve`, producing the
+    /// per-label placement policy map captured into maintenance work items at enqueue
+    /// time (ADR 0052 slice 6). A default-label row and an empty span both produce an
+    /// empty map; drain falls back to the order-preserving default for absent labels.
+    pub(crate) fn vertex_bucket_policies(
+        &self,
+        vid: VertexId,
+        resolve: &dyn Fn(BucketLabelKey) -> crate::labeled::graph::EdgePlacementPolicy,
+    ) -> Result<
+        Vec<(BucketLabelKey, crate::labeled::graph::EdgePlacementPolicy)>,
+        LabeledOperationError,
+    > {
+        let vertex = self.vertices.get(vid);
+        Ok(self
+            .read_vertex_label_buckets(&vertex)?
+            .into_iter()
+            .map(|bucket| {
+                let label = bucket.bucket_label_key();
+                (label, resolve(label))
+            })
+            .collect())
+    }
+
     pub(super) fn read_vertex_label_buckets_range(
         &self,
         vertex: &LabeledVertex,

@@ -499,11 +499,12 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::None,
         ),
         region(
-            "DIRTY_WORK_ITEMS",
+            "RESERVED_31",
             31,
             StableMemoryClass::Maintenance,
-            "lara/maintenance",
-            "Dirty maintenance work tracking",
+            "reserved",
+            "Former dirty maintenance work tracking region; intentionally unallocated after the \
+             slice-6 priority-ordered BTreeMap queue replaced the dirty bitmap",
             RebuildPath::None,
         ),
         // Graph facade

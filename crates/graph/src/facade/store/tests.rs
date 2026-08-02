@@ -658,7 +658,12 @@ fn forward_edge_compaction_preserves_inline_propertys() {
     store.delete_edge_by_handle(doomed).expect("delete first");
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark compaction");
     });
     store
@@ -1301,7 +1306,12 @@ fn forward_edge_compaction_moves_property_sidecars() {
         .expect("delete first");
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark compaction");
     });
     store
@@ -1395,7 +1405,12 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     // leaves fresh edges log-backed until maintenance folds them.
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark pre-fold");
     });
     store
@@ -1421,7 +1436,12 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
         .expect("delete first");
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark compaction");
     });
     store
@@ -1518,7 +1538,12 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
     // slab-backed bucket as the swap test.
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark pre-fold");
     });
     store
@@ -1543,14 +1568,10 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
     store
         .delete_edge_by_handle(first_edge)
         .expect("delete first");
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
-            .expect("mark compaction");
-    });
-
-    // The schema declaration alone does not influence the maintenance resolver in test
-    // builds: set the ambient Insertion table around the drain.
+    // The compaction policy is captured at enqueue time (ADR 0052 slice 6), so the
+    // ambient Insertion table must be active when `mark_compact_vertex_edge_span` runs.
+    // The drain below then runs with NO ambient table (the timer scenario) and still
+    // left-packs because the work item carries the captured policy.
     use gleaph_graph_kernel::plan_exec::{
         EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
     };
@@ -1569,6 +1590,17 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
         ..Default::default()
     };
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
+            .expect("mark compaction");
+    });
+    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
     store
         .run_maintenance_best_effort(MaintenanceBudget {
             max_instructions: 0,
@@ -1579,7 +1611,6 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
             max_delete_edge_steps: None,
         })
         .expect("maintenance");
-    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
 
     let edges = store.directed_out_edges(source).expect("out edges");
     let third_edge = edges
@@ -1598,6 +1629,121 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
             .collect::<Vec<_>>(),
         vec![second, third],
         "Insertion maintenance preserves bucket-local live order"
+    );
+}
+
+#[test]
+fn unordered_captured_at_enqueue_drains_without_ambient_table() {
+    // The timer scenario at the facade: the label resolves to Unordered when the span
+    // compaction is enqueued (ambient resolved table active), and the drain then runs
+    // with NO ambient table yet still swap-compacts because the work item carries the
+    // captured policy.
+    use gleaph_graph_kernel::plan_exec::{
+        EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
+    };
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let first = store.insert_vertex().expect("first");
+    let second = store.insert_vertex().expect("second");
+    let third = store.insert_vertex().expect("third");
+    let label = crate::test_labels::edge_label_id_for_name("TimerScenarioSwap");
+    install_w2_inline_property_profile(&store, label);
+    for (dst, bytes) in [(first, 1u16), (second, 2), (third, 3)] {
+        store
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                dst,
+                Some(label),
+                &bytes.to_le_bytes(),
+            )
+            .expect("insert");
+    }
+    // Fold the deferred-insert overflow log into the slab so the delete leaves an
+    // in-slab tombstone (the swap gate requires edge-slab-only buckets).
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &GraphStore::maintenance_policy_for_label,
+            )
+            .expect("mark pre-fold");
+    });
+    store
+        .run_maintenance_best_effort(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("pre-fold drain");
+    let first_edge = store
+        .find_first_forward_handle(
+            source,
+            lara_label(label.pack(EdgeDirectedness::Directed)),
+            |edge| edge.neighbor_vid() == first,
+        )
+        .expect("first lookup")
+        .expect("first edge");
+    store
+        .delete_edge_by_handle(first_edge)
+        .expect("delete first");
+    let resolved = ResolvedLabelTable {
+        edge: vec![
+            ResolvedEdgeLabel::new(
+                "TimerScenarioSwap".to_string(),
+                label,
+                gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+                    byte_width: 2,
+                    encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+                },
+            )
+            .with_ordering(EdgeOrderingPolicy::Unordered),
+        ],
+        ..Default::default()
+    };
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &GraphStore::maintenance_policy_for_label,
+            )
+            .expect("enqueue under Unordered table");
+    });
+    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
+    store
+        .run_maintenance_best_effort(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("timer drain");
+    let edges = store.directed_out_edges(source).expect("out edges");
+    assert_eq!(
+        edges
+            .iter()
+            .map(|edge| edge.neighbor_vid())
+            .collect::<Vec<_>>(),
+        vec![third, second],
+        "a drain with no ambient table must still swap-compact the captured Unordered label"
+    );
+    assert_eq!(
+        edges
+            .iter()
+            .find(|edge| edge.neighbor_vid() == third)
+            .expect("third")
+            .edge_slot_index,
+        EdgeSlotIndex::from_raw(0),
+        "the swapped edge lands in the first interior tombstone"
     );
 }
 
@@ -1636,7 +1782,12 @@ fn maintenance_without_resolved_table_compacts_order_preserving() {
         .expect("delete first");
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark compaction");
     });
     store
@@ -1749,7 +1900,12 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     // Fold the deferred-insert overflow log into the slab so the swap gate applies.
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark pre-fold");
     });
     store
@@ -1778,7 +1934,12 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
         .expect("delete first");
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .mark_compact_vertex_edge_span(
+                LabeledOrientation::Forward,
+                source,
+                0,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark compaction");
     });
     store
@@ -1860,7 +2021,11 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
         .expect("delete first");
     store.with_graph_mut(|graph| {
         graph
-            .mark_compact_dense_labeled_vertex_maintenance(LabeledOrientation::Reverse, target)
+            .mark_compact_dense_labeled_vertex_maintenance(
+                LabeledOrientation::Reverse,
+                target,
+                &super::GraphStore::maintenance_policy_for_label,
+            )
             .expect("mark reverse compaction");
     });
     store

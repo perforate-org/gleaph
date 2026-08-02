@@ -191,7 +191,10 @@ existing stable memory.
 | MemoryId | Symbol              | Role                    | Class       | Rebuild             |
 | -------- | ------------------- | ----------------------- | ----------- | ------------------- |
 | 30       | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
-| 31       | `DIRTY_WORK_ITEMS`  | Dirty work tracking     | maintenance | Internal LARA drain |
+
+MemoryId 31 (`DIRTY_WORK_ITEMS`) was retired in ADR 0052 Slice 6: the priority-ordered
+`StableBTreeMap` maintenance queue replaced the `StableRoaringBitmap` dirty-dedup set, so the
+region is reserved and unallocated.
 
 ### Former adaptive counterpart regions (removed)
 

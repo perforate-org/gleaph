@@ -51,7 +51,7 @@ descending as an explicit opt-in.
 
 The ADR body below remains **planned** except for the parts implemented by Slice 1 (Plan 0196,
 2026-08-01), Slice 2 (Plan 0197, 2026-08-01), Slice 3 (Plan 0198, 2026-08-01), Slice 4
-(Plan 0199, 2026-08-01), and Slice 5 (Plan 0200, 2026-08-02). Slice 1
+(Plan 0199, 2026-08-01), Slice 5 (Plan 0200, 2026-08-02), and Slice 6 (Plan 0201, 2026-08-02). Slice 1
 delivered §1/§4's `EdgeOrderingPolicy` (Unordered default / Insertion) as a resolved wire field on
 `ResolvedEdgeLabel`, and §2's Graph Type `ORDER BY INSERTION` declaration parses (gql, opaque key)
 and resolves per label in the Router from the canonical Graph Type definition, fail-closed on
@@ -93,6 +93,43 @@ when no table is active (a `Unordered` permission is not a reorder requirement),
 maintenance stays order-preserving until a persisted ordering table lands; swap-compaction runs
 in execution-context drains, tests, and canbench. Policy-change migration/rebuild (§10) remains
 planned.
+
+**Slice 6 implementation note (2026-08-02, Plan 0201):** the timer-drain gap from Slice 5 is
+closed by capturing the per-label placement policy into the maintenance work item **at enqueue
+time** instead of resolving it at drain. `mark_compact_vertex_edge_span` /
+`mark_compact_dense_labeled_vertex_maintenance` enumerate the span's buckets through the
+caller-provided resolver and store the complete `(BucketLabelKey, EdgePlacementPolicy)` map; the
+dense drain arm propagates the map to the re-enqueued span item and the span arm re-enqueues each
+step with the same map. A drain with **no ambient resolved-label table** therefore still
+swap-compacts Unordered labels (the timer scenario), an Insertion capture never reorders, and a
+label missing from the map falls back to order-preserving (valid for both policies — §7
+reordering is a permission). The production bulk-finalize enqueue still captures order-preserving
+(`BulkIngestFinalizeArgs` carries no resolved labels).
+
+Enqueue admission short-circuits **before** policy capture when a compatible item is already
+pending (per-vid span dedup, leaf-scoped dense dedup, with the two orientations independent in
+the shared queue), so repeated dense-insert maintenance admissions do not re-resolve the catalog
+on every write; the item key's presence remains the exact dedup.
+
+In the same breaking activation window the FIFO `StableVecDeque` + dirty-bitmap maintenance queue
+was replaced by a priority-ordered `StableBTreeMap<(priority, tag, discriminator), _>`:
+DeleteVertex purges (priority 0) and stalled-step retries (priority 1) preempt routine compaction
+(priority 2); the variant tag in the key makes Dense-hash discriminators collision-free from the
+DeleteVertex range; key presence is the dedup promise and a DeleteVertex re-enqueue on a pending
+key is a no-op that preserves the in-flight `removed_edges` cursor. The work-item stable encoding
+is now **versioned per variant** (`[magic 0x5A][tag][variant_version][payload]`), rejecting the
+old fixed-16-byte layout by magic; the dirty-bitmap stable region is retired and the queue must
+be **empty at the switch** (activation resets stable data). The drain keeps a DeleteVertex
+continuation in flight between steps (it is always the next pop — nothing enqueues mid-drain) and
+re-inserts it only at a budget boundary, so the BTreeMap round-trip is paid once per tick rather
+than once per removed edge; compaction continuations keep the one-`EdgeMoved`-per-pop contract.
+
+The compaction cursor from GAP-2026-07-14-001 lands: `CompactVertexEdgeSpan` carries
+`resume_slot_index`, the step and both finders scan from the cursor (packed-prefix invariant),
+`EdgeMoved` re-enqueues carry the advanced cursor, `AdvanceBucket` resets it, and a cursor-scan
+miss triggers a full re-scan before `stored_slots = degree` so an interleaved delete inside the
+already-packed prefix never truncates a live edge. ADR 0020's one-`EdgeMoved`-per-pop and
+retry-never-drop contracts are preserved. Policy-change migration/rebuild (§10) remains planned.
 
 ## Problem
 

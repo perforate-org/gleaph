@@ -93,6 +93,7 @@ impl GraphStore {
                 forward,
                 reverse,
                 placement,
+                &Self::maintenance_policy_for_label,
             )
         })?;
         let canonical = if let Some(location) = locations.forward {
@@ -164,7 +165,13 @@ impl GraphStore {
                 )?;
             }
             graph.insert_undirected_deferred_with_locations(
-                endpoint_a, endpoint_b, label, edge_ab, edge_ba, placement,
+                endpoint_a,
+                endpoint_b,
+                label,
+                edge_ab,
+                edge_ba,
+                placement,
+                &Self::maintenance_policy_for_label,
             )
         })?;
         let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);

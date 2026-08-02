@@ -3,51 +3,53 @@
 use crate::{
     VertexId,
     labeled::graph::{EdgePlacementPolicy, InitError, LabeledLaraGraph, LabeledOperationError},
-    lara::{
-        maintenance::{MaintenanceBudget, MaintenanceWorkReport},
-        vertex::InitError as VertexInitError,
-    },
+    lara::maintenance::{MaintenanceBudget, MaintenanceWorkReport},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-use ic_stable_structures::{Memory, Storable, storable::Bound};
-use ic_stable_vec_deque::{
-    GrowFailed as QueueGrowFailed, InitError as QueueInitError, StableVecDeque,
-};
-use std::{borrow::Cow, fmt};
+use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
+use std::{borrow::Cow, cell::RefCell, fmt};
 
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
 
-/// One deferred maintenance item for a labeled graph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One versioned deferred maintenance item for a labeled graph.
+///
+/// Each variant is a `{Tag}V{Version}` entry: the stable byte layout is
+/// `[magic 0x5A][tag][version][payload]` with the tag/version bytes derived from the
+/// enum variant (see [`Self::tag`] and [`Self::version`]), so the `(tag, version)`
+/// dispatch table is enforced by the compiler. A future change to one variant adds a
+/// `{Tag}V2` variant with a decode arm beside the V1 arm.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaintenanceWorkItem {
-    /// Compact the LabelBucketStore VertexSegment containing one vertex.
-    CompactLabelBucketVertexSegment {
+    /// v1: Compact the LabelBucketStore VertexSegment containing one vertex.
+    CompactLabelBucketVertexSegmentV1 {
         /// Vertex whose LabelBucketStore VertexSegment should be compacted.
         vid: VertexId,
     },
-    /// Compact the VertexEdgeSpan containing one LabelEdgeSpan (one edge step per queue pop).
-    CompactVertexEdgeSpan {
+    /// v1: Compact the VertexEdgeSpan containing one LabelEdgeSpan (one edge step per queue pop).
+    CompactVertexEdgeSpanV1 {
         /// Vertex owning the VertexEdgeSpan.
         vid: VertexId,
         /// Label-bucket index used to validate that the work item is still relevant.
         anchor_bucket_index: u32,
         /// Next label-bucket index to compact.
         resume_bucket_index: u32,
+        /// Next in-bucket slot to scan (compaction cursor; GAP-2026-07-14-001).
+        resume_slot_index: u32,
     },
-    /// Compact the label-bucket vertex segment, then the owning vertex edge span
+    /// v1: Compact the label-bucket vertex segment, then the owning vertex edge span
     /// (dense-leaf deferred enqueue).
-    CompactDenseLabeledVertexMaintenance {
+    CompactDenseLabeledVertexMaintenanceV1 {
         /// Vertex to compact in both stores.
         vid: VertexId,
     },
-    /// Reserved stable tag for independently scheduled value-span maintenance.
-    CompactVertexValueSpan {
+    /// v1: Reserved stable tag for independently scheduled value-span maintenance.
+    CompactVertexValueSpanV1 {
         /// Vertex owning the value span.
         vid: VertexId,
     },
-    /// Legacy stable tag. It now advances edge compaction only; value maintenance is independent.
-    CompactVertexEdgeAndValueSpan {
+    /// v1: Legacy stable tag. It now advances edge compaction only; value maintenance is independent.
+    CompactVertexEdgeAndValueSpanV1 {
         /// Vertex owning both spans.
         vid: VertexId,
         /// Label-bucket index used to validate relevance.
@@ -55,8 +57,35 @@ pub enum MaintenanceWorkItem {
         /// Next label-bucket index to compact.
         resume_bucket_index: u32,
     },
-    /// Compact the inline property bytes slab when aggregate free space is fragmented.
-    CompactInlinePropertyBytesSlab,
+    /// v1: Compact the inline property bytes slab when aggregate free space is fragmented.
+    CompactInlinePropertyBytesSlabV1,
+}
+
+impl MaintenanceWorkItem {
+    /// Stable variant tag byte (0..=5).
+    fn tag(&self) -> u8 {
+        match self {
+            Self::CompactLabelBucketVertexSegmentV1 { .. } => 0,
+            Self::CompactVertexEdgeSpanV1 { .. } => 1,
+            Self::CompactDenseLabeledVertexMaintenanceV1 { .. } => 2,
+            Self::CompactVertexValueSpanV1 { .. } => 3,
+            Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
+            Self::CompactInlinePropertyBytesSlabV1 => 5,
+        }
+    }
+
+    /// Stable variant version byte. All variants start at v1; a future version of one
+    /// variant is a new enum variant with its own (tag, version) decode arm.
+    fn version(&self) -> u8 {
+        match self {
+            Self::CompactLabelBucketVertexSegmentV1 { .. }
+            | Self::CompactVertexEdgeSpanV1 { .. }
+            | Self::CompactDenseLabeledVertexMaintenanceV1 { .. }
+            | Self::CompactVertexValueSpanV1 { .. }
+            | Self::CompactVertexEdgeAndValueSpanV1 { .. }
+            | Self::CompactInlinePropertyBytesSlabV1 => 1,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -804,10 +833,10 @@ mod tests {
 
     #[test]
     fn inline_property_bytes_compaction_maintenance_is_deduplicated_and_consumed() {
-        let encoded = MaintenanceWorkItem::CompactInlinePropertyBytesSlab.into_bytes();
+        let encoded = MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1.into_bytes();
         assert_eq!(
             MaintenanceWorkItem::from_bytes(Cow::Owned(encoded)),
-            MaintenanceWorkItem::CompactInlinePropertyBytesSlab
+            MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1
         );
 
         let graph = graph();
@@ -1048,76 +1077,101 @@ mod tests {
     }
 }
 
+/// Magic byte prefix of the versioned maintenance work-item encoding. The pre-slice-6
+/// fixed-16-byte layout had the variant tag at byte 0 (values 0..=5), so any legacy item
+/// fails the magic check by construction and is rejected instead of mis-decoded.
+const MAINTENANCE_WORK_ITEM_MAGIC: u8 = 0x5A;
+
+fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    out.push(MAINTENANCE_WORK_ITEM_MAGIC);
+    out.push(item.tag());
+    out.push(item.version());
+    match item {
+        MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { vid } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            vid,
+            anchor_bucket_index,
+            resume_bucket_index,
+            resume_slot_index,
+        } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&anchor_bucket_index.to_le_bytes());
+            out.extend_from_slice(&resume_bucket_index.to_le_bytes());
+            out.extend_from_slice(&resume_slot_index.to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 { vid } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactVertexValueSpanV1 { vid } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+            vid,
+            anchor_bucket_index,
+            resume_bucket_index,
+        } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&anchor_bucket_index.to_le_bytes());
+            out.extend_from_slice(&resume_bucket_index.to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => {}
+    }
+    out
+}
+
 impl Storable for MaintenanceWorkItem {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 16,
-        is_fixed_size: true,
+        max_size: 3 + 16,
+        is_fixed_size: false,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut bytes = [0u8; 16];
-        match *self {
-            Self::CompactLabelBucketVertexSegment { vid } => {
-                bytes[0] = 0;
-                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            }
-            Self::CompactVertexEdgeSpan {
-                vid,
-                anchor_bucket_index,
-                resume_bucket_index,
-            } => {
-                bytes[0] = 1;
-                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-                bytes[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
-                bytes[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
-            }
-            Self::CompactDenseLabeledVertexMaintenance { vid } => {
-                bytes[0] = 2;
-                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            }
-            Self::CompactVertexValueSpan { vid } => {
-                bytes[0] = 3;
-                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            }
-            Self::CompactVertexEdgeAndValueSpan {
-                vid,
-                anchor_bucket_index,
-                resume_bucket_index,
-            } => {
-                bytes[0] = 4;
-                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-                bytes[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
-                bytes[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
-            }
-            Self::CompactInlinePropertyBytesSlab => {
-                bytes[0] = 5;
-            }
-        }
-        Cow::Owned(Vec::from(bytes))
+        Cow::Owned(maintenance_work_item_bytes(self))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
+        maintenance_work_item_bytes(&self)
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         let b = bytes.as_ref();
-        let vid = VertexId::from(u32::from_le_bytes(b[4..8].try_into().unwrap()));
-        match b[0] {
-            1 => Self::CompactVertexEdgeSpan {
-                vid,
-                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
-                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+        let Some(&MAINTENANCE_WORK_ITEM_MAGIC) = b.first() else {
+            panic!(
+                "maintenance work item: rejected legacy or corrupt bytes (expected magic 0x5A, got {:?})",
+                b.first()
+            );
+        };
+        let tag = b[1];
+        let version = b[2];
+        let payload = &b[3..];
+        match (tag, version) {
+            (0, 1) => Self::CompactLabelBucketVertexSegmentV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
             },
-            2 => Self::CompactDenseLabeledVertexMaintenance { vid },
-            3 => Self::CompactVertexValueSpan { vid },
-            4 => Self::CompactVertexEdgeAndValueSpan {
-                vid,
-                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
-                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+            (1, 1) => Self::CompactVertexEdgeSpanV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
+                anchor_bucket_index: u32::from_le_bytes(payload[4..8].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(payload[8..12].try_into().unwrap()),
+                resume_slot_index: u32::from_le_bytes(payload[12..16].try_into().unwrap()),
             },
-            5 => Self::CompactInlinePropertyBytesSlab,
-            _ => Self::CompactLabelBucketVertexSegment { vid },
+            (2, 1) => Self::CompactDenseLabeledVertexMaintenanceV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
+            },
+            (3, 1) => Self::CompactVertexValueSpanV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
+            },
+            (4, 1) => Self::CompactVertexEdgeAndValueSpanV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
+                anchor_bucket_index: u32::from_le_bytes(payload[4..8].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(payload[8..12].try_into().unwrap()),
+            },
+            (5, 1) => Self::CompactInlinePropertyBytesSlabV1,
+            (unknown_tag, unknown_version) => panic!(
+                "maintenance work item: unsupported (tag, version) pair ({unknown_tag}, {unknown_version})"
+            ),
         }
     }
 }
@@ -1139,18 +1193,12 @@ fn current_instruction_counter() -> u64 {
 pub enum DeferredError {
     /// Inner graph operation failed.
     Inner(LabeledOperationError),
-    /// Maintenance queue could not be initialized.
-    Queue(QueueInitError),
-    /// Maintenance queue could not grow.
-    QueueGrow(QueueGrowFailed),
 }
 
 impl fmt::Display for DeferredError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Inner(err) => write!(f, "{err}"),
-            Self::Queue(err) => write!(f, "queue init failed: {err}"),
-            Self::QueueGrow(err) => write!(f, "queue grow failed: {err}"),
         }
     }
 }
@@ -1159,9 +1207,137 @@ impl std::error::Error for DeferredError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Inner(err) => Some(err),
-            Self::Queue(err) => Some(err),
-            Self::QueueGrow(err) => Some(err),
         }
+    }
+}
+
+/// Stable queue key: `(priority, tag, discriminator)`. The variant tag is part of the key,
+/// so a Dense-hash discriminator can never collide with another variant's discriminator
+/// range. Lexicographic key order is the pop order: Retry before Routine.
+mod priority {
+    /// A stalled compaction step requeued for retry (ADR 0020 retry-never-drop).
+    pub(super) const RETRY: u8 = 1;
+    /// Routine compaction: dense / span / inline-property-bytes.
+    pub(super) const ROUTINE: u8 = 2;
+}
+
+type MaintenanceQueueKey = (u8, u8, u32);
+
+fn work_item_discriminator(item: &MaintenanceWorkItem) -> u32 {
+    match item {
+        MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { vid } => {
+            u32::from(*vid).saturating_mul(2)
+        }
+        MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            vid,
+            anchor_bucket_index,
+            ..
+        } => 0x4000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1),
+        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 { vid } => {
+            0xC000_0000u32 ^ u32::from(*vid).wrapping_mul(2_654_435_761)
+        }
+        MaintenanceWorkItem::CompactVertexValueSpanV1 { vid } => {
+            0x8000_0000 | u32::from(*vid).wrapping_mul(2)
+        }
+        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+            vid,
+            anchor_bucket_index,
+            ..
+        } => 0xA000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1),
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => 0x6000_0000,
+    }
+}
+
+fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
+    (priority::ROUTINE, item.tag(), work_item_discriminator(item))
+}
+
+/// Priority-ordered maintenance queue backed by a stable B-tree map.
+///
+/// Replaces the FIFO `StableVecDeque`: key presence is the dedup promise (no
+/// scan-and-avoid duplication for exact keys), and the Retry priority keeps stalled-step
+/// retries ahead of routine compaction (ADR 0020). The queue must be empty at the format
+/// switch (ADR 0052 activation resets stable data); work items are versioned per variant.
+struct LabeledMaintenanceQueue<M: Memory> {
+    map: RefCell<StableBTreeMap<MaintenanceQueueKey, MaintenanceWorkItem, M>>,
+}
+
+impl<M: Memory> LabeledMaintenanceQueue<M> {
+    fn new(queue_memory: M) -> Self {
+        Self {
+            map: RefCell::new(StableBTreeMap::new(queue_memory)),
+        }
+    }
+
+    fn init(queue_memory: M) -> Self {
+        Self {
+            map: RefCell::new(StableBTreeMap::init(queue_memory)),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        self.map.borrow().len()
+    }
+
+    /// Inserts a routine work item unless an identical key is already pending (dedup).
+    fn enqueue(&self, item: &MaintenanceWorkItem) {
+        let key = maintenance_queue_key(item);
+        let mut map = self.map.borrow_mut();
+        if !map.contains_key(&key) {
+            map.insert(key, item.clone());
+        }
+    }
+
+    /// Pops the highest-priority pending item (first key), returning the exact key it was
+    /// stored under so a stalled-step retry can re-insert at the Retry priority.
+    fn pop_next(&self) -> Option<(MaintenanceQueueKey, MaintenanceWorkItem)> {
+        self.map.borrow_mut().pop_first()
+    }
+
+    /// Re-inserts a popped item at `priority` (Retry for stalled steps). Re-insertion
+    /// after a pop cannot collide: the item's own key was removed by the pop.
+    fn requeue(&self, key: &MaintenanceQueueKey, priority: u8, item: &MaintenanceWorkItem) {
+        self.map
+            .borrow_mut()
+            .insert((priority, key.1, key.2), item.clone());
+    }
+
+    /// Any span/dense/edge-value item pending for `vid` (coarse dedup scan; short-circuits).
+    fn vertex_edge_span_maintenance_pending(&self, vid: VertexId) -> bool {
+        self.map.borrow().iter().any(|entry| match entry.value() {
+            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 { vid: queued } => {
+                queued == vid
+            }
+            MaintenanceWorkItem::CompactVertexEdgeSpanV1 { vid: queued, .. } => queued == vid,
+            MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 { vid: queued, .. } => {
+                queued == vid
+            }
+            MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { .. }
+            | MaintenanceWorkItem::CompactVertexValueSpanV1 { .. }
+            | MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => false,
+        })
+    }
+
+    /// Any dense item pending for any vertex of `vid`'s leaf (short-circuits).
+    fn dense_maintenance_pending_in_leaf(&self, vid: VertexId, segment_size: u32) -> bool {
+        let segment_size = segment_size.max(1);
+        let leaf = u32::from(vid) / segment_size;
+        self.map.borrow().iter().any(|entry| match entry.value() {
+            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 { vid: queued } => {
+                u32::from(queued) / segment_size == leaf
+            }
+            _ => false,
+        })
+    }
+
+    /// Any inline-property-bytes slab compaction pending (short-circuits).
+    fn inline_property_bytes_compaction_pending(&self) -> bool {
+        self.map.borrow().iter().any(|entry| {
+            matches!(
+                entry.value(),
+                MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1
+            )
+        })
     }
 }
 
@@ -1172,7 +1348,7 @@ where
     M: Memory,
 {
     inner: LabeledLaraGraph<E, M>,
-    queue: StableVecDeque<MaintenanceWorkItem, M>,
+    queue: LabeledMaintenanceQueue<M>,
 }
 
 impl<E, M> DeferredLabeledLaraGraph<E, M>
@@ -1184,7 +1360,7 @@ where
     pub fn new(inner: LabeledLaraGraph<E, M>, queue_memory: M) -> Result<Self, DeferredError> {
         Ok(Self {
             inner,
-            queue: StableVecDeque::init(queue_memory).map_err(DeferredError::Queue)?,
+            queue: LabeledMaintenanceQueue::new(queue_memory),
         })
     }
 
@@ -1229,8 +1405,7 @@ where
             capacities,
             default_label,
         )?;
-        let queue = StableVecDeque::init(queue_memory)
-            .map_err(|_| InitError::Vertices(VertexInitError::OutOfMemory))?;
+        let queue = LabeledMaintenanceQueue::init(queue_memory);
         Ok(Self { inner, queue })
     }
 
@@ -1296,33 +1471,17 @@ where
     }
 
     fn vertex_edge_span_maintenance_pending(&self, vid: VertexId) -> bool {
-        self.queue.iter().any(|item| match item {
-            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid: queued } => {
-                queued == vid
-            }
-            MaintenanceWorkItem::CompactVertexEdgeSpan { vid: queued, .. } => queued == vid,
-            MaintenanceWorkItem::CompactVertexEdgeAndValueSpan { vid: queued, .. } => queued == vid,
-            MaintenanceWorkItem::CompactLabelBucketVertexSegment { .. }
-            | MaintenanceWorkItem::CompactVertexValueSpan { .. }
-            | MaintenanceWorkItem::CompactInlinePropertyBytesSlab => false,
-        })
+        self.queue.vertex_edge_span_maintenance_pending(vid)
     }
 
     fn dense_maintenance_pending_in_leaf(&self, vid: VertexId) -> bool {
         let segment_size = self.inner.edges().header().segment_size.max(1);
-        let leaf = u32::from(vid) / segment_size;
-        self.queue.iter().any(|item| match item {
-            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid: queued } => {
-                u32::from(queued) / segment_size == leaf
-            }
-            _ => false,
-        })
+        self.queue
+            .dense_maintenance_pending_in_leaf(vid, segment_size)
     }
 
     fn inline_property_bytes_compaction_pending(&self) -> bool {
-        self.queue
-            .iter()
-            .any(|item| matches!(item, MaintenanceWorkItem::CompactInlinePropertyBytesSlab))
+        self.queue.inline_property_bytes_compaction_pending()
     }
 
     /// Enqueues inline-property-bytes-only compaction, deduplicated across the graph.
@@ -1331,8 +1490,7 @@ where
             return Ok(());
         }
         self.queue
-            .push_back(&MaintenanceWorkItem::CompactInlinePropertyBytesSlab)
-            .map_err(DeferredError::QueueGrow)?;
+            .enqueue(&MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1);
         Ok(())
     }
 
@@ -1374,8 +1532,7 @@ where
             return Ok(());
         }
         self.queue
-            .push_back(&MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid })
-            .map_err(DeferredError::QueueGrow)?;
+            .enqueue(&MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 { vid });
         Ok(())
     }
 
@@ -1385,8 +1542,7 @@ where
         vid: VertexId,
     ) -> Result<(), DeferredError> {
         self.queue
-            .push_back(&MaintenanceWorkItem::CompactLabelBucketVertexSegment { vid })
-            .map_err(DeferredError::QueueGrow)?;
+            .enqueue(&MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { vid });
         Ok(())
     }
 
@@ -1400,12 +1556,12 @@ where
             return Ok(());
         }
         self.queue
-            .push_back(&MaintenanceWorkItem::CompactVertexEdgeSpan {
+            .enqueue(&MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
                 vid,
                 anchor_bucket_index: bucket_index,
                 resume_bucket_index: 0,
-            })
-            .map_err(DeferredError::QueueGrow)?;
+                resume_slot_index: 0,
+            });
         Ok(())
     }
 
@@ -1435,56 +1591,62 @@ where
                 break;
             }
 
-            let Some(item) = self.queue.pop_front() else {
+            let Some((item_key, item)) = self.queue.pop_next() else {
                 break;
             };
             report.processed_work_items = report.processed_work_items.saturating_add(1);
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_deferred_maintenance_item");
             // Set when a compaction step fails; the partially mutated span must be retried, not
-            // dropped. We requeue the item and stop the pass to avoid hot-looping a deterministic
-            // failure; the next maintenance call retries it with a fresh budget.
+            // dropped. We requeue it at the Retry priority and stop the pass to avoid
+            // hot-looping a deterministic failure; the next maintenance call retries it with a
+            // fresh budget (ADR 0020 retry-never-drop).
             let mut stalled = false;
-            let requeue = match item {
-                MaintenanceWorkItem::CompactLabelBucketVertexSegment { vid } => {
-                    if self.inner.compact_label_bucket_vertex_segment(vid).is_ok() {
+            let requeue = match &item {
+                MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { vid } => {
+                    if self.inner.compact_label_bucket_vertex_segment(*vid).is_ok() {
                         report.rebalanced_segments = report.rebalanced_segments.saturating_add(1);
                     }
                     None
                 }
-                MaintenanceWorkItem::CompactVertexEdgeSpan {
+                MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
                     vid,
                     anchor_bucket_index,
                     resume_bucket_index,
+                    resume_slot_index,
                 } => {
-                    let vertex = self.inner.vertices().get(vid);
-                    if anchor_bucket_index >= vertex.degree() {
+                    let vertex = self.inner.vertices().get(*vid);
+                    if *anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
                         match self.inner.compact_vertex_edge_span_one_step(
-                            vid,
-                            resume_bucket_index,
+                            *vid,
+                            *resume_bucket_index,
+                            *resume_slot_index,
                             &|_| EdgePlacementPolicy::Insertion,
                         ) {
-                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                                    vid,
-                                    anchor_bucket_index,
-                                    resume_bucket_index,
+                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
+                                    resume_bucket_index: *resume_bucket_index,
+                                    resume_slot_index: moved.new_slot_index.saturating_add(1),
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: next,
+                                    resume_slot_index: 0,
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: 0,
+                                    resume_slot_index: 0,
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::Finished) => {
@@ -1499,12 +1661,16 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid } => {
-                    if self.inner.compact_label_bucket_vertex_segment(vid).is_err() {
+                MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 { vid } => {
+                    if self
+                        .inner
+                        .compact_label_bucket_vertex_segment(*vid)
+                        .is_err()
+                    {
                         stalled = true;
                         None
                     } else {
-                        match self.inner.rebalance_cascade_after_labeled_mutation(vid) {
+                        match self.inner.rebalance_cascade_after_labeled_mutation(*vid) {
                             Ok(()) => {
                                 report.rebalanced_segments =
                                     report.rebalanced_segments.saturating_add(1);
@@ -1517,8 +1683,8 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
-                MaintenanceWorkItem::CompactInlinePropertyBytesSlab => {
+                MaintenanceWorkItem::CompactVertexValueSpanV1 { .. } => None,
+                MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 => {
                     match self.inner.compact_inline_property_bytes_slab() {
                         Ok(result) => {
                             if result.moved_spans > 0 {
@@ -1529,42 +1695,43 @@ where
                         }
                         Err(_) => {
                             stalled = true;
-                            Some(MaintenanceWorkItem::CompactInlinePropertyBytesSlab)
+                            None
                         }
                     }
                 }
-                MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
                     vid,
                     anchor_bucket_index,
                     resume_bucket_index,
                 } => {
-                    let vertex = self.inner.vertices().get(vid);
-                    if anchor_bucket_index >= vertex.degree() {
+                    let vertex = self.inner.vertices().get(*vid);
+                    if *anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
                         match self.inner.compact_vertex_edge_span_one_step(
-                            vid,
-                            resume_bucket_index,
+                            *vid,
+                            *resume_bucket_index,
+                            0,
                             &|_| EdgePlacementPolicy::Insertion,
                         ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-                                    vid,
-                                    anchor_bucket_index,
-                                    resume_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
+                                    resume_bucket_index: *resume_bucket_index,
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: next,
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: 0,
                                 })
                             }
@@ -1581,22 +1748,14 @@ where
                     }
                 }
             };
-            // Both requeues push exactly one item back immediately after the `pop_front`
-            // above, so `len < capacity` and the ring never grows; the slot is already
-            // allocated (`MaintenanceWorkItem` is fixed-width), so the write cannot fail.
-            // Unlike the bidirectional queue, this single-orientation queue has no dirty
-            // bitmap to reconstruct a dropped item, so we trap (rolling back the pass)
-            // rather than silently losing maintenance work if that invariant is violated.
             if stalled {
-                self.queue
-                    .push_front(&item)
-                    .expect("requeue after pop_front cannot grow the ring");
+                // Keep the failed item queued at the Retry priority (its key is unchanged)
+                // and stop the pass.
+                self.queue.requeue(&item_key, priority::RETRY, &item);
                 break;
             }
             if let Some(next) = requeue {
-                self.queue
-                    .push_front(&next)
-                    .expect("requeue after pop_front cannot grow the ring");
+                self.queue.requeue(&item_key, priority::ROUTINE, &next);
             }
         }
         report.remaining_queue_len = self.queue.len();

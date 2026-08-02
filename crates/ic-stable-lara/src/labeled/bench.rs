@@ -500,7 +500,7 @@ fn compact_vertex_edge_span_until_overflow_or_done<E: CsrEdge + CsrEdgeTombstone
     let mut resume = 0u32;
     loop {
         match graph
-            .compact_vertex_edge_span_one_step(vid, resume, &|_| {
+            .compact_vertex_edge_span_one_step(vid, resume, 0, &|_| {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion
             })
             .expect("compact step")
@@ -1720,7 +1720,7 @@ fn bench_labeled_unordered_swap_compact_half_deleted_1024() -> canbench_rs::Benc
             return;
         }
         let step = graph
-            .compact_vertex_edge_span_one_step(vid, resume, &|_| {
+            .compact_vertex_edge_span_one_step(vid, resume, 0, &|_| {
                 crate::labeled::graph::EdgePlacementPolicy::Unordered
             })
             .expect("swap step");
@@ -2184,7 +2184,6 @@ fn bidirectional_bench_graph()
         rvffsbs,
         rvlog,
         rvblobs,
-        vector_memory(),
         vector_memory(),
         crate::labeled::InitialCapacities::uniform(1 << 20),
         BucketLabelKey::UNLABELED_DIRECTED,

@@ -248,7 +248,6 @@ where
         rpl,
         rpb,
         crate::VectorMemory::default(),
-        crate::VectorMemory::default(),
         crate::labeled::InitialCapacities::uniform(1 << 16),
         BucketLabelKey::from_raw(1),
     )

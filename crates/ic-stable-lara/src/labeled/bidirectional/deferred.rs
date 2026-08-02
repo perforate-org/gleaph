@@ -24,12 +24,8 @@ use crate::{
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-use ic_stable_roaring::{BitmapError, InitError as RoaringInitError, StableRoaringBitmap};
-use ic_stable_structures::{Memory, Storable, storable::Bound};
-use ic_stable_vec_deque::{
-    GrowFailed as QueueGrowFailed, InitError as QueueInitError, StableVecDeque,
-};
-use std::{borrow::Cow, fmt, ops::ControlFlow};
+use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
+use std::{borrow::Cow, cell::RefCell, fmt, ops::ControlFlow};
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -62,8 +58,10 @@ fn test_take_post_write_maintenance_failure() -> bool {
 
 #[cfg(test)]
 fn test_post_write_maintenance_failure_result() -> Result<(), DeferredBidirectionalLabeledError> {
-    Err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap(
-        BitmapError::LimitsExceeded { value: 1, max: 0 },
+    Err(DeferredBidirectionalLabeledError::MaintenanceCapture(
+        LabeledOperationError::Store(
+            crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
+        ),
     ))
 }
 
@@ -146,18 +144,26 @@ pub enum Orientation {
     Reverse,
 }
 
-/// One item in the unified deferred bidirectional labeled maintenance queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One versioned item in the unified deferred bidirectional labeled maintenance queue.
+///
+/// Each variant is a `{Tag}V{Version}` entry: the stable byte layout is
+/// `[magic 0x5A][tag][version][payload]` with the tag/version bytes derived from the
+/// enum variant (see [`Self::tag`] and [`Self::version`]), so the `(tag, version)`
+/// dispatch table is enforced by the compiler instead of hand-maintained bytes. A future
+/// change to one variant adds a `{Tag}V2` variant with a `(tag, version)` decode arm
+/// beside the V1 arm, without touching the other variants or re-activating the queue
+/// for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaintenanceWorkItem {
-    /// Compact the LabelBucketStore VertexSegment containing one vertex in one orientation.
-    CompactLabelBucketVertexSegment {
+    /// v1: Compact the LabelBucketStore VertexSegment containing one vertex in one orientation.
+    CompactLabelBucketVertexSegmentV1 {
         /// Orientation whose LabelBucketStore VertexSegment should be compacted.
         orientation: Orientation,
         /// Vertex inside the segment to compact.
         vid: VertexId,
     },
-    /// Compact one VertexEdgeSpan in one orientation (incremental; one edge step per queue pop).
-    CompactVertexEdgeSpan {
+    /// v1: Compact one VertexEdgeSpan in one orientation (incremental; one edge step per queue pop).
+    CompactVertexEdgeSpanV1 {
         /// Orientation whose VertexEdgeSpan should be compacted.
         orientation: Orientation,
         /// Vertex owning the VertexEdgeSpan.
@@ -166,34 +172,45 @@ pub enum MaintenanceWorkItem {
         anchor_bucket_index: u32,
         /// Next label-bucket index to compact (0 at enqueue time).
         resume_bucket_index: u32,
+        /// Next in-bucket slot to scan (compaction cursor; GAP-2026-07-14-001).
+        /// Slots before the cursor are already packed; `AdvanceBucket` resets it.
+        resume_slot_index: u32,
+        /// Per-label placement policies captured at enqueue time. Drain resolves each
+        /// bucket's policy from this map (order-preserving fallback when absent) so
+        /// timer-driven drains swap-compact Unordered labels without an ambient
+        /// resolved-label table.
+        policies: Vec<(BucketLabelKey, EdgePlacementPolicy)>,
     },
-    /// Compact the label-bucket vertex segment then the vertex edge span for one orientation.
-    CompactDenseLabeledVertexMaintenance {
+    /// v1: Compact the label-bucket vertex segment then the vertex edge span for one orientation.
+    CompactDenseLabeledVertexMaintenanceV1 {
         /// Orientation whose stores should be compacted.
         orientation: Orientation,
         /// Vertex to compact.
         vid: VertexId,
+        /// Per-label placement policies captured at enqueue time (see
+        /// [`MaintenanceWorkItem::CompactVertexEdgeSpanV1::policies`]).
+        policies: Vec<(BucketLabelKey, EdgePlacementPolicy)>,
     },
-    /// Reserved stable tag for independently scheduled value-span maintenance.
-    CompactVertexValueSpan {
+    /// v1: Reserved stable tag for independently scheduled value-span maintenance.
+    CompactVertexValueSpanV1 {
         orientation: Orientation,
         vid: VertexId,
     },
-    /// Stable maintenance tag. It now advances edge compaction only; value maintenance is independent.
-    CompactVertexEdgeAndValueSpan {
+    /// v1: Stable maintenance tag. It now advances edge compaction only; value maintenance is independent.
+    CompactVertexEdgeAndValueSpanV1 {
         orientation: Orientation,
         vid: VertexId,
         anchor_bucket_index: u32,
         resume_bucket_index: u32,
     },
-    /// Compact the inline property bytes slab when aggregate free space is fragmented.
-    CompactInlinePropertyBytesSlab {
+    /// v1: Compact the inline property bytes slab when aggregate free space is fragmented.
+    CompactInlinePropertyBytesSlabV1 {
         /// Orientation whose inline property bytes slab should be compacted.
         orientation: Orientation,
     },
-    /// Incrementally remove all incident edges of a deleted vertex, one edge per
+    /// v1: Incrementally remove all incident edges of a deleted vertex, one edge per
     /// step, then clear its rows. Resumable across maintenance calls (ADR 0021).
-    DeleteVertex {
+    DeleteVertexV1 {
         /// Deleted vertex id.
         vid: VertexId,
         /// Incident edges already removed (informational; threaded across steps).
@@ -201,223 +218,435 @@ pub enum MaintenanceWorkItem {
     },
 }
 
-fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
-    let mut b = [0u8; 16];
-    match *item {
-        MaintenanceWorkItem::CompactLabelBucketVertexSegment { orientation, vid } => {
-            b[0] = 0;
-            b[1] = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-        }
-        MaintenanceWorkItem::CompactVertexEdgeSpan {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            resume_bucket_index,
-        } => {
-            b[0] = 1;
-            b[1] = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            b[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
-            b[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
-        }
-        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { orientation, vid } => {
-            b[0] = 2;
-            b[1] = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-        }
-        MaintenanceWorkItem::CompactVertexValueSpan { orientation, vid } => {
-            b[0] = 3;
-            b[1] = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-        }
-        MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            resume_bucket_index,
-        } => {
-            b[0] = 4;
-            b[1] = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            b[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
-            b[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
-        }
-        MaintenanceWorkItem::DeleteVertex { vid, removed_edges } => {
-            b[0] = 5;
-            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            b[8..12].copy_from_slice(&removed_edges.to_le_bytes());
-        }
-        MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation } => {
-            b[0] = 6;
-            b[1] = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
+impl MaintenanceWorkItem {
+    /// Stable variant tag byte (0..=6).
+    fn tag(&self) -> u8 {
+        match self {
+            Self::CompactLabelBucketVertexSegmentV1 { .. } => 0,
+            Self::CompactVertexEdgeSpanV1 { .. } => 1,
+            Self::CompactDenseLabeledVertexMaintenanceV1 { .. } => 2,
+            Self::CompactVertexValueSpanV1 { .. } => 3,
+            Self::CompactVertexEdgeAndValueSpanV1 { .. } => 4,
+            Self::DeleteVertexV1 { .. } => 5,
+            Self::CompactInlinePropertyBytesSlabV1 { .. } => 6,
         }
     }
-    b
+
+    /// Stable variant version byte. All variants start at v1; a future version of one
+    /// variant is a new enum variant with its own (tag, version) decode arm.
+    fn version(&self) -> u8 {
+        match self {
+            Self::CompactLabelBucketVertexSegmentV1 { .. }
+            | Self::CompactVertexEdgeSpanV1 { .. }
+            | Self::CompactDenseLabeledVertexMaintenanceV1 { .. }
+            | Self::CompactVertexValueSpanV1 { .. }
+            | Self::CompactVertexEdgeAndValueSpanV1 { .. }
+            | Self::DeleteVertexV1 { .. }
+            | Self::CompactInlinePropertyBytesSlabV1 { .. } => 1,
+        }
+    }
+}
+
+/// Magic byte prefix of the versioned maintenance work-item encoding. The pre-slice-6
+/// fixed-16-byte layout had the variant tag at byte 0 (values 0..=6), so any legacy item
+/// fails the magic check by construction and is rejected instead of mis-decoded.
+const MAINTENANCE_WORK_ITEM_MAGIC: u8 = 0x5A;
+
+fn orientation_byte(orientation: Orientation) -> u8 {
+    match orientation {
+        Orientation::Forward => 0,
+        Orientation::Reverse => 1,
+    }
+}
+
+fn orientation_from_byte(byte: u8) -> Orientation {
+    match byte {
+        0 => Orientation::Forward,
+        1 => Orientation::Reverse,
+        other => panic!("maintenance work item: invalid orientation byte {other}"),
+    }
+}
+
+fn policy_byte(policy: EdgePlacementPolicy) -> u8 {
+    match policy {
+        EdgePlacementPolicy::Unordered => 0,
+        EdgePlacementPolicy::Insertion => 1,
+    }
+}
+
+fn policy_from_byte(byte: u8) -> EdgePlacementPolicy {
+    match byte {
+        0 => EdgePlacementPolicy::Unordered,
+        1 => EdgePlacementPolicy::Insertion,
+        other => panic!("maintenance work item: invalid placement policy byte {other}"),
+    }
+}
+
+fn encode_policies(policies: &[(BucketLabelKey, EdgePlacementPolicy)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + policies.len() * 3);
+    let count =
+        u32::try_from(policies.len()).expect("maintenance work item: policies count exceeds u32");
+    out.extend_from_slice(&count.to_le_bytes());
+    for (label, policy) in policies {
+        out.extend_from_slice(&label.raw().to_le_bytes());
+        out.push(policy_byte(*policy));
+    }
+    out
+}
+
+fn decode_policies(bytes: &[u8]) -> Vec<(BucketLabelKey, EdgePlacementPolicy)> {
+    let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let mut out = Vec::with_capacity(count);
+    let mut offset = 4usize;
+    for _ in 0..count {
+        let label = BucketLabelKey::from_raw(u16::from_le_bytes(
+            bytes[offset..offset + 2].try_into().unwrap(),
+        ));
+        let policy = policy_from_byte(bytes[offset + 2]);
+        out.push((label, policy));
+        offset += 3;
+    }
+    out
+}
+
+fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
+    let mut out = Vec::with_capacity(64);
+    out.push(MAINTENANCE_WORK_ITEM_MAGIC);
+    out.push(item.tag());
+    out.push(item.version());
+    match item {
+        MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            resume_bucket_index,
+            resume_slot_index,
+            policies,
+        } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&anchor_bucket_index.to_le_bytes());
+            out.extend_from_slice(&resume_bucket_index.to_le_bytes());
+            out.extend_from_slice(&resume_slot_index.to_le_bytes());
+            out.extend_from_slice(&encode_policies(policies));
+        }
+        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+            orientation,
+            vid,
+            policies,
+        } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&encode_policies(policies));
+        }
+        MaintenanceWorkItem::CompactVertexValueSpanV1 { orientation, vid } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            resume_bucket_index,
+        } => {
+            out.push(orientation_byte(*orientation));
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&anchor_bucket_index.to_le_bytes());
+            out.extend_from_slice(&resume_bucket_index.to_le_bytes());
+        }
+        MaintenanceWorkItem::DeleteVertexV1 { vid, removed_edges } => {
+            out.extend_from_slice(&u32::from(*vid).to_le_bytes());
+            out.extend_from_slice(&removed_edges.to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
+            out.push(orientation_byte(*orientation));
+        }
+    }
+    out
 }
 
 impl Storable for MaintenanceWorkItem {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 16,
-        is_fixed_size: true,
-    };
+    // Unbounded: a `policies` map can reach `MAX_VERTEX_LABEL_BUCKETS × 3` bytes in the worst
+    // case, and a large `Bound::Bounded` would inflate the BTreeMap page size (~1.6 MB) for
+    // the tiny work items this queue stores. Unbounded values use a 1 KiB default page and
+    // record each item's actual length.
+    const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Vec::from(maintenance_work_item_bytes(self)))
+        Cow::Owned(maintenance_work_item_bytes(self))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Vec::from(maintenance_work_item_bytes(&self))
+        maintenance_work_item_bytes(&self)
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         let b = bytes.as_ref();
-        let vid = VertexId::from(u32::from_le_bytes(b[4..8].try_into().unwrap()));
-        let orientation = if b[1] == 1 {
-            Orientation::Reverse
-        } else {
-            Orientation::Forward
+        let Some(&MAINTENANCE_WORK_ITEM_MAGIC) = b.first() else {
+            panic!(
+                "maintenance work item: rejected legacy or corrupt bytes (expected magic 0x5A, got {:?})",
+                b.first()
+            );
         };
-        match b[0] {
-            1 => Self::CompactVertexEdgeSpan {
-                orientation,
-                vid,
-                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
-                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+        let tag = b[1];
+        let version = b[2];
+        let payload = &b[3..];
+        match (tag, version) {
+            (0, 1) => Self::CompactLabelBucketVertexSegmentV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
             },
-            2 => Self::CompactDenseLabeledVertexMaintenance { orientation, vid },
-            3 => Self::CompactVertexValueSpan { orientation, vid },
-            4 => Self::CompactVertexEdgeAndValueSpan {
-                orientation,
-                vid,
-                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
-                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+            (1, 1) => Self::CompactVertexEdgeSpanV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
+                anchor_bucket_index: u32::from_le_bytes(payload[5..9].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(payload[9..13].try_into().unwrap()),
+                resume_slot_index: u32::from_le_bytes(payload[13..17].try_into().unwrap()),
+                policies: decode_policies(&payload[17..]),
             },
-            5 => Self::DeleteVertex {
-                vid,
-                removed_edges: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+            (2, 1) => Self::CompactDenseLabeledVertexMaintenanceV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
+                policies: decode_policies(&payload[5..]),
             },
-            6 => Self::CompactInlinePropertyBytesSlab { orientation },
-            _ => Self::CompactLabelBucketVertexSegment { orientation, vid },
+            (3, 1) => Self::CompactVertexValueSpanV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
+            },
+            (4, 1) => Self::CompactVertexEdgeAndValueSpanV1 {
+                orientation: orientation_from_byte(payload[0]),
+                vid: VertexId::from(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
+                anchor_bucket_index: u32::from_le_bytes(payload[5..9].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(payload[9..13].try_into().unwrap()),
+            },
+            (5, 1) => Self::DeleteVertexV1 {
+                vid: VertexId::from(u32::from_le_bytes(payload[0..4].try_into().unwrap())),
+                removed_edges: u32::from_le_bytes(payload[4..8].try_into().unwrap()),
+            },
+            (6, 1) => Self::CompactInlinePropertyBytesSlabV1 {
+                orientation: orientation_from_byte(payload[0]),
+            },
+            (unknown_tag, unknown_version) => panic!(
+                "maintenance work item: unsupported (tag, version) pair ({unknown_tag}, {unknown_version})"
+            ),
         }
     }
 }
 
-#[derive(Debug)]
+/// Priority classes for maintenance work items (minimal, not a general scheduler).
+/// DeleteVertex always preempts; stalled-step retries preempt routine compaction.
+mod priority {
+    /// Deferred vertex purge (ADR 0021): highest — preempts all compaction.
+    pub(super) const DELETE_VERTEX: u8 = 0;
+    /// A stalled compaction step requeued for retry (ADR 0020 retry-never-drop).
+    pub(super) const RETRY: u8 = 1;
+    /// Routine compaction: dense / span / inline-property-bytes.
+    pub(super) const ROUTINE: u8 = 2;
+}
+
+/// Stable queue key: `(priority, tag, discriminator)`. The variant tag is part of the key,
+/// so a Dense-hash discriminator can never collide with a DeleteVertex key even when their
+/// `u32` discriminator ranges overlap (the pre-BTreeMap dirty-bitmap bypass hazard).
+/// Lexicographic key order is the pop order: DeleteVertex, then Retry, then Routine.
+type MaintenanceQueueKey = (u8, u8, u32);
+
+fn work_item_tag(item: &MaintenanceWorkItem) -> u8 {
+    item.tag()
+}
+
+/// Collision-free within one `(priority, tag)`: distinct work for the same tag must map to
+/// distinct discriminators (dedup is key presence).
+fn work_item_discriminator(item: &MaintenanceWorkItem) -> u32 {
+    match item {
+        MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            u32::from(*vid).saturating_mul(2).saturating_add(orient)
+        }
+        MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            ..
+        } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0x4000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1) ^ orient
+        }
+        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+            orientation, vid, ..
+        } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0xC000_0000u32 ^ u32::from(*vid).wrapping_mul(2_654_435_761) ^ orient
+        }
+        MaintenanceWorkItem::CompactVertexValueSpanV1 { orientation, vid } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0x8000_0000 | u32::from(*vid).wrapping_mul(2) ^ orient
+        }
+        MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            ..
+        } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0xA000_0000 | anchor_bucket_index ^ (u32::from(*vid) << 1) ^ orient
+        }
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
+            match orientation {
+                Orientation::Forward => 0x6000_0000,
+                Orientation::Reverse => 0x6000_0001,
+            }
+        }
+        MaintenanceWorkItem::DeleteVertexV1 { vid, .. } => 0xE000_0000 | u32::from(*vid),
+    }
+}
+
+fn work_item_priority(item: &MaintenanceWorkItem) -> u8 {
+    match item {
+        MaintenanceWorkItem::DeleteVertexV1 { .. } => priority::DELETE_VERTEX,
+        _ => priority::ROUTINE,
+    }
+}
+
+fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
+    (
+        work_item_priority(item),
+        work_item_tag(item),
+        work_item_discriminator(item),
+    )
+}
+
+/// Priority-ordered maintenance queue backed by a stable B-tree map.
+///
+/// Replaces the FIFO `StableVecDeque` + dirty RoaringBitmap: key presence is the dedup
+/// promise (no bitmap bookkeeping), the variant tag in the key makes Dense-hash keys
+/// collision-free from the DeleteVertex range, and lexicographic key order yields the
+/// DeleteVertex > Retry > Routine pop order. The queue must be empty at the format switch
+/// (ADR 0052 activation resets stable data); work items are versioned per variant.
 struct BidirectionalMaintenanceQueue<M: Memory> {
-    queue: StableVecDeque<MaintenanceWorkItem, M>,
-    dirty: StableRoaringBitmap<M>,
+    map: RefCell<StableBTreeMap<MaintenanceQueueKey, MaintenanceWorkItem, M>>,
 }
 
 impl<M: Memory> BidirectionalMaintenanceQueue<M> {
-    fn new(queue_memory: M, dirty_memory: M) -> Result<Self, DeferredBidirectionalLabeledError> {
-        Ok(Self {
-            queue: StableVecDeque::new(queue_memory)
-                .map_err(DeferredBidirectionalLabeledError::MaintenanceQueue)?,
-            dirty: StableRoaringBitmap::new(dirty_memory)
-                .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap)?,
-        })
+    fn new(queue_memory: M) -> Self {
+        Self {
+            map: RefCell::new(StableBTreeMap::new(queue_memory)),
+        }
     }
 
-    fn init(queue_memory: M, dirty_memory: M) -> Result<Self, DeferredBidirectionalLabeledError> {
-        Ok(Self {
-            queue: StableVecDeque::init(queue_memory)
-                .map_err(DeferredBidirectionalLabeledError::MaintenanceQueueInit)?,
-            dirty: StableRoaringBitmap::init(dirty_memory)
-                .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyInit)?,
-        })
+    fn init(queue_memory: M) -> Self {
+        Self {
+            map: RefCell::new(StableBTreeMap::init(queue_memory)),
+        }
     }
 
     fn len(&self) -> u64 {
-        self.queue.len()
+        self.map.borrow().len()
     }
 
-    fn mark_dirty(
-        &self,
-        item: MaintenanceWorkItem,
-    ) -> Result<bool, DeferredBidirectionalLabeledError> {
-        let key = work_item_key(item);
-        if self.dirty.contains(key) {
-            return Ok(false);
+    /// Inserts a routine work item unless an identical key is already pending (dedup).
+    fn enqueue(&self, item: &MaintenanceWorkItem) {
+        let key = maintenance_queue_key(item);
+        let mut map = self.map.borrow_mut();
+        if !map.contains_key(&key) {
+            map.insert(key, item.clone());
         }
-        self.dirty
-            .insert(key)
-            .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap)?;
-        if let Err(error) = self.queue.push_back(&item) {
-            // The dirty bit is a deduplication promise: leaving it set without a queued item
-            // would permanently suppress the maintenance work. Restore it before returning the
-            // recoverable queue error; if that repair fails, the maintenance invariant is
-            // ambiguous and must trap.
-            self.dirty.clear(key).unwrap_or_else(|rollback| {
-                panic!(
-                    "maintenance dirty-key rollback failed after queue admission error: {rollback}"
-                )
-            });
-            return Err(DeferredBidirectionalLabeledError::MaintenanceQueue(error));
+    }
+
+    /// Inserts a `DeleteVertex` job at the preempting priority. A re-enqueue while one is
+    /// already pending is a no-op that preserves the in-flight phase/`removed_edges` cursor
+    /// (the facade's `mark_vertex_pending_purge` gate already prevents production re-deletes).
+    fn enqueue_delete_vertex(&self, item: &MaintenanceWorkItem) {
+        debug_assert!(matches!(item, MaintenanceWorkItem::DeleteVertexV1 { .. }));
+        let key = maintenance_queue_key(item);
+        let mut map = self.map.borrow_mut();
+        if !map.contains_key(&key) {
+            map.insert(key, item.clone());
         }
-        Ok(true)
     }
 
-    /// Enqueues a `DeleteVertex` job. Delete jobs bypass the dirty gate (see
-    /// [`Self::pop_next`]), so this pushes directly without a dirty key.
-    fn enqueue_delete_vertex(
+    /// Pops the highest-priority pending item (first key), returning the exact key it was
+    /// stored under so `complete`/`requeue` can address the same `(tag, discriminator)` even
+    /// when the item was requeued at the Retry priority.
+    fn pop_next(&self) -> Option<(MaintenanceQueueKey, MaintenanceWorkItem)> {
+        self.map.borrow_mut().pop_first()
+    }
+
+    /// Removes a completed item by the exact key it was stored under (the key returned by
+    /// [`Self::pop_next`] when the item was popped).
+    fn complete(&self, key: &MaintenanceQueueKey) {
+        self.map.borrow_mut().remove(key);
+    }
+
+    /// Re-inserts a work item at `priority`. Used both for stalled-step retries (Retry) and
+    /// for step continuations (the item's natural priority). Re-insertion after a pop cannot
+    /// collide: the item's own key was removed by the pop and re-keying a popped item at
+    /// another priority keeps the `(tag, discriminator)` pair unique within that priority.
+    fn requeue(&self, key: &MaintenanceQueueKey, priority: u8, item: &MaintenanceWorkItem) {
+        self.map
+            .borrow_mut()
+            .insert((priority, key.1, key.2), item.clone());
+    }
+
+    /// Any span or dense item pending for `vid` in `orientation` (coarse dedup scan;
+    /// short-circuits). Mirrors the unidirectional graph's per-vid span dedup while
+    /// keeping the two orientations independent in the shared queue.
+    fn vertex_edge_span_maintenance_pending(
         &self,
-        item: MaintenanceWorkItem,
-    ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.queue
-            .push_back(&item)
-            .map_err(DeferredBidirectionalLabeledError::MaintenanceQueue)
-    }
-
-    fn pop_next(&self) -> Result<Option<MaintenanceWorkItem>, DeferredBidirectionalLabeledError> {
-        while let Some(item) = self.queue.pop_front() {
-            // DeleteVertex bypasses the dirty gate: its `work_item_key` would land
-            // in the same high-bit ranges as the compaction keys, so a colliding
-            // compaction `complete` could clear it and silently drop a delete
-            // mid-job. Delete jobs are never deduped via the dirty bitmap.
-            if matches!(item, MaintenanceWorkItem::DeleteVertex { .. })
-                || self.dirty.contains(work_item_key(item))
-            {
-                return Ok(Some(item));
+        vid: VertexId,
+        orientation: Orientation,
+    ) -> bool {
+        self.map.borrow().iter().any(|entry| match entry.value() {
+            MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                vid: queued,
+                orientation: queued_orientation,
+                ..
             }
-        }
-        Ok(None)
+            | MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+                vid: queued,
+                orientation: queued_orientation,
+                ..
+            } => queued == vid && queued_orientation == orientation,
+            _ => false,
+        })
     }
 
-    fn complete(&self, item: MaintenanceWorkItem) -> Result<(), DeferredBidirectionalLabeledError> {
-        if matches!(item, MaintenanceWorkItem::DeleteVertex { .. }) {
-            return Ok(());
-        }
-        self.dirty
-            .clear(work_item_key(item))
-            .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap)
-    }
-
-    fn requeue_front(
+    /// Any dense item pending for a vertex of `vid`'s leaf in `orientation`
+    /// (short-circuits). Mirrors the unidirectional leaf-scoped dense dedup.
+    fn dense_maintenance_pending_in_leaf(
         &self,
-        item: MaintenanceWorkItem,
-    ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.queue
-            .push_front(&item)
-            .map_err(DeferredBidirectionalLabeledError::MaintenanceQueue)
+        vid: VertexId,
+        segment_size: u32,
+        orientation: Orientation,
+    ) -> bool {
+        let segment_size = segment_size.max(1);
+        let leaf = u32::from(vid) / segment_size;
+        self.map.borrow().iter().any(|entry| match entry.value() {
+            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+                vid: queued,
+                orientation: queued_orientation,
+                ..
+            } => queued_orientation == orientation && u32::from(queued) / segment_size == leaf,
+            _ => false,
+        })
     }
 }
 
@@ -430,63 +659,6 @@ fn current_instruction_counter() -> u64 {
     #[cfg(not(target_family = "wasm"))]
     {
         0
-    }
-}
-
-fn work_item_key(item: MaintenanceWorkItem) -> u32 {
-    match item {
-        MaintenanceWorkItem::CompactLabelBucketVertexSegment { orientation, vid } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            u32::from(vid).saturating_mul(2).saturating_add(orient)
-        }
-        MaintenanceWorkItem::CompactVertexEdgeSpan {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            resume_bucket_index: _,
-        } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0x4000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
-        }
-        MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { orientation, vid } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0xC000_0000u32 ^ u32::from(vid).wrapping_mul(2_654_435_761) ^ orient
-        }
-        MaintenanceWorkItem::CompactVertexValueSpan { orientation, vid } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0x8000_0000 | u32::from(vid).wrapping_mul(2) ^ orient
-        }
-        MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-            orientation,
-            vid,
-            anchor_bucket_index,
-            resume_bucket_index: _,
-        } => {
-            let orient = match orientation {
-                Orientation::Forward => 0,
-                Orientation::Reverse => 1,
-            };
-            0xA000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
-        }
-        MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation } => match orientation {
-            Orientation::Forward => 0x6000_0000,
-            Orientation::Reverse => 0x6000_0001,
-        },
-        // DeleteVertex bypasses the dirty gate, so this key is never inserted,
-        // checked, or cleared; it exists only to keep the match exhaustive.
-        MaintenanceWorkItem::DeleteVertex { vid, .. } => 0xE000_0000 | u32::from(vid),
     }
 }
 
@@ -503,14 +675,8 @@ pub enum DeferredBidirectionalLabeledError {
     ReverseInit(InitError),
     /// Stable memory grow or format initialization failed.
     Grow(crate::GrowFailed),
-    /// Maintenance queue could not grow.
-    MaintenanceQueue(QueueGrowFailed),
-    /// Maintenance queue could not be reopened.
-    MaintenanceQueueInit(QueueInitError),
-    /// Maintenance dirty bitmap could not be reopened.
-    MaintenanceDirtyInit(RoaringInitError),
-    /// Maintenance dirty bitmap operation failed.
-    MaintenanceDirtyBitmap(BitmapError),
+    /// Maintenance work-item enqueue capture (bucket enumeration / policy resolution) failed.
+    MaintenanceCapture(LabeledOperationError),
     /// Deferred maintenance configuration is invalid.
     InvalidConfig(DeferredConfigError),
     /// The two orientations do not contain the same number of vertex rows.
@@ -537,14 +703,7 @@ impl fmt::Display for DeferredBidirectionalLabeledError {
             Self::ForwardInit(err) => write!(f, "forward init failed: {err}"),
             Self::ReverseInit(err) => write!(f, "reverse init failed: {err}"),
             Self::Grow(err) => write!(f, "format / grow: {err}"),
-            Self::MaintenanceQueue(err) => write!(f, "maintenance queue failed: {err}"),
-            Self::MaintenanceQueueInit(err) => write!(f, "maintenance queue init failed: {err}"),
-            Self::MaintenanceDirtyInit(err) => {
-                write!(f, "maintenance dirty bitmap init failed: {err}")
-            }
-            Self::MaintenanceDirtyBitmap(err) => {
-                write!(f, "maintenance dirty bitmap failed: {err}")
-            }
+            Self::MaintenanceCapture(err) => write!(f, "maintenance enqueue capture failed: {err}"),
             Self::InvalidConfig(err) => write!(f, "invalid deferred config: {err}"),
             Self::VertexCountMismatch { forward, reverse } => write!(
                 f,
@@ -563,10 +722,7 @@ impl std::error::Error for DeferredBidirectionalLabeledError {
             Self::Forward(err) | Self::Reverse(err) => Some(err),
             Self::ForwardInit(err) | Self::ReverseInit(err) => Some(err),
             Self::Grow(err) => Some(err),
-            Self::MaintenanceQueue(err) => Some(err),
-            Self::MaintenanceQueueInit(err) => Some(err),
-            Self::MaintenanceDirtyInit(err) => Some(err),
-            Self::MaintenanceDirtyBitmap(err) => Some(err),
+            Self::MaintenanceCapture(err) => Some(err),
             Self::InvalidConfig(err) => Some(err),
             Self::VertexCountMismatch { .. } | Self::VertexOutOfRange { .. } => None,
         }
@@ -645,7 +801,6 @@ where
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
         maintenance_queue: M,
-        dirty_work_items: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
@@ -681,7 +836,6 @@ where
             reverse_inline_property_bytes_log,
             reverse_inline_property_bytes_blobs,
             maintenance_queue,
-            dirty_work_items,
             capacities,
             default_label,
             DeferredConfig::default(),
@@ -722,7 +876,6 @@ where
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
         maintenance_queue: M,
-        dirty_work_items: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
         config: DeferredConfig,
@@ -768,7 +921,7 @@ where
             capacities,
             default_label,
         )?;
-        let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue, dirty_work_items)?;
+        let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue);
         Ok(Self {
             forward,
             reverse,
@@ -811,7 +964,6 @@ where
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
         maintenance_queue: M,
-        dirty_work_items: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
@@ -847,7 +999,6 @@ where
             reverse_inline_property_bytes_log,
             reverse_inline_property_bytes_blobs,
             maintenance_queue,
-            dirty_work_items,
             capacities,
             default_label,
             DeferredConfig::default(),
@@ -888,7 +1039,6 @@ where
         reverse_inline_property_bytes_log: M,
         reverse_inline_property_bytes_blobs: M,
         maintenance_queue: M,
-        dirty_work_items: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
         config: DeferredConfig,
@@ -936,7 +1086,7 @@ where
             default_label,
         )
         .map_err(DeferredBidirectionalLabeledError::ReverseInit)?;
-        let maintenance = BidirectionalMaintenanceQueue::init(maintenance_queue, dirty_work_items)?;
+        let maintenance = BidirectionalMaintenanceQueue::init(maintenance_queue);
         Ok(Self {
             forward,
             reverse,
@@ -1152,39 +1302,75 @@ where
         vid: VertexId,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.maintenance
-            .mark_dirty(MaintenanceWorkItem::CompactLabelBucketVertexSegment { orientation, vid })
-            .map(|_| ())
+            .enqueue(&MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid });
+        Ok(())
     }
 
-    /// Enqueues compaction of one VertexEdgeSpan.
+    /// Enqueues compaction of one VertexEdgeSpan, capturing the per-label placement
+    /// policies of the span at enqueue time through `policy_for_label` so the drain can
+    /// swap-compact Unordered labels without an ambient resolved-label table.
     pub fn mark_compact_vertex_edge_span(
         &self,
         orientation: Orientation,
         vid: VertexId,
         bucket_index: u32,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        if self
+            .maintenance
+            .vertex_edge_span_maintenance_pending(vid, orientation)
+        {
+            return Ok(());
+        }
+        let graph = match orientation {
+            Orientation::Forward => &self.forward,
+            Orientation::Reverse => &self.reverse,
+        };
+        let policies = graph
+            .vertex_bucket_policies(vid, policy_for_label)
+            .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?;
         self.maintenance
-            .mark_dirty(MaintenanceWorkItem::CompactVertexEdgeSpan {
+            .enqueue(&MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
                 orientation,
                 vid,
                 anchor_bucket_index: bucket_index,
                 resume_bucket_index: 0,
-            })
-            .map(|_| ())
+                resume_slot_index: 0,
+                policies,
+            });
+        Ok(())
     }
 
-    /// Enqueues label-bucket vertex-segment compaction then vertex-edge-span compaction.
+    /// Enqueues label-bucket vertex-segment compaction then vertex-edge-span compaction,
+    /// capturing the span's per-label placement policies at enqueue time.
     pub fn mark_compact_dense_labeled_vertex_maintenance(
         &self,
         orientation: Orientation,
         vid: VertexId,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.maintenance
-            .mark_dirty(MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance {
+        let graph = match orientation {
+            Orientation::Forward => &self.forward,
+            Orientation::Reverse => &self.reverse,
+        };
+        let segment_size = graph.edges().header().segment_size.max(1);
+        if self
+            .maintenance
+            .dense_maintenance_pending_in_leaf(vid, segment_size, orientation)
+        {
+            return Ok(());
+        }
+        let policies = graph
+            .vertex_bucket_policies(vid, policy_for_label)
+            .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?;
+        self.maintenance.enqueue(
+            &MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
                 orientation,
                 vid,
-            })
-            .map(|_| ())
+                policies,
+            },
+        );
+        Ok(())
     }
 
     /// Enqueues inline-property-bytes-only compaction for one orientation.
@@ -1193,8 +1379,8 @@ where
         orientation: Orientation,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.maintenance
-            .mark_dirty(MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation })
-            .map(|_| ())
+            .enqueue(&MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation });
+        Ok(())
     }
 
     /// Appends one vertex row to both orientations.
@@ -1382,6 +1568,7 @@ where
             forward_edge,
             reverse_edge,
             placement,
+            &|_| EdgePlacementPolicy::Insertion,
         )
         .map(|_| ())
     }
@@ -1399,6 +1586,7 @@ where
         forward_edge: E,
         reverse_edge: E,
         placement: crate::labeled::graph::EdgePlacementPolicy,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
         // Storage-owned capacity preparation: before any canonical edge write, make
         // sure both orientations have room for a new label bucket.  This keeps
@@ -1483,7 +1671,7 @@ where
                 });
         }
         if self.forward.labeled_leaf_segment_is_dense(src) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src)
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src, policy_for_label)
                 .unwrap_or_else(|error| {
                     panic!(
                         "forward dense maintenance admission failed after directed canonical write: {error}"
@@ -1491,7 +1679,7 @@ where
                 });
         }
         if self.reverse.labeled_leaf_segment_is_dense(dst) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Reverse, dst)
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Reverse, dst, policy_for_label)
                 .unwrap_or_else(|error| {
                     panic!(
                         "reverse dense maintenance admission failed after directed canonical write: {error}"
@@ -2578,7 +2766,6 @@ where
             budget,
             &mut NoopEdgeSlotMoveObserver,
             &mut NoopDeleteEdgeObserver,
-            &|_| EdgePlacementPolicy::Insertion,
         )
     }
 
@@ -2592,9 +2779,7 @@ where
         O: EdgeSlotMoveObserver,
         E: CsrEdgeTombstone + PartialEq,
     {
-        self.maintenance_with_observers(budget, observer, &mut NoopDeleteEdgeObserver, &|_| {
-            EdgePlacementPolicy::Insertion
-        })
+        self.maintenance_with_observers(budget, observer, &mut NoopDeleteEdgeObserver)
     }
 
     /// Processes queued maintenance work and reports removed edges of resumable
@@ -2608,26 +2793,22 @@ where
         D: DeleteEdgeObserver<E>,
         E: CsrEdgeTombstone + PartialEq,
     {
-        self.maintenance_with_observers(
-            budget,
-            &mut NoopEdgeSlotMoveObserver,
-            delete_observer,
-            &|_| EdgePlacementPolicy::Insertion,
-        )
+        self.maintenance_with_observers(budget, &mut NoopEdgeSlotMoveObserver, delete_observer)
     }
 
     /// Processes queued maintenance work, threading both the compaction edge-slot
-    /// move observer and the resumable vertex-delete edge observer. `policy_for_label`
-    /// resolves the per-label placement policy for compaction: `Unordered` permits
-    /// swap-compaction (reordering), `Insertion` forces the order-preserving left-pack;
-    /// callers without policy information pass the order-preserving default (valid for
-    /// both policies — ADR 0052 §7 reordering is a permission, not a requirement).
+    /// move observer and the resumable vertex-delete edge observer.
+    ///
+    /// Compaction policies come from the work item itself: the enqueue captured each
+    /// label's placement policy (ADR 0052 slice 6), so a timer drain with no ambient
+    /// resolved-label table still swap-compacts Unordered labels; a label absent from
+    /// the captured map falls back to the order-preserving default (valid for both
+    /// policies — ADR 0052 §7 reordering is a permission, not a requirement).
     pub fn maintenance_with_observers<O, D>(
         &self,
         budget: MaintenanceBudget,
         observer: &mut O,
         delete_observer: &mut D,
-        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
     where
         O: EdgeSlotMoveObserver,
@@ -2640,8 +2821,18 @@ where
         let baseline = current_instruction_counter();
         let max_items = budget.max_work_items.unwrap_or(u32::MAX);
         let mut checkpoint_tick = 0u32;
+        // Holds an in-flight `DeleteVertex` continuation between steps. A delete is the
+        // highest-priority item and nothing enqueues mid-drain, so its continuation is
+        // always the next pop; keeping it in memory instead of round-tripping through the
+        // BTreeMap per step removes two queue ops per removed edge (the continuation is
+        // re-inserted only when the pass stops at a budget boundary). Compaction
+        // continuations keep the one-`EdgeMoved`-per-pop contract and round-trip as before.
+        let mut in_flight: Option<(MaintenanceQueueKey, MaintenanceWorkItem)> = None;
 
-        while report.work.processed_work_items < max_items {
+        loop {
+            if report.work.processed_work_items >= max_items {
+                break;
+            }
             if budget
                 .max_delete_edge_steps
                 .is_some_and(|max| report.work.processed_delete_edge_steps >= max)
@@ -2663,23 +2854,28 @@ where
                 break;
             }
 
-            let Some(item) = self.maintenance.pop_next()? else {
-                break;
+            let (item_key, item) = match in_flight.take() {
+                Some(pair) => pair,
+                None => match self.maintenance.pop_next() {
+                    Some(pair) => pair,
+                    None => break,
+                },
             };
             report.work.processed_work_items = report.work.processed_work_items.saturating_add(1);
             // Set when a compaction step fails. A failed step may have partially mutated the
-            // slab, so the item must be retried rather than marked complete. We requeue it and
-            // stop the pass to avoid hot-looping a deterministic failure within a single tick;
-            // the next maintenance tick retries it with a fresh instruction budget.
+            // slab, so the item must be retried rather than marked complete. We requeue it at the
+            // Retry priority and stop the pass to avoid hot-looping a deterministic failure
+            // within a single tick; the next maintenance tick retries it with a fresh budget
+            // (ADR 0020 retry-never-drop).
             let mut stalled = false;
-            let requeue = match item {
-                MaintenanceWorkItem::CompactLabelBucketVertexSegment { orientation, vid } => {
+            let requeue = match &item {
+                MaintenanceWorkItem::CompactLabelBucketVertexSegmentV1 { orientation, vid } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
 
-                    match graph.compact_label_bucket_vertex_segment(vid) {
+                    match graph.compact_label_bucket_vertex_segment(*vid) {
                         Ok(()) => {
                             report.work.rebalanced_segments =
                                 report.work.rebalanced_segments.saturating_add(1);
@@ -2691,51 +2887,73 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::CompactVertexEdgeSpan {
+                MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
                     orientation,
                     vid,
                     anchor_bucket_index,
                     resume_bucket_index,
+                    resume_slot_index,
+                    policies,
                 } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    let vertex = graph.vertices().get(vid);
-                    if anchor_bucket_index >= vertex.degree() {
+                    let vertex = graph.vertices().get(*vid);
+                    if *anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
+                        // Resolve each bucket's policy from the map captured at enqueue time.
+                        // A label absent from the map (or a policy change after the span
+                        // emptied) falls back to order-preserving compaction, valid for both
+                        // policies (ADR 0052 §7 reordering is a permission).
+                        let policy_for_label = |label: BucketLabelKey| {
+                            policies
+                                .iter()
+                                .find(|(queued_label, _)| *queued_label == label)
+                                .map(|(_, policy)| *policy)
+                                .unwrap_or(EdgePlacementPolicy::Insertion)
+                        };
                         match graph.compact_vertex_edge_span_one_step(
-                            vid,
-                            resume_bucket_index,
-                            policy_for_label,
+                            *vid,
+                            *resume_bucket_index,
+                            *resume_slot_index,
+                            &policy_for_label,
                         ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved)) => {
-                                observer.edge_slot_moved(orientation, vid, moved);
-                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                                    orientation,
-                                    vid,
-                                    anchor_bucket_index,
-                                    resume_bucket_index,
+                                observer.edge_slot_moved(*orientation, *vid, moved);
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                                    orientation: *orientation,
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
+                                    resume_bucket_index: *resume_bucket_index,
+                                    // The moved edge now packs the prefix through its
+                                    // destination slot; the next step resumes just past it.
+                                    resume_slot_index: moved.new_slot_index.saturating_add(1),
+                                    policies: policies.clone(),
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                                    orientation,
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                                    orientation: *orientation,
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: next,
+                                    resume_slot_index: 0,
+                                    policies: policies.clone(),
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves)) => {
                                 for moved in moves {
-                                    observer.edge_slot_moved(orientation, vid, moved);
+                                    observer.edge_slot_moved(*orientation, *vid, moved);
                                 }
-                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                                    orientation,
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                                    orientation: *orientation,
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: 0,
+                                    resume_slot_index: 0,
+                                    policies: policies.clone(),
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::Finished) => {
@@ -2750,28 +2968,34 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { orientation, vid } => {
+                MaintenanceWorkItem::CompactDenseLabeledVertexMaintenanceV1 {
+                    orientation,
+                    vid,
+                    policies,
+                } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
 
-                    if graph.compact_label_bucket_vertex_segment(vid).is_err() {
+                    if graph.compact_label_bucket_vertex_segment(*vid).is_err() {
                         stalled = true;
                         None
                     } else {
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
-                        Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                            orientation,
-                            vid,
+                        Some(MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                            orientation: *orientation,
+                            vid: *vid,
                             anchor_bucket_index: 0,
                             resume_bucket_index: 0,
+                            resume_slot_index: 0,
+                            policies: policies.clone(),
                         })
                     }
                 }
-                MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
-                MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation } => {
+                MaintenanceWorkItem::CompactVertexValueSpanV1 { .. } => None,
+                MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
@@ -2786,13 +3010,11 @@ where
                         }
                         Err(_) => {
                             stalled = true;
-                            Some(MaintenanceWorkItem::CompactInlinePropertyBytesSlab {
-                                orientation,
-                            })
+                            None
                         }
                     }
                 }
-                MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
                     orientation,
                     vid,
                     anchor_bucket_index,
@@ -2802,36 +3024,38 @@ where
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    let vertex = graph.vertices().get(vid);
-                    if anchor_bucket_index >= vertex.degree() {
+                    let vertex = graph.vertices().get(*vid);
+                    if *anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
+                        // Legacy order-preserving tag: no captured policies (ADR 0052 §9).
                         match graph.compact_vertex_edge_span_one_step(
-                            vid,
-                            resume_bucket_index,
+                            *vid,
+                            *resume_bucket_index,
+                            0,
                             &|_| EdgePlacementPolicy::Insertion,
                         ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-                                    orientation,
-                                    vid,
-                                    anchor_bucket_index,
-                                    resume_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+                                    orientation: *orientation,
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
+                                    resume_bucket_index: *resume_bucket_index,
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-                                    orientation,
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+                                    orientation: *orientation,
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: next,
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
-                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
-                                    orientation,
-                                    vid,
-                                    anchor_bucket_index,
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpanV1 {
+                                    orientation: *orientation,
+                                    vid: *vid,
+                                    anchor_bucket_index: *anchor_bucket_index,
                                     resume_bucket_index: 0,
                                 })
                             }
@@ -2847,10 +3071,10 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::DeleteVertex { vid, removed_edges } => {
+                MaintenanceWorkItem::DeleteVertexV1 { vid, removed_edges } => {
                     let (next, did_step, completed) = self.process_delete_vertex_step(
-                        vid,
-                        removed_edges,
+                        *vid,
+                        *removed_edges,
                         observer,
                         delete_observer,
                     )?;
@@ -2866,17 +3090,32 @@ where
                 }
             };
             if stalled {
-                // Keep the failed item queued (its dirty bit is still set) and stop the pass.
-                self.maintenance.requeue_front(item)?;
+                // Keep the failed item queued at the Retry priority (its key is unchanged)
+                // and stop the pass.
+                self.maintenance.requeue(&item_key, priority::RETRY, &item);
                 break;
             }
-            if let Some(next) = requeue {
-                self.maintenance.requeue_front(next)?;
-            } else {
-                self.maintenance.complete(item)?;
+            match requeue {
+                Some(next) if matches!(next, MaintenanceWorkItem::DeleteVertexV1 { .. }) => {
+                    // The delete continuation stays in flight; it is re-inserted when the
+                    // pass stops so the in-progress `removed_edges` cursor survives.
+                    in_flight = Some((item_key, next));
+                }
+                Some(next) => {
+                    self.maintenance
+                        .requeue(&item_key, work_item_priority(&item), &next);
+                }
+                None => {
+                    self.maintenance.complete(&item_key);
+                }
             }
         }
 
+        // Persist any in-flight delete continuation before reporting the queue length.
+        if let Some((item_key, next)) = in_flight {
+            self.maintenance
+                .requeue(&item_key, priority::DELETE_VERTEX, &next);
+        }
         report.instructions_used = current_instruction_counter().saturating_sub(baseline);
         report.instruction_budget_exhausted |= budget.max_instructions > 0
             && report
@@ -3366,10 +3605,11 @@ where
             return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
         }
         self.maintenance
-            .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertex {
+            .enqueue_delete_vertex(&MaintenanceWorkItem::DeleteVertexV1 {
                 vid,
                 removed_edges: 0,
-            })
+            });
+        Ok(())
     }
 
     /// Tombstone-first start of a resumable vertex delete (ADR 0021 Stage 2).
@@ -3445,10 +3685,10 @@ where
                 .set(vid, &reverse_row.with_tombstone(true));
         }
         self.maintenance
-            .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertex {
+            .enqueue_delete_vertex(&MaintenanceWorkItem::DeleteVertexV1 {
                 vid,
                 removed_edges: 0,
-            })?;
+            });
         Ok(())
     }
 
@@ -3469,7 +3709,7 @@ where
         E: PartialEq + CsrEdgeTombstone,
     {
         let next_item = |removed: u32| {
-            Some(MaintenanceWorkItem::DeleteVertex {
+            Some(MaintenanceWorkItem::DeleteVertexV1 {
                 vid,
                 removed_edges: removed.saturating_add(1),
             })
@@ -3624,8 +3864,16 @@ where
         edge_vu: E,
         placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.insert_undirected_deferred_with_locations(u, v, label_id, edge_uv, edge_vu, placement)
-            .map(|_| ())
+        self.insert_undirected_deferred_with_locations(
+            u,
+            v,
+            label_id,
+            edge_uv,
+            edge_vu,
+            placement,
+            &|_| EdgePlacementPolicy::Insertion,
+        )
+        .map(|_| ())
     }
 
     /// Inserts both undirected endpoint rows and returns their exact locations.
@@ -3641,6 +3889,7 @@ where
         edge_uv: E,
         edge_vu: E,
         placement: crate::labeled::graph::EdgePlacementPolicy,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
         debug_assert!(
             label_id.is_undirected(),
@@ -3718,7 +3967,7 @@ where
                 });
         }
         if self.forward.labeled_leaf_segment_is_dense(u) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, u)
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, u, policy_for_label)
                 .unwrap_or_else(|error| {
                     panic!(
                         "undirected first-endpoint maintenance admission failed after canonical write: {error}"
@@ -3726,7 +3975,7 @@ where
                 });
         }
         if u != v && self.forward.labeled_leaf_segment_is_dense(v) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, v)
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, v, policy_for_label)
                 .unwrap_or_else(|error| {
                     panic!(
                         "undirected second-endpoint maintenance admission failed after canonical write: {error}"
@@ -3832,6 +4081,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        labeled::graph::VertexEdgeSpanCompactOneStep,
         test_support::{labeled_lara_memories, vector_memory},
         traits::{CsrEdge, CsrEdgeTombstone},
     };
@@ -4000,7 +4250,6 @@ mod tests {
             rvblobs,
         ) = labeled_lara_memories();
         let maintenance_queue = vector_memory();
-        let dirty_work_items = vector_memory();
         let regions = vec![
             fv.clone(),
             fb.clone(),
@@ -4033,7 +4282,6 @@ mod tests {
             rvlog.clone(),
             rvblobs.clone(),
             maintenance_queue.clone(),
-            dirty_work_items.clone(),
         ];
         let graph = DeferredBidirectionalLabeledLaraGraph::new(
             fv,
@@ -4067,7 +4315,6 @@ mod tests {
             rvlog,
             rvblobs,
             maintenance_queue,
-            dirty_work_items,
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::from_raw(1),
         )
@@ -4079,7 +4326,7 @@ mod tests {
         regions: &[VectorMemory],
         elem_capacity: u64,
     ) -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
-        assert_eq!(regions.len(), 32, "sized graph region order changed");
+        assert_eq!(regions.len(), 31, "sized graph region order changed");
         DeferredBidirectionalLabeledLaraGraph::init(
             regions[0].clone(),
             regions[1].clone(),
@@ -4112,7 +4359,6 @@ mod tests {
             regions[28].clone(),
             regions[29].clone(),
             regions[30].clone(),
-            regions[31].clone(),
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::from_raw(1),
         )
@@ -4162,7 +4408,9 @@ mod tests {
         // Enqueue a forward vertex-edge-span compaction (src has degree > 0, so the loop
         // reaches the fallible one-step call) and force that step to fail.
         graph
-            .mark_compact_vertex_edge_span(Orientation::Forward, src, 0)
+            .mark_compact_vertex_edge_span(Orientation::Forward, src, 0, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
             .expect("enqueue compaction");
         assert_eq!(graph.maintenance_queue_len(), 1);
 
@@ -4489,15 +4737,15 @@ mod tests {
     #[test]
     fn delete_vertex_work_item_round_trips() {
         use ic_stable_structures::Storable;
-        let item = MaintenanceWorkItem::DeleteVertex {
+        let item = MaintenanceWorkItem::DeleteVertexV1 {
             vid: VertexId::from(7),
             removed_edges: 12_345,
         };
         let bytes = item.to_bytes();
         assert_eq!(
             bytes.len(),
-            16,
-            "delete work item fits the fixed 16-byte format"
+            3 + 8,
+            "delete work item is the versioned header plus vid/removed_edges"
         );
         assert_eq!(MaintenanceWorkItem::from_bytes(bytes), item);
     }
@@ -4505,7 +4753,7 @@ mod tests {
     #[test]
     fn inline_property_bytes_compaction_work_item_round_trips_and_runs_once() {
         use ic_stable_structures::Storable;
-        let item = MaintenanceWorkItem::CompactInlinePropertyBytesSlab {
+        let item = MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 {
             orientation: Orientation::Reverse,
         };
         assert_eq!(MaintenanceWorkItem::from_bytes(item.to_bytes()), item);
@@ -4569,6 +4817,588 @@ mod tests {
         assert_eq!(second.work.completed_vertex_deletes, 1);
         assert_eq!(second.work.processed_delete_edge_steps, 0);
         assert!(!graph.has_incident_edges(hub).expect("incident again"));
+    }
+
+    /// Seeds `src` with three Insertion-ordered edges, then tombstones the first one,
+    /// leaving the bucket `[T, 2nd, 3rd]` (stored 3, degree 2).
+    fn tombstoned_three_edge_bucket(
+        graph: &DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory>,
+    ) -> (VertexId, BucketLabelKey) {
+        let src = graph.push_vertex().expect("src");
+        let first = graph.push_vertex().expect("first");
+        let second = graph.push_vertex().expect("second");
+        let third = graph.push_vertex().expect("third");
+        let label = BucketLabelKey::directed_from_index(3);
+        for (dst, target) in [(first, 1u32), (second, 2), (third, 3)] {
+            graph
+                .insert_directed_edge(
+                    src,
+                    dst,
+                    label,
+                    TestEdge(target),
+                    TestEdge(u32::from(src)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph
+            .maintenance(unbounded_budget())
+            .expect("settle inserts");
+        assert!(
+            graph
+                .remove_directed_deferred(src, first, TestEdge(1))
+                .expect("remove first edge"),
+            "fixture must tombstone the first edge"
+        );
+        (src, label)
+    }
+
+    fn out_targets(
+        graph: &DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory>,
+        src: VertexId,
+    ) -> Vec<u32> {
+        graph
+            .directed_out_edges(src)
+            .expect("out edges")
+            .into_iter()
+            .map(|edge| edge.neighbor_vid().into())
+            .collect()
+    }
+
+    #[test]
+    fn enqueued_unordered_capture_swap_compacts_without_ambient_table() {
+        // The timer scenario: an Unordered bucket enqueued under a resolved table must
+        // drain with swap-compaction from a bare `maintenance()` call that has NO ambient
+        // resolver — the work item carries the captured policy.
+        let graph = graph();
+        let (src, _label) = tombstoned_three_edge_bucket(&graph);
+        graph
+            .mark_compact_vertex_edge_span(Orientation::Forward, src, 0, &|_| {
+                EdgePlacementPolicy::Unordered
+            })
+            .expect("enqueue under Unordered capture");
+        graph.maintenance(unbounded_budget()).expect("timer drain");
+        assert_eq!(
+            out_targets(&graph, src),
+            vec![3, 2],
+            "captured Unordered must swap the last live edge into the first interior hole"
+        );
+    }
+
+    #[test]
+    fn enqueued_insertion_capture_never_reorders_without_ambient_table() {
+        let graph = graph();
+        let (src, _label) = tombstoned_three_edge_bucket(&graph);
+        graph
+            .mark_compact_vertex_edge_span(Orientation::Forward, src, 0, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("enqueue under Insertion capture");
+        graph.maintenance(unbounded_budget()).expect("timer drain");
+        assert_eq!(
+            out_targets(&graph, src),
+            vec![2, 3],
+            "captured Insertion must keep the order-preserving left-pack"
+        );
+    }
+
+    #[test]
+    fn dense_enqueue_propagates_captured_policies_to_re_enqueued_span() {
+        // The dense drain arm re-enqueues a span work item carrying the same captured map;
+        // the bare drain therefore swap-compacts even though the dense item itself only
+        // rebalances the vertex segment.
+        let graph = graph();
+        let (src, _label) = tombstoned_three_edge_bucket(&graph);
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src, &|_| {
+                EdgePlacementPolicy::Unordered
+            })
+            .expect("enqueue dense under Unordered capture");
+        graph.maintenance(unbounded_budget()).expect("timer drain");
+        assert_eq!(
+            out_targets(&graph, src),
+            vec![3, 2],
+            "the dense -> span re-enqueue must propagate the captured Unordered policy"
+        );
+    }
+
+    #[test]
+    fn missing_label_in_captured_map_falls_back_to_order_preserving() {
+        // A span work item whose captured map lacks the bucket label (a label appeared
+        // after capture) must compact order-preservingly, never swap.
+        let graph = graph();
+        let (src, label) = tombstoned_three_edge_bucket(&graph);
+        graph
+            .maintenance
+            .enqueue(&MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+                orientation: Orientation::Forward,
+                vid: src,
+                anchor_bucket_index: 0,
+                resume_bucket_index: 0,
+                resume_slot_index: 0,
+                policies: vec![],
+            });
+        graph.maintenance(unbounded_budget()).expect("timer drain");
+        assert_eq!(
+            out_targets(&graph, src),
+            vec![2, 3],
+            "a label absent from the captured map falls back to order-preserving"
+        );
+        let _ = label;
+    }
+
+    #[test]
+    fn versioned_encoding_rejects_legacy_bytes_and_unknown_pairs() {
+        use ic_stable_structures::Storable;
+        // Pre-slice-6 fixed-16-byte layout: leading byte is the tag 0..=6, never 0x5A.
+        let legacy = [0u8; 16];
+        assert!(
+            std::panic::catch_unwind(|| {
+                MaintenanceWorkItem::from_bytes(Cow::Owned(legacy.to_vec()))
+            })
+            .is_err(),
+            "legacy fixed-16-byte work items must be rejected"
+        );
+        // Unknown (tag, version) pairs must be rejected, not silently defaulted.
+        for bytes in [vec![0x5A, 7, 1], vec![0x5A, 1, 2]] {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    MaintenanceWorkItem::from_bytes(Cow::Owned(bytes.clone()))
+                })
+                .is_err(),
+                "unknown (tag, version) pair must be rejected: {bytes:?}"
+            );
+        }
+        // A current item still round-trips through the versioned format.
+        let item = MaintenanceWorkItem::CompactVertexEdgeSpanV1 {
+            orientation: Orientation::Reverse,
+            vid: VertexId::from(9),
+            anchor_bucket_index: 4,
+            resume_bucket_index: 1,
+            resume_slot_index: 7,
+            policies: vec![(
+                BucketLabelKey::directed_from_index(3),
+                EdgePlacementPolicy::Unordered,
+            )],
+        };
+        assert_eq!(MaintenanceWorkItem::from_bytes(item.to_bytes()), item);
+    }
+
+    #[test]
+    fn delete_vertex_preempts_routine_compaction() {
+        let graph = graph();
+        let hub = graph.push_vertex().expect("hub");
+        let label = BucketLabelKey::directed_from_index(3);
+        for target in 1u32..=2 {
+            let neighbor = graph.push_vertex().expect("neighbor");
+            graph
+                .insert_directed_edge(
+                    hub,
+                    neighbor,
+                    label,
+                    TestEdge(target),
+                    TestEdge(u32::from(hub)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("hub -> neighbor");
+        }
+        graph.maintenance(unbounded_budget()).expect("settle");
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, hub, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("enqueue routine");
+        graph.enqueue_vertex_delete(hub).expect("enqueue delete");
+        let one = MaintenanceBudget {
+            max_work_items: Some(1),
+            ..unbounded_budget()
+        };
+        let report = graph.maintenance(one).expect("one pop");
+        assert_eq!(report.work.processed_work_items, 1);
+        assert_eq!(
+            report.work.processed_delete_edge_steps, 1,
+            "DeleteVertex (priority 0) must pop before routine compaction (priority 2)"
+        );
+        assert_eq!(report.work.completed_vertex_deletes, 0);
+    }
+
+    #[test]
+    fn stalled_retry_preempts_routine_compaction() {
+        let graph = graph();
+        let src = graph.push_vertex().expect("src");
+        let dst = graph.push_vertex().expect("dst");
+        let label = BucketLabelKey::directed_from_index(3);
+        graph
+            .insert_directed_edge(
+                src,
+                dst,
+                label,
+                TestEdge(u32::from(dst)),
+                TestEdge(u32::from(src)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("src -> dst");
+        graph.maintenance(unbounded_budget()).expect("settle");
+        graph
+            .mark_compact_vertex_edge_span(Orientation::Forward, src, 0, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("enqueue span");
+        crate::labeled::graph::force_next_compact_vertex_edge_span_step_error();
+        graph.maintenance(unbounded_budget()).expect("stall");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            1,
+            "the failed step must be requeued at the Retry priority"
+        );
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("enqueue routine");
+        assert_eq!(graph.maintenance_queue_len(), 2);
+        // With the fault re-armed, the single pop must hit the Retry item (which stalls
+        // again, rebalanced == 0) rather than the routine dense item (which would succeed,
+        // rebalanced == 1).
+        crate::labeled::graph::force_next_compact_vertex_edge_span_step_error();
+        let one = MaintenanceBudget {
+            max_work_items: Some(1),
+            ..unbounded_budget()
+        };
+        let report = graph.maintenance(one).expect("one pop");
+        assert_eq!(report.work.processed_work_items, 1);
+        assert_eq!(
+            report.work.rebalanced_segments, 0,
+            "the Retry item must pop before routine compaction"
+        );
+    }
+
+    #[test]
+    fn maintenance_key_presence_dedups_and_preserves_delete_cursor() {
+        let graph = graph();
+        let hub = graph.push_vertex().expect("hub");
+        let neighbor = graph.push_vertex().expect("neighbor");
+        let label = BucketLabelKey::directed_from_index(3);
+        graph
+            .insert_directed_edge(
+                hub,
+                neighbor,
+                label,
+                TestEdge(u32::from(neighbor)),
+                TestEdge(u32::from(hub)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("hub -> neighbor");
+        graph.maintenance(unbounded_budget()).expect("settle");
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, hub, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("enqueue 1");
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, hub, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
+            .expect("enqueue 2");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            1,
+            "an identical key dedups by presence"
+        );
+        graph.enqueue_vertex_delete(hub).expect("enqueue delete");
+        assert_eq!(graph.maintenance_queue_len(), 2);
+        let one = MaintenanceBudget {
+            max_work_items: Some(1),
+            ..unbounded_budget()
+        };
+        let report = graph.maintenance(one).expect("delete step");
+        assert_eq!(report.work.processed_delete_edge_steps, 1);
+        // Re-enqueueing the delete while one is pending is a no-op (same vid key), so the
+        // in-flight `removed_edges` cursor is preserved instead of being replaced.
+        graph.enqueue_vertex_delete(hub).expect("re-enqueue delete");
+        assert_eq!(graph.maintenance_queue_len(), 2);
+        graph.maintenance(unbounded_budget()).expect("finish drain");
+        assert_eq!(graph.maintenance_queue_len(), 0);
+        assert!(!graph.has_incident_edges(hub).expect("hub incident"));
+    }
+
+    #[test]
+    fn pending_dense_maintenance_short_circuits_before_policy_capture() {
+        let graph = graph();
+        let hub = graph.push_vertex().expect("hub");
+        let neighbor = graph.push_vertex().expect("neighbor");
+        let label = BucketLabelKey::directed_from_index(3);
+        graph
+            .insert_directed_edge(
+                hub,
+                neighbor,
+                label,
+                TestEdge(u32::from(neighbor)),
+                TestEdge(u32::from(hub)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("hub -> neighbor");
+        graph.maintenance(unbounded_budget()).expect("settle");
+        let calls = std::cell::RefCell::new(0u32);
+        let count = |_: BucketLabelKey| {
+            *calls.borrow_mut() += 1;
+            EdgePlacementPolicy::Insertion
+        };
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, hub, &count)
+            .expect("enqueue 1");
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "policy captured once on the first enqueue"
+        );
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, hub, &count)
+            .expect("enqueue 2");
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "an already-pending dense item skips policy capture"
+        );
+        // A second vertex in the same leaf is absorbed by the leaf-scoped dense dedup
+        // without re-resolving policies.
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, neighbor, &count)
+            .expect("same-leaf enqueue");
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "a same-leaf dense item also skips policy capture"
+        );
+        // The reverse orientation is independent in the shared queue and captures its own
+        // policy map for the neighbor's reverse bucket.
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(Orientation::Reverse, neighbor, &count)
+            .expect("reverse enqueue");
+        assert_eq!(
+            *calls.borrow(),
+            2,
+            "reverse orientation captures independently"
+        );
+        assert_eq!(graph.maintenance_queue_len(), 2);
+    }
+
+    #[test]
+    fn pending_span_maintenance_short_circuits_before_policy_capture() {
+        let graph = graph();
+        let hub = graph.push_vertex().expect("hub");
+        let neighbor = graph.push_vertex().expect("neighbor");
+        let label = BucketLabelKey::directed_from_index(3);
+        graph
+            .insert_directed_edge(
+                hub,
+                neighbor,
+                label,
+                TestEdge(u32::from(neighbor)),
+                TestEdge(u32::from(hub)),
+                crate::labeled::graph::EdgePlacementPolicy::Unordered,
+            )
+            .expect("hub -> neighbor");
+        graph.maintenance(unbounded_budget()).expect("settle");
+        let calls = std::cell::RefCell::new(0u32);
+        let count = |_: BucketLabelKey| {
+            *calls.borrow_mut() += 1;
+            EdgePlacementPolicy::Unordered
+        };
+        graph
+            .mark_compact_vertex_edge_span(Orientation::Forward, hub, 0, &count)
+            .expect("span 1");
+        assert_eq!(*calls.borrow(), 1, "policy captured once on the first span");
+        // A second span request for the same vertex (even at another anchor bucket) is
+        // absorbed by the per-vid coarse dedup without re-resolving policies.
+        graph
+            .mark_compact_vertex_edge_span(Orientation::Forward, hub, 1, &count)
+            .expect("span 2");
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "an already-pending span skips policy capture"
+        );
+    }
+
+    #[test]
+    fn delete_purge_keeps_neighbor_survivors_order_preserving() {
+        let graph = graph();
+        let hub = graph.push_vertex().expect("hub");
+        let neighbor = graph.push_vertex().expect("neighbor");
+        let a = graph.push_vertex().expect("a");
+        let b = graph.push_vertex().expect("b");
+        let label = BucketLabelKey::directed_from_index(3);
+        for dst in [hub, a, b] {
+            graph
+                .insert_directed_edge(
+                    neighbor,
+                    dst,
+                    label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(neighbor)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("neighbor -> dst");
+        }
+        graph
+            .insert_directed_edge(
+                hub,
+                neighbor,
+                label,
+                TestEdge(u32::from(neighbor)),
+                TestEdge(u32::from(hub)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("hub -> neighbor");
+        graph.maintenance(unbounded_budget()).expect("settle");
+        graph.enqueue_vertex_delete(hub).expect("enqueue delete");
+        graph.maintenance(unbounded_budget()).expect("drain");
+        assert_eq!(
+            out_targets(&graph, neighbor),
+            vec![u32::from(a), u32::from(b)],
+            "the purge must remove only the hub edge and keep the survivors' order"
+        );
+    }
+
+    #[test]
+    fn compaction_cursor_packs_alternating_tombstones_across_steps() {
+        // Alternating tombstones [T, L, T, L, ...]: with the cursor threaded through the
+        // step results (as the drain arm does), each pop moves exactly one edge and the
+        // final bucket is fully packed.
+        let graph = graph();
+        let src = graph.push_vertex().expect("src");
+        let label = BucketLabelKey::directed_from_index(3);
+        for _ in 0..8u32 {
+            graph.push_vertex().expect("dst");
+        }
+        for dst in 1u32..=8 {
+            graph
+                .insert_directed_edge(
+                    src,
+                    VertexId::from(dst),
+                    label,
+                    TestEdge(dst),
+                    TestEdge(u32::from(src)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph.maintenance(unbounded_budget()).expect("settle");
+        for odd in [1u32, 3, 5, 7] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        let mut resume_bucket = 0u32;
+        let mut resume_slot = 0u32;
+        let mut moved = 0u32;
+        loop {
+            match graph
+                .forward()
+                .compact_vertex_edge_span_one_step(src, resume_bucket, resume_slot, &|_| {
+                    EdgePlacementPolicy::Insertion
+                })
+                .expect("compact step")
+            {
+                VertexEdgeSpanCompactOneStep::EdgeMoved(m) => {
+                    moved = moved.saturating_add(1);
+                    resume_slot = m.new_slot_index.saturating_add(1);
+                }
+                VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => {
+                    resume_bucket = next;
+                    resume_slot = 0;
+                }
+                VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => {
+                    resume_bucket = 0;
+                    resume_slot = 0;
+                }
+                VertexEdgeSpanCompactOneStep::Finished => break,
+            }
+        }
+        assert_eq!(moved, 4, "one move per packed tombstone");
+        assert_eq!(out_targets(&graph, src), vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn compaction_cursor_survives_interleaved_delete_in_packed_prefix() {
+        // A delete that tombstones a slot inside the already-packed prefix mid-flight must
+        // not strand a live edge when the bucket is finalized: the step re-scans from slot
+        // zero before `stored_slots = degree`.
+        let graph = graph();
+        let src = graph.push_vertex().expect("src");
+        let label = BucketLabelKey::directed_from_index(3);
+        for _ in 0..8u32 {
+            graph.push_vertex().expect("dst");
+        }
+        for dst in 1u32..=8 {
+            graph
+                .insert_directed_edge(
+                    src,
+                    VertexId::from(dst),
+                    label,
+                    TestEdge(dst),
+                    TestEdge(u32::from(src)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
+        }
+        graph.maintenance(unbounded_budget()).expect("settle");
+        for odd in [1u32, 3, 5, 7] {
+            assert!(
+                graph
+                    .remove_directed_deferred(src, VertexId::from(odd), TestEdge(odd))
+                    .expect("remove alternating edge"),
+                "fixture must tombstone target {odd}"
+            );
+        }
+        let mut resume_bucket = 0u32;
+        let mut resume_slot = 0u32;
+        let mut steps = 0u32;
+        loop {
+            match graph
+                .forward()
+                .compact_vertex_edge_span_one_step(src, resume_bucket, resume_slot, &|_| {
+                    EdgePlacementPolicy::Insertion
+                })
+                .expect("compact step")
+            {
+                VertexEdgeSpanCompactOneStep::EdgeMoved(m) => {
+                    steps = steps.saturating_add(1);
+                    resume_slot = m.new_slot_index.saturating_add(1);
+                    if steps == 2 {
+                        // Mid-flight, tombstone the edge that now sits inside the packed
+                        // prefix (target 2 moved to slot 0 by the first step).
+                        assert!(
+                            graph
+                                .remove_directed_deferred(src, VertexId::from(2), TestEdge(2),)
+                                .expect("interleaved delete"),
+                            "fixture must tombstone the packed-prefix edge"
+                        );
+                    }
+                }
+                VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => {
+                    resume_bucket = next;
+                    resume_slot = 0;
+                }
+                VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => {
+                    resume_bucket = 0;
+                    resume_slot = 0;
+                }
+                VertexEdgeSpanCompactOneStep::Finished => break,
+            }
+        }
+        assert_eq!(
+            out_targets(&graph, src),
+            vec![4, 6, 8],
+            "the interleaved delete must not truncate a live edge at finalize"
+        );
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4724,7 +5554,6 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
-            vector_memory(),
             vector_memory(),
             crate::labeled::InitialCapacities::uniform(256),
             BucketLabelKey::UNLABELED_DIRECTED,
@@ -5089,6 +5918,7 @@ mod tests {
                 TestEdge(1),
                 TestEdge(0),
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                &|_| EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let forward = locations.forward.expect("named forward bucket location");
@@ -5154,6 +5984,7 @@ mod tests {
                     InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    &|_| EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             locations.push(pair.forward.expect("named forward location"));
@@ -5214,6 +6045,7 @@ mod tests {
                     InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
                     crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    &|_| EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             locations.push(pair.forward.expect("forward location").logical_slot);
@@ -5250,6 +6082,7 @@ mod tests {
                 TestEdge(2),
                 TestEdge(0),
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                &|_| EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(pair.forward.is_some());
@@ -5263,6 +6096,7 @@ mod tests {
                 TestEdge(1),
                 TestEdge(1),
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                &|_| EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(self_pair.forward.is_some());
@@ -5341,6 +6175,7 @@ mod tests {
                 InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 rev(0, 20),
                 unordered,
+                &|_| EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert_eq!(pair.forward.unwrap().logical_slot, 1);

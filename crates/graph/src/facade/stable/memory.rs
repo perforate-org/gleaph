@@ -58,9 +58,9 @@ const REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27)
 const REV_INLINE_PROPERTY_BYTES_LOG: MemoryId = MemoryId::new(28);
 const REV_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(29);
 
-// --- LARA maintenance (2 memories) ---
+// --- LARA maintenance (1 memory) ---
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
-const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(31);
+// MemoryId 31 was formerly DIRTY_WORK_ITEMS. It remains reserved and is not allocated.
 
 // --- Graph facade core (8 memories) ---
 const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(32);
@@ -256,7 +256,6 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_LOG)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
         InitialCapacities {
             bucket_slots: GRAPH_INITIAL_BUCKET_CAPACITY,
             edge_slots: GRAPH_INITIAL_EDGE_CAPACITY,
@@ -383,7 +382,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             REV_INLINE_PROPERTY_BYTES_BLOBS,
         ),
         ("maintenance_queue", 30, MAINTENANCE_QUEUE),
-        ("dirty_work_items", 31, DIRTY_WORK_ITEMS),
+        // MemoryId 31 is reserved after DIRTY_WORK_ITEMS removal.
         ("vertex_label_sets", 32, VERTEX_LABEL_SETS),
         ("vertex_properties", 33, VERTEX_PROPERTIES),
         ("edge_properties", 34, EDGE_PROPERTIES),

@@ -176,33 +176,6 @@ defect from being rediscovered without its prior reasoning.
   [design/index/property-index.md](index/property-index.md),
   [design/index/vector-index.md](index/vector-index.md)
 
-### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
-
-- **Status:** Open
-- **Severity:** P2 maintenance-performance risk
-- **Owner:** `ic-stable-lara` labeled edge-slab compaction and deferred-maintenance cursor state
-- **Observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
-  most one `EdgeSlotMove` per queue pop, but `first_edge_slot_move_in_bucket` restarts at slot zero
-  after every move. Alternating tombstones therefore make full bucket compaction quadratic in the
-  resident slab width. After edge-log and inline-property maintenance were separated, canbench measured
-  `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` at 73.36M instructions versus
-  4.14M previously; the existing 4,096- and 16,384-edge cases were already dominated by the same
-  quadratic shape.
-- **Expected or needed behavior:** preserve ascending/descending edge scan order and immediate
-  per-edge sidecar/index re-keying while carrying enough progress state that successive bounded
-  maintenance steps do not rescan the already-packed prefix.
-- **Evidence:** `crates/ic-stable-lara/src/labeled/graph/compact.rs::first_edge_slot_move_in_bucket`;
-  `compact_vertex_edge_span_one_step`; `crates/ic-stable-lara/src/labeled/bench.rs::bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024`;
-  and ADR 0020's one-`EdgeMoved`-per-pop contract.
-- **Impact:** foreground overflow deletion remains bounded and tombstone-free, but later reclamation
-  of a wide slab with many tombstones can consume avoidable instructions across timer ticks.
-- **Next decision:** design a resumable compaction cursor that fits an upgrade-compatible maintenance
-  record or is stored in an existing owner-controlled stable state. Do not replace ordered moves with
-  swap-delete and do not batch index re-keys without an instruction-budget boundary.
-- **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
-  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
-  [ADR 0023](adr/0023-federated-index-consistency-upgrade-compaction.md)
-
 ### GAP-2026-07-11-005 — `FreeSpanStore` reopen validation has no production-scale cost bound
 
 - **Status:** Open
@@ -331,6 +304,37 @@ defect from being rediscovered without its prior reasoning.
   the new dataset deliberately in its own change.
 
 ## Resolved gaps
+
+### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
+
+- **Status:** Resolved by Plan 0201 (ADR 0052 Slice 6; commit in the same patch)
+- **Severity:** P2 maintenance-performance risk
+- **Owner:** `ic-stable-lara` labeled edge-slab compaction and deferred-maintenance cursor state
+- **Observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
+  most one `EdgeSlotMove` per queue pop, but `first_edge_slot_move_in_bucket` restarts at slot zero
+  after every move. Alternating tombstones therefore make full bucket compaction quadratic in the
+  resident slab width. After edge-log and inline-property maintenance were separated, canbench measured
+  `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` at 73.36M instructions versus
+  4.14M previously; the existing 4,096- and 16,384-edge cases were already dominated by the same
+  quadratic shape.
+- **Expected or needed behavior:** preserve ascending/descending edge scan order and immediate
+  per-edge sidecar/index re-keying while carrying enough progress state that successive bounded
+  maintenance steps do not rescan the already-packed prefix.
+- **Resolution:** `CompactVertexEdgeSpan` (v1 work item) carries a `resume_slot_index` cursor;
+  `compact_vertex_edge_span_one_step` and both finders scan from the cursor with `next_live` seeded
+  from it (packed-prefix invariant), `EdgeMoved` re-enqueues carry the advanced cursor,
+  `AdvanceBucket` resets it, and a cursor-scan miss triggers a full re-scan from slot zero before
+  `stored_slots = degree`, so an interleaved delete inside the already-packed prefix can never
+  truncate a live edge. `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` moves off
+  the quadratic shape.
+- **Evidence:** `crates/ic-stable-lara/src/labeled/graph/compact.rs::first_edge_slot_move_in_bucket`
+  (cursor parameter), `compact_vertex_edge_span_one_step`; regression tests
+  `compaction_cursor_packs_alternating_tombstones_across_steps` and
+  `compaction_cursor_survives_interleaved_delete_in_packed_prefix` in
+  `labeled/bidirectional/deferred.rs`; ADR 0020's one-`EdgeMoved`-per-pop contract.
+- **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
+  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
+  [ADR 0052](adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) Slice 6
 
 ### GAP-2026-07-31-003 — Typed V1 rejected disconnected multi-pattern seed bundles
 
