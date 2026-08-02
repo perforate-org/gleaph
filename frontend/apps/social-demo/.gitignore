@@ -11,3 +11,7 @@ src/generated/*
 # social_demo_gateway bindings are regenerated during build; keep untracked.
 src/generated/declarations/
 src/generated/social_demo_gateway.ts
+
+# Ignore all generated seed files.
+seeds/
+public/avatars/
