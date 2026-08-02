@@ -354,6 +354,28 @@ event-sourced state. The projection is eventually consistent, so a projection-la
 is an accepted limitation of the initial implementation and is not a correctness hole for the
 canonical edge store — it only means the DDL guard may be momentarily permissive.
 
+**Slice 7 consideration (2026-08-02, Plan 0202 — planned, not yet implemented):** the future §10
+work is directional, not symmetric. `Insertion -> Unordered` is physically safe and lazy: an
+Insertion bucket is a valid Unordered bucket (§7 reordering is a permission, not a requirement),
+so no rebuild is required — after the flip, new inserts reuse tombstones (Slices 3/4) and drains
+swap-compact (Slices 5/6), and Slice 6's enqueue-time policy capture means work items pending
+before the flip drain order-preserving, which is valid for both policies. `Unordered -> Insertion`
+is fundamentally impossible for live buckets: the existing unordered physical order cannot prove
+insertion order (ADR Alternative C, per-edge sequence/generation tables, was rejected), so this
+direction stays rejected unless a per-edge creation-time property is introduced later.
+
+Planned scope: (1) Router DDL allows `Insertion -> Unordered` even with live edges while keeping
+`Unordered -> Insertion` rejected with an explicit reason; (2) contract checks for a flip —
+`ORDER BY INSERTION(e)` queries fail closed (Slice 2), ADR 0049 ordered-batch admission rejects
+the flipped label, and pending Slice 6 captures remain order-preserving; (3) harden the
+rejected-direction guard, which currently fails **open** on `ROUTER_EDGE_LABEL_STATS` projection lag
+(a lagging `live_count` could admit an irreversible `Unordered -> Insertion` change); (4) lifecycle
+tests (flip with live edges, tombstone reuse after flip, swap-compaction convergence, ordered-batch
+rejection) and an optional policy-flip canbench. Open questions: whether the queue must be empty at
+a flip (the Slice 6 fallback suggests not), whether DDL should block flips while `ORDER BY
+INSERTION` is in active use, and whether the fail-closed hardening belongs in this slice. Out of
+scope: the `Unordered -> Insertion` migration itself and per-edge sequence tables.
+
 ### 11. Cross-canister and future inter-shard consistency
 
 Graph remains the canonical owner of edge deletion and local sidecars. Property/index updates are
