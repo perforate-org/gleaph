@@ -156,6 +156,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -243,6 +244,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -255,6 +257,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -294,6 +297,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: BucketLabelKey::directed_from_index(1),
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -330,6 +334,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: BucketLabelKey::directed_from_index(1),
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -342,6 +347,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: BucketLabelKey::directed_from_index(1),
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -379,6 +385,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: BucketLabelKey::directed_from_index(1),
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 1,
@@ -428,6 +435,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 0,
@@ -487,6 +495,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -526,6 +535,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -573,6 +583,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -589,6 +600,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(2),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(2),
@@ -632,6 +644,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -644,6 +657,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(2),
                     label_id: label,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(2),
@@ -703,6 +717,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -715,6 +730,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(2),
                     label_id: label,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(2),
@@ -764,6 +780,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -817,6 +834,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -885,6 +903,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -947,6 +966,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -959,6 +979,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(2),
                     label_id: label,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(2),
@@ -1007,6 +1028,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 0,
@@ -1028,6 +1050,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 2,
@@ -1102,6 +1125,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 0,
@@ -1123,6 +1147,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 2,
@@ -1247,6 +1272,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 0,
@@ -1268,6 +1294,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 2,
                         owner_vertex_id: VertexId::from(0),
@@ -1345,6 +1372,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 0,
@@ -1447,6 +1475,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 0,
@@ -1607,6 +1636,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -1619,6 +1649,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -1795,6 +1826,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -1931,6 +1963,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),

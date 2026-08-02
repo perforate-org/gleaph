@@ -3,8 +3,7 @@
 use gleaph_graph_kernel::entry::{
     Edge, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, VertexRef,
 };
-use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
-use ic_stable_lara::{VertexId, labeled::EdgePlacementPolicy, traits::CsrEdge};
+use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 use super::GraphStore;
 use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
@@ -12,19 +11,9 @@ use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
     build_edge_to, canonical_undirected_owner, edge_matches_local_neighbor, edge_storage_label,
-    lara_label, validate_edge_inline_property_bytes_for_label,
+    lara_edge_placement, lara_label, validate_edge_inline_property_bytes_for_label,
 };
 use crate::edge_inline_property_schema::resolved_edge_label_with;
-
-/// Maps the resolved ordering policy to the storage-owned LARA placement enum
-/// at the mutation boundary (ADR 0052 §4). An undeclared/unknown label resolves
-/// to the `Unordered` default (ADR 0052 §1).
-fn lara_edge_placement(ordering: Option<EdgeOrderingPolicy>) -> EdgePlacementPolicy {
-    match ordering {
-        None | Some(EdgeOrderingPolicy::Unordered) => EdgePlacementPolicy::Unordered,
-        Some(EdgeOrderingPolicy::Insertion) => EdgePlacementPolicy::Insertion,
-    }
-}
 
 impl GraphStore {
     fn edge_inline_property_width_u16(

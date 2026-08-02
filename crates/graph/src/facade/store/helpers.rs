@@ -5,11 +5,12 @@ use gleaph_graph_kernel::entry::{
     EdgeSlotIndex, EdgeTarget, EdgeWithInlinePropertyBytes, RemoteVertexId, TaggedEdgeLabelId,
     VertexRef,
 };
+use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::{
     VertexId,
     labeled::{
-        BucketLabelKey as LaraLabelId, DeleteEdgeObserver, DeletedEdge, EdgeSlotMove,
-        EdgeSlotMoveObserver, LabeledOrientation,
+        BucketLabelKey as LaraLabelId, DeleteEdgeObserver, DeletedEdge, EdgePlacementPolicy,
+        EdgeSlotMove, EdgeSlotMoveObserver, LabeledOrientation,
     },
     traits::CsrEdge,
 };
@@ -253,5 +254,15 @@ pub fn catalog_edge_label_from_wire(label: LaraLabelId) -> Option<EdgeLabelId> {
         None
     } else {
         Some(EdgeLabelId::from_raw(label.label_index()))
+    }
+}
+
+/// Maps the resolved ordering policy to the storage-owned LARA placement enum
+/// at the mutation boundary (ADR 0052 §4). An undeclared/unknown label resolves
+/// to the `Unordered` default (ADR 0052 §1).
+pub(crate) fn lara_edge_placement(ordering: Option<EdgeOrderingPolicy>) -> EdgePlacementPolicy {
+    match ordering {
+        None | Some(EdgeOrderingPolicy::Unordered) => EdgePlacementPolicy::Unordered,
+        Some(EdgeOrderingPolicy::Insertion) => EdgePlacementPolicy::Insertion,
     }
 }

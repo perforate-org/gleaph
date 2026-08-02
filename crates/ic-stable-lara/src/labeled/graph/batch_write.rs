@@ -52,6 +52,7 @@ use ic_stable_structures::Memory;
 
 use super::compact::LabeledLeafRelocationTarget;
 use super::error::LabeledOperationError;
+use super::insert::EdgePlacementPolicy;
 use super::{BucketSearch, LabeledLaraGraph};
 use crate::lara::edge::free_span::FreeSpan;
 
@@ -88,6 +89,9 @@ where
     pub label_id: BucketLabelKey,
     /// Physical byte width per edge inline property slot (`0` = no inline_property_bytes).
     pub inline_property_width: u16,
+    /// Storage placement policy for this bucket run (ADR 0052 §5/§6). `Unordered`
+    /// is the default; the Graph facade resolves it from the label's ordering policy.
+    pub placement: EdgePlacementPolicy,
     /// Edges in this bucket run, in strictly increasing logical ordinal order.
     pub edges: Vec<OneOrientationBatchEdge<E>>,
 }
@@ -588,7 +592,7 @@ where
     pub fn uses_expansion(&self) -> bool {
         self.runs.iter().any(|run| {
             matches!(
-                run.destination,
+                &run.destination,
                 RunDestination::ExpandedSlab { .. } | RunDestination::RelocatedSlab { .. }
             )
         })
@@ -711,13 +715,97 @@ pub enum OneOrientationBatchError {
     InvalidOrientationPair(String),
 }
 
-/// Physical destination chosen for one bucket-local run at preflight time.
+/// Edge write strategy for filling in-slab tombstone holes of an unordered bucket.
+///
+/// Both strategies publish identical canonical state; the choice is a pure cost
+/// decision derived from the `lara_slab_*` micro-benches (see
+/// [`choose_slab_hole_write_strategy`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlabHoleWriteStrategy {
+    /// Write each filled hole with one `write_slot` call (pre-encoded bytes).
+    PerHole,
+    /// Read the bucket's stored window once, patch the holes, and write the
+    /// window back in one contiguous call.
+    WindowRewrite,
+}
+
+/// Per-`write_slot` call fixed cost, wasm + IC charging layers (canbench
+/// `lara_slab_*`, 2026-08-01: ≈240 wasm + ≈30 IC per call).
+const SLAB_WRITE_CALL_FIXED: u64 = 270;
+/// Byte cost of a slab write, wasm + IC charging layers (≈1 each per byte).
+const SLAB_WRITE_BYTE_COST: u64 = 2;
+/// Fixed cost of two contiguous calls (one window read + one window write), wasm layer.
+const SLAB_WINDOW_CALL_FIXED: u64 = 1200;
+/// Cost of patching one hole into the already-read window buffer (no re-encode).
+const SLAB_HOLE_PATCH_COST: u64 = 25;
+
+// Test-only override so both write strategies can be exercised deterministically
+// without depending on the cost constants staying in a particular range.
+#[cfg(test)]
+thread_local! {
+    static SLAB_HOLE_WRITE_STRATEGY_OVERRIDE: std::cell::Cell<Option<SlabHoleWriteStrategy>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Chooses the cheaper edge write strategy for filling `holes` tombstone slots
+/// inside a `window_slots`-wide bucket window of `edge_bytes`-wide rows.
+///
+/// The whole-window rewrite costs the fixed two-call overhead plus reading and
+/// writing the full window (4·W·B across both layers) plus one patch per hole;
+/// per-hole writes cost the per-call fixed cost per hole. Window rewrite is
+/// chosen only when its modelled cost is below the per-hole cost, which for the
+/// production 24-byte row width happens around ≈35% tombstone density and for
+/// the 4-byte test width around ≈8% (the break-even density scales with edge
+/// width and is roughly window-size independent).
+fn choose_slab_hole_write_strategy(
+    edge_bytes: usize,
+    window_slots: u64,
+    holes: u64,
+) -> SlabHoleWriteStrategy {
+    #[cfg(test)]
+    if let Some(forced) = SLAB_HOLE_WRITE_STRATEGY_OVERRIDE.with(|cell| cell.get()) {
+        return forced;
+    }
+    let window_bytes = window_slots.saturating_mul(edge_bytes as u64);
+    let window_cost = SLAB_WINDOW_CALL_FIXED
+        .saturating_add(window_bytes.saturating_mul(4))
+        .saturating_add(SLAB_HOLE_PATCH_COST.saturating_mul(holes));
+    let hole_cost = SLAB_WRITE_CALL_FIXED.saturating_mul(holes);
+    if window_cost < hole_cost {
+        SlabHoleWriteStrategy::WindowRewrite
+    } else {
+        SlabHoleWriteStrategy::PerHole
+    }
+}
+
+/// Physical destination chosen for one bucket-local run at preflight time.
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum RunDestination {
     /// Write into the bucket's contiguous slab window.
     Slab {
         /// First edge slab slot written for the run.
         edge_start_slot: u64,
+        /// Byte offset in the inline property bytes slab where the run writes, if inline-property-bearing.
+        inline_property_bytes_offset: Option<u64>,
+        /// Number of inline property bytes reserved.
+        inline_property_bytes_byte_count: u64,
+    },
+    /// Fill in-slab tombstone holes of an unordered bucket (ADR 0052 §5) and
+    /// append the run's tail remainder at the slab tail.
+    ///
+    /// The first `hole_window_indices.len()` edges of the run are written into
+    /// the tombstone holes (in window order); the remaining edges are appended
+    /// contiguously at `edge_start_slot + stored_slots`.
+    SlabHoles {
+        /// Physical slab slot of the bucket's first stored slot (window start).
+        edge_start_slot: u64,
+        /// Window offsets (bucket-local, ascending) of the tombstone holes filled
+        /// by this run. The live ordinal of hole `j` is `offset - j`.
+        hole_window_indices: Vec<u32>,
+        /// Number of run edges appended at the slab tail after the stored window.
+        tail_edge_slot_count: u32,
+        /// Edge write strategy chosen at preflight.
+        write_strategy: SlabHoleWriteStrategy,
         /// Byte offset in the inline property bytes slab where the run writes, if inline-property-bearing.
         inline_property_bytes_offset: Option<u64>,
         /// Number of inline property bytes reserved.
@@ -1013,12 +1101,24 @@ where
                 &mut leaf_expansion_cursors,
                 &existing_buckets,
             )?;
-            if let RunDestination::Slab {
-                edge_start_slot, ..
-            } = p.destination
-            {
-                max_edge_end_slot =
-                    max_edge_end_slot.max(edge_start_slot + u64::from(p.edge_slot_count));
+            match &p.destination {
+                RunDestination::Slab {
+                    edge_start_slot, ..
+                } => {
+                    max_edge_end_slot =
+                        max_edge_end_slot.max(*edge_start_slot + u64::from(p.edge_slot_count));
+                }
+                RunDestination::SlabHoles {
+                    edge_start_slot,
+                    tail_edge_slot_count,
+                    ..
+                } => {
+                    let tail_end = (*edge_start_slot)
+                        .saturating_add(u64::from(p.bucket.stored_slots))
+                        .saturating_add(u64::from(*tail_edge_slot_count));
+                    max_edge_end_slot = max_edge_end_slot.max(tail_end);
+                }
+                _ => {}
             }
             preflight.push(p);
         }
@@ -1127,9 +1227,10 @@ where
         }
 
         for preflight_run in &mut preflight {
-            let RunDestination::ExpandedSlab { leaf, .. } = preflight_run.destination else {
+            let RunDestination::ExpandedSlab { leaf, .. } = &preflight_run.destination else {
                 continue;
             };
+            let leaf = *leaf;
             let Some(target) = leaf_relocations.get(&leaf) else {
                 // The leaf can expand in place while an existing inline-property span is
                 // non-tail. The reservation already copied that span into the free-span-first
@@ -1145,10 +1246,18 @@ where
                 inline_property_bytes_offset,
                 inline_property_bytes_byte_count,
                 ..
-            } = preflight_run.destination
+            } = &preflight_run.destination
             else {
                 unreachable!("relocation conversion requires expanded-slab preflight");
             };
+            // Copy the scalar fields so the borrow of `destination` ends before the
+            // assignment below (the destination is a non-Copy enum now).
+            let existing_bucket_slots = *existing_bucket_slots;
+            let edge_log_len = *edge_log_len;
+            let existing_inline_property_bytes_slots = *existing_inline_property_bytes_slots;
+            let inline_property_bytes_log_len = *inline_property_bytes_log_len;
+            let inline_property_bytes_offset = *inline_property_bytes_offset;
+            let inline_property_bytes_byte_count = *inline_property_bytes_byte_count;
             preflight_run.destination = RunDestination::RelocatedSlab {
                 leaf,
                 new_leaf_len: target.new_len,
@@ -1183,8 +1292,8 @@ where
             Vec::with_capacity(preflight.len());
         let mut allocated_inline_property_bytes_free_spans = Vec::new();
         for p in &preflight {
-            match p.destination {
-                RunDestination::Slab { .. } => {
+            match &p.destination {
+                RunDestination::Slab { .. } | RunDestination::SlabHoles { .. } => {
                     if let Some(allocation) = p.inline_property_bytes_allocation {
                         match allocation {
                             InlinePropertyBytesAllocationKind::Existing { offset } => {
@@ -1488,6 +1597,43 @@ where
                             inline_property_bytes_byte_count: p.inline_property_bytes_byte_count,
                         }
                     }
+                    RunDestination::SlabHoles {
+                        edge_start_slot,
+                        hole_window_indices,
+                        tail_edge_slot_count,
+                        write_strategy,
+                        inline_property_bytes_byte_count,
+                        ..
+                    } => {
+                        let inline_property_bytes_offset = if p.inline_property_width > 0 {
+                            let (actual_offset, _allocated_len) = allocated.expect(
+                                "inline-property-bearing hole-fill run must have an allocated offset",
+                            );
+                            if let Some(InlinePropertyBytesAllocationKind::Existing { offset }) =
+                                p.inline_property_bytes_allocation
+                            {
+                                assert_eq!(
+                                    actual_offset, offset,
+                                    "existing inline property bytes offset must not change during allocation"
+                                );
+                            }
+                            Some(actual_offset)
+                        } else {
+                            debug_assert!(
+                                allocated.is_none(),
+                                "edge-only hole-fill run must have no inline property bytes allocation"
+                            );
+                            None
+                        };
+                        RunDestination::SlabHoles {
+                            edge_start_slot,
+                            hole_window_indices,
+                            tail_edge_slot_count,
+                            write_strategy,
+                            inline_property_bytes_offset,
+                            inline_property_bytes_byte_count,
+                        }
+                    }
                     RunDestination::OverflowLog {
                         edge_log_start_idx,
                         inline_property_bytes_log_start_idx,
@@ -1718,81 +1864,18 @@ where
         }
     }
 
-    fn preflight_run(
+    /// Validates every inline-property-bearing edge's width and computes the
+    /// inline property bytes byte count plus the span allocation kind for a
+    /// slab-bound run (shared by the tail-append and hole-fill preflight paths).
+    fn preflight_inline_property_bytes(
         &self,
+        bucket: super::LabelBucket,
         run: &OneOrientationBucketRun<E>,
-        edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
-        inline_property_bytes_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
-        leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
-        existing_buckets: &std::collections::BTreeMap<
-            (VertexId, BucketLabelKey),
-            (u64, super::LabelBucket),
-        >,
-    ) -> Result<PreflightRun, OneOrientationBatchError> {
-        self.ensure_vertex(run.owner_vertex_id)
-            .map_err(OneOrientationBatchError::from)?;
-        let vertex = self.vertices.get(run.owner_vertex_id);
-        let (bucket_slot, bucket) = match existing_buckets
-            .get(&(run.owner_vertex_id, run.label_id))
-            .copied()
-        {
-            Some(found) => found,
-            None => match self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)? {
-                BucketSearch::Found { slot, bucket } => (slot, bucket),
-                BucketSearch::Missing { .. } => {
-                    return Err(OneOrientationBatchError::BucketNotFound {
-                        owner_vertex_id: run.owner_vertex_id,
-                        label_id: run.label_id,
-                    });
-                }
-            },
-        };
-        if run.inline_property_width != bucket.inline_property_byte_width() {
-            return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
-                bucket_width: bucket.inline_property_byte_width(),
-                edge_width: run.inline_property_width,
-            });
-        }
-
-        let edge_start_slot =
-            checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
-                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-        let edge_slot_count = u32::try_from(run.edges.len())
-            .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
-        let edge_end_slot = edge_start_slot
-            .checked_add(u64::from(edge_slot_count))
-            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
-
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)
-            .map_err(OneOrientationBatchError::from)?;
-        let successor_start = self
-            .bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)
-            .map_err(OneOrientationBatchError::from)?;
-        // A bucket with an existing overflow chain must continue through the
-        // log/fold path. Writing directly into its slab would leave the chain
-        // published alongside the new slab prefix and break edge/inline-property-bytes
-        // ordinal alignment.
-        if bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0 {
-            return self.preflight_overflow_log_run(
-                run,
-                bucket_slot,
-                bucket,
-                edge_log_leaf_cursors,
-                inline_property_bytes_log_leaf_cursors,
-                leaf_expansion_cursors,
-            );
-        }
-        if edge_end_slot > successor_start {
-            return self.preflight_overflow_log_run(
-                run,
-                bucket_slot,
-                bucket,
-                edge_log_leaf_cursors,
-                inline_property_bytes_log_leaf_cursors,
-                leaf_expansion_cursors,
-            );
-        }
-
+        edge_slot_count: u32,
+    ) -> Result<(u64, Option<InlinePropertyBytesAllocationKind>), OneOrientationBatchError>
+    where
+        E: CsrEdgeTombstone,
+    {
         // Verify every inline-property-bearing edge matches the declared width.  This
         // proves the commit-time assertion cannot fire for malformed input.
         let mut inline_property_bytes_byte_count: u64 = 0;
@@ -1860,6 +1943,156 @@ where
                 "preflight inline property geometry mismatch"
             );
         }
+        Ok((
+            inline_property_bytes_byte_count,
+            inline_property_bytes_allocation,
+        ))
+    }
+
+    fn preflight_run(
+        &self,
+        run: &OneOrientationBucketRun<E>,
+        edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
+        inline_property_bytes_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
+        leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
+        existing_buckets: &std::collections::BTreeMap<
+            (VertexId, BucketLabelKey),
+            (u64, super::LabelBucket),
+        >,
+    ) -> Result<PreflightRun, OneOrientationBatchError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(run.owner_vertex_id)
+            .map_err(OneOrientationBatchError::from)?;
+        let vertex = self.vertices.get(run.owner_vertex_id);
+        let (bucket_slot, bucket) = match existing_buckets
+            .get(&(run.owner_vertex_id, run.label_id))
+            .copied()
+        {
+            Some(found) => found,
+            None => match self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)? {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                BucketSearch::Missing { .. } => {
+                    return Err(OneOrientationBatchError::BucketNotFound {
+                        owner_vertex_id: run.owner_vertex_id,
+                        label_id: run.label_id,
+                    });
+                }
+            },
+        };
+        if run.inline_property_width != bucket.inline_property_byte_width() {
+            return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
+                bucket_width: bucket.inline_property_byte_width(),
+                edge_width: run.inline_property_width,
+            });
+        }
+
+        let edge_start_slot =
+            checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+        let edge_slot_count = u32::try_from(run.edges.len())
+            .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
+        let edge_end_slot = edge_start_slot
+            .checked_add(u64::from(edge_slot_count))
+            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)
+            .map_err(OneOrientationBatchError::from)?;
+        let successor_start = self
+            .bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)
+            .map_err(OneOrientationBatchError::from)?;
+        // A bucket with an existing overflow chain must continue through the
+        // log/fold path. Writing directly into its slab would leave the chain
+        // published alongside the new slab prefix and break edge/inline-property-bytes
+        // ordinal alignment.
+        if bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0 {
+            return self.preflight_overflow_log_run(
+                run,
+                bucket_slot,
+                bucket,
+                edge_log_leaf_cursors,
+                inline_property_bytes_log_leaf_cursors,
+                leaf_expansion_cursors,
+            );
+        }
+
+        // Unordered placement (ADR 0052 §5): count in-slab tombstone holes as
+        // reusable capacity before reserving tail or log space. Restricted to
+        // chain-free buckets whose inline property bytes are slab-backed: the O(1)
+        // gate `stored_slots > degree` is exact for chain-free buckets, and
+        // log-backed bytes cannot be synchronized at a reused middle ordinal
+        // (ADR 0052 §9, same fallback as the scalar reuse path). The window is read
+        // once and decoded in-buffer; the scan stops once the run is covered. This
+        // branch runs before the tail-fit check because a span that is exactly full
+        // of live edges plus tombstones has no tail room but can still admit the run
+        // through its holes. When holes plus the available tail cannot admit the
+        // whole run, the run keeps the current tail-first/log path (a mixed
+        // slab+log split of one run is out of scope).
+        if run.placement == EdgePlacementPolicy::Unordered && bucket.stored_slots > bucket.degree {
+            let window_len = u64::from(bucket.stored_slots);
+            let mut window = vec![0u8; (window_len as usize).saturating_mul(E::BYTES)];
+            self.edges
+                .read_slots_contiguous(bucket.edge_start(), &mut window);
+            let mut hole_window_indices = Vec::new();
+            for slot_index in 0..bucket.stored_slots {
+                let off = (slot_index as usize).saturating_mul(E::BYTES);
+                let encoded = E::read_from(&window[off..off + E::BYTES]);
+                if encoded.is_tombstone_edge() {
+                    hole_window_indices.push(slot_index);
+                    if hole_window_indices.len() == run.edges.len() {
+                        break;
+                    }
+                }
+            }
+            if !hole_window_indices.is_empty() {
+                let holes = hole_window_indices.len() as u64;
+                let tail_edge_slot_count = edge_slot_count
+                    .checked_sub(hole_window_indices.len() as u32)
+                    .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+                let tail_capacity = successor_start.saturating_sub(edge_start_slot);
+                if tail_capacity >= u64::from(tail_edge_slot_count) {
+                    let (inline_property_bytes_byte_count, inline_property_bytes_allocation) =
+                        self.preflight_inline_property_bytes(bucket, run, edge_slot_count)?;
+                    let write_strategy =
+                        choose_slab_hole_write_strategy(E::BYTES, window_len, holes);
+                    return Ok(PreflightRun {
+                        owner_vertex_id: run.owner_vertex_id,
+                        label_id: run.label_id,
+                        bucket_slot,
+                        bucket,
+                        edge_slot_count,
+                        inline_property_width: run.inline_property_width,
+                        inline_property_bytes_byte_count,
+                        inline_property_bytes_allocation,
+                        destination: RunDestination::SlabHoles {
+                            edge_start_slot: bucket.edge_start(),
+                            hole_window_indices,
+                            tail_edge_slot_count,
+                            write_strategy,
+                            inline_property_bytes_offset: None,
+                            inline_property_bytes_byte_count,
+                        },
+                    });
+                }
+            }
+        }
+
+        if edge_end_slot > successor_start {
+            return self.preflight_overflow_log_run(
+                run,
+                bucket_slot,
+                bucket,
+                edge_log_leaf_cursors,
+                inline_property_bytes_log_leaf_cursors,
+                leaf_expansion_cursors,
+            );
+        }
+
+        // Verify every inline-property-bearing edge matches the declared width.  This
+        // proves the commit-time assertion cannot fire for malformed input.
+        let (inline_property_bytes_byte_count, inline_property_bytes_allocation) =
+            self.preflight_inline_property_bytes(bucket, run, edge_slot_count)?;
 
         Ok(PreflightRun {
             owner_vertex_id: run.owner_vertex_id,
@@ -2328,6 +2561,25 @@ where
                             .expect("reserve guaranteed inline property bytes slab slot overflow safety");
                     }
                 }
+                RunDestination::SlabHoles {
+                    tail_edge_slot_count,
+                    ..
+                } => {
+                    // Hole-fill reuses tombstoned slots (already counted in
+                    // `stored_slots`); only the tail remainder grows the stored
+                    // window. Inline-property bytes are keyed by live ordinal, so
+                    // the byte-slot count still grows by the full run size.
+                    let _updated_stored_slots = bucket
+                        .stored_slots
+                        .checked_add(*tail_edge_slot_count)
+                        .expect("reserve guaranteed stored_slots overflow safety");
+                    if res.inline_property_width > 0 {
+                        let _updated_inline_property_bytes_slots = bucket
+                            .inline_property_bytes_slab_slots()
+                            .checked_add(res.edge_slot_count)
+                            .expect("reserve guaranteed inline property bytes slab slot overflow safety");
+                    }
+                }
                 RunDestination::OverflowLog { .. } => {}
                 RunDestination::ExpandedSlab { edge_log_len, .. } => {
                     let _updated_degree = bucket
@@ -2467,6 +2719,37 @@ where
                     edge_slots_written = edge_slots_written
                         .checked_add(u64::from(res.edge_slot_count))
                         .expect("reserve guaranteed edge slot count");
+                }
+                RunDestination::SlabHoles {
+                    edge_start_slot,
+                    hole_window_indices,
+                    tail_edge_slot_count,
+                    write_strategy,
+                    inline_property_bytes_offset,
+                    inline_property_bytes_byte_count,
+                } => {
+                    let (edge_written, inline_property_bytes_written, run_locations) =
+                        Self::commit_slab_holes_run::<M>(
+                            graph,
+                            run,
+                            res,
+                            *edge_start_slot,
+                            hole_window_indices,
+                            *tail_edge_slot_count,
+                            *write_strategy,
+                            *inline_property_bytes_offset,
+                            *inline_property_bytes_byte_count,
+                            location_mode,
+                        );
+                    if let Some(locations) = locations.as_mut() {
+                        locations.extend(run_locations);
+                    }
+                    edge_slots_written = edge_slots_written
+                        .checked_add(edge_written)
+                        .expect("reserve guaranteed hole-fill edge slot count");
+                    inline_property_bytes_slots_written = inline_property_bytes_slots_written
+                        .checked_add(inline_property_bytes_written)
+                        .expect("reserve guaranteed hole-fill inline property bytes slot count");
                 }
                 RunDestination::OverflowLog {
                     edge_log_start_idx,
@@ -2728,6 +3011,42 @@ where
                         .with_inline_property_bytes_offset(new_offset);
                     }
                 }
+                RunDestination::SlabHoles {
+                    inline_property_bytes_offset,
+                    tail_edge_slot_count,
+                    ..
+                } => {
+                    updated_bucket = updated_bucket.with_stored_slots(
+                        bucket
+                            .stored_slots
+                            .checked_add(*tail_edge_slot_count)
+                            .expect("reserve guaranteed stored_slots overflow safety"),
+                    );
+                    if res.inline_property_width > 0 {
+                        let new_offset = inline_property_bytes_offset.expect(
+                            "reserve inline_property_bytes offset for inline property bytes span",
+                        );
+                        let width = u64::from(res.inline_property_width);
+                        let old_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
+                            .checked_mul(width)
+                            .expect("reserve guaranteed existing inline property byte count");
+                        if bucket.inline_property_bytes_slab_slots() > 0
+                            && new_offset != bucket.inline_property_bytes_offset()
+                        {
+                            graph
+                                .values
+                                .retire_byte_span(bucket.inline_property_bytes_offset(), old_bytes)
+                                .expect("reserve guaranteed slab inline property span retirement");
+                        }
+                        updated_bucket = updated_bucket.with_inline_property_bytes_slab_slots(
+                            bucket
+                                .inline_property_bytes_slab_slots()
+                                .checked_add(res.edge_slot_count)
+                                .expect("reserve guaranteed inline property bytes slab slot overflow safety"),
+                        )
+                        .with_inline_property_bytes_offset(new_offset);
+                    }
+                }
                 RunDestination::OverflowLog {
                     edge_log_start_idx,
                     inline_property_bytes_log_start_idx,
@@ -2783,16 +3102,23 @@ where
         let mut vertex_stored_slot_ends: std::collections::BTreeMap<VertexId, u64> =
             std::collections::BTreeMap::new();
         for res in &self.runs {
-            if let RunDestination::Slab {
-                edge_start_slot, ..
-            } = &res.destination
-            {
-                let end = edge_start_slot + u64::from(res.edge_slot_count);
-                let entry = vertex_stored_slot_ends
-                    .entry(res.bucket_fingerprint.owner_vertex_id)
-                    .or_default();
-                *entry = (*entry).max(end);
-            }
+            let end = match &res.destination {
+                RunDestination::Slab {
+                    edge_start_slot, ..
+                } => *edge_start_slot + u64::from(res.edge_slot_count),
+                RunDestination::SlabHoles {
+                    edge_start_slot,
+                    tail_edge_slot_count,
+                    ..
+                } => (*edge_start_slot)
+                    .saturating_add(u64::from(res.bucket_fingerprint.stored_slots))
+                    .saturating_add(u64::from(*tail_edge_slot_count)),
+                _ => continue,
+            };
+            let entry = vertex_stored_slot_ends
+                .entry(res.bucket_fingerprint.owner_vertex_id)
+                .or_default();
+            *entry = (*entry).max(end);
         }
         for (vid, end) in vertex_stored_slot_ends {
             let vertex = graph.vertices.get(vid);
@@ -3047,6 +3373,193 @@ where
             u64::from(res.edge_slot_count),
             inline_property_bytes_slots_written,
             locations,
+        )
+    }
+
+    /// Commit one hole-fill run: write the run edges into the in-slab tombstone
+    /// holes (per-hole writes or a whole-window rewrite per the reservation's
+    /// strategy), append the tail remainder contiguously, insert inline property
+    /// bytes at the reused live ordinals with the trailing shift, and return the
+    /// written slot deltas plus per-edge locations (ADR 0052 §5/§9).
+    fn commit_slab_holes_run<M: Memory>(
+        graph: &LabeledLaraGraph<E, M>,
+        run: &OneOrientationBucketRun<E>,
+        res: &BatchReservationRun,
+        edge_start_slot: u64,
+        hole_window_indices: &[u32],
+        tail_edge_slot_count: u32,
+        write_strategy: SlabHoleWriteStrategy,
+        inline_property_bytes_offset: Option<u64>,
+        inline_property_bytes_byte_count: u64,
+        location_mode: BatchLocationMode,
+    ) -> (u64, u64, Vec<OneOrientationBatchLocation>) {
+        let bucket = graph
+            .buckets
+            .read_label_bucket_slot(res.bucket_slot)
+            .expect("reserve found this slab bucket");
+        let window_len = u64::from(bucket.stored_slots);
+        let holes = hole_window_indices.len();
+        let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
+        for e in &run.edges {
+            let mut buf = vec![0u8; E::BYTES];
+            e.edge.write_to(&mut buf);
+            edge_bytes.extend_from_slice(&buf);
+        }
+        match write_strategy {
+            SlabHoleWriteStrategy::PerHole => {
+                for (index, hole_index) in hole_window_indices.iter().enumerate() {
+                    let off = index.saturating_mul(E::BYTES);
+                    let slot = edge_start_slot
+                        .checked_add(u64::from(*hole_index))
+                        .expect("reserve guaranteed hole slot");
+                    graph
+                        .edges
+                        .write_slot_bytes(slot, &edge_bytes[off..off + E::BYTES])
+                        .expect("reserve guaranteed edge slab capacity");
+                }
+            }
+            SlabHoleWriteStrategy::WindowRewrite => {
+                let mut window = vec![0u8; (window_len as usize).saturating_mul(E::BYTES)];
+                graph
+                    .edges
+                    .read_slots_contiguous(edge_start_slot, &mut window);
+                for (index, hole_index) in hole_window_indices.iter().enumerate() {
+                    let off = usize::try_from(*hole_index)
+                        .expect("reserve guaranteed window offset fits in usize")
+                        .saturating_mul(E::BYTES);
+                    window[off..off + E::BYTES].copy_from_slice(
+                        &edge_bytes
+                            [index.saturating_mul(E::BYTES)..(index + 1).saturating_mul(E::BYTES)],
+                    );
+                }
+                graph
+                    .edges
+                    .write_slots_contiguous(edge_start_slot, &window)
+                    .expect("reserve guaranteed edge slab capacity");
+            }
+        }
+        let tail_start = edge_start_slot
+            .checked_add(window_len)
+            .expect("reserve guaranteed tail slot");
+        if tail_edge_slot_count > 0 {
+            let tail_bytes = &edge_bytes[holes.saturating_mul(E::BYTES)..];
+            graph
+                .edges
+                .write_slots_contiguous(tail_start, tail_bytes)
+                .expect("reserve guaranteed edge slab capacity");
+        }
+
+        let mut run_locations = Vec::new();
+        let inline_property_width = u64::from(res.inline_property_width);
+        if location_mode.captures() {
+            run_locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
+                let (logical_slot, edge_slot, live_ordinal) = if offset < holes {
+                    let hole_index = hole_window_indices[offset];
+                    (
+                        hole_index,
+                        edge_start_slot + u64::from(hole_index),
+                        // New live ordinal: live slots before the hole plus
+                        // already-filled holes before it equals the window index
+                        // (holes are filled in window order).
+                        u64::from(hole_index),
+                    )
+                } else {
+                    let tail_offset = (offset - holes) as u64;
+                    (
+                        bucket
+                            .stored_slots
+                            .checked_add(tail_offset as u32)
+                            .expect("reserve guaranteed logical slot"),
+                        tail_start
+                            .checked_add(tail_offset)
+                            .expect("reserve guaranteed edge location"),
+                        // Tail edges follow every live slot in the window (old
+                        // live plus all filled holes).
+                        u64::from(bucket.degree)
+                            .checked_add(holes as u64)
+                            .and_then(|o| o.checked_add(tail_offset))
+                            .expect("reserve guaranteed live ordinal"),
+                    )
+                };
+                OneOrientationBatchLocation {
+                    logical_ordinal: edge.logical_ordinal,
+                    owner_vertex_id: edge.owner_vertex_id,
+                    logical_slot,
+                    location: OneOrientationPhysicalLocation::Slab {
+                        edge_slot,
+                        inline_property_bytes_offset: inline_property_bytes_offset.map(|start| {
+                            start
+                                .checked_add(
+                                    live_ordinal
+                                        .checked_mul(inline_property_width)
+                                        .expect("reserve guaranteed inline property location"),
+                                )
+                                .expect("reserve guaranteed inline property location")
+                        }),
+                    },
+                }
+            }));
+        }
+
+        if res.inline_property_width > 0 {
+            let offset = inline_property_bytes_offset.expect(
+                "reserve guaranteed an inline property byte offset for inline-property-bearing run",
+            );
+            let width = usize::from(res.inline_property_width);
+            let old_slots = usize::try_from(bucket.inline_property_bytes_slab_slots())
+                .expect("reserve guaranteed inline property bytes slot count");
+            let mut old_bytes = vec![0u8; old_slots.saturating_mul(width)];
+            graph.values.read_bytes(offset, &mut old_bytes);
+            let value_blocks: Vec<u8> = run
+                .edges
+                .iter()
+                .flat_map(|e| e.edge.edge_inline_property_bytes().iter().copied())
+                .collect();
+            assert_eq!(
+                value_blocks.len() as u64,
+                inline_property_bytes_byte_count,
+                "reserve inline property byte count must match actual inline property bytes"
+            );
+            // Rebuild the byte window keyed by live ordinal: existing blocks keep
+            // their ordinals, hole-assigned edges insert at their reused ordinals,
+            // and tail edges append after the previous live suffix (ADR 0052 §9
+            // trailing shift). The insert position in the OLD block sequence is
+            // `k - j` (old live blocks before the hole); the NEW live ordinal of
+            // the same edge is `k` (location math above).
+            let mut new_bytes = Vec::with_capacity(
+                old_slots
+                    .saturating_add(run.edges.len())
+                    .saturating_mul(width),
+            );
+            let mut old_index = 0usize;
+            for (index, hole_index) in hole_window_indices.iter().enumerate() {
+                let hole_ordinal = usize::try_from(*hole_index)
+                    .expect("reserve guaranteed window offset fits in usize")
+                    .saturating_sub(index);
+                new_bytes.extend_from_slice(
+                    &old_bytes[old_index.saturating_mul(width)..hole_ordinal.saturating_mul(width)],
+                );
+                old_index = hole_ordinal;
+                new_bytes.extend_from_slice(
+                    &value_blocks[index.saturating_mul(width)..(index + 1).saturating_mul(width)],
+                );
+            }
+            new_bytes.extend_from_slice(&old_bytes[old_index.saturating_mul(width)..]);
+            new_bytes.extend_from_slice(&value_blocks[holes.saturating_mul(width)..]);
+            graph
+                .values
+                .write_bytes(offset, &new_bytes)
+                .expect("reserve guaranteed inline property bytes slab capacity");
+        }
+
+        (
+            u64::from(res.edge_slot_count),
+            if res.inline_property_width > 0 {
+                u64::from(res.edge_slot_count)
+            } else {
+                0
+            },
+            run_locations,
         )
     }
 
@@ -3529,11 +4042,12 @@ mod tests {
     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
     use crate::traits::CsrEdge;
+    use crate::traits::CsrVertex;
 
     use super::{
         BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchError,
         OneOrientationBatchLocation, OneOrientationBatchPlan, OneOrientationBucketRun,
-        OneOrientationPhysicalLocation, PreflightRun,
+        OneOrientationPhysicalLocation, PreflightRun, SlabHoleWriteStrategy,
     };
 
     fn segment16_graph() -> LabeledLaraGraph<GraphTestEdge, crate::VectorMemory> {
@@ -3571,6 +4085,7 @@ mod tests {
                 owner_vertex_id: owner,
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: owner,
@@ -3643,6 +4158,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(2),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 0,
@@ -3790,6 +4306,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: BucketLabelKey::directed_from_index(1),
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -3836,6 +4353,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: BucketLabelKey::directed_from_index(1),
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -3848,6 +4366,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: BucketLabelKey::directed_from_index(1),
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -3885,6 +4404,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: BucketLabelKey::directed_from_index(1),
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 1,
@@ -3935,6 +4455,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -4025,6 +4546,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 2,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -4116,6 +4638,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -4168,6 +4691,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -4249,6 +4773,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -4388,6 +4913,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -4400,6 +4926,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -4548,6 +5075,7 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_property_width: 4,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -4760,6 +5288,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -4772,6 +5301,7 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_property_width: 4,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -4813,5 +5343,381 @@ mod tests {
                 "each bucket must retain its own folded inline-property bytes"
             );
         }
+    }
+
+    // --- ADR 0052 §5 batch unordered hole-fill (Plan 0199) ---
+
+    /// Chain-free slab-backed bucket with one interior tombstone: three edges
+    /// inserted, the overflow log folded into the slab, and the middle edge
+    /// (slot 1) removed so `stored_slots = 3`, `degree = 2`.
+    fn slab_backed_bucket_with_interior_tombstone() -> (
+        LabeledLaraGraph<GraphTestEdge, crate::VectorMemory>,
+        BucketLabelKey,
+    ) {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::directed_from_index(1);
+        for target in 1..=3u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    GraphTestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("middle edge must be tombstoned");
+        (graph, label)
+    }
+
+    /// RAII guard forcing one slab-hole write strategy for the duration of a test.
+    struct SlabHoleStrategyGuard(SlabHoleWriteStrategy);
+
+    impl SlabHoleStrategyGuard {
+        fn force(strategy: SlabHoleWriteStrategy) -> Self {
+            super::SLAB_HOLE_WRITE_STRATEGY_OVERRIDE.with(|cell| cell.set(Some(strategy)));
+            Self(strategy)
+        }
+    }
+
+    impl Drop for SlabHoleStrategyGuard {
+        fn drop(&mut self) {
+            super::SLAB_HOLE_WRITE_STRATEGY_OVERRIDE.with(|cell| cell.set(None));
+        }
+    }
+
+    #[test]
+    fn unordered_batch_fills_slab_tombstone_holes_first() {
+        let (graph, label) = slab_backed_bucket_with_interior_tombstone();
+        let _guard = SlabHoleStrategyGuard::force(SlabHoleWriteStrategy::PerHole);
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(10),
+                    label_id: label,
+                    edge: GraphTestEdge { target: 10 },
+                }],
+            }],
+        };
+        let result = graph
+            .insert_one_orientation_batch_with_locations(&plan)
+            .expect("unordered batch must fill the slab tombstone");
+        let bucket_slot = graph
+            .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+            .unwrap()
+            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert!(matches!(
+            result.locations.as_deref(),
+            Some([OneOrientationBatchLocation {
+                logical_slot,
+                location:
+                    OneOrientationPhysicalLocation::Slab {
+                        edge_slot,
+                        inline_property_bytes_offset: None,
+                    },
+                ..
+            }]) if *logical_slot == 1
+                && *edge_slot == bucket.edge_start() + 1
+        ));
+        assert_eq!(
+            graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 10, 3],
+            "the new edge must land in the tombstone hole at slot 1"
+        );
+        assert_eq!(
+            bucket.stored_slots, 3,
+            "hole reuse must not grow stored_slots"
+        );
+        assert_eq!(bucket.degree(), 3, "degree must grow by the run size");
+    }
+
+    #[test]
+    fn unordered_batch_hole_fill_window_rewrite_matches_per_hole() {
+        // Both write strategies publish identical canonical state and locations.
+        let run_batch = |strategy: SlabHoleWriteStrategy| {
+            let (graph, label) = slab_backed_bucket_with_interior_tombstone();
+            let _guard = SlabHoleStrategyGuard::force(strategy);
+            let plan = OneOrientationBatchPlan {
+                runs: vec![OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label,
+                    inline_property_width: 0,
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(10),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 10 },
+                    }],
+                }],
+            };
+            let result = graph
+                .insert_one_orientation_batch_with_locations(&plan)
+                .expect("hole-fill batch");
+            let targets = graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>();
+            let bucket_slot = graph
+                .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+                .unwrap()
+                .unwrap();
+            let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+            (
+                targets,
+                bucket.stored_slots,
+                bucket.degree(),
+                result.locations,
+            )
+        };
+        let per_hole = run_batch(SlabHoleWriteStrategy::PerHole);
+        let window = run_batch(SlabHoleWriteStrategy::WindowRewrite);
+        assert_eq!(per_hole.0, window.0, "read-back order must match");
+        assert_eq!(per_hole.1, window.1, "stored_slots must match");
+        assert_eq!(per_hole.2, window.2, "degree must match");
+        assert_eq!(per_hole.3, window.3, "locations must match");
+    }
+
+    #[test]
+    fn unordered_batch_hole_fill_with_tail_remainder() {
+        // Two interior tombstones and a three-edge run: two edges fill the holes
+        // and the third appends at the slab tail. The vertex's slab allocation is
+        // grown by one slot beyond the bucket's stored window (mirroring a vertex
+        // with slack) so the tail remainder has room.
+        let (graph, label) = slab_backed_bucket_with_interior_tombstone();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 2)
+            .unwrap()
+            .expect("third edge must be tombstoned");
+        let vertex = graph.vertices.get(VertexId::from(0));
+        graph
+            .vertices
+            .set(VertexId::from(0), &vertex.with_stored_slots(4));
+        let _guard = SlabHoleStrategyGuard::force(SlabHoleWriteStrategy::PerHole);
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
+                edges: vec![
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(10),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 10 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(11),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 11 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 2,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(12),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 12 },
+                    },
+                ],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("holes plus tail remainder");
+        assert_eq!(
+            graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 10, 11, 12],
+            "two holes filled and one edge appended at the tail"
+        );
+        let bucket_slot = graph
+            .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+            .unwrap()
+            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert_eq!(
+            bucket.stored_slots, 4,
+            "only the tail remainder grows stored_slots"
+        );
+        assert_eq!(bucket.degree(), 4, "degree grows by the full run size");
+    }
+
+    #[test]
+    fn unordered_batch_hole_fill_writes_inline_property_bytes_at_live_ordinal() {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 2u16)
+            .unwrap();
+        for target in 1..=3u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("middle edge must be tombstoned");
+        let _guard = SlabHoleStrategyGuard::force(SlabHoleWriteStrategy::PerHole);
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 2,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(21),
+                    label_id: label,
+                    edge: InlinePropertyTestEdge::with_bytes(21, &21u16.to_le_bytes()),
+                }],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("hole-fill with inline property bytes");
+        let edges = graph.out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            edges.iter().map(|edge| edge.target).collect::<Vec<_>>(),
+            vec![1, 21, 3],
+            "hole-fill must place the new edge in the reused slot"
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.value[..usize::from(edge.inline_property_len)].to_vec())
+                .collect::<Vec<_>>(),
+            vec![
+                1u16.to_le_bytes().to_vec(),
+                21u16.to_le_bytes().to_vec(),
+                3u16.to_le_bytes().to_vec(),
+            ],
+            "inline property bytes must stay aligned to the reused live ordinal (ADR 0052 §9)"
+        );
+    }
+
+    #[test]
+    fn insertion_batch_never_fills_slab_tombstone() {
+        let (graph, label) = slab_backed_bucket_with_interior_tombstone();
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(10),
+                    label_id: label,
+                    edge: GraphTestEdge { target: 10 },
+                }],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("insertion batch append");
+        assert_eq!(
+            graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 10],
+            "insertion placement must append at the live tail, never reuse the tombstone"
+        );
+        let bucket_slot = graph
+            .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+            .unwrap()
+            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert_eq!(
+            bucket.stored_slots, 3,
+            "a full slab span keeps Insertion batch on the overflow-log path; no tombstone reuse"
+        );
+    }
+
+    #[test]
+    fn unordered_batch_hole_fill_rollback_leaves_state_unchanged() {
+        let (graph, label) = slab_backed_bucket_with_interior_tombstone();
+        let _guard = SlabHoleStrategyGuard::force(SlabHoleWriteStrategy::PerHole);
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                placement: crate::labeled::graph::EdgePlacementPolicy::Unordered,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(10),
+                    label_id: label,
+                    edge: GraphTestEdge { target: 10 },
+                }],
+            }],
+        };
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("reserve hole-fill");
+        reservation.rollback(&graph);
+        assert_eq!(
+            graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 3],
+            "rollback must leave the tombstone and live edges untouched"
+        );
+        let bucket_slot = graph
+            .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+            .unwrap()
+            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.degree(), 2);
     }
 }

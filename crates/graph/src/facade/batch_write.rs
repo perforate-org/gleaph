@@ -13,7 +13,9 @@ use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult,
     GraphOrderedMixedBatchResultV1, LabelStatsDelta, MutationId,
 };
+use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::EdgePlacementPolicy;
 #[cfg(test)]
 use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
@@ -32,7 +34,11 @@ use super::batch_placement::{
     BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
 };
 use super::mutation_executor::GraphMutationExecutor;
-use super::store::helpers::{build_edge_to, edge_storage_label, lara_label};
+use super::store::helpers::{
+    build_edge_to, catalog_edge_label_from_wire, edge_storage_label, lara_edge_placement,
+    lara_label,
+};
+use crate::edge_inline_property_schema::resolved_edge_label_with;
 
 /// Result of attempting a clean-slab batch edge insert through GraphStore.
 ///
@@ -880,6 +886,10 @@ impl GraphStore {
         for ((role, key), edges) in runs_by_role {
             grouped.entry(role).or_default().insert(key, edges);
         }
+        // The placement policy is per storage label. Resolve it once per distinct
+        // label for the whole plan instead of once per run: under canbench (and in
+        // production with a projected table) the resolution clones the resolved
+        // label entry, so per-run resolution measurably regresses the plan build.
         let mut requests = grouped
             .into_iter()
             .map(|(role, runs)| OneOrientationBatchWriteRequest {
@@ -943,6 +953,8 @@ impl GraphStore {
                 .or_default()
                 .insert(key, edges);
         }
+        // Resolve the per-storage-label placement once per distinct label; both
+        // orientations share the sorted table built inside `runs_from_map`.
         let mut plans = by_orientation
             .into_iter()
             .map(|(orientation, runs)| {
@@ -1123,6 +1135,20 @@ fn join_physical_locations(
 fn runs_from_map<E: CsrEdge>(
     map: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>,
 ) -> Vec<OneOrientationBucketRun<E>> {
+    // Resolve the per-storage-label placement once per distinct label: the
+    // resolution clones the resolved label entry (test_labels fallback under
+    // canbench, projected table in production), so per-run resolution would
+    // dominate the plan build. Runs binary-search the small sorted table instead
+    // of paying a hash-map probe per run.
+    let placements: Vec<(LaraLabelId, EdgePlacementPolicy)> = {
+        let mut labels: Vec<LaraLabelId> = map.keys().map(|key| key.storage_label).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        labels
+            .into_iter()
+            .map(|label| (label, run_placement_for_storage_label(label)))
+            .collect()
+    };
     let mut runs: Vec<_> = map.into_iter().collect();
     runs.sort_by_key(|(key, _)| *key);
     runs.into_iter()
@@ -1130,9 +1156,25 @@ fn runs_from_map<E: CsrEdge>(
             owner_vertex_id: key.owner_vertex_id,
             label_id: key.storage_label,
             inline_property_width: key.inline_property_width,
+            placement: placements
+                .binary_search_by_key(&key.storage_label, |(label, _)| *label)
+                .map(|index| placements[index].1)
+                .unwrap_or(EdgePlacementPolicy::Unordered),
             edges,
         })
         .collect()
+}
+
+/// Resolves the LARA placement policy for one batch run from its storage label,
+/// mirroring the scalar mutation boundary: the storage label maps back to the
+/// catalog label, whose resolved ordering policy becomes the placement
+/// (ADR 0052 §4; undeclared/unknown -> Unordered). During execution the active
+/// resolved-label table is set; host tests without one fall back to Unordered.
+fn run_placement_for_storage_label(storage: LaraLabelId) -> EdgePlacementPolicy {
+    lara_edge_placement(
+        catalog_edge_label_from_wire(storage)
+            .and_then(|label| resolved_edge_label_with(None, label).map(|l| l.ordering)),
+    )
 }
 
 fn merge_one_orientation_batch_plans<E: CsrEdge>(
@@ -1272,6 +1314,7 @@ fn build_mixed_batch_pairs(
 #[cfg(test)]
 mod tests {
     use super::super::batch_placement::BatchEdgeInput;
+    use super::super::store::BulkIngestFinalizeSpec;
     use super::super::store::helpers::{edge_storage_label, lara_label};
     use super::*;
     use crate::test_labels::{
@@ -1380,6 +1423,150 @@ mod tests {
                 label_id: lara_label(edge_storage_label(Some(label), true)),
                 slot_index: 17.into(),
             }
+        );
+    }
+
+    #[test]
+    fn batch_run_resolves_insertion_policy_and_unordered_default() {
+        use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
+        use gleaph_graph_kernel::plan_exec::{
+            EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
+        };
+        let label = EdgeLabelId::from_raw(4092);
+
+        // Scenario A: Unordered default (no active resolved labels) fills the hole.
+        let store = fresh_store();
+        let vertices = make_vertices(&store, 3);
+        let (source, target_a, target_b) = (vertices[0], vertices[1], vertices[2]);
+        store.prepare_clean_slab_dir_buckets(source, target_a, label, 0);
+        for _ in 0..3 {
+            store
+                .insert_directed_edge(source, target_a, Some(label))
+                .expect("seed");
+        }
+        let seeded = store.directed_out_edges(source).expect("out");
+        assert_eq!(seeded.len(), 3);
+        // Fold the overflow log into the slab so the forward bucket is chain-free
+        // and slab-backed (ADR 0052 §9 fallback does not apply).
+        store
+            .finalize_bulk_ingest(&BulkIngestFinalizeSpec {
+                forward_vertices: vec![source],
+                reverse_vertices: vec![target_a],
+            })
+            .expect("fold log to slab");
+        let middle = EdgeHandle::at_slot(
+            source,
+            LaraLabelId::from_raw(seeded[1].label_id),
+            seeded[1].edge_slot_index.raw(),
+        );
+        store.delete_edge_by_handle(middle).expect("delete middle");
+        let before = store.directed_out_edges(source).expect("out");
+        assert_eq!(before.len(), 2);
+        let live_before: std::collections::BTreeSet<u32> =
+            before.iter().map(|e| e.edge_slot_index.raw()).collect();
+        let batch_result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&[input(
+                source,
+                target_b,
+                Some(label),
+                true,
+                vec![],
+            )])
+            .expect("unordered batch");
+        let BatchEdgeInsertResult::Committed {
+            locations: Some(locations),
+            ..
+        } = batch_result
+        else {
+            panic!("unordered batch must capture locations");
+        };
+        let BatchEdgePhysicalLocation::Directed { forward, .. } = &locations[0] else {
+            panic!("directed batch shape expected");
+        };
+        let OneOrientationPhysicalLocation::Slab { edge_slot, .. } = forward.location else {
+            panic!(
+                "Unordered default must reuse an in-slab tombstone, got {:?}",
+                forward.location
+            );
+        };
+        let batch_slot = forward.logical_slot;
+        assert!(
+            !live_before.contains(&batch_slot),
+            "Unordered default must place the batch edge into the tombstone hole (slot {batch_slot} was free)"
+        );
+        assert!(
+            batch_slot < 3,
+            "Unordered default must reuse an in-window tombstone (edge_slot {edge_slot}), not append outside it"
+        );
+
+        // Scenario B: a resolved Insertion policy reaches the batch run and appends
+        // through the overflow log, never reusing the tombstone (ADR 0052 §6).
+        let store = fresh_store();
+        let vertices = make_vertices(&store, 3);
+        let (source, target_a, target_b) = (vertices[0], vertices[1], vertices[2]);
+        store.prepare_clean_slab_dir_buckets(source, target_a, label, 0);
+        for _ in 0..3 {
+            store
+                .insert_directed_edge(source, target_a, Some(label))
+                .expect("seed");
+        }
+        let seeded = store.directed_out_edges(source).expect("out");
+        // Fold the overflow log into the slab so the forward bucket is chain-free.
+        store
+            .finalize_bulk_ingest(&BulkIngestFinalizeSpec {
+                forward_vertices: vec![source],
+                reverse_vertices: vec![target_a],
+            })
+            .expect("fold log to slab");
+        let middle = EdgeHandle::at_slot(
+            source,
+            LaraLabelId::from_raw(seeded[1].label_id),
+            seeded[1].edge_slot_index.raw(),
+        );
+        store.delete_edge_by_handle(middle).expect("delete middle");
+        let before = store.directed_out_edges(source).expect("out");
+        let live_before: std::collections::BTreeSet<u32> =
+            before.iter().map(|e| e.edge_slot_index.raw()).collect();
+        let resolved = ResolvedLabelTable {
+            vertex: vec![],
+            edge: vec![
+                ResolvedEdgeLabel::new(
+                    "BatchInsertionBoundary".to_string(),
+                    label,
+                    EdgeInlinePropertyProfile::no_inline_property(),
+                )
+                .with_ordering(EdgeOrderingPolicy::Insertion),
+            ],
+        };
+        crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
+        let batch_result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&[input(
+                source,
+                target_b,
+                Some(label),
+                true,
+                vec![],
+            )])
+            .expect("insertion batch");
+        crate::edge_inline_property_schema::set_execution_resolved_labels(None);
+        let BatchEdgeInsertResult::Committed {
+            locations: Some(locations),
+            ..
+        } = batch_result
+        else {
+            panic!("insertion batch must capture locations");
+        };
+        let BatchEdgePhysicalLocation::Directed { forward, .. } = &locations[0] else {
+            panic!("directed batch shape expected");
+        };
+        assert!(
+            matches!(
+                forward.location,
+                OneOrientationPhysicalLocation::OverflowLog { .. }
+            ) || (forward.logical_slot >= 3 && !live_before.contains(&forward.logical_slot)),
+            "Insertion placement must never fill the slab tombstone (got {:?}, logical slot {})",
+            forward.location,
+            forward.logical_slot
         );
     }
 

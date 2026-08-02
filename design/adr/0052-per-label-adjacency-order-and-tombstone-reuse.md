@@ -50,7 +50,8 @@ descending as an explicit opt-in.
   `ORDER BY INSERTION(e) DESC` remains the explicit descending path.
 
 The ADR body below remains **planned** except for the parts implemented by Slice 1 (Plan 0196,
-2026-08-01), Slice 2 (Plan 0197, 2026-08-01), and Slice 3 (Plan 0198, 2026-08-01). Slice 1
+2026-08-01), Slice 2 (Plan 0197, 2026-08-01), Slice 3 (Plan 0198, 2026-08-01), and Slice 4
+(Plan 0199, 2026-08-01). Slice 1
 delivered §1/§4's `EdgeOrderingPolicy` (Unordered default / Insertion) as a resolved wire field on
 `ResolvedEdgeLabel`, and §2's Graph Type `ORDER BY INSERTION` declaration parses (gql, opaque key)
 and resolves per label in the Router from the canonical Graph Type definition, fail-closed on
@@ -63,9 +64,20 @@ Insertion scalar placement (append only) through a storage-owned `EdgePlacementP
 (Unordered default / Insertion) threaded through every scalar insert entry point; §9's synchronized
 slab-backed inline property bytes (the reused slot's live ordinal, log-backed bytes fall back to
 the ordered path); the Graph mutation-boundary policy mapping; and §10's Router DDL-time rejection
-of a per-label policy change on labels with live edges (see below). Unordered batch placement
-(§5), policy-specific compaction reordering (§7), and policy-change migration/rebuild remain
-planned; no batch placement behavior changes yet.
+of a per-label policy change on labels with live edges (see below).
+
+**Slice 4 implementation note (2026-08-01, Plan 0199):** the batch planner now counts in-slab
+tombstone holes as reusable capacity before reserving tail or log space (ADR 0052 §5). An
+`Unordered` run on a chain-free, slab-bytes-backed bucket scans the stored window once, fills the
+first `R` holes (per-hole `write_slot` writes or a whole-window rewrite, chosen by a
+measured-constant cost comparison from the `lara_slab_*` micro-benches), and appends the tail
+remainder contiguously when the vertex span has room; `Insertion` runs keep the ordered
+substrate. Hole-fill is restricted to chain-free buckets whose inline property bytes are
+slab-backed; log-backed bytes keep the ordered fallback (ADR 0052 §9), buckets with an existing
+edge overflow chain keep the log path, and a run that cannot be admitted by holes plus tail
+keeps the current tail-first/log path (no mixed slab+log split). Inline-property bytes are
+inserted at the reused live ordinal with the trailing shift (ADR 0052 §9). Unordered compaction
+(§7) and policy-change migration/rebuild remain planned.
 
 ## Problem
 

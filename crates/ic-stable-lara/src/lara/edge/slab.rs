@@ -35,6 +35,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.edges.write_slots_contiguous(start_slot, bytes)
     }
 
+    /// Writes pre-encoded edge bytes to one slab slot without re-encoding.
+    /// `bytes.len()` must equal `E::BYTES`.
+    pub(crate) fn write_slot_bytes(&self, slot: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+        debug_assert_eq!(bytes.len(), E::BYTES);
+        self.edges.write_slot(slot, bytes)
+    }
+
     /// Writes one edge slab slot.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
         if E::BYTES <= 8 {
