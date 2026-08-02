@@ -2,7 +2,7 @@
 
 use crate::{
     VertexId,
-    labeled::graph::{InitError, LabeledLaraGraph, LabeledOperationError},
+    labeled::graph::{EdgePlacementPolicy, InitError, LabeledLaraGraph, LabeledOperationError},
     lara::{
         maintenance::{MaintenanceBudget, MaintenanceWorkReport},
         vertex::InitError as VertexInitError,
@@ -1461,10 +1461,11 @@ where
                     if anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
-                        match self
-                            .inner
-                            .compact_vertex_edge_span_one_step(vid, resume_bucket_index)
-                        {
+                        match self.inner.compact_vertex_edge_span_one_step(
+                            vid,
+                            resume_bucket_index,
+                            &|_| EdgePlacementPolicy::Insertion,
+                        ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
                                 Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
                                     vid,
@@ -1541,10 +1542,11 @@ where
                     if anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
-                        match self
-                            .inner
-                            .compact_vertex_edge_span_one_step(vid, resume_bucket_index)
-                        {
+                        match self.inner.compact_vertex_edge_span_one_step(
+                            vid,
+                            resume_bucket_index,
+                            &|_| EdgePlacementPolicy::Insertion,
+                        ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
                                 Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                                     vid,

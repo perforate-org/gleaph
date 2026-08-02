@@ -50,8 +50,8 @@ descending as an explicit opt-in.
   `ORDER BY INSERTION(e) DESC` remains the explicit descending path.
 
 The ADR body below remains **planned** except for the parts implemented by Slice 1 (Plan 0196,
-2026-08-01), Slice 2 (Plan 0197, 2026-08-01), Slice 3 (Plan 0198, 2026-08-01), and Slice 4
-(Plan 0199, 2026-08-01). Slice 1
+2026-08-01), Slice 2 (Plan 0197, 2026-08-01), Slice 3 (Plan 0198, 2026-08-01), Slice 4
+(Plan 0199, 2026-08-01), and Slice 5 (Plan 0200, 2026-08-02). Slice 1
 delivered §1/§4's `EdgeOrderingPolicy` (Unordered default / Insertion) as a resolved wire field on
 `ResolvedEdgeLabel`, and §2's Graph Type `ORDER BY INSERTION` declaration parses (gql, opaque key)
 and resolves per label in the Router from the canonical Graph Type definition, fail-closed on
@@ -76,8 +76,23 @@ substrate. Hole-fill is restricted to chain-free buckets whose inline property b
 slab-backed; log-backed bytes keep the ordered fallback (ADR 0052 §9), buckets with an existing
 edge overflow chain keep the log path, and a run that cannot be admitted by holes plus tail
 keeps the current tail-first/log path (no mixed slab+log split). Inline-property bytes are
-inserted at the reused live ordinal with the trailing shift (ADR 0052 §9). Unordered compaction
-(§7) and policy-change migration/rebuild remain planned.
+inserted at the reused live ordinal with the trailing shift (ADR 0052 §9).
+
+**Slice 5 implementation note (2026-08-02, Plan 0200):** maintenance is now policy-aware (ADR
+0052 §7/§8/§9). `compact_vertex_edge_span_one_step` and `maintenance_with_observers` thread a
+per-label placement resolver: `Unordered` buckets on chain-free, slab-bytes-backed (or width-0)
+buckets swap-compact (the last live row moves into the first interior tombstone, reordering live
+rows), while `Insertion` buckets keep the order-preserving left-pack and any bucket with an
+inline-property-bytes log falls back to the full left-pack step. The swap moves the edge's
+inline-property block from live ordinal `degree - 1` to the hole ordinal `k` with the `[k..degree-1)`
+trailing shift in ordinal space, keeping the dense value span degree-sized; all writes are
+preflighted in-bounds so the step is atomic-in-practice. `EdgeSlotMove` observers publish the
+exact swap moves so sidecars, reverse rows, and the inline-scalar index rekey follow (§8). The
+Graph facade resolves policies from the Router-projected table with an order-preserving fallback
+when no table is active (a `Unordered` permission is not a reorder requirement), so timer-driven
+maintenance stays order-preserving until a persisted ordering table lands; swap-compaction runs
+in execution-context drains, tests, and canbench. Policy-change migration/rebuild (§10) remains
+planned.
 
 ## Problem
 

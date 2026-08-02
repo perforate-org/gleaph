@@ -4,6 +4,7 @@ use crate::{
     SegmentId, VertexId,
     labeled::{
         access::LabelEdgeSpanAccess,
+        bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
@@ -13,7 +14,23 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
+use super::{EdgePlacementPolicy, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
+
+/// One swap-compaction move for an `Unordered` bucket (ADR 0052 §7): the last
+/// live edge moves into the first interior tombstone. Edge-move coordinates are
+/// bucket-local physical slots; `hole_ordinal` is the live ordinal of the hole
+/// (the value span is dense and degree-sized, keyed by live ordinal — ADR §9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EdgeSlotSwapMove {
+    /// Label row whose local slot changes.
+    pub label_id: BucketLabelKey,
+    /// Physical bucket-local slot of the first interior tombstone (destination).
+    pub hole_slot: u32,
+    /// Physical bucket-local slot of the last live edge (source; becomes a trailing tombstone).
+    pub vacated_slot: u32,
+    /// Live ordinal of the hole slot; the moved edge's value block lands here.
+    pub hole_ordinal: u32,
+}
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -1635,6 +1652,135 @@ where
         Ok(None)
     }
 
+    /// `true` when this bucket may use unordered swap-compaction: edge-slab-only
+    /// and either width 0 or value-slab-only with the dense degree-sized value span.
+    /// Any bucket with an inline-property-bytes log or a non-dense value span falls
+    /// back to the order-preserving left-pack step for that bucket (ADR 0052 §9).
+    pub(super) fn bucket_allows_unordered_swap(bucket: &LabelBucket) -> bool {
+        bucket.overflow_log_head() < 0
+            && (bucket.inline_property_byte_width() == 0
+                || (bucket.inline_property_bytes_log_head() < 0
+                    && bucket.inline_property_bytes_slab_slots() == bucket.degree()))
+    }
+
+    /// Finds the first interior tombstone (a non-live slot with a later live row) and
+    /// the last live slot in one pass, computing the hole's live ordinal as a rank
+    /// (never a physical slot index). Mirrors the left-pack finder's gates and treats
+    /// both `is_tombstone_edge` and `is_deleted_slot` as non-live.
+    pub(super) fn first_edge_slot_swap_move_in_bucket(
+        bucket: &LabelBucket,
+        edges: &EdgeStore<E, M>,
+    ) -> Result<Option<EdgeSlotSwapMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if bucket.degree() == 0 || bucket.overflow_log_head() >= 0 {
+            return Ok(None);
+        }
+        let mut live_count = 0u32;
+        let mut first_hole: Option<(u32, u32)> = None; // (slot, live ordinal)
+        let mut last_live_slot: Option<u32> = None;
+        for slot_index in 0..bucket.stored_slots {
+            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = edges.read_slot(edge_slot);
+            if edge.is_tombstone_edge() || edge.is_deleted_slot() {
+                if first_hole.is_none() {
+                    first_hole = Some((slot_index, live_count));
+                }
+                continue;
+            }
+            last_live_slot = Some(slot_index);
+            live_count = live_count
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        match (first_hole, last_live_slot) {
+            // Interior only: a trailing tombstone (no live row after it) is trimmable,
+            // not a swap target.
+            (Some((hole_slot, hole_ordinal)), Some(vacated_slot)) if hole_slot < vacated_slot => {
+                Ok(Some(EdgeSlotSwapMove {
+                    label_id: bucket.bucket_label_key(),
+                    hole_slot,
+                    vacated_slot,
+                    hole_ordinal,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Applies one swap-compaction move: value block first (ordinal space), then the
+    /// edge write into the hole, then the tombstone at the vacated slot. All writes
+    /// are preflighted in-bounds within the existing edge/value spans, so a recoverable
+    /// error cannot occur after the first canonical byte write (the same
+    /// atomicity-in-practice discipline as `commit_slab_holes_run`).
+    fn apply_edge_slot_swap_move_in_bucket(
+        &self,
+        bucket: &LabelBucket,
+        swap: &EdgeSlotSwapMove,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let hole = checked_add_slot_index(bucket.edge_start(), u64::from(swap.hole_slot))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let vacated = checked_add_slot_index(bucket.edge_start(), u64::from(swap.vacated_slot))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let width = bucket.inline_property_byte_width();
+        if width > 0 && bucket.inline_property_bytes_log_head() < 0 {
+            let degree = bucket.degree();
+            let k_ord = swap.hole_ordinal;
+            let m_ord = degree
+                .checked_sub(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if k_ord < m_ord {
+                // The moved edge's value is the last live block (ordinal m_ord); it
+                // lands at the hole ordinal k_ord and the suffix [k_ord..m_ord) shifts
+                // one block right. The window is (degree - k_ord) blocks in ordinal
+                // space, never physical-slot arithmetic.
+                let window_blocks = m_ord
+                    .checked_sub(k_ord)
+                    .and_then(|d| d.checked_add(1))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let byte_len = u64::from(window_blocks)
+                    .checked_mul(u64::from(width))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let byte_len_usize = usize::try_from(byte_len)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                let window_offset =
+                    crate::labeled::invariants::inline_property_bytes_byte_offset_at_slot(
+                        bucket, k_ord,
+                    )?;
+                let mut window = vec![0u8; byte_len_usize];
+                self.values.read_bytes(window_offset, &mut window);
+                let width_usize = usize::from(width);
+                let suffix_len = window.len() - width_usize;
+                let suffix_offset = window_offset
+                    .checked_add(u64::from(width))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                // Shift the suffix [k_ord..m_ord) one block right (to ordinals k_ord+1..=m_ord),
+                // then write the moved block at the hole ordinal.
+                self.values
+                    .write_bytes(suffix_offset, &window[..suffix_len])
+                    .expect(
+                        "swap value shift stays within the existing inline property bytes span",
+                    );
+                self.values
+                    .write_bytes(window_offset, &window[suffix_len..])
+                    .expect("swap value move stays within the existing inline property bytes span");
+            }
+        }
+        let edge = self.edges.read_slot(vacated);
+        self.edges
+            .write_slot(hole, edge)
+            .map_err(LabeledOperationError::from)?;
+        self.edges
+            .write_slot(vacated, E::tombstone_edge())
+            .map_err(LabeledOperationError::from)?;
+        Ok(())
+    }
+
     pub(super) fn apply_edge_slot_move_in_bucket(
         &self,
         bucket: &LabelBucket,
@@ -1667,6 +1813,7 @@ where
         &self,
         vid: VertexId,
         resume_bucket_index: u32,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<VertexEdgeSpanCompactOneStep, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1707,7 +1854,7 @@ where
                         bucket.overflow_log_head(),
                     );
                     self.rebalance_vertex_edge_span(vid, Some(bucket_index), log_len, true)?;
-                    return self.compact_vertex_edge_span_one_step(vid, 0);
+                    return self.compact_vertex_edge_span_one_step(vid, 0, policy_for_label);
                 }
                 Err(error) => return Err(error),
             }
@@ -1730,7 +1877,17 @@ where
             .buckets
             .read_label_bucket_slot(slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if let Some(moved) = Self::first_edge_slot_move_in_bucket(&bucket, &self.edges)? {
+        let policy = policy_for_label(bucket.bucket_label_key());
+        if policy == EdgePlacementPolicy::Unordered && Self::bucket_allows_unordered_swap(&bucket) {
+            if let Some(swap) = Self::first_edge_slot_swap_move_in_bucket(&bucket, &self.edges)? {
+                self.apply_edge_slot_swap_move_in_bucket(&bucket, &swap)?;
+                return Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                    label_id: swap.label_id,
+                    old_slot_index: swap.vacated_slot,
+                    new_slot_index: swap.hole_slot,
+                }));
+            }
+        } else if let Some(moved) = Self::first_edge_slot_move_in_bucket(&bucket, &self.edges)? {
             self.apply_edge_slot_move_in_bucket(&bucket, moved)?;
             return Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved));
         }
@@ -2071,7 +2228,9 @@ where
         let mut moves = Vec::new();
         let mut resume = 0u32;
         loop {
-            match self.compact_vertex_edge_span_one_step(vid, resume)? {
+            match self.compact_vertex_edge_span_one_step(vid, resume, &|_| {
+                EdgePlacementPolicy::Insertion
+            })? {
                 VertexEdgeSpanCompactOneStep::EdgeMoved(moved) => {
                     moves.push(moved);
                 }
@@ -3271,7 +3430,9 @@ mod tests {
         let mut edge_moves = 0u32;
         loop {
             match graph
-                .compact_vertex_edge_span_one_step(VertexId::from(0), resume)
+                .compact_vertex_edge_span_one_step(VertexId::from(0), resume, &|_| {
+                    EdgePlacementPolicy::Insertion
+                })
                 .unwrap()
             {
                 VertexEdgeSpanCompactOneStep::EdgeMoved(_) => edge_moves += 1,
@@ -3347,7 +3508,9 @@ mod tests {
         let mut resume = 0u32;
         loop {
             match graph
-                .compact_vertex_edge_span_one_step(VertexId::from(0), resume)
+                .compact_vertex_edge_span_one_step(VertexId::from(0), resume, &|_| {
+                    EdgePlacementPolicy::Insertion
+                })
                 .unwrap()
             {
                 VertexEdgeSpanCompactOneStep::EdgeMoved(_) => {}
@@ -4192,7 +4355,9 @@ mod tests {
             .unwrap();
 
         let moved = graph
-            .compact_vertex_edge_span_one_step(VertexId::from(0), 0)
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                EdgePlacementPolicy::Insertion
+            })
             .unwrap();
 
         assert_eq!(
@@ -4239,7 +4404,9 @@ mod tests {
             ]
         );
 
-        let rewritten = graph.compact_vertex_edge_span_one_step(hub, 0).unwrap();
+        let rewritten = graph
+            .compact_vertex_edge_span_one_step(hub, 0, &|_| EdgePlacementPolicy::Insertion)
+            .unwrap();
 
         assert_eq!(
             rewritten,
@@ -4357,7 +4524,9 @@ mod tests {
         assert!(before.stored_slots >= 4);
         assert!(before.overflow_log_head() >= 0);
 
-        let rewritten = graph.compact_vertex_edge_span_one_step(hub, 0).unwrap();
+        let rewritten = graph
+            .compact_vertex_edge_span_one_step(hub, 0, &|_| EdgePlacementPolicy::Insertion)
+            .unwrap();
 
         let VertexEdgeSpanCompactOneStep::OverflowRewrite(moves) = rewritten else {
             panic!("expected overflow-only compaction, got {rewritten:?}");
@@ -4372,7 +4541,9 @@ mod tests {
         assert_eq!(slab_survivor.edge_slot_index_raw(), 1);
 
         assert_eq!(
-            graph.compact_vertex_edge_span_one_step(hub, 0).unwrap(),
+            graph
+                .compact_vertex_edge_span_one_step(hub, 0, &|_| EdgePlacementPolicy::Insertion)
+                .unwrap(),
             VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
                 label_id: road,
                 old_slot_index: 1,
@@ -4435,7 +4606,9 @@ mod tests {
         );
 
         assert!(matches!(
-            graph.compact_vertex_edge_span_one_step(hub, 0).unwrap(),
+            graph
+                .compact_vertex_edge_span_one_step(hub, 0, &|_| EdgePlacementPolicy::Insertion)
+                .unwrap(),
             VertexEdgeSpanCompactOneStep::OverflowRewrite(_)
         ));
 
@@ -4474,5 +4647,345 @@ mod tests {
         let after = graph.vertices().get(VertexId::from(0));
         assert_eq!(after.degree(), before.degree());
         assert_eq!(graph.out_edges(VertexId::from(0)).unwrap().len(), 6);
+    }
+
+    // --- ADR 0052 §7/§9: policy-aware compaction (unordered swap vs insertion left-pack) ---
+
+    /// `[a, T, b, T, c]` with values `[va, vb, vc]`: two interior tombstones, degree 3.
+    /// The first swap has `k_ord = 1 < m_ord = 2` and exercises the value rotation.
+    fn slab_bucket_with_two_interior_tombstones() -> (
+        LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
+        BucketLabelKey,
+    ) {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 2u16)
+            .unwrap();
+        for target in 1..=5u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("slot 1 must be tombstoned");
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 3)
+            .unwrap()
+            .expect("slot 3 must be tombstoned");
+        (graph, label)
+    }
+
+    #[test]
+    fn unordered_swap_compaction_moves_last_live_into_first_interior_tombstone() {
+        let (graph, label) = slab_bucket_with_two_interior_tombstones();
+        let moved = graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Unordered
+            })
+            .unwrap();
+        assert_eq!(
+            moved,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: label,
+                old_slot_index: 4,
+                new_slot_index: 1,
+            }),
+            "the last live edge must swap into the first interior tombstone (physical slot space)"
+        );
+        let edges = graph.out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            edges.iter().map(|edge| edge.target).collect::<Vec<_>>(),
+            vec![1, 5, 3],
+            "swap-compaction reorders: the last live edge lands in the first interior hole"
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.value[..usize::from(edge.inline_property_len)].to_vec())
+                .collect::<Vec<_>>(),
+            vec![
+                1u16.to_le_bytes().to_vec(),
+                5u16.to_le_bytes().to_vec(),
+                3u16.to_le_bytes().to_vec(),
+            ],
+            "inline property bytes must follow the swapped edge at its new live ordinal (ADR §9)"
+        );
+        // Drain the rest of the span: the next step finds no interior tombstone, finalizes
+        // `stored_slots = degree`, and trims trailing tombstones.
+        let mut resume = 0u32;
+        loop {
+            match graph
+                .compact_vertex_edge_span_one_step(VertexId::from(0), resume, &|_| {
+                    crate::labeled::graph::EdgePlacementPolicy::Unordered
+                })
+                .unwrap()
+            {
+                VertexEdgeSpanCompactOneStep::EdgeMoved(_) => resume = 0,
+                VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => resume = next,
+                VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => resume = 0,
+                VertexEdgeSpanCompactOneStep::Finished => break,
+            }
+        }
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(bucket.stored_slots, 3, "trailing tombstones trimmed");
+        assert_eq!(bucket.degree(), 3);
+        assert_eq!(
+            bucket.inline_property_bytes_slab_slots(),
+            3,
+            "dense value span must stay degree-sized after the swap sequence"
+        );
+    }
+
+    #[test]
+    fn unordered_swap_compaction_k_equals_m_skips_value_rotation() {
+        // [a, T, c]: the only interior tombstone's live ordinal equals degree - 1, so the
+        // value window is one block and the rotation is a no-op; the edge still swaps.
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 2u16)
+            .unwrap();
+        for target in 1..=3u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("middle edge must be tombstoned");
+        let moved = graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Unordered
+            })
+            .unwrap();
+        assert_eq!(
+            moved,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: label,
+                old_slot_index: 2,
+                new_slot_index: 1,
+            })
+        );
+        let edges = graph.out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            edges.iter().map(|edge| edge.target).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.value[..usize::from(edge.inline_property_len)].to_vec())
+                .collect::<Vec<_>>(),
+            vec![1u16.to_le_bytes().to_vec(), 3u16.to_le_bytes().to_vec()],
+            "values must stay aligned when the hole ordinal equals the source ordinal"
+        );
+    }
+
+    #[test]
+    fn unordered_swap_compaction_two_swaps_reorder_and_trim() {
+        // [T, a, T, b, T, c]: two interior tombstones before live rows produce TWO swaps.
+        // Swap 1 rotates the value window (k_ord = 0 < m_ord = 2); swap 2 has k_ord == m_ord.
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 2u16)
+            .unwrap();
+        for target in 1..=6u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+        }
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        for slot in [0u32, 2, 4] {
+            graph
+                .remove_edge_at_slot(VertexId::from(0), label, slot)
+                .unwrap()
+                .expect("interior tombstone");
+        }
+        let first = graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Unordered
+            })
+            .unwrap();
+        assert_eq!(
+            first,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: label,
+                old_slot_index: 5,
+                new_slot_index: 0,
+            })
+        );
+        let second = graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Unordered
+            })
+            .unwrap();
+        assert_eq!(
+            second,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: label,
+                old_slot_index: 3,
+                new_slot_index: 2,
+            }),
+            "second swap: k_ord == m_ord edge move without a value rotation"
+        );
+        let edges = graph.out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            edges.iter().map(|edge| edge.target).collect::<Vec<_>>(),
+            vec![6, 2, 4],
+            "two swaps reorder the bucket; trailing tombstones are trim candidates"
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.value[..usize::from(edge.inline_property_len)].to_vec())
+                .collect::<Vec<_>>(),
+            vec![
+                6u16.to_le_bytes().to_vec(),
+                2u16.to_le_bytes().to_vec(),
+                4u16.to_le_bytes().to_vec(),
+            ],
+            "values stay aligned across the two-swap sequence"
+        );
+    }
+
+    #[test]
+    fn insertion_bucket_compaction_keeps_left_pack_order() {
+        // Same tombstone geometry, Insertion resolver: the order-preserving left-pack must
+        // run and the original live order [1, 3, 5] must be preserved (no reordering).
+        let (graph, label) = slab_bucket_with_two_interior_tombstones();
+        let moved = graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Insertion
+            })
+            .unwrap();
+        assert_eq!(
+            moved,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: label,
+                old_slot_index: 2,
+                new_slot_index: 1,
+            }),
+            "Insertion compaction must keep the order-preserving left-pack"
+        );
+        let mut resume = 0u32;
+        loop {
+            match graph
+                .compact_vertex_edge_span_one_step(VertexId::from(0), resume, &|_| {
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion
+                })
+                .unwrap()
+            {
+                VertexEdgeSpanCompactOneStep::EdgeMoved(_) => resume = 0,
+                VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => resume = next,
+                VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => resume = 0,
+                VertexEdgeSpanCompactOneStep::Finished => break,
+            }
+        }
+        assert_eq!(
+            graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5],
+            "Insertion compaction preserves bucket-local live order"
+        );
+    }
+
+    #[test]
+    fn unordered_swap_gate_rejects_value_log_and_non_dense_spans() {
+        use crate::labeled::record::LabelBucket;
+        let value_log = LabelBucket::default()
+            .with_inline_property_byte_width(2)
+            .with_inline_property_bytes_log_head(3)
+            .with_degree_field(2)
+            .with_stored_slots(4);
+        assert!(
+            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
+                &value_log
+            ),
+            "a bucket with log-backed inline property bytes must fall back to left-pack (ADR §9)"
+        );
+        let non_dense = LabelBucket::default()
+            .with_inline_property_byte_width(2)
+            .with_inline_property_bytes_slab_slots(2)
+            .with_degree_field(3)
+            .with_stored_slots(4);
+        assert!(
+            !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
+                &non_dense
+            ),
+            "a non-dense value span must fall back to left-pack"
+        );
+        let width_zero = LabelBucket::default()
+            .with_inline_property_bytes_log_head(3)
+            .with_degree_field(2)
+            .with_stored_slots(4);
+        assert!(
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::bucket_allows_unordered_swap(
+                &width_zero
+            ),
+            "width-0 buckets may swap regardless of a value log head"
+        );
+    }
+
+    #[test]
+    fn unordered_swap_step_forced_error_returns_before_mutation() {
+        let (graph, label) = slab_bucket_with_two_interior_tombstones();
+        crate::labeled::graph::force_next_compact_vertex_edge_span_step_error();
+        graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Unordered
+            })
+            .expect_err("forced compaction step error must surface before any mutation");
+        assert_eq!(
+            graph
+                .out_edges(VertexId::from(0))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5],
+            "the pre-mutation forced error must leave the tombstone fixture untouched"
+        );
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(bucket.stored_slots, 5);
+        assert_eq!(bucket.degree(), 3);
     }
 }

@@ -500,7 +500,9 @@ fn compact_vertex_edge_span_until_overflow_or_done<E: CsrEdge + CsrEdgeTombstone
     let mut resume = 0u32;
     loop {
         match graph
-            .compact_vertex_edge_span_one_step(vid, resume)
+            .compact_vertex_edge_span_one_step(vid, resume, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Insertion
+            })
             .expect("compact step")
         {
             VertexEdgeSpanCompactOneStep::EdgeMoved(_) => {}
@@ -1673,6 +1675,63 @@ fn bench_labeled_insertion_append_on_tombstone_hub_1024() -> canbench_rs::BenchR
             .expect("append insert");
         next.set(i + 1);
         black_box(graph.vertices().get(vid));
+    })
+}
+
+/// ADR 0052 Slice 5: Unordered swap-compaction maintenance on a tombstone-heavy
+/// slab-backed hub bucket carrying inline property bytes. The fixture folds the
+/// overflow log to the slab, deletes every other slot, then drains
+/// `compact_vertex_edge_span_one_step` with the Unordered resolver — measuring the
+/// swap finder scan, the edge writes into interior tombstones, and the synchronized
+/// value-block rotation (ADR 0052 §7/§9). The step-drain mirrors the maintenance
+/// loop's per-step invocation with Noop observers.
+#[bench(raw)]
+fn bench_labeled_unordered_swap_compact_half_deleted_1024() -> canbench_rs::BenchResult {
+    let graph = inline_property_bench_graph(1 << 20);
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+        .expect("width");
+    for i in 0..STAGE2_HUB_DEGREE {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                InlinePropertyBenchEdge::with_inline_property(i, 8, &(i as u16).to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("insert");
+    }
+    compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+    for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
+        graph
+            .remove_edge_at_slot(vid, label, slot)
+            .expect("remove")
+            .expect("removed");
+    }
+    // (resume, moves); resume == u32::MAX marks the drained terminal state.
+    let state = Cell::new((0u32, 0u64));
+    bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("labeled_unordered_swap_compact_half_deleted");
+        let (resume, moves) = state.get();
+        if resume == u32::MAX {
+            return;
+        }
+        let step = graph
+            .compact_vertex_edge_span_one_step(vid, resume, &|_| {
+                crate::labeled::graph::EdgePlacementPolicy::Unordered
+            })
+            .expect("swap step");
+        let next = match step {
+            VertexEdgeSpanCompactOneStep::EdgeMoved(_) => (0, moves + 1),
+            VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => (next, moves),
+            VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => (0, moves),
+            VertexEdgeSpanCompactOneStep::Finished => (u32::MAX, moves),
+        };
+        state.set(next);
+        black_box(state.get());
     })
 }
 

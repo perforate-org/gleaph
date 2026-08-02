@@ -1,14 +1,22 @@
 //! GraphStore `maintenance` implementation.
 
 use super::super::stable::GRAPH;
+use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::{
     MaintenanceBudget, VertexId,
-    labeled::{LabeledBidirectionalMaintenanceReport, LabeledOrientation},
+    labeled::{
+        BucketLabelKey, EdgePlacementPolicy, LabeledBidirectionalMaintenanceReport,
+        LabeledOrientation,
+    },
 };
+
+use crate::edge_inline_property_schema::resolved_edge_label_with;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
-use super::helpers::{GraphDeleteEdgeObserver, GraphSidecarMoveObserver};
+use super::helpers::{
+    GraphDeleteEdgeObserver, GraphSidecarMoveObserver, catalog_edge_label_from_wire,
+};
 
 /// Caller-supplied vertices to compact after a tombstone-free bulk ingest batch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -31,6 +39,24 @@ pub struct BulkIngestFinalizeReport {
 }
 
 impl GraphStore {
+    /// Resolves the per-label placement policy for maintenance compaction from the
+    /// Router-projected resolved label table. `Unordered` permits swap-compaction
+    /// (reordering), `Insertion` forces the order-preserving left-pack, and **no policy
+    /// information** (unknown label or no active resolved-label table) maps to the
+    /// order-preserving `Insertion` behavior — never `lara_edge_placement(None)`, which
+    /// defaults to `Unordered` for inserts but would reorder an `Insertion` bucket whose
+    /// table is absent during a timer drain. Order-preserving compaction is a valid
+    /// outcome for both policies (ADR 0052 §7 reordering is a permission).
+    fn maintenance_policy_for_label(label: BucketLabelKey) -> EdgePlacementPolicy {
+        match catalog_edge_label_from_wire(label)
+            .and_then(|l| resolved_edge_label_with(None, l).map(|entry| entry.ordering))
+        {
+            Some(EdgeOrderingPolicy::Insertion) => EdgePlacementPolicy::Insertion,
+            Some(EdgeOrderingPolicy::Unordered) => EdgePlacementPolicy::Unordered,
+            None => EdgePlacementPolicy::Insertion,
+        }
+    }
+
     pub fn run_maintenance_best_effort(
         &self,
         budget: MaintenanceBudget,
@@ -41,7 +67,12 @@ impl GraphStore {
         let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
         let report = GRAPH
             .with_borrow(|graph| {
-                graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
+                graph.maintenance_with_observers(
+                    budget,
+                    &mut move_observer,
+                    &mut delete_observer,
+                    &Self::maintenance_policy_for_label,
+                )
             })
             .map_err(GraphStoreError::from)?;
         for (owner_vertex_id, moved) in move_observer.inline_moves {

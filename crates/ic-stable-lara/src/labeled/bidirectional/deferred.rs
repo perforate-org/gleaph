@@ -15,8 +15,8 @@ use crate::{
         },
         graph::traverse::{EdgeFindScope, EdgeWithInlinePropertyRef, FoundEdge},
         graph::{
-            BucketEntryPosition, EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph,
-            LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
+            BucketEntryPosition, EdgePlacementPolicy, EdgeRemoval, EdgeSlotMove, InitError,
+            LabeledLaraGraph, LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
         },
     },
     lara::maintenance::{
@@ -2578,6 +2578,7 @@ where
             budget,
             &mut NoopEdgeSlotMoveObserver,
             &mut NoopDeleteEdgeObserver,
+            &|_| EdgePlacementPolicy::Insertion,
         )
     }
 
@@ -2591,7 +2592,9 @@ where
         O: EdgeSlotMoveObserver,
         E: CsrEdgeTombstone + PartialEq,
     {
-        self.maintenance_with_observers(budget, observer, &mut NoopDeleteEdgeObserver)
+        self.maintenance_with_observers(budget, observer, &mut NoopDeleteEdgeObserver, &|_| {
+            EdgePlacementPolicy::Insertion
+        })
     }
 
     /// Processes queued maintenance work and reports removed edges of resumable
@@ -2605,16 +2608,26 @@ where
         D: DeleteEdgeObserver<E>,
         E: CsrEdgeTombstone + PartialEq,
     {
-        self.maintenance_with_observers(budget, &mut NoopEdgeSlotMoveObserver, delete_observer)
+        self.maintenance_with_observers(
+            budget,
+            &mut NoopEdgeSlotMoveObserver,
+            delete_observer,
+            &|_| EdgePlacementPolicy::Insertion,
+        )
     }
 
     /// Processes queued maintenance work, threading both the compaction edge-slot
-    /// move observer and the resumable vertex-delete edge observer.
+    /// move observer and the resumable vertex-delete edge observer. `policy_for_label`
+    /// resolves the per-label placement policy for compaction: `Unordered` permits
+    /// swap-compaction (reordering), `Insertion` forces the order-preserving left-pack;
+    /// callers without policy information pass the order-preserving default (valid for
+    /// both policies — ADR 0052 §7 reordering is a permission, not a requirement).
     pub fn maintenance_with_observers<O, D>(
         &self,
         budget: MaintenanceBudget,
         observer: &mut O,
         delete_observer: &mut D,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
     ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
     where
         O: EdgeSlotMoveObserver,
@@ -2692,7 +2705,11 @@ where
                     if anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
-                        match graph.compact_vertex_edge_span_one_step(vid, resume_bucket_index) {
+                        match graph.compact_vertex_edge_span_one_step(
+                            vid,
+                            resume_bucket_index,
+                            policy_for_label,
+                        ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved)) => {
                                 observer.edge_slot_moved(orientation, vid, moved);
                                 Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
@@ -2789,7 +2806,11 @@ where
                     if anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
-                        match graph.compact_vertex_edge_span_one_step(vid, resume_bucket_index) {
+                        match graph.compact_vertex_edge_span_one_step(
+                            vid,
+                            resume_bucket_index,
+                            &|_| EdgePlacementPolicy::Insertion,
+                        ) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
                                 Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                                     orientation,
