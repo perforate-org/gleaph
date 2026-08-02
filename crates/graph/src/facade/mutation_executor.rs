@@ -5,6 +5,79 @@ use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId}
 use ic_stable_lara::VertexId;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BULK_VERTEX_ALLOCATION_ORDER: RefCell<Option<Vec<usize>>> = const { RefCell::new(None) };
+    static TEST_FAIL_BULK_VERTEX_AFTER_ROW_WRITE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestBulkVertexAllocationOrderGuard;
+
+#[cfg(test)]
+impl Drop for TestBulkVertexAllocationOrderGuard {
+    fn drop(&mut self) {
+        TEST_BULK_VERTEX_ALLOCATION_ORDER.with_borrow_mut(|order| {
+            assert!(
+                order.take().is_some(),
+                "test bulk vertex allocation order was already cleared"
+            );
+        });
+    }
+}
+
+/// Install a one-test allocation-order permutation at the bulk allocator boundary.
+///
+/// Production allocation remains append-ordered. The test-only seam maps each input ordinal to a
+/// physical allocation slot before canonical labels and properties are written, then returns the
+/// IDs in input-ordinal order. This lets handler tests exercise a deliberately non-sorted allocator
+/// result without divorcing returned IDs from their stored vertex contents.
+#[cfg(test)]
+pub(crate) fn test_bulk_vertex_allocation_order(
+    order: Vec<usize>,
+) -> TestBulkVertexAllocationOrderGuard {
+    TEST_BULK_VERTEX_ALLOCATION_ORDER.with_borrow_mut(|current| {
+        assert!(current.replace(order).is_none());
+    });
+    TestBulkVertexAllocationOrderGuard
+}
+
+#[cfg(test)]
+pub(crate) struct TestFailBulkVertexAfterRowWriteGuard;
+
+#[cfg(test)]
+impl Drop for TestFailBulkVertexAfterRowWriteGuard {
+    fn drop(&mut self) {
+        TEST_FAIL_BULK_VERTEX_AFTER_ROW_WRITE.with(|enabled| {
+            assert!(
+                enabled.replace(false),
+                "test bulk vertex post-row-write failure was already cleared"
+            );
+        });
+    }
+}
+
+/// Inject an unexpected error immediately after canonical vertex rows were written.
+#[cfg(test)]
+pub(crate) fn test_fail_bulk_vertex_after_row_write() -> TestFailBulkVertexAfterRowWriteGuard {
+    TEST_FAIL_BULK_VERTEX_AFTER_ROW_WRITE.with(|enabled| {
+        assert!(!enabled.replace(true));
+    });
+    TestFailBulkVertexAfterRowWriteGuard
+}
+
+fn trap_after_bulk_vertex_write_began<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    phase: &str,
+) -> T {
+    result.unwrap_or_else(|error| {
+        panic!("bulk vertex canonical write failed during {phase}: {error}")
+    })
+}
+
 pub trait GraphMutationExecutor {
     fn insert_vertex_with(
         &self,
@@ -105,7 +178,60 @@ pub fn insert_vertices_with(
             })?;
         }
     }
-    let ids = store.insert_vertex_rows_bulk((0..vertices.len()).map(|_| Vertex::default()))?;
+
+    #[cfg(test)]
+    let (vertices, test_allocation_order) = {
+        let order = TEST_BULK_VERTEX_ALLOCATION_ORDER.with_borrow(|order| order.clone());
+        if let Some(order) = order {
+            assert_eq!(
+                order.len(),
+                vertices.len(),
+                "test allocation order length mismatch"
+            );
+            let mut seen = BTreeSet::new();
+            for &index in &order {
+                assert!(
+                    index < vertices.len(),
+                    "test allocation order index out of range"
+                );
+                assert!(seen.insert(index), "test allocation order repeats an index");
+            }
+            assert_eq!(
+                seen.len(),
+                vertices.len(),
+                "test allocation order is not a permutation"
+            );
+
+            let mut physical_vertices: Vec<Option<_>> = (0..vertices.len()).map(|_| None).collect();
+            for (vertex_ordinal, vertex) in vertices.into_iter().enumerate() {
+                physical_vertices[order[vertex_ordinal]] = Some(vertex);
+            }
+            let vertices = physical_vertices
+                .into_iter()
+                .map(|vertex| vertex.expect("test allocation slot must be populated"))
+                .collect();
+            (vertices, Some(order))
+        } else {
+            (vertices, None)
+        }
+    };
+
+    // This call begins the canonical write phase. The allocator may have written a prefix before
+    // reporting an unexpected failure, so this and every later failure must trap and let the IC
+    // roll back the message rather than expose recoverable partial state.
+    let ids = trap_after_bulk_vertex_write_began(
+        store.insert_vertex_rows_bulk((0..vertices.len()).map(|_| Vertex::default())),
+        "row allocation",
+    );
+    #[cfg(test)]
+    TEST_FAIL_BULK_VERTEX_AFTER_ROW_WRITE.with(|enabled| {
+        if enabled.get() {
+            trap_after_bulk_vertex_write_began::<(), GraphStoreError>(
+                Err(GraphStoreError::VertexTombstoned),
+                "test failpoint after row allocation",
+            );
+        }
+    });
     let label_assignments: Vec<_> = ids
         .iter()
         .copied()
@@ -117,8 +243,14 @@ pub fn insert_vertices_with(
             (vertex_id, vertex, labels.clone())
         })
         .collect();
-    let labeled_rows = store.commit_set_vertex_labels_bulk(&label_assignments)?;
-    store.set_vertex_rows_bulk(&labeled_rows)?;
+    let labeled_rows = trap_after_bulk_vertex_write_began(
+        store.commit_set_vertex_labels_bulk(&label_assignments),
+        "label assignment",
+    );
+    trap_after_bulk_vertex_write_began(
+        store.set_vertex_rows_bulk(&labeled_rows),
+        "labeled row persistence",
+    );
     let properties: Vec<_> = ids
         .iter()
         .copied()
@@ -129,7 +261,17 @@ pub fn insert_vertices_with(
                 .map(move |(property_id, value)| (vertex_id, property_id, value))
         })
         .collect();
-    store.commit_vertex_property_writes_bulk(&properties)?;
+    trap_after_bulk_vertex_write_began(
+        store.commit_vertex_property_writes_bulk(&properties),
+        "property persistence",
+    );
+
+    #[cfg(test)]
+    let ids = if let Some(order) = test_allocation_order {
+        order.into_iter().map(|index| ids[index]).collect()
+    } else {
+        ids
+    };
     Ok(ids)
 }
 

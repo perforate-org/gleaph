@@ -17,10 +17,9 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation, PostingHit};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, create_vertex_property_index, execute_prepared_with_params_as,
-    gql_execute_as_admin, gql_query_as_admin, install_single_shard_federation,
-    list_prepared_as_admin, prepare_as_admin, seed_upgrade_fixture_graph, upgrade_fixture_query,
-    wasm_bytes,
+    FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_mutate_as_admin,
+    gql_query_as_admin, install_single_shard_federation, list_prepared_as_admin, prepare_as_admin,
+    prepared_query_with_params_as, seed_upgrade_fixture_graph, upgrade_fixture_query, wasm_bytes,
 };
 use gleaph_prepared_api::{OperationKind, PreparedOperation, ResultSchema};
 use gleaph_router::types::BackfillKind;
@@ -114,14 +113,14 @@ fn prepared_query_survives_router_upgrade_cache_rebuild() {
 
     let query_name = "upgrade-prepared-cache-rebuild";
     prepare_as_admin(&env, query_name, upgrade_fixture_query());
-    let before = execute_prepared_with_params_as(&env, env.admin, query_name, Vec::new());
+    let before = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
 
     upgrade_all(&env);
 
     // The Router stable record contains source, while the parsed AST and plan are rebuilt by
     // post_upgrade. Successful execution after upgrade proves the cache was reconstructed and
     // the Graph still received the prepared plan through the normal dispatch boundary.
-    let after = execute_prepared_with_params_as(&env, env.admin, query_name, Vec::new());
+    let after = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
     assert_eq!(after.row_count, before.row_count);
     assert_eq!(edge_ids(&after), edge_ids(&before));
 }
@@ -208,7 +207,7 @@ fn canister_upgrade_repeated_is_stable() {
     let new_edge_ddl = "MATCH (a:UpgradeSource {fixture_id: 'source'}) RETURN a \
 NEXT INSERT (a)-[:UPGRADE_EDGE {fixture_edge_id: 'edge-post-upgrade', fixture_kind: 'verify'}]\
 ->(:UpgradeTarget {fixture_id: 'target-post-upgrade', fixture_kind: 'upgrade'})";
-    let _ = gql_execute_as_admin(&env, new_edge_ddl, "post_upgrade_new_edge");
+    let _ = gql_mutate_as_admin(&env, new_edge_ddl, "post_upgrade_new_edge");
     let after_write = edge_ids(&gql_query_as_admin(&env, upgrade_fixture_query()));
     assert!(
         after_write.contains("edge-post-upgrade"),
@@ -283,8 +282,8 @@ fn router_backfill_cursor_survives_router_upgrade() {
         "age",
         "upgrade_backfill_create_index",
     );
-    gql_execute_as_admin(&env, "INSERT (:Person {age: 1})", "upgrade_backfill_v1");
-    gql_execute_as_admin(&env, "INSERT (:Person {age: 2})", "upgrade_backfill_v2");
+    gql_mutate_as_admin(&env, "INSERT (:Person {age: 1})", "upgrade_backfill_v1");
+    gql_mutate_as_admin(&env, "INSERT (:Person {age: 2})", "upgrade_backfill_v2");
 
     // The Router iterates shards internally; `advance_backfill` with kind `VertexProperty` and
     // `max_work = 1` processes one vertex, leaving the shard not yet done.

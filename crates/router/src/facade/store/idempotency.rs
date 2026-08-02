@@ -74,15 +74,16 @@ fn ordered_replay_target_active(record: &RouterMutationRecord) -> bool {
 
 /// Scan up to `budget` records starting strictly after `start_after`, removing those
 /// past [`CLIENT_MUTATION_KEY_TTL_NS`] that are not actively routing. Returns
-/// `(scanned, removed, last_examined_key)`. `created_at_ns` on the record stays the sole
-/// source of truth for age.
+/// `(scanned, removed, last_examined_key)`. Terminal records use their durable
+/// `terminal_at_ns` anchor; non-terminal records are never age-evictable.
 fn evict_expired_client_mutation_keys(
     start_after: Option<&ClientMutationKey>,
     budget: usize,
     now: u64,
-) -> (u32, u32, Option<ClientMutationKey>) {
+) -> (u32, u32, Option<ClientMutationKey>, Vec<ClientMutationKey>) {
     let mut scanned: u32 = 0;
     let mut last_key: Option<ClientMutationKey> = None;
+    let mut expired_bulk_loads = Vec::new();
     // Each evictable candidate is captured with its `mutation_id` so the apply removes the reverse
     // index row in lockstep with the record (ADR 0030 slice 6): one read-only preflight, then a
     // failure-free apply, never a partial removal.
@@ -107,8 +108,22 @@ fn evict_expired_client_mutation_keys(
             // It also stays pinned while any pending unique-effect discovery row remains, since
             // Driver 2 reads this record's completion state before removing the row (the only pin a
             // Release/orphan mutation has, as it owns no reservation).
-            if record.is_terminal()
-                && now.saturating_sub(record.as_v1().created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS
+            let expired_terminal = record.is_terminal()
+                && record.as_v1().terminal_at_ns.is_some_and(|terminal_at| {
+                    now.saturating_sub(terminal_at) > CLIENT_MUTATION_KEY_TTL_NS
+                });
+            if expired_terminal
+                && matches!(
+                    record.payload(),
+                    RouterMutationPayloadV1::BulkLoadCoordinator(_)
+                )
+            {
+                // Bulk parents own a durable receipt range and must be cleaned by the dedicated
+                // bounded GC step.  Do not remove the client binding here: the GC step advances
+                // the durable receipt cursor and removes the parent only after the child range is
+                // empty.
+                expired_bulk_loads.push(key.clone());
+            } else if expired_terminal
                 && !reservation_slot_pinned_raw(record.as_v1().mutation_id)
                 && !pending_effect_pinned_raw(key.graph_id, record.as_v1().mutation_id)
             {
@@ -133,38 +148,23 @@ fn evict_expired_client_mutation_keys(
             }
         });
     }
-    (scanned, removed, last_key)
+    (scanned, removed, last_key, expired_bulk_loads)
 }
 
 /// Drop the heavy fields of a fully completed + projected record. The resolved
 /// label/property tables and the shard fan-out are never read again once replay
 /// short-circuits on `completed_row_count` (ADR 0025, mechanism E); `mutation_id`,
-/// `created_at_ns`, `request_fingerprint`, and `completed_row_count` remain for
+/// `created_at_ns`, `terminal_at_ns`, `request_fingerprint`, and `completed_row_count` remain for
 /// idempotent replay and TTL eviction.
 pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
     use crate::facade::stable::label_stats::RouterMutationPayloadV1;
     record.as_v1_mut().resolved_labels = None;
     record.as_v1_mut().resolved_properties = None;
-    // ADR 0025 mechanism E: scalar terminal representation stays `Scalar {{ shards: [] }}`,
-    // while active bulk payloads compact to `CompletedBulk`. Typed completion retains only the
-    // ordered result cardinalities needed for exact idempotent replay.
+    // ADR 0025 mechanism E: scalar terminal representation stays `Scalar { shards: [] }`.
     match record.payload().clone() {
+        RouterMutationPayloadV1::BulkLoadCoordinator(_) => {}
         RouterMutationPayloadV1::Scalar { .. } => {
             record.payload_mut().scalar_clear_shards();
-        }
-        RouterMutationPayloadV1::SharedSeedBulk { total_ops, .. } => {
-            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk {
-                total_ops,
-                operation_row_counts: Vec::new(),
-            };
-        }
-        RouterMutationPayloadV1::TypedSeedBulk(ref replay) => {
-            let total_ops = replay.total_ops;
-            let operation_row_counts = replay.target.operation_row_counts.clone();
-            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk {
-                total_ops,
-                operation_row_counts,
-            };
         }
         RouterMutationPayloadV1::OrderedEdgeBatchRouting
         | RouterMutationPayloadV1::OrderedEdgeBatch(_)
@@ -172,11 +172,11 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
         | RouterMutationPayloadV1::OrderedVertexBatch(_)
         | RouterMutationPayloadV1::OrderedMixedBatchRouting
         | RouterMutationPayloadV1::OrderedMixedBatch(_)
-        | RouterMutationPayloadV1::CompletedBulk { .. }
         | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
         | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
         | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. } => {}
     }
+    record.mark_terminal_at_ns(ic_time_ns());
 }
 
 impl RouterStore {
@@ -221,7 +221,10 @@ impl RouterStore {
         validate_client_mutation_key(client_key)?;
         let key = client_mutation_key(caller, graph_id, client_key);
         if let Some(mut record) = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key)) {
-            if now.saturating_sub(record.as_v1().created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS
+            if record.is_terminal()
+                && record.as_v1().terminal_at_ns.is_some_and(|terminal_at| {
+                    now.saturating_sub(terminal_at) > CLIENT_MUTATION_KEY_TTL_NS
+                })
                 && !ordered_replay_target_active(&record)
             {
                 return Err(RouterError::InvalidArgument(
@@ -319,16 +322,36 @@ impl RouterStore {
     /// cursor over the journal keyspace, examining [`MUTATION_GC_BUDGET`] records per
     /// call and wrapping at the end. Driven by [`reserve_mutation_id_for_client_key_at`]
     /// (the sole growth source), so the journal converges to its TTL working set.
-    pub(crate) fn gc_expired_client_mutation_keys(&self, now: u64) {
+    pub(crate) fn gc_expired_client_mutation_keys(&self, now: u64) -> bool {
         let start = MUTATION_GC_CURSOR.with_borrow(|cursor| cursor.clone());
-        let (scanned, _removed, last_key) =
+        let (scanned, _removed, last_key, expired_bulk_loads) =
             evict_expired_client_mutation_keys(start.as_ref(), MUTATION_GC_BUDGET as usize, now);
-        let next = if scanned < MUTATION_GC_BUDGET {
+        let bulk_gc_pending = self.drive_expired_bulk_load_gc(&expired_bulk_loads, now);
+        // A bulk parent with receipts remaining must be revisited on the next write.  Resetting
+        // the ordinary journal cursor prevents a short final page from skipping that parent until
+        // a later round-robin lap.
+        let next = if bulk_gc_pending || scanned < MUTATION_GC_BUDGET {
             None
         } else {
             last_key
         };
         MUTATION_GC_CURSOR.with_borrow_mut(|cursor| *cursor = next);
+        bulk_gc_pending
+    }
+
+    /// Drive one bounded receipt-GC step for each expired bulk parent found in the current journal
+    /// slice.  A child that is still pending keeps the parent for a later recovery lap; malformed
+    /// durable bulk state remains a corruption trap rather than being silently evicted.
+    fn drive_expired_bulk_load_gc(&self, keys: &[ClientMutationKey], now: u64) -> bool {
+        let mut pending = false;
+        for key in keys {
+            match self.bulk_load_receipt_gc_step(key.caller, key.graph_id, &key.client_key, now) {
+                Ok(step) => pending |= !step.done,
+                Err(RouterError::Busy { .. }) => pending = true,
+                Err(error) => panic!("bulk-load receipt GC failed: {error}"),
+            }
+        }
+        pending
     }
 
     /// Remove expired client-mutation idempotency records in a bounded, paginated
@@ -369,8 +392,9 @@ impl RouterStore {
             ));
         }
 
-        let (scanned, removed, last_key) =
+        let (scanned, removed, last_key, expired_bulk_loads) =
             evict_expired_client_mutation_keys(start_after.as_ref(), max_scan as usize, now);
+        let _bulk_gc_pending = self.drive_expired_bulk_load_gc(&expired_bulk_loads, now);
 
         // Fewer entries scanned than the budget means the range was exhausted.
         let done = scanned < max_scan;
@@ -425,6 +449,7 @@ impl RouterStore {
         key: &ClientMutationKey,
         error: String,
     ) -> Result<(), RouterError> {
+        let error = crate::facade::stable::label_stats::bound_mutation_recovery_diagnostic(error);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             if let Some(mut record) = m.get(key)
                 && !record.is_terminal()
@@ -471,6 +496,7 @@ impl RouterStore {
                 return false;
             }
             record.as_v1_mut().terminal_failure = Some(error);
+            record.mark_terminal_at_ns(ic_time_ns());
             m.insert(key.clone(), record);
             true
         })
@@ -613,10 +639,7 @@ impl RouterStore {
                 let has_dispatch_envelope = !record.shards().is_empty()
                     || matches!(
                         record.payload(),
-                        crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(
-                            _
-                        )
-                        | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(
+                        crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(
                             _
                         )
                         | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(
@@ -1285,6 +1308,7 @@ impl RouterStore {
             v1.resolved_properties = None;
             v1.routing_in_progress = false;
             v1.routing_lease_ns = None;
+            record.mark_terminal_at_ns(ic_time_ns());
             m.insert(key, record);
             Ok(())
         })
@@ -1533,6 +1557,7 @@ impl RouterStore {
             v1.resolved_properties = None;
             v1.routing_in_progress = false;
             v1.routing_lease_ns = None;
+            record.mark_terminal_at_ns(ic_time_ns());
             m.insert(key, record);
             Ok(())
         })
@@ -1844,92 +1869,11 @@ impl RouterStore {
             v1.resolved_properties = None;
             v1.routing_in_progress = false;
             v1.routing_lease_ns = None;
+            record.mark_terminal_at_ns(ic_time_ns());
             m.insert(key, record);
             Ok(())
         })
     }
-
-    /// Atomically transition a pristine scalar reservation to a durable typed seed bulk payload.
-    ///
-    /// Accepts only a record that:
-    /// - exists under the client key;
-    /// - matches the expected `mutation_id`;
-    /// - is still `routing_in_progress`;
-    /// - has an empty scalar shard envelope and no completed row count;
-    /// - has the same `request_fingerprint`.
-    ///
-    /// On acceptance, installs the typed replay payload and releases the routing lease. On any
-    /// mismatch, leaves the record unchanged and returns `Err`.
-    pub fn transition_to_typed_seed_bulk(
-        &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        mutation_id: MutationId,
-        request_fingerprint: &[u8],
-        resolved_labels: ResolvedLabelTable,
-        resolved_properties: ResolvedPropertyTable,
-        replay: crate::facade::stable::label_stats::TypedSeedBulkReplayV1,
-    ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-        replay.validate()?;
-        if replay.target.completed
-            || replay.target.projection_advanced
-            || replay.target.row_count != 0
-        {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk target must be pristine at transition".into(),
-            ));
-        }
-        let key = client_mutation_key(caller, graph_id, client_key);
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at typed bulk transition".into(),
-                ));
-            }
-            if v1.request_identity.request_fingerprint() != request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "request fingerprint mismatch at typed bulk transition".into(),
-                ));
-            }
-            if !v1.routing_in_progress {
-                return Err(RouterError::Conflict(
-                    "typed bulk transition requires an active routing reservation".into(),
-                ));
-            }
-            if v1.completed_row_count.is_some() {
-                return Err(RouterError::Conflict(
-                    "typed bulk transition refused: record already completed".into(),
-                ));
-            }
-            match v1.payload {
-                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty() => {}
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "typed bulk transition requires a pristine scalar reservation".into(),
-                    ));
-                }
-            }
-            v1.resolved_labels = Some(resolved_labels);
-            v1.resolved_properties = Some(resolved_properties);
-            v1.payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(RouterError::InvalidArgument(
-                    "typed seed bulk record exceeds safe inter-canister payload bound".into(),
-                ));
-            }
-            m.insert(key, record);
-            Ok(())
-        })
-    }
-
     pub fn record_router_mutation_shards(
         &self,
         caller: Principal,
@@ -1946,7 +1890,6 @@ impl RouterStore {
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
             // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
-            // TypedSeedBulk and CompletedBulk must never be overwritten by a shard-envelope writer.
             let existing = match &record.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards }
                     if record.as_v1().completed_row_count.is_none() =>
@@ -1988,109 +1931,6 @@ impl RouterStore {
         })
     }
 
-    /// Mark the single typed bulk target as canonical-complete and store its row count.
-    ///
-    /// Idempotent: a terminal record is left unchanged. Rejects legacy/scalar payloads.
-    pub fn record_typed_bulk_target_completed(
-        &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        shard_id: ShardId,
-        row_count: u64,
-        operation_row_counts: Vec<u64>,
-    ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, graph_id, client_key);
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.is_terminal() {
-                return Ok(());
-            }
-            let Some(target) = record.typed_target() else {
-                return Err(RouterError::Internal(
-                    "typed bulk completion requires a TypedSeedBulk payload".into(),
-                ));
-            };
-            if target.shard_id != shard_id {
-                return Err(RouterError::ShardNotRegistered);
-            }
-            let expected = record.bulk_total_ops().unwrap_or_default() as usize;
-            if operation_row_counts.len() != expected
-                || operation_row_counts
-                    .iter()
-                    .copied()
-                    .fold(0_u64, u64::saturating_add)
-                    != row_count
-            {
-                return Err(RouterError::InvalidArgument(
-                    "typed bulk operation row counts must match total_ops and aggregate row_count"
-                        .into(),
-                ));
-            }
-            if target.completed {
-                return if target.row_count == row_count
-                    && target.operation_row_counts == operation_row_counts
-                {
-                    Ok(())
-                } else {
-                    Err(RouterError::Conflict(
-                        "typed bulk completion conflicts with the persisted outcome".into(),
-                    ))
-                };
-            }
-            let target = record
-                .typed_target_mut()
-                .expect("payload was checked above");
-            target.completed = true;
-            target.row_count = row_count;
-            target.operation_row_counts = operation_row_counts;
-            m.insert(key, record);
-            Ok(())
-        })
-    }
-
-    /// Mark the single typed bulk target as projection-advanced and compact when complete.
-    ///
-    /// Idempotent: a terminal record is left unchanged. Rejects legacy/scalar payloads.
-    pub fn record_typed_bulk_target_projection_advanced(
-        &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        shard_id: ShardId,
-    ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, graph_id, client_key);
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.is_terminal() {
-                return Ok(());
-            }
-            let Some(target) = record.typed_target_mut() else {
-                return Err(RouterError::Internal(
-                    "typed bulk projection advancement requires a TypedSeedBulk payload".into(),
-                ));
-            };
-            if target.shard_id != shard_id {
-                return Err(RouterError::ShardNotRegistered);
-            }
-            if !target.completed {
-                return Err(RouterError::Conflict(
-                    "typed bulk projection cannot advance before canonical completion".into(),
-                ));
-            }
-            target.projection_advanced = true;
-            let row_count = target.row_count;
-            record.as_v1_mut().completed_row_count = Some(row_count);
-            compact_completed_record(&mut record);
-            m.insert(key, record);
-            Ok(())
-        })
-    }
-
     pub fn record_router_mutation_completed_without_shards(
         &self,
         caller: Principal,
@@ -2127,6 +1967,7 @@ impl RouterStore {
             record.as_v1_mut().resolved_labels = Some(resolved_labels);
             record.as_v1_mut().resolved_properties = Some(resolved_properties);
             record.as_v1_mut().completed_row_count = Some(row_count);
+            record.mark_terminal_at_ns(ic_time_ns());
             record.as_v1_mut().routing_in_progress = false;
             m.insert(key, record);
             Ok(())
@@ -2220,6 +2061,7 @@ impl RouterStore {
                     .iter()
                     .fold(0u64, |total, shard| total.saturating_add(shard.row_count()));
                 record.as_v1_mut().completed_row_count = Some(total);
+                record.mark_terminal_at_ns(ic_time_ns());
                 compact_completed_record(&mut record);
             }
             m.insert(key, record);
@@ -2295,7 +2137,7 @@ impl RouterStore {
     }
 }
 
-fn client_mutation_key(
+pub(crate) fn client_mutation_key(
     caller: Principal,
     graph_id: GraphId,
     client_key: &str,

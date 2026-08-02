@@ -151,6 +151,10 @@ impl GraphStore {
             emitted_delta_first_seq: entry.emitted_delta_first_seq(),
             emitted_delta_last_seq: entry.emitted_delta_last_seq(),
             hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+            allocated_vertex_ids: entry
+                .allocated_vertex_ids()
+                .ok_or("ordered vertex journal entry missing allocated vertex ids")?
+                .to_vec(),
         };
         receipt.validate()?;
         Ok(receipt)
@@ -219,6 +223,10 @@ impl GraphStore {
                     emitted_delta_first_seq: entry.emitted_delta_first_seq(),
                     emitted_delta_last_seq: entry.emitted_delta_last_seq(),
                     hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                    allocated_vertex_ids: entry
+                        .allocated_vertex_ids()
+                        .ok_or("ordered mixed journal entry missing allocated vertex ids")?
+                        .to_vec(),
                 };
                 receipt.validate()?;
                 GraphOrderedMixedBatchResultV1::Completed(receipt)
@@ -246,6 +254,7 @@ impl GraphStore {
         emitted_delta_first_seq: Option<ShardEventSeq>,
         emitted_delta_last_seq: Option<ShardEventSeq>,
         hot_forward_vertices: Vec<LocalVertexId>,
+        allocated_vertex_ids: Vec<LocalVertexId>,
     ) {
         let GraphMutationRequestIdentityV1::OrderedMixedBatch {
             logical_operation_count,
@@ -263,6 +272,7 @@ impl GraphStore {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices: hot_forward_vertices.clone(),
+            allocated_vertex_ids: allocated_vertex_ids.clone(),
         };
         receipt
             .validate()
@@ -277,6 +287,7 @@ impl GraphStore {
             ic_time_ns(),
         );
         entry.set_request_identity(request_identity);
+        entry.set_allocated_vertex_ids(Some(allocated_vertex_ids));
         entry.set_retirement(GraphMutationRetirementV1::Active);
         entry
             .wire()
@@ -294,12 +305,14 @@ impl GraphStore {
         emitted_delta_first_seq: Option<ShardEventSeq>,
         emitted_delta_last_seq: Option<ShardEventSeq>,
         hot_forward_vertices: Vec<LocalVertexId>,
+        allocated_vertex_ids: Vec<LocalVertexId>,
     ) {
         let receipt = GraphOrderedVertexBatchReceiptV1 {
             logical_vertex_count: row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices: hot_forward_vertices.clone(),
+            allocated_vertex_ids: allocated_vertex_ids.clone(),
         };
         receipt
             .validate()
@@ -313,6 +326,7 @@ impl GraphStore {
             now_ns,
         );
         entry.set_request_identity(request_identity);
+        entry.set_allocated_vertex_ids(Some(allocated_vertex_ids));
         entry.set_retirement(GraphMutationRetirementV1::Active);
         entry
             .wire()
@@ -329,6 +343,7 @@ impl GraphStore {
         emitted_delta_first_seq: Option<ShardEventSeq>,
         emitted_delta_last_seq: Option<ShardEventSeq>,
         hot_forward_vertices: Vec<LocalVertexId>,
+        allocated_vertex_ids: Vec<LocalVertexId>,
     ) {
         self.commit_record_completed_ordered_vertex_batch_journal_at(
             ic_time_ns(),
@@ -338,6 +353,7 @@ impl GraphStore {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices,
+            allocated_vertex_ids,
         );
     }
 
@@ -579,6 +595,10 @@ impl GraphStore {
                 emitted_delta_first_seq: entry.emitted_delta_first_seq(),
                 emitted_delta_last_seq: entry.emitted_delta_last_seq(),
                 hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                allocated_vertex_ids: entry
+                    .allocated_vertex_ids()
+                    .ok_or("ordered mixed journal entry missing allocated vertex ids")?
+                    .to_vec(),
             };
             receipt.validate()?;
             match entry.retirement() {
@@ -659,8 +679,8 @@ impl GraphStore {
         self.retire_ordered_vertex_mutation_at(ic_time_ns(), mutation_id, graph_request_fingerprint)
     }
 
-    /// Record a bulk mutation journal entry with an operation cursor and progress metadata
-    /// (ADR 0044). `next_index` is the first unexecuted operation; `completed_count` is the number of
+    /// Record an internal plan-batch journal entry with an operation cursor and progress metadata.
+    /// `next_index` is the first unexecuted operation; `completed_count` is the number of
     /// operations whose canonical write has already committed.
     pub(crate) fn commit_record_bulk_mutation_journal(
         &self,

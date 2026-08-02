@@ -89,6 +89,51 @@ type AdvanceBackfillResult = record {
   shards : vec BackfillShardAdvance;
   all_done : bool;
 };
+type AtomicInsertEdgeV1 = record {
+  edge_label_name : opt text;
+  source : AtomicInsertEndpointV1;
+  inline_property : opt blob;
+  directed : bool;
+  target : AtomicInsertEndpointV1;
+  initial_edge_properties : vec AtomicInsertPropertyV1;
+};
+type AtomicInsertEndpointV1 = variant {
+  // Ordinal among vertex operations, not the position in the mixed operation array.
+  NewVertexOrdinal : nat32;
+  Existing : blob;
+};
+type AtomicInsertOperationV1 = variant {
+  Edge : AtomicInsertEdgeV1;
+  Vertex : AtomicInsertVertexV1;
+};
+type AtomicInsertPropertyV1 = record { value : blob; property_name : text };
+// Router-owned projection of the Graph-specific durable receipts.
+type AtomicInsertReceiptV1 = record {
+  logical_edge_count : nat64;
+  // Opaque graph-scoped encoded IDs in vertex-operation ordinal order.
+  // Edge-only inserts always return an empty list.
+  allocated_vertex_ids : vec blob;
+  logical_vertex_count : nat64;
+  logical_operation_count : nat64;
+};
+// Versioned public request for Router-owned ordered batch mutation.
+type AtomicInsertRequest = variant { V1 : AtomicInsertRequestV1 };
+type AtomicInsertRequestV1 = record {
+  // Stable idempotency key supplied by the caller; retries must reuse it with identical data.
+  client_mutation_key : text;
+  operations : vec AtomicInsertOperationV1;
+  logical_graph_name : text;
+};
+// Public result for one Router atomic insert.
+type AtomicInsertResponse = record {
+  status : MutationStatus;
+  // Present after Graph commits the canonical vertex and/or edge operations.
+  receipt : opt AtomicInsertReceiptV1;
+};
+type AtomicInsertVertexV1 = record {
+  initial_properties : vec AtomicInsertPropertyV1;
+  vertex_labels : vec text;
+};
 // Which posting-backfill cursor a reset (and `advance_backfill`, ADR 0056 §4) targets.
 // `LabelStats` drives the label-stats projection drain.
 type BackfillKind = variant { Label; Edge; LabelStats; VertexProperty };
@@ -100,47 +145,65 @@ type BackfillShardStatus = record {
   shard_id : nat32;
   kind : BackfillKind;
 };
-type BatchEdgeInsertV1 = record {
+// One committed chunk receipt in a status page.
+type BulkLoadChunkReceiptV1 = record {
+  chunk_index : nat32;
+  receipt : AtomicInsertReceiptV1;
+};
+// Self-contained vertex-only or existing-ID edge-only chunk.
+type BulkLoadChunkV1 = variant {
+  Vertices : vec AtomicInsertVertexV1;
+  Edges : vec BulkLoadEdgeV1;
+};
+// Public durable bulk-load command family (ADR 0057).
+type BulkLoadCommand = variant {
+  Start : record { client_bulk_key : text; logical_graph_name : text };
+  Abort : record { client_bulk_key : text; logical_graph_name : text };
+  Append : record {
+    client_bulk_key : text;
+    chunk_index : nat32;
+    chunk : BulkLoadChunkV1;
+    logical_graph_name : text;
+  };
+  Finalize : record { client_bulk_key : text; logical_graph_name : text };
+};
+// One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
+type BulkLoadEdgeV1 = record {
   edge_label_name : opt text;
-  source : BatchEndpointV1;
+  source : blob;
   inline_property : opt blob;
   directed : bool;
-  target : BatchEndpointV1;
-  initial_edge_properties : vec BatchPropertyV1;
+  target : blob;
+  initial_edge_properties : vec AtomicInsertPropertyV1;
 };
-type BatchEndpointV1 = variant {
-  // Ordinal among vertex operations, not the position in the mixed operation array.
-  NewVertexOrdinal : nat32;
-  Existing : blob;
+// Public projection of the durable bulk-load lifecycle. Internal placement and cursors are never
+// exposed through this enum.
+type BulkLoadPublicStateV1 = variant {
+  Failed : record { reason : text };
+  Open;
+  AbortPending;
+  AppendPending;
+  FinalizePending;
+  Completed;
+  Aborted;
 };
-type BatchOperationV1 = variant {
-  Edge : BatchEdgeInsertV1;
-  Vertex : BatchVertexInsertV1;
+// Response to one public bulk-load command.
+type BulkLoadResponse = variant {
+  Started : record { next_chunk_index : nat32 };
+  AbortAccepted : record { state : BulkLoadPublicStateV1 };
+  FinalizeAccepted : record { state : BulkLoadPublicStateV1 };
+  Appended : record { chunk_index : nat32; receipt : AtomicInsertReceiptV1 };
 };
-type BatchPropertyV1 = record { value : blob; property_name : text };
-// Router-owned projection of the Graph-specific durable receipts.
-type BatchReceiptV1 = record {
-  logical_edge_count : nat64;
-  logical_vertex_count : nat64;
-  logical_operation_count : nat64;
-};
-// Versioned public request for Router-owned ordered batch mutation.
-type BatchRequest = variant { V1 : BatchRequestV1 };
-type BatchRequestV1 = record {
-  // Stable idempotency key supplied by the caller; retries must reuse it with identical data.
-  client_mutation_key : text;
-  operations : vec BatchOperationV1;
-  logical_graph_name : text;
-};
-// Public result for one Router batch.
-type BatchResponse = record {
-  status : MutationStatus;
-  // Present after Graph commits the canonical vertex and/or edge operations.
-  receipt : opt BatchReceiptV1;
-};
-type BatchVertexInsertV1 = record {
-  initial_properties : vec BatchPropertyV1;
-  vertex_labels : vec text;
+// Bounded status response for one graph-scoped durable bulk-load job.
+type BulkLoadStatusPage = record {
+  committed_chunk_count : nat32;
+  completed_chunk_count : nat32;
+  state : BulkLoadPublicStateV1;
+  next_receipt_cursor : opt nat32;
+  next_chunk_index : nat32;
+  terminal_at_ns : opt nat64;
+  receipts : vec BulkLoadChunkReceiptV1;
+  expires_at_ns : opt nat64;
 };
 type ClientMutationKey = record {
   graph_id : nat32;
@@ -155,28 +218,6 @@ type Column = record {
   name : text;
   // Language-neutral semantic type of the column.
   "type" : SemanticType;
-};
-// Cursor-based idempotent mutation execution.
-//
-// `instruction_budget` bounds the work done in a single ingress update call. When the Router
-// exhausts this budget it returns `next_index`, allowing the caller to continue with another
-// call. There is no separate `max_items` field: the budget is the only pagination signal.
-type GqlExecuteIdempotentBatchArgs = record {
-  // `None` selects the Router default safety budget below the IC update-call limit.
-  instruction_budget : opt nat64;
-  mutations : vec GqlExecuteIdempotentBatchItem;
-  start_index : nat32;
-};
-// One mutation in a paged bulk idempotent execution request.
-type GqlExecuteIdempotentBatchItem = record {
-  gql_query : text;
-  mutation_key : text;
-  params : blob;
-};
-type GqlExecuteIdempotentBatchResult = record {
-  next_index : opt nat32;
-  instruction_counter : nat64;
-  results : vec GqlQueryResult;
 };
 // Router read-path result: merged row count and optional materialized rows.
 //
@@ -514,14 +555,14 @@ type ResultSchema = record {
   columns : vec Column;
 };
 type Result_1 = variant { Ok : bool; Err : RouterError };
-type Result_10 = variant { Ok : GqlQueryResult; Err : RouterError };
-type Result_11 = variant { Ok : GraphRegistryEntry; Err : RouterError };
-type Result_12 = variant { Ok : GraphHealthView; Err : RouterError };
-type Result_13 = variant { Ok : nat32; Err : RouterError };
-type Result_14 = variant { Ok : IndexSyncStatus; Err : RouterError };
-type Result_15 = variant { Ok : blob; Err : RouterError };
-type Result_16 = variant { Ok : IndexedPropertyCatalog; Err : RouterError };
-type Result_17 = variant { Ok : MutationStatus; Err : RouterError };
+type Result_10 = variant { Ok : nat16; Err : RouterError };
+type Result_11 = variant { Ok : nat32; Err : RouterError };
+type Result_12 = variant { Ok : GraphRegistryEntry; Err : RouterError };
+type Result_13 = variant { Ok : GraphHealthView; Err : RouterError };
+type Result_14 = variant { Ok : nat32; Err : RouterError };
+type Result_15 = variant { Ok : IndexSyncStatus; Err : RouterError };
+type Result_16 = variant { Ok : blob; Err : RouterError };
+type Result_17 = variant { Ok : IndexedPropertyCatalog; Err : RouterError };
 type Result_18 = variant { Ok : ShardRegistryEntry; Err : RouterError };
 type Result_19 = variant { Ok : vec GraphStableMemoryStats; Err : RouterError };
 type Result_2 = variant { Ok : AdvanceBackfillResult; Err : RouterError };
@@ -543,10 +584,7 @@ type Result_24 = variant {
   Err : RouterError;
 };
 type Result_25 = variant { Ok : VectorSlabStats; Err : RouterError };
-type Result_26 = variant {
-  Ok : GqlExecuteIdempotentBatchResult;
-  Err : RouterError;
-};
+type Result_26 = variant { Ok : GqlQueryResult; Err : RouterError };
 type Result_27 = variant { Ok : VertexEmbeddingIngestionResult; Err : text };
 type Result_28 = variant { Ok : vec Result_27; Err : RouterError };
 type Result_29 = variant { Ok : vec BackfillShardStatus; Err : RouterError };
@@ -562,25 +600,26 @@ type Result_34 = variant {
   Ok : vec VectorMaintenancePolicyView;
   Err : RouterError;
 };
-type Result_35 = variant { Ok : text; Err : RouterError };
-type Result_36 = variant { Ok : ProvisionGraphResponse; Err : RouterError };
-type Result_37 = variant { Ok : RouterAckResponse; Err : RouterError };
-type Result_38 = variant { Ok : VectorPartitionHealthStep; Err : RouterError };
-type Result_39 = variant { Ok : VectorSlabStatsStep; Err : RouterError };
+type Result_35 = variant { Ok : MutationStatus; Err : RouterError };
+type Result_36 = variant { Ok : text; Err : RouterError };
+type Result_37 = variant { Ok : ProvisionGraphResponse; Err : RouterError };
+type Result_38 = variant { Ok : RouterAckResponse; Err : RouterError };
+type Result_39 = variant { Ok : VectorPartitionHealthStep; Err : RouterError };
 type Result_4 = variant {
   Ok : VectorMaintenanceStepOutcome;
   Err : RouterError;
 };
-type Result_40 = variant {
+type Result_40 = variant { Ok : VectorSlabStatsStep; Err : RouterError };
+type Result_41 = variant {
   Ok : AdminSweepMutationKeysStepResult;
   Err : RouterError;
 };
-type Result_41 = variant { Ok : VectorSearchResult; Err : RouterError };
+type Result_42 = variant { Ok : VectorSearchResult; Err : RouterError };
 type Result_5 = variant { Ok : VectorRebuildStatus; Err : RouterError };
-type Result_6 = variant { Ok : BatchResponse; Err : RouterError };
-type Result_7 = variant { Ok : VectorCentroidCacheStatus; Err : RouterError };
-type Result_8 = variant { Ok : nat16; Err : RouterError };
-type Result_9 = variant { Ok : nat32; Err : RouterError };
+type Result_6 = variant { Ok : AtomicInsertResponse; Err : RouterError };
+type Result_7 = variant { Ok : BulkLoadResponse; Err : RouterError };
+type Result_8 = variant { Ok : BulkLoadStatusPage; Err : RouterError };
+type Result_9 = variant { Ok : VectorCentroidCacheStatus; Err : RouterError };
 // Response returned by the Router canister `router_ack` callback.
 //
 // A successful response denotes that the Router catalog is durably in `Completed` for this
@@ -599,6 +638,10 @@ type RouterAckResponse = record { accepted_registry_version : nat64 };
 type RouterError = variant {
   Internal : text;
   ShardNotRegistered;
+  // Retryable command contention: the named durable operation must settle before the
+  // requested command can transition. Bulk-load v1 uses the stable operation identifiers
+  // `bulk_load.append` and `bulk_load.abort`.
+  Busy : record { operation : text };
   // The Provision canister sent an ack with a registry version that differs from the
   // version already committed by a previous `Completed` Router record. **Not retryable as
   // written**: investigate the version mismatch before re-issuing.
@@ -1363,58 +1406,54 @@ service : (RouterInitArgs) -> {
   advance_vector_rebuild : (text, nat32, nat32) -> (Result_5);
   // Drive one bounded cleanup/abort teardown step on the activated vector target.
   advance_vector_rebuild_cleanup : (text, nat32, nat32) -> (Result_5);
+  // ADR 0049: classify and execute one order-preserving public atomic insert.
+  atomic_insert : (AtomicInsertRequest) -> (Result_6);
+  // Return the exact durable receipt for an ordered atomic insert.
+  atomic_insert_status : (text, text) -> (Result_6) query;
   // Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
   // attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
   attach_vector_shard : (AdminAttachVectorIndexShardArgs) -> (Result);
-  // ADR 0049: classify and execute one order-preserving public batch.
-  batch_insert : (BatchRequest) -> (Result_6);
+  // Start, append, finalize, or abort one durable graph-scoped bulk-load job (ADR 0057).
+  bulk_load : (BulkLoadCommand) -> (Result_7);
+  // Return a bounded page of committed durable bulk-load chunk receipts (ADR 0057).
+  bulk_load_status : (text, text, opt nat32, nat32) -> (Result_8) query;
   // Verify router registry denormalization invariants (regions 1–5, 15–16). `Ok(())`
   // means consistent; `Err(Internal(detail))` reports the first divergence. Read-only
   // oracle so registry consistency can be checked on demand, including across upgrades.
   check_registry_invariants : () -> (Result) query;
   // Clear the entire heap centroid cache on the graph's vector target.
-  clear_vector_centroid_cache : (text) -> (Result_7);
+  clear_vector_centroid_cache : (text) -> (Result_9);
   // Delete the maintenance policy for one vector index (DDL admin). Returns whether one existed.
   delete_vector_maintenance_policy : (text, nat32) -> (Result_1);
   // Disable (but keep) the maintenance policy for one vector index (DDL admin).
   disable_vector_maintenance_policy : (text, nat32) -> (Result);
   // Remove one named prepared operation.
   drop_prepared : (text) -> (Result);
-  ensure_edge_label : (text, text) -> (Result_8);
-  ensure_property : (text, text) -> (Result_9);
-  ensure_vertex_label : (text, text) -> (Result_8);
-  // Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
-  execute_prepared : (text, blob, opt vec PreparedSortSpec, ReadMode) -> (
-      Result_10,
-    ) composite_query;
-  // Idempotent prepared update. Returns the richer
-  // [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
-  // federated mutation lifecycle `phase`.
-  execute_prepared_update : (text, blob, text) -> (Result_10);
-  get_graph : (text) -> (Result_11) query;
+  ensure_edge_label : (text, text) -> (Result_10);
+  ensure_property : (text, text) -> (Result_11);
+  ensure_vertex_label : (text, text) -> (Result_10);
+  get_graph : (text) -> (Result_12) query;
   // Best-effort graph-level operational snapshot (ADR 0056 §7): shard reachability, index-sync
   // convergence, and vector-index health summary. Composite query: probes every shard's index-sync
   // status (reachability + convergence) and summarizes vector-index health. Per-shard and physical
   // detail stay at L3; failures are reported in `notes`, not as errors.
-  get_graph_health : (text) -> (Result_12) composite_query;
-  get_graph_id : (text) -> (Result_13) query;
+  get_graph_health : (text) -> (Result_13) composite_query;
+  get_graph_id : (text) -> (Result_14) query;
   // Graph-index convergence snapshot for one graph shard (`Role::Admin`). Poll
   // `converged` before dispatching index-dependent waves; the backfill steps repair
   // convergence when it stalls.
-  get_graph_sync_status : (AdminIndexSyncStatusArgs) -> (Result_14);
-  get_id_encoding_key : (text) -> (Result_15) query;
+  get_graph_sync_status : (AdminIndexSyncStatusArgs) -> (Result_15);
+  get_id_encoding_key : (text) -> (Result_16) query;
   // Router-sourced snapshot of which properties are indexed for a graph (ADR 0023
   // D1/D3/P2). Graph shards consult this ephemerally per operation — including the
   // async maintenance tick that re-keys postings after compaction — so they never
   // persist derived index state across the upgrade boundary.
-  get_indexed_property_catalog : (text) -> (Result_16) query;
-  // ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
-  get_mutation_status : (text, text) -> (Result_17) query;
+  get_indexed_property_catalog : (text) -> (Result_17) query;
   get_shard : (text, nat32) -> (Result_18) query;
   // Admin-only physical stable-memory inventory for every shard in a graph.
   get_stable_memory_stats : (text) -> (Result_19) composite_query;
   // Heap centroid cache status, forwarded to the graph's vector target.
-  get_vector_centroid_cache : (text) -> (Result_7) composite_query;
+  get_vector_centroid_cache : (text) -> (Result_9) composite_query;
   // Read the global vector-dispatch activation flag (ADR 0031 Slice 4).
   get_vector_dispatch_enabled : () -> (bool) query;
   // Report a vector index's activation state and, while fail-closed, the blocking reason
@@ -1438,17 +1477,11 @@ service : (RouterInitArgs) -> {
   // Returns the richer [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) so
   // clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
   // durable canonical commit from full cross-canister projection convergence.
-  gql_execute : (text, blob, text) -> (Result_10);
-  // Execute cursor-based idempotent mutations until the Router instruction budget is reached.
-  //
-  // Mutations are prepared and executed sequentially within one ingress. A returned `next_index`
-  // is the only continuation signal; retrying the same cursor is safe because every item retains
-  // its original client mutation key.
-  gql_execute_batch : (GqlExecuteIdempotentBatchArgs) -> (Result_26);
+  gql_mutate : (text, blob, text) -> (Result_26);
   // Read-only GQL: composite query (calls index + graph query endpoints) with an explicit
   // ADR 0029 §5 read-consistency contract. `Eventual` is the default contract; `AtLeast(token)`
   // enforces a retryable read-your-writes barrier against the token's per-shard watermarks.
-  gql_query : (text, blob, ReadMode) -> (Result_10) composite_query;
+  gql_query : (text, blob, ReadMode) -> (Result_26) composite_query;
   grant_role : (GrantRoleArgs) -> (Result);
   index_edge_property : (text, text, text) -> (Result);
   index_vertex_property : (text, text, text) -> (Result);
@@ -1470,18 +1503,28 @@ service : (RouterInitArgs) -> {
   list_vector_indexes : (text) -> (Result_33) query;
   // All maintenance policies in a graph.
   list_vector_maintenance_policies : (text) -> (Result_34) query;
-  lookup_edge_label_id : (text, text) -> (Result_8) query;
-  lookup_property_id : (text, text) -> (Result_13) query;
-  lookup_vertex_label_id : (text, text) -> (Result_8) query;
-  my_role : () -> (Result_35) query;
+  lookup_edge_label_id : (text, text) -> (Result_10) query;
+  lookup_property_id : (text, text) -> (Result_14) query;
+  lookup_vertex_label_id : (text, text) -> (Result_10) query;
+  // ADR 0029 Phase 4: pull-based status of a GQL/prepared mutation for the calling principal.
+  mutation_status : (text, text) -> (Result_35) query;
+  my_role : () -> (Result_36) query;
   // Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
   prepare : (text, text, opt PreparedOperation) -> (Result);
+  // Idempotent prepared update. Returns the richer
+  // [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
+  // federated mutation lifecycle `phase`.
+  prepared_mutate : (text, blob, text) -> (Result_26);
+  // Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
+  prepared_query : (text, blob, opt vec PreparedSortSpec, ReadMode) -> (
+      Result_26,
+    ) composite_query;
   // **Internal seam (ADR 0056 §6 Slice A): not a client API.** Sends a provisioning envelope to
   // the configured Provision canister and records the `RouterProvisioningRequest`. `register_graph`
   // is the public graph-creation surface; this endpoint is superseded by the `register_graph`
   // provisioning fold in Slice B and is retained only so the `adr0035` outbound/ack E2E coverage
   // keeps running. Admin-only.
-  provision_graph : (ProvisionGraphArgs) -> (Result_36);
+  provision_graph : (ProvisionGraphArgs) -> (Result_37);
   // Publish a `ReadyToPublish` rebuild on the activated vector target.
   publish_vector_rebuild : (text, nat32) -> (Result);
   // Intent-based graph creation (ADR 0056 §6 Slice A): dev mode registers the graph and its
@@ -1494,19 +1537,19 @@ service : (RouterInitArgs) -> {
   // Reset the maintenance execution state to `Idle` (incl. `Failed`) on the activated vector target.
   // Does not abort an in-flight rebuild (use `abort_vector_rebuild`) or change Router policy.
   reset_vector_maintenance : (text, nat32) -> (Result);
-  reverse_edge_label_name : (text, nat16) -> (Result_35) query;
-  reverse_property_name : (text, nat32) -> (Result_35) query;
-  reverse_vertex_label_name : (text, nat16) -> (Result_35) query;
+  reverse_edge_label_name : (text, nat16) -> (Result_36) query;
+  reverse_property_name : (text, nat32) -> (Result_36) query;
+  reverse_vertex_label_name : (text, nat16) -> (Result_36) query;
   // Internal callback: the configured Provision canister acknowledges a completed
   // provisioning job and asks the Router to commit the terminal catalog state.
-  router_ack : (RouterProvisionAck) -> (Result_37);
+  router_ack : (RouterProvisionAck) -> (Result_38);
   // Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
   scan_partition_health : (text, nat32, opt blob, nat32) -> (
-      Result_38,
+      Result_39,
     ) composite_query;
   // Cursor/budgeted slab-stats scan step, forwarded to the graph's vector target.
   scan_slab_stats : (text, opt blob, nat32, opt nat32) -> (
-      Result_39,
+      Result_40,
     ) composite_query;
   // Flip the global vector-dispatch activation flag (ADR 0031 Slice 4; Admin only). `false` keeps
   // production dispatch/backfill fail-closed across all graphs. Reversible.
@@ -1520,7 +1563,7 @@ service : (RouterInitArgs) -> {
   start_vector_rebuild : (text, nat32, nat32, nat32) -> (Result);
   // Evict expired client-mutation idempotency records in a bounded, paginated pass.
   // Call repeatedly, feeding `next_cursor` back as `start_after`, until `done`.
-  sweep_expired_mutation_keys : (AdminSweepMutationKeysStepArgs) -> (Result_40);
+  sweep_expired_mutation_keys : (AdminSweepMutationKeysStepArgs) -> (Result_41);
   unregister_graph : (text) -> (Result);
   unregister_shard : (text, nat32) -> (Result);
   update_graph_status : (text, GraphStatus, nat64) -> (Result);
@@ -1528,8 +1571,8 @@ service : (RouterInitArgs) -> {
   // and forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
   // Slice 4 activation gate is satisfied. `query` is the encoded F32 vector (dims are inferred from
   // the registered index definition).
-  vector_search : (text, text, blob, nat32) -> (Result_41) composite_query;
+  vector_search : (text, text, blob, nat32) -> (Result_42) composite_query;
   // Warm the heap centroid cache on the activated vector target.
-  warm_vector_centroid_cache : (text, nat32) -> (Result_7);
+  warm_vector_centroid_cache : (text, nat32) -> (Result_9);
   whoami : () -> (principal) query;
 }

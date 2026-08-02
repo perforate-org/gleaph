@@ -14,16 +14,14 @@ use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog,
-    PostingHit, ValuePostingCount,
+    IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PostingHit,
+    ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanBatchMode, ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args,
-    ExecutePlanResult, ExecutePlanSharedV2Op, GetMutationJournalEntriesArgs, GqlExecutionMode,
-    GqlQueryResult, GraphMutationJournalEntryWire, GraphOrderedVertexBatchResult,
-    GraphOrderedVertexBatchResultV1, MutationId, MutationJournalState, MutationLifecyclePhase,
-    MutationToken, MutationTokenShard, ReadMode, ResolvedLabelTable, ResolvedPropertyTable,
-    ResolvedSearchWire, SeedBindingsWire, SeedRowWire, SeedVertexBinding, ShardEventSeq,
+    ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
+    GraphMutationJournalEntryWire, GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1,
+    MutationId, MutationJournalState, MutationToken, MutationTokenShard, ReadMode,
+    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, ShardEventSeq,
     UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
@@ -46,11 +44,9 @@ fn log_router_dispatch_phase(_phase: &str, _cost: u64) {}
 #[cfg(feature = "batch-instr-log")]
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct SeedResolutionMetrics {
-    per_item_anchor_set: u64,
     cache_lookup_clone: u64,
     remote_index_await: u64,
     anchor_intersection: u64,
-    seed_row_build: u64,
     cache_hits: u64,
     cache_misses: u64,
 }
@@ -71,19 +67,6 @@ fn log_router_preflight(kind: &str, cost: u64) {
 #[allow(dead_code)]
 #[inline]
 fn log_router_preflight(_kind: &str, _cost: u64) {}
-
-#[cfg(feature = "batch-instr-log")]
-fn log_router_typed_batch_decision(decision: &str, reason: &str) {
-    crate::instr_log::push(format!(
-        "GLEAPH_ROUTER_TYPED_BATCH decision={} reason={}",
-        decision, reason
-    ));
-}
-
-#[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
-#[inline]
-fn log_router_typed_batch_decision(_decision: &str, _reason: &str) {}
 
 #[cfg(feature = "batch-instr-log")]
 struct PrepareInstrLogger {
@@ -174,8 +157,7 @@ use crate::federation::{
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_ordered_edge_batch_on_graph,
     execute_ordered_mixed_batch_on_graph, execute_ordered_vertex_batch_on_graph,
-    execute_plan_batch_on_graph, execute_plan_batch_shared_v2_on_graph,
-    execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
+    execute_plan_batch_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
     get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
     read_unique_effect_proof, read_unique_release_effects, retire_ordered_mixed_mutation_on_graph,
     retire_ordered_mutation_on_graph, retire_ordered_vertex_mutation_on_graph,
@@ -189,8 +171,6 @@ use crate::state::RouterError;
 
 pub(crate) type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
 
-/// Per-canister bulk dispatch result: (dispatch_index_in_group, item_index, result).
-pub(crate) type ItemDispatchResult = (usize, usize, Result<ExecutePlanResult, String>);
 pub(crate) const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
 
 /// Cached plan/plan-blob for a concrete `(caller, graph, query)` shape.
@@ -204,7 +184,7 @@ pub(crate) struct CachedPlanDispatch {
     plan_blob: Vec<u8>,
 }
 
-/// Preflight context shared across one `gql_execute_idempotent_batch` ingress.
+/// Preflight context shared across one internal GQL plan-batch ingress.
 ///
 /// Holds coalesced inter-canister lookup results so that N mutations referencing the same
 /// seed anchor or shard do not issue N identical Router→Graph/Index calls during planning.
@@ -239,18 +219,6 @@ pub(crate) struct PreflightContext {
 }
 
 impl PreflightContext {
-    pub(crate) fn new() -> Self {
-        Self {
-            anchor_hits: Rc::new(RefCell::new(HashMap::new())),
-            journal_entries: Rc::new(RefCell::new(HashMap::new())),
-            pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())),
-            plan_cache: Rc::new(RefCell::new(HashMap::new())),
-            resolved_labels: Rc::new(RefCell::new(HashMap::new())),
-            resolved_properties: Rc::new(RefCell::new(HashMap::new())),
-            graph_catalog: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
     /// Return a cached dispatch and plan blob for the given query shape.
     pub(crate) fn get_cached_plan(
         &self,
@@ -794,285 +762,6 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     }
 }
 
-/// Lazily materializable complete-row seed relation for one target shard.
-///
-/// The domains are retained, while Cartesian-product rows are generated only for the chunk
-/// currently being sent to Graph. This keeps the Router heap proportional to the request being
-/// built instead of proportional to the full candidate relation.
-pub(crate) struct CompleteRowSeedRelation {
-    variable_domains: Vec<(String, Vec<u32>)>,
-}
-
-impl CompleteRowSeedRelation {
-    fn row_count(&self) -> Result<usize, RouterError> {
-        self.variable_domains
-            .iter()
-            .try_fold(1usize, |total, (_, domain)| {
-                total.checked_mul(domain.len()).ok_or_else(|| {
-                    RouterError::InvalidArgument("multi-variable seed product size overflow".into())
-                })
-            })
-    }
-
-    pub(crate) fn rows(
-        &self,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<SeedRowWire>, RouterError> {
-        let total = self.row_count()?;
-        let end = offset.saturating_add(limit).min(total);
-        let mut rows = Vec::with_capacity(end.saturating_sub(offset));
-        for mut ordinal in offset..end {
-            let mut bindings = Vec::with_capacity(self.variable_domains.len());
-            for (variable, domain) in self.variable_domains.iter().rev() {
-                let index = ordinal % domain.len();
-                ordinal /= domain.len();
-                bindings.push(SeedVertexBinding {
-                    variable: variable.clone(),
-                    local_vertex_id: domain[index],
-                    required_vertex_label_ids: Vec::new(),
-                });
-            }
-            bindings.reverse();
-            rows.push(SeedRowWire {
-                vertex_bindings: bindings,
-                float64_bindings: Vec::new(),
-            });
-        }
-        Ok(rows)
-    }
-}
-
-/// Resolve a selective [`SeedAnchorSet`] into a lazily materializable complete-row seed relation.
-/// Single-variable seeds produce one row per local vertex id; multi-variable seeds intersect each
-/// variable's anchors on the shard and retain the domains for lazy Cartesian-product expansion.
-/// Empty domains are represented as a complete empty row set so Graph can skip the read prefix
-/// while preserving the item ordinal.
-pub(crate) async fn resolve_complete_row_seed_relation<I: IndexLookup + ?Sized>(
-    index: &I,
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    store: &RouterStore,
-    stats: &RouterGraphStats,
-    shard_id: ShardId,
-    preflight: Option<&PreflightContext>,
-    metrics: &mut SeedResolutionMetrics,
-) -> Result<Option<CompleteRowSeedRelation>, RouterError> {
-    #[cfg(feature = "batch-instr-log")]
-    let anchor_set_start = crate::current_instruction_counter();
-
-    let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
-        Some(set) if set.is_selective_complete_row_seed() => set,
-        _ => return Ok(None),
-    };
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        metrics.per_item_anchor_set +=
-            crate::current_instruction_counter().saturating_sub(anchor_set_start);
-    }
-
-    // Multi-variable fast path: when every variable is bound by exactly one equality `Equal`
-    // anchor, resolve all anchors in a single batched index call instead of one `lookup_equal`
-    // round trip per variable. The seed anchors (e.g. `MATCH (a {..}), (b {..})` feed edges) are
-    // distinct values per item, so the preflight cache would not hit anyway.
-    if set.variables.len() >= 2
-        && set
-            .variables
-            .iter()
-            .all(|var| matches!(var.anchors.as_slice(), [IndexAnchor::Equal(_)]))
-    {
-        let specs: Vec<IndexEqualSpec> = set
-            .variables
-            .iter()
-            .map(|var| {
-                let IndexAnchor::Equal(probe) = &var.anchors[0] else {
-                    unreachable!("filtered above")
-                };
-                IndexEqualSpec::vertex(probe.property_id, probe.payload_bytes.clone())
-            })
-            .collect();
-        let hit_lists = index
-            .lookup_equal_batch(specs)
-            .await
-            .map_err(RouterError::InvalidArgument)?;
-        return Ok(Some(relation_from_variable_hits(&set, hit_lists)?));
-    }
-
-    if set.variables.len() == 1 {
-        let var = &set.variables[0];
-
-        let hits =
-            resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight, metrics)
-                .await
-                .map_err(RouterError::InvalidArgument)?;
-
-        #[cfg(feature = "batch-instr-log")]
-        let row_build_start = crate::current_instruction_counter();
-
-        let ids = hits_to_local_vertex_ids(hits)?;
-
-        #[cfg(feature = "batch-instr-log")]
-        {
-            metrics.seed_row_build +=
-                crate::current_instruction_counter().saturating_sub(row_build_start);
-        }
-
-        return Ok(Some(CompleteRowSeedRelation {
-            variable_domains: vec![(var.variable.clone(), ids)],
-        }));
-    }
-
-    let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
-    for var in &set.variables {
-        let hits =
-            resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight, metrics)
-                .await
-                .map_err(RouterError::InvalidArgument)?;
-        let ids = hits_to_local_vertex_ids(hits)?;
-        if ids.is_empty() {
-            return Ok(Some(CompleteRowSeedRelation {
-                variable_domains: vec![(var.variable.clone(), Vec::new())],
-            }));
-        }
-        variable_domains.push((var.variable.clone(), ids));
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    let intersection_start = crate::current_instruction_counter();
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        metrics.anchor_intersection +=
-            crate::current_instruction_counter().saturating_sub(intersection_start);
-    }
-
-    Ok(Some(CompleteRowSeedRelation { variable_domains }))
-}
-
-/// Build a complete-row seed relation from one hit list per seed variable (in variable order),
-/// converting postings to local vertex ids and short-circuiting on the first empty domain.
-fn relation_from_variable_hits(
-    set: &SeedAnchorSet,
-    hit_lists: Vec<Vec<PostingHit>>,
-) -> Result<CompleteRowSeedRelation, RouterError> {
-    let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
-    for (var, hits) in set.variables.iter().zip(hit_lists) {
-        let ids = hits_to_local_vertex_ids(SeedHits::Vertices(hits))?;
-        if ids.is_empty() {
-            // Empty domain short-circuits the Cartesian product to an empty row set while
-            // preserving the item ordinal for Graph.
-            return Ok(CompleteRowSeedRelation {
-                variable_domains: vec![(var.variable.clone(), Vec::new())],
-            });
-        }
-        variable_domains.push((var.variable.clone(), ids));
-    }
-    Ok(CompleteRowSeedRelation { variable_domains })
-}
-
-/// Extract one vertex `Equal` spec per variable when every variable is bound by exactly one
-/// equality anchor — the shape eligible for the cross-item batched fast path below.
-fn complete_row_equal_specs(set: &SeedAnchorSet) -> Option<Vec<IndexEqualSpec>> {
-    let mut specs = Vec::with_capacity(set.variables.len());
-    for var in &set.variables {
-        let [IndexAnchor::Equal(probe)] = var.anchors.as_slice() else {
-            return None;
-        };
-        specs.push(IndexEqualSpec::vertex(
-            probe.property_id,
-            probe.payload_bytes.clone(),
-        ));
-    }
-    Some(specs)
-}
-
-/// Resolve a complete-row seed relation for every item of a typed V1 bulk group, in item order.
-///
-/// When every item binds each seed variable with exactly one `Equal` vertex anchor (the seed
-/// shapes of the social demo, e.g. `MATCH (a:Post {demo_id: $a}), (b:User {user_id: $b})`), all
-/// anchors of all items are resolved through batched `lookup_equal_batch` requests (chunked to the
-/// inter-canister payload limit by the index client) instead of one round trip per item. Any item
-/// that does not qualify falls back to per-item resolution, preserving
-/// [`resolve_complete_row_seed_relation`]'s `Ok(None)` contract for non-selective seeds so the
-/// caller can reject the group exactly as before.
-pub(crate) async fn resolve_complete_row_seed_relations<I: IndexLookup + ?Sized>(
-    index: &I,
-    plans: &[PhysicalPlan],
-    item_params: &[(Vec<u8>, BTreeMap<String, gleaph_gql::Value>)],
-    store: &RouterStore,
-    stats: &RouterGraphStats,
-    shard_id: ShardId,
-    preflight: Option<&PreflightContext>,
-    metrics: &mut SeedResolutionMetrics,
-) -> Result<Vec<Option<CompleteRowSeedRelation>>, RouterError> {
-    let mut anchor_sets: Vec<Option<SeedAnchorSet>> = Vec::with_capacity(item_params.len());
-    let mut all_specs: Vec<IndexEqualSpec> = Vec::new();
-    let mut batchable = true;
-    for (_, pmap) in item_params {
-        let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
-            Some(set) if set.is_selective_complete_row_seed() => set,
-            _ => {
-                batchable = false;
-                break;
-            }
-        };
-        match complete_row_equal_specs(&set) {
-            Some(specs) => all_specs.extend(specs),
-            None => {
-                batchable = false;
-                break;
-            }
-        }
-        anchor_sets.push(Some(set));
-    }
-    if !batchable {
-        let mut out = Vec::with_capacity(item_params.len());
-        for (_, pmap) in item_params {
-            out.push(
-                resolve_complete_row_seed_relation(
-                    index, plans, pmap, store, stats, shard_id, preflight, metrics,
-                )
-                .await?,
-            );
-        }
-        return Ok(out);
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    let batch_start = crate::current_instruction_counter();
-
-    let hit_lists = index
-        .lookup_equal_batch(all_specs)
-        .await
-        .map_err(RouterError::InvalidArgument)?;
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        metrics.remote_index_await +=
-            crate::current_instruction_counter().saturating_sub(batch_start);
-    }
-
-    let mut out = Vec::with_capacity(item_params.len());
-    let mut cursor = 0usize;
-    for set in anchor_sets.into_iter().flatten() {
-        let count = set.variables.len();
-        let per_variable: Vec<Vec<PostingHit>> = hit_lists[cursor..cursor + count].to_vec();
-        cursor += count;
-        out.push(Some(relation_from_variable_hits(&set, per_variable)?));
-    }
-    Ok(out)
-}
-
-fn hits_to_local_vertex_ids(hits: SeedHits) -> Result<Vec<u32>, RouterError> {
-    match hits {
-        SeedHits::Vertices(hits) => Ok(hits.into_iter().map(|h| h.vertex_id).collect()),
-        SeedHits::Edges(_) => Err(RouterError::InvalidArgument(
-            "edge anchor not supported in multi-variable seed relation".into(),
-        )),
-    }
-}
-
 async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
     ctx: &PreflightContext,
     index: &I,
@@ -1297,34 +986,34 @@ pub async fn gql_execute_idempotent(
     gql_execute_idempotent_with_batch(query, params, client_mutation_key).await
 }
 
-/// Classify and execute one public Router batch through the existing durable ordered paths.
-pub(crate) async fn batch_public(
-    request: crate::types::BatchRequest,
-) -> Result<crate::types::BatchResponse, RouterError> {
+/// Classify and execute one public Router atomic insert through the existing durable ordered paths.
+pub(crate) async fn atomic_insert_public(
+    request: crate::types::AtomicInsertRequest,
+) -> Result<crate::types::AtomicInsertResponse, RouterError> {
     let (request, public_fingerprint) = request
         .into_classified()
         .map_err(RouterError::InvalidArgument)?;
     match request {
-        crate::types::ClassifiedBatchRequest::Edge(request) => {
+        crate::types::ClassifiedAtomicInsertRequest::Edge(request) => {
             execute_ordered_edge_batch_classified(request, public_fingerprint).await
         }
-        crate::types::ClassifiedBatchRequest::Vertex(request) => {
+        crate::types::ClassifiedAtomicInsertRequest::Vertex(request) => {
             execute_ordered_vertex_batch_classified(request, public_fingerprint).await
         }
-        crate::types::ClassifiedBatchRequest::Mixed(request) => {
+        crate::types::ClassifiedAtomicInsertRequest::Mixed(request) => {
             execute_ordered_mixed_batch_classified(request, public_fingerprint).await
         }
     }
 }
 
-/// Admit and execute one classified ordered edge batch (ADR 0049).
+/// Admit and execute one classified ordered edge atomic insert (ADR 0049).
 ///
 /// V1 requires one existing catalog vocabulary. Router derives the target Graph shard from the
 /// encoded endpoints; the public request does not expose physical routing state.
 async fn execute_ordered_edge_batch_classified(
     request: crate::types::OrderedEdgeBatchRequest,
     public_fingerprint: [u8; 32],
-) -> Result<crate::types::BatchResponse, RouterError> {
+) -> Result<crate::types::AtomicInsertResponse, RouterError> {
     let caller = msg_caller();
     let public_item_count = match &request {
         crate::types::OrderedEdgeBatchRequest::V1(request) => request.items.len() as u32,
@@ -1408,7 +1097,12 @@ async fn execute_ordered_edge_batch_classified(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::BatchResponse::from_record(&record));
+        return Ok(
+            crate::types::AtomicInsertResponse::from_record_with_encoding_key(
+                &record,
+                &encoding_key,
+            ),
+        );
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1556,17 +1250,17 @@ async fn execute_ordered_edge_batch_classified(
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)
         .ok_or_else(|| RouterError::Internal("ordered mutation record disappeared".into()))?;
-    Ok(crate::types::BatchResponse::from_record(&record))
+    Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
 
-/// Admit and execute one public ordered vertex batch (ADR 0049).
+/// Admit and execute one public ordered vertex atomic insert (ADR 0049).
 ///
 /// V1 selects the graph's latest live shard, following ADR 0029's placement authority. The public
 /// request does not expose the physical shard id; Router resolves it before the Graph call.
 async fn execute_ordered_vertex_batch_classified(
     request: crate::types::OrderedVertexBatchRequest,
     public_fingerprint: [u8; 32],
-) -> Result<crate::types::BatchResponse, RouterError> {
+) -> Result<crate::types::AtomicInsertResponse, RouterError> {
     let caller = msg_caller();
     let (client_key, logical_graph_name, label_names, property_names) = match &request {
         crate::types::OrderedVertexBatchRequest::V1(request) => (
@@ -1593,6 +1287,7 @@ async fn execute_ordered_vertex_batch_classified(
     };
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let target =
         crate::federation::latest_shard_routing(&store.list_live_shards_for_graph_id(graph_id)?)?
             .into_iter()
@@ -1638,7 +1333,12 @@ async fn execute_ordered_vertex_batch_classified(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::BatchResponse::from_record(&record));
+        return Ok(
+            crate::types::AtomicInsertResponse::from_record_with_encoding_key(
+                &record,
+                &encoding_key,
+            ),
+        );
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1787,16 +1487,16 @@ async fn execute_ordered_vertex_batch_classified(
         .ok_or_else(|| {
             RouterError::Internal("ordered vertex mutation record disappeared".into())
         })?;
-    Ok(crate::types::BatchResponse::from_record(&record))
+    Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
 
-/// Admit one mixed ordered batch and persist its Graph canonical receipt. This entry point stops
+/// Admit one mixed ordered atomic insert and persist its Graph canonical receipt. This entry point stops
 /// at `CanonicalCommitted`; projection and retirement are intentionally represented as
 /// non-terminal durable progress for the following lifecycle slice.
 async fn execute_ordered_mixed_batch_classified(
     request: crate::types::OrderedMixedBatchRequest,
     public_fingerprint: [u8; 32],
-) -> Result<crate::types::BatchResponse, RouterError> {
+) -> Result<crate::types::AtomicInsertResponse, RouterError> {
     let caller = msg_caller();
     let (
         client_key,
@@ -1812,7 +1512,9 @@ async fn execute_ordered_mixed_batch_classified(
             let public_vertex_count = request
                 .operations
                 .iter()
-                .filter(|operation| matches!(operation, crate::types::BatchOperationV1::Vertex(_)))
+                .filter(|operation| {
+                    matches!(operation, crate::types::AtomicInsertOperationV1::Vertex(_))
+                })
                 .count() as u32;
             let public_operation_count = request.operations.len() as u32;
             (
@@ -1825,28 +1527,32 @@ async fn execute_ordered_mixed_batch_classified(
                     .operations
                     .iter()
                     .flat_map(|operation| match operation {
-                        crate::types::BatchOperationV1::Vertex(item) => item.vertex_labels.clone(),
-                        crate::types::BatchOperationV1::Edge(_) => Vec::new(),
+                        crate::types::AtomicInsertOperationV1::Vertex(item) => {
+                            item.vertex_labels.clone()
+                        }
+                        crate::types::AtomicInsertOperationV1::Edge(_) => Vec::new(),
                     })
                     .collect::<Vec<_>>(),
                 request
                     .operations
                     .iter()
                     .filter_map(|operation| match operation {
-                        crate::types::BatchOperationV1::Vertex(_) => None,
-                        crate::types::BatchOperationV1::Edge(item) => item.edge_label_name.clone(),
+                        crate::types::AtomicInsertOperationV1::Vertex(_) => None,
+                        crate::types::AtomicInsertOperationV1::Edge(item) => {
+                            item.edge_label_name.clone()
+                        }
                     })
                     .collect::<Vec<_>>(),
                 request
                     .operations
                     .iter()
                     .flat_map(|operation| match operation {
-                        crate::types::BatchOperationV1::Vertex(item) => item
+                        crate::types::AtomicInsertOperationV1::Vertex(item) => item
                             .initial_properties
                             .iter()
                             .map(|property| property.property_name.clone())
                             .collect::<Vec<_>>(),
-                        crate::types::BatchOperationV1::Edge(item) => item
+                        crate::types::AtomicInsertOperationV1::Edge(item) => item
                             .initial_edge_properties
                             .iter()
                             .map(|property| property.property_name.clone())
@@ -1917,7 +1623,12 @@ async fn execute_ordered_mixed_batch_classified(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::BatchResponse::from_record(&record));
+        return Ok(
+            crate::types::AtomicInsertResponse::from_record_with_encoding_key(
+                &record,
+                &encoding_key,
+            ),
+        );
     }
     let mutation_id = reservation.mutation_id;
     let target = RouterOrderedMixedBatchTargetV1 {
@@ -2064,7 +1775,7 @@ async fn execute_ordered_mixed_batch_classified(
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)
         .ok_or_else(|| RouterError::Internal("ordered mixed mutation record disappeared".into()))?;
-    Ok(crate::types::BatchResponse::from_record(&record))
+    Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
 
 pub(crate) async fn gql_execute_idempotent_with_batch(
@@ -2087,7 +1798,7 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
         &query,
         &params,
         GqlExecutionMode::Update,
-        "gql_execute",
+        "gql_mutate",
         false,
         Some(&client_mutation_key),
         ReadMode::Eventual,
@@ -3640,379 +3351,6 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     )))
 }
 
-/// ADR 0044 bulk group path. Plans the first item, prepares one shared mutation, and dispatches
-/// all items under a single `mutation_id`. Returns one `GqlQueryResult` per input item, an
-/// unsupported result when the caller should execute items sequentially, or an oversized-shared
-/// result when the caller should retry a smaller homogeneous subgroup.
-pub(crate) enum BulkGroupExecution {
-    Applied(Vec<GqlQueryResult>),
-    Unsupported,
-    SharedRequestTooLarge,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_bulk_group(
-    caller: Principal,
-    group_key: &str,
-    items: &[crate::types::GqlExecuteIdempotentBatchItem],
-    mode: GqlExecutionMode,
-    preflight: Option<&PreflightContext>,
-) -> Result<BulkGroupExecution, RouterError> {
-    if items.len() < 2 {
-        return Ok(BulkGroupExecution::Unsupported);
-    }
-
-    let first = &items[0];
-    let plan_result =
-        plan_simple_query_for_bulk(caller, &first.gql_query, &first.params, mode, preflight)
-            .await?;
-    let (graph_id, plan_blob, plans, base_pmap) = match plan_result {
-        Some(r) => r,
-        None => return Ok(BulkGroupExecution::Unsupported),
-    };
-
-    let store = RouterStore::new();
-    let stats = graph_stats_for(graph_id);
-
-    let mut extra_items = Vec::with_capacity(items.len() - 1);
-    for item in &items[1..] {
-        let pmap = decode_gql_params_blob(&item.params)
-            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        extra_items.push(crate::batch_wave::BulkGroupItem {
-            params: item.params.clone(),
-            pmap,
-        });
-    }
-
-    // ADR 0047: durable ordered replay requires a fingerprint over every item's params in order.
-    // Reserve the group mutation id before preparation so the same ordered group aliases correctly
-    // on retry.
-    let group_params: Vec<Vec<u8>> = std::iter::once(first.params.clone())
-        .chain(extra_items.iter().map(|item| item.params.clone()))
-        .collect();
-    let group_fingerprint = bulk_group_fingerprint(&plan_blob, mode, &group_params);
-    let group_reservation =
-        store.reserve_mutation_id_for_client_key(caller, graph_id, group_key, group_fingerprint)?;
-
-    // A compacted typed record retains ordered per-operation cardinalities so an idempotent retry
-    // reproduces the original batch result rather than repeating the aggregate for every item.
-    if let Some(existing_record) = store.router_mutation_record(caller, graph_id, group_key)
-        && let Some(operation_row_counts) = existing_record.completed_bulk_operation_row_counts()
-    {
-        return completed_typed_bulk_results(operation_row_counts, items.len())
-            .map(BulkGroupExecution::Applied);
-    }
-
-    // ADR 0047: if a durable typed seed bulk record already exists for this exact ordered group,
-    // redispatch it directly from stable replay state without re-planning or re-resolving seeds.
-    if let Some(existing_record) = store.router_mutation_record(caller, graph_id, group_key)
-        && let crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(replay) =
-            existing_record.payload()
-        && !existing_record.is_terminal()
-    {
-        if group_reservation.routing_owner {
-            store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
-        }
-        let (item_results, token) =
-            execute_typed_bulk_replay(replay, &store, caller, graph_id, group_key, preflight, None)
-                .await?;
-        let shared_phase = store
-            .router_mutation_record(caller, graph_id, group_key)
-            .map(|record| record.lifecycle_phase());
-        let mut out = Vec::with_capacity(items.len());
-        for result in item_results {
-            let gql_result = GqlQueryResult {
-                row_count: result.row_count,
-                rows_blob: None,
-                phase: shared_phase,
-                token: token.clone(),
-            };
-            out.push(attach_mutation_token(gql_result, token.clone()));
-        }
-        return Ok(BulkGroupExecution::Applied(out));
-    }
-
-    // Selective complete-row seeds require per-item routing and cannot use the shared-seed
-    // envelope. The typed V1 attempt below either applies them or rejects; on rejection the caller
-    // executes each item sequentially through its own scalar idempotency record.
-    let prepared = prepare_single_mutation(
-        graph_id,
-        &plan_blob,
-        &plans,
-        &base_pmap,
-        &first.params,
-        mode,
-        Some(group_key),
-        &store,
-        caller,
-        &stats,
-        None,
-        preflight,
-        Some(group_reservation),
-    )
-    .await?;
-
-    let base = match prepared {
-        PrepareOutcome::Early(result) => {
-            // The whole group is already durable (or requires no Graph dispatch).
-            // Return the same result for every input item, preserving order.
-            return Ok(BulkGroupExecution::Applied(vec![result; items.len()]));
-        }
-        PrepareOutcome::Prepared(p) => *p,
-    };
-
-    let group = crate::batch_wave::PreparedBulkGroup { base, extra_items };
-
-    // Bulk path is only safe when no uniqueness or constrained-property effects are active.
-    if group
-        .base
-        .unique_claims
-        .as_ref()
-        .is_some_and(|v| !v.is_empty())
-        || group
-            .base
-            .constrained_properties
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-        || group
-            .base
-            .local_unique_claims
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-        || group
-            .base
-            .local_constrained_properties
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-    {
-        release_routing_if_owner(
-            &store,
-            caller,
-            graph_id,
-            Some(group_key),
-            group
-                .base
-                .mutation_id
-                .map(|mid| crate::facade::store::ClientMutationReservation {
-                    mutation_id: mid,
-                    routing_owner: true,
-                }),
-        )?;
-        return Ok(BulkGroupExecution::Unsupported);
-    }
-
-    // Try the unified bulk path first; it returns None if eligibility is not met. The Graph
-    // re-validates every bulk envelope fail-closed, so no Router-side capability gate is needed.
-    if let Some(typed_results) = execute_prepared_bulk_group_typed(
-        group.clone(),
-        &store,
-        caller,
-        graph_id,
-        Some(group_key),
-        preflight,
-    )
-    .await?
-    {
-        return Ok(BulkGroupExecution::Applied(typed_results));
-    }
-
-    // Distinct complete-row seeds cannot be represented by the shared one-seed-per-shard replay
-    // envelope. Release the provisional group reservation and let the caller execute each item
-    // through its own scalar idempotency record.
-    if SeedAnchorSet::from_plans(&group.base.plans, &group.base.pmap, &store, &stats)?
-        .is_some_and(|set| set.is_selective_complete_row_seed())
-    {
-        #[cfg(feature = "pocket-ic-e2e")]
-        crate::test_fault::record_typed_batch_trace("sequential-scalar-fallback");
-        store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
-        return Ok(BulkGroupExecution::Unsupported);
-    }
-
-    // Seed-invariant groups may use the shared V2 envelope. Preparation deliberately left the
-    // reservation pristine so the complete-row typed path could win first. Persist the shared
-    // replay envelope only after the whole ordered operation domain is known to fit one request.
-    match execute_prepared_bulk_group(group, &store, caller, graph_id, Some(group_key), preflight)
-        .await?
-    {
-        PreparedSharedBulkExecution::Applied(results) => Ok(BulkGroupExecution::Applied(results)),
-        PreparedSharedBulkExecution::Unsupported => {
-            store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
-            Ok(BulkGroupExecution::Unsupported)
-        }
-        PreparedSharedBulkExecution::RequestTooLarge => {
-            store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
-            Ok(BulkGroupExecution::SharedRequestTooLarge)
-        }
-    }
-}
-
-fn completed_typed_bulk_results(
-    operation_row_counts: &[u64],
-    expected_items: usize,
-) -> Result<Vec<GqlQueryResult>, RouterError> {
-    if operation_row_counts.len() != expected_items {
-        return Err(RouterError::Internal(
-            "completed typed bulk result cardinality does not match request".into(),
-        ));
-    }
-    Ok(operation_row_counts
-        .iter()
-        .copied()
-        .map(|row_count| GqlQueryResult {
-            row_count,
-            rows_blob: None,
-            phase: Some(MutationLifecyclePhase::Completed),
-            token: None,
-        })
-        .collect())
-}
-
-/// Plan a simple single-graph DML query for the bulk-group path (ADR 0044).
-/// Returns `(graph_id, plan_blob, plans, pmap)` when the query is a plain DML write on the
-/// caller's default graph with no `use_graph`, no DDL, and no SEARCH. Returns `None` for queries
-/// that must fall back to the normal sequential path.
-async fn plan_simple_query_for_bulk(
-    caller: Principal,
-    query: &str,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    preflight: Option<&PreflightContext>,
-) -> Result<
-    Option<(
-        GraphId,
-        Vec<u8>,
-        Vec<PhysicalPlan>,
-        BTreeMap<String, gleaph_gql::Value>,
-    )>,
-    RouterError,
-> {
-    // DDL/admin paths are not eligible for bulk grouping.
-    if crate::index_ddl::try_parse(query).is_some()
-        || crate::constraint_ddl::try_parse(query).is_some()
-    {
-        return Ok(None);
-    }
-
-    let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let flags = classify_program(&program);
-    if mode == GqlExecutionMode::Query || !flags.requires_write_path() {
-        return Ok(None);
-    }
-
-    let store = RouterStore::new();
-    let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
-    let default_graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
-    if resolved.graph_id != default_graph_id {
-        // `use_graph` or session activity targeted a non-default graph: fall back.
-        return Ok(None);
-    }
-
-    let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
-    gleaph_gql::validate::validate_with_seed(&program, Some(&seed))
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-
-    let tx = program
-        .transaction_activity
-        .as_ref()
-        .ok_or_else(|| RouterError::InvalidArgument("missing transaction".into()))?;
-    let block = tx
-        .body
-        .as_ref()
-        .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
-
-    if crate::facade::stable::graph_type_catalog::block_has_catalog_ddl(block) {
-        return Ok(None);
-    }
-
-    let stats = graph_stats_for(resolved.graph_id);
-    let open = NoSchema;
-    let mut typed = None;
-    let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
-        resolved.graph_id,
-        &open,
-        &mut typed,
-    )?;
-    let plan = build_router_block_plan(block, schema, &stats)?;
-    let requires_write_path = plan.has_dml();
-    if !requires_write_path {
-        return Ok(None);
-    }
-
-    // Multi-DML bundles on a federated graph are rejected by the normal path; keep the same gate.
-    if !plan.is_pure_insert() && !plan.is_single_anchor_threaded_bundle() {
-        enforce_multi_dml_bundle_gate(&store, resolved.graph_id, block)?;
-    }
-
-    if gleaph_gql_planner::plan_contains_search(&plan) {
-        return Ok(None);
-    }
-
-    let pmap =
-        decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-
-    if let Some(ctx) = preflight {
-        ctx.insert_cached_plan(
-            caller,
-            resolved.graph_id,
-            query.to_string(),
-            resolved.graph_id,
-            crate::use_graph::UseGraphV2Dispatch::Single {
-                graph_id: resolved.graph_id,
-                plan: plan.clone(),
-            },
-            plan_blob.clone(),
-        );
-    }
-
-    Ok(Some((resolved.graph_id, plan_blob, vec![plan], pmap)))
-}
-/// Prepare a single mutation through the same pipeline used by `dispatch_plan_blob_with_index_and_batch`,
-/// but return the prepared outcome instead of executing it. Used by the bulk-group path to share one
-/// plan/label resolution across multiple input mutations.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn prepare_single_mutation(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
-    store: &RouterStore,
-    caller: Principal,
-    stats: &RouterGraphStats,
-    resolved_search: Option<BTreeMap<ShardId, ResolvedSearchWire>>,
-    preflight: Option<&PreflightContext>,
-    pre_reserved_mutation: Option<ClientMutationReservation>,
-) -> Result<PrepareOutcome, RouterError> {
-    let shards = store.list_live_shards_for_graph_id(graph_id)?;
-    if shards.is_empty() {
-        return Err(RouterError::ShardNotRegistered);
-    }
-    let index =
-        RouterIndexLookup::from_shards(graph_id, &shards).map_err(RouterError::InvalidArgument)?;
-    prepare_mutation_for_batch(
-        graph_id,
-        plan_blob,
-        plans,
-        pmap,
-        params,
-        mode,
-        client_mutation_key,
-        store,
-        shards,
-        &index,
-        caller,
-        stats,
-        resolved_search,
-        preflight,
-        pre_reserved_mutation,
-        false,
-    )
-    .await
-}
 /// Execute a single prepared mutation (the Graph dispatch and post-processing phases).
 async fn execute_prepared_mutation(
     prepared: crate::batch_wave::PreparedMutation,
@@ -4420,1075 +3758,6 @@ async fn execute_prepared_mutation(
     Ok(result)
 }
 
-enum PreparedSharedBulkExecution {
-    Applied(Vec<GqlQueryResult>),
-    Unsupported,
-    RequestTooLarge,
-}
-
-/// Execute a prepared seed-invariant bulk group through the shared V2 envelope (ADR 0047).
-/// All items share the plan, catalogs, shard seed, and a single `mutation_id`; only `params`
-/// differ per item.
-async fn execute_prepared_bulk_group(
-    group: crate::batch_wave::PreparedBulkGroup,
-    store: &RouterStore,
-    caller: Principal,
-    graph_id: GraphId,
-    client_mutation_key: Option<&str>,
-    preflight: Option<&PreflightContext>,
-) -> Result<PreparedSharedBulkExecution, RouterError> {
-    let base = group.base;
-    let mode = base.mode;
-    if mode != GqlExecutionMode::Update {
-        return Ok(PreparedSharedBulkExecution::Unsupported);
-    }
-    let mutation_id = base
-        .mutation_id
-        .ok_or_else(|| RouterError::Internal("bulk group requires a mutation id".into()))?;
-    let merge_mode = base.merge_mode.clone();
-    let plans = base.plans.clone();
-    let element_id_encoding_key = base.element_id_encoding_key.0;
-    let item_count = 1 + group.extra_items.len();
-
-    // Collect per-item params, starting with the first item represented by `base`.
-    let mut item_params: Vec<(Vec<u8>, BTreeMap<String, gleaph_gql::Value>)> =
-        Vec::with_capacity(item_count);
-    item_params.push((base.params.clone(), base.pmap.clone()));
-    for extra in &group.extra_items {
-        item_params.push((extra.params.clone(), extra.pmap.clone()));
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    let graph_request_build_start = crate::current_instruction_counter();
-
-    let dispatch_groups = group_dispatches_by_graph(base.dispatches.clone());
-
-    // A Graph canister owns one shard execution domain. Fail closed if routing ever coalesces
-    // multiple shard dispatches under one canister: the V2 shared target/seed would be ambiguous.
-    let mut canister_results: Vec<(Principal, Vec<ItemDispatchResult>)> = Vec::new();
-    let mut dispatch_batches = Vec::with_capacity(dispatch_groups.len());
-
-    for group in dispatch_groups {
-        if group.len() != 1 {
-            return Ok(PreparedSharedBulkExecution::Unsupported);
-        }
-        let group_graph = group[0].graph_canister;
-        let dispatch = &group[0];
-
-        let args = ExecutePlanBatchSharedV2Args {
-            shared: ExecutePlanBatchSharedV2 {
-                target_shard_id: dispatch.shard_id,
-                element_id_encoding_key,
-                mutation_id,
-                plan_blob: base.plan_blob.clone(),
-                seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
-                resolved_labels: Some(base.resolved_labels.clone()),
-                resolved_properties: Some(base.resolved_properties.clone()),
-                indexed_properties: Some(base.indexed_properties.clone()),
-                indexed_embeddings: Some(base.indexed_embeddings.clone()),
-                resolved_search_blob: dispatch.resolved_search_blob.clone(),
-            },
-            operations: item_params
-                .iter()
-                .map(|(params_blob, _)| ExecutePlanSharedV2Op {
-                    params_blob: params_blob.clone(),
-                })
-                .collect(),
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        };
-        if let Err(error) = args.validate() {
-            if error.contains("exceeds the safe payload") {
-                return Ok(PreparedSharedBulkExecution::RequestTooLarge);
-            }
-            return Err(RouterError::InvalidArgument(format!(
-                "shared batch V2 validation failed: {error}"
-            )));
-        }
-        let index_map: Vec<(usize, usize)> =
-            (0..item_count).map(|item_index| (item_index, 0)).collect();
-        dispatch_batches.push((group_graph, args, index_map));
-    }
-
-    if let Some(key) = client_mutation_key {
-        let envelope_shards = base
-            .dispatches
-            .iter()
-            .map(|dispatch| {
-                crate::facade::stable::label_stats::RouterMutationShardV1::new(
-                    dispatch.shard_id,
-                    dispatch.graph_canister,
-                    dispatch.seed_bindings_blob.clone(),
-                )
-            })
-            .collect();
-        store.record_router_mutation_shards(
-            caller,
-            graph_id,
-            key,
-            base.resolved_labels.clone(),
-            base.resolved_properties.clone(),
-            envelope_shards,
-        )?;
-    }
-
-    let mut group_futures: Vec<
-        futures::future::BoxFuture<Result<(Principal, Vec<ItemDispatchResult>), RouterError>>,
-    > = Vec::new();
-
-    for (group_graph, args, index_map) in dispatch_batches {
-        group_futures.push(Box::pin(async move {
-            let mut results: Vec<ItemDispatchResult> = Vec::new();
-            loop {
-                let batch =
-                    match execute_plan_batch_shared_v2_on_graph(group_graph, args.clone()).await {
-                        Ok(batch) => batch,
-                        Err(err) => {
-                            for (item_index, dispatch_index) in
-                                index_map.iter().copied().skip(results.len())
-                            {
-                                results.push((dispatch_index, item_index, Err(err.clone())));
-                            }
-                            break;
-                        }
-                    };
-                let prior_result_count = results.len();
-                let returned_count = batch.results.len();
-                if returned_count < prior_result_count || returned_count > index_map.len() {
-                    let err = format!(
-                        "graph bulk batch returned {returned_count} results after \
-                         {prior_result_count} completed operations out of {}",
-                        index_map.len()
-                    );
-                    for (item_index, dispatch_index) in
-                        index_map.iter().copied().skip(prior_result_count)
-                    {
-                        results.push((dispatch_index, item_index, Err(err.clone())));
-                    }
-                    break;
-                }
-
-                let batch_ends_in_error = batch.results.last().is_some_and(Result::is_err);
-                let mut failed = false;
-                for ((item_index, dispatch_index), result) in index_map
-                    [prior_result_count..returned_count]
-                    .iter()
-                    .copied()
-                    .zip(batch.results.into_iter().skip(prior_result_count))
-                {
-                    failed = result.is_err();
-                    results.push((dispatch_index, item_index, result));
-                    if failed {
-                        break;
-                    }
-                }
-                if failed || batch_ends_in_error {
-                    break;
-                }
-                match batch.next_index {
-                    None if results.len() == index_map.len() => break,
-                    None => {
-                        let err = format!(
-                            "graph bulk batch completed with {} results for {} operations",
-                            results.len(),
-                            index_map.len()
-                        );
-                        for (item_index, dispatch_index) in
-                            index_map.iter().copied().skip(results.len())
-                        {
-                            results.push((dispatch_index, item_index, Err(err.clone())));
-                        }
-                        break;
-                    }
-                    Some(next) if next as usize == results.len() => {}
-                    Some(next) => {
-                        let err = format!(
-                            "graph bulk batch next_index {next} does not match returned result \
-                             count {}",
-                            results.len()
-                        );
-                        for (item_index, dispatch_index) in
-                            index_map.iter().copied().skip(results.len())
-                        {
-                            results.push((dispatch_index, item_index, Err(err.clone())));
-                        }
-                        break;
-                    }
-                }
-            }
-
-            Ok((group_graph, results))
-        }));
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "graph_request_build",
-        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let graph_await_start = crate::current_instruction_counter();
-
-    for group_result in futures::future::join_all(group_futures).await {
-        let (graph, results) = group_result?;
-        canister_results.push((graph, results));
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "graph_await",
-        crate::current_instruction_counter().saturating_sub(graph_await_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let post_dispatch_start = crate::current_instruction_counter();
-
-    // Group results by item. Within each canister group, results are ordered by item then
-    // dispatch. The global dispatch order is the canister group order.
-    let mut per_item_results: Vec<Vec<ExecutePlanResult>> =
-        (0..item_count).map(|_| Vec::new()).collect();
-    let mut per_item_errors: Vec<Option<String>> = (0..item_count).map(|_| None).collect();
-
-    for (_graph, results) in &canister_results {
-        for (_dispatch_index, item_index, result) in results {
-            match result {
-                Ok(r) => per_item_results[*item_index].push(r.clone()),
-                Err(e) => {
-                    if per_item_errors[*item_index].is_none() {
-                        per_item_errors[*item_index] = Some(e.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Merge successful per-item results. If any dispatch for an item errored, the item fails.
-    let mut item_merged: Vec<ExecutePlanResult> = Vec::with_capacity(item_count);
-    for i in 0..item_count {
-        if let Some(err) = &per_item_errors[i] {
-            return Err(RouterError::InvalidArgument(err.clone()));
-        }
-        let mut merged = empty_execute_plan_result();
-        for result in &per_item_results[i] {
-            merge_execute_plan_result(&mut merged, result.clone(), merge_mode.clone())
-                .map_err(RouterError::InvalidArgument)?;
-        }
-        item_merged.push(merged);
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "result_regroup_merge",
-        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let shard_aggregate_start = crate::current_instruction_counter();
-
-    // Per-shard aggregation: total row count and hot vertices across all items on that shard.
-    struct ShardAggregate {
-        graph_canister: Principal,
-        row_count: u64,
-        hot_forward_vertices: Vec<u32>,
-    }
-    let mut shard_aggregates: BTreeMap<ShardId, ShardAggregate> = BTreeMap::new();
-
-    // Reuse the same canister-group ordering as the dispatch loop.
-    let dispatch_groups_for_aggregate = group_dispatches_by_graph(base.dispatches.clone());
-    for (graph, results) in &canister_results {
-        let group = dispatch_groups_for_aggregate
-            .iter()
-            .find(|g| g[0].graph_canister == *graph)
-            .expect("canister group must exist");
-        for (dispatch_index, _item_index, result) in results {
-            if let Ok(r) = result {
-                let dispatch = group
-                    .get(*dispatch_index)
-                    .expect("dispatch index must resolve");
-                let agg = shard_aggregates
-                    .entry(dispatch.shard_id)
-                    .or_insert_with(|| ShardAggregate {
-                        graph_canister: *graph,
-                        row_count: 0,
-                        hot_forward_vertices: Vec::new(),
-                    });
-                agg.row_count = agg.row_count.saturating_add(r.row_count);
-                agg.hot_forward_vertices
-                    .extend(r.hot_forward_vertices.iter().copied());
-                agg.hot_forward_vertices.sort_unstable();
-                agg.hot_forward_vertices.dedup();
-            }
-        }
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "shard_aggregate",
-        crate::current_instruction_counter().saturating_sub(shard_aggregate_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let hot_vertex_finalize_start = crate::current_instruction_counter();
-
-    // Finalize hot vertices once per shard.
-    for (shard_id, aggregate) in &shard_aggregates {
-        if !aggregate.hot_forward_vertices.is_empty() {
-            crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
-                aggregate.graph_canister,
-                *shard_id,
-                &plans,
-                &aggregate.hot_forward_vertices,
-            )
-            .await?;
-        }
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "hot_vertex_finalize",
-        crate::current_instruction_counter().saturating_sub(hot_vertex_finalize_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let projection_advance_start = crate::current_instruction_counter();
-
-    let mut token_shards: Vec<MutationTokenShard> = Vec::new();
-    for (shard_id, aggregate) in &shard_aggregates {
-        let entry = advance_mutation_label_stats_projection(
-            store,
-            graph_id,
-            aggregate.graph_canister,
-            *shard_id,
-            mutation_id,
-            preflight,
-        )
-        .await?;
-        token_shards.push(MutationTokenShard {
-            shard_id: *shard_id,
-            label_stats_seq: entry.emitted_delta_last_seq(),
-        });
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "projection_advance",
-        crate::current_instruction_counter().saturating_sub(projection_advance_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let router_journal_update_start = crate::current_instruction_counter();
-
-    for (shard_id, aggregate) in &shard_aggregates {
-        if let Some(key) = client_mutation_key {
-            store.record_router_mutation_shard_completed(
-                caller,
-                graph_id,
-                key,
-                *shard_id,
-                aggregate.row_count,
-            )?;
-            store.record_router_mutation_shard_projection_advanced(
-                caller, graph_id, key, *shard_id,
-            )?;
-        }
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "router_journal_update",
-        crate::current_instruction_counter().saturating_sub(router_journal_update_start),
-    );
-
-    let token = Some(MutationToken {
-        mutation_id,
-        shards: token_shards,
-    });
-
-    // Pre-load the mutation record once per batch. The record is stable-written above and is
-    // immutable for the remainder of this ingress call, so each item can reuse its row_count
-    // and lifecycle phase without a separate stable read.
-    let mutation_record_snapshot =
-        client_mutation_key.and_then(|key| store.router_mutation_record(caller, graph_id, key));
-    let compacted_row_count = mutation_record_snapshot
-        .as_ref()
-        .and_then(|record| record.as_v1().completed_row_count);
-    let shared_phase = mutation_record_snapshot
-        .as_ref()
-        .map(|record| record.lifecycle_phase());
-
-    #[cfg(feature = "batch-instr-log")]
-    let result_materialize_start = crate::current_instruction_counter();
-
-    let mut results = Vec::with_capacity(item_count);
-    for merged in item_merged {
-        let row_count = compacted_row_count.unwrap_or(merged.row_count);
-        let result = GqlQueryResult {
-            row_count,
-            rows_blob: merged.rows_blob,
-            phase: shared_phase,
-            token: token.clone(),
-        };
-        results.push(attach_mutation_token(result, token.clone()));
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "result_materialize",
-        crate::current_instruction_counter().saturating_sub(result_materialize_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "post_dispatch",
-        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "dispatch_total",
-        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
-    );
-
-    Ok(PreparedSharedBulkExecution::Applied(results))
-}
-
-/// Typed V1 bulk dispatch path (ADR 0047).
-///
-/// Returns `Ok(Some(results))` when the group is eligible, capability is advertised, and the
-/// typed Graph call succeeds. Returns `Ok(None)` when typed eligibility or capability is not
-/// met, so the caller can try the shared seed-invariant V2 path. Errors are propagated for structural
-/// rejections, response inconsistencies, or ambiguous outcomes after durable persistence.
-/// Execute a durable typed seed bulk replay payload against the Graph shard it names.
-///
-/// Shared by the initial admission path and ingress/maintenance retry paths. The caller is
-/// responsible for capability/eligibility checks and for materializing `GqlQueryResult` items.
-/// `plans` is optional: provided on the initial path, decoded from `plan_blob` on retry/recovery
-/// when the caller does not have the decoded plans in scope.
-async fn execute_typed_bulk_replay(
-    replay: &crate::facade::stable::label_stats::TypedSeedBulkReplayV1,
-    store: &RouterStore,
-    caller: Principal,
-    graph_id: GraphId,
-    client_key: &str,
-    preflight: Option<&PreflightContext>,
-    plans: Option<&[PhysicalPlan]>,
-) -> Result<(Vec<ExecutePlanResult>, Option<MutationToken>), RouterError> {
-    use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
-        ExecutePlanTypedOp,
-    };
-
-    let typed_args = ExecutePlanBatchTypedArgs {
-        shared: ExecutePlanBatchTypedShared {
-            target_shard_id: replay.target.shard_id,
-            element_id_encoding_key: replay.shared.element_id_encoding_key,
-            mutation_id: {
-                let record = store
-                    .router_mutation_record(caller, graph_id, client_key)
-                    .ok_or_else(|| RouterError::Internal("typed replay record missing".into()))?;
-                record.as_v1().mutation_id
-            },
-            plan_blob: replay.shared.plan_blob.clone(),
-            resolved_labels: {
-                let record = store
-                    .router_mutation_record(caller, graph_id, client_key)
-                    .ok_or_else(|| RouterError::Internal("typed replay record missing".into()))?;
-                record.as_v1().resolved_labels.clone()
-            },
-            resolved_properties: {
-                let record = store
-                    .router_mutation_record(caller, graph_id, client_key)
-                    .ok_or_else(|| RouterError::Internal("typed replay record missing".into()))?;
-                record.as_v1().resolved_properties.clone()
-            },
-            indexed_properties: replay.shared.indexed_properties.clone(),
-        },
-        operations: replay
-            .operations
-            .iter()
-            .map(|op| ExecutePlanTypedOp {
-                params_blob: op.params.clone(),
-                seed: op.seed_bindings.clone(),
-            })
-            .collect(),
-        batch_mode: ExecutePlanBatchMode::Dynamic,
-    };
-    typed_args.validate().map_err(|e| {
-        RouterError::InvalidArgument(format!("typed replay validation failed: {e}"))
-    })?;
-
-    let wire_item_count = typed_args.operations.len();
-    let chunk_counts = replay
-        .logical_operation_chunk_counts
-        .clone()
-        .unwrap_or_else(|| vec![1; replay.total_ops as usize]);
-    let mapped_wire_count = chunk_counts.iter().try_fold(0usize, |sum, &count| {
-        sum.checked_add(count as usize)
-            .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))
-    })?;
-    if mapped_wire_count != wire_item_count {
-        return Err(RouterError::InvalidArgument(
-            "typed replay chunk mapping does not cover wire operations".into(),
-        ));
-    }
-    let mut results: Vec<Result<ExecutePlanResult, String>> = Vec::new();
-    let mut attempts = 0usize;
-    const MAX_TYPED_DISPATCH_ATTEMPTS: usize = 100;
-    loop {
-        attempts += 1;
-        if attempts > MAX_TYPED_DISPATCH_ATTEMPTS {
-            return Err(RouterError::InvalidArgument(
-                "typed batch V1 exceeded maximum continuation attempts".into(),
-            ));
-        }
-        let batch =
-            execute_plan_batch_typed_v1_on_graph(replay.target.graph_canister, typed_args.clone())
-                .await
-                .map_err(|error| {
-                    RouterError::InvalidArgument(format!(
-                        "typed batch V1 graph call failed: {error}"
-                    ))
-                })?;
-        let batch_ends_in_error = batch.results.last().is_some_and(Result::is_err);
-        let returned_results = batch.results;
-        let prior_result_count = results.len();
-        let returned_count = returned_results.len();
-        let new_results = if prior_result_count > 0 && returned_count == wire_item_count {
-            // Graph replays an existing bulk journal from operation zero and includes synthetic
-            // successes for the completed prefix. Router already owns that prefix locally, so
-            // retain only the continuation suffix.
-            returned_results
-                .into_iter()
-                .skip(prior_result_count)
-                .collect::<Vec<_>>()
-        } else if returned_count <= wire_item_count.saturating_sub(prior_result_count) {
-            returned_results
-        } else {
-            return Err(RouterError::InvalidArgument(
-                "typed batch V1 returned more results than operations".into(),
-            ));
-        };
-        results.extend(new_results);
-        if batch_ends_in_error {
-            if let Some(error) = results.iter().find_map(|result| result.as_ref().err()) {
-                return Err(RouterError::InvalidArgument(error.clone()));
-            }
-            break;
-        }
-        match batch.next_index {
-            None => break,
-            Some(next) if next as usize >= wire_item_count => {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed batch V1 next_index {next} is out of range"
-                )));
-            }
-            Some(next) if next as usize == results.len() => continue,
-            Some(next) => {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed batch V1 next_index {next} does not match returned result count {}",
-                    results.len()
-                )));
-            }
-        }
-    }
-    if results.len() != wire_item_count {
-        return Err(RouterError::InvalidArgument(format!(
-            "typed batch V1 final result count {} does not match operation count {} (attempts={})",
-            results.len(),
-            wire_item_count,
-            attempts
-        )));
-    }
-
-    #[cfg(feature = "pocket-ic-e2e")]
-    crate::test_fault::maybe_trap_after_typed_graph_commit();
-
-    let mut wire_successful_results: Vec<ExecutePlanResult> = Vec::with_capacity(wire_item_count);
-    for result in results {
-        match result {
-            Ok(r) => {
-                wire_successful_results.push(r);
-            }
-            Err(error) => {
-                return Err(RouterError::InvalidArgument(error));
-            }
-        }
-    }
-
-    let entry = fetch_journal_entry(
-        preflight,
-        replay.target.graph_canister,
-        typed_args.shared.mutation_id,
-        replay.target.shard_id,
-    )
-    .await?
-    .ok_or_else(|| {
-        RouterError::InvalidArgument(format!(
-            "graph shard {} did not persist typed mutation journal entry for mutation {}",
-            replay.target.shard_id, typed_args.shared.mutation_id
-        ))
-    })?;
-    validate_completed_typed_journal(&entry, wire_item_count)?;
-
-    let graph_operation_row_counts = entry
-        .bulk_progress()
-        .as_ref()
-        .expect("validated typed journal has bulk progress")
-        .operation_row_counts();
-    let mut logical_operation_row_counts = Vec::with_capacity(chunk_counts.len());
-    let mut wire_offset = 0usize;
-    for &chunk_count in &chunk_counts {
-        let end = wire_offset + chunk_count as usize;
-        logical_operation_row_counts
-            .push(graph_operation_row_counts[wire_offset..end].iter().sum());
-        wire_offset = end;
-    }
-
-    let mut hot_forward_vertices = entry.hot_forward_vertices().clone();
-    hot_forward_vertices.sort_unstable();
-    hot_forward_vertices.dedup();
-
-    let plans_for_finalize = match plans {
-        Some(p) => p.to_vec(),
-        None => {
-            let (requires_write_path, decoded_plans) =
-                gleaph_gql_planner::wire::decode_plan_bundle(&replay.shared.plan_blob).map_err(
-                    |e| RouterError::InvalidArgument(format!("typed replay plan decode: {e}")),
-                )?;
-            if !requires_write_path {
-                return Err(RouterError::InvalidArgument(
-                    "typed replay plan does not require write path".into(),
-                ));
-            }
-            decoded_plans
-        }
-    };
-
-    if !hot_forward_vertices.is_empty() {
-        crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
-            replay.target.graph_canister,
-            replay.target.shard_id,
-            &plans_for_finalize,
-            &hot_forward_vertices,
-        )
-        .await?;
-    }
-
-    store.record_typed_bulk_target_completed(
-        caller,
-        graph_id,
-        client_key,
-        replay.target.shard_id,
-        entry.row_count(),
-        logical_operation_row_counts.clone(),
-    )?;
-
-    advance_label_stats_projection_through(
-        store,
-        graph_id,
-        replay.target.graph_canister,
-        replay.target.shard_id,
-        entry.emitted_delta_last_seq(),
-    )
-    .await?;
-    let token = Some(MutationToken {
-        mutation_id: typed_args.shared.mutation_id,
-        shards: vec![MutationTokenShard {
-            shard_id: replay.target.shard_id,
-            label_stats_seq: entry.emitted_delta_last_seq(),
-        }],
-    });
-
-    store.record_typed_bulk_target_projection_advanced(
-        caller,
-        graph_id,
-        client_key,
-        replay.target.shard_id,
-    )?;
-
-    let logical_results = aggregate_typed_wire_results(&wire_successful_results, &chunk_counts)?;
-
-    Ok((logical_results, token))
-}
-
-fn aggregate_typed_wire_results(
-    wire_results: &[ExecutePlanResult],
-    chunk_counts: &[u32],
-) -> Result<Vec<ExecutePlanResult>, RouterError> {
-    let expected_wire_results = chunk_counts.iter().try_fold(0usize, |sum, &count| {
-        sum.checked_add(count as usize)
-            .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))
-    })?;
-    if expected_wire_results != wire_results.len() || chunk_counts.is_empty() {
-        return Err(RouterError::InvalidArgument(
-            "typed wire result cardinality does not match logical chunk mapping".into(),
-        ));
-    }
-
-    let mut logical_results = Vec::with_capacity(chunk_counts.len());
-    let mut result_offset = 0usize;
-    for &chunk_count in chunk_counts {
-        let end = result_offset + chunk_count as usize;
-        logical_results.push(ExecutePlanResult {
-            row_count: wire_results[result_offset..end]
-                .iter()
-                .map(|result| result.row_count)
-                .sum(),
-            rows_blob: None,
-            hot_forward_vertices: Vec::new(),
-        });
-        result_offset = end;
-    }
-    Ok(logical_results)
-}
-
-fn validate_completed_typed_journal(
-    entry: &GraphMutationJournalEntryWire,
-    item_count: usize,
-) -> Result<(), RouterError> {
-    if !matches!(entry.state(), MutationJournalState::Completed) || entry.next_index().is_some() {
-        return Err(RouterError::InvalidArgument(
-            "typed batch Graph journal is not terminal".into(),
-        ));
-    }
-    let progress = entry.bulk_progress().as_ref().ok_or_else(|| {
-        RouterError::InvalidArgument("typed batch Graph journal is missing bulk progress".into())
-    })?;
-    let expected = u32::try_from(item_count)
-        .map_err(|_| RouterError::InvalidArgument("typed batch operation count overflow".into()))?;
-    if progress.operation_count() != expected
-        || progress.completed_count() != expected
-        || progress.operation_row_counts().len() != item_count
-    {
-        return Err(RouterError::InvalidArgument(format!(
-            "typed batch Graph journal progress mismatch: operations={}, completed={}, row_counts={}, expected={expected}",
-            progress.operation_count(),
-            progress.completed_count(),
-            progress.operation_row_counts().len()
-        )));
-    }
-    Ok(())
-}
-
-async fn execute_prepared_bulk_group_typed(
-    group: crate::batch_wave::PreparedBulkGroup,
-    store: &RouterStore,
-    caller: Principal,
-    graph_id: GraphId,
-    client_mutation_key: Option<&str>,
-    preflight: Option<&PreflightContext>,
-) -> Result<Option<Vec<GqlQueryResult>>, RouterError> {
-    use crate::facade::stable::label_stats::{
-        TypedSeedBulkOperationV1, TypedSeedBulkReplayV1, TypedSeedBulkSharedHeaderV1,
-        TypedSeedBulkTargetV1,
-    };
-    use gleaph_gql_integration::typed_batch::{TypedBatchCandidate, TypedBatchCandidateOp};
-
-    #[cfg(feature = "pocket-ic-e2e")]
-    {
-        crate::test_fault::record_typed_batch_trace("entered");
-        crate::test_fault::increment_typed_batch_prepare_count();
-    }
-
-    let base = group.base;
-    let Some(mutation_id) = base.mutation_id else {
-        log_router_typed_batch_decision("rejected", "missing_mutation_id");
-        return Ok(None);
-    };
-    let Some(key) = client_mutation_key else {
-        log_router_typed_batch_decision("rejected", "missing_client_mutation_key");
-        return Ok(None);
-    };
-
-    // Single target and no effect dispatches.
-    if base.dispatches.len() != 1 {
-        log_router_typed_batch_decision("rejected", "multi_dispatch");
-        return Ok(None);
-    }
-    let dispatch = &base.dispatches[0];
-    let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
-    if base.unique_claims.as_ref().is_some_and(|v| !v.is_empty())
-        || base
-            .constrained_properties
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-        || base
-            .local_unique_claims
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-        || base
-            .local_constrained_properties
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
-    {
-        log_router_typed_batch_decision("rejected", "effect_claims");
-        return Ok(None);
-    }
-
-    // Collect per-item params and resolve complete-row seeds as typed wires.
-    let mut item_params: Vec<(Vec<u8>, BTreeMap<String, gleaph_gql::Value>)> =
-        Vec::with_capacity(1 + group.extra_items.len());
-    item_params.push((base.params.clone(), base.pmap.clone()));
-    for extra in &group.extra_items {
-        item_params.push((extra.params.clone(), extra.pmap.clone()));
-    }
-    let item_count = item_params.len();
-
-    let stats = graph_stats_for(graph_id);
-    let index = match RouterIndexLookup::from_shards(graph_id, std::slice::from_ref(&shard))
-        .map_err(RouterError::InvalidArgument)
-    {
-        Ok(ix) => ix,
-        Err(_) => {
-            log_router_typed_batch_decision("rejected", "index_lookup_unavailable");
-            return Ok(None);
-        }
-    };
-
-    #[cfg_attr(
-        not(feature = "batch-instr-log"),
-        allow(clippy::default_constructed_unit_structs)
-    )]
-    let mut seed_resolution_acc = SeedResolutionMetrics::default();
-    let mut typed_operations = Vec::new();
-    let mut logical_operation_chunk_counts = Vec::with_capacity(item_count);
-    // Resolve every item's complete-row seed relation. When all items bind exactly one `Equal`
-    // anchor per variable (the seed shapes of the social demo), all anchors of all items are
-    // resolved through one batched `lookup_equal_batch` per request chunk instead of one round
-    // trip per item; otherwise each item resolves on its own exactly as before.
-    let relations = resolve_complete_row_seed_relations(
-        &index,
-        &base.plans,
-        &item_params,
-        store,
-        &stats,
-        dispatch.shard_id,
-        preflight,
-        &mut seed_resolution_acc,
-    )
-    .await?;
-    for ((params_blob, _), relation) in item_params.iter().zip(relations) {
-        let Some(relation) = relation else {
-            log_router_typed_batch_decision("rejected", "seed_relation_unavailable");
-            return Ok(None);
-        };
-        let total_rows = relation.row_count()?;
-        let mut offset = 0usize;
-        let mut chunk_count = 0u32;
-        if total_rows == 0 {
-            typed_operations.push(TypedBatchCandidateOp {
-                params_blob: params_blob.clone(),
-                seed: SeedBindingsWire {
-                    entries: Vec::new(),
-                    rows: Vec::new(),
-                    complete_prefix_rows: true,
-                },
-            });
-            logical_operation_chunk_counts.push(1);
-            continue;
-        }
-        while offset < total_rows {
-            let remaining = total_rows.saturating_sub(offset);
-            let upper = remaining;
-            let best = largest_fitting_prefix(upper, |mid| {
-                let rows = relation.rows(offset, mid)?;
-                let probe = TypedBatchCandidate {
-                    target_shard_id: dispatch.shard_id,
-                    element_id_encoding_key: base.element_id_encoding_key.0,
-                    mutation_id,
-                    plan_blob: base.plan_blob.clone(),
-                    operations: vec![TypedBatchCandidateOp {
-                        params_blob: params_blob.clone(),
-                        seed: SeedBindingsWire {
-                            entries: Vec::new(),
-                            rows,
-                            complete_prefix_rows: true,
-                        },
-                    }],
-                };
-                Ok(
-                    gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
-                        &probe,
-                        Some(base.resolved_labels.clone()),
-                        Some(base.resolved_properties.clone()),
-                        Some(base.indexed_properties.clone()),
-                        &base.indexed_embeddings,
-                        gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-                    )
-                    .is_ok(),
-                )
-            })?
-            .or_else(|| {
-                // A complete-row relation can still belong to a plan shape that typed V1
-                // deliberately rejects (for example, a residual graph read after the anchor
-                // prefix). Typed V1 is an optimization, so treat that rejection as ineligibility and let the caller
-                // use the existing sequential scalar path below.  Propagating it here would
-                // turn a valid seed into a user-visible batch error.
-                log_router_typed_batch_decision("rejected", "single_row_does_not_fit");
-                None
-            });
-            let Some(best) = best else {
-                return Ok(None);
-            };
-            let chunk_rows = relation.rows(offset, best)?;
-            typed_operations.push(TypedBatchCandidateOp {
-                params_blob: params_blob.clone(),
-                seed: SeedBindingsWire {
-                    entries: Vec::new(),
-                    rows: chunk_rows,
-                    complete_prefix_rows: true,
-                },
-            });
-            chunk_count = chunk_count
-                .checked_add(1)
-                .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))?;
-            offset += best;
-        }
-        logical_operation_chunk_counts.push(chunk_count);
-    }
-
-    let candidate = TypedBatchCandidate {
-        target_shard_id: dispatch.shard_id,
-        element_id_encoding_key: base.element_id_encoding_key.0,
-        mutation_id,
-        plan_blob: base.plan_blob.clone(),
-        operations: typed_operations,
-    };
-    let validated_typed_args =
-        match gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
-            &candidate,
-            Some(base.resolved_labels.clone()),
-            Some(base.resolved_properties.clone()),
-            Some(base.indexed_properties.clone()),
-            &base.indexed_embeddings,
-            gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-        ) {
-            Ok(args) => args,
-            Err(_error) => {
-                log_router_typed_batch_decision("rejected", &format!("request_rejected: {_error}"));
-                #[cfg(feature = "pocket-ic-e2e")]
-                crate::test_fault::record_typed_batch_trace(format!("request-rejected: {_error}"));
-                return Ok(None);
-            }
-        };
-    #[cfg(feature = "pocket-ic-e2e")]
-    crate::test_fault::record_typed_batch_trace("validated");
-    log_router_typed_batch_decision(
-        "accepted",
-        &format!("ops={} shard={}", item_count, dispatch.shard_id.raw()),
-    );
-
-    let group_fingerprint = bulk_group_fingerprint(
-        &base.plan_blob,
-        base.mode,
-        &item_params
-            .iter()
-            .map(|(p, _)| p.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    let replay = TypedSeedBulkReplayV1 {
-        total_ops: item_count as u32,
-        target: TypedSeedBulkTargetV1::new(dispatch.shard_id, dispatch.graph_canister),
-        shared: TypedSeedBulkSharedHeaderV1 {
-            element_id_encoding_key: validated_typed_args.shared.element_id_encoding_key,
-            plan_blob: validated_typed_args.shared.plan_blob,
-            mode: base.mode,
-            indexed_properties: validated_typed_args.shared.indexed_properties,
-        },
-        operations: validated_typed_args
-            .operations
-            .into_iter()
-            .map(|op| TypedSeedBulkOperationV1 {
-                params: op.params_blob,
-                seed_bindings: op.seed,
-            })
-            .collect(),
-        logical_operation_chunk_counts: Some(logical_operation_chunk_counts),
-    };
-    store.transition_to_typed_seed_bulk(
-        caller,
-        graph_id,
-        key,
-        mutation_id,
-        &group_fingerprint,
-        base.resolved_labels.clone(),
-        base.resolved_properties.clone(),
-        replay,
-    )?;
-    #[cfg(feature = "pocket-ic-e2e")]
-    crate::test_fault::record_typed_batch_trace("persisted");
-
-    let record = store
-        .router_mutation_record(caller, graph_id, key)
-        .ok_or_else(|| {
-            RouterError::Internal("typed bulk record missing after transition".into())
-        })?;
-    let replay_ref = match record.payload() {
-        crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(replay) => {
-            replay
-        }
-        _ => {
-            return Err(RouterError::Internal(
-                "typed bulk payload missing after transition".into(),
-            ));
-        }
-    };
-
-    let (item_results, token) = execute_typed_bulk_replay(
-        replay_ref,
-        store,
-        caller,
-        graph_id,
-        key,
-        preflight,
-        Some(&base.plans),
-    )
-    .await?;
-
-    let mutation_record_snapshot = store.router_mutation_record(caller, graph_id, key);
-    let shared_phase = mutation_record_snapshot
-        .as_ref()
-        .map(|record| record.lifecycle_phase());
-
-    let mut out = Vec::with_capacity(item_count);
-    for result in item_results {
-        let gql_result = GqlQueryResult {
-            row_count: result.row_count,
-            rows_blob: None,
-            phase: shared_phase,
-            token: token.clone(),
-        };
-        out.push(attach_mutation_token(gql_result, token.clone()));
-    }
-    Ok(Some(out))
-}
-
-/// Chunk a bulk batch by the safe inter-canister payload size. All operations share the same
-/// plan blob; the dominant variable is the params blob per item. We keep full canister groups
-/// together when possible and split only when the encoded batch would exceed the safe limit.
-fn largest_fitting_prefix<E>(
-    length: usize,
-    mut fits: impl FnMut(usize) -> Result<bool, E>,
-) -> Result<Option<usize>, E> {
-    if length == 0 {
-        return Ok(None);
-    }
-    let mut low = 1;
-    let mut high = length;
-    let mut best = None;
-    while low <= high {
-        let mid = low + (high - low) / 2;
-        if fits(mid)? {
-            best = Some(mid);
-            low = mid.saturating_add(1);
-        } else {
-            high = mid.saturating_sub(1);
-        }
-    }
-    Ok(best)
-}
-
 fn graph_batch_chunk_len_for_dispatches(
     dispatches: &[ShardDispatch],
     build_execute_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
@@ -5805,39 +4074,14 @@ fn request_fingerprint(plan_blob: &[u8], params: &[u8], mode: GqlExecutionMode) 
     out
 }
 
-/// Version-tagged, length-delimited fingerprint over a homogeneous bulk group.
+/// Version-tagged, length-delimited fingerprint for one scalar plan execution.
 ///
-/// Covers the protocol tag/version, execution mode, plan blob, operation count, and every
-/// operation's params blob in ordinal order. Changing any later item, count, order, plan, or
-/// mode produces a different fingerprint, so a retry must present the exact same ordered group
-/// to match an existing durable record (ADR 0044/0047).
-fn bulk_group_fingerprint(
-    plan_blob: &[u8],
-    mode: GqlExecutionMode,
-    params_per_item: &[Vec<u8>],
-) -> Vec<u8> {
-    const TAG_TYPED_BULK_V1: u8 = 2;
-    let mut out = Vec::with_capacity(
-        1 + 8 + plan_blob.len() + 1 + 8 + params_per_item.iter().map(Vec::len).sum::<usize>(),
-    );
-    out.push(TAG_TYPED_BULK_V1);
-    out.extend_from_slice(&(plan_blob.len() as u64).to_le_bytes());
-    out.extend_from_slice(plan_blob);
-    out.push(match mode {
-        GqlExecutionMode::Query => 0,
-        GqlExecutionMode::Update => 1,
-    });
-    out.extend_from_slice(&(params_per_item.len() as u64).to_le_bytes());
-    for params in params_per_item {
-        out.extend_from_slice(&(params.len() as u64).to_le_bytes());
-        out.extend_from_slice(params);
-    }
-    out
-}
-
+/// The plan mode, bytes, and parameter bytes are the identity for the internal GQL mutation
+/// replay record. Ordered atomic-insert and durable bulk-load requests use their family-owned
+/// fingerprints instead.
 const LABEL_STATS_PROJECTION_BATCH_LIMIT: u32 = 1_000;
 
-async fn advance_label_stats_projection_through(
+pub(crate) async fn advance_label_stats_projection_through(
     store: &RouterStore,
     graph_id: GraphId,
     graph_canister: Principal,
@@ -6012,51 +4256,6 @@ async fn recover_mutation_outcome(
 /// Idempotent and bounded: safe to call concurrently with a client retry (both paths use
 /// cursor-guarded projection advancement and idempotent record mutators).
 #[cfg(target_family = "wasm")]
-/// Recovery redispatch for a durable typed seed bulk record (ADR 0047).
-///
-/// Reconstructs the exact `ExecutePlanBatchTypedArgs` from the stable replay payload and resends
-/// it to the recorded Graph canister. The Graph mutation journal provides idempotency for the
-/// already-committed prefix, so resending the full request is safe. Updates the Router record
-/// from the terminal response without consulting Property Index or the capability bit.
-async fn recover_typed_bulk_record(
-    store: &RouterStore,
-    key: &crate::facade::stable::label_stats::ClientMutationKey,
-    record: &crate::facade::stable::label_stats::RouterMutationRecord,
-) -> Result<(), RouterError> {
-    use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-    let replay = match record.payload() {
-        RouterMutationPayloadV1::TypedSeedBulk(replay) => replay,
-        _ => return Ok(()),
-    };
-    if replay.target.completed && replay.target.projection_advanced {
-        return Ok(());
-    }
-
-    match execute_typed_bulk_replay(
-        replay,
-        store,
-        key.caller,
-        key.graph_id,
-        &key.client_key,
-        None,
-        None,
-    )
-    .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            store.record_router_mutation_last_error(key, error.to_string())?;
-            Ok(())
-        }
-    }
-}
-
-#[cfg(target_family = "wasm")]
-/// Projection/retirement recovery for a durable ordered edge batch.
-///
-/// A `CanonicalPending` ordered record is deliberately not redispatched by the background
-/// driver: canonical replay remains an explicit client retry boundary. Once the Graph receipt is
-/// durable, recovery may advance Router-owned projection and issue the exact retirement call.
 async fn recover_ordered_edge_batch_record(
     store: &RouterStore,
     key: &crate::facade::stable::label_stats::ClientMutationKey,
@@ -6444,14 +4643,6 @@ pub(crate) async fn recover_mutation_record(
     }
     let mutation_id = record.as_v1().mutation_id;
 
-    // ADR 0047: typed seed bulk records redispatch canonical DML from stable replay state.
-    if matches!(
-        record.payload(),
-        crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(_)
-    ) {
-        return recover_typed_bulk_record(store, key, &record).await;
-    }
-
     if matches!(
         record.payload(),
         crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(_)
@@ -6555,37 +4746,14 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
-    use gleaph_graph_kernel::federation::LocalVertexId;
     use gleaph_graph_kernel::index::{
-        EdgePostingHit, IndexEqualSpec, IndexLabelIntersectionRequest, LabelLookupPageResult,
-        PostingHit, ValuePostingCount,
+        EdgePostingHit, IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit,
+        ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphBulkMutationProgress,
-        GraphMutationJournalEntryWire, LabelStatsDelta, LabelStatsDeltaEventWire,
-        MutationJournalState, MutationLifecyclePhase, MutationToken, MutationTokenShard, ReadMode,
-        SeedBindingsWire,
+        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
+        LabelStatsDeltaEventWire, MutationToken, MutationTokenShard, ReadMode, SeedBindingsWire,
     };
-
-    #[test]
-    fn typed_journal_validation_requires_exact_terminal_progress() {
-        let mut entry = GraphMutationJournalEntryWire::new(
-            7,
-            MutationJournalState::Completed,
-            2,
-            None,
-            None,
-            Vec::new(),
-        );
-        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 2, vec![1, 1])));
-        super::validate_completed_typed_journal(&entry, 2).expect("exact terminal progress");
-
-        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 1, vec![1])));
-        assert!(super::validate_completed_typed_journal(&entry, 2).is_err());
-        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 2, vec![1, 1])));
-        entry.set_next_index(Some(1));
-        assert!(super::validate_completed_typed_journal(&entry, 2).is_err());
-    }
 
     #[test]
     fn gql_result_payload_guard_rejects_oversized_rows_blob() {
@@ -6606,119 +4774,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shared_v2_bulk_encodes_invariant_context_once() {
-        use candid::Encode;
-        use gleaph_graph_kernel::plan_exec::{
-            ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchSharedV2,
-            ExecutePlanBatchSharedV2Args, ExecutePlanSharedV2Op,
-        };
-
-        let seed_bindings_blob = vec![3; 20_000];
-        let operation = |params_blob| ExecutePlanArgs {
-            target_shard_id: ShardId::new(0),
-            element_id_encoding_key: [0; 16],
-            mutation_id: Some(7),
-            plan_blob: vec![1],
-            params_blob,
-            mode: GqlExecutionMode::Update,
-            seed_bindings_blob: Some(seed_bindings_blob.clone()),
-            resolved_labels: None,
-            resolved_properties: None,
-            indexed_properties: None,
-            unique_claims: None,
-            constrained_properties: None,
-            local_unique_claims: None,
-            local_constrained_properties: None,
-            indexed_embeddings: None,
-            resolved_search_blob: None,
-        };
-
-        let params = (0..300).map(|i| vec![i as u8; 32]).collect::<Vec<_>>();
-        let repeated = ExecutePlanBatchArgs {
-            operations: params.iter().cloned().map(operation).collect(),
-            mode: ExecutePlanBatchMode::Dynamic,
-        };
-        let shared = ExecutePlanBatchSharedV2Args {
-            shared: ExecutePlanBatchSharedV2 {
-                target_shard_id: ShardId::new(0),
-                element_id_encoding_key: [0; 16],
-                mutation_id: 7,
-                plan_blob: vec![1],
-                seed_bindings_blob: Some(seed_bindings_blob),
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-                indexed_embeddings: None,
-                resolved_search_blob: None,
-            },
-            operations: params
-                .into_iter()
-                .map(|params_blob| ExecutePlanSharedV2Op { params_blob })
-                .collect(),
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        };
-
-        let repeated_len = Encode!(&repeated).expect("encode repeated request").len();
-        let shared_len = Encode!(&shared).expect("encode shared request").len();
-        assert!(
-            repeated_len > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
-            "test fixture must exceed the safe bound with repeated common context"
-        );
-        shared.validate().expect("shared request must fit");
-        assert!(
-            shared_len < repeated_len / 10,
-            "shared request should remove the repeated invariant context"
-        );
-    }
-
-    #[test]
-    fn bulk_request_fingerprint_changes_with_later_item_count_order_plan_and_mode() {
-        use super::bulk_group_fingerprint;
-        let plan_a = b"plan-a".to_vec();
-        let plan_b = b"plan-b".to_vec();
-        let params = vec![b"p1".to_vec(), b"p2".to_vec()];
-        let fp_update_a = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params);
-        let fp_query_a = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Query, &params);
-        assert_ne!(
-            fp_update_a, fp_query_a,
-            "mode change must produce a different fingerprint"
-        );
-
-        let fp_plan_b = bulk_group_fingerprint(&plan_b, GqlExecutionMode::Update, &params);
-        assert_ne!(
-            fp_update_a, fp_plan_b,
-            "plan change must produce a different fingerprint"
-        );
-
-        let params_longer = vec![b"p1".to_vec(), b"p2".to_vec(), b"p3".to_vec()];
-        let fp_more = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params_longer);
-        assert_ne!(
-            fp_update_a, fp_more,
-            "operation count change must produce a different fingerprint"
-        );
-
-        let params_reordered = vec![b"p2".to_vec(), b"p1".to_vec()];
-        let fp_reordered =
-            bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params_reordered);
-        assert_ne!(
-            fp_update_a, fp_reordered,
-            "param order change must produce a different fingerprint"
-        );
-
-        let params_later_changed = vec![b"p1".to_vec(), b"p2-changed".to_vec()];
-        let fp_later_changed =
-            bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params_later_changed);
-        assert_ne!(
-            fp_update_a, fp_later_changed,
-            "later-item change must produce a different fingerprint"
-        );
-
-        // Same inputs reproduce the same fingerprint.
-        let fp_same = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params);
-        assert_eq!(fp_update_a, fp_same);
-    }
-
     use crate::facade::stable::graph_catalog::lookup_graph_id;
     use crate::facade::store::RouterStore;
     use crate::federation::{
@@ -6729,7 +4784,6 @@ mod tests {
         dispatch_plan_blob_with_index, enforce_multi_dml_bundle_gate, enforce_read_consistency,
         enforce_read_consistency_with_lookup, request_fingerprint,
     };
-
     use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
     use crate::seed::SeedAnchorSet;
@@ -8768,525 +6822,5 @@ mod tests {
             vec!["a", "b"],
             "indexed demo_id should anchor both a and b"
         );
-    }
-
-    /// Params for a wave-4-shaped REPLY_TO seed item with the given a/b demo ids.
-    fn params_for_seed(a_demo_id: u64, b_demo_id: u64) -> BTreeMap<String, gleaph_gql::Value> {
-        let mut params = BTreeMap::new();
-        params.insert(
-            "$a_demo_id".to_string(),
-            gleaph_gql::Value::Uint64(a_demo_id),
-        );
-        params.insert(
-            "$b_demo_id".to_string(),
-            gleaph_gql::Value::Uint64(b_demo_id),
-        );
-        params
-    }
-
-    /// Fake index that records batched lookup calls and returns pre-seeded complete hit lists.
-    #[derive(Clone)]
-    struct BatchCountingFakeIndex {
-        batch_calls: Rc<Cell<u32>>,
-        /// Specs count of the most recent `lookup_equal_batch` call.
-        batch_spec_count: Rc<Cell<usize>>,
-        /// One entry per `lookup_equal_batch` call; each entry is one hit list per spec.
-        batch_results: Rc<RefCell<Vec<Vec<Vec<PostingHit>>>>>,
-    }
-
-    impl BatchCountingFakeIndex {
-        fn new(batch_results: Vec<Vec<Vec<PostingHit>>>) -> Self {
-            Self {
-                batch_calls: Rc::new(Cell::new(0)),
-                batch_spec_count: Rc::new(Cell::new(0)),
-                batch_results: Rc::new(RefCell::new(batch_results)),
-            }
-        }
-
-        fn batch_calls(&self) -> u32 {
-            self.batch_calls.get()
-        }
-
-        fn batch_spec_count(&self) -> usize {
-            self.batch_spec_count.get()
-        }
-    }
-
-    impl IndexLookup for BatchCountingFakeIndex {
-        fn lookup_equal(
-            &self,
-            _property_id: u32,
-            _value: Vec<u8>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn lookup_equal_batch(
-            &self,
-            specs: Vec<IndexEqualSpec>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
-            self.batch_calls.set(self.batch_calls.get() + 1);
-            self.batch_spec_count.set(specs.len());
-            let result = self.batch_results.borrow_mut().remove(0);
-            Box::pin(async move { Ok(result) })
-        }
-
-        fn lookup_intersection(
-            &self,
-            _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
-        ) -> Pin<
-            Box<
-                dyn Future<
-                        Output = Result<
-                            gleaph_graph_kernel::index::IndexIntersectionResult,
-                            String,
-                        >,
-                    > + '_,
-            >,
-        > {
-            Box::pin(async move {
-                Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Vec::new()))
-            })
-        }
-
-        fn lookup_edge_equal(
-            &self,
-            _property_id: u32,
-            _value: Vec<u8>,
-            _label_id: Option<u16>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn count_postings_by_value(
-            &self,
-            _property_id: u32,
-            _min_count: u64,
-            _vertex_filter_packed: Option<Vec<u64>>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn lookup_label_intersection(
-            &self,
-            _req: IndexLabelIntersectionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn lookup_label_page(
-            &self,
-            _req: gleaph_graph_kernel::index::LabelLookupPageRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
-            Box::pin(async move {
-                Ok(LabelLookupPageResult {
-                    hits: Vec::new(),
-                    next: None,
-                    done: true,
-                })
-            })
-        }
-
-        fn filter_hits_by_label(
-            &self,
-            _vertex_label_id: u32,
-            hits: Vec<PostingHit>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-            Box::pin(async move { Ok(hits) })
-        }
-
-        fn count_postings_by_value_for_label(
-            &self,
-            _property_id: u32,
-            _vertex_label_id: u32,
-            _min_count: u64,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-            Box::pin(async move { Ok(Vec::new()) })
-        }
-    }
-
-    #[test]
-    fn resolve_complete_row_seed_relation_batches_two_variable_equal_anchors() {
-        use crate::gql::build_router_block_plan;
-        use crate::planner_stats::RouterGraphStats;
-        use gleaph_gql::type_check::NoSchema;
-        use std::collections::BTreeMap;
-
-        let store = store_with_one_shard();
-        let graph_id = tenant_main_graph_id();
-        let admin = Principal::from_slice(&[1; 29]);
-        store
-            .admin_intern_vertex_label(admin, "tenant.main", "Post")
-            .expect("intern Post");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_id")
-            .expect("intern demo_id");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_graph")
-            .expect("intern demo_graph");
-
-        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
-        let program = parser::parse(gql).expect("parse");
-        let block = program
-            .transaction_activity
-            .as_ref()
-            .unwrap()
-            .body
-            .as_ref()
-            .unwrap();
-
-        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
-        let plan = build_router_block_plan(block, &NoSchema, &stats).expect("plan indexed");
-        let mut params = BTreeMap::new();
-        params.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
-        params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(2));
-
-        let index = BatchCountingFakeIndex::new(vec![vec![
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 10,
-            }],
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 20,
-            }],
-        ]]);
-        let mut metrics = super::SeedResolutionMetrics::default();
-        let relation = pollster::block_on(super::resolve_complete_row_seed_relation(
-            &index,
-            std::slice::from_ref(&plan),
-            &params,
-            &store,
-            &stats,
-            ShardId::new(0),
-            None,
-            &mut metrics,
-        ))
-        .expect("resolve")
-        .expect("relation");
-
-        assert_eq!(
-            index.batch_calls(),
-            1,
-            "two variable equal anchors must be resolved in a single batched lookup call"
-        );
-        assert_eq!(relation.variable_domains.len(), 2);
-        assert_eq!(relation.variable_domains[0], ("a".to_string(), vec![10]));
-        assert_eq!(relation.variable_domains[1], ("b".to_string(), vec![20]));
-    }
-
-    #[test]
-    fn resolve_complete_row_seed_relations_batches_all_items_in_one_call() {
-        use crate::gql::build_router_block_plan;
-        use crate::planner_stats::RouterGraphStats;
-        use gleaph_gql::type_check::NoSchema;
-
-        let store = store_with_one_shard();
-        let graph_id = tenant_main_graph_id();
-        let admin = Principal::from_slice(&[1; 29]);
-        store
-            .admin_intern_vertex_label(admin, "tenant.main", "Post")
-            .expect("intern Post");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_id")
-            .expect("intern demo_id");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_graph")
-            .expect("intern demo_graph");
-
-        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
-        let program = parser::parse(gql).expect("parse");
-        let block = program
-            .transaction_activity
-            .as_ref()
-            .unwrap()
-            .body
-            .as_ref()
-            .unwrap();
-        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
-        let plan = build_router_block_plan(block, &NoSchema, &stats).expect("plan indexed");
-
-        // Three seed items, each with distinct a/b anchors; the index answers all six specs in one
-        // batch call, one posting per spec.
-        let item_params = vec![
-            (vec![0], params_for_seed(1, 2)),
-            (vec![1], params_for_seed(3, 4)),
-            (vec![2], params_for_seed(5, 6)),
-        ];
-        let index = BatchCountingFakeIndex::new(vec![vec![
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 11,
-            }],
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 21,
-            }],
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 31,
-            }],
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 41,
-            }],
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 51,
-            }],
-            vec![PostingHit {
-                shard_id: ShardId::new(0),
-                vertex_id: 61,
-            }],
-        ]]);
-        let mut metrics = super::SeedResolutionMetrics::default();
-        let relations = pollster::block_on(super::resolve_complete_row_seed_relations(
-            &index,
-            std::slice::from_ref(&plan),
-            &item_params,
-            &store,
-            &stats,
-            ShardId::new(0),
-            None,
-            &mut metrics,
-        ))
-        .expect("resolve");
-
-        assert_eq!(
-            index.batch_calls(),
-            1,
-            "all items' anchors must be resolved in a single batched lookup call"
-        );
-        assert_eq!(index.batch_spec_count(), 6, "three items x two anchors");
-        assert_eq!(relations.len(), 3);
-        assert_eq!(
-            relations[0].as_ref().expect("relation").variable_domains,
-            vec![("a".to_string(), vec![11]), ("b".to_string(), vec![21])]
-        );
-        assert_eq!(
-            relations[1].as_ref().expect("relation").variable_domains,
-            vec![("a".to_string(), vec![31]), ("b".to_string(), vec![41])]
-        );
-        assert_eq!(
-            relations[2].as_ref().expect("relation").variable_domains,
-            vec![("a".to_string(), vec![51]), ("b".to_string(), vec![61])]
-        );
-    }
-
-    #[test]
-    fn single_variable_bulk_seed_admits_selective_anchor() {
-        use crate::gql::build_router_block_plan;
-        use crate::planner_stats::RouterGraphStats;
-        use gleaph_gql::type_check::NoSchema;
-        use std::collections::BTreeMap;
-
-        let store = store_with_one_shard();
-        let graph_id = tenant_main_graph_id();
-        let admin = Principal::from_slice(&[1; 29]);
-        store
-            .admin_intern_vertex_label(admin, "tenant.main", "User")
-            .expect("intern User");
-        store
-            .admin_intern_property(admin, "tenant.main", "user_id")
-            .expect("intern user_id");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_graph")
-            .expect("intern demo_graph");
-
-        let gql = "MATCH (a:User {user_id: $a_user_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'p'}]->(b:Post {demo_id: $b_demo_id})";
-        let program = parser::parse(gql).expect("parse");
-        let block = program
-            .transaction_activity
-            .as_ref()
-            .unwrap()
-            .body
-            .as_ref()
-            .unwrap();
-
-        let stats_indexed = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["user_id"]);
-        let plan_indexed =
-            build_router_block_plan(block, &NoSchema, &stats_indexed).expect("plan indexed");
-
-        let mut params = BTreeMap::new();
-        params.insert("$a_user_id".to_string(), gleaph_gql::Value::Uint64(1));
-        params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(100));
-        let indexed_set = SeedAnchorSet::from_plans(
-            std::slice::from_ref(&plan_indexed),
-            &params,
-            &store,
-            &stats_indexed,
-        )
-        .expect("parse anchors")
-        .expect("single-variable indexed plan must produce seed anchor");
-        assert_eq!(
-            indexed_set
-                .variables
-                .iter()
-                .map(|v| v.variable.as_str())
-                .collect::<Vec<_>>(),
-            vec!["a"],
-            "indexed user_id should anchor variable a"
-        );
-        assert!(
-            indexed_set.is_selective_complete_row_seed(),
-            "single-variable equality anchor is a selective complete-row seed"
-        );
-
-        // Label-only single-variable plans must still fall back to scalar execution.
-        let label_only_gql = "MATCH (a:User) RETURN a NEXT INSERT (a)-[:POSTED]->(b:Post)";
-        let label_only_program = parser::parse(label_only_gql).expect("parse label only");
-        let label_only_block = label_only_program
-            .transaction_activity
-            .as_ref()
-            .unwrap()
-            .body
-            .as_ref()
-            .unwrap();
-        let label_only_plan = build_router_block_plan(label_only_block, &NoSchema, &stats_indexed)
-            .expect("plan label only");
-        let label_only_set = SeedAnchorSet::from_plans(
-            std::slice::from_ref(&label_only_plan),
-            &BTreeMap::new(),
-            &store,
-            &stats_indexed,
-        )
-        .expect("parse anchors")
-        .expect("label-only plan produces a label anchor");
-        assert!(
-            !label_only_set.is_selective_complete_row_seed(),
-            "label-only anchor is not a selective complete-row seed"
-        );
-    }
-
-    #[test]
-    fn complete_row_relation_generates_cartesian_rows_lazily() {
-        let domains = vec![
-            ("a".to_string(), vec![1u32, 2, 3]),
-            ("b".to_string(), vec![10u32, 20]),
-        ];
-        let relation = super::CompleteRowSeedRelation {
-            variable_domains: domains,
-        };
-        let product = relation.rows(0, 6).expect("product");
-        assert_eq!(product.len(), 6);
-        let mut keys: Vec<String> = product
-            .iter()
-            .map(|row| {
-                row.vertex_bindings
-                    .iter()
-                    .map(|binding| format!("{}={}", binding.variable, binding.local_vertex_id))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-            .collect();
-        keys.sort();
-        assert_eq!(
-            keys,
-            vec![
-                "a=1,b=10", "a=1,b=20", "a=2,b=10", "a=2,b=20", "a=3,b=10", "a=3,b=20",
-            ]
-        );
-
-        assert_eq!(relation.row_count().expect("count"), 6);
-        assert_eq!(relation.rows(2, 2).expect("chunk").len(), 2);
-
-        let large = super::CompleteRowSeedRelation {
-            variable_domains: vec![
-                ("left".to_string(), (0..256).collect()),
-                ("right".to_string(), (0..256).collect()),
-            ],
-        };
-        assert_eq!(large.row_count().expect("large count"), 65_536);
-        let mut visited = 0usize;
-        while visited < 65_536 {
-            let chunk = large.rows(visited, 1_024).expect("large chunk");
-            assert!(!chunk.is_empty());
-            for (index, row) in chunk.iter().enumerate() {
-                let ordinal = visited + index;
-                assert_eq!(
-                    row.vertex_bindings[0].local_vertex_id,
-                    (ordinal / 256) as u32
-                );
-                assert_eq!(
-                    row.vertex_bindings[1].local_vertex_id,
-                    (ordinal % 256) as u32
-                );
-            }
-            visited += chunk.len();
-        }
-        assert_eq!(visited, 65_536);
-    }
-
-    #[test]
-    fn completed_typed_bulk_retry_preserves_ordered_nonzero_row_counts() {
-        let results = super::completed_typed_bulk_results(&[3, 0, 4], 3).expect("valid results");
-        assert_eq!(
-            results
-                .iter()
-                .map(|result| result.row_count)
-                .collect::<Vec<_>>(),
-            vec![3, 0, 4]
-        );
-        assert!(results.iter().all(|result| {
-            result.phase == Some(MutationLifecyclePhase::Completed)
-                && result.rows_blob.is_none()
-                && result.token.is_none()
-        }));
-        assert!(super::completed_typed_bulk_results(&[3, 4], 3).is_err());
-    }
-
-    #[test]
-    fn typed_wire_results_aggregate_into_logical_operation_order() {
-        let wire_results = vec![
-            ExecutePlanResult {
-                row_count: 2,
-                rows_blob: Some(vec![1]),
-                hot_forward_vertices: vec![10 as LocalVertexId],
-            },
-            ExecutePlanResult {
-                row_count: 3,
-                rows_blob: Some(vec![2]),
-                hot_forward_vertices: vec![11 as LocalVertexId],
-            },
-            ExecutePlanResult {
-                row_count: 7,
-                rows_blob: Some(vec![3]),
-                hot_forward_vertices: vec![],
-            },
-        ];
-        let logical = super::aggregate_typed_wire_results(&wire_results, &[2, 1])
-            .expect("wire chunks aggregate");
-        assert_eq!(
-            logical
-                .iter()
-                .map(|result| result.row_count)
-                .collect::<Vec<_>>(),
-            vec![5, 7]
-        );
-        assert!(logical.iter().all(|result| {
-            result.rows_blob.is_none() && result.hot_forward_vertices.is_empty()
-        }));
-        assert!(super::aggregate_typed_wire_results(&wire_results, &[2, 2]).is_err());
-    }
-
-    #[test]
-    fn largest_fitting_prefix_is_shared_by_batch_bound_probes() {
-        assert_eq!(
-            super::largest_fitting_prefix(16, |count| Ok::<bool, ()>(count <= 5)),
-            Ok(Some(5))
-        );
-        assert_eq!(
-            super::largest_fitting_prefix(16, |_| Ok::<bool, ()>(false)),
-            Ok(None)
-        );
-        let error = super::largest_fitting_prefix(4, |count| {
-            if count == 2 {
-                Err("probe failed")
-            } else {
-                Ok(count == 1)
-            }
-        })
-        .expect_err("probe errors must be propagated");
-        assert_eq!(error, "probe failed");
     }
 }

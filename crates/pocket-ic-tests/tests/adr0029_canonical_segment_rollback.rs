@@ -23,26 +23,26 @@ use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, ensure_edge_label, ensure_vertex_label,
-    gql_execute_as_admin, gql_query_as_admin, install_single_shard_federation,
+    FederationEnv, ensure_edge_label, ensure_vertex_label, gql_mutate_as_admin, gql_query_as_admin,
+    install_single_shard_federation,
 };
 
-/// Issue a router `gql_execute` that must NOT commit because the graph
+/// Issue a router `gql_mutate` that must NOT commit because the graph
 /// shard traps inside its DML atomic section. Asserting the surfaced error carries
 /// the "DML atomic section" marker proves execution actually entered the canonical
 /// segment (a mid-segment trap), not a pre-execution parse/plan rejection that
 /// would never have written anything.
-fn gql_execute_expect_segment_trap(env: &FederationEnv, query: &str, client_mutation_key: &str) {
+fn gql_mutate_expect_segment_trap(env: &FederationEnv, query: &str, client_mutation_key: &str) {
     let outcome = env.pic.update_call(
         env.router,
         env.admin,
-        "gql_execute",
+        "gql_mutate",
         Encode!(
             &query.to_string(),
             &Vec::<u8>::new(),
             &client_mutation_key.to_string()
         )
-        .expect("encode gql_execute"),
+        .expect("encode gql_mutate"),
     );
     let message = match outcome {
         Ok(reply) => match Decode!(&reply, Result<GqlQueryResult, RouterError>) {
@@ -51,7 +51,7 @@ fn gql_execute_expect_segment_trap(env: &FederationEnv, query: &str, client_muta
                 "trapping DML must not commit, got row_count {}",
                 result.row_count
             ),
-            Err(err) => panic!("decode gql_execute: {err}"),
+            Err(err) => panic!("decode gql_mutate: {err}"),
         },
         // A graph trap that propagates as a raw call rejection also carries the
         // canister trap message.
@@ -82,7 +82,7 @@ fn canonical_segment_trap_rolls_back_whole_message() {
 
     // Setup: an attached hub (a vertex with an out-edge), so a plain `DELETE` of
     // it traps inside the segment.
-    let _ = gql_execute_as_admin(
+    let _ = gql_mutate_as_admin(
         &env,
         "INSERT (:AttachedHub)-[:TrapRel]->(:TrapSink)",
         "adr0029_setup_attached",
@@ -93,7 +93,7 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // Vacuity guard: a committed INSERT of the same orphan label persists and is
     // observable by label scan. This proves the write mechanism is real, so the
     // trap case's empty-after result is attributable to rollback.
-    let _ = gql_execute_as_admin(&env, "INSERT (:CtrlOrphan)", "adr0029_ctrl_commit");
+    let _ = gql_mutate_as_admin(&env, "INSERT (:CtrlOrphan)", "adr0029_ctrl_commit");
     assert_eq!(
         count(&env, "MATCH (n:CtrlOrphan) RETURN n"),
         1,
@@ -105,7 +105,7 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // orphan, then `DELETE h` traps (the matched hub has an incident edge). The
     // trap fires at the DELETE op, which the plan reaches only after the INSERT op
     // already wrote the orphan, so whole-message rollback must erase the orphan.
-    gql_execute_expect_segment_trap(
+    gql_mutate_expect_segment_trap(
         &env,
         "MATCH (h:AttachedHub) INSERT (:RollbackOrphan) DELETE h",
         "adr0029_trap_rollback",

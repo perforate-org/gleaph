@@ -135,6 +135,66 @@ export interface AdvanceBackfillResult {
   'shards' : Array<BackfillShardAdvance>,
   'all_done' : boolean,
 }
+export interface AtomicInsertEdgeV1 {
+  'edge_label_name' : [] | [string],
+  'source' : AtomicInsertEndpointV1,
+  'inline_property' : [] | [Uint8Array],
+  'directed' : boolean,
+  'target' : AtomicInsertEndpointV1,
+  'initial_edge_properties' : Array<AtomicInsertPropertyV1>,
+}
+export type AtomicInsertEndpointV1 = {
+    /**
+     * Ordinal among vertex operations, not the position in the mixed operation array.
+     */
+    'NewVertexOrdinal' : number
+  } |
+  { 'Existing' : Uint8Array };
+export type AtomicInsertOperationV1 = { 'Edge' : AtomicInsertEdgeV1 } |
+  { 'Vertex' : AtomicInsertVertexV1 };
+export interface AtomicInsertPropertyV1 {
+  'value' : Uint8Array,
+  'property_name' : string,
+}
+/**
+ * Router-owned projection of the Graph-specific durable receipts.
+ */
+export interface AtomicInsertReceiptV1 {
+  'logical_edge_count' : bigint,
+  /**
+   * Opaque graph-scoped encoded IDs in vertex-operation ordinal order.
+   * Edge-only inserts always return an empty list.
+   */
+  'allocated_vertex_ids' : Array<Uint8Array>,
+  'logical_vertex_count' : bigint,
+  'logical_operation_count' : bigint,
+}
+/**
+ * Versioned public request for Router-owned ordered batch mutation.
+ */
+export type AtomicInsertRequest = { 'V1' : AtomicInsertRequestV1 };
+export interface AtomicInsertRequestV1 {
+  /**
+   * Stable idempotency key supplied by the caller; retries must reuse it with identical data.
+   */
+  'client_mutation_key' : string,
+  'operations' : Array<AtomicInsertOperationV1>,
+  'logical_graph_name' : string,
+}
+/**
+ * Public result for one Router atomic insert.
+ */
+export interface AtomicInsertResponse {
+  'status' : MutationStatus,
+  /**
+   * Present after Graph commits the canonical vertex and/or edge operations.
+   */
+  'receipt' : [] | [AtomicInsertReceiptV1],
+}
+export interface AtomicInsertVertexV1 {
+  'initial_properties' : Array<AtomicInsertPropertyV1>,
+  'vertex_labels' : Array<string>,
+}
 /**
  * Which posting-backfill cursor a reset (and `advance_backfill`, ADR 0056 §4) targets.
  * `LabelStats` drives the label-stats projection drain.
@@ -155,60 +215,79 @@ export interface BackfillShardStatus {
   'shard_id' : number,
   'kind' : BackfillKind,
 }
-export interface BatchEdgeInsertV1 {
+/**
+ * One committed chunk receipt in a status page.
+ */
+export interface BulkLoadChunkReceiptV1 {
+  'chunk_index' : number,
+  'receipt' : AtomicInsertReceiptV1,
+}
+/**
+ * Self-contained vertex-only or existing-ID edge-only chunk.
+ */
+export type BulkLoadChunkV1 = { 'Vertices' : Array<AtomicInsertVertexV1> } |
+  { 'Edges' : Array<BulkLoadEdgeV1> };
+/**
+ * Public durable bulk-load command family (ADR 0057).
+ */
+export type BulkLoadCommand = {
+    'Start' : { 'client_bulk_key' : string, 'logical_graph_name' : string }
+  } |
+  { 'Abort' : { 'client_bulk_key' : string, 'logical_graph_name' : string } } |
+  {
+    'Append' : {
+      'client_bulk_key' : string,
+      'chunk_index' : number,
+      'chunk' : BulkLoadChunkV1,
+      'logical_graph_name' : string,
+    }
+  } |
+  {
+    'Finalize' : { 'client_bulk_key' : string, 'logical_graph_name' : string }
+  };
+/**
+ * One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
+ */
+export interface BulkLoadEdgeV1 {
   'edge_label_name' : [] | [string],
-  'source' : BatchEndpointV1,
+  'source' : Uint8Array,
   'inline_property' : [] | [Uint8Array],
   'directed' : boolean,
-  'target' : BatchEndpointV1,
-  'initial_edge_properties' : Array<BatchPropertyV1>,
-}
-export type BatchEndpointV1 = {
-    /**
-     * Ordinal among vertex operations, not the position in the mixed operation array.
-     */
-    'NewVertexOrdinal' : number
-  } |
-  { 'Existing' : Uint8Array };
-export type BatchOperationV1 = { 'Edge' : BatchEdgeInsertV1 } |
-  { 'Vertex' : BatchVertexInsertV1 };
-export interface BatchPropertyV1 {
-  'value' : Uint8Array,
-  'property_name' : string,
+  'target' : Uint8Array,
+  'initial_edge_properties' : Array<AtomicInsertPropertyV1>,
 }
 /**
- * Router-owned projection of the Graph-specific durable receipts.
+ * Public projection of the durable bulk-load lifecycle. Internal placement and cursors are never
+ * exposed through this enum.
  */
-export interface BatchReceiptV1 {
-  'logical_edge_count' : bigint,
-  'logical_vertex_count' : bigint,
-  'logical_operation_count' : bigint,
-}
+export type BulkLoadPublicStateV1 = { 'Failed' : { 'reason' : string } } |
+  { 'Open' : null } |
+  { 'AbortPending' : null } |
+  { 'AppendPending' : null } |
+  { 'FinalizePending' : null } |
+  { 'Completed' : null } |
+  { 'Aborted' : null };
 /**
- * Versioned public request for Router-owned ordered batch mutation.
+ * Response to one public bulk-load command.
  */
-export type BatchRequest = { 'V1' : BatchRequestV1 };
-export interface BatchRequestV1 {
-  /**
-   * Stable idempotency key supplied by the caller; retries must reuse it with identical data.
-   */
-  'client_mutation_key' : string,
-  'operations' : Array<BatchOperationV1>,
-  'logical_graph_name' : string,
-}
+export type BulkLoadResponse = { 'Started' : { 'next_chunk_index' : number } } |
+  { 'AbortAccepted' : { 'state' : BulkLoadPublicStateV1 } } |
+  { 'FinalizeAccepted' : { 'state' : BulkLoadPublicStateV1 } } |
+  {
+    'Appended' : { 'chunk_index' : number, 'receipt' : AtomicInsertReceiptV1 }
+  };
 /**
- * Public result for one Router batch.
+ * Bounded status response for one graph-scoped durable bulk-load job.
  */
-export interface BatchResponse {
-  'status' : MutationStatus,
-  /**
-   * Present after Graph commits the canonical vertex and/or edge operations.
-   */
-  'receipt' : [] | [BatchReceiptV1],
-}
-export interface BatchVertexInsertV1 {
-  'initial_properties' : Array<BatchPropertyV1>,
-  'vertex_labels' : Array<string>,
+export interface BulkLoadStatusPage {
+  'committed_chunk_count' : number,
+  'completed_chunk_count' : number,
+  'state' : BulkLoadPublicStateV1,
+  'next_receipt_cursor' : [] | [number],
+  'next_chunk_index' : number,
+  'terminal_at_ns' : [] | [bigint],
+  'receipts' : Array<BulkLoadChunkReceiptV1>,
+  'expires_at_ns' : [] | [bigint],
 }
 export interface ClientMutationKey {
   'graph_id' : number,
@@ -228,34 +307,6 @@ export interface Column {
    */
   'name' : string,
   'type' : SemanticType,
-}
-/**
- * Cursor-based idempotent mutation execution.
- *
- * `instruction_budget` bounds the work done in a single ingress update call. When the Router
- * exhausts this budget it returns `next_index`, allowing the caller to continue with another
- * call. There is no separate `max_items` field: the budget is the only pagination signal.
- */
-export interface GqlExecuteIdempotentBatchArgs {
-  /**
-   * `None` selects the Router default safety budget below the IC update-call limit.
-   */
-  'instruction_budget' : [] | [bigint],
-  'mutations' : Array<GqlExecuteIdempotentBatchItem>,
-  'start_index' : number,
-}
-/**
- * One mutation in a paged bulk idempotent execution request.
- */
-export interface GqlExecuteIdempotentBatchItem {
-  'gql_query' : string,
-  'mutation_key' : string,
-  'params' : Uint8Array,
-}
-export interface GqlExecuteIdempotentBatchResult {
-  'next_index' : [] | [number],
-  'instruction_counter' : bigint,
-  'results' : Array<GqlQueryResult>,
 }
 /**
  * Router read-path result: merged row count and optional materialized rows.
@@ -777,21 +828,21 @@ export interface ResultSchema {
 }
 export type Result_1 = { 'Ok' : boolean } |
   { 'Err' : RouterError };
-export type Result_10 = { 'Ok' : GqlQueryResult } |
+export type Result_10 = { 'Ok' : number } |
   { 'Err' : RouterError };
-export type Result_11 = { 'Ok' : GraphRegistryEntry } |
+export type Result_11 = { 'Ok' : number } |
   { 'Err' : RouterError };
-export type Result_12 = { 'Ok' : GraphHealthView } |
+export type Result_12 = { 'Ok' : GraphRegistryEntry } |
   { 'Err' : RouterError };
-export type Result_13 = { 'Ok' : number } |
+export type Result_13 = { 'Ok' : GraphHealthView } |
   { 'Err' : RouterError };
-export type Result_14 = { 'Ok' : IndexSyncStatus } |
+export type Result_14 = { 'Ok' : number } |
   { 'Err' : RouterError };
-export type Result_15 = { 'Ok' : Uint8Array } |
+export type Result_15 = { 'Ok' : IndexSyncStatus } |
   { 'Err' : RouterError };
-export type Result_16 = { 'Ok' : IndexedPropertyCatalog } |
+export type Result_16 = { 'Ok' : Uint8Array } |
   { 'Err' : RouterError };
-export type Result_17 = { 'Ok' : MutationStatus } |
+export type Result_17 = { 'Ok' : IndexedPropertyCatalog } |
   { 'Err' : RouterError };
 export type Result_18 = { 'Ok' : ShardRegistryEntry } |
   { 'Err' : RouterError };
@@ -811,7 +862,7 @@ export type Result_24 = { 'Ok' : VectorPartitionHealthSummary } |
   { 'Err' : RouterError };
 export type Result_25 = { 'Ok' : VectorSlabStats } |
   { 'Err' : RouterError };
-export type Result_26 = { 'Ok' : GqlExecuteIdempotentBatchResult } |
+export type Result_26 = { 'Ok' : GqlQueryResult } |
   { 'Err' : RouterError };
 export type Result_27 = { 'Ok' : VertexEmbeddingIngestionResult } |
   { 'Err' : string };
@@ -831,31 +882,33 @@ export type Result_33 = { 'Ok' : Array<VectorIndexInfo> } |
   { 'Err' : RouterError };
 export type Result_34 = { 'Ok' : Array<VectorMaintenancePolicyView> } |
   { 'Err' : RouterError };
-export type Result_35 = { 'Ok' : string } |
+export type Result_35 = { 'Ok' : MutationStatus } |
   { 'Err' : RouterError };
-export type Result_36 = { 'Ok' : ProvisionGraphResponse } |
+export type Result_36 = { 'Ok' : string } |
   { 'Err' : RouterError };
-export type Result_37 = { 'Ok' : RouterAckResponse } |
+export type Result_37 = { 'Ok' : ProvisionGraphResponse } |
   { 'Err' : RouterError };
-export type Result_38 = { 'Ok' : VectorPartitionHealthStep } |
+export type Result_38 = { 'Ok' : RouterAckResponse } |
   { 'Err' : RouterError };
-export type Result_39 = { 'Ok' : VectorSlabStatsStep } |
+export type Result_39 = { 'Ok' : VectorPartitionHealthStep } |
   { 'Err' : RouterError };
 export type Result_4 = { 'Ok' : VectorMaintenanceStepOutcome } |
   { 'Err' : RouterError };
-export type Result_40 = { 'Ok' : AdminSweepMutationKeysStepResult } |
+export type Result_40 = { 'Ok' : VectorSlabStatsStep } |
   { 'Err' : RouterError };
-export type Result_41 = { 'Ok' : VectorSearchResult } |
+export type Result_41 = { 'Ok' : AdminSweepMutationKeysStepResult } |
+  { 'Err' : RouterError };
+export type Result_42 = { 'Ok' : VectorSearchResult } |
   { 'Err' : RouterError };
 export type Result_5 = { 'Ok' : VectorRebuildStatus } |
   { 'Err' : RouterError };
-export type Result_6 = { 'Ok' : BatchResponse } |
+export type Result_6 = { 'Ok' : AtomicInsertResponse } |
   { 'Err' : RouterError };
-export type Result_7 = { 'Ok' : VectorCentroidCacheStatus } |
+export type Result_7 = { 'Ok' : BulkLoadResponse } |
   { 'Err' : RouterError };
-export type Result_8 = { 'Ok' : number } |
+export type Result_8 = { 'Ok' : BulkLoadStatusPage } |
   { 'Err' : RouterError };
-export type Result_9 = { 'Ok' : number } |
+export type Result_9 = { 'Ok' : VectorCentroidCacheStatus } |
   { 'Err' : RouterError };
 /**
  * Response returned by the Router canister `router_ack` callback.
@@ -876,6 +929,14 @@ export type Result_9 = { 'Ok' : number } |
 export interface RouterAckResponse { 'accepted_registry_version' : bigint }
 export type RouterError = { 'Internal' : string } |
   { 'ShardNotRegistered' : null } |
+  {
+    /**
+     * Retryable command contention: the named durable operation must settle before the
+     * requested command can transition. Bulk-load v1 uses the stable operation identifiers
+     * `bulk_load.append` and `bulk_load.abort`.
+     */
+    'Busy' : { 'operation' : string }
+  } |
   {
     /**
      * The Provision canister sent an ack with a registry version that differs from the
@@ -2275,6 +2336,14 @@ export interface _SERVICE {
     Result_5
   >,
   /**
+   * ADR 0049: classify and execute one order-preserving public atomic insert.
+   */
+  'atomic_insert' : ActorMethod<[AtomicInsertRequest], Result_6>,
+  /**
+   * Return the exact durable receipt for an ordered atomic insert.
+   */
+  'atomic_insert_status' : ActorMethod<[string, string], Result_6>,
+  /**
    * Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
    * attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
    */
@@ -2283,9 +2352,16 @@ export interface _SERVICE {
     Result
   >,
   /**
-   * ADR 0049: classify and execute one order-preserving public batch.
+   * Start, append, finalize, or abort one durable graph-scoped bulk-load job (ADR 0057).
    */
-  'batch_insert' : ActorMethod<[BatchRequest], Result_6>,
+  'bulk_load' : ActorMethod<[BulkLoadCommand], Result_7>,
+  /**
+   * Return a bounded page of committed durable bulk-load chunk receipts (ADR 0057).
+   */
+  'bulk_load_status' : ActorMethod<
+    [string, string, [] | [number], number],
+    Result_8
+  >,
   /**
    * Verify router registry denormalization invariants (regions 1–5, 15–16). `Ok(())`
    * means consistent; `Err(Internal(detail))` reports the first divergence. Read-only
@@ -2295,7 +2371,7 @@ export interface _SERVICE {
   /**
    * Clear the entire heap centroid cache on the graph's vector target.
    */
-  'clear_vector_centroid_cache' : ActorMethod<[string], Result_7>,
+  'clear_vector_centroid_cache' : ActorMethod<[string], Result_9>,
   /**
    * Delete the maintenance policy for one vector index (DDL admin). Returns whether one existed.
    */
@@ -2308,52 +2384,32 @@ export interface _SERVICE {
    * Remove one named prepared operation.
    */
   'drop_prepared' : ActorMethod<[string], Result>,
-  'ensure_edge_label' : ActorMethod<[string, string], Result_8>,
-  'ensure_property' : ActorMethod<[string, string], Result_9>,
-  'ensure_vertex_label' : ActorMethod<[string, string], Result_8>,
-  /**
-   * Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
-   */
-  'execute_prepared' : ActorMethod<
-    [string, Uint8Array, [] | [Array<PreparedSortSpec>], ReadMode],
-    Result_10
-  >,
-  /**
-   * Idempotent prepared update. Returns the richer
-   * [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
-   * federated mutation lifecycle `phase`.
-   */
-  'execute_prepared_update' : ActorMethod<
-    [string, Uint8Array, string],
-    Result_10
-  >,
-  'get_graph' : ActorMethod<[string], Result_11>,
+  'ensure_edge_label' : ActorMethod<[string, string], Result_10>,
+  'ensure_property' : ActorMethod<[string, string], Result_11>,
+  'ensure_vertex_label' : ActorMethod<[string, string], Result_10>,
+  'get_graph' : ActorMethod<[string], Result_12>,
   /**
    * Best-effort graph-level operational snapshot (ADR 0056 §7): shard reachability, index-sync
    * convergence, and vector-index health summary. Composite query: probes every shard's index-sync
    * status (reachability + convergence) and summarizes vector-index health. Per-shard and physical
    * detail stay at L3; failures are reported in `notes`, not as errors.
    */
-  'get_graph_health' : ActorMethod<[string], Result_12>,
-  'get_graph_id' : ActorMethod<[string], Result_13>,
+  'get_graph_health' : ActorMethod<[string], Result_13>,
+  'get_graph_id' : ActorMethod<[string], Result_14>,
   /**
    * Graph-index convergence snapshot for one graph shard (`Role::Admin`). Poll
    * `converged` before dispatching index-dependent waves; the backfill steps repair
    * convergence when it stalls.
    */
-  'get_graph_sync_status' : ActorMethod<[AdminIndexSyncStatusArgs], Result_14>,
-  'get_id_encoding_key' : ActorMethod<[string], Result_15>,
+  'get_graph_sync_status' : ActorMethod<[AdminIndexSyncStatusArgs], Result_15>,
+  'get_id_encoding_key' : ActorMethod<[string], Result_16>,
   /**
    * Router-sourced snapshot of which properties are indexed for a graph (ADR 0023
    * D1/D3/P2). Graph shards consult this ephemerally per operation — including the
    * async maintenance tick that re-keys postings after compaction — so they never
    * persist derived index state across the upgrade boundary.
    */
-  'get_indexed_property_catalog' : ActorMethod<[string], Result_16>,
-  /**
-   * ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
-   */
-  'get_mutation_status' : ActorMethod<[string, string], Result_17>,
+  'get_indexed_property_catalog' : ActorMethod<[string], Result_17>,
   'get_shard' : ActorMethod<[string, number], Result_18>,
   /**
    * Admin-only physical stable-memory inventory for every shard in a graph.
@@ -2362,7 +2418,7 @@ export interface _SERVICE {
   /**
    * Heap centroid cache status, forwarded to the graph's vector target.
    */
-  'get_vector_centroid_cache' : ActorMethod<[string], Result_7>,
+  'get_vector_centroid_cache' : ActorMethod<[string], Result_9>,
   /**
    * Read the global vector-dispatch activation flag (ADR 0031 Slice 4).
    */
@@ -2404,21 +2460,13 @@ export interface _SERVICE {
    * clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
    * durable canonical commit from full cross-canister projection convergence.
    */
-  'gql_execute' : ActorMethod<[string, Uint8Array, string], Result_10>,
-  /**
-   * Execute cursor-based idempotent mutations until the Router instruction budget is reached.
-   *
-   * Mutations are prepared and executed sequentially within one ingress. A returned `next_index`
-   * is the only continuation signal; retrying the same cursor is safe because every item retains
-   * its original client mutation key.
-   */
-  'gql_execute_batch' : ActorMethod<[GqlExecuteIdempotentBatchArgs], Result_26>,
+  'gql_mutate' : ActorMethod<[string, Uint8Array, string], Result_26>,
   /**
    * Read-only GQL: composite query (calls index + graph query endpoints) with an explicit
    * ADR 0029 §5 read-consistency contract. `Eventual` is the default contract; `AtLeast(token)`
    * enforces a retryable read-your-writes barrier against the token's per-shard watermarks.
    */
-  'gql_query' : ActorMethod<[string, Uint8Array, ReadMode], Result_10>,
+  'gql_query' : ActorMethod<[string, Uint8Array, ReadMode], Result_26>,
   'grant_role' : ActorMethod<[GrantRoleArgs], Result>,
   'index_edge_property' : ActorMethod<[string, string, string], Result>,
   'index_vertex_property' : ActorMethod<[string, string, string], Result>,
@@ -2453,14 +2501,31 @@ export interface _SERVICE {
    * All maintenance policies in a graph.
    */
   'list_vector_maintenance_policies' : ActorMethod<[string], Result_34>,
-  'lookup_edge_label_id' : ActorMethod<[string, string], Result_8>,
-  'lookup_property_id' : ActorMethod<[string, string], Result_13>,
-  'lookup_vertex_label_id' : ActorMethod<[string, string], Result_8>,
-  'my_role' : ActorMethod<[], Result_35>,
+  'lookup_edge_label_id' : ActorMethod<[string, string], Result_10>,
+  'lookup_property_id' : ActorMethod<[string, string], Result_14>,
+  'lookup_vertex_label_id' : ActorMethod<[string, string], Result_10>,
+  /**
+   * ADR 0029 Phase 4: pull-based status of a GQL/prepared mutation for the calling principal.
+   */
+  'mutation_status' : ActorMethod<[string, string], Result_35>,
+  'my_role' : ActorMethod<[], Result_36>,
   /**
    * Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
    */
   'prepare' : ActorMethod<[string, string, [] | [PreparedOperation]], Result>,
+  /**
+   * Idempotent prepared update. Returns the richer
+   * [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
+   * federated mutation lifecycle `phase`.
+   */
+  'prepared_mutate' : ActorMethod<[string, Uint8Array, string], Result_26>,
+  /**
+   * Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
+   */
+  'prepared_query' : ActorMethod<
+    [string, Uint8Array, [] | [Array<PreparedSortSpec>], ReadMode],
+    Result_26
+  >,
   /**
    * **Internal seam (ADR 0056 §6 Slice A): not a client API.** Sends a provisioning envelope to
    * the configured Provision canister and records the `RouterProvisioningRequest`. `register_graph`
@@ -2468,7 +2533,7 @@ export interface _SERVICE {
    * provisioning fold in Slice B and is retained only so the `adr0035` outbound/ack E2E coverage
    * keeps running. Admin-only.
    */
-  'provision_graph' : ActorMethod<[ProvisionGraphArgs], Result_36>,
+  'provision_graph' : ActorMethod<[ProvisionGraphArgs], Result_37>,
   /**
    * Publish a `ReadyToPublish` rebuild on the activated vector target.
    */
@@ -2489,27 +2554,27 @@ export interface _SERVICE {
    * Does not abort an in-flight rebuild (use `abort_vector_rebuild`) or change Router policy.
    */
   'reset_vector_maintenance' : ActorMethod<[string, number], Result>,
-  'reverse_edge_label_name' : ActorMethod<[string, number], Result_35>,
-  'reverse_property_name' : ActorMethod<[string, number], Result_35>,
-  'reverse_vertex_label_name' : ActorMethod<[string, number], Result_35>,
+  'reverse_edge_label_name' : ActorMethod<[string, number], Result_36>,
+  'reverse_property_name' : ActorMethod<[string, number], Result_36>,
+  'reverse_vertex_label_name' : ActorMethod<[string, number], Result_36>,
   /**
    * Internal callback: the configured Provision canister acknowledges a completed
    * provisioning job and asks the Router to commit the terminal catalog state.
    */
-  'router_ack' : ActorMethod<[RouterProvisionAck], Result_37>,
+  'router_ack' : ActorMethod<[RouterProvisionAck], Result_38>,
   /**
    * Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
    */
   'scan_partition_health' : ActorMethod<
     [string, number, [] | [Uint8Array], number],
-    Result_38
+    Result_39
   >,
   /**
    * Cursor/budgeted slab-stats scan step, forwarded to the graph's vector target.
    */
   'scan_slab_stats' : ActorMethod<
     [string, [] | [Uint8Array], number, [] | [number]],
-    Result_39
+    Result_40
   >,
   /**
    * Flip the global vector-dispatch activation flag (ADR 0031 Slice 4; Admin only). `false` keeps
@@ -2541,7 +2606,7 @@ export interface _SERVICE {
    */
   'sweep_expired_mutation_keys' : ActorMethod<
     [AdminSweepMutationKeysStepArgs],
-    Result_40
+    Result_41
   >,
   'unregister_graph' : ActorMethod<[string], Result>,
   'unregister_shard' : ActorMethod<[string, number], Result>,
@@ -2554,12 +2619,12 @@ export interface _SERVICE {
    */
   'vector_search' : ActorMethod<
     [string, string, Uint8Array, number],
-    Result_41
+    Result_42
   >,
   /**
    * Warm the heap centroid cache on the activated vector target.
    */
-  'warm_vector_centroid_cache' : ActorMethod<[string, number], Result_7>,
+  'warm_vector_centroid_cache' : ActorMethod<[string, number], Result_9>,
   'whoami' : ActorMethod<[], Principal>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;

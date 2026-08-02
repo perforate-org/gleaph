@@ -32,6 +32,8 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
 use ic_stable_lara::VertexId;
+#[cfg(feature = "canbench")]
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
@@ -3748,6 +3750,50 @@ fn bench_graph_journal_entry_encode_bulk_progress() -> canbench_rs::BenchResult 
     entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
     canbench_rs::bench_fn(|| {
         black_box(entry.clone().into_bytes());
+    })
+}
+
+/// Maximum bounded atomic-insert receipt path: ordered local-ID appendix encode/decode plus
+/// receipt construction/validation. Setup stays outside the measured closure so the benchmark
+/// isolates the durable receipt work itself.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_atomic_insert_max_receipt() -> canbench_rs::BenchResult {
+    use gleaph_graph_kernel::plan_exec::{
+        GraphMutationRequestIdentityV1, GraphMutationRetirementV1, GraphOrderedVertexBatchReceiptV1,
+    };
+
+    const MAX_VERTEX_OPERATIONS: usize = 1024;
+    let allocated_vertex_ids: Vec<u32> = (1..=MAX_VERTEX_OPERATIONS as u32).collect();
+    let mut entry = GraphMutationJournalEntry::completed(
+        4_096,
+        MAX_VERTEX_OPERATIONS as u64,
+        None,
+        None,
+        allocated_vertex_ids.clone(),
+        0,
+    );
+    entry.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x5a; 32],
+        logical_item_count: MAX_VERTEX_OPERATIONS as u32,
+    });
+    entry.set_allocated_vertex_ids(Some(allocated_vertex_ids.clone()));
+    entry.set_retirement(GraphMutationRetirementV1::Active);
+
+    canbench_rs::bench_fn(|| {
+        let bytes = black_box(entry.clone().into_bytes());
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        black_box(decoded);
+        let receipt = GraphOrderedVertexBatchReceiptV1 {
+            logical_vertex_count: MAX_VERTEX_OPERATIONS as u64,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: allocated_vertex_ids.clone(),
+            allocated_vertex_ids: allocated_vertex_ids.clone(),
+        };
+        receipt.validate().expect("maximum receipt validates");
+        black_box(receipt);
     })
 }
 

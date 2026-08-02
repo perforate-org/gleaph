@@ -12,6 +12,7 @@ use ic_stable_lara::{
     traits::CsrEdge,
 };
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn install_w2_inline_property_profile(_store: &GraphStore, label_id: EdgeLabelId) {
     crate::test_labels::install_test_edge_inline_property_profile(
@@ -154,6 +155,31 @@ fn bulk_vertex_insert_rejects_duplicate_properties_before_allocating_rows() {
         GraphStoreError::DuplicateBulkVertexProperty { .. }
     ));
     assert_eq!(store.vertex_count(), before);
+}
+
+#[test]
+fn bulk_vertex_insert_post_write_failure_panics_instead_of_returning_error() {
+    let store = GraphStore::new();
+    let before = u32::from(store.vertex_count());
+    let failure_guard = crate::facade::mutation_executor::test_fail_bulk_vertex_after_row_write();
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        crate::facade::mutation_executor::insert_vertices_with(
+            &store,
+            vec![(Vec::new(), Vec::new())],
+        )
+    }));
+
+    assert!(
+        outcome.is_err(),
+        "an unexpected error after the first canonical write must panic, not return Err"
+    );
+    assert_eq!(
+        u32::from(store.vertex_count()),
+        before + 1,
+        "the host-only failpoint must run after the first write; IC message rollback is not emulated by catch_unwind"
+    );
+    drop(failure_guard);
 }
 
 #[test]

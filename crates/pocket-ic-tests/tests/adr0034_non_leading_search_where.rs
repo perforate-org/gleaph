@@ -23,10 +23,10 @@ use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, ensure_edge_label, ensure_property,
-    ensure_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
-    e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_property,
-    gql_query_with_params_as_admin, install_federation, install_vector_canister,
+    FederationEnv, GRAPH_NAME, create_vertex_property_index, e2e_insert_edge_with_label,
+    e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_property, ensure_edge_label,
+    ensure_property, ensure_vertex_label, gql_query_with_params_as_admin, install_federation,
+    install_vector_canister,
 };
 use gleaph_router::types::{AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs};
 use std::collections::BTreeMap;

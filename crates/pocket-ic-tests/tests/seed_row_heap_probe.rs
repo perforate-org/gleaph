@@ -14,7 +14,7 @@ use gleaph_graph_kernel::plan_exec::{
     SeedVertexBinding,
 };
 use gleaph_pocket_ic_tests::{
-    SOURCE_SHARD, ensure_property, e2e_insert_vertex_with_property,
+    SOURCE_SHARD, e2e_insert_vertex_with_property, ensure_property,
     federation_graph_element_id_encoding_key_bytes, install_single_shard_federation,
 };
 use std::rc::Rc;

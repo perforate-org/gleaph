@@ -1,5 +1,4 @@
 import type {
-  ApiListPreparedResponse,
   ApiPlanResponse,
   ApiPrepareRequest,
   ApiPrepareResponse,
@@ -7,20 +6,28 @@ import type {
   GqlMutationResult,
   GqlQueryResult,
   ApiExecutePreparedRequest,
+  ApiPreparedMutationRequest,
   ApiValue,
   PreparedManifest,
   PreparedSortSpec,
 } from "./types";
+import type {
+  BulkLoadCommand,
+  BulkLoadResponse,
+  BulkLoadStatusPage,
+  BulkLoadStatusRequest,
+} from "./bulk";
 import { makeExecutePreparedRequest } from "./values";
 
 export interface GraphTransport {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
   execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
-  listPrepared(): Promise<ApiListPreparedResponse>;
   getPreparedManifest(graphName: string): Promise<PreparedManifest>;
   executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
-  executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<GqlMutationResult>;
+  executePreparedUpdate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
+  bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse>;
+  bulkLoadStatus(request: BulkLoadStatusRequest): Promise<BulkLoadStatusPage>;
   dropPrepared(name: string): Promise<boolean>;
 }
 
@@ -28,7 +35,6 @@ export interface GraphClient {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
   execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
-  listPrepared(): Promise<ApiListPreparedResponse>;
   getPreparedManifest(graphName: string): Promise<PreparedManifest>;
   executePrepared(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
   executePrepared(
@@ -36,12 +42,15 @@ export interface GraphClient {
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
   ): Promise<GqlQueryResult>;
-  executePreparedMutation(request: ApiExecutePreparedRequest): Promise<GqlMutationResult>;
+  executePreparedMutation(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
   executePreparedMutation(
     name: string,
-    params?: Record<string, unknown | ApiValue>,
+    params: Record<string, unknown | ApiValue> | undefined,
+    clientMutationKey: string,
     sort?: PreparedSortSpec[],
   ): Promise<GqlMutationResult>;
+  bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse>;
+  bulkLoadStatus(request: BulkLoadStatusRequest): Promise<BulkLoadStatusPage>;
   dropPrepared(name: string): Promise<boolean>;
 }
 
@@ -60,10 +69,6 @@ class TransportBackedGraphClient implements GraphClient {
     return this.transport.prepare(request);
   }
 
-  listPrepared(): Promise<ApiListPreparedResponse> {
-    return this.transport.listPrepared();
-  }
-
   getPreparedManifest(graphName: string): Promise<PreparedManifest> {
     return this.transport.getPreparedManifest(graphName);
   }
@@ -80,20 +85,41 @@ class TransportBackedGraphClient implements GraphClient {
     return this.transport.executePreparedQuery(request);
   }
 
+  executePreparedMutation(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
   executePreparedMutation(
-    requestOrName: ApiExecutePreparedRequest | string,
+    name: string,
+    params: Record<string, unknown | ApiValue> | undefined,
+    clientMutationKey: string,
+    sort?: PreparedSortSpec[],
+  ): Promise<GqlMutationResult>;
+  executePreparedMutation(
+    requestOrName: ApiPreparedMutationRequest | string,
     params?: Record<string, unknown | ApiValue>,
+    clientMutationKey?: string,
     sort?: PreparedSortSpec[],
   ): Promise<GqlMutationResult> {
-    const request =
-      typeof requestOrName === "string"
-        ? makeExecutePreparedRequest(requestOrName, params, sort)
-        : requestOrName;
-    return this.transport.executePreparedUpdate(request);
+    if (typeof requestOrName !== "string") {
+      return this.transport.executePreparedUpdate(requestOrName);
+    }
+    if (clientMutationKey === undefined) {
+      throw new Error("clientMutationKey is required for prepared mutations");
+    }
+    return this.transport.executePreparedUpdate({
+      ...makeExecutePreparedRequest(requestOrName, params, sort),
+      client_mutation_key: clientMutationKey,
+    });
   }
 
   dropPrepared(name: string): Promise<boolean> {
     return this.transport.dropPrepared(name);
+  }
+
+  bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse> {
+    return this.transport.bulkLoad(command);
+  }
+
+  bulkLoadStatus(request: BulkLoadStatusRequest): Promise<BulkLoadStatusPage> {
+    return this.transport.bulkLoadStatus(request);
   }
 }
 

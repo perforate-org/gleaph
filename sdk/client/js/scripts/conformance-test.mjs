@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { encodeCanonicalGqlValue, bytesToHex } from "../src/canonical-value.ts";
-import { makeBatchRequest } from "../src/batch.ts";
+import { makeAtomicInsertRequest } from "../src/atomic.ts";
 
 const fixturePath = new URL(
   "../../../../crates/graph-kernel/conformance/gql_value_vectors.json",
@@ -63,7 +63,7 @@ for (const vector of fixture.invalid_sdk_values) {
   if (!rejected) throw new Error(`${vector.name}: invalid SDK value was accepted`);
 }
 
-const batchRequest = makeBatchRequest({
+const atomicInsertRequest = makeAtomicInsertRequest({
   client_mutation_key: "sdk-conformance",
   logical_graph_name: "tenant.main",
   operations: [
@@ -91,7 +91,7 @@ const batchRequest = makeBatchRequest({
     },
   ],
 });
-const [vertexOperation, edgeOperation] = batchRequest.V1.operations;
+const [vertexOperation, edgeOperation] = atomicInsertRequest.V1.operations;
 if (
   !vertexOperation ||
   !("Vertex" in vertexOperation) ||
@@ -99,7 +99,7 @@ if (
   vertexOperation.Vertex.initial_properties.map(({ property_name }) => property_name).join(",") !==
     "alpha,zeta"
 ) {
-  throw new Error("batch request does not canonicalize vertex catalog order");
+  throw new Error("atomic insert request does not canonicalize vertex catalog order");
 }
 if (
   !edgeOperation ||
@@ -110,17 +110,17 @@ if (
   edgeOperation.Edge.initial_edge_properties.map(({ property_name }) => property_name).join(",") !==
     "alpha,zeta"
 ) {
-  throw new Error("batch request does not preserve the canonical Candid edge shape");
+  throw new Error("atomic insert request does not preserve the canonical Candid edge shape");
 }
 
 function assertBuilderRejects(input, name) {
   let rejected = false;
   try {
-    makeBatchRequest(input);
+    makeAtomicInsertRequest(input);
   } catch {
     rejected = true;
   }
-  if (!rejected) throw new Error(`${name}: invalid batch request was accepted`);
+  if (!rejected) throw new Error(`${name}: invalid atomic insert request was accepted`);
 }
 
 assertBuilderRejects(
@@ -221,7 +221,7 @@ assertBuilderRejects(
       },
     ],
   },
-  "empty edge label in mixed batch",
+  "empty edge label in mixed atomic insert",
 );
 assertBuilderRejects(
   {
@@ -241,5 +241,5 @@ assertBuilderRejects(
 );
 
 console.log(
-  `sdk/js conformance: ${fixture.vectors.length} value vectors and unified batch request builder passed`,
+  `sdk/js conformance: ${fixture.vectors.length} value vectors and unified atomic insert request builder passed`,
 );

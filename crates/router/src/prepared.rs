@@ -360,7 +360,7 @@ pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
 /// Read-only prepared execution with an explicit ADR 0029 §5 consistency contract (Phase 3).
 /// `ReadMode::Eventual` is the default contract; `ReadMode::AtLeast(token)` enforces the
 /// read-your-writes barrier.
-pub async fn execute_prepared(
+pub async fn prepared_query(
     name: String,
     params: Vec<u8>,
     sort: Option<Vec<PreparedSortSpec>>,
@@ -370,7 +370,7 @@ pub async fn execute_prepared(
         name,
         params,
         GqlExecutionMode::Query,
-        "execute_prepared",
+        "prepared_query",
         false,
         None,
         sort.as_deref(),
@@ -379,7 +379,7 @@ pub async fn execute_prepared(
     .await
 }
 
-pub async fn execute_prepared_update(
+pub async fn prepared_mutate(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
@@ -388,7 +388,7 @@ pub async fn execute_prepared_update(
         name,
         params,
         GqlExecutionMode::Update,
-        "execute_prepared_update",
+        "prepared_mutate",
         false,
         Some(&client_mutation_key),
         None,

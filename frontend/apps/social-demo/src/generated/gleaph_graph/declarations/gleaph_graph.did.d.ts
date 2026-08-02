@@ -225,7 +225,7 @@ export interface ExecutePlanArgs {
  * A bounded group of independent plan executions sent in one Router → Graph call.
  *
  * Each item retains its own mutation identity and execution payload. The Graph executes items
- * independently; this type is a transport aggregation only and does not make the group atomic.
+ * independently; this type is an internal transport aggregation and does not make the group atomic.
  */
 export interface ExecutePlanBatchArgs {
   'mode' : ExecutePlanBatchMode,
@@ -234,103 +234,15 @@ export interface ExecutePlanBatchArgs {
 export type ExecutePlanBatchMode = { 'Dynamic' : null } |
   { 'Fixed' : null };
 /**
- * Per-item outcomes for [`ExecutePlanBatchArgs`]. Keeping the result at item granularity lets the
- * Router continue its existing saga/recovery handling after a later item fails.
+ * Per-item outcomes for [`ExecutePlanBatchArgs`].
  */
 export interface ExecutePlanBatchResult {
   /**
-   * Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
+   * Index of the first operation not attempted when Dynamic mode hit the Graph budget.
    */
   'next_index' : [] | [number],
   'results' : Array<Result_9>,
 }
-/**
- * Immutable context shared by every operation in a shared V2 bulk group.
- */
-export interface ExecutePlanBatchSharedV2 {
-  'mutation_id' : bigint,
-  'indexed_properties' : [] | [IndexedPropertyCatalog],
-  'plan_blob' : Uint8Array,
-  'resolved_labels' : [] | [ResolvedLabelTable],
-  'target_shard_id' : number,
-  'indexed_embeddings' : [] | [IndexedEmbeddingCatalog],
-  'resolved_search_blob' : [] | [Uint8Array],
-  'resolved_properties' : [] | [ResolvedPropertyTable],
-  'element_id_encoding_key' : Uint8Array,
-  'seed_bindings_blob' : [] | [Uint8Array],
-}
-/**
- * Router → Graph: shared execution envelope for seed-invariant homogeneous bulk groups.
- *
- * Unlike [`ExecutePlanBatchArgs`], immutable plan/catalog context and the common seed/search
- * relation are encoded once. Per-operation data is only the parameter blob. The entire ordered
- * operation domain belongs to one `mutation_id`; callers must resend this same domain when
- * continuing from Graph journal progress.
- */
-export interface ExecutePlanBatchSharedV2Args {
-  'batch_mode' : ExecutePlanBatchMode,
-  'shared' : ExecutePlanBatchSharedV2,
-  'operations' : Array<ExecutePlanSharedV2Op>,
-}
-/**
- * Router → graph: shared typed bulk execution envelope (ADR 0047).
- *
- * This is the production transport for homogeneous groups where every operation has the same
- * target shard and shares immutable plan/catalog context. Per-operation data is reduced to the
- * params blob and the already-decoded complete-row seed relation.
- */
-export interface ExecutePlanBatchTypedArgs {
-  'batch_mode' : ExecutePlanBatchMode,
-  'shared' : ExecutePlanBatchTypedShared,
-  'operations' : Array<ExecutePlanTypedOp>,
-}
-/**
- * Immutable context shared by every operation in a typed bulk group.
- */
-export interface ExecutePlanBatchTypedShared {
-  /**
-   * Router-issued idempotency key for the whole bulk group.
-   */
-  'mutation_id' : bigint,
-  /**
-   * Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
-   */
-  'indexed_properties' : [] | [IndexedPropertyCatalog],
-  'plan_blob' : Uint8Array,
-  /**
-   * Router-resolved label names referenced by the physical plan.
-   */
-  'resolved_labels' : [] | [ResolvedLabelTable],
-  'target_shard_id' : number,
-  /**
-   * Router-resolved property names referenced by the physical plan.
-   */
-  'resolved_properties' : [] | [ResolvedPropertyTable],
-  /**
-   * Per-graph key for ELEMENT_ID/path id encoding.
-   */
-  'element_id_encoding_key' : Uint8Array,
-}
-/**
- * Router → Graph: the unified bulk execution envelope (ADR 0047).
- *
- * One versionless entrypoint replaces the former `typed_v1` (per-operation complete-row seeds)
- * and `shared_v2` (one shared seed relation) endpoints; the variant carries the seed placement
- * while immutable plan/catalog context stays shared inside each arm. Future envelope shapes are
- * added as new variants rather than new method-name versions.
- */
-export type ExecutePlanBulkBatch = {
-    /**
-     * All operations share one encoded seed relation carried in the shared context.
-     */
-    'SharedSeed' : ExecutePlanBatchSharedV2Args
-  } |
-  {
-    /**
-     * Every operation carries its own already-decoded complete-row seed relation.
-     */
-    'PerItemSeed' : ExecutePlanBatchTypedArgs
-  };
 export interface ExecutePlanResult {
   /**
    * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
@@ -341,23 +253,6 @@ export interface ExecutePlanResult {
    * Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
    */
   'hot_forward_vertices' : Uint32Array,
-}
-/**
- * Per-operation data for a shared V2 bulk group.
- */
-export interface ExecutePlanSharedV2Op { 'params_blob' : Uint8Array }
-/**
- * One typed bulk operation with an already-decoded complete-row seed.
- */
-export interface ExecutePlanTypedOp {
-  /**
-   * Required complete-row seed relation. Zero matches use an empty `rows` vector.
-   */
-  'seed' : SeedBindingsWire,
-  /**
-   * Per-operation GQL parameter map, already encoded.
-   */
-  'params_blob' : Uint8Array,
 }
 /**
  * Router → graph: read a batch of mutation journal entries in one call.
@@ -392,14 +287,10 @@ export type GqlExecutionMode = {
     'Query' : null
   };
 /**
- * Versioned bulk mutation progress metadata stored in a Graph journal entry (ADR 0044).
+ * Versioned internal plan-batch progress stored in a Graph journal entry.
  */
 export type GraphBulkMutationProgress = { 'V1' : GraphBulkMutationProgressV1 };
 export interface GraphBulkMutationProgressV1 {
-  /**
-   * Ordered row counts for the committed prefix. Persisted so a completed replay can return the
-   * same per-operation result cardinality instead of synthetic zeroes.
-   */
   'operation_row_counts' : BigUint64Array,
   'completed_count' : number,
   'operation_count' : number,
@@ -423,22 +314,26 @@ export interface GraphInitArgs {
   'logical_graph_name' : [] | [string],
 }
 /**
- * Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
+ * Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0027, ADR 0057).
  */
 export type GraphMutationJournalEntryWire = {
     'V1' : GraphMutationJournalEntryWireV1
   };
 export interface GraphMutationJournalEntryWireV1 {
   'mutation_id' : bigint,
+  /**
+   * Ordered local vertex allocations. `Some` is mandatory for ordered vertex/mixed entries;
+   * edge-only and plan-execution entries must keep this `None` so the appendix remains absent.
+   */
+  'allocated_vertex_ids' : [] | [Uint32Array],
   'emitted_delta_last_seq' : [] | [bigint],
   /**
-   * Bulk operation cursor: for a bulk mutation, points at the next unexecuted
-   * operation index. For a single mutation it is `None`.
+   * Internal plan-batch cursor: the first unexecuted operation.
    */
   'next_index' : [] | [number],
   'request_identity' : GraphMutationRequestIdentityV1,
   /**
-   * Bulk-specific progress metadata; present only when `next_index` is used.
+   * Internal plan-batch progress metadata.
    */
   'bulk_progress' : [] | [GraphBulkMutationProgress],
   'row_count' : bigint,
@@ -524,6 +419,10 @@ export type GraphOrderedEdgeBatchResultV1 = {
  */
 export interface GraphOrderedMixedBatchReceiptV1 {
   'logical_edge_count' : bigint,
+  /**
+   * Vertex IDs in request-local vertex-operation ordinal order.
+   */
+  'allocated_vertex_ids' : Uint32Array,
   'emitted_delta_last_seq' : [] | [bigint],
   'emitted_delta_first_seq' : [] | [bigint],
   'logical_vertex_count' : bigint,
@@ -544,6 +443,10 @@ export type GraphOrderedMixedBatchResultV1 = {
  * Durable aggregate receipt returned by a completed ordered Graph vertex batch.
  */
 export interface GraphOrderedVertexBatchReceiptV1 {
+  /**
+   * Vertex IDs in request-local vertex-operation ordinal order.
+   */
+  'allocated_vertex_ids' : Uint32Array,
   'emitted_delta_last_seq' : [] | [bigint],
   'emitted_delta_first_seq' : [] | [bigint],
   'logical_vertex_count' : bigint,
@@ -644,14 +547,6 @@ export interface LabelStatsDeltaEventWire {
   'mutation_id' : bigint,
   'shard_event_seq' : bigint,
   'label_stats_delta' : LabelStatsDelta,
-}
-/**
- * Shard-local edge identity for router seed bindings (ADR 0009 phase D).
- */
-export interface LocalEdgePosting {
-  'label_id' : number,
-  'slot_index' : number,
-  'owner_vertex_id' : number,
 }
 /**
  * Graph-local mutation journal state (ADR 0015).
@@ -941,57 +836,6 @@ export type Result_8 = { 'Ok' : GraphOrderedVertexBatchResult } |
 export type Result_9 = { 'Ok' : ExecutePlanResult } |
   { 'Err' : string };
 /**
- * Router → graph seed bindings for a single variable on the target shard.
- */
-export interface SeedBindingEntry {
-  'variable' : string,
-  'local_edge_postings' : Array<LocalEdgePosting>,
-  'local_vertex_ids' : Uint32Array,
-}
-/**
- * Router → graph seed bindings. `entries` is the legacy grouped-anchor path; `rows` is the
- * row-shaped path introduced for GQL `SEARCH` lowering. Both may be present; a plan that uses row
- * seeds has already had its leading anchor stripped, so the graph executor consumes only `rows`.
- */
-export interface SeedBindingsWire {
-  'rows' : Array<SeedRowWire>,
-  'entries' : Array<SeedBindingEntry>,
-  /**
-   * When true, `rows` are complete for the entire read prefix and the Graph executor may skip
-   * the whole prefix rather than only the leading index-anchor ops. Introduced for ADR 0046
-   * Phase 1 multi-variable seed relations; `false` preserves the legacy `SEARCH`/single-variable
-   * semantics. Missing field decodes as `false` for stable blobs encoded before this addition.
-   */
-  'complete_prefix_rows' : boolean,
-}
-/**
- * One scalar binding inside a row-shaped seed. Used to carry a `SEARCH ... SCORE/DISTANCE AS alias`
- * value alongside its matched vertex binding without requiring a second grouped seed entry.
- */
-export interface SeedFloat64Binding { 'value' : number, 'variable' : string }
-/**
- * One complete seed row produced by Router-side vector-search lowering. Each hit becomes one row
- * carrying the matched vertex and the score/distance alias. Row-shaped seeds are processed
- * independently; a row is skipped if any of its required vertex bindings is missing, tombstoned, or
- * fails the required label check.
- */
-export interface SeedRowWire {
-  'float64_bindings' : Array<SeedFloat64Binding>,
-  'vertex_bindings' : Array<SeedVertexBinding>,
-}
-/**
- * One vertex binding inside a row-shaped seed, with optional label constraints enforced during
- * hydration. Carrying the label ids on the seed row lets the Router express a leading
- * `NodeScan(variable, label = Some(...))` without leaking label-name resolution into the graph
- * canister. Label ids are stored as raw `u16` because Candid does not subtype through the
- * `VertexLabelId` newtype inside a vector.
- */
-export interface SeedVertexBinding {
-  'local_vertex_id' : number,
-  'variable' : string,
-  'required_vertex_label_ids' : Uint16Array,
-}
-/**
  * Logical size of one named virtual stable-memory region owned by a canister.
  *
  * This excludes `MemoryManager` bucket rounding and is therefore not the
@@ -1249,15 +1093,6 @@ export interface _SERVICE {
    */
   'execute_plan_update' : ActorMethod<[ExecutePlanArgs], Result_9>,
   'execute_plan_update_batch' : ActorMethod<[ExecutePlanBatchArgs], Result_10>,
-  /**
-   * Router → graph: the unified versionless bulk execution entrypoint (ADR 0047).
-   *
-   * The envelope variant selects per-operation complete-row seeds or one shared seed relation.
-   */
-  'execute_plan_update_batch_bulk' : ActorMethod<
-    [ExecutePlanBulkBatch],
-    Result_10
-  >,
   'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_11>,
   'get_mutation_journal_entries' : ActorMethod<
     [GetMutationJournalEntriesArgs],

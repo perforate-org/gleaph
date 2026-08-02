@@ -1092,6 +1092,15 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "ProvisionRuntimeConfig: durable Router provision-canister binding (bootstrap config); re-seeds the heap threadlocal in post_upgrade",
             RebuildPath::None,
         ),
+        // Durable Router bulk-load child receipts (ADR 0057).
+        region(
+            "ROUTER_BULK_LOAD_CHUNK_RECEIPTS",
+            49,
+            StableMemoryClass::Canonical,
+            "idempotency",
+            "(job_mutation_id, chunk_index) → immutable ordered Graph request, child mutation id, +             public/Graph receipts, and projection/retirement progress",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1610,8 +1619,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 49);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(48));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 50);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(49));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry
@@ -1626,6 +1635,14 @@ mod tests {
         );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[48].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[49].symbol,
+            "ROUTER_BULK_LOAD_CHUNK_RECEIPTS"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[49].class,
             StableMemoryClass::Canonical
         );
     }

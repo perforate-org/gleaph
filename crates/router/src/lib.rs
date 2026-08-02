@@ -13,6 +13,7 @@ mod test_fault;
 mod api;
 mod batch_wave;
 mod bulk_ingest_finalize;
+mod bulk_load;
 mod constraint_ddl;
 mod constraint_drop;
 mod edge_backfill;
@@ -76,12 +77,12 @@ use ic_cdk_macros::{init, post_upgrade};
 
 use crate::facade::auth;
 
-#[cfg(target_family = "wasm")]
+#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 fn current_instruction_counter() -> u64 {
     ic_cdk::api::call_context_instruction_counter()
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
 fn current_instruction_counter() -> u64 {
     0
 }

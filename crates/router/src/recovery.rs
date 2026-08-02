@@ -89,6 +89,11 @@ thread_local! {
     static CONSTRAINT_DROP_CURSOR: std::cell::RefCell<
         Option<crate::facade::stable::constraint_catalog::UniqueConstraintKey>,
     > = const { std::cell::RefCell::new(None) };
+    /// Test-feature-only deterministic GC seam. It is heap-only and absent from production builds;
+    /// the ADR 0057 PocketIC test clears the ordinary recovery timer before advancing simulated
+    /// time so one explicit bulk receipt-GC step remains exactly observable.
+    #[cfg(feature = "pocket-ic-e2e")]
+    static TEST_RECOVERY_PAUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// `true` if the drop-drain lap in progress has found a `Dropping` constraint still needing work
     /// on **any** of its pages (accumulated; reset only when a fresh lap begins).
     static CONSTRAINT_DROP_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -100,6 +105,10 @@ thread_local! {
 pub(crate) fn arm_if_needed() {
     #[cfg(target_family = "wasm")]
     {
+        #[cfg(feature = "pocket-ic-e2e")]
+        if TEST_RECOVERY_PAUSED.with(std::cell::Cell::get) {
+            return;
+        }
         if RECOVERY_RUNNING.with(std::cell::Cell::get) {
             return;
         }
@@ -110,6 +119,22 @@ pub(crate) fn arm_if_needed() {
         });
     }
 }
+
+/// Test-feature-only: cancel and suppress the autonomous recovery timer so a PocketIC test can
+/// drive one exact production-owned bulk receipt-GC step. Upgrade resets this heap flag; the test
+/// calls its exact-step endpoint immediately after reopen, before the newly scheduled timer is due.
+#[cfg(all(feature = "pocket-ic-e2e", target_family = "wasm"))]
+pub(crate) fn test_pause_for_exact_bulk_gc() {
+    TEST_RECOVERY_PAUSED.with(|paused| paused.set(true));
+    RECOVERY_TIMER.with_borrow_mut(|slot| {
+        if let Some(timer_id) = slot.take() {
+            ic_cdk_timers::clear_timer(timer_id);
+        }
+    });
+}
+
+#[cfg(all(feature = "pocket-ic-e2e", not(target_family = "wasm")))]
+pub(crate) fn test_pause_for_exact_bulk_gc() {}
 
 #[cfg(target_family = "wasm")]
 fn schedule(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
@@ -132,6 +157,10 @@ fn schedule_migratory(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
 #[cfg(target_family = "wasm")]
 async fn on_tick() {
     RECOVERY_TIMER.with_borrow_mut(|slot| *slot = None);
+    #[cfg(feature = "pocket-ic-e2e")]
+    if TEST_RECOVERY_PAUSED.with(std::cell::Cell::get) {
+        return;
+    }
     RECOVERY_RUNNING.with(|r| r.set(true));
 
     let next = run_recovery_pass().await;
@@ -151,6 +180,10 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     use crate::facade::store::RouterStore;
 
     let store = RouterStore::new();
+    // The journal's existing bounded GC owner also advances durable bulk-load receipt cleanup.
+    // Keep the timer alive while a bulk parent has more receipts to delete; the parent cursor is
+    // durable, so a later tick resumes exactly where the previous bounded step stopped.
+    let bulk_gc_pending = store.gc_expired_client_mutation_keys(ic_cdk::api::time());
     let start = RECOVERY_CURSOR.with_borrow(Clone::clone);
     if start.is_none() {
         // Beginning a fresh lap.
@@ -239,7 +272,8 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     let next_cursor = if lap_complete { None } else { last_examined };
     RECOVERY_CURSOR.with_borrow_mut(|c| *c = next_cursor.clone());
 
-    if next_cursor.is_some()
+    if bulk_gc_pending
+        || next_cursor.is_some()
         || reclaim_next.is_some()
         || effect_next.is_some()
         || drop_next.is_some()

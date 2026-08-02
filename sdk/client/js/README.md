@@ -13,7 +13,7 @@ Current scope:
 - `ApiValue` codec and request builders
 - canonical GQL value encoding for independently encoded mutation boundaries
 - Rust/JavaScript conformance vectors for the canonical value codec
-- prepared-query codegen runtime surface (`executePrepared` / `executePreparedMutation`)
+- prepared-query codegen runtime surface (`executePrepared` / `executePreparedMutation`) backed by Router `prepared_query` / `prepared_mutate`
 - prepared-query manifest retrieval (`getPreparedManifest`)
 - codegen integration with `gleaph-codegen`
 

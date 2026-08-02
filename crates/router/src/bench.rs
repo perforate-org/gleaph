@@ -738,165 +738,280 @@ fn bench_seed_decode_typed_512() -> canbench_rs::BenchResult {
 }
 
 // -----------------------------------------------------------------------------
-// Plan 0111: production typed seed batch admission benchmark.
-// Measures Router-side classifier + typed request construction + outer encode
-// for the POSTED complete-row shape at N=1/32/512. The fixture uses pre-resolved
-// SeedBindingsWire values so the benchmark isolates the admission/encode path from
-// async Property Index lookup.
+// Plan 0203: durable bulk-load receipt bounds.
+//
+// These probes exercise the Router-owned child receipt value, public status projection, bounded
+// Finalize scan, and bounded receipt-GC delete/cursor write.  Every cardinality is imported from
+// the owning stable/public modules so a changed SSOT bound changes both the workload and its
+// validation path together.
 // -----------------------------------------------------------------------------
-use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_integration::typed_batch::{TypedBatchCandidate, TypedBatchCandidateOp};
-use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
-use gleaph_gql_planner::wire::encode_block_plans;
-use gleaph_graph_kernel::federation::ElementIdEncodingKey;
-use gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode;
-use std::rc::Rc;
 
-fn posted_plan_blob() -> Vec<u8> {
-    let plan = PhysicalPlan::from_ops(vec![
-        PlanOp::NodeScan {
-            variable: Rc::from("u"),
-            label: Some("User".into()),
-            property_projection: None,
-        },
-        PlanOp::InsertVertex {
-            variable: Some(Rc::from("p")),
-            labels: vec!["Post".into()],
-            properties: vec![],
-        },
-        PlanOp::InsertEdge {
-            variable: None,
-            src: Rc::from("u"),
-            dst: Rc::from("p"),
-            direction: EdgeDirection::PointingRight,
-            labels: vec!["POSTED".into()],
-            properties: vec![],
-        },
-    ]);
-    encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan")
+use crate::facade::stable::bulk_load::{
+    BULK_LOAD_FINALIZE_SCAN_ROWS_PER_STEP, BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP,
+    BulkLoadChunkEnvelopeV1, BulkLoadChunkProgressV1, BulkLoadChunkReceiptKey,
+    BulkLoadChunkReceiptRecordV1, BulkLoadGraphReceiptV1, BulkLoadGraphRequestV1,
+    MAX_BULK_LOAD_RECEIPTS_PER_PAGE,
+};
+use crate::facade::stable::label_stats::{
+    BulkLoadCoordinatorV1, BulkLoadFinalizeStageV1, BulkLoadLifecycleV1, BulkLoadTargetV1,
+    ClientMutationKey, RouterMutationRecord,
+};
+use crate::facade::stable::{
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
+};
+use crate::facade::store::bulk_load::BulkLoadGcStepResult;
+use crate::types::{
+    AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadStatusPage,
+    MAX_ATOMIC_INSERT_OPERATIONS,
+};
+use candid::Principal;
+use gleaph_graph_kernel::plan_exec::{
+    GraphOrderedVertexBatchReceiptV1, OrderedVertexBatchGraphItemV1,
+    OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedPropertyTable,
+};
+use ic_stable_structures::Storable;
+
+const BULK_BENCH_GRAPH_ID: GraphId = GraphId::from_raw(989_001);
+const BULK_BENCH_PARENT_ID: u64 = 9_890_001;
+const BULK_BENCH_CLIENT_KEY: &str = "bench-bulk-load";
+
+fn bulk_bench_target() -> BulkLoadTargetV1 {
+    BulkLoadTargetV1 {
+        shard_id: ShardId::new(0),
+        graph_canister: Principal::self_authenticating([98; 32]),
+    }
 }
 
-fn typed_candidate_from_seeds(seeds: &[SeedBindingsWire]) -> TypedBatchCandidate {
-    TypedBatchCandidate {
-        target_shard_id: ShardId::new(0),
-        element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
-        mutation_id: 1,
-        plan_blob: posted_plan_blob(),
-        operations: seeds
-            .iter()
-            .enumerate()
-            .map(|(i, seed)| TypedBatchCandidateOp {
-                params_blob: vec![i as u8; 8],
-                seed: seed.clone(),
+fn bulk_bench_graph_request(
+    graph_id: GraphId,
+    target: &BulkLoadTargetV1,
+    operation_count: usize,
+) -> BulkLoadGraphRequestV1 {
+    BulkLoadGraphRequestV1::Vertex(OrderedVertexBatchGraphRequestV1 {
+        graph_id,
+        target_shard_id: target.shard_id,
+        target_graph_canister: target.graph_canister,
+        resolved_labels: ResolvedLabelTable::default(),
+        resolved_properties: ResolvedPropertyTable::default(),
+        items: (0..operation_count)
+            .map(|_| OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: Vec::new(),
+                resolved_initial_properties: Vec::new(),
             })
             .collect(),
-    }
+    })
 }
 
-fn build_typed_args(
-    candidate: &TypedBatchCandidate,
-) -> gleaph_graph_kernel::plan_exec::ExecutePlanBatchTypedArgs {
-    gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
-        candidate,
-        Default::default(),
-        Default::default(),
-        None,
-        &Default::default(),
-        ExecutePlanBatchMode::Dynamic,
+fn bulk_bench_chunk_envelope(operation_count: usize) -> BulkLoadChunkV1 {
+    BulkLoadChunkV1::Vertices(
+        (0..operation_count)
+            .map(|_| AtomicInsertVertexV1 {
+                vertex_labels: Vec::new(),
+                initial_properties: Vec::new(),
+            })
+            .collect(),
     )
-    .expect("build production typed batch args")
 }
 
-fn typed_admission_workload(n: usize) -> (TypedBatchCandidate, Vec<u8>) {
-    let seeds = posted_seeds(n);
-    let candidate = typed_candidate_from_seeds(&seeds);
-    let bytes = candid::Encode!(&build_typed_args(&candidate)).expect("encode typed batch args");
-    (candidate, bytes)
-}
-
-fn typed_single_operation_rows_workload(row_count: usize) -> (TypedBatchCandidate, Vec<u8>) {
-    let candidate = typed_candidate_from_seeds(std::slice::from_ref(&posted_seed_rows(row_count)));
-    let bytes = candid::Encode!(&build_typed_args(&candidate)).expect("encode typed batch args");
-    (candidate, bytes)
-}
-
-#[bench(raw)]
-fn bench_seed_typed_production_admission_1() -> canbench_rs::BenchResult {
-    let (candidate, _) = typed_admission_workload(1);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("seed_typed_production_admission_1");
-        black_box(build_typed_args(&candidate));
-    })
-}
-
-#[bench(raw)]
-fn bench_seed_typed_production_admission_32() -> canbench_rs::BenchResult {
-    let (candidate, _) = typed_admission_workload(32);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("seed_typed_production_admission_32");
-        black_box(build_typed_args(&candidate));
-    })
-}
-
-#[bench(raw)]
-fn bench_seed_typed_production_admission_512() -> canbench_rs::BenchResult {
-    let (candidate, _) = typed_admission_workload(512);
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("seed_typed_production_admission_512");
-        black_box(build_typed_args(&candidate));
-    })
-}
-
-#[bench(raw)]
-fn bench_seed_typed_production_admission_one_operation_128_rows() -> canbench_rs::BenchResult {
-    let (candidate, _) = typed_single_operation_rows_workload(128);
-    canbench_rs::bench_fn(|| {
-        let _scope =
-            canbench_rs::bench_scope("seed_typed_production_admission_one_operation_128_rows");
-        black_box(build_typed_args(&candidate));
-    })
-}
-
-#[bench(raw)]
-fn bench_seed_typed_production_admission_one_operation_512_rows() -> canbench_rs::BenchResult {
-    let (candidate, _) = typed_single_operation_rows_workload(512);
-    canbench_rs::bench_fn(|| {
-        let _scope =
-            canbench_rs::bench_scope("seed_typed_production_admission_one_operation_512_rows");
-        black_box(build_typed_args(&candidate));
-    })
-}
-
-#[bench(raw)]
-fn bench_seed_typed_production_admission_one_operation_1024_rows() -> canbench_rs::BenchResult {
-    let (candidate, _) = typed_single_operation_rows_workload(1024);
-    canbench_rs::bench_fn(|| {
-        let _scope =
-            canbench_rs::bench_scope("seed_typed_production_admission_one_operation_1024_rows");
-        black_box(build_typed_args(&candidate));
-    })
-}
-
-#[cfg(test)]
-mod typed_admission_tests {
-    use super::*;
-
-    #[test]
-    fn typed_admission_encoded_sizes_for_record() {
-        for n in [1usize, 32, 512] {
-            let (_, bytes) = typed_admission_workload(n);
-            println!("typed_admission N={n} bytes={}", bytes.len());
+fn bulk_bench_receipt_row(
+    graph_id: GraphId,
+    target: &BulkLoadTargetV1,
+    parent_mutation_id: u64,
+    chunk_index: u32,
+    operation_count: usize,
+    progress: BulkLoadChunkProgressV1,
+) -> (BulkLoadChunkReceiptKey, BulkLoadChunkReceiptRecordV1) {
+    let graph_request = bulk_bench_graph_request(graph_id, target, operation_count);
+    let graph_request_fingerprint = graph_request.fingerprint().expect("Graph fingerprint");
+    let chunk = bulk_bench_chunk_envelope(operation_count);
+    let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
+    let chunk_fingerprint = chunk_envelope.fingerprint().expect("Chunk fingerprint");
+    let (graph_receipt, public_receipt, completed_at_ns) = match progress {
+        BulkLoadChunkProgressV1::CanonicalPending => (None, None, None),
+        BulkLoadChunkProgressV1::CanonicalCommitted
+        | BulkLoadChunkProgressV1::ProjectionPending
+        | BulkLoadChunkProgressV1::RetirementPending
+        | BulkLoadChunkProgressV1::Completed => {
+            let graph_receipt = BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
+                logical_vertex_count: operation_count as u64,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices: Vec::new(),
+                allocated_vertex_ids: (0..operation_count as u32).collect(),
+            });
+            let public_receipt = AtomicInsertReceiptV1 {
+                logical_operation_count: operation_count as u64,
+                logical_vertex_count: operation_count as u64,
+                logical_edge_count: 0,
+                allocated_vertex_ids: vec![vec![0; 8]; operation_count],
+            };
+            let completed_at_ns = (progress == BulkLoadChunkProgressV1::Completed).then_some(1_u64);
+            (Some(graph_receipt), Some(public_receipt), completed_at_ns)
         }
-    }
+    };
+    let row = BulkLoadChunkReceiptRecordV1 {
+        chunk_fingerprint,
+        chunk_envelope,
+        graph_request,
+        graph_request_fingerprint,
+        child_mutation_id: parent_mutation_id + chunk_index as u64 + 1,
+        progress,
+        public_receipt,
+        graph_receipt,
+        completed_at_ns,
+    };
+    row.validate().expect("valid bulk-load benchmark row");
+    (
+        BulkLoadChunkReceiptKey::new(parent_mutation_id, chunk_index),
+        row,
+    )
+}
 
-    #[test]
-    fn typed_admission_one_operation_row_sizes_for_record() {
-        for rows in [128usize, 512, 1024] {
-            let (_, bytes) = typed_single_operation_rows_workload(rows);
-            println!(
-                "typed_admission one_operation rows={rows} bytes={}",
-                bytes.len()
+fn bulk_bench_key() -> ClientMutationKey {
+    ClientMutationKey::new(
+        Principal::anonymous(),
+        BULK_BENCH_GRAPH_ID,
+        BULK_BENCH_CLIENT_KEY.to_owned(),
+    )
+}
+
+fn reset_bulk_bench_maps() {
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.clear_new());
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.clear_new());
+}
+
+fn seed_bulk_bench_parent(lifecycle: BulkLoadLifecycleV1, chunk_count: u32) {
+    reset_bulk_bench_maps();
+    let target = bulk_bench_target();
+    let mut coordinator = BulkLoadCoordinatorV1::new(target.clone());
+    coordinator.logical_operation_count = chunk_count as u64;
+    coordinator.logical_vertex_count = chunk_count as u64;
+    coordinator.next_chunk_index = chunk_count;
+    coordinator.committed_chunk_count = chunk_count;
+    coordinator.completed_chunk_count = chunk_count;
+    coordinator.lifecycle = lifecycle;
+    coordinator
+        .validate()
+        .expect("valid bulk-load benchmark parent");
+    let mut parent = RouterMutationRecord::new_bulk_load(BULK_BENCH_PARENT_ID, 0, coordinator)
+        .expect("bulk-load benchmark parent");
+    if parent.is_terminal() {
+        parent.mark_terminal_at_ns(0);
+    }
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| {
+        map.insert(bulk_bench_key(), parent);
+    });
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| {
+        for chunk_index in 0..chunk_count {
+            let (key, row) = bulk_bench_receipt_row(
+                BULK_BENCH_GRAPH_ID,
+                &target,
+                BULK_BENCH_PARENT_ID,
+                chunk_index,
+                1,
+                BulkLoadChunkProgressV1::Completed,
             );
+            map.insert(key, row);
         }
-    }
+    });
+}
+
+#[bench(raw)]
+fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
+    reset_bulk_bench_maps();
+    ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
+    let target = bulk_bench_target();
+    let coordinator = BulkLoadCoordinatorV1::new(target.clone());
+    let parent = RouterMutationRecord::new_bulk_load(BULK_BENCH_PARENT_ID, 0, coordinator)
+        .expect("bulk-load benchmark parent");
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| {
+        map.insert(bulk_bench_key(), parent);
+    });
+    let (_key, row) = bulk_bench_receipt_row(
+        BULK_BENCH_GRAPH_ID,
+        &target,
+        BULK_BENCH_PARENT_ID,
+        0,
+        MAX_ATOMIC_INSERT_OPERATIONS,
+        BulkLoadChunkProgressV1::CanonicalPending,
+    );
+    let graph = BULK_BENCH_GRAPH_ID;
+    let caller = Principal::anonymous();
+    let client_key = BULK_BENCH_CLIENT_KEY;
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bulk_load_receipt_insert_max_operations");
+        let encoded = row.to_bytes();
+        black_box(encoded);
+        let child_id = crate::facade::store::RouterStore::new()
+            .admit_bulk_load_child(
+                black_box(caller),
+                black_box(graph),
+                black_box(client_key),
+                black_box(BULK_BENCH_PARENT_ID),
+                black_box(0),
+                black_box(row.chunk_fingerprint),
+                black_box(row.clone()),
+            )
+            .expect("bulk-load benchmark child admission");
+        black_box(child_id);
+    })
+}
+
+#[bench(raw)]
+fn bench_bulk_load_status_page_max_public_projection() -> canbench_rs::BenchResult {
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bulk_load_status_page_max_public_projection");
+        BulkLoadStatusPage::validate_max_receipts(black_box(MAX_BULK_LOAD_RECEIPTS_PER_PAGE))
+            .expect("maximum bulk-load status page fits the response bound");
+    })
+}
+
+#[bench(raw)]
+fn bench_bulk_load_finalize_scan_max_rows() -> canbench_rs::BenchResult {
+    let row_count = BULK_LOAD_FINALIZE_SCAN_ROWS_PER_STEP * 2;
+    seed_bulk_bench_parent(
+        BulkLoadLifecycleV1::FinalizePending {
+            stage: BulkLoadFinalizeStageV1::VerifyReceipts,
+            cursor: 0,
+        },
+        row_count,
+    );
+    let store = crate::facade::store::RouterStore::new();
+    let page_count = row_count.div_ceil(BULK_LOAD_FINALIZE_SCAN_ROWS_PER_STEP);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bulk_load_finalize_scan_max_rows");
+        for _ in 0..page_count {
+            let coordinator = store
+                .finalize_bulk_load_step(
+                    black_box(Principal::anonymous()),
+                    black_box(BULK_BENCH_GRAPH_ID),
+                    black_box(BULK_BENCH_CLIENT_KEY),
+                    black_box(0),
+                )
+                .expect("bulk-load finalize scan");
+            black_box(coordinator);
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_bulk_load_receipt_gc_max_delete() -> canbench_rs::BenchResult {
+    let row_count = BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP * 2;
+    seed_bulk_bench_parent(BulkLoadLifecycleV1::Completed, row_count);
+    let store = crate::facade::store::RouterStore::new();
+    let page_count = row_count.div_ceil(BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bulk_load_receipt_gc_max_delete");
+        for _ in 0..=page_count {
+            let result: BulkLoadGcStepResult = store
+                .bulk_load_receipt_gc_step(
+                    black_box(Principal::anonymous()),
+                    black_box(BULK_BENCH_GRAPH_ID),
+                    black_box(BULK_BENCH_CLIENT_KEY),
+                    black_box(crate::facade::store::CLIENT_MUTATION_KEY_TTL_NS + 1),
+                )
+                .expect("bulk-load receipt GC step");
+            black_box(result);
+        }
+    })
 }

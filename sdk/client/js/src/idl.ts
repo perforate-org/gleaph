@@ -77,6 +77,11 @@ const MutationToken = IDL.Record({
   ),
 });
 
+const ReadMode = IDL.Variant({
+  Eventual: IDL.Null,
+  AtLeast: MutationToken,
+});
+
 export const GqlQueryResult = IDL.Record({
   row_count: IDL.Nat64,
   rows_blob: IDL.Opt(IDL.Vec(IDL.Nat8)),
@@ -165,10 +170,6 @@ const ApiPreparedQueryInfo = IDL.Record({
 
 const ApiPrepareResponse = IDL.Record({
   prepared: ApiPreparedQueryInfo,
-});
-
-const ApiListPreparedResponse = IDL.Record({
-  statements: IDL.Vec(ApiPreparedQueryInfo),
 });
 
 const PreparedSemanticType: IDL.Type = IDL.Rec();
@@ -264,11 +265,83 @@ const VectorActivationBlockReason = IDL.Variant({
   ShardsNotVectorAttached: IDL.Null,
 });
 
+const AtomicInsertPropertyV1 = IDL.Record({
+  property_name: IDL.Text,
+  value: IDL.Vec(IDL.Nat8),
+});
+
+const AtomicInsertVertexV1 = IDL.Record({
+  vertex_labels: IDL.Vec(IDL.Text),
+  initial_properties: IDL.Vec(AtomicInsertPropertyV1),
+});
+
+const BulkLoadEdgeV1 = IDL.Record({
+  source: IDL.Vec(IDL.Nat8),
+  target: IDL.Vec(IDL.Nat8),
+  directed: IDL.Bool,
+  edge_label_name: IDL.Opt(IDL.Text),
+  inline_property: IDL.Opt(IDL.Vec(IDL.Nat8)),
+  initial_edge_properties: IDL.Vec(AtomicInsertPropertyV1),
+});
+
+const BulkLoadChunkV1 = IDL.Variant({
+  Vertices: IDL.Vec(AtomicInsertVertexV1),
+  Edges: IDL.Vec(BulkLoadEdgeV1),
+});
+
+const BulkLoadCommand = IDL.Variant({
+  Start: IDL.Record({ logical_graph_name: IDL.Text, client_bulk_key: IDL.Text }),
+  Append: IDL.Record({
+    logical_graph_name: IDL.Text,
+    client_bulk_key: IDL.Text,
+    chunk_index: IDL.Nat32,
+    chunk: BulkLoadChunkV1,
+  }),
+  Finalize: IDL.Record({ logical_graph_name: IDL.Text, client_bulk_key: IDL.Text }),
+  Abort: IDL.Record({ logical_graph_name: IDL.Text, client_bulk_key: IDL.Text }),
+});
+
+const AtomicInsertReceiptV1 = IDL.Record({
+  logical_operation_count: IDL.Nat64,
+  logical_vertex_count: IDL.Nat64,
+  logical_edge_count: IDL.Nat64,
+  allocated_vertex_ids: IDL.Vec(IDL.Vec(IDL.Nat8)),
+});
+
+const BulkLoadPublicStateV1 = IDL.Variant({
+  Open: IDL.Null,
+  AppendPending: IDL.Null,
+  FinalizePending: IDL.Null,
+  AbortPending: IDL.Null,
+  Completed: IDL.Null,
+  Aborted: IDL.Null,
+  Failed: IDL.Record({ reason: IDL.Text }),
+});
+
+const BulkLoadResponse = IDL.Variant({
+  Started: IDL.Record({ next_chunk_index: IDL.Nat32 }),
+  Appended: IDL.Record({ chunk_index: IDL.Nat32, receipt: AtomicInsertReceiptV1 }),
+  FinalizeAccepted: IDL.Record({ state: BulkLoadPublicStateV1 }),
+  AbortAccepted: IDL.Record({ state: BulkLoadPublicStateV1 }),
+});
+
+const BulkLoadStatusPage = IDL.Record({
+  state: BulkLoadPublicStateV1,
+  next_chunk_index: IDL.Nat32,
+  committed_chunk_count: IDL.Nat32,
+  completed_chunk_count: IDL.Nat32,
+  terminal_at_ns: IDL.Opt(IDL.Nat64),
+  expires_at_ns: IDL.Opt(IDL.Nat64),
+  receipts: IDL.Vec(IDL.Record({ chunk_index: IDL.Nat32, receipt: AtomicInsertReceiptV1 })),
+  next_receipt_cursor: IDL.Opt(IDL.Nat32),
+});
+
 const RouterError = IDL.Variant({
   NotAuthorized: IDL.Null,
   Forbidden: IDL.Null,
   NotFound: IDL.Text,
   Conflict: IDL.Text,
+  Busy: IDL.Record({ operation: IDL.Text }),
   InvalidArgument: IDL.Text,
   ExecutionPathMismatch: IDL.Record({
     entrypoint: IDL.Text,
@@ -304,19 +377,19 @@ const RouterError = IDL.Variant({
 
 export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
   LocalIDL.Service({
-    query: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
+    gql_query: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8), ReadMode],
       [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
-      ["query"],
+      ["composite_query"],
     ),
     explain: LocalIDL.Func(
       [LocalIDL.Text],
       [LocalIDL.Variant({ Ok: ApiPlanResponse, Err: RouterError })],
       ["query"],
     ),
-    update: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
-      [LocalIDL.Variant({ Ok: LocalIDL.Nat64, Err: RouterError })],
+    gql_mutate: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8), LocalIDL.Text],
+      [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
       [],
     ),
     prepare: LocalIDL.Func(
@@ -324,27 +397,37 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
       [LocalIDL.Variant({ Ok: ApiPrepareResponse, Err: RouterError })],
       [],
     ),
-    list_prepared_api: LocalIDL.Func(
-      [],
-      [LocalIDL.Variant({ Ok: ApiListPreparedResponse, Err: RouterError })],
-      ["query"],
-    ),
-    prepared_manifest: LocalIDL.Func(
+    list_prepared: LocalIDL.Func(
       [LocalIDL.Text],
       [LocalIDL.Variant({ Ok: PreparedManifest, Err: RouterError })],
       ["query"],
     ),
     prepared_query: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8), LocalIDL.Opt(LocalIDL.Vec(PreparedSortSpec))],
+      [
+        LocalIDL.Text,
+        LocalIDL.Vec(LocalIDL.Nat8),
+        LocalIDL.Opt(LocalIDL.Vec(PreparedSortSpec)),
+        ReadMode,
+      ],
       [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
-      ["query"],
+      ["composite_query"],
     ),
-    prepared_update: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
-      [LocalIDL.Variant({ Ok: LocalIDL.Nat64, Err: RouterError })],
+    prepared_mutate: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8), LocalIDL.Text],
+      [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
       [],
     ),
-    prepared_delete: LocalIDL.Func(
+    bulk_load: LocalIDL.Func(
+      [BulkLoadCommand],
+      [LocalIDL.Variant({ Ok: BulkLoadResponse, Err: RouterError })],
+      [],
+    ),
+    bulk_load_status: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Text, LocalIDL.Opt(LocalIDL.Nat32), LocalIDL.Nat32],
+      [LocalIDL.Variant({ Ok: BulkLoadStatusPage, Err: RouterError })],
+      ["query"],
+    ),
+    drop_prepared: LocalIDL.Func(
       [LocalIDL.Text],
       [LocalIDL.Variant({ Ok: LocalIDL.Null, Err: RouterError })],
       [],

@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod bulk_load;
 pub(crate) mod constraint_catalog;
 pub(crate) mod constraint_name_catalog;
 pub(crate) mod edge_inline_property_profiles;
@@ -152,6 +153,12 @@ thread_local! {
     /// Mirrors the in-heap `PROVISION_CANISTER` thread_local and re-seeds it on `post_upgrade`.
     pub(crate) static ROUTER_PROVISION_CONFIG: RefCell<memory::StableProvisionConfig> =
         RefCell::new(memory::init_provision_config());
+
+    /// `(bulk_job_mutation_id, chunk_index) → immutable Graph/public receipt and progress` (ADR
+    /// 0057). The parent mutation record remains the lifecycle/aggregate source of truth.
+    pub(crate) static ROUTER_BULK_LOAD_CHUNK_RECEIPTS:
+        RefCell<memory::StableBulkLoadChunkReceiptMap> =
+        RefCell::new(memory::init_bulk_load_chunk_receipts());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

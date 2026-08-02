@@ -6,7 +6,7 @@ import { GleaphCanisterError } from "./errors";
 import { GqlQueryRows, graphIdlFactory } from "./idl";
 import type {
   ApiExecutePreparedRequest,
-  ApiListPreparedResponse,
+  ApiPreparedMutationRequest,
   ApiPlanResponse,
   ApiPrepareRequest,
   ApiPrepareResponse,
@@ -14,7 +14,14 @@ import type {
   GqlMutationResult,
   GqlQueryResult,
   PreparedManifest,
+  ReadMode,
 } from "./types";
+import type {
+  BulkLoadCommand,
+  BulkLoadResponse,
+  BulkLoadStatusPage,
+  BulkLoadStatusRequest,
+} from "./bulk";
 import { toApiParams } from "./values";
 import { encodeCanonicalGqlValue } from "./canonical-value";
 
@@ -23,21 +30,41 @@ type ActorInterfaceFactory = Parameters<typeof Actor.createActor>[0];
 
 interface GraphActorMethods {
   explain(query: string): Promise<Result<ApiPlanResponse>>;
-  query(query: string, params: Uint8Array): Promise<Result<GqlQueryWireResult>>;
+  gql_query(
+    query: string,
+    params: Uint8Array,
+    read_mode: ReadMode,
+  ): Promise<Result<GqlQueryWireResult>>;
+  gql_mutate(
+    query: string,
+    params: Uint8Array,
+    client_mutation_key: string,
+  ): Promise<Result<GqlQueryWireResult>>;
   prepare(
     name: string,
     query: string,
     options: [] | [ApiPrepareRequest["options"]],
   ): Promise<Result<ApiPrepareResponse>>;
-  list_prepared_api(): Promise<Result<ApiListPreparedResponse>>;
-  prepared_manifest(graphName: string): Promise<Result<PreparedManifest>>;
+  list_prepared(graphName: string): Promise<Result<PreparedManifest>>;
   prepared_query(
     name: string,
     params: Uint8Array,
     sort: [] | [{ key: string; direction: string }[]],
+    read_mode: ReadMode,
   ): Promise<Result<GqlQueryWireResult>>;
-  prepared_update(name: string, params: Uint8Array): Promise<Result<bigint>>;
-  prepared_delete(name: string): Promise<Result<null>>;
+  prepared_mutate(
+    name: string,
+    params: Uint8Array,
+    client_mutation_key: string,
+  ): Promise<Result<GqlQueryWireResult>>;
+  bulk_load(command: BulkLoadCommand): Promise<Result<BulkLoadResponse>>;
+  bulk_load_status(
+    logicalGraphName: string,
+    clientBulkKey: string,
+    receiptCursor: [] | [number],
+    maxReceipts: number,
+  ): Promise<Result<BulkLoadStatusPage>>;
+  drop_prepared(name: string): Promise<Result<null>>;
 }
 
 type GqlQueryWireResult = {
@@ -90,11 +117,12 @@ function toGqlQueryResult(result: GqlQueryWireResult): GqlQueryResult {
       ? null
       : {
           mutation_id: result.token[0].mutation_id,
-          shards: result.token[0].shards.map((shard) => ({
-            shard_id: shard.shard_id,
-            label_stats_seq:
-              shard.label_stats_seq.length === 0 ? undefined : shard.label_stats_seq[0],
-          })),
+          shards: result.token[0].shards.map((shard) => {
+            const labelStatsSeq = shard.label_stats_seq[0];
+            return labelStatsSeq === undefined
+              ? { shard_id: shard.shard_id }
+              : { shard_id: shard.shard_id, label_stats_seq: labelStatsSeq };
+          }),
         };
   return {
     row_count: result.row_count,
@@ -137,7 +165,7 @@ class IcGraphTransport implements GraphTransport {
   async execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
-        await this.actor.query(request.query, encodeParams(request.params)),
+        await this.actor.gql_query(request.query, encodeParams(request.params), { Eventual: null }),
       ),
     );
   }
@@ -152,12 +180,8 @@ class IcGraphTransport implements GraphTransport {
     );
   }
 
-  async listPrepared(): Promise<ApiListPreparedResponse> {
-    return unwrapResult<ApiListPreparedResponse>(await this.actor.list_prepared_api());
-  }
-
   async getPreparedManifest(graphName: string): Promise<PreparedManifest> {
-    return unwrapResult<PreparedManifest>(await this.actor.prepared_manifest(graphName));
+    return unwrapResult<PreparedManifest>(await this.actor.list_prepared(graphName));
   }
 
   async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult> {
@@ -167,20 +191,42 @@ class IcGraphTransport implements GraphTransport {
         : [];
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
-        await this.actor.prepared_query(request.name, encodeParams(request.params), sort),
+        await this.actor.prepared_query(request.name, encodeParams(request.params), sort, {
+          Eventual: null,
+        }),
       ),
     );
   }
 
-  async executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<GqlMutationResult> {
-    const rowCount = unwrapResult<bigint>(
-      await this.actor.prepared_update(request.name, encodeParams(request.params)),
+  async executePreparedUpdate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult> {
+    return toGqlQueryResult(
+      unwrapResult<GqlQueryWireResult>(
+        await this.actor.prepared_mutate(
+          request.name,
+          encodeParams(request.params),
+          request.client_mutation_key,
+        ),
+      ),
     );
-    return { row_count: rowCount };
+  }
+
+  async bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse> {
+    return unwrapResult<BulkLoadResponse>(await this.actor.bulk_load(command));
+  }
+
+  async bulkLoadStatus(request: BulkLoadStatusRequest): Promise<BulkLoadStatusPage> {
+    return unwrapResult<BulkLoadStatusPage>(
+      await this.actor.bulk_load_status(
+        request.logical_graph_name,
+        request.client_bulk_key,
+        request.receipt_cursor === undefined ? [] : [request.receipt_cursor],
+        request.max_receipts,
+      ),
+    );
   }
 
   async dropPrepared(name: string): Promise<boolean> {
-    unwrapResult<null>(await this.actor.prepared_delete(name));
+    unwrapResult<null>(await this.actor.drop_prepared(name));
     return true;
   }
 }

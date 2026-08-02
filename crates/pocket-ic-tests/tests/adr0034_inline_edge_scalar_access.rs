@@ -13,10 +13,9 @@ use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, ensure_edge_label, ensure_property, ensure_vertex_label,
-    e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex, e2e_insert_vertex_with_label,
-    e2e_set_edge_property, gql_execute_as_admin,
-    gql_execute_as_admin_expect_err, gql_query_as_admin,
+    FederationEnv, e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex,
+    e2e_insert_vertex_with_label, e2e_set_edge_property, ensure_edge_label, ensure_property,
+    ensure_vertex_label, gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation,
 };
 use std::collections::BTreeMap;
@@ -39,7 +38,7 @@ fn inline_ddl() -> String {
 
 fn setup() -> FederationEnv {
     let env = install_single_shard_federation();
-    gql_execute_as_admin(&env, &inline_ddl(), "adr0034_inline_scalar_access_schema");
+    gql_mutate_as_admin(&env, &inline_ddl(), "adr0034_inline_scalar_access_schema");
     env
 }
 
@@ -171,7 +170,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, road_label_id
 }
 
 fn scenario_edge_index_create_rejects_inline_property(env: &FederationEnv) {
-    let err = gql_execute_as_admin_expect_err(
+    let err = gql_mutate_as_admin_expect_err(
         env,
         "CREATE INDEX dist_idx FOR ()-[e:ROAD]-() ON (e.distance)",
         "adr0034_inline_access_index_conflict",

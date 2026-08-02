@@ -108,7 +108,7 @@ Deliverables:
   `gleaph_graph_kernel::plan_exec::MutationJournalState`.
 - **Done.** Decide whether public mutation APIs return a richer result or add a
   status/token endpoint. Decision: richer result. The idempotent update entrypoints
-  (`gql_execute_idempotent`, `prepared_update_idempotent`) now return
+  (`gql_mutate`, `prepared_mutate`) now return
   `GqlQueryResult` with an optional `phase`. The mutation token with per-shard watermarks
   is deferred to Phase 2; only the lifecycle phase ships in Phase 0.
 - **Done.** Reconcile ADR 0023's completion invariant with ADR 0024's deferred-index
@@ -293,8 +293,9 @@ Deliverables:
   (`Eventual` is the `Default`; `Canonical` was removed in ADR 0056 — it was never implemented).
   New router composite-query entrypoints
   `gql_query(query, params, read_mode)` and
-  `execute_prepared(name, params, sort, read_mode)` carry it; the existing
-  `gql_query` / `execute_prepared` default to `Eventual` (back-compatible).
+  `prepared_query(name, params, sort, read_mode)` carry it; `gql_query` and
+  `prepared_query` require the explicit mode (callers use `Eventual` for the historical
+  non-blocking behavior).
 - **Done.** Unmet watermarks return a retryable `RouterError::ProjectionLag { shard_id, watermark,
 required, current }` **without serving stale state**; the caller retries after the projection
   drains.
@@ -352,7 +353,7 @@ Scope decision (projection-only autonomous recovery): the background timer drive
 idempotent half of recovery — projection/index convergence for sagas whose canonical writes are
 already durable. It deliberately does **not** re-dispatch canonical DML, because autonomous shard
 re-execution is the single operation that risks double-apply. Unfinished canonical writes
-(`CanonicalPending`) are resumed by explicit idempotent retry, surfaced via `get_mutation_status`. Full
+(`CanonicalPending`) are resumed by explicit idempotent retry, surfaced via `mutation_status`. Full
 autonomous canonical re-dispatch can be added later without reworking the timer/lease/status
 machinery (it would add envelope `plan_blob`/`params` persistence plus a re-dispatch branch).
 
@@ -368,7 +369,7 @@ Deliverables:
 - Exclude non-terminal mutations from TTL eviction (terminal-only predicate). **Done** (ADR 0025
   revision; `evict_expired_client_mutation_keys`).
 - Operator/SDK inspection for stuck phase, last error, target shard, next retry action. **Done**
-  (`get_mutation_status` router query).
+  (`mutation_status` router query; `atomic_insert_status` is the family-specific receipt query).
 - Bound work per timer message and avoid unsafe lease expiry. **Done** (per-tick scan budget;
   `routing_lease_ns` / `ROUTING_LEASE_TTL_NS` reclaim is safe only pre-envelope).
 
@@ -377,7 +378,7 @@ Tests:
 - Drop the original client after one shard commits; recovery completes remaining shards. **Done** —
   host tests cover the recovery decision logic (scan selection, projection convergence record
   mutations, lease reclaim, TTL retention, status derivation); a PocketIC test asserts the timer is
-  armed, runs, and is a safe no-op on a terminal saga, plus `get_mutation_status` wiring. A full
+  armed, runs, and is a safe no-op on a terminal saga, plus `mutation_status` wiring. A full
   end-to-end convergence test crashes one shard mid-saga, asserts the saga persists as
   `CanonicalPending`, that the autonomous timer leaves it pending without double-applying while the
   shard is down, and that restarting the shard plus an idempotent retry converges it to `Completed`
@@ -396,8 +397,11 @@ Tests:
   only and idempotent; `post_upgrade` re-arms the timer.
 - Repeated rejection keeps durable progress and does not spin unboundedly — timer backs off to a
   relaxed delay and stops a lap that finds no recoverable saga.
-- Completed records still compact and expire under ADR 0025 — unchanged; terminal records evict as
-  before.
+- Completed records still compact under ADR 0025. Since ADR 0057, the shared Router record stores
+  `terminal_at_ns` at the first irreversible terminal transition; the seven-day terminal retention
+  window and `atomic_insert_status` receipt recovery are measured from that anchor. Non-terminal
+  records remain ineligible for GC, while Graph's independent nine-day retirement evidence remains
+  unchanged under ADR 0027.
 
 Benchmarks:
 

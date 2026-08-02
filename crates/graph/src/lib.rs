@@ -99,14 +99,6 @@ fn execute_ordered_mixed_batch(
     canister::handlers::execute_ordered_mixed_batch(args)
 }
 
-/// Router → graph: retire an exact ordered vertex mutation after projection convergence.
-#[update(guard = "guard_router_canister")]
-fn retire_ordered_vertex_mutation(
-    args: gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementArgs,
-) -> Result<gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementAck, String> {
-    canister::handlers::retire_ordered_vertex_mutation(args)
-}
-
 #[update(guard = "guard_router_canister")]
 async fn execute_plan_update_batch(
     args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs,
@@ -114,14 +106,12 @@ async fn execute_plan_update_batch(
     canister::handlers::execute_plan_update_batch(args).await
 }
 
-/// Router → graph: the unified versionless bulk execution entrypoint (ADR 0047).
-///
-/// The envelope variant selects per-operation complete-row seeds or one shared seed relation.
+/// Router → graph: retire an exact ordered vertex mutation after projection convergence.
 #[update(guard = "guard_router_canister")]
-async fn execute_plan_update_batch_bulk(
-    args: gleaph_graph_kernel::plan_exec::ExecutePlanBulkBatch,
-) -> Result<gleaph_graph_kernel::plan_exec::ExecutePlanBatchResult, String> {
-    canister::handlers::execute_plan_update_batch_bulk(args).await
+fn retire_ordered_vertex_mutation(
+    args: gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementAck, String> {
+    canister::handlers::retire_ordered_vertex_mutation(args)
 }
 
 #[query(guard = "guard_router_canister")]

@@ -1,6 +1,6 @@
 # Social Graph and GraphRAG Comparison Demo
 
-Last updated: 2026-07-13
+Last updated: 2026-08-02
 Anchor timestamp: 2026-07-13 08:15:23 UTC +0000
 
 ## Status
@@ -16,14 +16,15 @@ readable as `<author>/<post-stem>` paths.
 As of 2026-07-31 05:00:26 UTC +0000:
 
 - Canonical manifest: `frontend/apps/social-demo/seeds/social-graph.json`.
-- Generated seed artifact: `frontend/apps/social-demo/seeds/social-seeds.json`.
+- Generated typed-load artifact: `frontend/apps/social-demo/seeds/social-load.json`.
 - Config-driven build: `frontend/apps/social-demo/scripts/build-config.mjs`.
 - The seed graph now includes a `public-feed` Feed vertex and materialized `IN_PUBLIC_FEED` /
   `IN_HOME_FEED` edges so the public timeline and home feed read paths need no runtime sort key.
 - Seed generator: `frontend/apps/social-demo/scripts/build-config.mjs` emits the canonical graph
   manifest and seed artifact from the social-demo configuration.
-- Seed applier: `frontend/apps/social-demo/scripts/apply-social-seeds.mjs` accepts optional seeds
-  path, canister name, and method name arguments.
+- Seed applier: `frontend/apps/social-demo/scripts/apply-social-load.mjs` exact-replays durable
+  vertex and edge chunks, recovers canonical IDs from vertex receipts, ingests embeddings from those
+  IDs, and fences whole-load completion with the permanent `SeedLoad` marker.
 - Gateway canister: `crates/social-demo-gateway`.
 - Committed Gateway Candid: `crates/social-demo-gateway/social_demo_gateway.did`.
 - Candid drift check: `scripts/check-social-demo-gateway-candid.sh` verifies the committed

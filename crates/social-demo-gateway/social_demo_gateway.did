@@ -59,6 +59,10 @@ type Result = variant { Ok : GqlQueryResult; Err : SocialDemoGatewayError };
 type RouterError = variant {
   Internal : text;
   ShardNotRegistered;
+  // Retryable command contention: the named durable operation must settle before the
+  // requested command can transition. Bulk-load v1 uses the stable operation identifiers
+  // `bulk_load.append` and `bulk_load.abort`.
+  Busy : record { operation : text };
   // The Provision canister sent an ack with a registry version that differs from the
   // version already committed by a previous `Completed` Router record. **Not retryable as
   // written**: investigate the version mismatch before re-issuing.

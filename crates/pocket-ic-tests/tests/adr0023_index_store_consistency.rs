@@ -22,13 +22,12 @@ use gleaph_graph_kernel::index::PostingHit;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, ensure_edge_label, ensure_property, create_edge_property_index,
-    create_vertex_property_index, drain_maintenance_via_timer, drop_vertex_property_index,
+    FederationEnv, create_edge_property_index, create_vertex_property_index,
+    drain_maintenance_via_timer, drop_vertex_property_index,
     e2e_delete_directed_edge_with_property, e2e_enqueue_forward_compaction,
     e2e_insert_directed_edge_with_property, e2e_insert_vertex, e2e_maintenance_queue_len,
-    e2e_reverse_resolved_edge_property, gql_execute_as_admin,
-    gql_execute_result_as_admin, gql_query_as_admin, install_single_shard_federation,
-    wasm_bytes,
+    e2e_reverse_resolved_edge_property, ensure_edge_label, ensure_property, gql_mutate_as_admin,
+    gql_mutate_result_as_admin, gql_query_as_admin, install_single_shard_federation, wasm_bytes,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -70,7 +69,7 @@ fn post_upgrade_indexed_write_stays_consistent_with_store() {
 
     // Pre-upgrade indexed write: the posting is created and the index-served
     // equality lookup finds exactly the one matching vertex.
-    let _ = gql_execute_as_admin(
+    let _ = gql_mutate_as_admin(
         &env,
         "INSERT (:Person {age: 5})",
         "adr0023_pre_upgrade_insert",
@@ -90,7 +89,7 @@ fn post_upgrade_indexed_write_stays_consistent_with_store() {
         .expect("upgrade graph shard canister");
 
     // Post-upgrade indexed write of a second vertex with the SAME indexed value.
-    let _ = gql_execute_as_admin(
+    let _ = gql_mutate_as_admin(
         &env,
         "INSERT (:Person {age: 5})",
         "adr0023_post_upgrade_insert",
@@ -124,7 +123,7 @@ fn post_upgrade_indexed_edge_write_stays_consistent_with_store() {
 
     const EDGE_QUERY: &str = "MATCH (a)-[e:KNOWS {weight: 7}]->(b) RETURN e";
 
-    let _ = gql_execute_as_admin(
+    let _ = gql_mutate_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 7}]->(:Project)",
         "adr0023_pre_upgrade_edge_insert",
@@ -140,7 +139,7 @@ fn post_upgrade_indexed_edge_write_stays_consistent_with_store() {
         .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
         .expect("upgrade graph shard canister");
 
-    let _ = gql_execute_as_admin(
+    let _ = gql_mutate_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 7}]->(:Project)",
         "adr0023_post_upgrade_edge_insert",
@@ -167,7 +166,7 @@ fn drop_index_purges_postings_from_graph_index() {
         "age",
         "p7_create_index",
     );
-    let _ = gql_execute_as_admin(&env, "INSERT (:Person {age: 5})", "p7_insert");
+    let _ = gql_mutate_as_admin(&env, "INSERT (:Person {age: 5})", "p7_insert");
 
     let age_value = value_to_index_key_bytes(&Value::Int64(5))
         .expect("encode age value")
@@ -414,7 +413,7 @@ fn repair_journal_replays_index_batch_after_graph_upgrade() {
     env.pic
         .stop_canister(env.index, None)
         .expect("stop graph-index to force a deferred posting flush");
-    let outcome = gql_execute_result_as_admin(
+    let outcome = gql_mutate_result_as_admin(
         &env,
         "INSERT (:Person {age: 99})",
         "adr0023_repair_upgrade_insert",

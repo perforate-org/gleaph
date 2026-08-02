@@ -10,8 +10,10 @@ use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
-    AdminAttachVectorIndexShardArgs, BatchRequest, BatchResponse, GqlExecuteIdempotentBatchItem,
-    RegisterGraphArgs, RegisterGraphShard, RegisterVectorIndexArgs,
+    AdminAttachVectorIndexShardArgs, AtomicInsertPropertyV1, AtomicInsertRequest,
+    AtomicInsertResponse, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs,
+    RegisterGraphShard, RegisterVectorIndexArgs,
 };
 use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -1203,14 +1205,14 @@ pub fn ensure_edge_label(
     }
 }
 
-/// Gleaph extension DDL on the router update path (`gql_execute`).
-pub fn gql_execute_as_admin(env: &FederationEnv, query: &str, client_mutation_key: &str) -> u64 {
-    gql_execute_result_as_admin(env, query, client_mutation_key).row_count
+/// Gleaph extension DDL on the router update path (`gql_mutate`).
+pub fn gql_mutate_as_admin(env: &FederationEnv, query: &str, client_mutation_key: &str) -> u64 {
+    gql_mutate_result_as_admin(env, query, client_mutation_key).row_count
 }
 
-/// Like [`gql_execute_as_admin`] but returns the full `GqlQueryResult`
+/// Like [`gql_mutate_as_admin`] but returns the full `GqlQueryResult`
 /// (lifecycle `phase` and ADR 0029 Phase 2 mutation `token`), not just the row count.
-pub fn gql_execute_result_as_admin(
+pub fn gql_mutate_result_as_admin(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -1225,67 +1227,17 @@ pub fn gql_execute_result_as_admin(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute",
-            Encode!(&query, &params, &mutation_key).expect("encode gql_execute"),
+            "gql_mutate",
+            Encode!(&query, &params, &mutation_key).expect("encode gql_mutate"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_mutate on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Ok(result)) => result,
         Ok(Err(err)) => {
-            panic!("gql_execute rejected for client mutation key '{mutation_key}': {err:?}")
+            panic!("gql_mutate rejected for client mutation key '{mutation_key}': {err:?}")
         }
         Err(err) => {
-            panic!("decode gql_execute for client mutation key '{mutation_key}': {err}")
-        }
-    }
-}
-
-/// Execute a paged idempotent mutation batch through the Router as the admin
-/// principal. The Router may return a continuation cursor when the per-call
-/// instruction budget is exhausted; this helper follows the cursor until the
-/// whole batch is applied.
-const SOCIAL_SEED_BATCH_PAGE_SIZE: usize = 400;
-
-pub fn gql_execute_batch_as_admin(
-    env: &FederationEnv,
-    mutations: Vec<GqlExecuteIdempotentBatchItem>,
-) {
-    use gleaph_graph_kernel::federation::RouterError;
-
-    use gleaph_router::types::{GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchResult};
-
-    let total = mutations.len() as u32;
-    let mut start_index = 0u32;
-    while start_index < total {
-        let page_end = std::cmp::min(
-            start_index as usize + SOCIAL_SEED_BATCH_PAGE_SIZE,
-            mutations.len(),
-        );
-        let page = mutations[start_index as usize..page_end].to_vec();
-        let args = GqlExecuteIdempotentBatchArgs {
-            mutations: page,
-            start_index: 0,
-            instruction_budget: None,
-        };
-        let bytes = env
-            .pic
-            .update_call(
-                env.router,
-                env.admin,
-                "gql_execute_batch",
-                Encode!(&args).expect("encode gql_execute_batch"),
-            )
-            .unwrap_or_else(|e| panic!("gql_execute_batch on router: {e:?}"));
-        match Decode!(&bytes, Result<GqlExecuteIdempotentBatchResult, RouterError>) {
-            Ok(Ok(result)) => {
-                let applied = result.results.len() as u32;
-                if applied == 0 {
-                    panic!("gql_execute_batch applied zero mutations");
-                }
-                start_index += applied;
-            }
-            Ok(Err(err)) => panic!("gql_execute_batch rejected: {err:?}"),
-            Err(err) => panic!("decode gql_execute_batch: {err}"),
+            panic!("decode gql_mutate for client mutation key '{mutation_key}': {err}")
         }
     }
 }
@@ -1343,7 +1295,7 @@ pub fn create_edge_property_index(
     let ddl = format!(
         "CREATE INDEX {index_name} IF NOT EXISTS FOR ()-[e:{edge_label}]-() ON (e.{property})"
     );
-    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_mutate_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1363,7 +1315,7 @@ pub fn create_directed_edge_property_index(
     let ddl = format!(
         "CREATE INDEX {index_name} IF NOT EXISTS FOR ()-[e:{edge_label}]->() ON (e.{property})"
     );
-    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_mutate_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1383,7 +1335,7 @@ pub fn create_undirected_edge_property_index(
     let ddl = format!(
         "CREATE INDEX {index_name} IF NOT EXISTS FOR () ~[e:{edge_label}]~ () ON (e.{property})"
     );
-    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_mutate_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1402,7 +1354,7 @@ pub fn create_vertex_property_index(
     let _ = ensure_property(env, property);
     let ddl =
         format!("CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{vertex_label}) ON (n.{property})");
-    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_mutate_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "CREATE INDEX DDL should return row_count 0, got {row_count}"
@@ -1421,7 +1373,7 @@ pub fn drop_vertex_property_index(
     } else {
         format!("DROP INDEX {index_name}")
     };
-    let row_count = gql_execute_as_admin(env, &ddl, client_mutation_key);
+    let row_count = gql_mutate_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,
         "DROP INDEX DDL should return row_count 0, got {row_count}"
@@ -1803,7 +1755,7 @@ pub fn list_prepared_as_admin(
 }
 
 /// Execute a registered prepared query as `caller` with an explicit parameter blob.
-pub fn execute_prepared_with_params_as(
+pub fn prepared_query_with_params_as(
     env: &FederationEnv,
     caller: Principal,
     name: &str,
@@ -1816,20 +1768,20 @@ pub fn execute_prepared_with_params_as(
         .query_call(
             env.router,
             caller,
-            "execute_prepared",
+            "prepared_query",
             Encode!(
                 &name.to_string(),
                 &params_blob,
                 &Option::<Vec<gleaph_prepared_api::PreparedSortSpec>>::None,
                 &ReadMode::Eventual
             )
-            .expect("encode execute_prepared"),
+            .expect("encode prepared_query"),
         )
-        .unwrap_or_else(|e| panic!("execute_prepared on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("prepared_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => panic!("execute_prepared rejected: {err:?}"),
-        Err(err) => panic!("decode execute_prepared: {err}"),
+        Ok(Err(err)) => panic!("prepared_query rejected: {err:?}"),
+        Err(err) => panic!("decode prepared_query: {err}"),
     }
 }
 
@@ -1930,7 +1882,7 @@ pub fn gql_query_as_admin_with_read_mode(
 
 /// Router `mutation_status` (ADR 0029 Phase 4) as the bootstrap admin principal. Returns the
 /// raw `Result` so a test can assert both a found saga and the not-found error.
-pub fn get_mutation_status_as_admin(
+pub fn mutation_status_as_admin(
     env: &FederationEnv,
     logical_graph_name: &str,
     client_mutation_key: &str,
@@ -1943,7 +1895,7 @@ pub fn get_mutation_status_as_admin(
         .query_call(
             env.router,
             env.admin,
-            "get_mutation_status",
+            "mutation_status",
             Encode!(
                 &logical_graph_name.to_string(),
                 &client_mutation_key.to_string()
@@ -1954,25 +1906,215 @@ pub fn get_mutation_status_as_admin(
     Decode!(&bytes, Result<MutationStatus, RouterError>).expect("decode mutation_status")
 }
 
-/// Execute one Router batch as the bootstrap admin.
-pub fn batch_insert_as_admin(
+/// Router `atomic_insert_status` as the bootstrap admin. Returns the durable receipt, including
+/// graph-scoped allocated vertex IDs, even when the original update response was lost.
+pub fn atomic_insert_status_as_admin(
     env: &FederationEnv,
-    request: BatchRequest,
-) -> Result<BatchResponse, gleaph_graph_kernel::federation::RouterError> {
+    logical_graph_name: &str,
+    client_mutation_key: &str,
+) -> Result<AtomicInsertResponse, gleaph_graph_kernel::federation::RouterError> {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "atomic_insert_status",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_mutation_key.to_string()
+            )
+            .expect("encode atomic_insert_status"),
+        )
+        .unwrap_or_else(|e| panic!("atomic_insert_status on router: {e:?}"));
+    Decode!(&bytes, Result<AtomicInsertResponse, RouterError>).expect("decode atomic_insert_status")
+}
+
+/// Execute one Router atomic insert as the bootstrap admin.
+pub fn atomic_insert_as_admin(
+    env: &FederationEnv,
+    request: AtomicInsertRequest,
+) -> Result<AtomicInsertResponse, gleaph_graph_kernel::federation::RouterError> {
     let bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "batch_insert",
-            Encode!(&request).expect("encode batch"),
+            "atomic_insert",
+            Encode!(&request).expect("encode atomic_insert"),
         )
-        .unwrap_or_else(|e| panic!("batch on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("atomic_insert on router: {e:?}"));
     Decode!(
         &bytes,
-        Result<BatchResponse, gleaph_graph_kernel::federation::RouterError>
+        Result<AtomicInsertResponse, gleaph_graph_kernel::federation::RouterError>
     )
-    .expect("decode batch")
+    .expect("decode atomic_insert")
+}
+
+/// Execute one durable Router bulk-load command as the bootstrap admin.
+pub fn bulk_load_as_admin(
+    env: &FederationEnv,
+    command: BulkLoadCommand,
+) -> Result<BulkLoadResponse, gleaph_graph_kernel::federation::RouterError> {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "bulk_load",
+            Encode!(&command).expect("encode bulk_load"),
+        )
+        .unwrap_or_else(|e| panic!("bulk_load on router: {e:?}"));
+    Decode!(&bytes, Result<BulkLoadResponse, RouterError>).expect("decode bulk_load")
+}
+
+/// Execute one durable Router bulk-load command and require the ingress itself to trap.
+pub fn bulk_load_as_admin_expect_trap(env: &FederationEnv, command: BulkLoadCommand) {
+    let result = env.pic.update_call(
+        env.router,
+        env.admin,
+        "bulk_load",
+        Encode!(&command).expect("encode bulk_load"),
+    );
+    assert!(result.is_err(), "bulk_load should trap, got {result:?}");
+}
+
+/// Inspect the test-only durable Start allocation boundary for one bulk-load key.
+pub fn bulk_load_start_probe_as_admin(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_bulk_key: &str,
+) -> (u64, Option<u64>, bool) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "test_bulk_load_start_probe",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_bulk_key.to_string()
+            )
+            .expect("encode test_bulk_load_start_probe"),
+        )
+        .unwrap_or_else(|e| panic!("test_bulk_load_start_probe on router: {e:?}"));
+    Decode!(&bytes, Result<(u64, Option<u64>, bool), RouterError>)
+        .expect("decode test_bulk_load_start_probe")
+        .unwrap_or_else(|err| panic!("test_bulk_load_start_probe rejected: {err:?}"))
+}
+
+/// Expand one publicly completed bulk-load receipt into the fixed 65-row deterministic GC fixture.
+pub fn seed_bulk_load_gc_fixture_as_admin(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_bulk_key: &str,
+) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "test_seed_bulk_load_gc_fixture",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_bulk_key.to_string()
+            )
+            .expect("encode test_seed_bulk_load_gc_fixture"),
+        )
+        .unwrap_or_else(|error| panic!("test_seed_bulk_load_gc_fixture: {error:?}"));
+    Decode!(&bytes, Result<(), RouterError>)
+        .expect("decode test_seed_bulk_load_gc_fixture")
+        .unwrap_or_else(|error| panic!("test_seed_bulk_load_gc_fixture rejected: {error:?}"));
+}
+
+/// Drive exactly one production bulk receipt-GC step through the test-feature seam.
+pub fn bulk_load_gc_step_as_admin(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_bulk_key: &str,
+) -> (u32, u32, bool) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "test_bulk_load_gc_step",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_bulk_key.to_string()
+            )
+            .expect("encode test_bulk_load_gc_step"),
+        )
+        .unwrap_or_else(|error| panic!("test_bulk_load_gc_step: {error:?}"));
+    Decode!(&bytes, Result<(u32, u32, bool), RouterError>)
+        .expect("decode test_bulk_load_gc_step")
+        .unwrap_or_else(|error| panic!("test_bulk_load_gc_step rejected: {error:?}"))
+}
+
+/// Observe the exact durable parent/receipt state without advancing bulk GC.
+pub fn bulk_load_gc_probe_as_admin(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_bulk_key: &str,
+) -> (bool, Option<u32>, u32, Option<String>) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "test_bulk_load_gc_probe",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_bulk_key.to_string()
+            )
+            .expect("encode test_bulk_load_gc_probe"),
+        )
+        .unwrap_or_else(|error| panic!("test_bulk_load_gc_probe: {error:?}"));
+    Decode!(
+        &bytes,
+        Result<(bool, Option<u32>, u32, Option<String>), RouterError>
+    )
+    .expect("decode test_bulk_load_gc_probe")
+    .unwrap_or_else(|error| panic!("test_bulk_load_gc_probe rejected: {error:?}"))
+}
+
+/// Read one bounded durable Router bulk-load status page as the bootstrap admin.
+pub fn bulk_load_status_as_admin(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_bulk_key: &str,
+    receipt_cursor: Option<u32>,
+    max_receipts: u32,
+) -> Result<BulkLoadStatusPage, gleaph_graph_kernel::federation::RouterError> {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "bulk_load_status",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_bulk_key.to_string(),
+                &receipt_cursor,
+                &max_receipts
+            )
+            .expect("encode bulk_load_status"),
+        )
+        .unwrap_or_else(|e| panic!("bulk_load_status on router: {e:?}"));
+    Decode!(&bytes, Result<BulkLoadStatusPage, RouterError>).expect("decode bulk_load_status")
 }
 
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga under `client_mutation_key`
@@ -2469,19 +2611,6 @@ pub fn fully_activate_social_vector_index(
         .expect("router attaches shard");
 }
 
-/// Resolve the opaque encoded `ELEMENT_ID` for one seeded Post by its `demo_id`.
-pub fn resolve_social_post_element_id(env: &FederationEnv, demo_id: &str) -> Vec<u8> {
-    let numeric_id = demo_id
-        .parse::<i64>()
-        .unwrap_or_else(|_| panic!("social Post demo_id must be numeric: {demo_id}"));
-    let query = format!(
-        "MATCH (p:Post {{demo_id: {}}}) RETURN ELEMENT_ID(p) AS element_id",
-        numeric_id
-    );
-    let result =
-        gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
-    element_id_bytes_from_gql_result(&result, "element_id")
-}
 /// Encode a deterministic `f32` embedding vector into little-endian bytes.
 pub fn encode_f32_embedding(values: &[f32]) -> Vec<u8> {
     values
@@ -2492,8 +2621,12 @@ pub fn encode_f32_embedding(values: &[f32]) -> Vec<u8> {
 
 /// Ingest every Post embedding from the canonical social manifest through Router's canonical
 /// ingestion boundary. `embeddings` is the `embeddings` object from the generated social seeds
-/// artifact, keyed by Post `demo_id`.
-pub fn ingest_social_embeddings(env: &FederationEnv, embeddings: &serde_json::Value) {
+/// artifact, keyed by Post application `source_id`. IDs must come from exact-replayed bulk receipts.
+pub fn ingest_social_embeddings(
+    env: &FederationEnv,
+    source_ids: &std::collections::BTreeMap<String, Vec<u8>>,
+    embeddings: &serde_json::Value,
+) {
     use gleaph_router::types::{
         AdminIngestVertexEmbeddingBatchArgs, AdminIngestVertexEmbeddingBatchItem,
     };
@@ -2502,20 +2635,23 @@ pub fn ingest_social_embeddings(env: &FederationEnv, embeddings: &serde_json::Va
         .as_object()
         .expect("social embeddings must be a JSON object");
     let mut items: Vec<(String, AdminIngestVertexEmbeddingBatchItem)> = Vec::new();
-    for (demo_id, meta) in embeddings {
-        let encoded = resolve_social_post_element_id(env, demo_id);
+    for (source_id, meta) in embeddings {
+        let encoded = source_ids
+            .get(source_id)
+            .unwrap_or_else(|| panic!("missing replay-proven ID for {source_id}"))
+            .clone();
         let values: Vec<f32> = meta["values"]
             .as_array()
-            .unwrap_or_else(|| panic!("embedding values for {demo_id} must be an array"))
+            .unwrap_or_else(|| panic!("embedding values for {source_id} must be an array"))
             .iter()
             .map(|v| {
                 v.as_f64()
-                    .unwrap_or_else(|| panic!("embedding value for {demo_id} must be a number"))
+                    .unwrap_or_else(|| panic!("embedding value for {source_id} must be a number"))
                     as f32
             })
             .collect();
         items.push((
-            demo_id.clone(),
+            source_id.clone(),
             AdminIngestVertexEmbeddingBatchItem {
                 encoded_vertex_id: encoded,
                 values,
@@ -2594,7 +2730,7 @@ pub fn gql_query_as_admin_expect_err(
 }
 
 /// Gleaph extension DDL on the update path, expected to fail.
-pub fn gql_execute_as_admin_expect_err(
+pub fn gql_mutate_as_admin_expect_err(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -2609,19 +2745,16 @@ pub fn gql_execute_as_admin_expect_err(
         .update_call(
             env.router,
             env.admin,
-            "gql_execute",
-            Encode!(&query, &params, &mutation_key).expect("encode gql_execute"),
+            "gql_mutate",
+            Encode!(&query, &params, &mutation_key).expect("encode gql_mutate"),
         )
-        .unwrap_or_else(|e| panic!("gql_execute on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("gql_mutate on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Err(err)) => err,
         Ok(Ok(result)) => {
-            panic!(
-                "gql_execute should fail, got row_count {}",
-                result.row_count
-            )
+            panic!("gql_mutate should fail, got row_count {}", result.row_count)
         }
-        Err(err) => panic!("decode gql_execute: {err}"),
+        Err(err) => panic!("decode gql_mutate: {err}"),
     }
 }
 
@@ -2645,9 +2778,9 @@ pub fn arm_router_fault(env: &FederationEnv, code: u8) {
     .unwrap_or_else(|err| panic!("test_arm_fault rejected: {err:?}"));
 }
 
-/// Run `gql_execute` as admin expecting the message itself to **trap** (an injected
+/// Run `gql_mutate` as admin expecting the message itself to **trap** (an injected
 /// fault), i.e. the ingress is rejected rather than returning an application `Result`.
-pub fn gql_execute_as_admin_expect_trap(
+pub fn gql_mutate_as_admin_expect_trap(
     env: &FederationEnv,
     query: &str,
     client_mutation_key: &str,
@@ -2655,13 +2788,13 @@ pub fn gql_execute_as_admin_expect_trap(
     let result = env.pic.update_call(
         env.router,
         env.admin,
-        "gql_execute",
+        "gql_mutate",
         Encode!(
             &query.to_string(),
             &Vec::<u8>::new(),
             &client_mutation_key.to_string()
         )
-        .expect("encode gql_execute"),
+        .expect("encode gql_mutate"),
     );
     assert!(
         result.is_err(),
@@ -2670,12 +2803,12 @@ pub fn gql_execute_as_admin_expect_trap(
     );
 }
 
-/// Submit two `gql_execute` ingress messages (as admin) **before** executing any round,
+/// Submit two `gql_mutate` ingress messages (as admin) **before** executing any round,
 /// then drive rounds so they interleave (each yields at its dispatch `await`). Returns both decoded
 /// application results so a caller can assert exactly one winner. Used for the ADR 0030 true
 /// concurrent same-value conflict test.
 #[allow(clippy::type_complexity)]
-pub fn gql_execute_pair_concurrent_as_admin(
+pub fn gql_mutate_pair_concurrent_as_admin(
     env: &FederationEnv,
     query_a: &str,
     key_a: &str,
@@ -2692,17 +2825,16 @@ pub fn gql_execute_pair_concurrent_as_admin(
     >,
 ) {
     let encode = |query: &str, key: &str| {
-        Encode!(&query.to_string(), &Vec::<u8>::new(), &key.to_string())
-            .expect("encode gql_execute")
+        Encode!(&query.to_string(), &Vec::<u8>::new(), &key.to_string()).expect("encode gql_mutate")
     };
     let msg_a = env
         .pic
-        .submit_call(env.router, env.admin, "gql_execute", encode(query_a, key_a))
-        .expect("submit gql_execute a");
+        .submit_call(env.router, env.admin, "gql_mutate", encode(query_a, key_a))
+        .expect("submit gql_mutate a");
     let msg_b = env
         .pic
-        .submit_call(env.router, env.admin, "gql_execute", encode(query_b, key_b))
-        .expect("submit gql_execute b");
+        .submit_call(env.router, env.admin, "gql_mutate", encode(query_b, key_b))
+        .expect("submit gql_mutate b");
     // Both ingress messages are now queued; ticking executes them in interleaved rounds.
     for _ in 0..60 {
         env.pic.tick();
@@ -2712,7 +2844,7 @@ pub fn gql_execute_pair_concurrent_as_admin(
             &bytes,
             Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError>
         )
-        .expect("decode gql_execute a"),
+        .expect("decode gql_mutate a"),
         Err(reject) => panic!("concurrent ingress a unexpectedly trapped: {reject:?}"),
     };
     let result_b = match env.pic.await_call(msg_b) {
@@ -2720,24 +2852,24 @@ pub fn gql_execute_pair_concurrent_as_admin(
             &bytes,
             Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError>
         )
-        .expect("decode gql_execute b"),
+        .expect("decode gql_mutate b"),
         Err(reject) => panic!("concurrent ingress b unexpectedly trapped: {reject:?}"),
     };
     (result_a, result_b)
 }
 
-const SOCIAL_SEEDS_JSON: &str =
-    include_str!("../../../frontend/apps/social-demo/seeds/social-seeds.json");
+const SOCIAL_LOAD_JSON: &str =
+    include_str!("../../../frontend/apps/social-demo/seeds/social-load.json");
 
 const UPGRADE_FIXTURE_QUERY: &str = "\
 MATCH ()-[e:UPGRADE_EDGE]->() WHERE e.fixture_edge_id IS NOT NULL \
 RETURN e.fixture_edge_id AS edge_id, e.fixture_kind AS edge_kind \
 ORDER BY edge_id";
 
-/// Seed a 26-edge fan-out fixture through Router `gql_execute`.
+/// Seed a 26-edge fan-out fixture through Router `gql_mutate`.
 pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
     let source_query = "INSERT (:UpgradeSource {fixture_id: 'source', fixture_kind: 'upgrade'})";
-    let row_count = gql_execute_as_admin(env, source_query, "upgrade-fixture-source");
+    let row_count = gql_mutate_as_admin(env, source_query, "upgrade-fixture-source");
     assert_eq!(row_count, 0, "source seed should not return rows");
     drain_maintenance_via_timer(env, env.graph_source);
 
@@ -2749,7 +2881,7 @@ pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
              ->(:UpgradeTarget {{fixture_id: 'target-{index:02}', fixture_kind: 'upgrade'}})"
         );
         let key = format!("upgrade-fixture-{edge_id}");
-        let row_count = gql_execute_as_admin(env, &gql, &key);
+        let row_count = gql_mutate_as_admin(env, &gql, &key);
         assert_eq!(row_count, 0, "seed {key} should not return rows");
         drain_maintenance_via_timer(env, env.graph_source);
     }
@@ -2758,11 +2890,13 @@ pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
 pub fn upgrade_fixture_query() -> &'static str {
     UPGRADE_FIXTURE_QUERY
 }
-/// Seed the social demo graph through Router `gql_execute`, then assert
+/// Seed the social demo graph through Router `gql_mutate`, then assert
 /// that the materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges return their source posts
 /// in creation order (the deterministic fixed-label scan order, no ORDER BY).
-pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
-    seed_social_graph(env);
+pub fn seed_social_graph_and_assert_feed_edge_order(
+    env: &FederationEnv,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let source_ids = seed_social_graph(env);
 
     // The fixed-label scan yields source posts in vertex-id (creation) order: the materialized
     // feed edges are asserted oldest-first (the order the posts were created), which is the
@@ -2798,44 +2932,52 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         social_feed_post_ids("-in-home-alice"),
         "IN_HOME_FEED fixed-label scan should return posts in creation order"
     );
+    source_ids
 }
 
 pub fn social_feed_post_ids(key_suffix: &str) -> Vec<String> {
     let parsed: serde_json::Value =
-        serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds for feed assertion");
-    let seeds = parsed["seeds"].as_array().expect("social seed array");
+        serde_json::from_str(SOCIAL_LOAD_JSON).expect("parse typed social load for feed assertion");
+    let vertices = parsed["vertices"].as_array().expect("social vertices");
+    let edges = parsed["edges"].as_array().expect("social edges");
 
     // The graph's fixed-label scan yields source posts in vertex-id (creation) order. Feed
-    // edge seeds are parameterized (post id in the `$a_demo_id` param) and the generator
-    // interleaves authors within a feed, so the expected order is the posts' creation rank
-    // (their position in the POSTED wave), not the feed-edge seed order.
-    let mut creation_rank: std::collections::HashMap<i64, usize> = Default::default();
-    for (rank, seed) in seeds.iter().enumerate() {
-        if seed["gql"]
-            .as_str()
-            .is_some_and(|gql| gql.contains("-[:POSTED"))
+    // edges are source-ID-addressed, so derive their numeric display identity and creation rank
+    // from the ordered Post vertices in the same artifact.
+    let mut posts = std::collections::HashMap::<String, (usize, i64)>::new();
+    for (rank, vertex) in vertices.iter().enumerate() {
+        if vertex["labels"]
+            .as_array()
+            .is_some_and(|labels| labels.iter().any(|label| label.as_str() == Some("Post")))
         {
-            if let Some(post_id) = seed["params"]["$b_demo_id"].as_i64() {
-                creation_rank.entry(post_id).or_insert(rank);
-            }
+            posts.insert(
+                vertex["source_id"]
+                    .as_str()
+                    .expect("post source_id")
+                    .to_string(),
+                (
+                    rank,
+                    vertex["properties"]["demo_id"]["Int64"]
+                        .as_i64()
+                        .expect("post demo_id"),
+                ),
+            );
         }
     }
 
-    let mut post_ids: Vec<(usize, String)> = seeds
+    let mut post_ids: Vec<(usize, String)> = edges
         .iter()
-        .filter(|seed| {
-            seed["key"]
+        .filter(|edge| {
+            edge["properties"]["demo_edge_id"]["Text"]
                 .as_str()
                 .is_some_and(|key| key.ends_with(key_suffix))
         })
-        .map(|seed| {
-            let post_id = seed["params"]["$a_demo_id"]
-                .as_i64()
-                .expect("feed edge source demo_id");
-            let rank = *creation_rank
-                .get(&post_id)
-                .expect("feed post must have a POSTED creation seed");
-            (rank, post_id.to_string())
+        .map(|edge| {
+            let source_id = edge["source_id"].as_str().expect("feed edge source_id");
+            let (rank, post_id) = posts
+                .get(source_id)
+                .expect("feed edge source must be an ordered Post vertex");
+            (*rank, post_id.to_string())
         })
         .collect();
     assert!(
@@ -2882,98 +3024,149 @@ fn feed_assertion_text(
     }
 }
 
-/// Seed the social demo graph through Router `gql_execute`.
-pub fn seed_social_graph(env: &FederationEnv) {
+/// Seed the social demo graph through Router durable typed `bulk_load`.
+pub fn seed_social_graph(env: &FederationEnv) -> std::collections::BTreeMap<String, Vec<u8>> {
     use gleaph_gql::Value;
-    use gleaph_gql_ic::encode_gql_params_blob;
-    use gleaph_router::types::GqlExecuteIdempotentBatchItem;
 
-    fn seed_wave(gql: &str) -> u32 {
-        if gql.contains("INSERT (n:User") {
-            return 1;
+    fn logical_value(value: &serde_json::Value) -> Value {
+        let object = value.as_object().expect("typed social property value");
+        if let Some(value) = object.get("Text") {
+            return Value::Text(value.as_str().expect("Text value").to_string());
         }
-        if gql.contains("INSERT (n:Community") {
-            return 1;
+        if let Some(value) = object.get("Int64") {
+            return Value::Int64(value.as_i64().expect("Int64 value"));
         }
-        if gql.contains("INSERT (n:Topic") {
-            return 1;
+        if let Some(value) = object.get("Bool") {
+            return Value::Bool(value.as_bool().expect("Bool value"));
         }
-        if gql.contains("INSERT (n:Feed") {
-            return 1;
+        if let Some(value) = object.get("DateTime") {
+            return Value::DateTime(
+                value["seconds"].as_i64().expect("DateTime seconds"),
+                value["nanos"].as_u64().expect("DateTime nanos") as u32,
+            );
         }
-        if gql.contains("-[:FOLLOWS") {
-            return 2;
-        }
-        if gql.contains("-[:MEMBER_OF") {
-            return 2;
-        }
-        if gql.contains("-[:POSTED") {
-            return 3;
-        }
-        if gql.contains("-[:REPLY_TO") {
-            return 4;
-        }
-        if gql.contains("-[:IN_TOPIC") {
-            return 5;
-        }
-        if gql.contains("-[:IN_PUBLIC_FEED") {
-            return 6;
-        }
-        if gql.contains("-[:IN_HOME") {
-            return 6;
-        }
-        7
+        panic!("unsupported typed social property value: {value:?}")
     }
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds");
-    let mut waves: std::collections::BTreeMap<u32, Vec<GqlExecuteIdempotentBatchItem>> =
-        std::collections::BTreeMap::new();
-    fn json_params_to_blob(params: &serde_json::Value) -> Vec<u8> {
-        let fields: Vec<(String, Value)> = params
+    fn properties(value: &serde_json::Value) -> Vec<AtomicInsertPropertyV1> {
+        let mut properties: Vec<_> = value
             .as_object()
-            .expect("social seed params object")
+            .expect("typed social properties")
             .iter()
-            .map(|(k, v)| {
-                let value = match v {
-                    serde_json::Value::String(s) => Value::Text(s.clone()),
-                    serde_json::Value::Bool(b) => Value::Bool(*b),
-                    serde_json::Value::Number(n) => {
-                        Value::Int64(n.as_i64().expect("social seed param integer"))
-                    }
-                    _ => panic!("unsupported social seed param type for {k}: {v:?}"),
-                };
-                (k.clone(), value)
+            .map(|(name, value)| AtomicInsertPropertyV1 {
+                property_name: name.clone(),
+                value: logical_value(value)
+                    .to_binary_bytes()
+                    .expect("encode typed social property"),
             })
             .collect();
-        encode_gql_params_blob(fields).expect("encode social seed params")
+        properties.sort_by(|left, right| {
+            left.property_name
+                .as_bytes()
+                .cmp(right.property_name.as_bytes())
+        });
+        properties
     }
 
-    for seed in parsed["seeds"].as_array().expect("social seed array") {
-        let gql = seed["gql"].as_str().expect("social seed gql");
-        let key = seed["key"].as_str().expect("social seed key");
-        let params_blob = json_params_to_blob(&seed["params"]);
-        let wave = seed_wave(gql);
-        waves
-            .entry(wave)
-            .or_default()
-            .push(GqlExecuteIdempotentBatchItem {
-                gql_query: gql.to_string(),
-                params: params_blob,
-                mutation_key: key.to_string(),
-            });
-    }
+    const KEY: &str = "social-demo-initial-load-v1";
+    const CHUNK_SIZE: usize = 256;
+    let parsed: serde_json::Value =
+        serde_json::from_str(SOCIAL_LOAD_JSON).expect("parse typed social load");
+    let vertices = parsed["vertices"].as_array().expect("social vertices");
+    let edges = parsed["edges"].as_array().expect("social edges");
+    bulk_load_as_admin(
+        env,
+        BulkLoadCommand::Start {
+            logical_graph_name: GRAPH_NAME.into(),
+            client_bulk_key: KEY.into(),
+        },
+    )
+    .expect("start social bulk load");
 
-    for (wave, mutations) in waves {
-        if mutations.is_empty() {
-            continue;
+    let mut source_ids = std::collections::BTreeMap::<String, Vec<u8>>::new();
+    let mut chunk_index = 0u32;
+    for page in vertices.chunks(CHUNK_SIZE) {
+        let items = page
+            .iter()
+            .map(|vertex| AtomicInsertVertexV1 {
+                vertex_labels: vertex["labels"]
+                    .as_array()
+                    .expect("vertex labels")
+                    .iter()
+                    .map(|label| label.as_str().expect("vertex label").to_string())
+                    .collect(),
+                initial_properties: properties(&vertex["properties"]),
+            })
+            .collect();
+        let response = bulk_load_as_admin(
+            env,
+            BulkLoadCommand::Append {
+                logical_graph_name: GRAPH_NAME.into(),
+                client_bulk_key: KEY.into(),
+                chunk_index,
+                chunk: BulkLoadChunkV1::Vertices(items),
+            },
+        )
+        .expect("append social vertices");
+        let BulkLoadResponse::Appended { receipt, .. } = response else {
+            panic!("unexpected social vertex append response")
+        };
+        assert_eq!(receipt.allocated_vertex_ids.len(), page.len());
+        for (vertex, encoded_id) in page.iter().zip(receipt.allocated_vertex_ids) {
+            source_ids.insert(
+                vertex["source_id"]
+                    .as_str()
+                    .expect("vertex source_id")
+                    .to_string(),
+                encoded_id,
+            );
         }
-        gql_execute_batch_as_admin(env, mutations);
-        // Later seeds resolve earlier users/posts/feed edges through derived postings. Keep the
-        // fixture deterministic by draining the projection before issuing the next dependent seed.
-        drain_maintenance_via_timer(env, env.graph_source);
-        eprintln!("Seeded social graph wave {wave}");
+        chunk_index += 1;
     }
+
+    for page in edges.chunks(CHUNK_SIZE) {
+        let items = page
+            .iter()
+            .map(|edge| BulkLoadEdgeV1 {
+                source: source_ids[edge["source_id"].as_str().expect("edge source_id")].clone(),
+                target: source_ids[edge["target_id"].as_str().expect("edge target_id")].clone(),
+                directed: edge["directed"].as_bool().expect("edge directed"),
+                edge_label_name: Some(edge["label"].as_str().expect("edge label").to_string()),
+                inline_property: None,
+                initial_edge_properties: properties(&edge["properties"]),
+            })
+            .collect();
+        bulk_load_as_admin(
+            env,
+            BulkLoadCommand::Append {
+                logical_graph_name: GRAPH_NAME.into(),
+                client_bulk_key: KEY.into(),
+                chunk_index,
+                chunk: BulkLoadChunkV1::Edges(items),
+            },
+        )
+        .expect("append social edges");
+        chunk_index += 1;
+    }
+    bulk_load_as_admin(
+        env,
+        BulkLoadCommand::Finalize {
+            logical_graph_name: GRAPH_NAME.into(),
+            client_bulk_key: KEY.into(),
+        },
+    )
+    .expect("finalize social bulk load");
+    let mut completed = false;
+    for _ in 0..120 {
+        let status =
+            bulk_load_status_as_admin(env, GRAPH_NAME, KEY, None, 1).expect("social bulk status");
+        if status.state == BulkLoadPublicStateV1::Completed {
+            completed = true;
+            break;
+        }
+        env.pic.tick();
+    }
+    assert!(completed, "social bulk load must reach Completed");
 
     // Verify every generated Post body is readable from the graph without coupling this helper
     // to an authored Post identifier or a particular fixture size.
@@ -3007,6 +3200,7 @@ pub fn seed_social_graph(env: &FederationEnv) {
             "generated Post body must be non-empty text: {row:?}"
         );
     }
+    source_ids
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! PocketIC: social demo public-read Gateway contract.
 //!
-//! Seeds the canonical social demo graph through Router `gql_execute` and proves that
+//! Seeds the canonical social demo graph through Router durable `bulk_load` and proves that
 //! an anonymous browser caller can execute only the fixed social-demo scenarios through the
 //! application-owned Gateway, while neither arbitrary ad-hoc `gql_query` nor arbitrary prepared
 //! names or parameters are expressible through the Gateway.
@@ -21,7 +21,7 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     GRAPH_NAME, create_vertex_property_index, ensure_edge_label, ensure_property,
     ensure_vertex_label, execute_social_demo_scenario_as, fully_activate_social_vector_index,
-    gql_execute_as_admin, gql_query_as, ingest_social_embeddings,
+    gql_mutate_as_admin, gql_query_as, ingest_social_embeddings,
     install_single_shard_federation_with_gateway, install_vector_canister, prepare_as_admin,
     seed_social_graph_and_assert_feed_edge_order, social_feed_post_ids,
 };
@@ -58,8 +58,8 @@ const SEMANTIC_DIMS: u16 = 8;
 const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset";
 const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset";
 
-const SOCIAL_SEEDS_JSON: &str =
-    include_str!("../../../frontend/apps/social-demo/seeds/social-seeds.json");
+const SOCIAL_LOAD_JSON: &str =
+    include_str!("../../../frontend/apps/social-demo/seeds/social-load.json");
 
 #[test]
 fn social_graph_demo_gateway_contract() {
@@ -69,7 +69,7 @@ fn social_graph_demo_gateway_contract() {
     let (env, gateway) = install_single_shard_federation_with_gateway();
 
     intern_social_schema(&env);
-    seed_social_graph_and_assert_feed_edge_order(&env);
+    let source_ids = seed_social_graph_and_assert_feed_edge_order(&env);
 
     prepare_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
     prepare_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
@@ -81,6 +81,7 @@ fn social_graph_demo_gateway_contract() {
 
     ingest_social_embeddings_through_router(
         &env,
+        &source_ids,
         SEMANTIC_INDEX_ID,
         SEMANTIC_EMBEDDING_NAME,
         SEMANTIC_DIMS,
@@ -96,22 +97,23 @@ fn social_graph_demo_gateway_contract() {
 
 fn ingest_social_embeddings_through_router(
     env: &gleaph_pocket_ic_tests::FederationEnv,
+    source_ids: &std::collections::BTreeMap<String, Vec<u8>>,
     index_id: u32,
     embedding_name: &str,
     dims: u16,
 ) {
     let manifest: serde_json::Value =
-        serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds manifest");
+        serde_json::from_str(SOCIAL_LOAD_JSON).expect("parse typed social load manifest");
     let embeddings = &manifest["embeddings"];
     assert!(
         embeddings.is_object(),
-        "generated social seeds must carry deterministic Post embeddings"
+        "generated social load must carry deterministic Post embeddings"
     );
 
     let vector = install_vector_canister(&env.pic, env.router);
     fully_activate_social_vector_index(env, vector, index_id, embedding_name, dims);
 
-    ingest_social_embeddings(env, embeddings);
+    ingest_social_embeddings(env, source_ids, embeddings);
 }
 
 fn assert_public_timeline_through_gateway(
@@ -483,7 +485,7 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
          DIRECTED EDGE FeedMembership LABEL IN_PUBLIC_FEED ORDER BY INSERTION CONNECTING (Post -> Feed), \
          DIRECTED EDGE HomeFeedMembership LABEL IN_HOME_FEED ORDER BY INSERTION CONNECTING (Post -> User) }}"
     );
-    gql_execute_as_admin(env, &graph_type_ddl, "social-graph-type");
+    gql_mutate_as_admin(env, &graph_type_ddl, "social-graph-type");
 }
 
 fn assert_author_name_is_text(row: &std::collections::BTreeMap<String, Value>, context: &str) {
@@ -561,7 +563,7 @@ fn alice_semantic_feed_body_regression() {
     let (env, gateway) = install_single_shard_federation_with_gateway();
 
     intern_social_schema(&env);
-    seed_social_graph_and_assert_feed_edge_order(&env);
+    let source_ids = seed_social_graph_and_assert_feed_edge_order(&env);
 
     prepare_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
     prepare_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
@@ -569,6 +571,7 @@ fn alice_semantic_feed_body_regression() {
 
     ingest_social_embeddings_through_router(
         &env,
+        &source_ids,
         SEMANTIC_INDEX_ID,
         SEMANTIC_EMBEDDING_NAME,
         SEMANTIC_DIMS,

@@ -2,18 +2,18 @@
 
 Date: 2026-07-23
 Status: Implemented
-Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Last revised: 2026-08-02
+Anchor timestamp: 2026-08-02 14:44:33 UTC +0000
 
-The 2026-07-31 public-surface correction replaces the three specialized Router
-updates with two mutation APIs: `batch(BatchRequest)` submits work and
-`mutation_status(logical_graph_name, client_mutation_key)` observes recovery.
+The 2026-08-02 public-surface correction replaces the specialized Router updates
+with the `atomic_insert(AtomicInsertRequest)` mutation and the
+`atomic_insert_status(logical_graph_name, client_mutation_key)` receipt query; the
+`mutation_status` query remains reserved for GQL/prepared mutation records.
 This is an intentional pre-release breaking change. The removed
-`execute_ordered_edge_batch`, `execute_ordered_vertex_batch`, and
-`execute_ordered_mixed_batch` methods and their public request/response types
-have no compatibility wrappers.
+specialized ordered Router methods and their public request/response types have
+no compatibility wrappers.
 
-`BatchRequest::V1` owns one ordered operation list containing `Vertex` and
+`AtomicInsertRequest::V1` owns one ordered operation list containing `Vertex` and
 `Edge` variants. Router validates and fingerprints that public envelope, then
 classifies it into the existing edge-only, vertex-only, or mixed durable
 execution path. This preserves the Graph wire protocols, mutation journals,
@@ -61,11 +61,12 @@ algorithm; no persistent counterpart substrate is owned by this batch-mutation
 design. Any future adaptive algorithm requires a separate ADR and measured
 adoption decision.
 
-This ADR is partially implemented. ADR 0048's owner boundary and alias removal
-are complete; this ADR does not introduce another counterpart compatibility
-path. The public single-shard ordered edge-batch endpoint, Graph journal-first
-execution, scalar fallback, projection/retirement lifecycle, and basic recovery
-are active. Unsupported optimized geometry remains on the scalar fallback path.
+This ADR's active v1 contract is implemented. ADR 0048's owner boundary and
+alias removal are complete; this ADR does not introduce another counterpart
+compatibility path. The public single-shard ordered edge-batch endpoint, Graph
+journal-first execution, scalar fallback, projection/retirement lifecycle, and
+recovery are active. Unsupported optimized geometry remains on the scalar
+fallback path.
 The failure/recovery coverage and SDK conformance matrix are validated for the
 current v1 target. Fresh-release activation is verified by the serial PocketIC
 release-set target; production activation remains an operational cutover. Core
@@ -148,9 +149,9 @@ request-local pair table to LARA. LARA validates the merged plan as exact
 reversed pairs covered by that table, so the same-bucket case cannot be
 represented as two independent reservations. The current internal clean-slab
 path now admits mixed directed, undirected, and self-loop shapes through one
-owner reservation. The public ordered API and its basic replay/write lifecycle
-are active; unsupported optimized geometry and the remaining failure/recovery
-gates still use the documented fallback or remain planned.
+owner reservation. The public ordered API and its replay/write, retirement, and
+recovery lifecycle are active; unsupported optimized geometry continues to use
+the documented scalar fallback.
 
 The Graph journal now carries the ordered-batch request identity and stable
 retirement state in `GraphMutationJournalEntryV1`; its wire projection carries
@@ -158,13 +159,14 @@ the identity and the projected retirement enum in
 `GraphMutationJournalEntryWireV1`. The fixed V1 stable codec appends these
 optional sections under the existing appendix flags, with the old default
 (`PlanExecution` plus `NotApplicable`) decoding when the sections are absent.
-Router's `bulk_group_fingerprint` remains order-sensitive, but Router state
-cannot substitute for Graph's direct replay authority. Section 10 deliberately
-removes internal multi-chunk execution from v1, so no chunk identity is needed.
-The journal-first endpoint, identity comparison, receipt commit, and replay
-algorithm are implemented for the Graph boundary. The remaining fresh
-mutation work is supported-geometry expansion beyond the proven batch paths,
-full Router failure/recovery coverage, and release activation evidence.
+Router uses family-specific order-sensitive fingerprints (the
+`ordered_*_graph_request_fingerprint` helpers); Router state cannot substitute
+for Graph's direct replay authority. Section 10 deliberately removes internal multi-chunk execution from
+v1, so no chunk identity is needed. The journal-first endpoint, identity
+comparison, receipt commit, replay algorithm, and Router recovery lifecycle are
+implemented for the Graph boundary. Supported-geometry expansion beyond the
+proven batch paths remains a scalar-fallback optimization scope, not an
+unimplemented recovery gate.
 
 ## Prerequisite: complete ADR 0048
 
@@ -187,7 +189,7 @@ to work around an unfinished ADR 0048.
 
 ## Decision
 
-### 1. Ordered batch contract for `ORDER BY INSERTION` labels
+### 1. Ordered atomic-insert contract for `ORDER BY INSERTION` labels
 
 The ordered edge-insertion batch API preserves input order for labels resolved with the
 `Insertion` policy. Ordering is selected by Graph Type schema, not by a public `ordered: bool`,
@@ -204,51 +206,52 @@ are unresolved and contain no Router-interned catalog id, LARA storage label,
 inline-property width, local vertex id, target shard, or Graph canister:
 
 ```text
-BatchRequest =
-    V1(BatchRequestV1)
+AtomicInsertRequest =
+    V1(AtomicInsertRequestV1)
 
-BatchRequestV1 {
+AtomicInsertRequestV1 {
     client_mutation_key: String,
     logical_graph_name: String,
-    operations: [BatchOperationV1],
+    operations: [AtomicInsertOperationV1],
 }
 
-BatchOperationV1 =
-    Vertex(BatchVertexInsertV1)
-  | Edge(BatchEdgeInsertV1)
+AtomicInsertOperationV1 =
+    Vertex(AtomicInsertVertexV1)
+  | Edge(AtomicInsertEdgeV1)
 
-BatchVertexInsertV1 {
+AtomicInsertVertexV1 {
     vertex_labels: [String],
-    initial_properties: [BatchPropertyV1],
+    initial_properties: [AtomicInsertPropertyV1],
 }
 
-BatchEdgeInsertV1 {
-    source: BatchEndpointV1,
-    target: BatchEndpointV1,
+AtomicInsertEdgeV1 {
+    source: AtomicInsertEndpointV1,
+    target: AtomicInsertEndpointV1,
     directed,
     edge_label_name: Option<String>,
     inline_property: Option<CanonicalGqlValueBytesV1>,
-    initial_edge_properties: [BatchPropertyV1],
+    initial_edge_properties: [AtomicInsertPropertyV1],
 }
 
-BatchEndpointV1 =
+AtomicInsertEndpointV1 =
     Existing(EncodedVertexId)
   | NewVertexOrdinal(u32)
 
-BatchPropertyV1 {
+AtomicInsertPropertyV1 {
     property_name: String,
     value: CanonicalGqlValueBytesV1,
 }
 
-BatchResponse {
+AtomicInsertResponse {
     status: MutationStatus,
-    receipt: Option<BatchReceiptV1>,
+    receipt: Option<AtomicInsertReceiptV1>,
 }
 
-BatchReceiptV1 {
+AtomicInsertReceiptV1 {
     logical_operation_count: u64,
     logical_vertex_count: u64,
     logical_edge_count: u64,
+    allocated_vertex_ids: [EncodedVertexId],
 }
 ```
 
@@ -257,6 +260,14 @@ same request, not an index into the complete operation array. Edge-only requests
 must use `Existing` endpoints. A request contains 1 through 1024 operations.
 The public fingerprint excludes `client_mutation_key`, canonicalizes labels and
 property-name order, and preserves operation order.
+
+`AtomicInsertReceiptV1.allocated_vertex_ids` is the graph-scoped encoded ID list in
+vertex-operation ordinal order. Vertex-only and mixed requests return one ID per vertex
+operation; edge-only requests return an empty list. Router derives these IDs from the ordered
+Graph local-ID receipt and the immutable graph encoding key for both the initial response and
+`atomic_insert_status`. A caller may pass a returned ID to a later edge-only `atomic_insert`
+before Property Index convergence; Graph validates canonical vertex existence directly, so this
+path does not depend on a lagging index.
 
 `CanonicalGqlValueBytesV1` is the existing canonical compact binary encoding of
 one GQL `Value`, with an explicit byte bound. `gleaph-gql-ic` provides the Rust
@@ -391,7 +402,7 @@ OrderedEdgeBatchGraphRequestV1 {
 ```
 
 Version envelopes exist only at independently encoded persistence or wire
-boundaries. `BatchRequest` and `OrderedEdgeBatchGraphRequest` therefore carry
+boundaries. `AtomicInsertRequest` and `OrderedEdgeBatchGraphRequest` therefore carry
 outer `V1(...)` variants.
 Stable Router/Graph records and independently returned Graph results use the
 same rule. Types that exist only inside a parent V1 schema—request identity,
@@ -404,7 +415,7 @@ boundary with a separately supported compatibility lifecycle.
 
 | Independent boundary          | Sole outer envelope                 | Directly nested V1 schema                                               |
 | ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
-| Public ingress                | `BatchRequest::V1`                  | public request, operations, endpoints, and properties                    |
+| Public ingress                | `AtomicInsertRequest::V1`          | public request, operations, endpoints, and properties                    |
 | Router → Graph canonical call | `OrderedEdgeBatchGraphRequest::V1`  | resolved request, items, and properties                                 |
 | Graph canonical response      | `GraphOrderedEdgeBatchResult::V1`   | result and receipt payloads                                             |
 | Graph retirement response     | `OrderedMutationRetirementAck::V1`  | acknowledgement and receipt payload                                     |
@@ -991,8 +1002,9 @@ four-byte edge row:
   sequence;
 - pair identity remains represented by equal-neighbor occurrence rank under
   ADR 0048; and
-- retries extend the existing Graph journal ownership from ADRs 0015, 0044, and
-  0047 with an order-sensitive Graph-side identity.
+- retries extend the existing Graph journal ownership from ADR 0015 with an
+  order-sensitive Graph-side identity; the retired transport decisions in ADRs 0044 and 0047 are
+  preserved only by Git history.
 
 No new stable per-edge sequence table, row field, or counterpart identity is introduced.
 If implementation proves that an existing physical transformation cannot
@@ -1100,9 +1112,9 @@ request-kind accessors all reject these combinations fail-closed.
 `GraphMutationRequestIdentityV1::PlanExecution` alone may use its existing
 `Incomplete`, `next_index`, and `bulk_progress` combinations.
 
-`GraphMutationRequestIdentityV1::PlanExecution` preserves the existing scalar,
-shared-seed-bulk, and typed-bulk journal semantics. This ADR does not silently
-strengthen their current content-fingerprint behavior. The ordered Graph owner
+`GraphMutationRequestIdentityV1::PlanExecution` preserves the existing scalar
+plan-execution journal semantics. This ADR does not silently strengthen its
+current content-fingerprint behavior. The ordered Graph owner
 persists `GraphMutationRequestIdentityV1::OrderedEdgeBatch` in the same atomic
 message as the receipt and canonical mutation, initially with retirement
 `Active`.
@@ -1185,9 +1197,10 @@ for all identity fields, and fail-closed encode/decode behavior. The internal
 layout marker remains V1 because it describes the only supported fresh layout
 rather than compatibility with the discarded one.
 
-Router replaces its V1 durable mutation payload in place while retaining all
-currently supported scalar/legacy/typed variants. Its exhaustive payload shape
-adds active and compacted ordered variants:
+Router replaces its V1 durable mutation payload in place. The current payload shape retains scalar
+plan execution, ordered edge/vertex/mixed atomic-insert replay, and the durable `BulkLoadCoordinator`.
+The former typed/shared GQL bulk variants are removed rather than decoded. Its exhaustive payload
+shape adds active and compacted ordered variants:
 
 ```text
 RouterMutationRequestIdentityV1 =
@@ -1267,17 +1280,9 @@ RouterMutationPayloadV1 =
     Scalar {
         shards: [RouterMutationShardV1],
     }
-  | SharedSeedBulk {
-        total_ops,
-        shards: [RouterMutationShardV1],
-    }
-  | TypedSeedBulk(TypedSeedBulkReplayV1)
+  | BulkLoadCoordinator(BulkLoadCoordinatorV1)
   | OrderedEdgeBatchRouting
   | OrderedEdgeBatch(RouterOrderedEdgeBatchReplayV1)
-  | CompletedBulk {
-        total_ops,
-        operation_row_counts,
-    }
   | CompletedOrderedEdgeBatch {
         receipt: GraphOrderedEdgeBatchReceiptV1,
         projection_watermark: MutationTokenShard,
@@ -1317,6 +1322,11 @@ GraphOrderedEdgeBatchReceiptV1 {
     hot_forward_vertices: Vec<LocalVertexId>,
 }
 ```
+
+The sketch above is the edge-focused decision-history shape. The implemented V1 adds corresponding
+ordered vertex/mixed request identities, replay payloads, and receipts, plus `terminal_at_ns` on
+the shared Router record; the definitions in the current source are normative. No compatibility
+decoder for the removed typed/shared payloads is retained.
 
 The Graph canonical endpoint returns
 `GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1)`. A completed
@@ -1467,7 +1477,7 @@ ordered lifecycle source; parallel booleans are forbidden.
 
 `RouterMutationRequestIdentityV1` replaces the untyped top-level
 `request_fingerprint` field in the fresh V1 layout. Its `PlanExecution` variant
-preserves current scalar/legacy/typed fingerprint semantics, while
+preserves the scalar plan-execution fingerprint semantics, while
 `OrderedEdgeBatch` is the sole owner of the public ordered fingerprint and
 public item count.
 
@@ -2352,8 +2362,8 @@ At minimum, implementation must cover:
   and parallel edges;
 - reserve failure in a later orientation with complete rollback before any
   canonical write;
-- replacement Graph journal/wire V1 round-trip preserving current scalar,
-  legacy/typed bulk continuation, delta, hot-vertex, retention, and completion
+- replacement Graph journal/wire V1 round-trip preserving scalar plan execution,
+  durable bulk-load continuation, delta, hot-vertex, retention, and completion
   fields, plus stable ordered retirement round-trip, its derived wire retirement
   enum, `Retired.at_ns` absence from the wire, and mandatory
   `GraphMutationRequestIdentityV1::PlanExecution` `NotApplicable` state;
@@ -2391,7 +2401,7 @@ At minimum, implementation must cover:
   edge-item permutation changes both the public and Graph fingerprints;
 - replacement `RouterMutationRecord::V1` round-trip proving its nested
   request-identity/payload types are encoded directly without independent
-  version envelopes, for current scalar/legacy/typed variants and the ordered
+  version envelopes, for scalar plan execution, durable bulk-load, and ordered
   routing/`CanonicalPending`/`CanonicalCommitted`/`ProjectionPending`/
   `ProjectionAdvanced`/`RetirementPending` states;
 - completed ordered records must retain the full validated receipt needed for
@@ -2727,10 +2737,11 @@ and split invariant ownership. Rejected.
 - ADR 0048 remains the prerequisite owner of pair rank, counterpart resolution,
   invalidation, rebuild, and alias removal.
 - ADR 0025 retains non-terminal ordered retirement states regardless of age;
-  Router compaction remains the only transition to terminal TTL eligibility.
+  Router compaction remains the only transition to terminal TTL eligibility, and
+  terminal receipt retention is measured from `terminal_at_ns` for seven days.
 - ADR 0027 keeps its implemented age-only
-  `GraphMutationRequestIdentityV1::PlanExecution` policy and records the planned
-  request-kind-aware ordered retirement predicate.
+  `GraphMutationRequestIdentityV1::PlanExecution` policy and its unchanged nine-day
+  Graph retirement window; the Router terminal anchor does not shorten Graph evidence retention.
 - ADR 0029 permits bounded autonomous retirement recovery as post-canonical
   work and exact journal-only reconciliation of an ordered unknown canonical
   outcome while continuing to forbid background canonical redispatch. Its
@@ -2762,9 +2773,8 @@ and split invariant ownership. Rejected.
 - [ADR 0030](0030-cross-shard-uniqueness-tcc-reservation.md): uniqueness coordination.
 - [ADR 0041](0041-router-graph-batch-mutation-dispatch.md): Router-to-Graph dispatch.
 - [ADR 0042](0042-router-dynamic-instruction-budget-batching.md): dynamic continuation.
-- [ADR 0044](0044-router-bulk-mutation-key.md): durable bulk identity.
 - [ADR 0045](0045-unordered-batch-graph-mutations-and-lara-placement.md): retained physical batch substrate and superseded future unordered contract.
-- [ADR 0047](0047-shared-typed-graph-bulk-envelope.md): shared typed Graph bulk envelope.
+- [ADR 0057](0057-router-operation-api-and-durable-bulk-load.md): public atomic insert and durable bulk-load lifecycles.
 - [ADR 0048](0048-lara-counterpart-resolution.md): prerequisite physical pair rank and adaptive counterpart ownership.
 - [LARA storage contract](../storage/lara.md).
 - [Bulk ingest finalize](../storage/bulk-ingest-finalize.md).

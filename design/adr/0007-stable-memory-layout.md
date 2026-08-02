@@ -2,13 +2,14 @@
 
 Date: 2026-06-12
 Status: accepted
-Last revised: 2026-07-11
-Anchor timestamp: 2026-07-17 01:50:09 UTC +0000
+Last revised: 2026-08-02
+Anchor timestamp: 2026-08-02 12:43:54 UTC +0000
 
 ## Revision history
 
 | Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-02 | ADR 0057 adds Router `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` (MemoryId 49) for canonical paged chunk receipts; Router now has **50 regions (0–49)**. The stable-reopen benchmark implementation touches the new region; the persisted benchmark artifact awaits the final unfiltered `canbench --persist` run. |
 | 2026-07-17 | Router adopts the custom variable memory manager with an explicit per-`MemoryId` initial policy (default 2 pages; 1–16-page overrides). Stable-memory compatibility is intentionally not supported for this development layout. |
 | 2026-07-17 | Router reopen canbench now touches all 49 stable regions; its persisted baseline is refreshed so capacity/slack comparisons include constraint, vector, and provisioning regions. |
 | 2026-07-17 | Router adds production-API capacity probes for a 2-page property catalog (1,024 rows: 4 stable pages) and a 16-page prepared-plan catalog (32 × 256 KiB: 144 stable pages); these are initial slope measurements, not maximum-capacity claims. |
@@ -127,7 +128,7 @@ Code source of truth:
 | ------------------- | ------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Graph — LARA bundle | 32           | 0–31     | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph`                                                                                                                                                                                                                                                                               |
 | Graph — facade      | 8            | 32–39    | Properties, labels, aliases, label stats delta log, mutation journal                                                                                                                                                                                                                                                                                                                    |
-| Router              | 49           | 0–48     | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding-name catalog + vector-index defs (ADR 0031 Slice 3, 40–42) → vector dispatch activation flag (ADR 0031 Slice 4, 43) → vector maintenance policy catalog (ADR 0031 Slice 10, 44) → provisioning-request catalog (ADR 0035 Slice 1, 45–47); `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
+| Router              | 50           | 0–49     | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding/vector catalogs (40–44) → provisioning state (45–48) → ADR 0057 durable bulk-load chunk receipts (49); `ROUTER_GRAPH_RUNTIME_CONFIG` remains at MemoryId 5 |
 | Graph-index         | 7            | 0–6      | Router auth, shard catalog, ownership config, then derived postings                                                                                                                                                                                                                                                                                                                     |
 | Graph-vector-index  | 15           | 0–14     | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, page meta (ADR 0031 Slice 2 / ADR 0032), id→subject reverse locator (ADR 0031 Slice 6), rebuild lifecycle state (ADR 0031 Slice 7), row slab (ADR 0032), maintenance scan state (ADR 0031 Slice 10)                                  |
 | Provision           | 4            | 0–3      | Deployment trust binding, canonical job-by-request, derived job-by-deployment intent index, canonical intent locks (ADR 0035 Slice 2).                                                                                                                                                                                                                                             |
@@ -242,6 +243,13 @@ Router canister gains one new stable region, `ROUTER_PROVISION_CONFIG` (MemoryId
 ADR 0035 Slice 5 provision-canister bootstrap binding. Total router regions: 49 (0–48). No
 provision-side or graph-side layout changes. Registry test `router_layout_registry_matches_baseline`
 updated to assert the new count and region symbol.
+
+### ADR 0057 revision (2026-08-02)
+
+Router gains `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` (MemoryId 49), the canonical bounded receipt range
+owned by each durable bulk-load parent in MemoryId 7. Total Router regions: 50 (0–49). The typed
+layout registry and stable-reopen benchmark touch set include the new region; no Graph, index, or
+Provision MemoryId changes are required.
 
 ### 7. Memory layout registry (Phase 8 deliverable)
 

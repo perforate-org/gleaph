@@ -90,7 +90,7 @@ The existing ownership boundaries remain suitable:
   canonical batch commit.
 
 ADR 0041 and ADR 0042 already define size-bounded Router-to-Graph dispatch and
-continuation. ADR 0044 defines bulk-group mutation identity and durable progress.
+continuation. ADR 0057 defines current durable bulk-load identity and progress.
 ADR 0001 and the active LARA storage contracts already define PMA leaf blocks,
 overflow logs, weighted slide, relocation, free-span retirement, and the
 separation between rebalance and maintenance compaction.
@@ -718,7 +718,7 @@ invariants and failure-atomic boundaries are covered.
 - [ADR 0030](0030-cross-shard-uniqueness-tcc-reservation.md): uniqueness coordination.
 - [ADR 0041](0041-router-graph-batch-mutation-dispatch.md): Router-to-Graph batch dispatch.
 - [ADR 0042](0042-router-dynamic-instruction-budget-batching.md): dynamic continuation.
-- [ADR 0044](0044-router-bulk-mutation-key.md): durable bulk mutation grouping.
+- [ADR 0057](0057-router-operation-api-and-durable-bulk-load.md): durable bulk-load lifecycle.
 - [ADR 0048](0048-lara-counterpart-resolution.md): physical pair rank, returned slots,
   and adaptive LARA mate acceleration replacing facade aliases.
 - [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md): planned

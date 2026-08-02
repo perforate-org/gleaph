@@ -674,19 +674,79 @@ fn test_arm_fault(code: u8) -> Result<(), RouterError> {
     Ok(())
 }
 
-/// Test-only (`pocket-ic-e2e`): report the last typed-admission stage for transport assertions.
+/// Test-only (`pocket-ic-e2e`): inspect the durable bulk-load Start allocation boundary for one
+/// client key. This exposes only the mutation counter, optional bound mutation id, and identity
+/// family so an ingress-trap test can prove IC message rollback without adding production API.
 #[cfg(feature = "pocket-ic-e2e")]
 #[query]
-fn test_typed_batch_trace() -> Result<String, RouterError> {
-    auth::require_admin(&msg_caller())?;
-    Ok(crate::test_fault::typed_batch_trace())
+fn test_bulk_load_start_probe(
+    logical_graph_name: String,
+    client_bulk_key: String,
+) -> Result<(u64, Option<u64>, bool), RouterError> {
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let counter = crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|value| *value.get());
+    let record = store.router_mutation_record(caller, graph_id, &client_bulk_key);
+    let mutation_id = record.as_ref().map(|value| value.as_v1().mutation_id);
+    let is_bulk_load = record.as_ref().is_some_and(|value| {
+        matches!(
+            value.as_v1().request_identity,
+            crate::facade::stable::label_stats::RouterMutationRequestIdentityV1::BulkLoadJob
+        )
+    });
+    Ok((counter, mutation_id, is_bulk_load))
 }
 
+/// Test-only (`pocket-ic-e2e`): expand one publicly completed receipt into the fixed 65-row GC
+/// fixture at the actual stable owner, then suppress the autonomous timer before simulated time is
+/// advanced. Public commands still create and complete the template job.
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn test_seed_bulk_load_gc_fixture(
+    logical_graph_name: String,
+    client_bulk_key: String,
+) -> Result<(), RouterError> {
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    store.test_expand_completed_bulk_load_receipts(caller, graph_id, &client_bulk_key)?;
+    crate::recovery::test_pause_for_exact_bulk_gc();
+    Ok(())
+}
+
+/// Test-only (`pocket-ic-e2e`): execute exactly one production-owned bounded receipt-GC step.
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn test_bulk_load_gc_step(
+    logical_graph_name: String,
+    client_bulk_key: String,
+) -> Result<(u32, u32, bool), RouterError> {
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+    crate::recovery::test_pause_for_exact_bulk_gc();
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let step =
+        store.bulk_load_receipt_gc_step(caller, graph_id, &client_bulk_key, ic_cdk::api::time())?;
+    Ok((step.scanned, step.removed, step.done))
+}
+
+/// Test-only (`pocket-ic-e2e`): observe parent existence, durable receipt-GC cursor, physical child
+/// row count, and preserved terminal outcome without advancing GC.
 #[cfg(feature = "pocket-ic-e2e")]
 #[query]
-fn test_typed_batch_prepare_count() -> Result<u64, RouterError> {
-    auth::require_admin(&msg_caller())?;
-    Ok(crate::test_fault::typed_batch_prepare_count())
+fn test_bulk_load_gc_probe(
+    logical_graph_name: String,
+    client_bulk_key: String,
+) -> Result<(bool, Option<u32>, u32, Option<String>), RouterError> {
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    store.test_bulk_load_gc_probe(caller, graph_id, &client_bulk_key)
 }
 
 /// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin), so the

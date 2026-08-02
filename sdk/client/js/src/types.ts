@@ -55,6 +55,10 @@ export interface ApiExecutePreparedRequest {
   sort?: PreparedSortSpec[];
 }
 
+export interface ApiPreparedMutationRequest extends ApiExecutePreparedRequest {
+  client_mutation_key: string;
+}
+
 export interface PreparedOptions {
   description?: string;
   allowed_sorts?: PreparedSortKey[];
@@ -166,6 +170,8 @@ export interface MutationToken {
   shards: MutationTokenShard[];
 }
 
+export type ReadMode = { Eventual: null } | { AtLeast: MutationToken };
+
 /** Decoded result returned by Router GQL query and prepared-query calls. */
 export interface GqlQueryResult<Row = Record<string, ApiValue>> {
   row_count: bigint;
@@ -177,10 +183,6 @@ export interface GqlQueryResult<Row = Record<string, ApiValue>> {
 /** Result returned by Router update calls that expose only the affected row count. */
 export interface GqlMutationResult {
   row_count: bigint;
-}
-
-export interface ApiListPreparedResponse {
-  statements: ApiPreparedQueryInfo[];
 }
 
 export interface PreparedManifest {

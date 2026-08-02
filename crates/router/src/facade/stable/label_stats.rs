@@ -5,11 +5,11 @@ use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    GqlExecutionMode, GraphOrderedEdgeBatchReceiptV1, GraphOrderedMixedBatchReceiptV1,
+    GraphOrderedEdgeBatchReceiptV1, GraphOrderedMixedBatchReceiptV1,
     GraphOrderedVertexBatchReceiptV1, MutationId, MutationLifecyclePhase, MutationTokenShard,
     OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphRequest,
     OrderedMixedBatchGraphRequestV1, OrderedVertexBatchGraphRequest,
-    OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedPropertyTable, SeedBindingsWire,
+    OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedPropertyTable,
     ordered_edge_batch_graph_request_fingerprint, ordered_mixed_batch_graph_request_fingerprint,
     ordered_vertex_batch_graph_request_fingerprint,
 };
@@ -17,6 +17,23 @@ use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+
+/// Maximum UTF-8 byte length retained for a mutation recovery diagnostic.
+///
+/// Public status response admission reserves this full bound.
+pub(crate) const MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES: usize = 4 * 1024;
+
+pub(crate) fn bound_mutation_recovery_diagnostic(mut diagnostic: String) -> String {
+    if diagnostic.len() <= MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES {
+        return diagnostic;
+    }
+    let mut end = MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES;
+    while !diagnostic.is_char_boundary(end) {
+        end -= 1;
+    }
+    diagnostic.truncate(end);
+    diagnostic
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LabelStats {
@@ -213,7 +230,7 @@ impl Storable for MutationReservationIndexEntry {
     }
 }
 
-/// Versioned Router mutation saga record (ADR 0044).
+/// Versioned Router mutation saga record (ADR 0029 and ADR 0057).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum RouterMutationRecord {
     V1(RouterMutationRecordV1),
@@ -221,12 +238,14 @@ pub enum RouterMutationRecord {
 
 /// Request identity owned by the Router mutation record.
 ///
-/// The existing scalar, shared-seed bulk, and typed-seed paths use `PlanExecution`.
-/// Ordered-edge identity will be added as a sibling variant when its public
-/// replay envelope is installed; keeping the identity here prevents a future
-/// ordered payload from reusing the untyped fingerprint field.
+/// Scalar GQL/prepared mutations use `PlanExecution`; ordered atomic-insert and durable bulk-load
+/// identities are exhaustive sibling variants, so no family can reuse another fingerprint field.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum RouterMutationRequestIdentityV1 {
+    /// Unit identity for an ADR 0057 durable bulk-load job.  The graph-scoped
+    /// `(caller, graph_id, client_key)` remains the canonical map key; this variant carries no
+    /// duplicate identity fields.
+    BulkLoadJob,
     PlanExecution {
         request_fingerprint: Vec<u8>,
     },
@@ -246,9 +265,30 @@ pub enum RouterMutationRequestIdentityV1 {
     },
 }
 
+/// Internal family classification derived independently from both durable authorities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RouterMutationFamilyV1 {
+    BulkLoadJob,
+    PlanExecution,
+    OrderedEdgeBatch,
+    OrderedVertexBatch,
+    OrderedMixedBatch,
+}
+
 impl RouterMutationRequestIdentityV1 {
+    fn mutation_family(&self) -> RouterMutationFamilyV1 {
+        match self {
+            Self::BulkLoadJob => RouterMutationFamilyV1::BulkLoadJob,
+            Self::PlanExecution { .. } => RouterMutationFamilyV1::PlanExecution,
+            Self::OrderedEdgeBatch { .. } => RouterMutationFamilyV1::OrderedEdgeBatch,
+            Self::OrderedVertexBatch { .. } => RouterMutationFamilyV1::OrderedVertexBatch,
+            Self::OrderedMixedBatch { .. } => RouterMutationFamilyV1::OrderedMixedBatch,
+        }
+    }
+
     pub fn request_fingerprint(&self) -> &[u8] {
         match self {
+            Self::BulkLoadJob => &BULK_LOAD_JOB_IDENTITY_FINGERPRINT,
             Self::PlanExecution {
                 request_fingerprint,
             } => request_fingerprint,
@@ -266,6 +306,7 @@ impl RouterMutationRequestIdentityV1 {
 
     pub fn public_item_count(&self) -> Option<u32> {
         match self {
+            Self::BulkLoadJob => None,
             Self::PlanExecution { .. } => None,
             Self::OrderedEdgeBatch {
                 public_item_count, ..
@@ -280,6 +321,214 @@ impl RouterMutationRequestIdentityV1 {
         }
     }
 }
+
+/// Pinned physical target for one durable bulk-load job.  It is internal Router recovery data and
+/// is never projected through the public Candid status surface.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BulkLoadTargetV1 {
+    pub shard_id: ShardId,
+    pub graph_canister: Principal,
+}
+
+impl BulkLoadTargetV1 {
+    pub fn validate(&self) -> Result<(), RouterError> {
+        if self.graph_canister == Principal::anonymous() {
+            return Err(RouterError::InvalidArgument(
+                "bulk-load target graph canister must not be anonymous".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Bounded Finalize state.  V1 has one verification stage; the enum keeps the persisted state
+/// exhaustive so a future stage cannot be smuggled in as a parallel flag.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BulkLoadFinalizeStageV1 {
+    VerifyReceipts,
+}
+
+/// Durable parent lifecycle for ADR 0057.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum BulkLoadLifecycleV1 {
+    Open,
+    AppendPending {
+        chunk_index: u32,
+        fingerprint: [u8; 32],
+        child_mutation_id: MutationId,
+    },
+    FinalizePending {
+        stage: BulkLoadFinalizeStageV1,
+        cursor: u32,
+    },
+    AbortPending {
+        active_chunk: u32,
+    },
+    Completed,
+    Aborted,
+    Failed {
+        reason: String,
+    },
+}
+
+impl BulkLoadLifecycleV1 {
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Aborted | Self::Failed { .. })
+    }
+
+    pub const fn active_child(&self) -> Option<(u32, MutationId)> {
+        match self {
+            Self::AppendPending {
+                chunk_index,
+                child_mutation_id,
+                ..
+            } => Some((*chunk_index, *child_mutation_id)),
+            Self::AbortPending { active_chunk } => Some((*active_chunk, 0)),
+            _ => None,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RouterError> {
+        match self {
+            Self::AppendPending {
+                chunk_index,
+                child_mutation_id,
+                ..
+            } => {
+                if *child_mutation_id == 0 {
+                    return Err(RouterError::Conflict(
+                        "bulk-load AppendPending child mutation id must be non-zero".into(),
+                    ));
+                }
+                let _ = chunk_index;
+            }
+            Self::FinalizePending { stage, .. } => match stage {
+                BulkLoadFinalizeStageV1::VerifyReceipts => {}
+            },
+            Self::AbortPending { .. } => {}
+            Self::Failed { reason } if reason.is_empty() => {
+                return Err(RouterError::Conflict(
+                    "bulk-load Failed state requires a reason".into(),
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Router-owned aggregate and lifecycle payload stored in the parent mutation record.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BulkLoadCoordinatorV1 {
+    pub target: BulkLoadTargetV1,
+    pub logical_operation_count: u64,
+    pub logical_vertex_count: u64,
+    pub logical_edge_count: u64,
+    pub next_chunk_index: u32,
+    pub committed_chunk_count: u32,
+    pub completed_chunk_count: u32,
+    pub lifecycle: BulkLoadLifecycleV1,
+    /// Orthogonal receipt cleanup cursor. It does not replace or erase the terminal lifecycle.
+    pub receipt_gc_cursor: Option<u32>,
+}
+
+impl BulkLoadCoordinatorV1 {
+    pub fn new(target: BulkLoadTargetV1) -> Self {
+        Self {
+            target,
+            logical_operation_count: 0,
+            logical_vertex_count: 0,
+            logical_edge_count: 0,
+            next_chunk_index: 0,
+            committed_chunk_count: 0,
+            completed_chunk_count: 0,
+            lifecycle: BulkLoadLifecycleV1::Open,
+            receipt_gc_cursor: None,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RouterError> {
+        self.target.validate()?;
+        self.lifecycle.validate()?;
+        let expected = self
+            .logical_vertex_count
+            .checked_add(self.logical_edge_count)
+            .ok_or_else(|| RouterError::Conflict("bulk-load aggregate count overflow".into()))?;
+        if expected != self.logical_operation_count {
+            return Err(RouterError::Conflict(
+                "bulk-load aggregate counts must sum to logical operation count".into(),
+            ));
+        }
+        if self.committed_chunk_count > self.next_chunk_index.saturating_add(1)
+            || self.completed_chunk_count > self.committed_chunk_count
+        {
+            return Err(RouterError::Conflict(
+                "bulk-load aggregate chunk counters are not monotonic".into(),
+            ));
+        }
+        let active_child = matches!(
+            self.lifecycle,
+            BulkLoadLifecycleV1::AppendPending { .. } | BulkLoadLifecycleV1::AbortPending { .. }
+        );
+        if active_child {
+            if self.completed_chunk_count != self.next_chunk_index
+                || self.committed_chunk_count < self.next_chunk_index
+            {
+                return Err(RouterError::Conflict(
+                    "bulk-load active-child counters do not describe the accepted prefix".into(),
+                ));
+            }
+        } else if self.committed_chunk_count != self.next_chunk_index
+            || self.completed_chunk_count != self.next_chunk_index
+        {
+            return Err(RouterError::Conflict(
+                "bulk-load inactive lifecycle counters do not describe a completed prefix".into(),
+            ));
+        }
+        if let BulkLoadLifecycleV1::FinalizePending { cursor, .. } = self.lifecycle
+            && cursor > self.next_chunk_index
+        {
+            return Err(RouterError::Conflict(
+                "bulk-load Finalize cursor exceeds accepted chunk prefix".into(),
+            ));
+        }
+        if let BulkLoadLifecycleV1::AbortPending { active_chunk } = self.lifecycle
+            && active_chunk != self.next_chunk_index
+        {
+            return Err(RouterError::Conflict(
+                "bulk-load AbortPending active chunk is not the next accepted index".into(),
+            ));
+        }
+        if self.lifecycle.is_terminal() {
+            if self.receipt_gc_cursor.is_none()
+                && self.committed_chunk_count != self.next_chunk_index
+            {
+                return Err(RouterError::Conflict(
+                    "terminal bulk-load lifecycle requires committed prefix counters".into(),
+                ));
+            }
+        } else if self.receipt_gc_cursor.is_some() {
+            return Err(RouterError::Conflict(
+                "bulk-load receipt GC cursor requires terminal lifecycle".into(),
+            ));
+        }
+        let encoded = Encode!(self).map_err(|error| {
+            RouterError::Internal(format!("bulk-load coordinator encode failed: {error}"))
+        })?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err(RouterError::InvalidArgument(
+                "bulk-load coordinator exceeds the safe stable payload bound".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// SHA-256(`gleaph:bulk-load-job:v1\0`), the sole Router parent identity fingerprint.
+pub const BULK_LOAD_JOB_IDENTITY_FINGERPRINT: [u8; 32] = [
+    0x3a, 0x8c, 0x1f, 0x7f, 0x39, 0xa5, 0x0f, 0x2a, 0x59, 0x0d, 0x7b, 0x40, 0x6e, 0x9f, 0x9c, 0xe8,
+    0xcd, 0xad, 0x2c, 0xed, 0xa9, 0xdf, 0x41, 0x3e, 0x70, 0xec, 0x6b, 0xed, 0x7d, 0x2e, 0xbf, 0x61,
+];
 
 /// Router-owned progress for one single-target ordered edge batch.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -543,23 +792,21 @@ pub struct RouterMutationRecordV1 {
     /// dispatch for this mutation can still arrive and commit after the proof's absence read.
     #[serde(default)]
     pub terminal_failure: Option<String>,
+    /// Sole retention anchor for every terminal mutation family. Non-terminal records must keep
+    /// this unset; terminal records set it exactly once at the first irreversible transition.
+    #[serde(default)]
+    pub terminal_at_ns: Option<u64>,
 }
 
 /// Exhaustive payload for a V1 Router mutation saga. Exactly one variant is active at a time;
 /// no parallel `shards`/`is_bulk`/`bulk_state` combination exists.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum RouterMutationPayloadV1 {
+    /// Durable graph-scoped Router bulk-load coordinator (ADR 0057). Chunk envelopes live in the
+    /// dedicated MemoryId 49 receipt map; this payload owns only lifecycle and aggregate state.
+    BulkLoadCoordinator(Box<BulkLoadCoordinatorV1>),
     /// Single-operation or multi-shard DML with one encoded seed relation per shard.
     Scalar { shards: Vec<RouterMutationShardV1> },
-    /// Homogeneous bulk group replay where one shared encoded seed relation per shard is sufficient.
-    SharedSeedBulk {
-        total_ops: u32,
-        shards: Vec<RouterMutationShardV1>,
-    },
-    /// Ordered per-operation typed seed replay for a single target shard. Router admission persists
-    /// this exact relation before dispatch; retry and maintenance recovery reconstruct the same
-    /// typed request without a blob-plus-typed dual authority.
-    TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
     /// Ordered edge batch admitted but not yet materialized into its Graph replay target.
     OrderedEdgeBatchRouting,
     /// Ordered edge batch with one durable Graph target and explicit progress.
@@ -572,13 +819,6 @@ pub enum RouterMutationPayloadV1 {
     OrderedMixedBatchRouting,
     /// Ordered mixed batch with one durable Graph target and explicit progress.
     OrderedMixedBatch(Box<RouterOrderedMixedBatchReplayV1>),
-    /// Terminal compacted form for both shared-seed and typed bulk. Typed completion retains the
-    /// ordered per-operation row counts required to reproduce the original batch result;
-    /// shared-seed completion uses an empty vector because that path only owns the aggregate.
-    CompletedBulk {
-        total_ops: u32,
-        operation_row_counts: Vec<u64>,
-    },
     /// Compacted ordered completion retained after projection convergence.
     CompletedOrderedEdgeBatch {
         receipt: GraphOrderedEdgeBatchReceiptV1,
@@ -596,150 +836,30 @@ pub enum RouterMutationPayloadV1 {
     },
 }
 
-/// Durable typed seed replay state for one bulk group (ADR 0047).
 impl RouterMutationPayloadV1 {
+    fn mutation_family(&self) -> RouterMutationFamilyV1 {
+        match self {
+            Self::BulkLoadCoordinator(_) => RouterMutationFamilyV1::BulkLoadJob,
+            Self::Scalar { .. } => RouterMutationFamilyV1::PlanExecution,
+            Self::OrderedEdgeBatchRouting
+            | Self::OrderedEdgeBatch(_)
+            | Self::CompletedOrderedEdgeBatch { .. } => RouterMutationFamilyV1::OrderedEdgeBatch,
+            Self::OrderedVertexBatchRouting
+            | Self::OrderedVertexBatch(_)
+            | Self::CompletedOrderedVertexBatch { .. } => {
+                RouterMutationFamilyV1::OrderedVertexBatch
+            }
+            Self::OrderedMixedBatchRouting
+            | Self::OrderedMixedBatch(_)
+            | Self::CompletedOrderedMixedBatch { .. } => RouterMutationFamilyV1::OrderedMixedBatch,
+        }
+    }
+
     /// Clear the shard vector of a `Scalar` payload. No-op for other variants.
     pub(crate) fn scalar_clear_shards(&mut self) {
         if let RouterMutationPayloadV1::Scalar { shards } = self {
             shards.clear();
         }
-    }
-}
-
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct TypedSeedBulkReplayV1 {
-    /// Total number of logical operations in the bulk group.
-    pub total_ops: u32,
-    /// The single graph shard that owns every operation in this group.
-    pub target: TypedSeedBulkTargetV1,
-    /// Plan, catalog, and execution mode shared by all operations. Resolved label/property tables
-    /// are owned at the `RouterMutationRecordV1` top level, not duplicated here.
-    pub shared: TypedSeedBulkSharedHeaderV1,
-    /// Ordered per-operation parameters and typed seed bindings.
-    pub operations: Vec<TypedSeedBulkOperationV1>,
-    /// Number of wire operations emitted for each logical operation. `None` is the legacy
-    /// representation where every logical operation occupies exactly one wire operation.
-    #[serde(default)]
-    pub logical_operation_chunk_counts: Option<Vec<u32>>,
-}
-
-/// Outcome and identity of the single graph shard that owns every operation in a typed bulk
-/// group. This is a dedicated stable type (not `RouterMutationShardV1`) so that typed replay can
-/// never carry a legacy `seed_bindings_blob`.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct TypedSeedBulkTargetV1 {
-    pub shard_id: ShardId,
-    pub graph_canister: Principal,
-    pub completed: bool,
-    pub projection_advanced: bool,
-    pub row_count: u64,
-    /// Ordered row counts copied from the terminal Graph journal before projection advancement.
-    /// Empty until canonical completion; then its length must equal `total_ops`.
-    pub operation_row_counts: Vec<u64>,
-}
-
-impl TypedSeedBulkTargetV1 {
-    pub fn new(shard_id: ShardId, graph_canister: Principal) -> Self {
-        Self {
-            shard_id,
-            graph_canister,
-            completed: false,
-            projection_advanced: false,
-            row_count: 0,
-            operation_row_counts: Vec::new(),
-        }
-    }
-}
-
-/// Shared header for a typed bulk group.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct TypedSeedBulkSharedHeaderV1 {
-    /// Per-graph key for ELEMENT_ID/path id encoding.
-    pub element_id_encoding_key: [u8; 16],
-    /// Serialized physical plan executed by every operation in the group.
-    pub plan_blob: Vec<u8>,
-    /// Execution mode for the group. Typed V1 is update-only.
-    pub mode: GqlExecutionMode,
-    /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
-    pub indexed_properties: Option<gleaph_graph_kernel::index::IndexedPropertyCatalog>,
-}
-
-/// One typed bulk operation with decoded seed bindings.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct TypedSeedBulkOperationV1 {
-    /// Candid-encoded per-operation parameters.
-    pub params: Vec<u8>,
-    /// Router-resolved seed bindings for this operation.
-    pub seed_bindings: SeedBindingsWire,
-}
-
-impl TypedSeedBulkReplayV1 {
-    /// Validate the invariants required for a durable typed seed replay payload.
-    ///
-    /// - `mode == Update`
-    /// - `total_ops` is non-zero
-    /// - the chunk mapping covers `total_ops` logical operations and all wire operations
-    /// - every operation has empty grouped `entries` and `complete_prefix_rows == true`
-    /// - every `params` blob is at most `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`
-    pub(crate) fn validate(&self) -> Result<(), RouterError> {
-        if self.shared.mode != GqlExecutionMode::Update {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk V1 requires Update mode".into(),
-            ));
-        }
-        if self.total_ops == 0 {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk total_ops must be non-zero".into(),
-            ));
-        }
-        let chunk_counts = self
-            .logical_operation_chunk_counts
-            .as_deref()
-            .unwrap_or(&[]);
-        if self.logical_operation_chunk_counts.is_some()
-            && chunk_counts.len() != self.total_ops as usize
-        {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk logical operation chunk mapping must equal total_ops".into(),
-            ));
-        }
-        if chunk_counts.contains(&0) {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk logical operations must have at least one wire chunk".into(),
-            ));
-        }
-        let wire_operation_count = if self.logical_operation_chunk_counts.is_some() {
-            chunk_counts.iter().try_fold(0usize, |sum, &count| {
-                sum.checked_add(count as usize).ok_or_else(|| {
-                    RouterError::InvalidArgument("typed bulk chunk count overflow".into())
-                })
-            })?
-        } else {
-            self.total_ops as usize
-        };
-        if self.operations.len() != wire_operation_count {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk wire operation count does not match chunk mapping".into(),
-            ));
-        }
-        for (i, op) in self.operations.iter().enumerate() {
-            if !op.seed_bindings.entries.is_empty() {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed bulk op {i} must not contain legacy grouped seed entries"
-                )));
-            }
-            if !op.seed_bindings.complete_prefix_rows {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed bulk op {i} requires complete_prefix_rows=true"
-                )));
-            }
-            if op.params.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed bulk op {i} params exceed safe payload bound"
-                )));
-            }
-        }
-        Ok(())
     }
 }
 
@@ -759,44 +879,40 @@ impl RouterMutationRecord {
             routing_lease_ns: Some(created_at_ns),
             last_error: None,
             terminal_failure: None,
+            terminal_at_ns: None,
         })
     }
 
-    /// Create a non-terminal typed seed bulk saga record with bounded replay state.
-    ///
-    /// The payload is validated and the encoded stable record is checked against the 2 MiB
-    /// portable IC payload bound. No per-seed Candid encode is performed for the size check:
-    /// the single full-record encode is the only serialization.
-    #[cfg(any(test, feature = "pocket-ic-e2e"))]
-    #[allow(dead_code)]
-    pub(crate) fn new_typed_seed_bulk(
+    /// Construct the final durable parent row for a graph-scoped bulk-load job.  The caller must
+    /// perform graph/key and target admission before invoking this constructor; this function
+    /// validates the payload and encoded stable-record bound so the store can co-write it with the
+    /// mutation counter without a recoverable post-write error.
+    pub fn new_bulk_load(
         mutation_id: MutationId,
         created_at_ns: u64,
-        request_fingerprint: Vec<u8>,
-        resolved_labels: Option<ResolvedLabelTable>,
-        resolved_properties: Option<ResolvedPropertyTable>,
-        replay: TypedSeedBulkReplayV1,
+        coordinator: BulkLoadCoordinatorV1,
     ) -> Result<Self, RouterError> {
-        replay.validate()?;
-        if replay.target.completed
-            || replay.target.projection_advanced
-            || replay.target.row_count != 0
-            || !replay.target.operation_row_counts.is_empty()
-        {
-            return Err(RouterError::InvalidArgument(
-                "typed bulk V1 target must be pristine at admission".into(),
-            ));
+        if mutation_id == 0 {
+            return Err(RouterError::IdExhausted("mutation_id".into()));
         }
-        let mut record = Self::new(mutation_id, created_at_ns, request_fingerprint);
-        {
-            let v1 = record.as_v1_mut();
-            v1.resolved_labels = resolved_labels;
-            v1.resolved_properties = resolved_properties;
-            v1.payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
-        }
+        coordinator.validate()?;
+        let record = Self::V1(RouterMutationRecordV1 {
+            mutation_id,
+            created_at_ns,
+            request_identity: RouterMutationRequestIdentityV1::BulkLoadJob,
+            resolved_labels: None,
+            resolved_properties: None,
+            completed_row_count: None,
+            routing_in_progress: false,
+            payload: RouterMutationPayloadV1::BulkLoadCoordinator(Box::new(coordinator)),
+            routing_lease_ns: None,
+            last_error: None,
+            terminal_failure: None,
+            terminal_at_ns: None,
+        });
         if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err(RouterError::InvalidArgument(
-                "typed seed bulk record exceeds safe inter-canister payload bound".into(),
+                "bulk-load parent record exceeds the safe payload bound".into(),
             ));
         }
         Ok(record)
@@ -819,128 +935,107 @@ impl RouterMutationRecord {
         &self.as_v1().payload
     }
 
+    fn mutation_family(&self) -> Result<RouterMutationFamilyV1, RouterError> {
+        let identity_family = self.as_v1().request_identity.mutation_family();
+        let payload_family = self.payload().mutation_family();
+        if identity_family != payload_family {
+            return Err(RouterError::Conflict(
+                "mutation record request identity and payload families disagree".into(),
+            ));
+        }
+        Ok(identity_family)
+    }
+
+    /// Validate that both durable family authorities identify a GQL/prepared mutation.
+    pub fn ensure_gql_mutation_family(&self) -> Result<(), RouterError> {
+        match self.mutation_family()? {
+            RouterMutationFamilyV1::BulkLoadJob => Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into(),
+            )),
+            RouterMutationFamilyV1::PlanExecution => Ok(()),
+            RouterMutationFamilyV1::OrderedEdgeBatch
+            | RouterMutationFamilyV1::OrderedVertexBatch
+            | RouterMutationFamilyV1::OrderedMixedBatch => Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into(),
+            )),
+        }
+    }
+
+    /// Validate that both durable family authorities identify one atomic-insert subtype.
+    pub fn ensure_atomic_insert_family(&self) -> Result<(), RouterError> {
+        match self.mutation_family()? {
+            RouterMutationFamilyV1::BulkLoadJob => Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into(),
+            )),
+            RouterMutationFamilyV1::PlanExecution => Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into(),
+            )),
+            RouterMutationFamilyV1::OrderedEdgeBatch
+            | RouterMutationFamilyV1::OrderedVertexBatch
+            | RouterMutationFamilyV1::OrderedMixedBatch => Ok(()),
+        }
+    }
+
+    /// Validate that both durable family authorities identify an ADR 0057 bulk-load job.
+    pub fn ensure_bulk_load_family(&self) -> Result<(), RouterError> {
+        match self.mutation_family()? {
+            RouterMutationFamilyV1::BulkLoadJob => Ok(()),
+            RouterMutationFamilyV1::PlanExecution
+            | RouterMutationFamilyV1::OrderedEdgeBatch
+            | RouterMutationFamilyV1::OrderedVertexBatch
+            | RouterMutationFamilyV1::OrderedMixedBatch => Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into(),
+            )),
+        }
+    }
+
     pub(crate) fn payload_mut(&mut self) -> &mut RouterMutationPayloadV1 {
         &mut self.as_v1_mut().payload
     }
 
-    /// Return the scalar/shared-seed shard slice, or an empty slice for non-shard payloads.
+    /// Return the scalar shard slice, or an empty slice for non-shard payloads.
     pub fn shards(&self) -> &[RouterMutationShardV1] {
         match &self.as_v1().payload {
-            RouterMutationPayloadV1::Scalar { shards }
-            | RouterMutationPayloadV1::SharedSeedBulk { shards, .. } => shards,
+            RouterMutationPayloadV1::Scalar { shards } => shards,
             _ => &[],
         }
     }
 
     pub(crate) fn shards_mut(&mut self) -> Option<&mut Vec<RouterMutationShardV1>> {
         match self.payload_mut() {
-            RouterMutationPayloadV1::Scalar { shards }
-            | RouterMutationPayloadV1::SharedSeedBulk { shards, .. } => Some(shards),
+            RouterMutationPayloadV1::Scalar { shards } => Some(shards),
             _ => None,
         }
     }
 
-    /// `true` if the record is a bulk group (shared-seed, typed, or completed), as distinct from a
-    /// scalar saga.
-    pub fn is_bulk(&self) -> bool {
-        matches!(
-            self.payload(),
-            RouterMutationPayloadV1::SharedSeedBulk { .. }
-                | RouterMutationPayloadV1::TypedSeedBulk(_)
-                | RouterMutationPayloadV1::OrderedEdgeBatchRouting
-                | RouterMutationPayloadV1::OrderedEdgeBatch(_)
-                | RouterMutationPayloadV1::OrderedVertexBatchRouting
-                | RouterMutationPayloadV1::OrderedVertexBatch(_)
-                | RouterMutationPayloadV1::OrderedMixedBatchRouting
-                | RouterMutationPayloadV1::OrderedMixedBatch(_)
-                | RouterMutationPayloadV1::CompletedBulk { .. }
-                | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
-                | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
-                | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. }
-        )
-    }
-
-    /// Total operation count for bulk payloads; `None` for scalar.
-    pub fn bulk_total_ops(&self) -> Option<u32> {
-        match self.payload() {
-            RouterMutationPayloadV1::SharedSeedBulk { total_ops, .. } => Some(*total_ops),
-            RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(replay.total_ops),
-            RouterMutationPayloadV1::OrderedEdgeBatch(replay) => Some(
-                replay
-                    .target
-                    .request
-                    .items
-                    .len()
-                    .try_into()
-                    .expect("ordered request item bound fits u32"),
-            ),
-            RouterMutationPayloadV1::OrderedVertexBatch(replay) => Some(
-                replay
-                    .target
-                    .request
-                    .items
-                    .len()
-                    .try_into()
-                    .expect("ordered vertex request item bound fits u32"),
-            ),
-            RouterMutationPayloadV1::OrderedMixedBatch(replay) => Some(
-                replay
-                    .target
-                    .request
-                    .operations
-                    .len()
-                    .try_into()
-                    .expect("ordered mixed request operation bound fits u32"),
-            ),
-            RouterMutationPayloadV1::CompletedBulk { total_ops, .. } => Some(*total_ops),
-            _ => None,
-        }
-    }
-
-    /// Return the typed bulk single target, if the payload is `TypedSeedBulk`.
-    pub fn typed_target(&self) -> Option<&TypedSeedBulkTargetV1> {
-        match self.payload() {
-            RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(&replay.target),
-            _ => None,
-        }
-    }
-
-    /// Ordered result cardinalities retained by a completed typed bulk record.
-    pub fn completed_bulk_operation_row_counts(&self) -> Option<&[u64]> {
-        match self.payload() {
-            RouterMutationPayloadV1::CompletedBulk {
-                operation_row_counts,
-                ..
-            } if !operation_row_counts.is_empty() => Some(operation_row_counts),
-            _ => None,
-        }
-    }
-
-    /// Mutable access to the typed bulk single target, for lifecycle tests and recovery steps.
-    #[allow(dead_code)]
-    pub(crate) fn typed_target_mut(&mut self) -> Option<&mut TypedSeedBulkTargetV1> {
-        match self.payload_mut() {
-            RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(&mut replay.target),
-            _ => None,
-        }
-    }
-
-    /// `true` once the saga reaches a terminal phase. An irreversible `terminal_failure` takes
-    /// priority (it forces [`Self::lifecycle_phase`] to `Failed`); otherwise terminality is the
-    /// progress-derived `Completed`/`Failed`. Terminal records are the only ones eligible for TTL
-    /// eviction (gated additionally by the non-terminal reservation count in ADR 0030 slice 6);
-    /// non-terminal sagas are retained as recovery targets (ADR 0029 Phase 4).
+    /// `true` once the saga reaches an irreversible terminal state. A progress-derived `Failed`
+    /// without `terminal_failure` is retryable and therefore remains non-terminal.
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.lifecycle_phase(),
-            MutationLifecyclePhase::Completed | MutationLifecyclePhase::Failed
-        )
+        self.as_v1().terminal_failure.is_some()
+            || self.lifecycle_phase() == MutationLifecyclePhase::Completed
+            || matches!(
+                self.payload(),
+                RouterMutationPayloadV1::BulkLoadCoordinator(coordinator)
+                    if coordinator.lifecycle.is_terminal()
+            )
+    }
+
+    /// Set the terminal retention anchor exactly once after a terminal transition.
+    pub(crate) fn mark_terminal_at_ns(&mut self, now: u64) {
+        if self.is_terminal() && self.as_v1().terminal_at_ns.is_none() {
+            self.as_v1_mut().terminal_at_ns = Some(now);
+        }
     }
 
     /// `true` once the saga is **irreversibly** terminally failed (ADR 0030 slice 6): a same-key
     /// retry returns the stored error rather than re-dispatching.
     pub fn is_terminally_failed(&self) -> bool {
         self.as_v1().terminal_failure.is_some()
+            || matches!(
+                self.payload(),
+                RouterMutationPayloadV1::BulkLoadCoordinator(coordinator)
+                    if matches!(coordinator.lifecycle, BulkLoadLifecycleV1::Failed { .. })
+            )
     }
 
     /// `true` while a unique-reservation-holding mutation is eligible to be flipped to irreversible
@@ -951,8 +1046,7 @@ impl RouterMutationRecord {
         self.as_v1().terminal_failure.is_none()
             && !self.as_v1().routing_in_progress
             && match &self.as_v1().payload {
-                RouterMutationPayloadV1::Scalar { shards }
-                | RouterMutationPayloadV1::SharedSeedBulk { shards, .. } => {
+                RouterMutationPayloadV1::Scalar { shards } => {
                     !shards.is_empty() && shards.iter().all(|shard| !shard.completed)
                 }
                 _ => false,
@@ -964,6 +1058,22 @@ impl RouterMutationRecord {
     /// stored field, so the per-shard `completed`/`projection_advanced` flags and
     /// `completed_row_count` remain the single source of truth.
     pub fn lifecycle_phase(&self) -> MutationLifecyclePhase {
+        if let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = self.payload() {
+            return match coordinator.lifecycle {
+                BulkLoadLifecycleV1::Open => MutationLifecyclePhase::CanonicalCommitted,
+                BulkLoadLifecycleV1::AppendPending { .. }
+                | BulkLoadLifecycleV1::AbortPending { .. } => {
+                    MutationLifecyclePhase::CanonicalPending
+                }
+                BulkLoadLifecycleV1::FinalizePending { .. } => {
+                    MutationLifecyclePhase::ProjectionPending
+                }
+                BulkLoadLifecycleV1::Completed | BulkLoadLifecycleV1::Aborted => {
+                    MutationLifecyclePhase::Completed
+                }
+                BulkLoadLifecycleV1::Failed { .. } => MutationLifecyclePhase::Failed,
+            };
+        }
         // An irreversible terminal failure (ADR 0030 slice 6) is authoritative over the
         // progress-derived phase.
         if self.as_v1().terminal_failure.is_some() {
@@ -1037,16 +1147,6 @@ impl RouterMutationRecord {
             }
             return MutationLifecyclePhase::CanonicalCommitted;
         }
-        // Typed payload: derive from the single dedicated target outcome.
-        if let Some(target) = self.typed_target() {
-            if !target.completed {
-                return MutationLifecyclePhase::CanonicalPending;
-            }
-            if target.projection_advanced {
-                return MutationLifecyclePhase::Completed;
-            }
-            return MutationLifecyclePhase::CanonicalCommitted;
-        }
         // Routing was released without a durable dispatch envelope and no canonical
         // write committed (e.g. a validation/planning failure that freed the
         // reservation). The key is still re-reservable for a fresh attempt.
@@ -1070,7 +1170,7 @@ impl Storable for RouterMutationRecord {
     }
 }
 
-/// Router mutation shard outcome (ADR 0044).
+/// Router mutation shard outcome for scalar plan execution (ADR 0029).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RouterMutationShardV1 {
     pub shard_id: ShardId,
@@ -1133,17 +1233,47 @@ impl RouterMutationShardV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::store::compact_completed_record;
-    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
     use gleaph_graph_kernel::plan_exec::{
         GraphOrderedEdgeBatchReceiptV1, GraphOrderedVertexBatchReceiptV1,
         OrderedEdgeBatchGraphItemV1, OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest,
-        OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedProperty,
-        ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedRowWire,
+        OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedPropertyTable,
         ordered_edge_batch_graph_request_fingerprint,
         ordered_vertex_batch_graph_request_fingerprint,
     };
     use ic_stable_structures::Storable;
+
+    #[test]
+    fn bulk_load_job_identity_uses_one_domain_fingerprint_and_family() {
+        let identity = RouterMutationRequestIdentityV1::BulkLoadJob;
+        assert_eq!(
+            identity.request_fingerprint(),
+            &BULK_LOAD_JOB_IDENTITY_FINGERPRINT
+        );
+        assert_eq!(identity.public_item_count(), None);
+        let record = RouterMutationRecord::new_bulk_load(
+            7,
+            1,
+            BulkLoadCoordinatorV1::new(BulkLoadTargetV1 {
+                shard_id: ShardId::new(0),
+                graph_canister: Principal::self_authenticating([41; 32]),
+            }),
+        )
+        .unwrap();
+        assert_eq!(record.ensure_bulk_load_family(), Ok(()));
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn bulk_load_coordinator_rejects_terminal_counter_mismatch() {
+        let mut coordinator = BulkLoadCoordinatorV1::new(BulkLoadTargetV1 {
+            shard_id: ShardId::new(0),
+            graph_canister: Principal::self_authenticating([42; 32]),
+        });
+        coordinator.lifecycle = BulkLoadLifecycleV1::Completed;
+        coordinator.next_chunk_index = 1;
+        assert!(coordinator.validate().is_err());
+    }
 
     #[test]
     fn router_mutation_record_round_trips_through_storable() {
@@ -1174,6 +1304,70 @@ mod tests {
     }
 
     #[test]
+    fn mutation_family_validation_uses_both_identity_and_payload() {
+        let mut record = RouterMutationRecord::new(2, 42, vec![9; 32]);
+        record
+            .ensure_gql_mutation_family()
+            .expect("matching plan identity and scalar payload");
+        assert_eq!(
+            record.ensure_atomic_insert_family(),
+            Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into()
+            ))
+        );
+
+        record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+            public_fingerprint: [7; 32],
+            public_item_count: 1,
+        };
+        assert_eq!(
+            record.ensure_atomic_insert_family(),
+            Err(RouterError::Conflict(
+                "mutation record request identity and payload families disagree".into()
+            )),
+            "an identity-only classifier would wrongly admit this corrupt row"
+        );
+
+        record.as_v1_mut().payload = RouterMutationPayloadV1::OrderedEdgeBatchRouting;
+        record
+            .ensure_atomic_insert_family()
+            .expect("matching ordered edge identity and payload");
+        assert_eq!(
+            record.ensure_gql_mutation_family(),
+            Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into()
+            ))
+        );
+
+        record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedVertexBatch {
+            public_fingerprint: [8; 32],
+            public_item_count: 1,
+        };
+        assert_eq!(
+            record.ensure_atomic_insert_family(),
+            Err(RouterError::Conflict(
+                "mutation record request identity and payload families disagree".into()
+            )),
+            "atomic subtypes must also agree"
+        );
+
+        record.as_v1_mut().payload = RouterMutationPayloadV1::OrderedVertexBatchRouting;
+        record
+            .ensure_atomic_insert_family()
+            .expect("matching ordered vertex identity and payload");
+        record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedMixedBatch {
+            public_fingerprint: [9; 32],
+            public_operation_count: 1,
+            public_vertex_count: 1,
+            public_edge_count: 0,
+        };
+        record.as_v1_mut().payload = RouterMutationPayloadV1::OrderedMixedBatchRouting;
+        record
+            .ensure_atomic_insert_family()
+            .expect("matching ordered mixed identity and payload");
+    }
+
+    #[test]
     fn ordered_vertex_router_replay_round_trips_and_validates() {
         let request = OrderedVertexBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(1),
@@ -1198,6 +1392,7 @@ mod tests {
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
                     hot_forward_vertices: Vec::new(),
+                    allocated_vertex_ids: vec![7],
                 },
             ),
             projection_watermark: None,
@@ -1221,7 +1416,6 @@ mod tests {
             decoded.lifecycle_phase(),
             MutationLifecyclePhase::CanonicalCommitted
         );
-        assert_eq!(decoded.bulk_total_ops(), Some(1));
     }
 
     #[test]
@@ -1326,6 +1520,26 @@ mod tests {
         // Failed: routing released with no durable shard envelope.
         let failed = record_with_shards(Vec::new());
         assert_eq!(failed.lifecycle_phase(), MutationLifecyclePhase::Failed);
+        assert!(!failed.is_terminal(), "retryable Failed is not terminal");
+    }
+
+    #[test]
+    fn terminal_anchor_excludes_retryable_failure_and_is_set_once() {
+        let mut retryable_failure = record_with_shards(Vec::new());
+        retryable_failure.mark_terminal_at_ns(10);
+        assert_eq!(retryable_failure.as_v1().terminal_at_ns, None);
+
+        retryable_failure.as_v1_mut().completed_row_count = Some(0);
+        retryable_failure.mark_terminal_at_ns(20);
+        retryable_failure.mark_terminal_at_ns(30);
+        assert!(retryable_failure.is_terminal());
+        assert_eq!(retryable_failure.as_v1().terminal_at_ns, Some(20));
+
+        let mut terminal_failure = record_with_shards(Vec::new());
+        terminal_failure.as_v1_mut().terminal_failure = Some("permanent".into());
+        terminal_failure.mark_terminal_at_ns(40);
+        assert!(terminal_failure.is_terminal());
+        assert_eq!(terminal_failure.as_v1().terminal_at_ns, Some(40));
     }
 
     // ADR 0029 Phase 0 contract: Router must never report `Completed` while any required
@@ -1346,314 +1560,5 @@ mod tests {
                 record.shards()
             );
         }
-    }
-
-    fn typed_seed_replay(total_ops: u32) -> TypedSeedBulkReplayV1 {
-        typed_seed_replay_with_rows(total_ops, vec![])
-    }
-
-    fn typed_seed_replay_with_rows(
-        total_ops: u32,
-        rows: Vec<SeedRowWire>,
-    ) -> TypedSeedBulkReplayV1 {
-        let target = TypedSeedBulkTargetV1::new(ShardId(0), Principal::anonymous());
-        let shared = TypedSeedBulkSharedHeaderV1 {
-            element_id_encoding_key: [0u8; 16],
-            plan_blob: vec![1, 2, 3],
-            mode: GqlExecutionMode::Update,
-            indexed_properties: None,
-        };
-        let operations = (0..total_ops)
-            .map(|i| TypedSeedBulkOperationV1 {
-                params: vec![i as u8],
-                seed_bindings: SeedBindingsWire {
-                    entries: vec![],
-                    rows: rows.clone(),
-                    complete_prefix_rows: true,
-                },
-            })
-            .collect();
-        TypedSeedBulkReplayV1 {
-            total_ops,
-            target,
-            shared,
-            operations,
-            logical_operation_chunk_counts: None,
-        }
-    }
-
-    fn sample_resolved_labels() -> ResolvedLabelTable {
-        ResolvedLabelTable {
-            vertex: vec![ResolvedVertexLabel {
-                name: "Person".into(),
-                id: VertexLabelId::from_raw(1),
-            }],
-            edge: vec![],
-        }
-    }
-
-    fn sample_resolved_properties() -> ResolvedPropertyTable {
-        ResolvedPropertyTable {
-            properties: vec![ResolvedProperty {
-                name: "name".into(),
-                id: PropertyId::from_raw(1),
-            }],
-        }
-    }
-
-    fn typed_seed_bulk_record(total_ops: u32) -> RouterMutationRecord {
-        RouterMutationRecord::new_typed_seed_bulk(
-            1,
-            0,
-            Vec::new(),
-            Some(sample_resolved_labels()),
-            Some(sample_resolved_properties()),
-            typed_seed_replay(total_ops),
-        )
-        .expect("valid typed seed bulk record")
-    }
-
-    #[test]
-    fn shared_seed_bulk_payload_round_trips() {
-        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
-        record.as_v1_mut().payload = RouterMutationPayloadV1::SharedSeedBulk {
-            total_ops: 2,
-            shards: vec![RouterMutationShardV1::new(
-                ShardId(0),
-                Principal::anonymous(),
-                None,
-            )],
-        };
-        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
-        assert_eq!(decoded, record);
-        assert!(decoded.is_bulk());
-        assert_eq!(decoded.bulk_total_ops(), Some(2));
-    }
-
-    #[test]
-    fn typed_seed_bulk_payload_round_trips() {
-        let record = typed_seed_bulk_record(3);
-        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
-        assert_eq!(decoded, record);
-        assert!(decoded.is_bulk());
-        assert_eq!(decoded.bulk_total_ops(), Some(3));
-        assert_eq!(decoded.shards().len(), 0);
-        assert!(decoded.as_v1().resolved_labels.is_some());
-        assert!(decoded.as_v1().resolved_properties.is_some());
-        assert_eq!(
-            decoded.as_v1().resolved_labels.as_ref().unwrap().vertex[0].name,
-            "Person"
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_lifecycle_stages() {
-        let mut record = typed_seed_bulk_record(1);
-        record.as_v1_mut().routing_in_progress = false;
-        assert_eq!(
-            record.lifecycle_phase(),
-            MutationLifecyclePhase::CanonicalPending
-        );
-
-        record.typed_target_mut().unwrap().completed = true;
-        assert_eq!(
-            record.lifecycle_phase(),
-            MutationLifecyclePhase::CanonicalCommitted
-        );
-
-        record.typed_target_mut().unwrap().projection_advanced = true;
-        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
-
-        // A pinned row count overrides the payload-derived terminal signal after compaction.
-        record.as_v1_mut().completed_row_count = Some(7);
-        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
-    }
-
-    #[test]
-    fn typed_payload_is_not_uncommitted_dispatch() {
-        let mut record = typed_seed_bulk_record(1);
-        record.as_v1_mut().routing_in_progress = false;
-        assert!(!record.is_uncommitted_dispatch());
-        assert_eq!(
-            record.lifecycle_phase(),
-            MutationLifecyclePhase::CanonicalPending
-        );
-    }
-
-    #[test]
-    fn completed_bulk_is_terminal() {
-        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
-        record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().completed_row_count = Some(7);
-        record.as_v1_mut().payload = RouterMutationPayloadV1::CompletedBulk {
-            total_ops: 7,
-            operation_row_counts: Vec::new(),
-        };
-        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
-        assert!(record.is_bulk());
-        assert!(!record.is_uncommitted_dispatch());
-    }
-
-    #[test]
-    fn completed_bulk_typed_seed_drops_replay_and_resolved_tables() {
-        let mut record = typed_seed_bulk_record(5);
-        record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().completed_row_count = Some(5);
-        record.typed_target_mut().unwrap().operation_row_counts = vec![1; 5];
-        compact_completed_record(&mut record);
-        assert!(matches!(
-            record.payload(),
-            RouterMutationPayloadV1::CompletedBulk {
-                total_ops: 5,
-                operation_row_counts,
-            } if operation_row_counts == &[1; 5]
-        ));
-        assert_eq!(
-            record.completed_bulk_operation_row_counts(),
-            Some(&[1; 5][..])
-        );
-        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
-        assert_eq!(decoded, record);
-        assert!(record.as_v1().resolved_labels.is_none());
-        assert!(record.as_v1().resolved_properties.is_none());
-        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_rejects_zero_ops() {
-        let mut replay = typed_seed_replay(1);
-        replay.total_ops = 0;
-        assert!(replay.validate().is_err());
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_rejects_ops_count_mismatch() {
-        let mut replay = typed_seed_replay(2);
-        replay.operations.pop();
-        assert!(replay.validate().is_err());
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_rejects_query_mode() {
-        let mut replay = typed_seed_replay(1);
-        replay.shared.mode = GqlExecutionMode::Query;
-        assert!(replay.validate().is_err());
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_rejects_grouped_entries() {
-        let mut replay = typed_seed_replay(1);
-        replay.operations[0]
-            .seed_bindings
-            .entries
-            .push(SeedBindingEntry {
-                variable: "x".into(),
-                local_vertex_ids: vec![1],
-                local_edge_postings: vec![],
-            });
-        assert!(replay.validate().is_err());
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_rejects_incomplete_prefix_rows() {
-        let mut replay = typed_seed_replay(1);
-        replay.operations[0].seed_bindings.complete_prefix_rows = false;
-        assert!(replay.validate().is_err());
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_accepts_zero_rows() {
-        let replay = typed_seed_replay(1);
-        assert!(replay.validate().is_ok());
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay).is_ok()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_accepts_rows_without_fixed_cardinality_cap() {
-        let mut replay = typed_seed_replay(1);
-        replay.operations[0].seed_bindings.rows = (0..1025)
-            .map(|_| SeedRowWire {
-                vertex_bindings: vec![],
-                float64_bindings: vec![],
-            })
-            .collect();
-        assert!(replay.validate().is_ok());
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_rejects_oversized_params() {
-        let mut replay = typed_seed_replay(1);
-        replay.operations[0].params = vec![0u8; MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES + 1];
-        assert!(replay.validate().is_err());
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_validation_accepts_logical_to_wire_chunk_mapping() {
-        let mut replay = typed_seed_replay(2);
-        replay.operations.push(replay.operations[1].clone());
-        replay.logical_operation_chunk_counts = Some(vec![2, 1]);
-        replay.validate().expect("chunked replay is valid");
-
-        replay.logical_operation_chunk_counts = Some(vec![2, 2]);
-        assert!(replay.validate().is_err());
-    }
-
-    #[test]
-    fn typed_seed_bulk_record_rejects_non_pristine_target() {
-        let mut replay = typed_seed_replay(1);
-        replay.target.completed = true;
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_record_rejects_exceeding_safe_payload_bound() {
-        let mut replay = typed_seed_replay_with_rows(
-            1024,
-            vec![SeedRowWire {
-                vertex_bindings: vec![],
-                float64_bindings: vec![],
-            }],
-        );
-        // Each params is within the per-operation limit, but the full record still exceeds the
-        // portable inter-canister payload bound because of the cumulative Candid overhead.
-        for op in replay.operations.iter_mut() {
-            op.params = vec![0u8; 3 * 1024];
-        }
-        assert!(
-            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn typed_seed_bulk_target_has_no_blob_field() {
-        // The target type has no `seed_bindings_blob` accessor and cannot be constructed from a
-        // legacy shard envelope. This is a compile-time invariant; the test just exercises the
-        // dedicated constructor and field set.
-        let target = TypedSeedBulkTargetV1::new(ShardId(7), Principal::anonymous());
-        assert_eq!(target.shard_id, ShardId(7));
-        assert_eq!(target.graph_canister, Principal::anonymous());
-        assert!(!target.completed);
     }
 }

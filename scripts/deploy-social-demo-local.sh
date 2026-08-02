@@ -297,16 +297,9 @@ build_social_config() {
   node "$ROOT/frontend/apps/social-demo/scripts/build-gql-formatter.mjs"
 }
 
-# apply-social-seeds.mjs sizes pages dynamically by Candid payload and waits for
-# graph-index convergence between dependency waves, so no fixed item cap is needed.
 seed_social_graph() {
-  log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
-  # apply-social-seeds.mjs groups the manifest into dependency waves
-  # (vertices, user edges, posts, replies, topic/feed assignments) and runs each wave as a
-  # separate gql_execute_idempotent_batch call, preserving parent-before-child order.
-  # After the vertex wave it backfills vertex property postings, then waits for the shard's
-  # durable index projections (outbox + repair journal) to converge before each edge wave,
-  # so MATCH anchors resolve against a current graph-index even with large dynamic pages.
+  local fresh_bootstrap="$1"
+  log "Applying deterministic typed social load through Router bulk_load"
   env \
     HOME="$ICP_CLI_HOME" \
     COREPACK_HOME="$ICP_COREPACK_HOME" \
@@ -315,12 +308,13 @@ seed_social_graph() {
     RUSTUP_HOME="$RUSTUP_HOME" \
     CARGO_HOME="$CARGO_HOME" \
     GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
+    GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
+    GLEAPH_DEMO_EMBEDDING_NAME="$EMBEDDING_NAME" \
+    GLEAPH_DEMO_FRESH_BOOTSTRAP="$fresh_bootstrap" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
-    node "$ROOT/frontend/apps/social-demo/scripts/apply-social-seeds.mjs" \
-      "$ROOT/frontend/apps/social-demo/seeds/social-seeds.json" \
-      gleaph-router \
-      gql_execute_idempotent_batch
+    node "$ROOT/frontend/apps/social-demo/scripts/apply-social-load.mjs" \
+      "$ROOT/frontend/apps/social-demo/seeds/social-load.json"
 }
 
 setup_vector_index() {
@@ -339,41 +333,13 @@ setup_vector_index() {
     '(record { logical_graph_name = "'"$GRAPH_NAME"'"; shard_id = '"$SHARD_ID"' : nat32; vector_index_canister = principal "'"$vector_id"'" })'
 }
 
-ingest_social_embeddings() {
-  if [[ "${GLEAPH_DEMO_SKIP_EMBEDDINGS:-0}" == "1" ]]; then
-    log "Skipping Post embeddings ingest (GLEAPH_DEMO_SKIP_EMBEDDINGS=1)"
-    return
-  fi
-  log "Ingesting Post embeddings through Router"
-  if env \
-      HOME="$ICP_CLI_HOME" \
-      COREPACK_HOME="$ICP_COREPACK_HOME" \
-      XDG_CACHE_HOME="$ICP_XDG_CACHE_HOME" \
-      XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
-      RUSTUP_HOME="$RUSTUP_HOME" \
-      CARGO_HOME="$CARGO_HOME" \
-      GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
-      GLEAPH_DEMO_EMBEDDING_NAME="$EMBEDDING_NAME" \
-      ICP_IDENTITY_NAME="$deployer_id" \
-      DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
-      node "$ROOT/frontend/apps/social-demo/scripts/ingest-social-embeddings.mjs" \
-        "$ROOT/frontend/apps/social-demo/seeds/social-seeds.json"
-  then
-    log "Embeddings ingest complete"
-  else
-    local rc=$?
-    log "WARN: embeddings ingest failed (rc=$rc); continuing without embeddings."
-    log "      Set GLEAPH_DEMO_SKIP_EMBEDDINGS=1 to silence this warning."
-  fi
-}
-
 register_social_graph_type() {
   log "Registering Social Graph Type with ORDER BY INSERTION feed labels"
   # ADR 0052 slice 2: the prepared feed queries use ORDER BY INSERTION(e), so the materialized
   # feed labels must be declared insertion-ordered in the Graph Type (IF NOT EXISTS keeps the
   # step idempotent for redeploys). The Router interns the declared vocabulary idempotently.
-  icp_call_expect_ok "Register Social Graph Type" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"CREATE GRAPH IF NOT EXISTS $GRAPH_NAME { NODE Feed, NODE Post, NODE User, DIRECTED EDGE FeedMembership LABEL IN_PUBLIC_FEED ORDER BY INSERTION CONNECTING (Post -> Feed), DIRECTED EDGE HomeFeedMembership LABEL IN_HOME_FEED ORDER BY INSERTION CONNECTING (Post -> User) }\", vec {}, \"social-graph-type\")"
+  icp_call_expect_ok "Register Social Graph Type" "" -e local gleaph-router gql_mutate \
+    "(\"CREATE GRAPH IF NOT EXISTS $GRAPH_NAME { NODE Feed, NODE Post, NODE User, NODE SeedLoad, DIRECTED EDGE FeedMembership LABEL IN_PUBLIC_FEED ORDER BY INSERTION CONNECTING (Post -> Feed), DIRECTED EDGE HomeFeedMembership LABEL IN_HOME_FEED ORDER BY INSERTION CONNECTING (Post -> User) }\", vec {}, \"social-graph-type\")"
 }
 
 register_social_prepared_queries() {
@@ -448,6 +414,10 @@ main() {
   # adding graph admins. It is installed after Router, Index, Graph, and Vector are registered/wired
   # because its init args need the Router principal.
   local router_id index_id graph_id gateway_id frontend_id vector_id
+  local graph_was_existing=0
+  if icp_cmd canister status -e local -i gleaph-graph-shard-0 >/dev/null 2>&1; then
+    graph_was_existing=1
+  fi
   router_id="$(ensure_canister gleaph-router)"
   index_id="$(ensure_canister gleaph-graph-index)"
   graph_id="$(ensure_canister gleaph-graph-shard-0)"
@@ -509,38 +479,6 @@ main() {
       logical_graph_name = \"$GRAPH_NAME\";
     }
   )"
-  # Prime the property index for the lookup keys used by the social-demo seed
-  # GQL. Without these, every MATCH by `user_id` or `demo_id` scans every vertex
-  # of that label. This is a one-time DDL cost paid before seeding.
-  log "Bootstrapping social-demo labels for index registration"
-  local sentinel_offset=9000000
-  local sentinel_user_id="__gleaph_bootstrap_user"
-  icp_call_expect_ok "Bootstrap User label" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"INSERT (n:User {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap', user_id: '$sentinel_user_id'})\", vec {}, \"social-bootstrap-user\")"
-  icp_call_expect_ok "Bootstrap Post label" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"INSERT (n:Post {demo_id: $sentinel_offset, demo_graph: 'social', body: '__bootstrap'})\", vec {}, \"social-bootstrap-post\")"
-  icp_call_expect_ok "Bootstrap Feed label" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"INSERT (n:Feed {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap'})\", vec {}, \"social-bootstrap-feed\")"
-  icp_call_expect_ok "Bootstrap Topic label" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"INSERT (n:Topic {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap'})\", vec {}, \"social-bootstrap-topic\")"
-  icp_call_expect_ok "Bootstrap Community label" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"INSERT (n:Community {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap'})\", vec {}, \"social-bootstrap-community\")"
-
-  log "Setting indexed vertex properties for social-demo lookups"
-  icp_call_expect_ok "Index User.user_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
-    "(\"$GRAPH_NAME\", \"User\", \"user_id\")"
-  icp_call_expect_ok "Index Post.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
-    "(\"$GRAPH_NAME\", \"Post\", \"demo_id\")"
-  icp_call_expect_ok "Index Feed.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
-    "(\"$GRAPH_NAME\", \"Feed\", \"demo_id\")"
-  icp_call_expect_ok "Index Topic.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
-    "(\"$GRAPH_NAME\", \"Topic\", \"demo_id\")"
-  icp_call_expect_ok "Index User.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
-    "(\"$GRAPH_NAME\", \"User\", \"demo_id\")"
-
-  log "Removing bootstrap vertices"
-  icp_call_expect_ok "Delete bootstrap vertices" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"MATCH (n {demo_id: $sentinel_offset, demo_graph: 'social'}) DETACH DELETE n\", vec {}, \"social-bootstrap-delete\")"
   log "Installing gleaph-vector"
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-vector --args "(
     record {
@@ -559,10 +497,13 @@ main() {
   vite_env_path="$(write_social_demo_vite_env || true)"
 
   build_social_config
-  seed_social_graph
   register_social_graph_type
   setup_vector_index "$vector_id"
-  ingest_social_embeddings
+  local fresh_bootstrap=0
+  if [[ "$graph_was_existing" == "0" || "$INSTALL_MODE" == "reinstall" ]]; then
+    fresh_bootstrap=1
+  fi
+  seed_social_graph "$fresh_bootstrap"
   register_social_prepared_queries
 
   if [[ "${GLEAPH_DEMO_VERIFY_QUERY:-0}" == "1" ]]; then

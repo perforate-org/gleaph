@@ -8,8 +8,8 @@ use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, gql_execute_as_admin, gql_execute_as_admin_expect_err,
-    gql_query_as_admin, install_single_shard_federation,
+    FederationEnv, gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_query_as_admin,
+    install_single_shard_federation,
 };
 use std::collections::BTreeMap;
 
@@ -24,7 +24,7 @@ fn inline_ddl() -> String {
 
 fn setup() -> FederationEnv {
     let env = install_single_shard_federation();
-    gql_execute_as_admin(&env, &inline_ddl(), "adr0034_inline_scalar_mutation_schema");
+    gql_mutate_as_admin(&env, &inline_ddl(), "adr0034_inline_scalar_mutation_schema");
     env
 }
 
@@ -47,7 +47,7 @@ fn scenario_insert_round_trips_through_inline_property_bytes(
     value: u64,
     mutation_key: &str,
 ) {
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         env,
         &format!("INSERT (:City)-[:ROAD {{{PROPERTY}: {value}}}]->(:City)"),
         mutation_key,
@@ -69,7 +69,7 @@ fn scenario_assert_distance(env: &FederationEnv, expected: u64) {
 }
 
 fn scenario_set_updates_inline_property(env: &FederationEnv, value: u64, mutation_key: &str) {
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         env,
         &format!(
             "MATCH (a:City)-[e:ROAD]->(b:City) SET e.{PROPERTY} = {value} RETURN id(e) AS eid, e.{PROPERTY} AS d"
@@ -83,7 +83,7 @@ fn scenario_remove_rejects_and_inline_property_bytes_unchanged(
     expected: u64,
     mutation_key: &str,
 ) {
-    let err = gql_execute_as_admin_expect_err(
+    let err = gql_mutate_as_admin_expect_err(
         env,
         &format!("MATCH (a:City)-[e:ROAD]-(b:City) REMOVE e.{PROPERTY}"),
         mutation_key,
@@ -104,11 +104,7 @@ fn scenario_assert_no_road_edge(env: &FederationEnv) {
 }
 
 fn scenario_missing_value_rejects_insert(env: &FederationEnv, mutation_key: &str) {
-    let err = gql_execute_as_admin_expect_err(
-        env,
-        "INSERT (:City)-[:ROAD]->(:City)",
-        mutation_key,
-    );
+    let err = gql_mutate_as_admin_expect_err(env, "INSERT (:City)-[:ROAD]->(:City)", mutation_key);
     assert!(
         matches!(err, RouterError::InvalidArgument(_)),
         "expected missing inline property bytes to fail with InvalidArgument, got {err:?}"
@@ -116,7 +112,7 @@ fn scenario_missing_value_rejects_insert(env: &FederationEnv, mutation_key: &str
 }
 
 fn scenario_null_value_rejects_insert(env: &FederationEnv, mutation_key: &str) {
-    let err = gql_execute_as_admin_expect_err(
+    let err = gql_mutate_as_admin_expect_err(
         env,
         &format!("INSERT (:City)-[:ROAD {{{PROPERTY}: NULL}}]->(:City)"),
         mutation_key,
@@ -128,7 +124,7 @@ fn scenario_null_value_rejects_insert(env: &FederationEnv, mutation_key: &str) {
 }
 
 fn scenario_overflow_rejects_insert(env: &FederationEnv, mutation_key: &str) {
-    let err = gql_execute_as_admin_expect_err(
+    let err = gql_mutate_as_admin_expect_err(
         env,
         &format!("INSERT (:City)-[:ROAD {{{PROPERTY}: 65536}}]->(:City)"),
         mutation_key,
@@ -140,7 +136,7 @@ fn scenario_overflow_rejects_insert(env: &FederationEnv, mutation_key: &str) {
 }
 
 fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         env,
         "INSERT (:City)-[:ROAD {distance: 7, surface: 'asphalt'}]->(:City)",
         "adr0034_inline_scalar_mutation_mixed_insert",

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -11,12 +11,18 @@ import {
   scaleUserEmbeddings,
   readScaleEnv,
 } from "./social-scale.mjs";
+import { buildSocialLoadArtifact } from "./social-load-artifact.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(SCRIPT_DIR, "..");
 const CONFIG_DIR = join(APP_ROOT, "config");
-const SEEDS_DIR = resolve(APP_ROOT, "seeds");
-const DATA_DIR = join(APP_ROOT, "src", "data");
+const OUTPUT_ROOT = process.env.GLEAPH_DEMO_OUTPUT_ROOT
+  ? resolve(process.env.GLEAPH_DEMO_OUTPUT_ROOT)
+  : APP_ROOT;
+const SEEDS_DIR = resolve(OUTPUT_ROOT, "seeds");
+const DATA_DIR = join(OUTPUT_ROOT, "src", "data");
+mkdirSync(SEEDS_DIR, { recursive: true });
+mkdirSync(DATA_DIR, { recursive: true });
 
 const DEMO_GRAPH = "social";
 const EMBEDDING_NAME = "post_vec";
@@ -281,14 +287,6 @@ for (const topic of topics) {
 
 // Post nodes are layer 1.
 for (const post of posts) {
-  const properties = {};
-  // Posts carry a wall-clock timestamp from CURRENT_TIMESTAMP at seed execution
-  // time so the frontend can render relative time. Deterministic feed ordering is
-  // declared in the prepared query with ORDER BY INSERTION on the materialized feed
-  // edge rather than a synthetic ordering property.
-  properties.created_at = { raw: "CURRENT_TIMESTAMP" };
-  properties.is_public = post.isPublic;
-
   nodes.push({
     id: post.id,
     label: post.label,
@@ -296,7 +294,8 @@ for (const post of posts) {
     gqlLabel: "Post",
     layer: 1,
     property: "body",
-    properties,
+    createdAt: post.createdAt,
+    isPublic: post.isPublic,
     embedding: post.embedding,
   });
 }
@@ -480,124 +479,9 @@ for (const post of posts) {
 const graph = { nodes, edges };
 
 // ---------------------------------------------------------------------------
-// Seed GQL generation
+// Typed social-load generation
 // ---------------------------------------------------------------------------
-
-const escapeGqlString = (value) => String(value).replace(/'/g, "''");
-
-const paramName = (prefix, base) => `$${prefix}_${base}`;
-
-const nodeIdentity = (node, prefix, params) => {
-  if (node.gqlLabel === "User") {
-    params[paramName(prefix, "user_id")] = node.id;
-    return `user_id: ${paramName(prefix, "user_id")}`;
-  }
-  // demo_id values are small enough to fit in a JS Number for JSON serialization.
-  params[paramName(prefix, "demo_id")] = Number(demoId(node.id));
-  return `demo_id: ${paramName(prefix, "demo_id")}`;
-};
-
-const nodeProperties = (node, prefix, params) => {
-  const props = [
-    nodeIdentity(node, prefix, params),
-    `demo_graph: '${DEMO_GRAPH}'`,
-    `${node.property}: ${paramName(prefix, node.property)}`,
-  ];
-  params[paramName(prefix, node.property)] = node.label;
-  if (node.properties) {
-    for (const [key, value] of Object.entries(node.properties)) {
-      if (value && typeof value === "object" && "raw" in value) {
-        props.push(`${key}: ${value.raw}`);
-      } else if (typeof value === "string") {
-        props.push(`${key}: ${paramName(prefix, key)}`);
-        params[paramName(prefix, key)] = value;
-      } else if (typeof value === "boolean") {
-        props.push(`${key}: ${paramName(prefix, key)}`);
-        params[paramName(prefix, key)] = value;
-      } else if (typeof value === "number") {
-        props.push(`${key}: ${paramName(prefix, key)}`);
-        params[paramName(prefix, key)] = value;
-      } else {
-        throw new Error(
-          `Unsupported property type for ${node.id}.${key}: ${typeof value}`,
-        );
-      }
-    }
-  }
-  return props.join(", ");
-};
-
-const nodeMatch = (node, variable, params) =>
-  `(${variable}:${node.gqlLabel} {${nodeIdentity(node, variable, params)}, demo_graph: '${DEMO_GRAPH}'})`;
-
-const nodeCreate = (node, variable, params) =>
-  `(${variable}:${node.gqlLabel} {${nodeProperties(node, variable, params)}})`;
-
-const edgeProperties = (edge, params) => {
-  params.$edge_id = edge.id;
-  params.$demo_kind = edge.displayLabel;
-  return `{demo_edge_id: $edge_id, demo_kind: $demo_kind}`;
-};
-
-const seeds = [];
-
-for (const node of graph.nodes.filter((entry) => entry.layer === 0)) {
-  const params = {};
-  seeds.push({
-    key: `${DEMO_GRAPH}-seed-node-${node.id}`,
-    gql: `INSERT ${nodeCreate(node, "n", params)}`,
-    params,
-  });
-}
-
-const created = new Set(
-  graph.nodes.filter((entry) => entry.layer === 0).map((entry) => entry.id),
-);
-
-for (const edge of graph.edges) {
-  const source = nodeById.get(edge.source);
-  const target = nodeById.get(edge.target);
-  if (!source || !target) {
-    throw new Error(`Unknown ${DEMO_GRAPH} edge endpoint: ${edge.id}`);
-  }
-
-  const params = {};
-  const edgeProps = edgeProperties(edge, params);
-  if (created.has(edge.target)) {
-    seeds.push({
-      key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
-      gql:
-        `MATCH ${nodeMatch(source, "a", params)}, ${nodeMatch(target, "b", params)} RETURN a NEXT ` +
-        `INSERT (a)-[:${edge.gqlLabel} ${edgeProps}]->(b)`,
-      params,
-    });
-  } else {
-    seeds.push({
-      key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
-      gql:
-        `MATCH ${nodeMatch(source, "a", params)} RETURN a NEXT ` +
-        `INSERT (a)-[:${edge.gqlLabel} ${edgeProps}]->${nodeCreate(target, "b", params)}`,
-      params,
-    });
-    created.add(edge.target);
-  }
-
-}
-
-const hasPostEmbeddings = graph.nodes.some(
-  (node) => node.kind === "post" && node.embedding,
-);
-const embeddings = {};
-for (const node of graph.nodes) {
-  if (node.embedding) {
-    if (node.kind !== "post") {
-      throw new Error(`Non-Post node ${node.id} has embedding`);
-    }
-    embeddings[demoId(node.id).toString()] = node.embedding;
-  } else if (hasPostEmbeddings && node.kind === "post") {
-    throw new Error(`Post node ${node.id} is missing embedding`);
-  }
-}
+const socialLoad = buildSocialLoadArtifact({ graph, demoId, demoGraph: DEMO_GRAPH });
 
 // ---------------------------------------------------------------------------
 // Scenario code generation
@@ -736,8 +620,8 @@ writeFileSync(
 );
 
 writeFileSync(
-  join(SEEDS_DIR, "social-seeds.json"),
-  `${JSON.stringify({ seeds, embeddings }, null, 2)}\n`,
+  join(SEEDS_DIR, "social-load.json"),
+  `${JSON.stringify(socialLoad, null, 2)}\n`,
 );
 
 writeFileSync(join(DATA_DIR, "scenarios.generated.ts"), buildTsScenarios());
@@ -776,27 +660,13 @@ if (nullVectors.length !== expectedNullVectorCount) {
   );
 }
 
-// Validate emitted seeds.
-const seedsText = readFileSync(join(SEEDS_DIR, "social-seeds.json"), "utf8");
-const parsedSeeds = JSON.parse(seedsText);
-const expectedSeedCount =
-  graph.nodes.filter((node) => node.layer === 0).length + graph.edges.length;
-if (
-  !Array.isArray(parsedSeeds.seeds) ||
-  parsedSeeds.seeds.length !== expectedSeedCount
-) {
-  throw new Error(
-    `Expected exactly ${expectedSeedCount} seeds, found ${parsedSeeds.seeds?.length ?? 0}`,
-  );
-}
-const demoIdOccurrences = seedsText.match(/demo_id: [^,}]+/g) ?? [];
-const textDemoIdOccurrences = demoIdOccurrences.filter((m) => m.includes("'"));
-if (textDemoIdOccurrences.length > 0) {
-  throw new Error(
-    `Found text demo_id literals in seeds (expected numeric): ${textDemoIdOccurrences.join(", ")}`,
-  );
+// Validate emitted typed load closure.
+const loadText = readFileSync(join(SEEDS_DIR, "social-load.json"), "utf8");
+const parsedLoad = JSON.parse(loadText);
+if (parsedLoad.vertices.length !== graph.nodes.length || parsedLoad.edges.length !== graph.edges.length) {
+  throw new Error("Typed social-load artifact does not preserve graph source order");
 }
 
 console.log(
-  `Wrote 5 artifacts: social-graph.json, social-seeds.json, scenarios.generated.ts, scenarios.generated.json, userAvatars.generated.ts`,
+  `Wrote 5 artifacts: social-graph.json, social-load.json, scenarios.generated.ts, scenarios.generated.json, userAvatars.generated.ts`,
 );

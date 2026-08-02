@@ -22,9 +22,9 @@ INSERT (a)-[:REPLY_TO {demo_edge_id: $edge_id, demo_kind: $demo_kind}]->(b)
 ```
 
 Both equality anchors may have selective Property Index access paths, but Graph performs the full
-read prefix when the Router cannot represent both bindings. ADR 0044 bulk grouping magnifies the
-cost: one plan and one `MutationId` are shared by many parameter sets, while every item may need a
-different pair of endpoint seeds.
+read prefix when the Router cannot represent both bindings. A retired transport experiment grouped
+many parameter sets under one plan and mutation identity while every item could need a different
+pair of endpoint seeds.
 
 The existing wire has two unversioned shapes inside `SeedBindingsWire`:
 
@@ -208,9 +208,9 @@ ADR 0029 requires immutable seed bindings in the Router mutation envelope. The c
 `RouterMutationShard` shape stores one seed blob per shard and cannot represent different relations
 for several operations sharing one `MutationId`.
 
-Bulk support for the candidate-domain V2 seed envelope therefore requires an ordered per-operation
-dispatch envelope in Router durable state. Because Gleaph has no deployed Router stable state to
-preserve, ADR 0047 redefines `RouterMutationRecord::V1` incompatibly instead of adding a Router V2.
+Any future bulk support for candidate-domain seed relations would require an ordered per-operation
+dispatch envelope in Router durable state. The former typed/shared transport experiment was removed;
+this ADR does not authorize restoring it through the current public or internal API.
 Each operation records its request/parameter fingerprint
 and either `Dispatches(per_shard_seed_relations)` or `NoDispatchZeroMatch`. Seed relations may
 reference an immutable deduplicated blob table in the same record. The envelope also records the
@@ -269,7 +269,8 @@ same observable rows, errors, idempotency, and mutation effects as that baseline
 ### Let Graph full-scan every item
 
 This preserves canonical ownership and requires no wire change, but repeats work despite selective
-indexes and defeats ADR 0044's throughput goal. Retained only as an exact fallback.
+indexes and defeats the historical grouping experiment's throughput goal. Retained only as an exact
+fallback for scalar GQL execution.
 
 ### Materialize all `SeedRowWire` products in Router
 
@@ -370,11 +371,10 @@ instruction bounds shared across Router and Graph, V1/V2 decode compatibility, d
 constraint-catalog gating, and focused canbench coverage comparing full scan, 1x1 candidate domains,
 repeated-value bulk deduplication, bounded non-unique products, and `ShardLocalGlobal` owner lookup.
 
-ADR 0047 now owns the planned shared typed bulk execution envelope and deterministic replay for its
-initial eligible subset: one target shard, complete-row seeds, no resolved-search relation, and no
-constraint/uniqueness dispatch. Candidate-domain and multi-shard typed transport remain future
-versions rather than implicit ADR 0047 V1 behavior. ADR 0046 remains the owner of candidate-domain
-semantics, Graph canonical revalidation, and bound-anchor executor behavior.
+The former shared typed bulk execution envelope was removed. Candidate-domain and multi-shard typed
+transport are not part of the current API or Graph wire contract. ADR 0046 remains the owner of
+candidate-domain semantics, Graph canonical revalidation, and bound-anchor executor behavior for
+scalar physical-plan execution only; any future bulk transport requires a new decision.
 
 ## Related documents
 
@@ -382,9 +382,7 @@ semantics, Graph canonical revalidation, and bound-anchor executor behavior.
   atomicity and immutable Router mutation envelopes.
 - [ADR 0030](0030-cross-shard-uniqueness-tcc-reservation.md): declared constraint ownership and
   `ShardLocalGlobal` canonical unique-value table.
-- [ADR 0044](0044-router-bulk-mutation-key.md): bulk mutation identity, progress, and per-item
-  result mapping.
-- [ADR 0047](0047-shared-typed-graph-bulk-envelope.md): shared typed bulk execution envelope
-  for per-operation seed replay.
+- [ADR 0057](0057-router-operation-api-and-durable-bulk-load.md): current durable initial-load
+  identity, progress, and receipt mapping.
 - [Physical plan format](../gql/plan-format.md): seed transport and executor assumptions.
 - [Execution pipeline](../execution/pipeline.md): Graph seed hydration and read-prefix execution.

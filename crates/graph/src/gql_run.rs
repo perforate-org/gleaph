@@ -322,8 +322,8 @@ fn is_seed_skippable_anchor_op(op: &PlanOp) -> bool {
 /// paths planned as a leading CartesianProduct). The complete-row seed rows bind every variable of
 /// such an element, so Graph may skip it and revalidate its anchors against canonical state.
 ///
-/// This mirrors the typed V1 plan contract in `gleaph_gql_integration::typed_batch`; the two must
-/// stay in sync so the Router never admits a bundle Graph cannot skip.
+/// The complete-row seed contract must stay in sync with Router admission so the Router never
+/// admits seed bindings Graph cannot skip.
 fn is_seed_complete_prefix_element(op: &PlanOp) -> bool {
     match op {
         PlanOp::CartesianProduct { left, right } => {
@@ -1809,7 +1809,7 @@ mod tests {
         }])
     }
 
-    /// ADR 0044 scalar replay: a completed scalar journal entry lets a second call with the same
+    /// Scalar replay: a completed journal entry lets a second call with the same
     /// mutation id return the previously committed row count without re-executing the mutation.
     /// The incomplete journal is omitted for single-message scalar execution, but the complete
     /// journal remains the durable idempotency record.

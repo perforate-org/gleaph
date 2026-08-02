@@ -53,6 +53,11 @@ name = "adr0034_non_leading_search_join"
 path = "tests/adr0034_non_leading_search_join.rs"
 harness = true
 
+[[test]]
+name = "adr0057_durable_bulk_load"
+path = "tests/adr0057_durable_bulk_load.rs"
+harness = true
+
 [dependencies]
 candid.workspace = true
 gleaph-codegen.workspace = true

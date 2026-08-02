@@ -7,7 +7,7 @@ use gleaph_gql::program_modification::ProgramModificationFlags;
 use crate::facade::auth;
 use crate::state::RouterError;
 
-/// Ad-hoc GQL (`gql_query` / `gql_execute`): at least Read; write programs need Write.
+/// Ad-hoc GQL (`gql_query` / `gql_mutate`): at least Read; write programs need Write.
 pub fn authorize_adhoc_gql(
     caller: &Principal,
     flags: ProgramModificationFlags,

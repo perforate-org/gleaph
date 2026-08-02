@@ -9,10 +9,9 @@ use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, ensure_edge_label, ensure_vertex_label,
-    e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex_with_label,
-    gql_execute_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
-    install_single_shard_federation,
+    FederationEnv, e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex_with_label,
+    ensure_edge_label, ensure_vertex_label, gql_mutate_as_admin, gql_query_as_admin,
+    gql_query_as_admin_expect_err, install_single_shard_federation,
 };
 use std::collections::BTreeMap;
 
@@ -33,7 +32,7 @@ fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
 
 fn setup() -> FederationEnv {
     let env = install_single_shard_federation();
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         &env,
         &format!(
             "CREATE GRAPH TYPE IF NOT EXISTS road_type {{ NODE City AS city, DIRECTED EDGE Road LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }} CONNECTING (city -> city) }} NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type"
@@ -160,7 +159,7 @@ fn scenario_missing_cost_property_rejects_and_leaves_graph_unchanged(
 
 fn scenario_mutation_switches_to_direct_path(env: &FederationEnv, dst_id: &IcWireValue) {
     // Former contract: inline_cost_by_observes_mutation.
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         env,
         "MATCH (a:CitySrc)-[e:ROAD {distance: 1}]->(b) SET e.distance = 200 RETURN e",
         "adr0034_inline_cost_by_lifecycle_mutation",

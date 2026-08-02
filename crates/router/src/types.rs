@@ -101,27 +101,38 @@ pub struct MutationStatus {
     pub next_action: String,
 }
 
-/// Maximum number of logical operations admitted by one public batch.
-pub const MAX_BATCH_OPERATIONS: usize = 1024;
+/// Maximum number of logical operations admitted by one public atomic insert.
+pub const MAX_ATOMIC_INSERT_OPERATIONS: usize = 1024;
 
-/// Public result for one Router batch.
+/// Public result for one Router atomic insert.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BatchResponse {
+pub struct AtomicInsertResponse {
     pub status: MutationStatus,
     /// Present after Graph commits the canonical vertex and/or edge operations.
-    pub receipt: Option<BatchReceiptV1>,
+    pub receipt: Option<AtomicInsertReceiptV1>,
 }
 
 /// Router-owned projection of the Graph-specific durable receipts.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BatchReceiptV1 {
+pub struct AtomicInsertReceiptV1 {
     pub logical_operation_count: u64,
     pub logical_vertex_count: u64,
     pub logical_edge_count: u64,
+    /// Opaque graph-scoped encoded IDs in vertex-operation ordinal order.
+    /// Edge-only inserts always return an empty list.
+    pub allocated_vertex_ids: Vec<Vec<u8>>,
 }
 
-impl BatchResponse {
-    pub(crate) fn from_record(record: &RouterMutationRecord) -> Self {
+impl AtomicInsertResponse {
+    /// Project a durable ordered Graph receipt into the public graph-scoped receipt.
+    ///
+    /// Graph owns allocation and persists local IDs. Router owns the public encoding key and
+    /// derives the opaque IDs at the response boundary, so the encoded list is never persisted
+    /// as a second source of truth.
+    pub(crate) fn from_record_with_encoding_key(
+        record: &RouterMutationRecord,
+        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    ) -> Self {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
@@ -133,45 +144,63 @@ impl BatchResponse {
                 | OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
                 | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
                 | OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => {
-                    Some(BatchReceiptV1::edge(receipt.logical_edge_count))
+                    Some(AtomicInsertReceiptV1::edge(receipt.logical_edge_count))
                 }
                 OrderedEdgeBatchTargetProgressV1::CanonicalPending => None,
             },
             RouterMutationPayloadV1::CompletedOrderedEdgeBatch { receipt, .. } => {
-                Some(BatchReceiptV1::edge(receipt.logical_edge_count))
+                Some(AtomicInsertReceiptV1::edge(receipt.logical_edge_count))
             }
             RouterMutationPayloadV1::OrderedVertexBatch(replay) => match &replay.target.progress {
                 OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
                 | OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
                 | OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
                 | OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => {
-                    Some(BatchReceiptV1::vertex(receipt.logical_vertex_count))
+                    Some(AtomicInsertReceiptV1::vertex(
+                        receipt.logical_vertex_count,
+                        replay.target.request.target_shard_id,
+                        &receipt.allocated_vertex_ids,
+                        encoding_key,
+                    ))
                 }
                 OrderedVertexBatchTargetProgressV1::CanonicalPending => None,
             },
-            RouterMutationPayloadV1::CompletedOrderedVertexBatch { receipt, .. } => {
-                Some(BatchReceiptV1::vertex(receipt.logical_vertex_count))
-            }
+            RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                receipt,
+                projection_watermark,
+            } => Some(AtomicInsertReceiptV1::vertex(
+                receipt.logical_vertex_count,
+                projection_watermark.shard_id,
+                &receipt.allocated_vertex_ids,
+                encoding_key,
+            )),
             RouterMutationPayloadV1::OrderedMixedBatch(replay) => match &replay.target.progress {
                 OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
                 | OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
                 | OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
                 | OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => {
-                    Some(BatchReceiptV1::mixed(
+                    Some(AtomicInsertReceiptV1::mixed(
                         receipt.logical_operation_count,
                         receipt.logical_vertex_count,
                         receipt.logical_edge_count,
+                        replay.target.request.target_shard_id,
+                        &receipt.allocated_vertex_ids,
+                        encoding_key,
                     ))
                 }
                 OrderedMixedBatchTargetProgressV1::CanonicalPending => None,
             },
-            RouterMutationPayloadV1::CompletedOrderedMixedBatch { receipt, .. } => {
-                Some(BatchReceiptV1::mixed(
-                    receipt.logical_operation_count,
-                    receipt.logical_vertex_count,
-                    receipt.logical_edge_count,
-                ))
-            }
+            RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                receipt,
+                projection_watermark,
+            } => Some(AtomicInsertReceiptV1::mixed(
+                receipt.logical_operation_count,
+                receipt.logical_vertex_count,
+                receipt.logical_edge_count,
+                projection_watermark.shard_id,
+                &receipt.allocated_vertex_ids,
+                encoding_key,
+            )),
             _ => None,
         };
         Self {
@@ -179,14 +208,83 @@ impl BatchResponse {
             receipt,
         }
     }
+
+    /// Host-only projection helper for unit tests that do not have a Router graph registry.
+    /// Production ingress always calls [`Self::from_record_with_encoding_key`].
+    #[cfg(test)]
+    pub(crate) fn from_record(record: &RouterMutationRecord) -> Self {
+        Self::from_record_with_encoding_key(
+            record,
+            &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+        )
+    }
 }
 
-impl BatchReceiptV1 {
-    fn vertex(count: u64) -> Self {
+impl AtomicInsertReceiptV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        let expected_operations = self
+            .logical_vertex_count
+            .checked_add(self.logical_edge_count)
+            .ok_or_else(|| "atomic insert receipt logical counts overflow".to_string())?;
+        if expected_operations != self.logical_operation_count {
+            return Err(
+                "atomic insert receipt logical counts must sum to logical operation count".into(),
+            );
+        }
+        let expected_vertex_count = usize::try_from(self.logical_vertex_count)
+            .map_err(|_| "atomic insert receipt logical vertex count overflows usize")?;
+        if self.allocated_vertex_ids.len() != expected_vertex_count {
+            return Err(
+                "atomic insert receipt allocated vertex ID count must equal logical vertex count"
+                    .into(),
+            );
+        }
+        for (ordinal, id) in self.allocated_vertex_ids.iter().enumerate() {
+            if id.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES {
+                return Err(format!(
+                    "atomic insert receipt allocated vertex ID {ordinal} must be exactly {} bytes",
+                    gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+                ));
+            }
+        }
+        let encoded = Encode!(self)
+            .map_err(|error| format!("atomic insert receipt encode failed: {error}"))?;
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("atomic insert receipt exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+
+    fn encoded_vertex_ids(
+        shard_id: ShardId,
+        local_ids: &[LocalVertexId],
+        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    ) -> Vec<Vec<u8>> {
+        local_ids
+            .iter()
+            .copied()
+            .map(|local_id| {
+                gleaph_graph_kernel::federation::encode_global_vertex_id(
+                    encoding_key,
+                    GlobalVertexId::new(shard_id, local_id),
+                )
+                .0
+                .to_vec()
+            })
+            .collect()
+    }
+
+    fn vertex(
+        count: u64,
+        shard_id: ShardId,
+        local_ids: &[LocalVertexId],
+        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    ) -> Self {
         Self {
             logical_operation_count: count,
             logical_vertex_count: count,
             logical_edge_count: 0,
+            allocated_vertex_ids: Self::encoded_vertex_ids(shard_id, local_ids, encoding_key),
         }
     }
 
@@ -195,124 +293,404 @@ impl BatchReceiptV1 {
             logical_operation_count: count,
             logical_vertex_count: 0,
             logical_edge_count: count,
+            allocated_vertex_ids: Vec::new(),
         }
     }
 
-    fn mixed(operation_count: u64, vertex_count: u64, edge_count: u64) -> Self {
+    fn mixed(
+        operation_count: u64,
+        vertex_count: u64,
+        edge_count: u64,
+        shard_id: ShardId,
+        local_ids: &[LocalVertexId],
+        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    ) -> Self {
         Self {
             logical_operation_count: operation_count,
             logical_vertex_count: vertex_count,
             logical_edge_count: edge_count,
+            allocated_vertex_ids: Self::encoded_vertex_ids(shard_id, local_ids, encoding_key),
         }
+    }
+}
+
+/// Maximum number of committed bulk-load chunk receipts returned by one status page.
+///
+/// The value is owned by the Router receipt-map implementation so the public wire and every
+/// caller share one bound rather than copying an independently changeable cap.
+pub use crate::facade::stable::bulk_load::MAX_BULK_LOAD_RECEIPTS_PER_PAGE;
+
+/// Public durable bulk-load command family (ADR 0057).
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BulkLoadCommand {
+    Start {
+        logical_graph_name: String,
+        client_bulk_key: String,
+    },
+    Append {
+        logical_graph_name: String,
+        client_bulk_key: String,
+        chunk_index: u32,
+        chunk: BulkLoadChunkV1,
+    },
+    Finalize {
+        logical_graph_name: String,
+        client_bulk_key: String,
+    },
+    Abort {
+        logical_graph_name: String,
+        client_bulk_key: String,
+    },
+}
+
+/// Self-contained vertex-only or existing-ID edge-only chunk.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BulkLoadChunkV1 {
+    Vertices(Vec<AtomicInsertVertexV1>),
+    Edges(Vec<BulkLoadEdgeV1>),
+}
+
+/// One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BulkLoadEdgeV1 {
+    pub source: Vec<u8>,
+    pub target: Vec<u8>,
+    pub directed: bool,
+    pub edge_label_name: Option<String>,
+    pub inline_property: Option<Vec<u8>>,
+    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
+}
+
+/// Response to one public bulk-load command.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BulkLoadResponse {
+    Started {
+        next_chunk_index: u32,
+    },
+    Appended {
+        chunk_index: u32,
+        receipt: AtomicInsertReceiptV1,
+    },
+    FinalizeAccepted {
+        state: BulkLoadPublicStateV1,
+    },
+    AbortAccepted {
+        state: BulkLoadPublicStateV1,
+    },
+}
+
+/// Public projection of the durable bulk-load lifecycle. Internal placement and cursors are never
+/// exposed through this enum.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BulkLoadPublicStateV1 {
+    Open,
+    AppendPending,
+    FinalizePending,
+    AbortPending,
+    Completed,
+    Aborted,
+    Failed { reason: String },
+}
+
+/// One committed chunk receipt in a status page.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BulkLoadChunkReceiptV1 {
+    pub chunk_index: u32,
+    pub receipt: AtomicInsertReceiptV1,
+}
+
+/// Bounded status response for one graph-scoped durable bulk-load job.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BulkLoadStatusPage {
+    pub state: BulkLoadPublicStateV1,
+    pub next_chunk_index: u32,
+    pub committed_chunk_count: u32,
+    pub completed_chunk_count: u32,
+    pub terminal_at_ns: Option<u64>,
+    pub expires_at_ns: Option<u64>,
+    pub receipts: Vec<BulkLoadChunkReceiptV1>,
+    pub next_receipt_cursor: Option<u32>,
+}
+
+impl BulkLoadCommand {
+    /// Validate the public command before graph resolution, stable lookup, or dispatch.
+    pub fn validate(&self) -> Result<(), String> {
+        let (graph_name, key) = match self {
+            Self::Start {
+                logical_graph_name,
+                client_bulk_key,
+            }
+            | Self::Finalize {
+                logical_graph_name,
+                client_bulk_key,
+            }
+            | Self::Abort {
+                logical_graph_name,
+                client_bulk_key,
+            }
+            | Self::Append {
+                logical_graph_name,
+                client_bulk_key,
+                ..
+            } => (logical_graph_name, client_bulk_key),
+        };
+        if graph_name.is_empty() || graph_name.len() > 256 {
+            return Err("logical_graph_name must be 1..=256 UTF-8 bytes".into());
+        }
+        if key.is_empty() || key.len() > 256 {
+            return Err("client_bulk_key must be 1..=256 UTF-8 bytes".into());
+        }
+        if let Self::Append { chunk, .. } = self {
+            chunk.validate()?;
+        }
+        let encoded =
+            Encode!(self).map_err(|error| format!("bulk-load command encode: {error}"))?;
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("bulk-load command exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+}
+
+impl BulkLoadChunkV1 {
+    pub fn operation_count(&self) -> usize {
+        match self {
+            Self::Vertices(items) => items.len(),
+            Self::Edges(items) => items.len(),
+        }
+    }
+
+    /// Validate one self-contained chunk and its exact atomic-insert envelope bound.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.operation_count() == 0 || self.operation_count() > MAX_ATOMIC_INSERT_OPERATIONS {
+            return Err(format!(
+                "bulk-load chunk must contain 1..={MAX_ATOMIC_INSERT_OPERATIONS} operations"
+            ));
+        }
+        let operations = match self {
+            Self::Vertices(items) => items
+                .iter()
+                .cloned()
+                .map(AtomicInsertOperationV1::Vertex)
+                .collect(),
+            Self::Edges(items) => items
+                .iter()
+                .cloned()
+                .map(|item| {
+                    AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                        source: AtomicInsertEndpointV1::Existing(item.source),
+                        target: AtomicInsertEndpointV1::Existing(item.target),
+                        directed: item.directed,
+                        edge_label_name: item.edge_label_name,
+                        inline_property: item.inline_property,
+                        initial_edge_properties: item.initial_edge_properties,
+                    })
+                })
+                .collect(),
+        };
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
+            client_mutation_key: "bulk-load-validation".into(),
+            logical_graph_name: "bulk-load-validation".into(),
+            operations,
+        });
+        request.validate()?;
+        Ok(())
+    }
+
+    /// Compute the canonical chunk fingerprint used by Router admission and durable replay.
+    pub fn fingerprint(&self) -> Result<[u8; 32], String> {
+        self.validate()?;
+        let mut normalized = self.clone();
+        match &mut normalized {
+            Self::Vertices(items) => {
+                for item in items {
+                    item.vertex_labels
+                        .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+                    item.initial_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+            }
+            Self::Edges(items) => {
+                for item in items {
+                    item.initial_edge_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+            }
+        }
+        let encoded = Encode!(&normalized)
+            .map_err(|error| format!("bulk-load chunk fingerprint encode: {error}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"gleaph:bulk-load-chunk:v1\0");
+        hasher.update(encoded);
+        Ok(hasher.finalize().into())
+    }
+}
+
+impl BulkLoadStatusPage {
+    /// Reject invalid page caps before stable iteration and prove the maximum public page fits the
+    /// IC response bound. The `64` value is imported from the receipt-map owner above.
+    pub fn validate_max_receipts(max_receipts: u32) -> Result<(), String> {
+        if max_receipts == 0 || max_receipts > MAX_BULK_LOAD_RECEIPTS_PER_PAGE {
+            return Err(format!(
+                "max_receipts must be in 1..={MAX_BULK_LOAD_RECEIPTS_PER_PAGE}"
+            ));
+        }
+        if max_receipts != MAX_BULK_LOAD_RECEIPTS_PER_PAGE {
+            return Ok(());
+        }
+        let receipt =
+            AtomicInsertReceiptV1 {
+                logical_operation_count: MAX_ATOMIC_INSERT_OPERATIONS as u64,
+                logical_vertex_count: MAX_ATOMIC_INSERT_OPERATIONS as u64,
+                logical_edge_count: 0,
+                allocated_vertex_ids: vec![
+                vec![0; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES];
+                MAX_ATOMIC_INSERT_OPERATIONS
+            ],
+            };
+        let page = Self {
+            state: BulkLoadPublicStateV1::Failed {
+                reason: "x".repeat(
+                    crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES,
+                ),
+            },
+            next_chunk_index: u32::MAX,
+            committed_chunk_count: u32::MAX,
+            completed_chunk_count: u32::MAX,
+            terminal_at_ns: Some(u64::MAX),
+            expires_at_ns: Some(u64::MAX),
+            receipts: (0..MAX_BULK_LOAD_RECEIPTS_PER_PAGE)
+                .map(|chunk_index| BulkLoadChunkReceiptV1 {
+                    chunk_index,
+                    receipt: receipt.clone(),
+                })
+                .collect(),
+            next_receipt_cursor: Some(u32::MAX),
+        };
+        let encoded = Encode!(&Result::<Self, crate::state::RouterError>::Ok(page))
+            .map_err(|error| format!("bulk-load status page proof encode: {error}"))?;
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("bulk-load status page exceeds the safe payload bound".into());
+        }
+        Ok(())
     }
 }
 
 /// Versioned public request for Router-owned ordered batch mutation.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BatchRequest {
-    V1(BatchRequestV1),
+pub enum AtomicInsertRequest {
+    V1(AtomicInsertRequestV1),
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BatchRequestV1 {
+pub struct AtomicInsertRequestV1 {
     /// Stable idempotency key supplied by the caller; retries must reuse it with identical data.
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub operations: Vec<BatchOperationV1>,
+    pub operations: Vec<AtomicInsertOperationV1>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BatchOperationV1 {
-    Vertex(BatchVertexInsertV1),
-    Edge(BatchEdgeInsertV1),
+pub enum AtomicInsertOperationV1 {
+    Vertex(AtomicInsertVertexV1),
+    Edge(AtomicInsertEdgeV1),
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BatchVertexInsertV1 {
+pub struct AtomicInsertVertexV1 {
     pub vertex_labels: Vec<String>,
-    pub initial_properties: Vec<BatchPropertyV1>,
+    pub initial_properties: Vec<AtomicInsertPropertyV1>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BatchEdgeInsertV1 {
-    pub source: BatchEndpointV1,
-    pub target: BatchEndpointV1,
+pub struct AtomicInsertEdgeV1 {
+    pub source: AtomicInsertEndpointV1,
+    pub target: AtomicInsertEndpointV1,
     pub directed: bool,
     pub edge_label_name: Option<String>,
     pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<BatchPropertyV1>,
+    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BatchEndpointV1 {
+pub enum AtomicInsertEndpointV1 {
     Existing(Vec<u8>),
     /// Ordinal among vertex operations, not the position in the mixed operation array.
     NewVertexOrdinal(u32),
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BatchPropertyV1 {
+pub struct AtomicInsertPropertyV1 {
     pub property_name: String,
     pub value: Vec<u8>,
 }
 
-pub(crate) enum ClassifiedBatchRequest {
+pub(crate) enum ClassifiedAtomicInsertRequest {
     Edge(OrderedEdgeBatchRequest),
     Vertex(OrderedVertexBatchRequest),
     Mixed(OrderedMixedBatchRequest),
 }
 
-impl BatchRequest {
+impl AtomicInsertRequest {
     pub fn validate(&self) -> Result<(), String> {
         let Self::V1(request) = self;
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
-            return Err("batch client mutation key must be 1..=256 bytes".into());
+            return Err("atomic insert client mutation key must be 1..=256 bytes".into());
         }
         if request.logical_graph_name.is_empty() {
-            return Err("batch logical graph name must not be empty".into());
+            return Err("atomic insert logical graph name must not be empty".into());
         }
-        if request.operations.is_empty() || request.operations.len() > MAX_BATCH_OPERATIONS {
+        if request.operations.is_empty() || request.operations.len() > MAX_ATOMIC_INSERT_OPERATIONS
+        {
             return Err(format!(
-                "batch operations must contain 1..={MAX_BATCH_OPERATIONS} entries"
+                "atomic insert operations must contain 1..={MAX_ATOMIC_INSERT_OPERATIONS} entries"
             ));
         }
         let vertex_count = request
             .operations
             .iter()
-            .filter(|operation| matches!(operation, BatchOperationV1::Vertex(_)))
+            .filter(|operation| matches!(operation, AtomicInsertOperationV1::Vertex(_)))
             .count() as u32;
+        preflight_atomic_insert_response_size(request.operations.len(), vertex_count as usize)?;
         for (ordinal, operation) in request.operations.iter().enumerate() {
             match operation {
-                BatchOperationV1::Vertex(item) => {
+                AtomicInsertOperationV1::Vertex(item) => {
                     if item.vertex_labels.iter().any(String::is_empty) {
                         return Err(format!(
-                            "batch operation {ordinal} contains an empty vertex label"
+                            "atomic insert operation {ordinal} contains an empty vertex label"
                         ));
                     }
                     validate_batch_properties(ordinal, &item.initial_properties)?;
                 }
-                BatchOperationV1::Edge(item) => {
+                AtomicInsertOperationV1::Edge(item) => {
                     validate_batch_endpoint(ordinal, "source", &item.source, vertex_count)?;
                     validate_batch_endpoint(ordinal, "target", &item.target, vertex_count)?;
                     if item.edge_label_name.as_deref() == Some("") {
                         return Err(format!(
-                            "batch operation {ordinal} contains an empty edge label"
+                            "atomic insert operation {ordinal} contains an empty edge label"
                         ));
                     }
                     if let Some(inline) = &item.inline_property
                         && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
                     {
                         return Err(format!(
-                            "batch operation {ordinal} inline property exceeds the byte bound"
+                            "atomic insert operation {ordinal} inline property exceeds the byte bound"
                         ));
                     }
                     validate_batch_properties(ordinal, &item.initial_edge_properties)?;
                 }
             }
         }
-        let encoded = Encode!(self).map_err(|error| format!("batch request encode: {error}"))?;
+        let encoded =
+            Encode!(self).map_err(|error| format!("atomic insert request encode: {error}"))?;
         if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err("batch request exceeds the safe payload bound".into());
+            return Err("atomic insert request exceeds the safe payload bound".into());
         }
         Ok(())
     }
@@ -324,7 +702,7 @@ impl BatchRequest {
         let mut operations = request.operations.clone();
         for operation in &mut operations {
             match operation {
-                BatchOperationV1::Vertex(item) => {
+                AtomicInsertOperationV1::Vertex(item) => {
                     item.vertex_labels
                         .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
                     item.initial_properties.sort_by(|left, right| {
@@ -333,7 +711,7 @@ impl BatchRequest {
                             .cmp(right.property_name.as_bytes())
                     });
                 }
-                BatchOperationV1::Edge(item) => {
+                AtomicInsertOperationV1::Edge(item) => {
                     item.initial_edge_properties.sort_by(|left, right| {
                         left.property_name
                             .as_bytes()
@@ -345,37 +723,39 @@ impl BatchRequest {
         let encoded = Encode!(&(request.logical_graph_name.clone(), operations))
             .map_err(|error| format!("batch fingerprint encode: {error}"))?;
         let mut hasher = Sha256::new();
-        hasher.update(b"gleaph:batch-public:v1\0");
+        hasher.update(b"gleaph:atomic-insert-public:v1\0");
         hasher.update(encoded);
         Ok(hasher.finalize().into())
     }
 
-    pub(crate) fn into_classified(self) -> Result<(ClassifiedBatchRequest, [u8; 32]), String> {
+    pub(crate) fn into_classified(
+        self,
+    ) -> Result<(ClassifiedAtomicInsertRequest, [u8; 32]), String> {
         let public_fingerprint = self.public_fingerprint()?;
         let Self::V1(request) = self;
-        let BatchRequestV1 {
+        let AtomicInsertRequestV1 {
             client_mutation_key,
             logical_graph_name,
             operations,
         } = request;
         let has_vertex = operations
             .iter()
-            .any(|operation| matches!(operation, BatchOperationV1::Vertex(_)));
+            .any(|operation| matches!(operation, AtomicInsertOperationV1::Vertex(_)));
         let has_edge = operations
             .iter()
-            .any(|operation| matches!(operation, BatchOperationV1::Edge(_)));
+            .any(|operation| matches!(operation, AtomicInsertOperationV1::Edge(_)));
         let classified = match (has_vertex, has_edge) {
             (true, false) => {
                 let items = operations
                     .into_iter()
                     .map(|operation| match operation {
-                        BatchOperationV1::Vertex(item) => Ok(item),
-                        BatchOperationV1::Edge(_) => {
+                        AtomicInsertOperationV1::Vertex(item) => Ok(item),
+                        AtomicInsertOperationV1::Edge(_) => {
                             Err("vertex-only batch contains an edge operation".to_string())
                         }
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                ClassifiedBatchRequest::Vertex(OrderedVertexBatchRequest::V1(
+                ClassifiedAtomicInsertRequest::Vertex(OrderedVertexBatchRequest::V1(
                     OrderedVertexBatchRequestV1 {
                         client_mutation_key,
                         logical_graph_name,
@@ -387,15 +767,15 @@ impl BatchRequest {
                 let items = operations
                     .into_iter()
                     .map(|operation| {
-                        let BatchOperationV1::Edge(item) = operation else {
+                        let AtomicInsertOperationV1::Edge(item) = operation else {
                             return Err("edge-only batch contains a vertex operation".to_string());
                         };
-                        let BatchEndpointV1::Existing(source) = item.source else {
+                        let AtomicInsertEndpointV1::Existing(source) = item.source else {
                             return Err(
                                 "edge-only batch source must reference an existing vertex".into()
                             );
                         };
-                        let BatchEndpointV1::Existing(target) = item.target else {
+                        let AtomicInsertEndpointV1::Existing(target) = item.target else {
                             return Err(
                                 "edge-only batch target must reference an existing vertex".into()
                             );
@@ -410,7 +790,7 @@ impl BatchRequest {
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                ClassifiedBatchRequest::Edge(OrderedEdgeBatchRequest::V1(
+                ClassifiedAtomicInsertRequest::Edge(OrderedEdgeBatchRequest::V1(
                     OrderedEdgeBatchRequestV1 {
                         client_mutation_key,
                         logical_graph_name,
@@ -418,7 +798,7 @@ impl BatchRequest {
                     },
                 ))
             }
-            (true, true) => ClassifiedBatchRequest::Mixed(OrderedMixedBatchRequest::V1(
+            (true, true) => ClassifiedAtomicInsertRequest::Mixed(OrderedMixedBatchRequest::V1(
                 OrderedMixedBatchRequestV1 {
                     client_mutation_key,
                     logical_graph_name,
@@ -434,38 +814,119 @@ impl BatchRequest {
 fn validate_batch_endpoint(
     ordinal: usize,
     name: &str,
-    endpoint: &BatchEndpointV1,
+    endpoint: &AtomicInsertEndpointV1,
     vertex_count: u32,
 ) -> Result<(), String> {
     match endpoint {
-        BatchEndpointV1::Existing(bytes)
+        AtomicInsertEndpointV1::Existing(bytes)
             if bytes.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES =>
         {
             Err(format!(
-                "batch operation {ordinal} {name} must be exactly {} bytes",
+                "atomic insert operation {ordinal} {name} must be exactly {} bytes",
                 gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
             ))
         }
-        BatchEndpointV1::NewVertexOrdinal(vertex_ordinal) if *vertex_ordinal >= vertex_count => {
+        AtomicInsertEndpointV1::NewVertexOrdinal(vertex_ordinal)
+            if *vertex_ordinal >= vertex_count =>
+        {
             Err(format!(
-                "batch operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
+                "atomic insert operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
             ))
         }
         _ => Ok(()),
     }
 }
 
-fn validate_batch_properties(ordinal: usize, properties: &[BatchPropertyV1]) -> Result<(), String> {
+/// Exact encoded size of the largest reachable successful public response for this request shape.
+///
+/// Every lifecycle phase is encoded with its real `next_action`, a maximum bounded recovery
+/// diagnostic, a maximum-width target shard, and the full fixed-width vertex-ID receipt. Encoding
+/// the outer `Result::Ok` keeps this proof aligned with the actual canister method response.
+fn worst_case_atomic_insert_response_size(
+    operation_count: usize,
+    vertex_count: usize,
+) -> Result<usize, String> {
+    let edge_count = operation_count
+        .checked_sub(vertex_count)
+        .ok_or_else(|| "atomic insert vertex count exceeds operation count".to_string())?;
+    let operation_count = u64::try_from(operation_count)
+        .map_err(|_| "atomic insert operation count overflows u64")?;
+    let vertex_count_u64 =
+        u64::try_from(vertex_count).map_err(|_| "atomic insert vertex count overflows u64")?;
+    let edge_count =
+        u64::try_from(edge_count).map_err(|_| "atomic insert edge count overflows u64")?;
+    let receipt = AtomicInsertReceiptV1 {
+        logical_operation_count: operation_count,
+        logical_vertex_count: vertex_count_u64,
+        logical_edge_count: edge_count,
+        allocated_vertex_ids: vec![
+            vec![0; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES];
+            vertex_count
+        ],
+    };
+    let diagnostic =
+        "x".repeat(crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES);
+    MutationStatus::ALL_PHASES
+        .into_iter()
+        .map(|phase| {
+            let response: Result<AtomicInsertResponse, crate::state::RouterError> =
+                Ok(AtomicInsertResponse {
+                    status: MutationStatus {
+                        mutation_id: u64::MAX,
+                        phase,
+                        last_error: Some(diagnostic.clone()),
+                        target_shard: Some(ShardId::new(u32::MAX)),
+                        next_action: MutationStatus::next_action_for_phase(phase).to_owned(),
+                    },
+                    receipt: Some(receipt.clone()),
+                });
+            Encode!(&response)
+                .map(|encoded| encoded.len())
+                .map_err(|error| {
+                    format!("atomic insert worst-case response encode failed: {error}")
+                })
+        })
+        .try_fold(0usize, |maximum, encoded_len| {
+            encoded_len.map(|encoded_len| maximum.max(encoded_len))
+        })
+}
+
+fn preflight_atomic_insert_response_size(
+    operation_count: usize,
+    vertex_count: usize,
+) -> Result<(), String> {
+    preflight_atomic_insert_response_size_at_limit(
+        operation_count,
+        vertex_count,
+        gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+    )
+}
+
+fn preflight_atomic_insert_response_size_at_limit(
+    operation_count: usize,
+    vertex_count: usize,
+    response_limit: usize,
+) -> Result<(), String> {
+    if worst_case_atomic_insert_response_size(operation_count, vertex_count)? > response_limit {
+        return Err("atomic insert worst-case response exceeds the safe payload bound".into());
+    }
+    Ok(())
+}
+
+fn validate_batch_properties(
+    ordinal: usize,
+    properties: &[AtomicInsertPropertyV1],
+) -> Result<(), String> {
     let mut names = BTreeSet::new();
     for property in properties {
         if property.property_name.is_empty() {
             return Err(format!(
-                "batch operation {ordinal} contains an empty property name"
+                "atomic insert operation {ordinal} contains an empty property name"
             ));
         }
         if !names.insert(&property.property_name) {
             return Err(format!(
-                "batch operation {ordinal} repeats property name {}",
+                "atomic insert operation {ordinal} repeats property name {}",
                 property.property_name
             ));
         }
@@ -473,14 +934,14 @@ fn validate_batch_properties(ordinal: usize, properties: &[BatchPropertyV1]) -> 
             > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         {
             return Err(format!(
-                "batch operation {ordinal} property value exceeds the payload bound"
+                "atomic insert operation {ordinal} property value exceeds the payload bound"
             ));
         }
     }
     Ok(())
 }
 
-/// Router-internal edge-only form selected from [`BatchRequest`].
+/// Router-internal edge-only form selected from [`AtomicInsertRequest`].
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OrderedEdgeBatchRequest {
     V1(OrderedEdgeBatchRequestV1),
@@ -502,7 +963,7 @@ pub(crate) struct OrderedEdgeInsertRequestItemV1 {
     pub directed: bool,
     pub edge_label_name: Option<String>,
     pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<BatchPropertyV1>,
+    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
 }
 
 impl OrderedEdgeBatchRequest {
@@ -702,7 +1163,7 @@ impl OrderedEdgeBatchRequest {
     }
 }
 
-/// Router-internal vertex-only form selected from [`BatchRequest`].
+/// Router-internal vertex-only form selected from [`AtomicInsertRequest`].
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OrderedVertexBatchRequest {
     V1(OrderedVertexBatchRequestV1),
@@ -712,7 +1173,7 @@ pub(crate) enum OrderedVertexBatchRequest {
 pub(crate) struct OrderedVertexBatchRequestV1 {
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub items: Vec<BatchVertexInsertV1>,
+    pub items: Vec<AtomicInsertVertexV1>,
 }
 
 impl OrderedVertexBatchRequest {
@@ -839,7 +1300,7 @@ impl OrderedVertexBatchRequest {
     }
 }
 
-/// Router-internal mixed form selected from [`BatchRequest`].
+/// Router-internal mixed form selected from [`AtomicInsertRequest`].
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OrderedMixedBatchRequest {
     V1(OrderedMixedBatchRequestV1),
@@ -849,7 +1310,7 @@ pub(crate) enum OrderedMixedBatchRequest {
 pub(crate) struct OrderedMixedBatchRequestV1 {
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub operations: Vec<BatchOperationV1>,
+    pub operations: Vec<AtomicInsertOperationV1>,
 }
 
 impl OrderedMixedBatchRequest {
@@ -867,22 +1328,22 @@ impl OrderedMixedBatchRequest {
         if !request
             .operations
             .iter()
-            .any(|operation| matches!(operation, BatchOperationV1::Vertex(_)))
+            .any(|operation| matches!(operation, AtomicInsertOperationV1::Vertex(_)))
             || !request
                 .operations
                 .iter()
-                .any(|operation| matches!(operation, BatchOperationV1::Edge(_)))
+                .any(|operation| matches!(operation, AtomicInsertOperationV1::Edge(_)))
         {
             return Err("ordered mixed batch requires at least one vertex and one edge".into());
         }
         let vertex_count = request
             .operations
             .iter()
-            .filter(|operation| matches!(operation, BatchOperationV1::Vertex(_)))
+            .filter(|operation| matches!(operation, AtomicInsertOperationV1::Vertex(_)))
             .count() as u32;
         for (ordinal, operation) in request.operations.iter().enumerate() {
             match operation {
-                BatchOperationV1::Vertex(item) => {
+                AtomicInsertOperationV1::Vertex(item) => {
                     for label in &item.vertex_labels {
                         if label.is_empty() {
                             return Err(format!(
@@ -892,7 +1353,7 @@ impl OrderedMixedBatchRequest {
                     }
                     validate_classified_properties(ordinal, &item.initial_properties)?;
                 }
-                BatchOperationV1::Edge(item) => {
+                AtomicInsertOperationV1::Edge(item) => {
                     validate_mixed_endpoint(ordinal, "source", &item.source, vertex_count)?;
                     validate_mixed_endpoint(ordinal, "target", &item.target, vertex_count)?;
                     if let Some(label) = &item.edge_label_name
@@ -940,7 +1401,7 @@ impl OrderedMixedBatchRequest {
             .iter()
             .enumerate()
             .map(|(ordinal, operation)| match operation {
-                BatchOperationV1::Vertex(item) => {
+                AtomicInsertOperationV1::Vertex(item) => {
                     let labels = item
                         .vertex_labels
                         .iter()
@@ -975,7 +1436,7 @@ impl OrderedMixedBatchRequest {
                         ),
                     )
                 }
-                BatchOperationV1::Edge(item) => {
+                AtomicInsertOperationV1::Edge(item) => {
                     let source = decode_mixed_endpoint(
                         ordinal,
                         "source",
@@ -1058,11 +1519,11 @@ impl OrderedMixedBatchRequest {
         let Self::V1(request) = self;
         let mut target_shard = None;
         for (ordinal, operation) in request.operations.iter().enumerate() {
-            let BatchOperationV1::Edge(item) = operation else {
+            let AtomicInsertOperationV1::Edge(item) = operation else {
                 continue;
             };
             for (name, endpoint) in [("source", &item.source), ("target", &item.target)] {
-                let BatchEndpointV1::Existing(bytes) = endpoint else {
+                let AtomicInsertEndpointV1::Existing(bytes) = endpoint else {
                     continue;
                 };
                 let encoded: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
@@ -1103,17 +1564,17 @@ fn resolved_initial_property(
 fn decode_mixed_endpoint(
     ordinal: usize,
     name: &str,
-    endpoint: &BatchEndpointV1,
+    endpoint: &AtomicInsertEndpointV1,
     encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
     target_shard_id: ShardId,
 ) -> Result<gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1, String> {
     match endpoint {
-        BatchEndpointV1::NewVertexOrdinal(vertex_ordinal) => Ok(
+        AtomicInsertEndpointV1::NewVertexOrdinal(vertex_ordinal) => Ok(
             gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::NewVertexOrdinal(
                 *vertex_ordinal,
             ),
         ),
-        BatchEndpointV1::Existing(bytes) => {
+        AtomicInsertEndpointV1::Existing(bytes) => {
             let encoded: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
                 bytes.as_slice().try_into().map_err(|_| {
                     format!("mixed operation {ordinal} {name} endpoint has invalid width")
@@ -1139,11 +1600,11 @@ fn decode_mixed_endpoint(
 fn validate_mixed_endpoint(
     ordinal: usize,
     name: &str,
-    endpoint: &BatchEndpointV1,
+    endpoint: &AtomicInsertEndpointV1,
     vertex_count: u32,
 ) -> Result<(), String> {
     match endpoint {
-        BatchEndpointV1::Existing(bytes)
+        AtomicInsertEndpointV1::Existing(bytes)
             if bytes.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES =>
         {
             Err(format!(
@@ -1151,7 +1612,9 @@ fn validate_mixed_endpoint(
                 gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
             ))
         }
-        BatchEndpointV1::NewVertexOrdinal(vertex_ordinal) if *vertex_ordinal >= vertex_count => {
+        AtomicInsertEndpointV1::NewVertexOrdinal(vertex_ordinal)
+            if *vertex_ordinal >= vertex_count =>
+        {
             Err(format!(
                 "mixed operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
             ))
@@ -1162,7 +1625,7 @@ fn validate_mixed_endpoint(
 
 fn validate_classified_properties(
     ordinal: usize,
-    properties: &[BatchPropertyV1],
+    properties: &[AtomicInsertPropertyV1],
 ) -> Result<(), String> {
     let mut names = BTreeSet::new();
     for property in properties {
@@ -1189,20 +1652,17 @@ fn validate_classified_properties(
 }
 
 impl MutationStatus {
-    pub fn from_record(record: &RouterMutationRecord) -> Self {
-        let phase = record.lifecycle_phase();
-        let target_shard = record
-            .shards()
-            .iter()
-            .find(|shard| !shard.completed())
-            .or_else(|| {
-                record
-                    .shards()
-                    .iter()
-                    .find(|shard| !shard.projection_advanced())
-            })
-            .map(|shard| shard.shard_id());
-        let next_action = match phase {
+    const ALL_PHASES: [MutationLifecyclePhase; 6] = [
+        MutationLifecyclePhase::Routing,
+        MutationLifecyclePhase::CanonicalPending,
+        MutationLifecyclePhase::CanonicalCommitted,
+        MutationLifecyclePhase::ProjectionPending,
+        MutationLifecyclePhase::Completed,
+        MutationLifecyclePhase::Failed,
+    ];
+
+    fn next_action_for_phase(phase: MutationLifecyclePhase) -> &'static str {
+        match phase {
             MutationLifecyclePhase::Completed => "none",
             MutationLifecyclePhase::Failed => "resubmit with a new client_mutation_key",
             MutationLifecyclePhase::Routing => {
@@ -1216,7 +1676,22 @@ impl MutationStatus {
                 "none; projection recovery is automatic (poll mutation_status or use AtLeast reads)"
             }
         }
-        .to_string();
+    }
+
+    pub fn from_record(record: &RouterMutationRecord) -> Self {
+        let phase = record.lifecycle_phase();
+        let target_shard = record
+            .shards()
+            .iter()
+            .find(|shard| !shard.completed())
+            .or_else(|| {
+                record
+                    .shards()
+                    .iter()
+                    .find(|shard| !shard.projection_advanced())
+            })
+            .map(|shard| shard.shard_id());
+        let next_action = Self::next_action_for_phase(phase).to_string();
         Self {
             mutation_id: record.as_v1().mutation_id,
             phase,
@@ -1232,34 +1707,6 @@ pub struct GrantRoleArgs {
     pub target: Principal,
     pub role: String,
     pub manager_caps: u64,
-}
-
-/// One mutation in a paged bulk idempotent execution request.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct GqlExecuteIdempotentBatchItem {
-    pub gql_query: String,
-    pub params: Vec<u8>,
-    pub mutation_key: String,
-}
-
-/// Cursor-based idempotent mutation execution.
-///
-/// `instruction_budget` bounds the work done in a single ingress update call. When the Router
-/// exhausts this budget it returns `next_index`, allowing the caller to continue with another
-/// call. There is no separate `max_items` field: the budget is the only pagination signal.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct GqlExecuteIdempotentBatchArgs {
-    pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
-    pub start_index: u32,
-    /// `None` selects the Router default safety budget below the IC update-call limit.
-    pub instruction_budget: Option<u64>,
-}
-
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct GqlExecuteIdempotentBatchResult {
-    pub results: Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult>,
-    pub next_index: Option<u32>,
-    pub instruction_counter: u64,
 }
 
 /// Arguments for one expired client-mutation-key sweep step. The sweep is
@@ -2024,6 +2471,64 @@ mod tests {
     }
 
     #[test]
+    fn bulk_load_status_page_64_fits_safe_candid_bound() {
+        BulkLoadStatusPage::validate_max_receipts(MAX_BULK_LOAD_RECEIPTS_PER_PAGE)
+            .expect("maximum status page must fit the safe response bound");
+    }
+
+    #[test]
+    fn bulk_load_status_page_65_rejects_before_iteration() {
+        let error = BulkLoadStatusPage::validate_max_receipts(MAX_BULK_LOAD_RECEIPTS_PER_PAGE + 1)
+            .expect_err("status page cap must reject before stable iteration");
+        assert!(error.contains("1..=64"), "{error}");
+    }
+
+    #[test]
+    fn bulk_load_chunk_fingerprint_normalizes_catalog_order_but_not_item_order() {
+        let first = BulkLoadChunkV1::Vertices(vec![AtomicInsertVertexV1 {
+            vertex_labels: vec!["z".into(), "a".into()],
+            initial_properties: vec![
+                AtomicInsertPropertyV1 {
+                    property_name: "z".into(),
+                    value: vec![2],
+                },
+                AtomicInsertPropertyV1 {
+                    property_name: "a".into(),
+                    value: vec![1],
+                },
+            ],
+        }]);
+        let reordered_catalogs = BulkLoadChunkV1::Vertices(vec![AtomicInsertVertexV1 {
+            vertex_labels: vec!["a".into(), "z".into()],
+            initial_properties: vec![
+                AtomicInsertPropertyV1 {
+                    property_name: "a".into(),
+                    value: vec![1],
+                },
+                AtomicInsertPropertyV1 {
+                    property_name: "z".into(),
+                    value: vec![2],
+                },
+            ],
+        }]);
+        assert_eq!(
+            first.fingerprint().unwrap(),
+            reordered_catalogs.fingerprint().unwrap()
+        );
+        let changed = BulkLoadChunkV1::Vertices(vec![
+            AtomicInsertVertexV1 {
+                vertex_labels: vec!["a".into()],
+                initial_properties: Vec::new(),
+            },
+            AtomicInsertVertexV1 {
+                vertex_labels: vec!["z".into()],
+                initial_properties: Vec::new(),
+            },
+        ]);
+        assert_ne!(first.fingerprint().unwrap(), changed.fingerprint().unwrap());
+    }
+
+    #[test]
     fn batch_response_projects_graph_specific_receipts_to_common_counts() {
         use gleaph_graph_kernel::plan_exec::{
             GraphOrderedEdgeBatchReceiptV1, GraphOrderedMixedBatchReceiptV1,
@@ -2033,6 +2538,16 @@ mod tests {
         let watermark = MutationTokenShard {
             shard_id: ShardId::new(0),
             label_stats_seq: None,
+        };
+        let encoding_key =
+            gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture();
+        let encoded = |local_id| {
+            gleaph_graph_kernel::federation::encode_global_vertex_id(
+                &encoding_key,
+                GlobalVertexId::new(ShardId::new(0), local_id),
+            )
+            .0
+            .to_vec()
         };
         let mut record = record_with(Vec::new());
         record.as_v1_mut().payload =
@@ -2046,11 +2561,12 @@ mod tests {
                 projection_watermark: watermark.clone(),
             };
         assert_eq!(
-            BatchResponse::from_record(&record).receipt,
-            Some(BatchReceiptV1 {
+            AtomicInsertResponse::from_record(&record).receipt,
+            Some(AtomicInsertReceiptV1 {
                 logical_operation_count: 3,
                 logical_vertex_count: 0,
                 logical_edge_count: 3,
+                allocated_vertex_ids: Vec::new(),
             })
         );
 
@@ -2061,15 +2577,17 @@ mod tests {
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
                     hot_forward_vertices: Vec::new(),
+                    allocated_vertex_ids: vec![2, 3],
                 },
                 projection_watermark: watermark.clone(),
             };
         assert_eq!(
-            BatchResponse::from_record(&record).receipt,
-            Some(BatchReceiptV1 {
+            AtomicInsertResponse::from_record(&record).receipt,
+            Some(AtomicInsertReceiptV1 {
                 logical_operation_count: 2,
                 logical_vertex_count: 2,
                 logical_edge_count: 0,
+                allocated_vertex_ids: vec![encoded(2), encoded(3)],
             })
         );
 
@@ -2082,80 +2600,140 @@ mod tests {
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
                     hot_forward_vertices: Vec::new(),
+                    allocated_vertex_ids: vec![2, 3],
                 },
                 projection_watermark: watermark,
             };
         assert_eq!(
-            BatchResponse::from_record(&record).receipt,
-            Some(BatchReceiptV1 {
+            AtomicInsertResponse::from_record(&record).receipt,
+            Some(AtomicInsertReceiptV1 {
                 logical_operation_count: 5,
                 logical_vertex_count: 2,
                 logical_edge_count: 3,
+                allocated_vertex_ids: vec![encoded(2), encoded(3)],
             })
         );
     }
 
     #[test]
-    fn batch_request_round_trips_fingerprints_without_client_key_and_classifies_edge() {
-        let request = BatchRequest::V1(BatchRequestV1 {
+    fn atomic_insert_response_preflight_uses_full_public_status_envelope() {
+        let operation_count = MAX_ATOMIC_INSERT_OPERATIONS;
+        let vertex_count = MAX_ATOMIC_INSERT_OPERATIONS;
+        let worst_case = worst_case_atomic_insert_response_size(operation_count, vertex_count)
+            .expect("worst-case response size");
+
+        let undercounted: Result<AtomicInsertResponse, crate::state::RouterError> =
+            Ok(AtomicInsertResponse {
+                status: MutationStatus {
+                    mutation_id: u64::MAX,
+                    phase: MutationLifecyclePhase::Completed,
+                    last_error: None,
+                    target_shard: None,
+                    next_action: String::new(),
+                },
+                receipt: Some(AtomicInsertReceiptV1 {
+                    logical_operation_count: operation_count as u64,
+                    logical_vertex_count: vertex_count as u64,
+                    logical_edge_count: 0,
+                    allocated_vertex_ids: vec![
+                        vec![0; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES];
+                        vertex_count
+                    ],
+                }),
+            });
+        let undercounted_size = Encode!(&undercounted)
+            .expect("encode undercounted response")
+            .len();
+        assert!(
+            worst_case > undercounted_size,
+            "omitting diagnostics, target shard, and real next_action must undercount"
+        );
+        assert!(
+            worst_case <= gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+            "the configured atomic insert maximum must remain publicly returnable"
+        );
+    }
+
+    #[test]
+    fn atomic_insert_response_preflight_enforces_exact_encoded_boundary() {
+        let exact =
+            worst_case_atomic_insert_response_size(7, 5).expect("exact worst-case response size");
+        preflight_atomic_insert_response_size_at_limit(7, 5, exact)
+            .expect("an exact-boundary response fits");
+        assert_eq!(
+            preflight_atomic_insert_response_size_at_limit(7, 5, exact - 1),
+            Err("atomic insert worst-case response exceeds the safe payload bound".into()),
+            "a receipt-only or empty-status implementation would wrongly accept this limit"
+        );
+    }
+
+    #[test]
+    fn atomic_insert_request_round_trips_fingerprints_without_client_key_and_classifies_edge() {
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "ordered-1".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                source: BatchEndpointV1::Existing(vec![1; 8]),
-                target: BatchEndpointV1::Existing(vec![2; 8]),
+            operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                source: AtomicInsertEndpointV1::Existing(vec![1; 8]),
+                target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: Some("KNOWS".into()),
                 inline_property: Some(vec![1, 2]),
-                initial_edge_properties: vec![BatchPropertyV1 {
+                initial_edge_properties: vec![AtomicInsertPropertyV1 {
                     property_name: "weight".into(),
                     value: vec![3, 4],
                 }],
             })],
         });
-        request.validate().expect("valid batch request");
-        let fingerprint = request.public_fingerprint().expect("batch fingerprint");
-        let bytes = Encode!(&request).expect("encode batch request");
-        let decoded: BatchRequest = Decode!(&bytes, BatchRequest).expect("decode batch request");
+        request.validate().expect("valid atomic insert request");
+        let fingerprint = request
+            .public_fingerprint()
+            .expect("atomic insert fingerprint");
+        let bytes = Encode!(&request).expect("encode atomic insert request");
+        let decoded: AtomicInsertRequest =
+            Decode!(&bytes, AtomicInsertRequest).expect("decode atomic insert request");
         assert_eq!(decoded, request);
         let mut retry = request.clone();
-        let BatchRequest::V1(ref mut retry_request) = retry;
+        let AtomicInsertRequest::V1(ref mut retry_request) = retry;
         retry_request.client_mutation_key = "different-retry-key".into();
         assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
         let (classified, classified_fingerprint) = request.into_classified().unwrap();
         assert_eq!(classified_fingerprint, fingerprint);
-        assert!(matches!(classified, ClassifiedBatchRequest::Edge(_)));
+        assert!(matches!(classified, ClassifiedAtomicInsertRequest::Edge(_)));
     }
 
     #[test]
-    fn batch_request_classifies_vertex_only_operations() {
-        let request = BatchRequest::V1(BatchRequestV1 {
+    fn atomic_insert_request_classifies_vertex_only_operations() {
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "vertex-1".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![BatchOperationV1::Vertex(BatchVertexInsertV1 {
+            operations: vec![AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: vec!["Person".into(), "User".into()],
-                initial_properties: vec![BatchPropertyV1 {
+                initial_properties: vec![AtomicInsertPropertyV1 {
                     property_name: "name".into(),
                     value: vec![1, 2],
                 }],
             })],
         });
         let (classified, _) = request.into_classified().unwrap();
-        assert!(matches!(classified, ClassifiedBatchRequest::Vertex(_)));
+        assert!(matches!(
+            classified,
+            ClassifiedAtomicInsertRequest::Vertex(_)
+        ));
     }
 
     #[test]
-    fn batch_request_classifies_mixed_operations_and_validates_vertex_ordinals() {
-        let request = BatchRequest::V1(BatchRequestV1 {
+    fn atomic_insert_request_classifies_mixed_operations_and_validates_vertex_ordinals() {
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "mixed-1".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                BatchOperationV1::Vertex(BatchVertexInsertV1 {
+                AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: vec!["Person".into()],
                     initial_properties: Vec::new(),
                 }),
-                BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                    source: BatchEndpointV1::NewVertexOrdinal(0),
-                    target: BatchEndpointV1::Existing(vec![2; 8]),
+                AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                    source: AtomicInsertEndpointV1::NewVertexOrdinal(0),
+                    target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
                     directed: true,
                     edge_label_name: None,
                     inline_property: None,
@@ -2164,7 +2742,10 @@ mod tests {
             ],
         });
         let (classified, _) = request.into_classified().unwrap();
-        assert!(matches!(classified, ClassifiedBatchRequest::Mixed(_)));
+        assert!(matches!(
+            classified,
+            ClassifiedAtomicInsertRequest::Mixed(_)
+        ));
     }
 
     #[test]
@@ -2178,13 +2759,13 @@ mod tests {
             client_mutation_key: "mixed-placement".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                BatchOperationV1::Vertex(BatchVertexInsertV1 {
+                AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: Vec::new(),
                     initial_properties: Vec::new(),
                 }),
-                BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                    source: BatchEndpointV1::NewVertexOrdinal(0),
-                    target: BatchEndpointV1::Existing(existing.0.to_vec()),
+                AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                    source: AtomicInsertEndpointV1::NewVertexOrdinal(0),
+                    target: AtomicInsertEndpointV1::Existing(existing.0.to_vec()),
                     directed: true,
                     edge_label_name: None,
                     inline_property: None,
@@ -2213,13 +2794,13 @@ mod tests {
             client_mutation_key: "mixed-placement-conflict".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                BatchOperationV1::Vertex(BatchVertexInsertV1 {
+                AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: Vec::new(),
                     initial_properties: Vec::new(),
                 }),
-                BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                    source: BatchEndpointV1::Existing(first.0.to_vec()),
-                    target: BatchEndpointV1::Existing(second.0.to_vec()),
+                AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                    source: AtomicInsertEndpointV1::Existing(first.0.to_vec()),
+                    target: AtomicInsertEndpointV1::Existing(second.0.to_vec()),
                     directed: true,
                     edge_label_name: None,
                     inline_property: None,
@@ -2236,13 +2817,13 @@ mod tests {
             client_mutation_key: "mixed-convert".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                BatchOperationV1::Vertex(BatchVertexInsertV1 {
+                AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: Vec::new(),
                     initial_properties: Vec::new(),
                 }),
-                BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                    source: BatchEndpointV1::NewVertexOrdinal(0),
-                    target: BatchEndpointV1::NewVertexOrdinal(0),
+                AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                    source: AtomicInsertEndpointV1::NewVertexOrdinal(0),
+                    target: AtomicInsertEndpointV1::NewVertexOrdinal(0),
                     directed: false,
                     edge_label_name: None,
                     inline_property: Some(vec![7, 8]),
@@ -2280,13 +2861,13 @@ mod tests {
     }
 
     #[test]
-    fn batch_request_rejects_unknown_vertex_ordinal() {
-        let request = BatchRequest::V1(BatchRequestV1 {
+    fn atomic_insert_request_rejects_unknown_vertex_ordinal() {
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "mixed-2".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                source: BatchEndpointV1::NewVertexOrdinal(0),
-                target: BatchEndpointV1::Existing(vec![2; 8]),
+            operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                source: AtomicInsertEndpointV1::NewVertexOrdinal(0),
+                target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: None,
                 inline_property: None,
@@ -2297,22 +2878,22 @@ mod tests {
     }
 
     #[test]
-    fn batch_fingerprint_canonicalizes_property_order_only() {
-        let mut request = BatchRequest::V1(BatchRequestV1 {
+    fn atomic_insert_fingerprint_canonicalizes_property_order_only() {
+        let mut request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "ordered-property-order".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                source: BatchEndpointV1::Existing(vec![1; 8]),
-                target: BatchEndpointV1::Existing(vec![2; 8]),
+            operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                source: AtomicInsertEndpointV1::Existing(vec![1; 8]),
+                target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: None,
                 inline_property: None,
                 initial_edge_properties: vec![
-                    BatchPropertyV1 {
+                    AtomicInsertPropertyV1 {
                         property_name: "zeta".into(),
                         value: vec![1],
                     },
-                    BatchPropertyV1 {
+                    AtomicInsertPropertyV1 {
                         property_name: "alpha".into(),
                         value: vec![2],
                     },
@@ -2321,8 +2902,8 @@ mod tests {
         });
         let fingerprint = request.public_fingerprint().expect("fingerprint");
         {
-            let BatchRequest::V1(ref mut request_v1) = request;
-            let BatchOperationV1::Edge(item) = &mut request_v1.operations[0] else {
+            let AtomicInsertRequest::V1(ref mut request_v1) = request;
+            let AtomicInsertOperationV1::Edge(item) = &mut request_v1.operations[0] else {
                 panic!("operation must remain an edge");
             };
             item.initial_edge_properties.swap(0, 1);
@@ -2330,27 +2911,27 @@ mod tests {
         assert_eq!(request.public_fingerprint().unwrap(), fingerprint);
 
         {
-            let BatchRequest::V1(ref mut request_v1) = request;
-            let BatchOperationV1::Edge(item) = &mut request_v1.operations[0] else {
+            let AtomicInsertRequest::V1(ref mut request_v1) = request;
+            let AtomicInsertOperationV1::Edge(item) = &mut request_v1.operations[0] else {
                 panic!("operation must remain an edge");
             };
-            item.target = BatchEndpointV1::Existing(vec![3; 8]);
+            item.target = AtomicInsertEndpointV1::Existing(vec![3; 8]);
         }
         assert_ne!(request.public_fingerprint().unwrap(), fingerprint);
     }
 
     #[test]
-    fn batch_request_rejects_empty_property_name() {
-        let request = BatchRequest::V1(BatchRequestV1 {
+    fn atomic_insert_request_rejects_empty_property_name() {
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "ordered-2".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
-                source: BatchEndpointV1::Existing(vec![1; 8]),
-                target: BatchEndpointV1::Existing(vec![2; 8]),
+            operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                source: AtomicInsertEndpointV1::Existing(vec![1; 8]),
+                target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: None,
                 inline_property: None,
-                initial_edge_properties: vec![BatchPropertyV1 {
+                initial_edge_properties: vec![AtomicInsertPropertyV1 {
                     property_name: String::new(),
                     value: Vec::new(),
                 }],
@@ -2360,36 +2941,36 @@ mod tests {
     }
 
     #[test]
-    fn batch_request_enforces_operation_and_property_name_bounds() {
-        let operation = BatchOperationV1::Vertex(BatchVertexInsertV1 {
+    fn atomic_insert_request_enforces_operation_and_property_name_bounds() {
+        let operation = AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
             vertex_labels: Vec::new(),
             initial_properties: Vec::new(),
         });
-        let empty = BatchRequest::V1(BatchRequestV1 {
+        let empty = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "empty".into(),
             logical_graph_name: "tenant.main".into(),
             operations: Vec::new(),
         });
         assert!(empty.validate().is_err());
 
-        let oversized = BatchRequest::V1(BatchRequestV1 {
+        let oversized = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "oversized".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![operation; MAX_BATCH_OPERATIONS + 1],
+            operations: vec![operation; MAX_ATOMIC_INSERT_OPERATIONS + 1],
         });
         assert!(oversized.validate().is_err());
 
-        let duplicate = BatchRequest::V1(BatchRequestV1 {
+        let duplicate = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "duplicate-property".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![BatchOperationV1::Vertex(BatchVertexInsertV1 {
+            operations: vec![AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: Vec::new(),
                 initial_properties: vec![
-                    BatchPropertyV1 {
+                    AtomicInsertPropertyV1 {
                         property_name: "name".into(),
                         value: vec![1],
                     },
-                    BatchPropertyV1 {
+                    AtomicInsertPropertyV1 {
                         property_name: "name".into(),
                         value: vec![2],
                     },
@@ -2417,7 +2998,7 @@ mod tests {
                 directed: false,
                 edge_label_name: None,
                 inline_property: None,
-                initial_edge_properties: vec![BatchPropertyV1 {
+                initial_edge_properties: vec![AtomicInsertPropertyV1 {
                     property_name: "weight".into(),
                     value: vec![7, 8],
                 }],
@@ -2568,39 +3149,5 @@ mod outbound_tests {
         let decoded: ProvisionGraphResponse = Decode!(&bytes, ProvisionGraphResponse)
             .expect("decode ProvisionGraphResponse Completed");
         assert_eq!(decoded, completed_response);
-    }
-
-    #[test]
-    fn test_gql_execute_idempotent_batch_args_roundtrip() {
-        let args = GqlExecuteIdempotentBatchArgs {
-            mutations: vec![GqlExecuteIdempotentBatchItem {
-                gql_query: "INSERT (:User)".to_owned(),
-                params: vec![1, 2, 3],
-                mutation_key: "seed-page-0-item-0".to_owned(),
-            }],
-            start_index: 0,
-            instruction_budget: None,
-        };
-        let bytes = Encode!(&args).expect("encode batch args");
-        let decoded: GqlExecuteIdempotentBatchArgs =
-            Decode!(&bytes, GqlExecuteIdempotentBatchArgs).expect("decode batch args");
-        assert_eq!(decoded, args);
-    }
-
-    #[test]
-    fn test_gql_execute_idempotent_batch_cursor_args_roundtrip() {
-        let args = GqlExecuteIdempotentBatchArgs {
-            mutations: vec![GqlExecuteIdempotentBatchItem {
-                gql_query: "INSERT (:User)".to_owned(),
-                params: vec![],
-                mutation_key: "dynamic-item-0".to_owned(),
-            }],
-            start_index: 3,
-            instruction_budget: Some(gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS),
-        };
-        let bytes = Encode!(&args).expect("encode dynamic batch args");
-        let decoded: GqlExecuteIdempotentBatchArgs =
-            Decode!(&bytes, GqlExecuteIdempotentBatchArgs).expect("decode dynamic batch args");
-        assert_eq!(decoded, args);
     }
 }

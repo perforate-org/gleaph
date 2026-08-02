@@ -4,14 +4,11 @@
 //! storage, canister calls, or generic GQL syntax. Its public modules are narrowly scoped:
 //!
 //! - `path_extension::GLEAPH_PATH_EXTENSION_HANDLER` translates Gleaph path-extension clauses
-//!   (e.g. `GLEAPH COST`) into planner concepts consumed by Router and Graph planning;
-//! - `typed_batch::classify_typed_batch_eligibility` decides whether a homogeneous bulk group may
-//!   use the typed V1 inter-canister envelope (ADR 0047).
+//!   (e.g. `GLEAPH COST`) into planner concepts consumed by Router and Graph planning.
 //!
 //! `gleaph_gql` and `gleaph_gql_planner` remain portable and gain no Router/Graph/ICP concepts.
 
 pub mod path_extension;
-pub mod typed_batch;
 
 #[cfg(test)]
 #[allow(dead_code)]

@@ -6,11 +6,11 @@ use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
 use crate::state::RouterError;
 
 pub(crate) const REMEDY_WRITE_ON_QUERY: &str =
-    "use gql_execute (update call with client_mutation_key)";
+    "use gql_mutate (update call with client_mutation_key)";
 const REMEDY_READ_ON_UPDATE: &str = "use gql_query (composite query call)";
 const REMEDY_PREPARED_WRITE_ON_QUERY: &str =
-    "use execute_prepared_update (update call with client_mutation_key)";
-const REMEDY_PREPARED_READ_ON_UPDATE: &str = "use execute_prepared (composite query call)";
+    "use prepared_mutate (update call with client_mutation_key)";
+const REMEDY_PREPARED_READ_ON_UPDATE: &str = "use prepared_query (composite query call)";
 
 /// Returns whether the program requires the update (write) canister path.
 pub fn program_requires_write_path(flags: ProgramModificationFlags) -> bool {
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn rejects_read_program_on_update_call() {
         let err = check_adhoc_execution_path(
-            "gql_execute",
+            "gql_mutate",
             GqlExecutionMode::Update,
             ProgramModificationFlags::default(),
             false,
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn prepared_rejects_write_plan_on_query_call() {
         let err =
-            check_prepared_execution_path("execute_prepared", GqlExecutionMode::Query, true, false)
+            check_prepared_execution_path("prepared_query", GqlExecutionMode::Query, true, false)
                 .expect_err("write on query");
         assert!(matches!(
             err,
@@ -147,7 +147,7 @@ mod tests {
                 program_kind,
                 call_kind,
                 ..
-            } if entrypoint == "execute_prepared"
+            } if entrypoint == "prepared_query"
                 && program_kind == "write"
                 && call_kind == "query"
         ));
@@ -155,12 +155,7 @@ mod tests {
 
     #[test]
     fn prepared_force_bypasses_read_on_update_mismatch() {
-        check_prepared_execution_path(
-            "execute_prepared_update",
-            GqlExecutionMode::Update,
-            false,
-            true,
-        )
-        .expect("force bypass");
+        check_prepared_execution_path("prepared_mutate", GqlExecutionMode::Update, false, true)
+            .expect("force bypass");
     }
 }

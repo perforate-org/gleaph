@@ -9,7 +9,7 @@
 //! Compiled only under `pocket-ic-e2e`; the call sites in `gql.rs` are `#[cfg]`-gated, so production
 //! builds contain none of this.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum InjectedFault {
@@ -21,9 +21,6 @@ pub(crate) enum InjectedFault {
     /// `Acquire` are already durable; only the Router-side Confirm is rolled back, leaving the
     /// reservation `Reserved` (a commit-but-reply-lost boundary for recovery to converge).
     TrapBeforeConfirm,
-    /// Trap after the typed Graph batch has committed but before Router target/projection
-    /// convergence. The durable typed replay record must recover this ambiguous boundary.
-    TrapAfterTypedGraphCommit,
     /// Return an application error after an ordered Graph receipt is durably recorded but before
     /// Router projection/retirement convergence. The ordered recovery driver must finish it.
     FailAfterOrderedCanonicalCommit,
@@ -31,32 +28,20 @@ pub(crate) enum InjectedFault {
     /// Router records the terminal completed state. Recovery must repeat the idempotent retirement
     /// call and finish the Router transition.
     FailAfterOrderedRetirementAck,
+    /// Trap immediately after the durable bulk-load Start counter write, before the parent/client
+    /// binding insert. IC message rollback must restore the counter.
+    TrapAfterBulkStartCounter,
+    /// Trap immediately after the durable bulk-load Start parent/client binding insert. IC message
+    /// rollback must restore both the parent and the counter.
+    TrapAfterBulkStartParent,
 }
 
 thread_local! {
     static FAULT: Cell<InjectedFault> = const { Cell::new(InjectedFault::None) };
-    static TYPED_BATCH_TRACE: RefCell<String> = const { RefCell::new(String::new()) };
-    static TYPED_PREPARE_COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
 pub(crate) fn arm(fault: InjectedFault) {
     FAULT.with(|f| f.set(fault));
-}
-
-pub(crate) fn record_typed_batch_trace(stage: impl Into<String>) {
-    TYPED_BATCH_TRACE.with_borrow_mut(|trace| *trace = stage.into());
-}
-
-pub(crate) fn typed_batch_trace() -> String {
-    TYPED_BATCH_TRACE.with_borrow(Clone::clone)
-}
-
-pub(crate) fn increment_typed_batch_prepare_count() {
-    TYPED_PREPARE_COUNT.with(|c| c.set(c.get() + 1));
-}
-
-pub(crate) fn typed_batch_prepare_count() -> u64 {
-    TYPED_PREPARE_COUNT.with(Cell::get)
 }
 
 /// Map a candid-friendly code to a fault (`0` clears). Unknown codes are rejected by the caller.
@@ -65,9 +50,10 @@ pub(crate) fn fault_from_code(code: u8) -> Option<InjectedFault> {
         0 => Some(InjectedFault::None),
         1 => Some(InjectedFault::TrapAfterTry),
         2 => Some(InjectedFault::TrapBeforeConfirm),
-        3 => Some(InjectedFault::TrapAfterTypedGraphCommit),
         4 => Some(InjectedFault::FailAfterOrderedCanonicalCommit),
         5 => Some(InjectedFault::FailAfterOrderedRetirementAck),
+        6 => Some(InjectedFault::TrapAfterBulkStartCounter),
+        7 => Some(InjectedFault::TrapAfterBulkStartParent),
         _ => None,
     }
 }
@@ -91,18 +77,22 @@ pub(crate) fn maybe_trap_before_confirm() {
     }
 }
 
-pub(crate) fn maybe_trap_after_typed_graph_commit() {
-    if armed() == InjectedFault::TrapAfterTypedGraphCommit {
-        ic_cdk::trap(
-            "pocket-ic-e2e injected fault: trap after typed Graph commit before Router convergence",
-        );
-    }
-}
-
 pub(crate) fn fail_after_ordered_canonical_commit() -> bool {
     armed() == InjectedFault::FailAfterOrderedCanonicalCommit
 }
 
 pub(crate) fn fail_after_ordered_retirement_ack() -> bool {
     armed() == InjectedFault::FailAfterOrderedRetirementAck
+}
+
+pub(crate) fn maybe_trap_after_bulk_start_counter() {
+    if armed() == InjectedFault::TrapAfterBulkStartCounter {
+        ic_cdk::trap("pocket-ic-e2e injected fault: trap after bulk Start counter write");
+    }
+}
+
+pub(crate) fn maybe_trap_after_bulk_start_parent() {
+    if armed() == InjectedFault::TrapAfterBulkStartParent {
+        ic_cdk::trap("pocket-ic-e2e injected fault: trap after bulk Start parent insert");
+    }
 }

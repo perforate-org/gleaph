@@ -47,40 +47,6 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
-### GAP-2026-07-31-002 — Typed V1 multi-anchor bulk remains selective-prefix-only
-
-- **Status:** Open
-- **Severity:** P2 bulk-throughput and capability-coverage gap
-- **Owner:** Router typed-batch admission and `gleaph-gql-integration::typed_batch` plan classifier
-- **Observed behavior:** The existing typed V1 envelope now accepts complete seed rows for multiple
-  contiguous leading anchors, but Router admission creates that relation only when every anchored
-  variable has a selective equality/index anchor. Label-only multi-variable prefixes, edge anchors
-  in a multi-variable relation, multi-shard dispatch, indexed-embedding or resolved-search
-  dispatch, uniqueness/constrained-property effects, and plans with a later graph-read or
-  row-cardinality-changing operator remain outside typed V1. Equivalent operations also stop
-  coalescing when their exact query/plan/catalog fields differ.
-- **Expected or needed behavior:** If broader multi-anchor bulk coverage is required, each newly
-  admitted shape needs an explicit seed-row construction, shard-routing, Graph revalidation,
-  response-bound, durable replay, and instruction-budget contract. The current implementation
-  intentionally falls back to scalar or another semantics-safe path rather than guessing these
-  invariants.
-- **Evidence:** `crates/router/src/seed.rs` (`SeedAnchorSet::is_selective_complete_row_seed` and
-  `hits_to_local_vertex_ids`), `crates/router/src/gql.rs`
-  (`execute_prepared_bulk_group_typed`),
-  `crates/gql-integration/src/typed_batch.rs` (`is_typed_seeded_bundle` and the exhaustive
-  row-preserving operator classifier), and [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md)
-  multi-anchor V1 contract.
-- **Impact:** Valid mutations outside the selective, single-shard, row-preserving subset may use
-  more Router ingresses or scalar execution. This is a performance/coverage limitation, not a
-  correctness failure; widening the envelope without a separate contract could make seed rows,
-  cross-shard effects, or replay state unsound.
-- **Next decision:** Choose one bounded follow-up slice—label-only anchor reduction, edge-endpoint
-  seed rows, or multi-shard typed replay—and define its owner boundary and acceptance benchmarks
-  before changing typed V1 again. Do not add another envelope version solely to bypass this gap.
-  The disconnected-patterns (leading CartesianProduct) sub-case is resolved by
-  [GAP-2026-07-31-003](#gap-2026-07-31-003--typed-v1-rejected-disconnected-multi-pattern-seed-bundles).
-- **Related contracts:** [ADR 0046](adr/0046-complete-prefix-seed-rows.md), [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md)
-
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
 
 - **Status:** Planned
@@ -256,8 +222,9 @@ defect from being rediscovered without its prior reasoning.
   or the product contract must explicitly require an application backend principal with graph
   visibility.
 - **Evidence:** `crates/router/src/rbac.rs::authorize_prepared_execute`,
-  `crates/router/src/prepared.rs::resolve_prepared_graph_id`, and Plan 0044's
-  `install_single_shard_federation_with_graph_admins` fixture.
+  `crates/router/src/prepared.rs::resolve_prepared_graph_id`, and the shared
+  `install_single_shard_federation_with_graph_admins` fixture in
+  `crates/pocket-ic-tests/src/lib.rs`.
 - **Impact:** the initial public social demo cannot truthfully claim direct anonymous prepared-query
   execution. The current bounded workaround is a graph-visible application principal with no Router
   ad-hoc `Read` role; anonymous and default-Executor semantics must not be conflated.
@@ -276,32 +243,18 @@ defect from being rediscovered without its prior reasoning.
 - **Related contracts:** [security/rbac-and-prepared.md](security/rbac-and-prepared.md),
   [demo/social-graph-rag.md](demo/social-graph-rag.md)
 
-### GAP-2026-08-01-001 — Social-demo seed artifacts are not reproducible from build-config.mjs
+### GAP-2026-08-01-001 — Social-demo load artifacts were not reproducible from build-config.mjs
 
-- **Status:** Open
+- **Status:** Resolved by Plan 0204 on 2026-08-02 UTC
 - **Severity:** P2 demo-tooling drift; blocks trusting `pnpm run build:config` as an idempotent
   regeneration step
 - **Owner:** `frontend/apps/social-demo/scripts/build-config.mjs` and the committed seed/avatar
   artifacts
-- **Observed behavior:** Running `pnpm run build:config` (build-config.mjs) in the current tree
-  rewrites `social-seeds.json`, `social-graph.json`, `userAvatars.generated.ts`, and the
-  `demoIdMap`/scenario sections of `scenarios.generated.{json,ts}` with content that differs from
-  the committed artifacts: the regenerated seed set drops the `*_gen1`..`*_gen4` user variants
-  (e.g. `akari_gen1`) and reorders entries, producing a ~1.1M-line deletion diff. The committed
-  artifacts were therefore produced from a different source state than the current script inputs.
-- **Expected or needed behavior:** `pnpm run build:config` should be deterministic and
-  reproduce the committed artifacts exactly when inputs are unchanged, so prepared-query and seed
-  edits can be landed by regenerating rather than by hand-editing generated files.
-- **Evidence:** `pnpm run build:config` in `frontend/apps/social-demo` on commit `3cc747d1`;
-  `git diff` against `seeds/social-seeds.json` and `src/data/scenarios.generated.json`.
-- **Impact:** prepared-query text changes (e.g. ADR 0052 slice 2's `ORDER BY INSERTION(e)`) cannot
-  be applied through regeneration without silently changing the seed dataset, so the generated
-  files were updated in place for slice 2. Any future seed change risks landing a different
-  dataset than intended.
-- **Next decision:** reconcile the committed artifacts with the current build inputs (identify
-  which source changed: the posts/users authoring files or the generation script) and add a
-  deterministic-order guarantee (sorted iteration) plus a drift check, or regenerate and commit
-  the new dataset deliberately in its own change.
+- **Resolution:** The generator now emits one ordered `social-load.json` directly from the canonical
+  node/edge model. Its typed properties contain no execution-time values, application endpoint keys
+  remain explicit, and exact UTC timestamps are deterministic. Focused contracts cover source-ID
+  closure and byte-stable generation inputs; the durable loader uses the full artifact SHA-256 plus
+  exact Router chunk replay rather than parsing generated mutation text.
 
 ## Resolved gaps
 
@@ -335,30 +288,6 @@ defect from being rediscovered without its prior reasoning.
 - **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
   [ADR 0052](adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) Slice 6
-
-### GAP-2026-07-31-003 — Typed V1 rejected disconnected multi-pattern seed bundles
-
-- **Status:** Resolved by the batched index-lookup slice
-- **Severity:** P2 bulk-throughput gap
-- **Owner:** Router typed-batch admission, `gleaph-gql-integration::typed_batch` plan classifier, and
-  Graph complete-row read-prefix execution
-- **Observed behavior:** social-demo feed edges (`MATCH (a:Post {demo_id}), (b:User {user_id})
-INSERT (a)-[:IN_HOME_FEED]->(b)`) are planned as a leading `CartesianProduct` of independent
-  scans. Typed V1 rejected that shape (`is_typed_seeded_bundle` only counted contiguous seedable
-  anchors), so every edge item fell back to the scalar path with one `lookup_equal` round trip per
-  anchor; the seed runner's effective page size collapsed from ~3000 items to ~120.
-- **Resolution:** `gleaph-gql-integration::typed_batch` now accepts a leading CartesianProduct
-  whose arms are each seedable-anchor prefixes followed by residual ops, and counts per-arm edge
-  inserts in the response bound. Graph skips the covered anchors inside the CartesianProduct arms
-  (residual filters still run) and revalidates them against canonical state, mirroring the existing
-  linear-prefix contract. Router resolves all items' anchors through chunked `lookup_equal_batch`
-  requests instead of one round trip per item.
-- **Evidence:** `typed_batch::tests::disconnected_cartesian_anchor_bundle_is_eligible`;
-  `gql_run::wave_4_regression_tests::wave_4_complete_row_seed_skips_index_scan_prefix_without_index_client`;
-  `canister::handlers::tests::typed_v1_batch_executes_feed_edge_cartesian_anchor_bundle`;
-  `gql::tests::resolve_complete_row_seed_relations_batches_all_items_in_one_call`.
-- **Related contracts:** [ADR 0046](adr/0046-complete-prefix-seed-rows.md), [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md),
-  GAP-2026-07-31-002 (label-only / edge-anchor / multi-shard variants remain open)
 
 ### GAP-2026-07-04-003 — No application-facing vertex-embedding ingestion boundary
 

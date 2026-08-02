@@ -13,7 +13,7 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, install_federation, check_registry_invariants, wasm_bytes,
+    FederationEnv, check_registry_invariants, install_federation, wasm_bytes,
 };
 
 fn upgrade_router(env: &FederationEnv) {

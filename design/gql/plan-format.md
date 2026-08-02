@@ -79,12 +79,12 @@ contracts must be distinguished.
 - Empty domains produce a zero-row complete-prefix relation, so the item reports zero matches without
   a separate Router short-circuit.
 
-**Planned ADR 0046 full contract:**
+**Historical ADR 0046 full contract:**
 
 - a versioned V2 seed relation carries one bounded candidate domain per independently anchored
   variable and is attached per bulk item, not copied from the first item's parameters;
-- Router deduplicates identical lookup keys across a homogeneous bulk group but persists the exact
-  per-item relation for deterministic replay;
+- Router previously deduplicated identical lookup keys across a homogeneous GQL bulk group and
+  persisted the exact per-item relation for deterministic replay;
 - candidate domains are not complete authoritative match rows and do not enumerate an unbounded
   Cartesian product on the wire;
 - Graph evaluates bound `NodeScan` / equality `IndexScan` / `IndexIntersection` semantics against
@@ -93,43 +93,18 @@ contracts must be distinguished.
 - checked candidate, product, encoded-payload, and instruction bounds fail closed without
   truncation.
 
-**ADR 0047 Graph contract (implemented; 2026-08-01 revision removes the capability gate):**
+**Current Graph update transport:**
 
-- Graph exposes `execute_plan_update_batch_bulk`, which accepts one `ExecutePlanBulkBatch` envelope
-  and dispatches on its variant: `PerItemSeed(ExecutePlanBatchTypedArgs)` for an eligible
-  single-shard batch with a shared immutable group header and required ordered per-operation
-  complete-row seeds (`SeedBindingsWire`), and `SharedSeed(ExecutePlanBatchSharedV2Args)` for a
-  seed-invariant group whose shared plan/catalog/seed/search context is encoded once;
-- the bulk method rejects resolved-search and constraint/uniqueness dispatch for `PerItemSeed` and
-  uses the existing semantics-safe path for those groups;
-- the bulk method also rejects plans outside an exhaustive row-preserving DML allowlist or without a
-  statically bounded row-free response shape; request admission uses structural seed bounds, one
-  full-request encode, and a conservative complete-response proof, never one Candid encode per seed;
-- the scalar `ExecutePlanArgs.seed_bindings_blob` path and independent-operation batch method remain
-  available; scalar is the fallback for unsupported distinct-seed groups, while seed-invariant
-  homogeneous bulk uses the `SharedSeed` variant;
-- the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`), while
-  Graph journal bulk progress persists committed-prefix row counts so replay preserves those results;
-- typed update admission may retain plan output metadata because the update executor always returns
-  `rows_blob=None`; response admission instead bounds result cardinality, errors, and hot vertices;
-- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, shared-seed-bulk,
-  typed-bulk, and terminal completed-bulk payload variants; the typed payload persists the exact
-  ordered replay relation without a parallel blob representation, and completed records discard the
-  heavy replay envelope while retaining bounded ordered row counts for exact typed-batch retry per
-  ADR 0025 mechanism E;
-- the unified bulk path is always active: the former `execution_capabilities` query,
-  `TypedSeedBatchCapability`, and the `ShardRegistryEntry.typed_seed_batch` field were removed, so
-  there is no admin refresh/clear activation step. The Graph re-validates every envelope fail-closed
-  independent of the Router; ambiguous bulk-call outcomes retain typed durable replay under the
-  same mutation id and operation order;
-- initial Router installation or rollback to older Router Wasm requires fresh install/reset because
-  there is no deployed stable state to migrate;
-- Plan 0113 observed a 71-item POSTED typed batch and measured approximately 115.5M fewer Router
-  instructions/item than the capability-disabled legacy control. Plan 0114 quantified the remaining
-  rejections (308 non-threaded plans, 2 non-selective seeds, and all indexed-embedding groups) and
-  decided not to expand the typed boundary. As of 2026-07-31, seed-invariant groups outside
-  per-item-seed admission use the shared-seed variant when supported; otherwise they fall back to
-  scalar execution.
+- `ExecutePlanArgs` remains the scalar physical-plan update boundary.
+- The internal simple independent-operation transport remains as `ExecutePlanBatchArgs`,
+  `ExecutePlanBatchMode`, `ExecutePlanBatchResult`, and `execute_plan_update_batch` because
+  `gql_mutate` uses it to execute already-resolved plan work. It is not a Router public endpoint or
+  an application bulk-loading contract.
+- The former typed/shared seed-envelope and bulk-plan variants are removed in place. `atomic_insert` and
+  `bulk_load` dispatch ordered Graph mutation families owned by their Router lifecycles; they do not
+  expose physical-plan aggregation as a client concept.
+- Graph still revalidates canonical labels, properties, and edge endpoints at the owning write
+  boundary. Router-resolved candidates are never authoritative canonical rows.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.

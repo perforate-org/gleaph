@@ -23,6 +23,7 @@ export const idlFactory = ({ IDL }) => {
   const RouterError = IDL.Variant({
     'Internal' : IDL.Text,
     'ShardNotRegistered' : IDL.Null,
+    'Busy' : IDL.Record({ 'operation' : IDL.Text }),
     'AckConflict' : IDL.Record({ 'stored' : IDL.Nat64 }),
     'UnsupportedMultiDmlBundle' : IDL.Record({
       'dml_statements' : IDL.Nat32,
@@ -195,41 +196,36 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : VectorRebuildStatus,
     'Err' : RouterError,
   });
-  const AdminAttachVectorIndexShardArgs = IDL.Record({
-    'shard_id' : IDL.Nat32,
-    'vector_index_canister' : IDL.Principal,
-    'logical_graph_name' : IDL.Text,
-  });
-  const BatchEndpointV1 = IDL.Variant({
+  const AtomicInsertEndpointV1 = IDL.Variant({
     'NewVertexOrdinal' : IDL.Nat32,
     'Existing' : IDL.Vec(IDL.Nat8),
   });
-  const BatchPropertyV1 = IDL.Record({
+  const AtomicInsertPropertyV1 = IDL.Record({
     'value' : IDL.Vec(IDL.Nat8),
     'property_name' : IDL.Text,
   });
-  const BatchEdgeInsertV1 = IDL.Record({
+  const AtomicInsertEdgeV1 = IDL.Record({
     'edge_label_name' : IDL.Opt(IDL.Text),
-    'source' : BatchEndpointV1,
+    'source' : AtomicInsertEndpointV1,
     'inline_property' : IDL.Opt(IDL.Vec(IDL.Nat8)),
     'directed' : IDL.Bool,
-    'target' : BatchEndpointV1,
-    'initial_edge_properties' : IDL.Vec(BatchPropertyV1),
+    'target' : AtomicInsertEndpointV1,
+    'initial_edge_properties' : IDL.Vec(AtomicInsertPropertyV1),
   });
-  const BatchVertexInsertV1 = IDL.Record({
-    'initial_properties' : IDL.Vec(BatchPropertyV1),
+  const AtomicInsertVertexV1 = IDL.Record({
+    'initial_properties' : IDL.Vec(AtomicInsertPropertyV1),
     'vertex_labels' : IDL.Vec(IDL.Text),
   });
-  const BatchOperationV1 = IDL.Variant({
-    'Edge' : BatchEdgeInsertV1,
-    'Vertex' : BatchVertexInsertV1,
+  const AtomicInsertOperationV1 = IDL.Variant({
+    'Edge' : AtomicInsertEdgeV1,
+    'Vertex' : AtomicInsertVertexV1,
   });
-  const BatchRequestV1 = IDL.Record({
+  const AtomicInsertRequestV1 = IDL.Record({
     'client_mutation_key' : IDL.Text,
-    'operations' : IDL.Vec(BatchOperationV1),
+    'operations' : IDL.Vec(AtomicInsertOperationV1),
     'logical_graph_name' : IDL.Text,
   });
-  const BatchRequest = IDL.Variant({ 'V1' : BatchRequestV1 });
+  const AtomicInsertRequest = IDL.Variant({ 'V1' : AtomicInsertRequestV1 });
   const MutationLifecyclePhase = IDL.Variant({
     'ProjectionPending' : IDL.Null,
     'Failed' : IDL.Null,
@@ -245,50 +241,108 @@ export const idlFactory = ({ IDL }) => {
     'phase' : MutationLifecyclePhase,
     'target_shard' : IDL.Opt(IDL.Nat32),
   });
-  const BatchReceiptV1 = IDL.Record({
+  const AtomicInsertReceiptV1 = IDL.Record({
     'logical_edge_count' : IDL.Nat64,
+    'allocated_vertex_ids' : IDL.Vec(IDL.Vec(IDL.Nat8)),
     'logical_vertex_count' : IDL.Nat64,
     'logical_operation_count' : IDL.Nat64,
   });
-  const BatchResponse = IDL.Record({
+  const AtomicInsertResponse = IDL.Record({
     'status' : MutationStatus,
-    'receipt' : IDL.Opt(BatchReceiptV1),
+    'receipt' : IDL.Opt(AtomicInsertReceiptV1),
   });
-  const Result_6 = IDL.Variant({ 'Ok' : BatchResponse, 'Err' : RouterError });
+  const Result_6 = IDL.Variant({
+    'Ok' : AtomicInsertResponse,
+    'Err' : RouterError,
+  });
+  const AdminAttachVectorIndexShardArgs = IDL.Record({
+    'shard_id' : IDL.Nat32,
+    'vector_index_canister' : IDL.Principal,
+    'logical_graph_name' : IDL.Text,
+  });
+  const BulkLoadEdgeV1 = IDL.Record({
+    'edge_label_name' : IDL.Opt(IDL.Text),
+    'source' : IDL.Vec(IDL.Nat8),
+    'inline_property' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'directed' : IDL.Bool,
+    'target' : IDL.Vec(IDL.Nat8),
+    'initial_edge_properties' : IDL.Vec(AtomicInsertPropertyV1),
+  });
+  const BulkLoadChunkV1 = IDL.Variant({
+    'Vertices' : IDL.Vec(AtomicInsertVertexV1),
+    'Edges' : IDL.Vec(BulkLoadEdgeV1),
+  });
+  const BulkLoadCommand = IDL.Variant({
+    'Start' : IDL.Record({
+      'client_bulk_key' : IDL.Text,
+      'logical_graph_name' : IDL.Text,
+    }),
+    'Abort' : IDL.Record({
+      'client_bulk_key' : IDL.Text,
+      'logical_graph_name' : IDL.Text,
+    }),
+    'Append' : IDL.Record({
+      'client_bulk_key' : IDL.Text,
+      'chunk_index' : IDL.Nat32,
+      'chunk' : BulkLoadChunkV1,
+      'logical_graph_name' : IDL.Text,
+    }),
+    'Finalize' : IDL.Record({
+      'client_bulk_key' : IDL.Text,
+      'logical_graph_name' : IDL.Text,
+    }),
+  });
+  const BulkLoadPublicStateV1 = IDL.Variant({
+    'Failed' : IDL.Record({ 'reason' : IDL.Text }),
+    'Open' : IDL.Null,
+    'AbortPending' : IDL.Null,
+    'AppendPending' : IDL.Null,
+    'FinalizePending' : IDL.Null,
+    'Completed' : IDL.Null,
+    'Aborted' : IDL.Null,
+  });
+  const BulkLoadResponse = IDL.Variant({
+    'Started' : IDL.Record({ 'next_chunk_index' : IDL.Nat32 }),
+    'AbortAccepted' : IDL.Record({ 'state' : BulkLoadPublicStateV1 }),
+    'FinalizeAccepted' : IDL.Record({ 'state' : BulkLoadPublicStateV1 }),
+    'Appended' : IDL.Record({
+      'chunk_index' : IDL.Nat32,
+      'receipt' : AtomicInsertReceiptV1,
+    }),
+  });
+  const Result_7 = IDL.Variant({
+    'Ok' : BulkLoadResponse,
+    'Err' : RouterError,
+  });
+  const BulkLoadChunkReceiptV1 = IDL.Record({
+    'chunk_index' : IDL.Nat32,
+    'receipt' : AtomicInsertReceiptV1,
+  });
+  const BulkLoadStatusPage = IDL.Record({
+    'committed_chunk_count' : IDL.Nat32,
+    'completed_chunk_count' : IDL.Nat32,
+    'state' : BulkLoadPublicStateV1,
+    'next_receipt_cursor' : IDL.Opt(IDL.Nat32),
+    'next_chunk_index' : IDL.Nat32,
+    'terminal_at_ns' : IDL.Opt(IDL.Nat64),
+    'receipts' : IDL.Vec(BulkLoadChunkReceiptV1),
+    'expires_at_ns' : IDL.Opt(IDL.Nat64),
+  });
+  const Result_8 = IDL.Variant({
+    'Ok' : BulkLoadStatusPage,
+    'Err' : RouterError,
+  });
   const VectorCentroidCacheStatus = IDL.Record({
     'entries' : IDL.Nat64,
     'max_bytes' : IDL.Nat64,
     'bytes' : IDL.Nat64,
   });
-  const Result_7 = IDL.Variant({
+  const Result_9 = IDL.Variant({
     'Ok' : VectorCentroidCacheStatus,
     'Err' : RouterError,
   });
-  const Result_8 = IDL.Variant({ 'Ok' : IDL.Nat16, 'Err' : RouterError });
-  const Result_9 = IDL.Variant({ 'Ok' : IDL.Nat32, 'Err' : RouterError });
-  const PreparedSortSpec = IDL.Record({
-    'key' : IDL.Text,
-    'direction' : IDL.Text,
-  });
-  const MutationTokenShard = IDL.Record({
-    'label_stats_seq' : IDL.Opt(IDL.Nat64),
-    'shard_id' : IDL.Nat32,
-  });
-  const MutationToken = IDL.Record({
-    'mutation_id' : IDL.Nat64,
-    'shards' : IDL.Vec(MutationTokenShard),
-  });
-  const ReadMode = IDL.Variant({
-    'Eventual' : IDL.Null,
-    'AtLeast' : MutationToken,
-  });
-  const GqlQueryResult = IDL.Record({
-    'rows_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-    'token' : IDL.Opt(MutationToken),
-    'row_count' : IDL.Nat64,
-    'phase' : IDL.Opt(MutationLifecyclePhase),
-  });
-  const Result_10 = IDL.Variant({ 'Ok' : GqlQueryResult, 'Err' : RouterError });
+  const Result_10 = IDL.Variant({ 'Ok' : IDL.Nat16, 'Err' : RouterError });
+  const Result_11 = IDL.Variant({ 'Ok' : IDL.Nat32, 'Err' : RouterError });
   const GraphStatus = IDL.Variant({
     'Deleting' : IDL.Null,
     'Active' : IDL.Null,
@@ -312,7 +366,7 @@ export const idlFactory = ({ IDL }) => {
     'admins' : IDL.Vec(IDL.Principal),
     'graph_name' : IDL.Text,
   });
-  const Result_11 = IDL.Variant({
+  const Result_12 = IDL.Variant({
     'Ok' : GraphRegistryEntry,
     'Err' : RouterError,
   });
@@ -332,11 +386,11 @@ export const idlFactory = ({ IDL }) => {
     'notes' : IDL.Vec(IDL.Text),
     'vector_index_count' : IDL.Nat32,
   });
-  const Result_12 = IDL.Variant({
+  const Result_13 = IDL.Variant({
     'Ok' : GraphHealthView,
     'Err' : RouterError,
   });
-  const Result_13 = IDL.Variant({ 'Ok' : IDL.Nat32, 'Err' : RouterError });
+  const Result_14 = IDL.Variant({ 'Ok' : IDL.Nat32, 'Err' : RouterError });
   const AdminIndexSyncStatusArgs = IDL.Record({
     'shard_id' : IDL.Nat32,
     'logical_graph_name' : IDL.Text,
@@ -346,11 +400,11 @@ export const idlFactory = ({ IDL }) => {
     'converged' : IDL.Bool,
     'derived_index_outbox_len' : IDL.Nat64,
   });
-  const Result_14 = IDL.Variant({
+  const Result_15 = IDL.Variant({
     'Ok' : IndexSyncStatus,
     'Err' : RouterError,
   });
-  const Result_15 = IDL.Variant({
+  const Result_16 = IDL.Variant({
     'Ok' : IDL.Vec(IDL.Nat8),
     'Err' : RouterError,
   });
@@ -365,11 +419,10 @@ export const idlFactory = ({ IDL }) => {
     'edge_property_ids' : IDL.Vec(IDL.Nat32),
     'edge_indexes' : IDL.Vec(IndexedEdgeMembership),
   });
-  const Result_16 = IDL.Variant({
+  const Result_17 = IDL.Variant({
     'Ok' : IndexedPropertyCatalog,
     'Err' : RouterError,
   });
-  const Result_17 = IDL.Variant({ 'Ok' : MutationStatus, 'Err' : RouterError });
   const ShardRegistryEntry = IDL.Record({
     'graph_id' : IDL.Nat32,
     'registered_at_ns' : IDL.Nat64,
@@ -521,24 +574,24 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : VectorSlabStats,
     'Err' : RouterError,
   });
-  const GqlExecuteIdempotentBatchItem = IDL.Record({
-    'gql_query' : IDL.Text,
-    'mutation_key' : IDL.Text,
-    'params' : IDL.Vec(IDL.Nat8),
+  const MutationTokenShard = IDL.Record({
+    'label_stats_seq' : IDL.Opt(IDL.Nat64),
+    'shard_id' : IDL.Nat32,
   });
-  const GqlExecuteIdempotentBatchArgs = IDL.Record({
-    'instruction_budget' : IDL.Opt(IDL.Nat64),
-    'mutations' : IDL.Vec(GqlExecuteIdempotentBatchItem),
-    'start_index' : IDL.Nat32,
+  const MutationToken = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'shards' : IDL.Vec(MutationTokenShard),
   });
-  const GqlExecuteIdempotentBatchResult = IDL.Record({
-    'next_index' : IDL.Opt(IDL.Nat32),
-    'instruction_counter' : IDL.Nat64,
-    'results' : IDL.Vec(GqlQueryResult),
+  const GqlQueryResult = IDL.Record({
+    'rows_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'token' : IDL.Opt(MutationToken),
+    'row_count' : IDL.Nat64,
+    'phase' : IDL.Opt(MutationLifecyclePhase),
   });
-  const Result_26 = IDL.Variant({
-    'Ok' : GqlExecuteIdempotentBatchResult,
-    'Err' : RouterError,
+  const Result_26 = IDL.Variant({ 'Ok' : GqlQueryResult, 'Err' : RouterError });
+  const ReadMode = IDL.Variant({
+    'Eventual' : IDL.Null,
+    'AtLeast' : MutationToken,
   });
   const GrantRoleArgs = IDL.Record({
     'role' : IDL.Text,
@@ -687,7 +740,12 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : IDL.Vec(VectorMaintenancePolicyView),
     'Err' : RouterError,
   });
-  const Result_35 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : RouterError });
+  const Result_35 = IDL.Variant({ 'Ok' : MutationStatus, 'Err' : RouterError });
+  const Result_36 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : RouterError });
+  const PreparedSortSpec = IDL.Record({
+    'key' : IDL.Text,
+    'direction' : IDL.Text,
+  });
   const ProvisionableResourceKind = IDL.Variant({
     'PropertyIndex' : IDL.Null,
     'VectorIndex' : IDL.Null,
@@ -724,7 +782,7 @@ export const idlFactory = ({ IDL }) => {
     }),
     'Completed' : IDL.Record({ 'accepted_registry_version' : IDL.Nat64 }),
   });
-  const Result_36 = IDL.Variant({
+  const Result_37 = IDL.Variant({
     'Ok' : ProvisionGraphResponse,
     'Err' : RouterError,
   });
@@ -760,7 +818,7 @@ export const idlFactory = ({ IDL }) => {
   const RouterAckResponse = IDL.Record({
     'accepted_registry_version' : IDL.Nat64,
   });
-  const Result_37 = IDL.Variant({
+  const Result_38 = IDL.Variant({
     'Ok' : RouterAckResponse,
     'Err' : RouterError,
   });
@@ -769,7 +827,7 @@ export const idlFactory = ({ IDL }) => {
     'exhausted' : IDL.Bool,
     'partial' : VectorPartitionPageHealth,
   });
-  const Result_38 = IDL.Variant({
+  const Result_39 = IDL.Variant({
     'Ok' : VectorPartitionHealthStep,
     'Err' : RouterError,
   });
@@ -778,7 +836,7 @@ export const idlFactory = ({ IDL }) => {
     'exhausted' : IDL.Bool,
     'partial' : VectorSlabStats,
   });
-  const Result_39 = IDL.Variant({
+  const Result_40 = IDL.Variant({
     'Ok' : VectorSlabStatsStep,
     'Err' : RouterError,
   });
@@ -813,7 +871,7 @@ export const idlFactory = ({ IDL }) => {
     'next_cursor' : IDL.Opt(ClientMutationKey),
     'removed' : IDL.Nat32,
   });
-  const Result_40 = IDL.Variant({
+  const Result_41 = IDL.Variant({
     'Ok' : AdminSweepMutationKeysStepResult,
     'Err' : RouterError,
   });
@@ -827,7 +885,7 @@ export const idlFactory = ({ IDL }) => {
     'embedding_incarnation' : IDL.Nat64,
   });
   const VectorSearchResult = IDL.Record({ 'hits' : IDL.Vec(VectorSearchHit) });
-  const Result_41 = IDL.Variant({
+  const Result_42 = IDL.Variant({
     'Ok' : VectorSearchResult,
     'Err' : RouterError,
   });
@@ -869,14 +927,25 @@ export const idlFactory = ({ IDL }) => {
         [Result_5],
         [],
       ),
+    'atomic_insert' : IDL.Func([AtomicInsertRequest], [Result_6], []),
+    'atomic_insert_status' : IDL.Func(
+        [IDL.Text, IDL.Text],
+        [Result_6],
+        ['query'],
+      ),
     'attach_vector_shard' : IDL.Func(
         [AdminAttachVectorIndexShardArgs],
         [Result],
         [],
       ),
-    'batch_insert' : IDL.Func([BatchRequest], [Result_6], []),
+    'bulk_load' : IDL.Func([BulkLoadCommand], [Result_7], []),
+    'bulk_load_status' : IDL.Func(
+        [IDL.Text, IDL.Text, IDL.Opt(IDL.Nat32), IDL.Nat32],
+        [Result_8],
+        ['query'],
+      ),
     'check_registry_invariants' : IDL.Func([], [Result], ['query']),
-    'clear_vector_centroid_cache' : IDL.Func([IDL.Text], [Result_7], []),
+    'clear_vector_centroid_cache' : IDL.Func([IDL.Text], [Result_9], []),
     'delete_vector_maintenance_policy' : IDL.Func(
         [IDL.Text, IDL.Nat32],
         [Result_1],
@@ -888,40 +957,20 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'drop_prepared' : IDL.Func([IDL.Text], [Result], []),
-    'ensure_edge_label' : IDL.Func([IDL.Text, IDL.Text], [Result_8], []),
-    'ensure_property' : IDL.Func([IDL.Text, IDL.Text], [Result_9], []),
-    'ensure_vertex_label' : IDL.Func([IDL.Text, IDL.Text], [Result_8], []),
-    'execute_prepared' : IDL.Func(
-        [
-          IDL.Text,
-          IDL.Vec(IDL.Nat8),
-          IDL.Opt(IDL.Vec(PreparedSortSpec)),
-          ReadMode,
-        ],
-        [Result_10],
-        ['composite_query'],
-      ),
-    'execute_prepared_update' : IDL.Func(
-        [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Text],
-        [Result_10],
-        [],
-      ),
-    'get_graph' : IDL.Func([IDL.Text], [Result_11], ['query']),
-    'get_graph_health' : IDL.Func([IDL.Text], [Result_12], ['composite_query']),
-    'get_graph_id' : IDL.Func([IDL.Text], [Result_13], ['query']),
+    'ensure_edge_label' : IDL.Func([IDL.Text, IDL.Text], [Result_10], []),
+    'ensure_property' : IDL.Func([IDL.Text, IDL.Text], [Result_11], []),
+    'ensure_vertex_label' : IDL.Func([IDL.Text, IDL.Text], [Result_10], []),
+    'get_graph' : IDL.Func([IDL.Text], [Result_12], ['query']),
+    'get_graph_health' : IDL.Func([IDL.Text], [Result_13], ['composite_query']),
+    'get_graph_id' : IDL.Func([IDL.Text], [Result_14], ['query']),
     'get_graph_sync_status' : IDL.Func(
         [AdminIndexSyncStatusArgs],
-        [Result_14],
+        [Result_15],
         [],
       ),
-    'get_id_encoding_key' : IDL.Func([IDL.Text], [Result_15], ['query']),
+    'get_id_encoding_key' : IDL.Func([IDL.Text], [Result_16], ['query']),
     'get_indexed_property_catalog' : IDL.Func(
         [IDL.Text],
-        [Result_16],
-        ['query'],
-      ),
-    'get_mutation_status' : IDL.Func(
-        [IDL.Text, IDL.Text],
         [Result_17],
         ['query'],
       ),
@@ -933,7 +982,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_vector_centroid_cache' : IDL.Func(
         [IDL.Text],
-        [Result_7],
+        [Result_9],
         ['composite_query'],
       ),
     'get_vector_dispatch_enabled' : IDL.Func([], [IDL.Bool], ['query']),
@@ -972,19 +1021,14 @@ export const idlFactory = ({ IDL }) => {
         [Result_25],
         ['composite_query'],
       ),
-    'gql_execute' : IDL.Func(
+    'gql_mutate' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Text],
-        [Result_10],
-        [],
-      ),
-    'gql_execute_batch' : IDL.Func(
-        [GqlExecuteIdempotentBatchArgs],
         [Result_26],
         [],
       ),
     'gql_query' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), ReadMode],
-        [Result_10],
+        [Result_26],
         ['composite_query'],
       ),
     'grant_role' : IDL.Func([GrantRoleArgs], [Result], []),
@@ -1015,26 +1059,42 @@ export const idlFactory = ({ IDL }) => {
       ),
     'lookup_edge_label_id' : IDL.Func(
         [IDL.Text, IDL.Text],
-        [Result_8],
+        [Result_10],
         ['query'],
       ),
     'lookup_property_id' : IDL.Func(
         [IDL.Text, IDL.Text],
-        [Result_13],
+        [Result_14],
         ['query'],
       ),
     'lookup_vertex_label_id' : IDL.Func(
         [IDL.Text, IDL.Text],
-        [Result_8],
+        [Result_10],
         ['query'],
       ),
-    'my_role' : IDL.Func([], [Result_35], ['query']),
+    'mutation_status' : IDL.Func([IDL.Text, IDL.Text], [Result_35], ['query']),
+    'my_role' : IDL.Func([], [Result_36], ['query']),
     'prepare' : IDL.Func(
         [IDL.Text, IDL.Text, IDL.Opt(PreparedOperation)],
         [Result],
         [],
       ),
-    'provision_graph' : IDL.Func([ProvisionGraphArgs], [Result_36], []),
+    'prepared_mutate' : IDL.Func(
+        [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Text],
+        [Result_26],
+        [],
+      ),
+    'prepared_query' : IDL.Func(
+        [
+          IDL.Text,
+          IDL.Vec(IDL.Nat8),
+          IDL.Opt(IDL.Vec(PreparedSortSpec)),
+          ReadMode,
+        ],
+        [Result_26],
+        ['composite_query'],
+      ),
+    'provision_graph' : IDL.Func([ProvisionGraphArgs], [Result_37], []),
     'publish_vector_rebuild' : IDL.Func([IDL.Text, IDL.Nat32], [Result], []),
     'register_graph' : IDL.Func([RegisterGraphArgs], [Result], []),
     'register_shard' : IDL.Func([AdminRegisterShardArgs], [Result], []),
@@ -1046,28 +1106,28 @@ export const idlFactory = ({ IDL }) => {
     'reset_vector_maintenance' : IDL.Func([IDL.Text, IDL.Nat32], [Result], []),
     'reverse_edge_label_name' : IDL.Func(
         [IDL.Text, IDL.Nat16],
-        [Result_35],
+        [Result_36],
         ['query'],
       ),
     'reverse_property_name' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_35],
+        [Result_36],
         ['query'],
       ),
     'reverse_vertex_label_name' : IDL.Func(
         [IDL.Text, IDL.Nat16],
-        [Result_35],
+        [Result_36],
         ['query'],
       ),
-    'router_ack' : IDL.Func([RouterProvisionAck], [Result_37], []),
+    'router_ack' : IDL.Func([RouterProvisionAck], [Result_38], []),
     'scan_partition_health' : IDL.Func(
         [IDL.Text, IDL.Nat32, IDL.Opt(IDL.Vec(IDL.Nat8)), IDL.Nat32],
-        [Result_38],
+        [Result_39],
         ['composite_query'],
       ),
     'scan_slab_stats' : IDL.Func(
         [IDL.Text, IDL.Opt(IDL.Vec(IDL.Nat8)), IDL.Nat32, IDL.Opt(IDL.Nat32)],
-        [Result_39],
+        [Result_40],
         ['composite_query'],
       ),
     'set_vector_dispatch_enabled' : IDL.Func([IDL.Bool], [Result], []),
@@ -1088,7 +1148,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'sweep_expired_mutation_keys' : IDL.Func(
         [AdminSweepMutationKeysStepArgs],
-        [Result_40],
+        [Result_41],
         [],
       ),
     'unregister_graph' : IDL.Func([IDL.Text], [Result], []),
@@ -1100,12 +1160,12 @@ export const idlFactory = ({ IDL }) => {
       ),
     'vector_search' : IDL.Func(
         [IDL.Text, IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat32],
-        [Result_41],
+        [Result_42],
         ['composite_query'],
       ),
     'warm_vector_centroid_cache' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_7],
+        [Result_9],
         [],
       ),
     'whoami' : IDL.Func([], [IDL.Principal], ['query']),

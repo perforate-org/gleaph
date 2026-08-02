@@ -51,15 +51,9 @@ function candid_none<T>(): [] {
 function record_opt_to_undefined<T>(arg: T | null): T | undefined {
     return arg == null ? undefined : arg;
 }
-export interface ExecutePlanBatchSharedV2Args {
-    batch_mode: ExecutePlanBatchMode;
-    shared: ExecutePlanBatchSharedV2;
-    operations: Array<ExecutePlanSharedV2Op>;
-}
-export interface LocalEdgePosting {
-    label_id: number;
-    slot_index: number;
-    owner_vertex_id: number;
+export interface UniqueAcquireEvidence {
+    owner_element_id: Uint8Array;
+    effect_id: EffectId;
 }
 export type Result_2 = {
     __kind__: "Ok";
@@ -68,9 +62,29 @@ export type Result_2 = {
     __kind__: "Err";
     Err: string;
 };
-export interface UniqueAcquireEvidence {
-    owner_element_id: Uint8Array;
-    effect_id: EffectId;
+export interface GetMutationJournalEntriesResult {
+    /**
+     * Smallest mutation id not included because the Graph canister neared its instruction budget.
+     * When present, the Router must issue a follow-up batch read for this and larger ids.
+     */
+    next?: bigint;
+    entries: Array<GraphMutationJournalEntryWire | null>;
+}
+export interface OrderedVertexBatchGraphRequestV1 {
+    graph_id: number;
+    resolved_labels: ResolvedLabelTable;
+    target_shard_id: number;
+    resolved_properties: ResolvedPropertyTable;
+    items: Array<OrderedVertexBatchGraphItemV1>;
+    target_graph_canister: Principal;
+}
+export interface OrderedEdgeBatchGraphArgsV1 {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+    request: OrderedEdgeBatchGraphRequest;
+}
+export interface ResolvedPropertyTable {
+    properties: Array<ResolvedProperty>;
 }
 export type OrderedMixedGraphOperationV1 = {
     __kind__: "Edge";
@@ -79,19 +93,33 @@ export type OrderedMixedGraphOperationV1 = {
     __kind__: "Vertex";
     Vertex: OrderedVertexBatchGraphItemV1;
 };
+export type Result_5 = {
+    __kind__: "Ok";
+    Ok: EmbeddingBackfillResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export interface IndexSyncStatus {
+    /**
+     * Failed-flush ops persisted in the repair journal awaiting re-application.
+     */
+    repair_journal_len: bigint;
+    /**
+     * `derived_index_outbox_len == 0 && repair_journal_len == 0`.
+     */
+    converged: boolean;
+    /**
+     * Derived-index ops still in the durable first-delivery outbox (never yet delivered).
+     */
+    derived_index_outbox_len: bigint;
+}
 export type OrderedMixedGraphEndpointV1 = {
     __kind__: "NewVertexOrdinal";
     NewVertexOrdinal: number;
 } | {
     __kind__: "Existing";
     Existing: number;
-};
-export type Result_4 = {
-    __kind__: "Ok";
-    Ok: PostingBackfillResult;
-} | {
-    __kind__: "Err";
-    Err: string;
 };
 export type ResolvedInlineSchema = {
     __kind__: "struct";
@@ -109,34 +137,56 @@ export type GraphMutationJournalEntryWire = {
     __kind__: "V1";
     V1: GraphMutationJournalEntryWireV1;
 };
-export interface ExecutePlanBatchSharedV2 {
-    mutation_id: bigint;
-    indexed_properties?: IndexedPropertyCatalog;
-    plan_blob: Uint8Array;
-    resolved_labels?: ResolvedLabelTable;
-    target_shard_id: number;
-    indexed_embeddings?: IndexedEmbeddingCatalog;
-    resolved_search_blob?: Uint8Array;
-    resolved_properties?: ResolvedPropertyTable;
-    element_id_encoding_key: Uint8Array;
-    seed_bindings_blob?: Uint8Array;
-}
 export type OrderedVertexBatchGraphRequest = {
     __kind__: "V1";
     V1: OrderedVertexBatchGraphRequestV1;
+};
+export type Result_4 = {
+    __kind__: "Ok";
+    Ok: PostingBackfillResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export interface EdgePropertyBackfillRequest {
+    args: EdgePostingBackfillArgs;
+    catalog: IndexedPropertyCatalog;
+}
+export type OrderedMixedBatchGraphRequest = {
+    __kind__: "V1";
+    V1: OrderedMixedBatchGraphRequestV1;
 };
 export type GraphOrderedEdgeBatchResult = {
     __kind__: "V1";
     V1: GraphOrderedEdgeBatchResultV1;
 };
-export interface VertexEmbeddingIngestionResult {
-    embedding_version: bigint;
-    projection_outcome: VertexEmbeddingProjectionOutcome;
+export interface GraphInitArgs {
+    shard_id?: number;
+    /**
+     * Index canister for install-time federation wiring.
+     *
+     * Canister init cannot perform inter-canister calls, so deployments pass this after the
+     * Router registry has been configured.
+     */
+    index_canister?: Principal;
+    /**
+     * Router canister for federation (required together with `shard_id`).
+     */
+    router_canister?: Principal;
+    logical_graph_name?: string;
 }
 export interface ExecutePlanBatchArgs {
     mode: ExecutePlanBatchMode;
     operations: Array<ExecutePlanArgs>;
 }
+export interface ResolvedProperty {
+    id: number;
+    name: string;
+}
+export type OrderedVertexBatchGraphArgs = {
+    __kind__: "V1";
+    V1: OrderedVertexBatchGraphArgsV1;
+};
 export interface ClaimId {
     mutation_id: bigint;
     /**
@@ -146,33 +196,26 @@ export interface ClaimId {
      */
     claim_ordinal: number;
 }
-export interface ExecutePlanBatchTypedShared {
+export interface GraphOrderedVertexBatchReceiptV1 {
     /**
-     * Router-issued idempotency key for the whole bulk group.
+     * Vertex IDs in request-local vertex-operation ordinal order.
      */
-    mutation_id: bigint;
-    /**
-     * Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
-     */
-    indexed_properties?: IndexedPropertyCatalog;
-    plan_blob: Uint8Array;
-    /**
-     * Router-resolved label names referenced by the physical plan.
-     */
-    resolved_labels?: ResolvedLabelTable;
-    target_shard_id: number;
-    /**
-     * Router-resolved property names referenced by the physical plan.
-     */
-    resolved_properties?: ResolvedPropertyTable;
-    /**
-     * Per-graph key for ELEMENT_ID/path id encoding.
-     */
-    element_id_encoding_key: Uint8Array;
+    allocated_vertex_ids: Uint32Array;
+    emitted_delta_last_seq?: bigint;
+    emitted_delta_first_seq?: bigint;
+    logical_vertex_count: bigint;
+    hot_forward_vertices: Uint32Array;
 }
 export type OrderedMixedMutationRetirementAck = {
     __kind__: "V1";
     V1: OrderedMixedMutationRetirementAckV1;
+};
+export type Result_7 = {
+    __kind__: "Ok";
+    Ok: GraphOrderedMixedBatchResult;
+} | {
+    __kind__: "Err";
+    Err: string;
 };
 export interface OrderedVertexBatchGraphArgsV1 {
     mutation_id: bigint;
@@ -183,10 +226,18 @@ export interface ResolvedOrderedEdgePropertyV1 {
     value: Uint8Array;
     property_id: number;
 }
-export interface SeedVertexBinding {
+export interface VertexEmbeddingIngestionArgs {
     local_vertex_id: number;
-    variable: string;
-    required_vertex_label_ids: Uint16Array;
+    spec: IndexedEmbeddingSpec;
+    values: Array<number>;
+}
+export interface OrderedEdgeBatchGraphItemV1 {
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id?: number;
+    target_local_vertex_id: number;
+    source_local_vertex_id: number;
 }
 export type Result_6 = {
     __kind__: "Ok";
@@ -195,11 +246,6 @@ export type Result_6 = {
     __kind__: "Err";
     Err: string;
 };
-export interface VertexEmbeddingIngestionArgs {
-    local_vertex_id: number;
-    spec: IndexedEmbeddingSpec;
-    values: Array<number>;
-}
 export type EdgeInlinePropertyEncoding = {
     __kind__: "F16";
     F16: null;
@@ -257,24 +303,32 @@ export type EdgeInlinePropertyEncoding = {
      */
     RawBytes: null;
 };
-export interface ExecutePlanTypedOp {
-    /**
-     * Required complete-row seed relation. Zero matches use an empty `rows` vector.
-     */
-    seed: SeedBindingsWire;
-    /**
-     * Per-operation GQL parameter map, already encoded.
-     */
-    params_blob: Uint8Array;
+export interface VertexEmbeddingIngestionResult {
+    embedding_version: bigint;
+    projection_outcome: VertexEmbeddingProjectionOutcome;
 }
 export interface OrderedMixedMutationRetirementAckV1 {
     mutation_id: bigint;
     receipt: GraphOrderedMixedBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
 }
+export type GraphBulkMutationProgress = {
+    __kind__: "V1";
+    V1: GraphBulkMutationProgressV1;
+};
 export type Result_12 = {
     __kind__: "Ok";
     Ok: OrderedMixedMutationRetirementAck;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export interface IndexedEmbeddingCatalog {
+    embeddings: Array<IndexedEmbeddingSpec>;
+}
+export type Result_9 = {
+    __kind__: "Ok";
+    Ok: ExecutePlanResult;
 } | {
     __kind__: "Err";
     Err: string;
@@ -373,12 +427,32 @@ export type Result_10 = {
     __kind__: "Err";
     Err: string;
 };
-export type Result_8 = {
-    __kind__: "Ok";
-    Ok: GraphOrderedVertexBatchResult;
+export interface UniqueClaimDispatch {
+    encoded_value: Uint8Array;
+    constraint_id: number;
+    claim_ordinal: number;
+}
+export type OrderedEdgeBatchGraphRequest = {
+    __kind__: "V1";
+    V1: OrderedEdgeBatchGraphRequestV1;
+};
+export type OrderedMutationRetirementAck = {
+    __kind__: "V1";
+    V1: OrderedMutationRetirementAckV1;
+};
+export type GraphOrderedEdgeBatchResultV1 = {
+    __kind__: "MutationRetired";
+    MutationRetired: {
+        mutation_id: bigint;
+        graph_request_fingerprint: Uint8Array;
+    };
 } | {
-    __kind__: "Err";
-    Err: string;
+    __kind__: "Completed";
+    Completed: GraphOrderedEdgeBatchReceiptV1;
+};
+export type OrderedVertexMutationRetirementAck = {
+    __kind__: "V1";
+    V1: OrderedVertexMutationRetirementAckV1;
 };
 export interface EmbeddingBackfillResult {
     vertices_processed: number;
@@ -386,9 +460,27 @@ export interface EmbeddingBackfillResult {
     embeddings_synced: number;
     next_vertex_id: number;
 }
+export interface ExecutePlanResult {
+    /**
+     * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
+     */
+    rows_blob?: Uint8Array;
+    row_count: bigint;
+    /**
+     * Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
+     */
+    hot_forward_vertices: Uint32Array;
+}
 export type OrderedMutationRetirementArgs = {
     __kind__: "V1";
     V1: OrderedMutationRetirementArgsV1;
+};
+export type Result_8 = {
+    __kind__: "Ok";
+    Ok: GraphOrderedVertexBatchResult;
+} | {
+    __kind__: "Err";
+    Err: string;
 };
 export interface OrderedMixedBatchGraphRequestV1 {
     graph_id: number;
@@ -398,9 +490,26 @@ export interface OrderedMixedBatchGraphRequestV1 {
     resolved_properties: ResolvedPropertyTable;
     target_graph_canister: Principal;
 }
+export interface PostingBackfillArgs {
+    max_vertices: number;
+    start_vertex_id: number;
+}
 export interface EffectId {
     mutation_id: bigint;
     effect_ordinal: number;
+}
+export interface OrderedMixedGraphEdgeItemV1 {
+    source: OrderedMixedGraphEndpointV1;
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    target: OrderedMixedGraphEndpointV1;
+    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id?: number;
+}
+export interface ResolvedInlineStructField {
+    byte_offset: number;
+    name: string;
+    profile: EdgeInlinePropertyProfile;
 }
 export type GraphOrderedMixedBatchResult = {
     __kind__: "V1";
@@ -410,6 +519,10 @@ export interface EdgeInlinePropertyProfile {
     encoding: EdgeInlinePropertyEncoding;
     byte_width: number;
 }
+export interface EdgePostingBackfillArgs {
+    max_entries: number;
+    after_key?: Uint8Array;
+}
 export type Result_13 = {
     __kind__: "Ok";
     Ok: OrderedMutationRetirementAck;
@@ -417,23 +530,60 @@ export type Result_13 = {
     __kind__: "Err";
     Err: string;
 };
+export interface PostingBackfillResult {
+    postings_synced: number;
+    vertices_processed: number;
+    done: boolean;
+    next_vertex_id: number;
+}
+export interface GraphOrderedMixedBatchReceiptV1 {
+    logical_edge_count: bigint;
+    /**
+     * Vertex IDs in request-local vertex-operation ordinal order.
+     */
+    allocated_vertex_ids: Uint32Array;
+    emitted_delta_last_seq?: bigint;
+    emitted_delta_first_seq?: bigint;
+    logical_vertex_count: bigint;
+    logical_operation_count: bigint;
+    hot_forward_vertices: Uint32Array;
+}
 export interface GraphOrderedEdgeBatchReceiptV1 {
     logical_edge_count: bigint;
     emitted_delta_last_seq?: bigint;
     emitted_delta_first_seq?: bigint;
     hot_forward_vertices: Uint32Array;
 }
+export type Result_1 = {
+    __kind__: "Ok";
+    Ok: Array<Result>;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export interface StableMemoryStats {
+    regions: Array<StableMemoryRegionStats>;
+    bucket_pages: number;
+    estimated_allocated_pages: bigint;
+    estimated_allocated_bytes: bigint;
+    logical_total_pages: bigint;
+    logical_total_bytes: bigint;
+}
 export interface GraphMutationJournalEntryWireV1 {
     mutation_id: bigint;
+    /**
+     * Ordered local vertex allocations. `Some` is mandatory for ordered vertex/mixed entries;
+     * edge-only and plan-execution entries must keep this `None` so the appendix remains absent.
+     */
+    allocated_vertex_ids?: Uint32Array;
     emitted_delta_last_seq?: bigint;
     /**
-     * Bulk operation cursor: for a bulk mutation, points at the next unexecuted
-     * operation index. For a single mutation it is `None`.
+     * Internal plan-batch cursor: the first unexecuted operation.
      */
     next_index?: number;
     request_identity: GraphMutationRequestIdentityV1;
     /**
-     * Bulk-specific progress metadata; present only when `next_index` is used.
+     * Internal plan-batch progress metadata.
      */
     bulk_progress?: GraphBulkMutationProgress;
     row_count: bigint;
@@ -451,7 +601,7 @@ export type OrderedEdgeBatchGraphArgs = {
 };
 export interface ExecutePlanBatchResult {
     /**
-     * Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
+     * Index of the first operation not attempted when Dynamic mode hit the Graph budget.
      */
     next_index?: number;
     results: Array<Result_9>;
@@ -463,380 +613,14 @@ export type Result_11 = {
     __kind__: "Err";
     Err: string;
 };
-export interface StableMemoryRegionStats {
-    slack_pages: bigint;
-    logical_pages: bigint;
-    logical_bytes: bigint;
-    name: string;
-    allocated_pages: bigint;
-    memory_id: number;
-    bucket_pages: number;
+export interface GetMutationJournalEntriesArgs {
+    mutation_ids: BigUint64Array;
 }
 export interface EdgePostingBackfillResult {
     entries_processed: number;
     postings_synced: number;
     done: boolean;
     next_after_key?: Uint8Array;
-}
-export interface OrderedVertexMutationRetirementAckV1 {
-    mutation_id: bigint;
-    receipt: GraphOrderedVertexBatchReceiptV1;
-    graph_request_fingerprint: Uint8Array;
-}
-export type GraphOrderedVertexBatchResult = {
-    __kind__: "V1";
-    V1: GraphOrderedVertexBatchResultV1;
-};
-export interface LabelStatsDeltaEventWire {
-    mutation_id: bigint;
-    shard_event_seq: bigint;
-    label_stats_delta: LabelStatsDelta;
-}
-export interface OrderedVertexBatchGraphItemV1 {
-    resolved_initial_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    resolved_vertex_labels: Uint16Array;
-}
-export interface OrderedEdgeBatchGraphRequestV1 {
-    graph_id: number;
-    resolved_labels: ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties: ResolvedPropertyTable;
-    items: Array<OrderedEdgeBatchGraphItemV1>;
-    target_graph_canister: Principal;
-}
-export interface GraphBulkMutationProgressV1 {
-    /**
-     * Ordered row counts for the committed prefix. Persisted so a completed replay can return the
-     * same per-operation result cardinality instead of synthetic zeroes.
-     */
-    operation_row_counts: BigUint64Array;
-    completed_count: number;
-    operation_count: number;
-}
-export interface OrderedMutationRetirementAckV1 {
-    mutation_id: bigint;
-    receipt: GraphOrderedEdgeBatchReceiptV1;
-    graph_request_fingerprint: Uint8Array;
-}
-export interface BulkIngestFinalizeArgs {
-    forward_vertices: Uint32Array;
-    target_shard_id: number;
-    reverse_vertices: Uint32Array;
-    /**
-     * `true`: enqueue span compaction then drain; `false`: drain-only retry.
-     */
-    enqueue: boolean;
-}
-export interface OrderedMutationRetirementArgsV1 {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-}
-export interface UniqueEffectReceipt {
-    op: UniqueEffectOp;
-    /**
-     * Canonical element that owns the value: the exact encoded element-id bytes (a vertex id is 8
-     * bytes, an edge id 12). Stored variable-length rather than a fixed buffer so different element
-     * kinds never collide under an opaque padding convention; the Router treats it as an opaque tag
-     * (`Acquire` Confirm stamps it; `Release` matches on it).
-     */
-    owner_element_id: Uint8Array;
-    /**
-     * `Some` for `Acquire` (the reserving claim); audit-only / `None` for `Release`.
-     */
-    claim_id?: ClaimId;
-    effect_id: EffectId;
-    encoded_value: Uint8Array;
-    constraint_id: number;
-}
-export type Result_3 = {
-    __kind__: "Ok";
-    Ok: EdgePostingBackfillResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export type ExecutePlanBulkBatch = {
-    __kind__: "SharedSeed";
-    /**
-     * All operations share one encoded seed relation carried in the shared context.
-     */
-    SharedSeed: ExecutePlanBatchSharedV2Args;
-} | {
-    __kind__: "PerItemSeed";
-    /**
-     * Every operation carries its own already-decoded complete-row seed relation.
-     */
-    PerItemSeed: ExecutePlanBatchTypedArgs;
-};
-export interface VertexPropertyBackfillRequest {
-    args: PostingBackfillArgs;
-    catalog: IndexedPropertyCatalog;
-}
-export interface BulkIngestFinalizeResult {
-    queued_forward: number;
-    processed_work_items: number;
-    queued_reverse: number;
-    remaining_queue_len: bigint;
-    instruction_budget_exhausted: boolean;
-    instructions_used: bigint;
-}
-export type OrderedMixedBatchGraphArgs = {
-    __kind__: "V1";
-    V1: OrderedMixedBatchGraphArgsV1;
-};
-export interface ResolvedEdgeLabel {
-    id: number;
-    name: string;
-    /**
-     * Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
-     */
-    inline_property_profile: EdgeInlinePropertyProfile;
-    /**
-     * Per-label ordering policy resolved by the Router from the Graph Type declaration
-     * (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
-     * bucket-local live order is the semantic insertion order.
-     */
-    ordering: EdgeOrderingPolicy;
-    /**
-     * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
-     * `None` for labels with no named inline slot; otherwise a scalar or struct projection.
-     * Graph receives this as a plan-scoped projection and must not persist or infer it.
-     */
-    inline_schema?: ResolvedInlineSchema;
-}
-export interface GetMutationJournalEntriesResult {
-    /**
-     * Smallest mutation id not included because the Graph canister neared its instruction budget.
-     * When present, the Router must issue a follow-up batch read for this and larger ids.
-     */
-    next?: bigint;
-    entries: Array<GraphMutationJournalEntryWire | null>;
-}
-export interface OrderedVertexBatchGraphRequestV1 {
-    graph_id: number;
-    resolved_labels: ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties: ResolvedPropertyTable;
-    items: Array<OrderedVertexBatchGraphItemV1>;
-    target_graph_canister: Principal;
-}
-export interface OrderedEdgeBatchGraphArgsV1 {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-    request: OrderedEdgeBatchGraphRequest;
-}
-export interface ResolvedPropertyTable {
-    properties: Array<ResolvedProperty>;
-}
-export type Result_5 = {
-    __kind__: "Ok";
-    Ok: EmbeddingBackfillResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface IndexSyncStatus {
-    /**
-     * Failed-flush ops persisted in the repair journal awaiting re-application.
-     */
-    repair_journal_len: bigint;
-    /**
-     * `derived_index_outbox_len == 0 && repair_journal_len == 0`.
-     */
-    converged: boolean;
-    /**
-     * Derived-index ops still in the durable first-delivery outbox (never yet delivered).
-     */
-    derived_index_outbox_len: bigint;
-}
-export interface EdgePropertyBackfillRequest {
-    args: EdgePostingBackfillArgs;
-    catalog: IndexedPropertyCatalog;
-}
-export type OrderedMixedBatchGraphRequest = {
-    __kind__: "V1";
-    V1: OrderedMixedBatchGraphRequestV1;
-};
-export interface ResolvedProperty {
-    id: number;
-    name: string;
-}
-export interface GraphInitArgs {
-    shard_id?: number;
-    /**
-     * Index canister for install-time federation wiring.
-     *
-     * Canister init cannot perform inter-canister calls, so deployments pass this after the
-     * Router registry has been configured.
-     */
-    index_canister?: Principal;
-    /**
-     * Router canister for federation (required together with `shard_id`).
-     */
-    router_canister?: Principal;
-    logical_graph_name?: string;
-}
-export type Result_7 = {
-    __kind__: "Ok";
-    Ok: GraphOrderedMixedBatchResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export type OrderedVertexBatchGraphArgs = {
-    __kind__: "V1";
-    V1: OrderedVertexBatchGraphArgsV1;
-};
-export interface GraphOrderedVertexBatchReceiptV1 {
-    emitted_delta_last_seq?: bigint;
-    emitted_delta_first_seq?: bigint;
-    logical_vertex_count: bigint;
-    hot_forward_vertices: Uint32Array;
-}
-export interface OrderedEdgeBatchGraphItemV1 {
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id?: number;
-    target_local_vertex_id: number;
-    source_local_vertex_id: number;
-}
-export type GraphBulkMutationProgress = {
-    __kind__: "V1";
-    V1: GraphBulkMutationProgressV1;
-};
-export type Result_9 = {
-    __kind__: "Ok";
-    Ok: ExecutePlanResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface IndexedEmbeddingCatalog {
-    embeddings: Array<IndexedEmbeddingSpec>;
-}
-export interface SeedBindingsWire {
-    rows: Array<SeedRowWire>;
-    entries: Array<SeedBindingEntry>;
-    /**
-     * When true, `rows` are complete for the entire read prefix and the Graph executor may skip
-     * the whole prefix rather than only the leading index-anchor ops. Introduced for ADR 0046
-     * Phase 1 multi-variable seed relations; `false` preserves the legacy `SEARCH`/single-variable
-     * semantics. Missing field decodes as `false` for stable blobs encoded before this addition.
-     */
-    complete_prefix_rows: boolean;
-}
-export interface UniqueClaimDispatch {
-    encoded_value: Uint8Array;
-    constraint_id: number;
-    claim_ordinal: number;
-}
-export type OrderedMutationRetirementAck = {
-    __kind__: "V1";
-    V1: OrderedMutationRetirementAckV1;
-};
-export type OrderedEdgeBatchGraphRequest = {
-    __kind__: "V1";
-    V1: OrderedEdgeBatchGraphRequestV1;
-};
-export interface ExecutePlanSharedV2Op {
-    params_blob: Uint8Array;
-}
-export type GraphOrderedEdgeBatchResultV1 = {
-    __kind__: "MutationRetired";
-    MutationRetired: {
-        mutation_id: bigint;
-        graph_request_fingerprint: Uint8Array;
-    };
-} | {
-    __kind__: "Completed";
-    Completed: GraphOrderedEdgeBatchReceiptV1;
-};
-export type OrderedVertexMutationRetirementAck = {
-    __kind__: "V1";
-    V1: OrderedVertexMutationRetirementAckV1;
-};
-export interface VertexEmbeddingBackfillRequest {
-    args: PostingBackfillArgs;
-    catalog: IndexedEmbeddingCatalog;
-}
-export interface ExecutePlanResult {
-    /**
-     * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
-     */
-    rows_blob?: Uint8Array;
-    row_count: bigint;
-    /**
-     * Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
-     */
-    hot_forward_vertices: Uint32Array;
-}
-export interface PostingBackfillArgs {
-    max_vertices: number;
-    start_vertex_id: number;
-}
-export interface ResolvedInlineStructField {
-    byte_offset: number;
-    name: string;
-    profile: EdgeInlinePropertyProfile;
-}
-export interface OrderedMixedGraphEdgeItemV1 {
-    source: OrderedMixedGraphEndpointV1;
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    target: OrderedMixedGraphEndpointV1;
-    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id?: number;
-}
-export interface SeedRowWire {
-    float64_bindings: Array<SeedFloat64Binding>;
-    vertex_bindings: Array<SeedVertexBinding>;
-}
-export interface StableMemoryStats {
-    regions: Array<StableMemoryRegionStats>;
-    bucket_pages: number;
-    estimated_allocated_pages: bigint;
-    estimated_allocated_bytes: bigint;
-    logical_total_pages: bigint;
-    logical_total_bytes: bigint;
-}
-export interface EdgePostingBackfillArgs {
-    max_entries: number;
-    after_key?: Uint8Array;
-}
-export interface PostingBackfillResult {
-    postings_synced: number;
-    vertices_processed: number;
-    done: boolean;
-    next_vertex_id: number;
-}
-export interface GraphOrderedMixedBatchReceiptV1 {
-    logical_edge_count: bigint;
-    emitted_delta_last_seq?: bigint;
-    emitted_delta_first_seq?: bigint;
-    logical_vertex_count: bigint;
-    logical_operation_count: bigint;
-    hot_forward_vertices: Uint32Array;
-}
-export type Result_1 = {
-    __kind__: "Ok";
-    Ok: Array<Result>;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface SeedBindingEntry {
-    variable: string;
-    local_edge_postings: Array<LocalEdgePosting>;
-    local_vertex_ids: Uint32Array;
-}
-export interface GetMutationJournalEntriesArgs {
-    mutation_ids: BigUint64Array;
-}
-export interface ExecutePlanBatchTypedArgs {
-    batch_mode: ExecutePlanBatchMode;
-    shared: ExecutePlanBatchTypedShared;
-    operations: Array<ExecutePlanTypedOp>;
 }
 export type GraphMutationRequestIdentityV1 = {
     __kind__: "OrderedVertexBatch";
@@ -877,18 +661,40 @@ export type GraphMutationRequestIdentityV1 = {
      */
     PlanExecution: null;
 };
-export interface ResolvedLabelTable {
-    edge: Array<ResolvedEdgeLabel>;
-    vertex: Array<ResolvedVertexLabel>;
+export type GraphOrderedVertexBatchResult = {
+    __kind__: "V1";
+    V1: GraphOrderedVertexBatchResultV1;
+};
+export interface OrderedVertexMutationRetirementAckV1 {
+    mutation_id: bigint;
+    receipt: GraphOrderedVertexBatchReceiptV1;
+    graph_request_fingerprint: Uint8Array;
 }
-export interface UniqueAcquireProof {
-    claim_id: ClaimId;
-    acquire?: UniqueAcquireEvidence;
+export interface LabelStatsDeltaEventWire {
+    mutation_id: bigint;
+    shard_event_seq: bigint;
+    label_stats_delta: LabelStatsDelta;
 }
 export interface OrderedMixedBatchGraphArgsV1 {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
     request: OrderedMixedBatchGraphRequest;
+}
+export interface OrderedEdgeBatchGraphRequestV1 {
+    graph_id: number;
+    resolved_labels: ResolvedLabelTable;
+    target_shard_id: number;
+    resolved_properties: ResolvedPropertyTable;
+    items: Array<OrderedEdgeBatchGraphItemV1>;
+    target_graph_canister: Principal;
+}
+export interface OrderedVertexBatchGraphItemV1 {
+    resolved_initial_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    resolved_vertex_labels: Uint16Array;
+}
+export interface ResolvedLabelTable {
+    edge: Array<ResolvedEdgeLabel>;
+    vertex: Array<ResolvedVertexLabel>;
 }
 export type Result_14 = {
     __kind__: "Ok";
@@ -897,9 +703,41 @@ export type Result_14 = {
     __kind__: "Err";
     Err: string;
 };
-export interface SeedFloat64Binding {
-    value: number;
-    variable: string;
+export interface StableMemoryRegionStats {
+    slack_pages: bigint;
+    logical_pages: bigint;
+    logical_bytes: bigint;
+    name: string;
+    allocated_pages: bigint;
+    memory_id: number;
+    bucket_pages: number;
+}
+export interface UniqueAcquireProof {
+    claim_id: ClaimId;
+    acquire?: UniqueAcquireEvidence;
+}
+export interface GraphBulkMutationProgressV1 {
+    operation_row_counts: BigUint64Array;
+    completed_count: number;
+    operation_count: number;
+}
+export interface VertexEmbeddingBackfillRequest {
+    args: PostingBackfillArgs;
+    catalog: IndexedEmbeddingCatalog;
+}
+export interface OrderedMutationRetirementAckV1 {
+    mutation_id: bigint;
+    receipt: GraphOrderedEdgeBatchReceiptV1;
+    graph_request_fingerprint: Uint8Array;
+}
+export interface BulkIngestFinalizeArgs {
+    forward_vertices: Uint32Array;
+    target_shard_id: number;
+    reverse_vertices: Uint32Array;
+    /**
+     * `true`: enqueue span compaction then drain; `false`: drain-only retry.
+     */
+    enqueue: boolean;
 }
 export type GraphOrderedMixedBatchResultV1 = {
     __kind__: "MutationRetired";
@@ -911,6 +749,27 @@ export type GraphOrderedMixedBatchResultV1 = {
     __kind__: "Completed";
     Completed: GraphOrderedMixedBatchReceiptV1;
 };
+export interface OrderedMutationRetirementArgsV1 {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+}
+export interface UniqueEffectReceipt {
+    op: UniqueEffectOp;
+    /**
+     * Canonical element that owns the value: the exact encoded element-id bytes (a vertex id is 8
+     * bytes, an edge id 12). Stored variable-length rather than a fixed buffer so different element
+     * kinds never collide under an opaque padding convention; the Router treats it as an opaque tag
+     * (`Acquire` Confirm stamps it; `Release` matches on it).
+     */
+    owner_element_id: Uint8Array;
+    /**
+     * `Some` for `Acquire` (the reserving claim); audit-only / `None` for `Release`.
+     */
+    claim_id?: ClaimId;
+    effect_id: EffectId;
+    encoded_value: Uint8Array;
+    constraint_id: number;
+}
 export interface ConstrainedPropertyDispatch {
     vertex_label_id: number;
     property_id: number;
@@ -921,6 +780,13 @@ export interface IndexedPropertyCatalog {
     edge_property_ids: Uint32Array;
     edge_indexes: Array<IndexedEdgeMembership>;
 }
+export type Result_3 = {
+    __kind__: "Ok";
+    Ok: EdgePostingBackfillResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
 export interface IndexedEdgeMembership {
     /**
      * Empty for a scalar/top-level edge property; the canonical dotted path for an inline
@@ -935,6 +801,10 @@ export interface LabelStatsDelta {
     edge: Array<[number, bigint]>;
     vertex: Array<[number, bigint]>;
 }
+export interface VertexPropertyBackfillRequest {
+    args: PostingBackfillArgs;
+    catalog: IndexedPropertyCatalog;
+}
 export type GraphOrderedVertexBatchResultV1 = {
     __kind__: "MutationRetired";
     MutationRetired: {
@@ -945,6 +815,18 @@ export type GraphOrderedVertexBatchResultV1 = {
     __kind__: "Completed";
     Completed: GraphOrderedVertexBatchReceiptV1;
 };
+export interface BulkIngestFinalizeResult {
+    queued_forward: number;
+    processed_work_items: number;
+    queued_reverse: number;
+    remaining_queue_len: bigint;
+    instruction_budget_exhausted: boolean;
+    instructions_used: bigint;
+}
+export type OrderedMixedBatchGraphArgs = {
+    __kind__: "V1";
+    V1: OrderedMixedBatchGraphArgsV1;
+};
 export interface IndexedEmbeddingSpec {
     metric: VectorMetric;
     encoding: VectorEncoding;
@@ -952,6 +834,26 @@ export interface IndexedEmbeddingSpec {
     kind: VectorIndexKind;
     embedding_name_id: number;
     index_id: number;
+}
+export interface ResolvedEdgeLabel {
+    id: number;
+    name: string;
+    /**
+     * Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
+     */
+    inline_property_profile: EdgeInlinePropertyProfile;
+    /**
+     * Per-label ordering policy resolved by the Router from the Graph Type declaration
+     * (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
+     * bucket-local live order is the semantic insertion order.
+     */
+    ordering: EdgeOrderingPolicy;
+    /**
+     * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
+     * `None` for labels with no named inline slot; otherwise a scalar or struct projection.
+     * Graph receives this as a plan-scoped projection and must not persist or infer it.
+     */
+    inline_schema?: ResolvedInlineSchema;
 }
 export enum EdgeOrderingPolicy {
     Unordered = "Unordered",
@@ -1035,7 +937,6 @@ export interface gleaph_graphInterface {
     execute_plan_query(arg0: ExecutePlanArgs): Promise<Result_9>;
     execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_9>;
     execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_10>;
-    execute_plan_update_batch_bulk(arg0: ExecutePlanBulkBatch): Promise<Result_10>;
     finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_11>;
     get_mutation_journal_entries(arg0: GetMutationJournalEntriesArgs): Promise<GetMutationJournalEntriesResult>;
     get_mutation_journal_entry(arg0: bigint): Promise<GraphMutationJournalEntryWire | null>;
@@ -1050,7 +951,7 @@ export interface gleaph_graphInterface {
     retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_13>;
     retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_14>;
 }
-import type { BulkIngestFinalizeResult as _BulkIngestFinalizeResult, ClaimId as _ClaimId, ConstrainedPropertyDispatch as _ConstrainedPropertyDispatch, EdgeInlinePropertyEncoding as _EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile as _EdgeInlinePropertyProfile, EdgeOrderingPolicy as _EdgeOrderingPolicy, EdgePostingBackfillArgs as _EdgePostingBackfillArgs, EdgePostingBackfillResult as _EdgePostingBackfillResult, EdgePropertyBackfillRequest as _EdgePropertyBackfillRequest, EffectId as _EffectId, EmbeddingBackfillResult as _EmbeddingBackfillResult, ExecutePlanArgs as _ExecutePlanArgs, ExecutePlanBatchArgs as _ExecutePlanBatchArgs, ExecutePlanBatchMode as _ExecutePlanBatchMode, ExecutePlanBatchResult as _ExecutePlanBatchResult, ExecutePlanBatchSharedV2 as _ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args as _ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs as _ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared as _ExecutePlanBatchTypedShared, ExecutePlanBulkBatch as _ExecutePlanBulkBatch, ExecutePlanResult as _ExecutePlanResult, ExecutePlanSharedV2Op as _ExecutePlanSharedV2Op, ExecutePlanTypedOp as _ExecutePlanTypedOp, GetMutationJournalEntriesResult as _GetMutationJournalEntriesResult, GqlExecutionMode as _GqlExecutionMode, GraphBulkMutationProgress as _GraphBulkMutationProgress, GraphBulkMutationProgressV1 as _GraphBulkMutationProgressV1, GraphMutationJournalEntryWire as _GraphMutationJournalEntryWire, GraphMutationJournalEntryWireV1 as _GraphMutationJournalEntryWireV1, GraphMutationRequestIdentityV1 as _GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1 as _GraphMutationRetirementWireV1, GraphOrderedEdgeBatchReceiptV1 as _GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult as _GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1 as _GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1 as _GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult as _GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1 as _GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1 as _GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult as _GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1 as _GraphOrderedVertexBatchResultV1, IndexedEmbeddingCatalog as _IndexedEmbeddingCatalog, IndexedEmbeddingSpec as _IndexedEmbeddingSpec, IndexedPropertyCatalog as _IndexedPropertyCatalog, MutationJournalState as _MutationJournalState, OrderedEdgeBatchGraphArgs as _OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1 as _OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1 as _OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest as _OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1 as _OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs as _OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1 as _OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest as _OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1 as _OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1 as _OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1 as _OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1 as _OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck as _OrderedMixedMutationRetirementAck, OrderedMixedMutationRetirementAckV1 as _OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck as _OrderedMutationRetirementAck, OrderedMutationRetirementAckV1 as _OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs as _OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1 as _OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs as _OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1 as _OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1 as _OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest as _OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1 as _OrderedVertexBatchGraphRequestV1, OrderedVertexMutationRetirementAck as _OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1 as _OrderedVertexMutationRetirementAckV1, PostingBackfillArgs as _PostingBackfillArgs, PostingBackfillResult as _PostingBackfillResult, ResolvedEdgeLabel as _ResolvedEdgeLabel, ResolvedInlineSchema as _ResolvedInlineSchema, ResolvedInlineStructField as _ResolvedInlineStructField, ResolvedLabelTable as _ResolvedLabelTable, ResolvedOrderedEdgePropertyV1 as _ResolvedOrderedEdgePropertyV1, ResolvedPropertyTable as _ResolvedPropertyTable, ResolvedVertexLabel as _ResolvedVertexLabel, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_2 as _Result_2, Result_3 as _Result_3, Result_4 as _Result_4, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, UniqueAcquireEvidence as _UniqueAcquireEvidence, UniqueAcquireProof as _UniqueAcquireProof, UniqueClaimDispatch as _UniqueClaimDispatch, UniqueEffectOp as _UniqueEffectOp, UniqueEffectReceipt as _UniqueEffectReceipt, VectorEncoding as _VectorEncoding, VectorIndexKind as _VectorIndexKind, VectorMetric as _VectorMetric, VertexEmbeddingBackfillRequest as _VertexEmbeddingBackfillRequest, VertexEmbeddingIngestionArgs as _VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_graph.did";
+import type { BulkIngestFinalizeResult as _BulkIngestFinalizeResult, ClaimId as _ClaimId, ConstrainedPropertyDispatch as _ConstrainedPropertyDispatch, EdgeInlinePropertyEncoding as _EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile as _EdgeInlinePropertyProfile, EdgeOrderingPolicy as _EdgeOrderingPolicy, EdgePostingBackfillArgs as _EdgePostingBackfillArgs, EdgePostingBackfillResult as _EdgePostingBackfillResult, EdgePropertyBackfillRequest as _EdgePropertyBackfillRequest, EffectId as _EffectId, EmbeddingBackfillResult as _EmbeddingBackfillResult, ExecutePlanArgs as _ExecutePlanArgs, ExecutePlanBatchArgs as _ExecutePlanBatchArgs, ExecutePlanBatchMode as _ExecutePlanBatchMode, ExecutePlanBatchResult as _ExecutePlanBatchResult, ExecutePlanResult as _ExecutePlanResult, GetMutationJournalEntriesResult as _GetMutationJournalEntriesResult, GqlExecutionMode as _GqlExecutionMode, GraphBulkMutationProgress as _GraphBulkMutationProgress, GraphBulkMutationProgressV1 as _GraphBulkMutationProgressV1, GraphMutationJournalEntryWire as _GraphMutationJournalEntryWire, GraphMutationJournalEntryWireV1 as _GraphMutationJournalEntryWireV1, GraphMutationRequestIdentityV1 as _GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1 as _GraphMutationRetirementWireV1, GraphOrderedEdgeBatchReceiptV1 as _GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult as _GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1 as _GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1 as _GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult as _GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1 as _GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1 as _GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult as _GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1 as _GraphOrderedVertexBatchResultV1, IndexedEmbeddingCatalog as _IndexedEmbeddingCatalog, IndexedEmbeddingSpec as _IndexedEmbeddingSpec, IndexedPropertyCatalog as _IndexedPropertyCatalog, MutationJournalState as _MutationJournalState, OrderedEdgeBatchGraphArgs as _OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1 as _OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1 as _OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest as _OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1 as _OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs as _OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1 as _OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest as _OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1 as _OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1 as _OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1 as _OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1 as _OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck as _OrderedMixedMutationRetirementAck, OrderedMixedMutationRetirementAckV1 as _OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck as _OrderedMutationRetirementAck, OrderedMutationRetirementAckV1 as _OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs as _OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1 as _OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs as _OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1 as _OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1 as _OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest as _OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1 as _OrderedVertexBatchGraphRequestV1, OrderedVertexMutationRetirementAck as _OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1 as _OrderedVertexMutationRetirementAckV1, PostingBackfillArgs as _PostingBackfillArgs, PostingBackfillResult as _PostingBackfillResult, ResolvedEdgeLabel as _ResolvedEdgeLabel, ResolvedInlineSchema as _ResolvedInlineSchema, ResolvedInlineStructField as _ResolvedInlineStructField, ResolvedLabelTable as _ResolvedLabelTable, ResolvedOrderedEdgePropertyV1 as _ResolvedOrderedEdgePropertyV1, ResolvedPropertyTable as _ResolvedPropertyTable, ResolvedVertexLabel as _ResolvedVertexLabel, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_2 as _Result_2, Result_3 as _Result_3, Result_4 as _Result_4, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, UniqueAcquireEvidence as _UniqueAcquireEvidence, UniqueAcquireProof as _UniqueAcquireProof, UniqueClaimDispatch as _UniqueClaimDispatch, UniqueEffectOp as _UniqueEffectOp, UniqueEffectReceipt as _UniqueEffectReceipt, VectorEncoding as _VectorEncoding, VectorIndexKind as _VectorIndexKind, VectorMetric as _VectorMetric, VertexEmbeddingBackfillRequest as _VertexEmbeddingBackfillRequest, VertexEmbeddingIngestionArgs as _VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_graph.did";
 export class Gleaph_graph implements gleaph_graphInterface {
     constructor(private actor: ActorSubclass<_SERVICE>){}
     async ack_label_stats_deltas_through(arg0: bigint): Promise<void> {
@@ -1117,21 +1018,17 @@ export class Gleaph_graph implements gleaph_graphInterface {
         const result = await this.actor.execute_plan_update_batch(to_candid_ExecutePlanBatchArgs_n125(arg0));
         return from_candid_Result_10_n130(result);
     }
-    async execute_plan_update_batch_bulk(arg0: ExecutePlanBulkBatch): Promise<Result_10> {
-        const result = await this.actor.execute_plan_update_batch_bulk(to_candid_ExecutePlanBulkBatch_n136(arg0));
-        return from_candid_Result_10_n130(result);
-    }
     async finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_11> {
         const result = await this.actor.finalize_bulk_ingest(arg0);
-        return from_candid_Result_11_n146(result);
+        return from_candid_Result_11_n136(result);
     }
     async get_mutation_journal_entries(arg0: GetMutationJournalEntriesArgs): Promise<GetMutationJournalEntriesResult> {
         const result = await this.actor.get_mutation_journal_entries(arg0);
-        return from_candid_GetMutationJournalEntriesResult_n148(result);
+        return from_candid_GetMutationJournalEntriesResult_n138(result);
     }
     async get_mutation_journal_entry(arg0: bigint): Promise<GraphMutationJournalEntryWire | null> {
         const result = await this.actor.get_mutation_journal_entry(arg0);
-        return from_candid_opt_n151(result);
+        return from_candid_opt_n141(result);
     }
     async index_pending_min_mutation_id(): Promise<bigint | null> {
         const result = await this.actor.index_pending_min_mutation_id();
@@ -1151,27 +1048,27 @@ export class Gleaph_graph implements gleaph_graphInterface {
     }
     async read_unique_effect_proof(arg0: Array<ClaimId>): Promise<Array<UniqueAcquireProof>> {
         const result = await this.actor.read_unique_effect_proof(arg0);
-        return from_candid_vec_n165(result);
+        return from_candid_vec_n156(result);
     }
     async read_unique_mutation_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>> {
-        const result = await this.actor.read_unique_mutation_effects(arg0, to_candid_opt_n169(arg1), arg2);
-        return from_candid_vec_n170(result);
+        const result = await this.actor.read_unique_mutation_effects(arg0, to_candid_opt_n160(arg1), arg2);
+        return from_candid_vec_n161(result);
     }
     async read_unique_release_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>> {
-        const result = await this.actor.read_unique_release_effects(arg0, to_candid_opt_n169(arg1), arg2);
-        return from_candid_vec_n170(result);
+        const result = await this.actor.read_unique_release_effects(arg0, to_candid_opt_n160(arg1), arg2);
+        return from_candid_vec_n161(result);
     }
     async retire_ordered_mixed_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_12> {
-        const result = await this.actor.retire_ordered_mixed_mutation(to_candid_OrderedMutationRetirementArgs_n176(arg0));
-        return from_candid_Result_12_n178(result);
+        const result = await this.actor.retire_ordered_mixed_mutation(to_candid_OrderedMutationRetirementArgs_n167(arg0));
+        return from_candid_Result_12_n169(result);
     }
     async retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_13> {
-        const result = await this.actor.retire_ordered_mutation(to_candid_OrderedMutationRetirementArgs_n176(arg0));
-        return from_candid_Result_13_n184(result);
+        const result = await this.actor.retire_ordered_mutation(to_candid_OrderedMutationRetirementArgs_n167(arg0));
+        return from_candid_Result_13_n175(result);
     }
     async retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_14> {
-        const result = await this.actor.retire_ordered_vertex_mutation(to_candid_OrderedMutationRetirementArgs_n176(arg0));
-        return from_candid_Result_14_n190(result);
+        const result = await this.actor.retire_ordered_vertex_mutation(to_candid_OrderedMutationRetirementArgs_n167(arg0));
+        return from_candid_Result_14_n181(result);
     }
 }
 function from_candid_EdgePostingBackfillResult_n29(value: _EdgePostingBackfillResult): EdgePostingBackfillResult {
@@ -1183,23 +1080,23 @@ function from_candid_ExecutePlanBatchResult_n132(value: _ExecutePlanBatchResult)
 function from_candid_ExecutePlanResult_n123(value: _ExecutePlanResult): ExecutePlanResult {
     return from_candid_record_n124(value);
 }
-function from_candid_GetMutationJournalEntriesResult_n148(value: _GetMutationJournalEntriesResult): GetMutationJournalEntriesResult {
-    return from_candid_record_n149(value);
+function from_candid_GetMutationJournalEntriesResult_n138(value: _GetMutationJournalEntriesResult): GetMutationJournalEntriesResult {
+    return from_candid_record_n139(value);
 }
-function from_candid_GraphBulkMutationProgress_n159(value: _GraphBulkMutationProgress): GraphBulkMutationProgress {
-    return from_candid_variant_n160(value);
+function from_candid_GraphBulkMutationProgress_n150(value: _GraphBulkMutationProgress): GraphBulkMutationProgress {
+    return from_candid_variant_n151(value);
 }
-function from_candid_GraphMutationJournalEntryWireV1_n154(value: _GraphMutationJournalEntryWireV1): GraphMutationJournalEntryWireV1 {
-    return from_candid_record_n155(value);
+function from_candid_GraphMutationJournalEntryWireV1_n144(value: _GraphMutationJournalEntryWireV1): GraphMutationJournalEntryWireV1 {
+    return from_candid_record_n145(value);
 }
-function from_candid_GraphMutationJournalEntryWire_n152(value: _GraphMutationJournalEntryWire): GraphMutationJournalEntryWire {
-    return from_candid_variant_n153(value);
+function from_candid_GraphMutationJournalEntryWire_n142(value: _GraphMutationJournalEntryWire): GraphMutationJournalEntryWire {
+    return from_candid_variant_n143(value);
 }
-function from_candid_GraphMutationRequestIdentityV1_n156(value: _GraphMutationRequestIdentityV1): GraphMutationRequestIdentityV1 {
-    return from_candid_variant_n157(value);
+function from_candid_GraphMutationRequestIdentityV1_n147(value: _GraphMutationRequestIdentityV1): GraphMutationRequestIdentityV1 {
+    return from_candid_variant_n148(value);
 }
-function from_candid_GraphMutationRetirementWireV1_n163(value: _GraphMutationRetirementWireV1): GraphMutationRetirementWireV1 {
-    return from_candid_variant_n164(value);
+function from_candid_GraphMutationRetirementWireV1_n154(value: _GraphMutationRetirementWireV1): GraphMutationRetirementWireV1 {
+    return from_candid_variant_n155(value);
 }
 function from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value: _GraphOrderedEdgeBatchReceiptV1): GraphOrderedEdgeBatchReceiptV1 {
     return from_candid_record_n76(value);
@@ -1228,41 +1125,41 @@ function from_candid_GraphOrderedVertexBatchResultV1_n113(value: _GraphOrderedVe
 function from_candid_GraphOrderedVertexBatchResult_n111(value: _GraphOrderedVertexBatchResult): GraphOrderedVertexBatchResult {
     return from_candid_variant_n112(value);
 }
-function from_candid_MutationJournalState_n161(value: _MutationJournalState): MutationJournalState {
-    return from_candid_variant_n162(value);
+function from_candid_MutationJournalState_n152(value: _MutationJournalState): MutationJournalState {
+    return from_candid_variant_n153(value);
 }
-function from_candid_OrderedMixedMutationRetirementAckV1_n182(value: _OrderedMixedMutationRetirementAckV1): OrderedMixedMutationRetirementAckV1 {
-    return from_candid_record_n183(value);
+function from_candid_OrderedMixedMutationRetirementAckV1_n173(value: _OrderedMixedMutationRetirementAckV1): OrderedMixedMutationRetirementAckV1 {
+    return from_candid_record_n174(value);
 }
-function from_candid_OrderedMixedMutationRetirementAck_n180(value: _OrderedMixedMutationRetirementAck): OrderedMixedMutationRetirementAck {
-    return from_candid_variant_n181(value);
+function from_candid_OrderedMixedMutationRetirementAck_n171(value: _OrderedMixedMutationRetirementAck): OrderedMixedMutationRetirementAck {
+    return from_candid_variant_n172(value);
 }
-function from_candid_OrderedMutationRetirementAckV1_n188(value: _OrderedMutationRetirementAckV1): OrderedMutationRetirementAckV1 {
-    return from_candid_record_n189(value);
+function from_candid_OrderedMutationRetirementAckV1_n179(value: _OrderedMutationRetirementAckV1): OrderedMutationRetirementAckV1 {
+    return from_candid_record_n180(value);
 }
-function from_candid_OrderedMutationRetirementAck_n186(value: _OrderedMutationRetirementAck): OrderedMutationRetirementAck {
-    return from_candid_variant_n187(value);
+function from_candid_OrderedMutationRetirementAck_n177(value: _OrderedMutationRetirementAck): OrderedMutationRetirementAck {
+    return from_candid_variant_n178(value);
 }
-function from_candid_OrderedVertexMutationRetirementAckV1_n194(value: _OrderedVertexMutationRetirementAckV1): OrderedVertexMutationRetirementAckV1 {
-    return from_candid_record_n195(value);
+function from_candid_OrderedVertexMutationRetirementAckV1_n185(value: _OrderedVertexMutationRetirementAckV1): OrderedVertexMutationRetirementAckV1 {
+    return from_candid_record_n186(value);
 }
-function from_candid_OrderedVertexMutationRetirementAck_n192(value: _OrderedVertexMutationRetirementAck): OrderedVertexMutationRetirementAck {
-    return from_candid_variant_n193(value);
+function from_candid_OrderedVertexMutationRetirementAck_n183(value: _OrderedVertexMutationRetirementAck): OrderedVertexMutationRetirementAck {
+    return from_candid_variant_n184(value);
 }
 function from_candid_Result_10_n130(value: _Result_10): Result_10 {
     return from_candid_variant_n131(value);
 }
-function from_candid_Result_11_n146(value: _Result_11): Result_11 {
-    return from_candid_variant_n147(value);
+function from_candid_Result_11_n136(value: _Result_11): Result_11 {
+    return from_candid_variant_n137(value);
 }
-function from_candid_Result_12_n178(value: _Result_12): Result_12 {
-    return from_candid_variant_n179(value);
+function from_candid_Result_12_n169(value: _Result_12): Result_12 {
+    return from_candid_variant_n170(value);
 }
-function from_candid_Result_13_n184(value: _Result_13): Result_13 {
-    return from_candid_variant_n185(value);
+function from_candid_Result_13_n175(value: _Result_13): Result_13 {
+    return from_candid_variant_n176(value);
 }
-function from_candid_Result_14_n190(value: _Result_14): Result_14 {
-    return from_candid_variant_n191(value);
+function from_candid_Result_14_n181(value: _Result_14): Result_14 {
+    return from_candid_variant_n182(value);
 }
 function from_candid_Result_1_n18(value: _Result_1): Result_1 {
     return from_candid_variant_n19(value);
@@ -1294,14 +1191,14 @@ function from_candid_Result_9_n121(value: _Result_9): Result_9 {
 function from_candid_Result_n11(value: _Result): Result {
     return from_candid_variant_n12(value);
 }
-function from_candid_UniqueAcquireProof_n166(value: _UniqueAcquireProof): UniqueAcquireProof {
-    return from_candid_record_n167(value);
+function from_candid_UniqueAcquireProof_n157(value: _UniqueAcquireProof): UniqueAcquireProof {
+    return from_candid_record_n158(value);
 }
-function from_candid_UniqueEffectOp_n173(value: _UniqueEffectOp): UniqueEffectOp {
-    return from_candid_variant_n174(value);
+function from_candid_UniqueEffectOp_n164(value: _UniqueEffectOp): UniqueEffectOp {
+    return from_candid_variant_n165(value);
 }
-function from_candid_UniqueEffectReceipt_n171(value: _UniqueEffectReceipt): UniqueEffectReceipt {
-    return from_candid_record_n172(value);
+function from_candid_UniqueEffectReceipt_n162(value: _UniqueEffectReceipt): UniqueEffectReceipt {
+    return from_candid_record_n163(value);
 }
 function from_candid_VertexEmbeddingIngestionResult_n13(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
     return from_candid_record_n14(value);
@@ -1312,16 +1209,19 @@ function from_candid_VertexEmbeddingProjectionOutcome_n15(value: _VertexEmbeddin
 function from_candid_opt_n134(value: [] | [number]): number | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n151(value: [] | [_GraphMutationJournalEntryWire]): GraphMutationJournalEntryWire | null {
-    return value.length === 0 ? null : from_candid_GraphMutationJournalEntryWire_n152(value[0]);
+function from_candid_opt_n141(value: [] | [_GraphMutationJournalEntryWire]): GraphMutationJournalEntryWire | null {
+    return value.length === 0 ? null : from_candid_GraphMutationJournalEntryWire_n142(value[0]);
 }
-function from_candid_opt_n158(value: [] | [_GraphBulkMutationProgress]): GraphBulkMutationProgress | null {
-    return value.length === 0 ? null : from_candid_GraphBulkMutationProgress_n159(value[0]);
-}
-function from_candid_opt_n168(value: [] | [_UniqueAcquireEvidence]): UniqueAcquireEvidence | null {
+function from_candid_opt_n146(value: [] | [Uint32Array]): Uint32Array | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n175(value: [] | [_ClaimId]): ClaimId | null {
+function from_candid_opt_n149(value: [] | [_GraphBulkMutationProgress]): GraphBulkMutationProgress | null {
+    return value.length === 0 ? null : from_candid_GraphBulkMutationProgress_n150(value[0]);
+}
+function from_candid_opt_n159(value: [] | [_UniqueAcquireEvidence]): UniqueAcquireEvidence | null {
+    return value.length === 0 ? null : value[0];
+}
+function from_candid_opt_n166(value: [] | [_ClaimId]): ClaimId | null {
     return value.length === 0 ? null : value[0];
 }
 function from_candid_opt_n31(value: [] | [Uint8Array]): Uint8Array | null {
@@ -1332,6 +1232,7 @@ function from_candid_opt_n77(value: [] | [bigint]): bigint | null {
 }
 function from_candid_record_n100(value: {
     logical_edge_count: bigint;
+    allocated_vertex_ids: Uint32Array;
     emitted_delta_last_seq: [] | [bigint];
     emitted_delta_first_seq: [] | [bigint];
     logical_vertex_count: bigint;
@@ -1339,6 +1240,7 @@ function from_candid_record_n100(value: {
     hot_forward_vertices: Uint32Array;
 }): {
     logical_edge_count: bigint;
+    allocated_vertex_ids: Uint32Array;
     emitted_delta_last_seq?: bigint;
     emitted_delta_first_seq?: bigint;
     logical_vertex_count: bigint;
@@ -1347,6 +1249,7 @@ function from_candid_record_n100(value: {
 } {
     return {
         logical_edge_count: value.logical_edge_count,
+        allocated_vertex_ids: value.allocated_vertex_ids,
         emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
         emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
         logical_vertex_count: value.logical_vertex_count,
@@ -1355,17 +1258,20 @@ function from_candid_record_n100(value: {
     };
 }
 function from_candid_record_n116(value: {
+    allocated_vertex_ids: Uint32Array;
     emitted_delta_last_seq: [] | [bigint];
     emitted_delta_first_seq: [] | [bigint];
     logical_vertex_count: bigint;
     hot_forward_vertices: Uint32Array;
 }): {
+    allocated_vertex_ids: Uint32Array;
     emitted_delta_last_seq?: bigint;
     emitted_delta_first_seq?: bigint;
     logical_vertex_count: bigint;
     hot_forward_vertices: Uint32Array;
 } {
     return {
+        allocated_vertex_ids: value.allocated_vertex_ids,
         emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
         emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
         logical_vertex_count: value.logical_vertex_count,
@@ -1399,6 +1305,18 @@ function from_candid_record_n133(value: {
         results: from_candid_vec_n135(value.results)
     };
 }
+function from_candid_record_n139(value: {
+    next: [] | [bigint];
+    entries: Array<[] | [_GraphMutationJournalEntryWire]>;
+}): {
+    next?: bigint;
+    entries: Array<GraphMutationJournalEntryWire | null>;
+} {
+    return {
+        next: record_opt_to_undefined(from_candid_opt_n77(value.next)),
+        entries: from_candid_vec_n140(value.entries)
+    };
+}
 function from_candid_record_n14(value: {
     embedding_version: bigint;
     projection_outcome: _VertexEmbeddingProjectionOutcome;
@@ -1411,20 +1329,9 @@ function from_candid_record_n14(value: {
         projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n15(value.projection_outcome)
     };
 }
-function from_candid_record_n149(value: {
-    next: [] | [bigint];
-    entries: Array<[] | [_GraphMutationJournalEntryWire]>;
-}): {
-    next?: bigint;
-    entries: Array<GraphMutationJournalEntryWire | null>;
-} {
-    return {
-        next: record_opt_to_undefined(from_candid_opt_n77(value.next)),
-        entries: from_candid_vec_n150(value.entries)
-    };
-}
-function from_candid_record_n155(value: {
+function from_candid_record_n145(value: {
     mutation_id: bigint;
+    allocated_vertex_ids: [] | [Uint32Array];
     emitted_delta_last_seq: [] | [bigint];
     next_index: [] | [number];
     request_identity: _GraphMutationRequestIdentityV1;
@@ -1436,6 +1343,7 @@ function from_candid_record_n155(value: {
     hot_forward_vertices: Uint32Array;
 }): {
     mutation_id: bigint;
+    allocated_vertex_ids?: Uint32Array;
     emitted_delta_last_seq?: bigint;
     next_index?: number;
     request_identity: GraphMutationRequestIdentityV1;
@@ -1448,18 +1356,19 @@ function from_candid_record_n155(value: {
 } {
     return {
         mutation_id: value.mutation_id,
+        allocated_vertex_ids: record_opt_to_undefined(from_candid_opt_n146(value.allocated_vertex_ids)),
         emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
         next_index: record_opt_to_undefined(from_candid_opt_n134(value.next_index)),
-        request_identity: from_candid_GraphMutationRequestIdentityV1_n156(value.request_identity),
-        bulk_progress: record_opt_to_undefined(from_candid_opt_n158(value.bulk_progress)),
+        request_identity: from_candid_GraphMutationRequestIdentityV1_n147(value.request_identity),
+        bulk_progress: record_opt_to_undefined(from_candid_opt_n149(value.bulk_progress)),
         row_count: value.row_count,
         emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
-        state: from_candid_MutationJournalState_n161(value.state),
-        retirement: from_candid_GraphMutationRetirementWireV1_n163(value.retirement),
+        state: from_candid_MutationJournalState_n152(value.state),
+        retirement: from_candid_GraphMutationRetirementWireV1_n154(value.retirement),
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n167(value: {
+function from_candid_record_n158(value: {
     claim_id: _ClaimId;
     acquire: [] | [_UniqueAcquireEvidence];
 }): {
@@ -1468,10 +1377,10 @@ function from_candid_record_n167(value: {
 } {
     return {
         claim_id: value.claim_id,
-        acquire: record_opt_to_undefined(from_candid_opt_n168(value.acquire))
+        acquire: record_opt_to_undefined(from_candid_opt_n159(value.acquire))
     };
 }
-function from_candid_record_n172(value: {
+function from_candid_record_n163(value: {
     op: _UniqueEffectOp;
     owner_element_id: Uint8Array;
     claim_id: [] | [_ClaimId];
@@ -1487,15 +1396,15 @@ function from_candid_record_n172(value: {
     constraint_id: number;
 } {
     return {
-        op: from_candid_UniqueEffectOp_n173(value.op),
+        op: from_candid_UniqueEffectOp_n164(value.op),
         owner_element_id: value.owner_element_id,
-        claim_id: record_opt_to_undefined(from_candid_opt_n175(value.claim_id)),
+        claim_id: record_opt_to_undefined(from_candid_opt_n166(value.claim_id)),
         effect_id: value.effect_id,
         encoded_value: value.encoded_value,
         constraint_id: value.constraint_id
     };
 }
-function from_candid_record_n183(value: {
+function from_candid_record_n174(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedMixedBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1510,7 +1419,7 @@ function from_candid_record_n183(value: {
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n189(value: {
+function from_candid_record_n180(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedEdgeBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1525,7 +1434,7 @@ function from_candid_record_n189(value: {
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n195(value: {
+function from_candid_record_n186(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedVertexBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1688,7 +1597,7 @@ function from_candid_variant_n131(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n147(value: {
+function from_candid_variant_n137(value: {
     Ok: _BulkIngestFinalizeResult;
 } | {
     Err: string;
@@ -1707,7 +1616,7 @@ function from_candid_variant_n147(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n153(value: {
+function from_candid_variant_n143(value: {
     V1: _GraphMutationJournalEntryWireV1;
 }): {
     __kind__: "V1";
@@ -1715,10 +1624,10 @@ function from_candid_variant_n153(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphMutationJournalEntryWireV1_n154(value.V1)
+        V1: from_candid_GraphMutationJournalEntryWireV1_n144(value.V1)
     } : value;
 }
-function from_candid_variant_n157(value: {
+function from_candid_variant_n148(value: {
     OrderedVertexBatch: {
         logical_item_count: number;
         canonical_encoding_version: number;
@@ -1781,14 +1690,7 @@ function from_candid_variant_n157(value: {
         PlanExecution: value.PlanExecution
     } : value;
 }
-function from_candid_variant_n16(value: {
-    DeferredForRepair: null;
-} | {
-    Applied: null;
-}): VertexEmbeddingProjectionOutcome {
-    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
-}
-function from_candid_variant_n160(value: {
+function from_candid_variant_n151(value: {
     V1: _GraphBulkMutationProgressV1;
 }): {
     __kind__: "V1";
@@ -1799,14 +1701,14 @@ function from_candid_variant_n160(value: {
         V1: value.V1
     } : value;
 }
-function from_candid_variant_n162(value: {
+function from_candid_variant_n153(value: {
     Completed: null;
 } | {
     Incomplete: null;
 }): MutationJournalState {
     return "Completed" in value ? MutationJournalState.Completed : "Incomplete" in value ? MutationJournalState.Incomplete : value;
 }
-function from_candid_variant_n164(value: {
+function from_candid_variant_n155(value: {
     NotApplicable: null;
 } | {
     Active: null;
@@ -1815,14 +1717,21 @@ function from_candid_variant_n164(value: {
 }): GraphMutationRetirementWireV1 {
     return "NotApplicable" in value ? GraphMutationRetirementWireV1.NotApplicable : "Active" in value ? GraphMutationRetirementWireV1.Active : "Retired" in value ? GraphMutationRetirementWireV1.Retired : value;
 }
-function from_candid_variant_n174(value: {
+function from_candid_variant_n16(value: {
+    DeferredForRepair: null;
+} | {
+    Applied: null;
+}): VertexEmbeddingProjectionOutcome {
+    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
+}
+function from_candid_variant_n165(value: {
     Release: null;
 } | {
     Acquire: null;
 }): UniqueEffectOp {
     return "Release" in value ? UniqueEffectOp.Release : "Acquire" in value ? UniqueEffectOp.Acquire : value;
 }
-function from_candid_variant_n179(value: {
+function from_candid_variant_n170(value: {
     Ok: _OrderedMixedMutationRetirementAck;
 } | {
     Err: string;
@@ -1835,13 +1744,13 @@ function from_candid_variant_n179(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedMixedMutationRetirementAck_n180(value.Ok)
+        Ok: from_candid_OrderedMixedMutationRetirementAck_n171(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n181(value: {
+function from_candid_variant_n172(value: {
     V1: _OrderedMixedMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1849,10 +1758,10 @@ function from_candid_variant_n181(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedMixedMutationRetirementAckV1_n182(value.V1)
+        V1: from_candid_OrderedMixedMutationRetirementAckV1_n173(value.V1)
     } : value;
 }
-function from_candid_variant_n185(value: {
+function from_candid_variant_n176(value: {
     Ok: _OrderedMutationRetirementAck;
 } | {
     Err: string;
@@ -1865,13 +1774,13 @@ function from_candid_variant_n185(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedMutationRetirementAck_n186(value.Ok)
+        Ok: from_candid_OrderedMutationRetirementAck_n177(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n187(value: {
+function from_candid_variant_n178(value: {
     V1: _OrderedMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1879,7 +1788,37 @@ function from_candid_variant_n187(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedMutationRetirementAckV1_n188(value.V1)
+        V1: from_candid_OrderedMutationRetirementAckV1_n179(value.V1)
+    } : value;
+}
+function from_candid_variant_n182(value: {
+    Ok: _OrderedVertexMutationRetirementAck;
+} | {
+    Err: string;
+}): {
+    __kind__: "Ok";
+    Ok: OrderedVertexMutationRetirementAck;
+} | {
+    __kind__: "Err";
+    Err: string;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_OrderedVertexMutationRetirementAck_n183(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: value.Err
+    } : value;
+}
+function from_candid_variant_n184(value: {
+    V1: _OrderedVertexMutationRetirementAckV1;
+}): {
+    __kind__: "V1";
+    V1: OrderedVertexMutationRetirementAckV1;
+} {
+    return "V1" in value ? {
+        __kind__: "V1",
+        V1: from_candid_OrderedVertexMutationRetirementAckV1_n185(value.V1)
     } : value;
 }
 function from_candid_variant_n19(value: {
@@ -1899,36 +1838,6 @@ function from_candid_variant_n19(value: {
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
-    } : value;
-}
-function from_candid_variant_n191(value: {
-    Ok: _OrderedVertexMutationRetirementAck;
-} | {
-    Err: string;
-}): {
-    __kind__: "Ok";
-    Ok: OrderedVertexMutationRetirementAck;
-} | {
-    __kind__: "Err";
-    Err: string;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_OrderedVertexMutationRetirementAck_n192(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: value.Err
-    } : value;
-}
-function from_candid_variant_n193(value: {
-    V1: _OrderedVertexMutationRetirementAckV1;
-}): {
-    __kind__: "V1";
-    V1: OrderedVertexMutationRetirementAckV1;
-} {
-    return "V1" in value ? {
-        __kind__: "V1",
-        V1: from_candid_OrderedVertexMutationRetirementAckV1_n194(value.V1)
     } : value;
 }
 function from_candid_variant_n22(value: {
@@ -2120,14 +2029,14 @@ function from_candid_variant_n98(value: {
 function from_candid_vec_n135(value: Array<_Result_9>): Array<Result_9> {
     return value.map((x)=>from_candid_Result_9_n121(x));
 }
-function from_candid_vec_n150(value: Array<[] | [_GraphMutationJournalEntryWire]>): Array<GraphMutationJournalEntryWire | null> {
-    return value.map((x)=>from_candid_opt_n151(x));
+function from_candid_vec_n140(value: Array<[] | [_GraphMutationJournalEntryWire]>): Array<GraphMutationJournalEntryWire | null> {
+    return value.map((x)=>from_candid_opt_n141(x));
 }
-function from_candid_vec_n165(value: Array<_UniqueAcquireProof>): Array<UniqueAcquireProof> {
-    return value.map((x)=>from_candid_UniqueAcquireProof_n166(x));
+function from_candid_vec_n156(value: Array<_UniqueAcquireProof>): Array<UniqueAcquireProof> {
+    return value.map((x)=>from_candid_UniqueAcquireProof_n157(x));
 }
-function from_candid_vec_n170(value: Array<_UniqueEffectReceipt>): Array<UniqueEffectReceipt> {
-    return value.map((x)=>from_candid_UniqueEffectReceipt_n171(x));
+function from_candid_vec_n161(value: Array<_UniqueEffectReceipt>): Array<UniqueEffectReceipt> {
+    return value.map((x)=>from_candid_UniqueEffectReceipt_n162(x));
 }
 function from_candid_vec_n20(value: Array<_Result>): Array<Result> {
     return value.map((x)=>from_candid_Result_n11(x));
@@ -2155,21 +2064,6 @@ function to_candid_ExecutePlanBatchArgs_n125(value: ExecutePlanBatchArgs): _Exec
 }
 function to_candid_ExecutePlanBatchMode_n127(value: ExecutePlanBatchMode): _ExecutePlanBatchMode {
     return to_candid_variant_n128(value);
-}
-function to_candid_ExecutePlanBatchSharedV2Args_n142(value: ExecutePlanBatchSharedV2Args): _ExecutePlanBatchSharedV2Args {
-    return to_candid_record_n143(value);
-}
-function to_candid_ExecutePlanBatchSharedV2_n144(value: ExecutePlanBatchSharedV2): _ExecutePlanBatchSharedV2 {
-    return to_candid_record_n145(value);
-}
-function to_candid_ExecutePlanBatchTypedArgs_n138(value: ExecutePlanBatchTypedArgs): _ExecutePlanBatchTypedArgs {
-    return to_candid_record_n139(value);
-}
-function to_candid_ExecutePlanBatchTypedShared_n140(value: ExecutePlanBatchTypedShared): _ExecutePlanBatchTypedShared {
-    return to_candid_record_n141(value);
-}
-function to_candid_ExecutePlanBulkBatch_n136(value: ExecutePlanBulkBatch): _ExecutePlanBulkBatch {
-    return to_candid_variant_n137(value);
 }
 function to_candid_GqlExecutionMode_n119(value: GqlExecutionMode): _GqlExecutionMode {
     return to_candid_variant_n120(value);
@@ -2216,8 +2110,8 @@ function to_candid_OrderedMixedGraphEndpointV1_n91(value: OrderedMixedGraphEndpo
 function to_candid_OrderedMixedGraphOperationV1_n87(value: OrderedMixedGraphOperationV1): _OrderedMixedGraphOperationV1 {
     return to_candid_variant_n88(value);
 }
-function to_candid_OrderedMutationRetirementArgs_n176(value: OrderedMutationRetirementArgs): _OrderedMutationRetirementArgs {
-    return to_candid_variant_n177(value);
+function to_candid_OrderedMutationRetirementArgs_n167(value: OrderedMutationRetirementArgs): _OrderedMutationRetirementArgs {
+    return to_candid_variant_n168(value);
 }
 function to_candid_OrderedVertexBatchGraphArgsV1_n103(value: OrderedVertexBatchGraphArgsV1): _OrderedVertexBatchGraphArgsV1 {
     return to_candid_record_n104(value);
@@ -2258,7 +2152,7 @@ function to_candid_VertexEmbeddingBackfillRequest_n34(value: VertexEmbeddingBack
 function to_candid_VertexEmbeddingIngestionArgs_n1(value: VertexEmbeddingIngestionArgs): _VertexEmbeddingIngestionArgs {
     return to_candid_record_n2(value);
 }
-function to_candid_opt_n169(value: number | null): [] | [number] {
+function to_candid_opt_n160(value: number | null): [] | [number] {
     return value === null ? candid_none() : candid_some(value);
 }
 function to_candid_record_n104(value: {
@@ -2364,99 +2258,6 @@ function to_candid_record_n126(value: {
     return {
         mode: to_candid_ExecutePlanBatchMode_n127(value.mode),
         operations: to_candid_vec_n129(value.operations)
-    };
-}
-function to_candid_record_n139(value: {
-    batch_mode: ExecutePlanBatchMode;
-    shared: ExecutePlanBatchTypedShared;
-    operations: Array<ExecutePlanTypedOp>;
-}): {
-    batch_mode: _ExecutePlanBatchMode;
-    shared: _ExecutePlanBatchTypedShared;
-    operations: Array<_ExecutePlanTypedOp>;
-} {
-    return {
-        batch_mode: to_candid_ExecutePlanBatchMode_n127(value.batch_mode),
-        shared: to_candid_ExecutePlanBatchTypedShared_n140(value.shared),
-        operations: value.operations
-    };
-}
-function to_candid_record_n141(value: {
-    mutation_id: bigint;
-    indexed_properties?: IndexedPropertyCatalog;
-    plan_blob: Uint8Array;
-    resolved_labels?: ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties?: ResolvedPropertyTable;
-    element_id_encoding_key: Uint8Array;
-}): {
-    mutation_id: bigint;
-    indexed_properties: [] | [_IndexedPropertyCatalog];
-    plan_blob: Uint8Array;
-    resolved_labels: [] | [_ResolvedLabelTable];
-    target_shard_id: number;
-    resolved_properties: [] | [_ResolvedPropertyTable];
-    element_id_encoding_key: Uint8Array;
-} {
-    return {
-        mutation_id: value.mutation_id,
-        indexed_properties: value.indexed_properties ? candid_some(value.indexed_properties) : candid_none(),
-        plan_blob: value.plan_blob,
-        resolved_labels: value.resolved_labels ? candid_some(to_candid_ResolvedLabelTable_n49(value.resolved_labels)) : candid_none(),
-        target_shard_id: value.target_shard_id,
-        resolved_properties: value.resolved_properties ? candid_some(value.resolved_properties) : candid_none(),
-        element_id_encoding_key: value.element_id_encoding_key
-    };
-}
-function to_candid_record_n143(value: {
-    batch_mode: ExecutePlanBatchMode;
-    shared: ExecutePlanBatchSharedV2;
-    operations: Array<ExecutePlanSharedV2Op>;
-}): {
-    batch_mode: _ExecutePlanBatchMode;
-    shared: _ExecutePlanBatchSharedV2;
-    operations: Array<_ExecutePlanSharedV2Op>;
-} {
-    return {
-        batch_mode: to_candid_ExecutePlanBatchMode_n127(value.batch_mode),
-        shared: to_candid_ExecutePlanBatchSharedV2_n144(value.shared),
-        operations: value.operations
-    };
-}
-function to_candid_record_n145(value: {
-    mutation_id: bigint;
-    indexed_properties?: IndexedPropertyCatalog;
-    plan_blob: Uint8Array;
-    resolved_labels?: ResolvedLabelTable;
-    target_shard_id: number;
-    indexed_embeddings?: IndexedEmbeddingCatalog;
-    resolved_search_blob?: Uint8Array;
-    resolved_properties?: ResolvedPropertyTable;
-    element_id_encoding_key: Uint8Array;
-    seed_bindings_blob?: Uint8Array;
-}): {
-    mutation_id: bigint;
-    indexed_properties: [] | [_IndexedPropertyCatalog];
-    plan_blob: Uint8Array;
-    resolved_labels: [] | [_ResolvedLabelTable];
-    target_shard_id: number;
-    indexed_embeddings: [] | [_IndexedEmbeddingCatalog];
-    resolved_search_blob: [] | [Uint8Array];
-    resolved_properties: [] | [_ResolvedPropertyTable];
-    element_id_encoding_key: Uint8Array;
-    seed_bindings_blob: [] | [Uint8Array];
-} {
-    return {
-        mutation_id: value.mutation_id,
-        indexed_properties: value.indexed_properties ? candid_some(value.indexed_properties) : candid_none(),
-        plan_blob: value.plan_blob,
-        resolved_labels: value.resolved_labels ? candid_some(to_candid_ResolvedLabelTable_n49(value.resolved_labels)) : candid_none(),
-        target_shard_id: value.target_shard_id,
-        indexed_embeddings: value.indexed_embeddings ? candid_some(to_candid_IndexedEmbeddingCatalog_n36(value.indexed_embeddings)) : candid_none(),
-        resolved_search_blob: value.resolved_search_blob ? candid_some(value.resolved_search_blob) : candid_none(),
-        resolved_properties: value.resolved_properties ? candid_some(value.resolved_properties) : candid_none(),
-        element_id_encoding_key: value.element_id_encoding_key,
-        seed_bindings_blob: value.seed_bindings_blob ? candid_some(value.seed_bindings_blob) : candid_none()
     };
 }
 function to_candid_record_n2(value: {
@@ -2790,24 +2591,7 @@ function to_candid_variant_n128(value: ExecutePlanBatchMode): {
         Fixed: null
     } : value;
 }
-function to_candid_variant_n137(value: {
-    __kind__: "SharedSeed";
-    SharedSeed: ExecutePlanBatchSharedV2Args;
-} | {
-    __kind__: "PerItemSeed";
-    PerItemSeed: ExecutePlanBatchTypedArgs;
-}): {
-    SharedSeed: _ExecutePlanBatchSharedV2Args;
-} | {
-    PerItemSeed: _ExecutePlanBatchTypedArgs;
-} {
-    return value.__kind__ === "SharedSeed" ? {
-        SharedSeed: to_candid_ExecutePlanBatchSharedV2Args_n142(value.SharedSeed)
-    } : value.__kind__ === "PerItemSeed" ? {
-        PerItemSeed: to_candid_ExecutePlanBatchTypedArgs_n138(value.PerItemSeed)
-    } : value;
-}
-function to_candid_variant_n177(value: {
+function to_candid_variant_n168(value: {
     __kind__: "V1";
     V1: OrderedMutationRetirementArgsV1;
 }): {

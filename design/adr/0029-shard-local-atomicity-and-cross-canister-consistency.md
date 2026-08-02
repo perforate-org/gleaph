@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Last revised: 2026-08-02
+Anchor timestamp: 2026-08-02 14:44:33 UTC +0000
 
 ## Context
 
@@ -148,7 +148,7 @@ Routing
 canonical write is recoverable and must remain in a roll-forward state rather than being relabeled
 as an all-or-nothing failure.
 
-ADR 0049's planned ordered-batch specialization extends the post-projection
+The implemented ordered atomic-insert lifecycle extends the post-projection
 portion to `ProjectionAdvanced -> RetirementPending -> Completed`. This does
 not change existing plan-execution state: it prevents Router completion and
 envelope compaction until Graph has durably retired the exact fingerprint-bound
@@ -198,14 +198,14 @@ Recovery is split by risk:
   canonical DML**: autonomous re-execution of a shard write is the one operation that risks
   double-apply, so it is deliberately excluded from the background path. Per-tick work and scan
   budget are bounded; the timer backs off and stops when a lap finds no recoverable saga.
-  ADR 0049's planned ordered path also permits this driver to retry the
+  The ordered atomic-insert path also permits this driver to retry the
   fingerprint-bound Graph retirement transition after projection convergence;
   that transition cannot execute canonical DML and is persisted as
   `RetirementPending` before its `await`.
 - *Unfinished canonical writes (`CanonicalPending`).* Resumed by **explicit retry**, not the timer:
   re-presenting the same `client_mutation_key` resumes the saga idempotently via the inline
   reconciliation path. `mutation_status` reports `next_action` so a client / SDK / operator knows a
-  retry is required. ADR 0049's planned ordered specialization additionally
+  retry is required. The ordered atomic-insert path additionally
   permits the timer to query the exact stored Graph journal identity without
   invoking canonical execution. A matching completed receipt advances the saga;
   `Absent` leaves it `CanonicalPending` for explicit retry.
@@ -221,7 +221,14 @@ Recovery is split by risk:
   next action. Read-your-writes convergence is observed through `AtLeast(token)` reads (§5) and this
   query; the timer never returns results to a client.
 
-Schema: `RouterMutationRecord` is now `RouterMutationRecord::V1` with an exhaustive `RouterMutationPayloadV1` (`Scalar`, `SharedSeedBulk`, `TypedSeedBulk`, `CompletedBulk`). Gleaph has no deployed Router mutation state, so the incompatible V1 replacement requires a fresh install/reset; no migration decoder is retained for the never-deployed prior `shards`/`is_bulk`/`bulk_state` shape. The `routing_lease_ns: Option<u64>` and `last_error: Option<String>` additions remain Candid `opt`, so any still-existing pre-Phase-4 records decode as `None` with no migration.
+Schema: `RouterMutationRecord` is now `RouterMutationRecord::V1` with an exhaustive
+`RouterMutationPayloadV1` containing the scalar plan-execution, ordered atomic-insert, and
+`BulkLoadCoordinator` families. The former typed/shared GQL bulk payloads are removed in place.
+Gleaph has no deployed Router mutation state, so the incompatible V1 replacement requires a fresh
+install/reset; no migration decoder is retained for the never-deployed prior `shards`/`is_bulk`/
+`bulk_state` shape. The `routing_lease_ns: Option<u64>`, `last_error: Option<String>`, and
+`terminal_at_ns: Option<u64>` additions remain Candid `opt`, so any still-existing pre-Phase-4
+records decode as `None` with no migration.
 
 ### 5. Make read consistency explicit
 

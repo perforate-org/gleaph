@@ -13,6 +13,11 @@ pub enum RouterError {
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Retryable command contention: the named durable operation must settle before the
+    /// requested command can transition. Bulk-load v1 uses the stable operation identifiers
+    /// `bulk_load.append` and `bulk_load.abort`.
+    #[error("busy: {operation}")]
+    Busy { operation: String },
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
     /// GQL program kind (read vs write) does not match the canister entrypoint (query vs update).

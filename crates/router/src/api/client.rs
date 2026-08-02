@@ -4,10 +4,8 @@
 //! `vector_search`, and mutation status. Graph resolution follows the program (`USE GRAPH`) for
 //! the GQL family; explicit graph arguments appear where the current surface already has them.
 
-use candid::Encode;
 use ic_cdk_macros::{query, update};
 
-use crate::current_instruction_counter;
 use crate::gql;
 use crate::prepared;
 use crate::state::RouterError;
@@ -31,7 +29,7 @@ async fn gql_query(
 /// clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
 /// durable canonical commit from full cross-canister projection convergence.
 #[update]
-async fn gql_execute(
+async fn gql_mutate(
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
@@ -39,187 +37,105 @@ async fn gql_execute(
     gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
-#[cfg(feature = "batch-instr-log")]
-fn log_batch_phase(phase: &str, cost: u64) {
-    crate::instr_log::push(format!("GLEAPH_ROUTER_BATCH phase={} cost={}", phase, cost));
-}
-
-#[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
-#[inline]
-fn log_batch_phase(_phase: &str, _cost: u64) {}
-
-/// Execute cursor-based idempotent mutations until the Router instruction budget is reached.
-///
-/// Mutations are prepared and executed sequentially within one ingress. A returned `next_index`
-/// is the only continuation signal; retrying the same cursor is safe because every item retains
-/// its original client mutation key.
-#[update]
-#[allow(unused_variables, unused_assignments)]
-async fn gql_execute_batch(
-    args: types::GqlExecuteIdempotentBatchArgs,
-) -> Result<types::GqlExecuteIdempotentBatchResult, RouterError> {
-    let request_bytes = Encode!(&args).map_err(|error| {
-        RouterError::InvalidArgument(format!("gql_execute_batch request encode failed: {error}"))
-    })?;
-    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_batch request exceeds the safe payload limit of {} bytes",
-            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    }
-    let total = args.mutations.len() as u32;
-    if total == 0 {
-        return Err(RouterError::InvalidArgument(
-            "gql_execute_batch requires mutations".into(),
-        ));
-    }
-    if args.start_index >= total {
-        return Err(RouterError::InvalidArgument(format!(
-            "start_index {} is outside mutation list of length {total}",
-            args.start_index
-        )));
-    }
-    let budget = match args.instruction_budget {
-        None => gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS,
-        Some(value) if value <= gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS => value,
-        value => {
-            return Err(RouterError::InvalidArgument(format!(
-                "instruction_budget {:?} exceeds safe maximum {}",
-                value,
-                gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
-            )));
-        }
-    };
-
-    let start_cursor = args.start_index as usize;
-    let mut cursor = start_cursor;
-    let end = args.mutations.len();
-    let mut results = Vec::new();
-    #[cfg(feature = "batch-instr-log")]
-    let ingress_start_instr = current_instruction_counter();
-    let preflight = gql::PreflightContext::new();
-    let caller = ic_cdk::api::msg_caller();
-    while cursor < end {
-        let stop_threshold =
-            budget.saturating_sub(gleaph_graph_kernel::ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM);
-        if current_instruction_counter() >= stop_threshold {
-            break;
-        }
-        let mutation = &args.mutations[cursor];
-
-        // ADR 0044: try to coalesce consecutive mutations that share the same query plan into
-        // one bulk group with a single mutation id / saga record.
-        let mut group_end = cursor + 1;
-        while group_end < end && args.mutations[group_end].gql_query == mutation.gql_query {
-            group_end += 1;
-        }
-        let mut bulk_group_end = group_end;
-        let mut bulk_applied = false;
-        let mut stop_after_bulk = false;
-        while bulk_group_end - cursor >= 2 {
-            let group_key = format!(
-                "{}#bulk-{}-{}",
-                mutation.mutation_key, cursor, bulk_group_end
-            );
-            match gql::execute_bulk_group(
-                caller,
-                &group_key,
-                &args.mutations[cursor..bulk_group_end],
-                gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update,
-                Some(&preflight),
-            )
-            .await?
-            {
-                gql::BulkGroupExecution::Applied(bulk_results) => {
-                    results.extend(bulk_results);
-                    cursor = bulk_group_end;
-                    bulk_applied = true;
-                    stop_after_bulk = bulk_group_end < group_end;
-                    break;
-                }
-                gql::BulkGroupExecution::Unsupported => break,
-                gql::BulkGroupExecution::SharedRequestTooLarge => {
-                    bulk_group_end = cursor + (bulk_group_end - cursor).div_ceil(2);
-                }
-            }
-        }
-        if bulk_applied {
-            if stop_after_bulk {
-                break;
-            }
-            continue;
-        }
-
-        let result = gql::gql_execute_idempotent_with_batch_outcome(
-            mutation.gql_query.clone(),
-            mutation.params.clone(),
-            mutation.mutation_key.clone(),
-            Some(&preflight),
-        )
-        .await?;
-        let result = result.ok_or_else(|| {
-            RouterError::InvalidArgument(
-                "unexpected deferred mutation in sequential batch ingress".into(),
-            )
-        })?;
-        results.push(result);
-        cursor += 1;
-    }
-    if cursor == start_cursor {
-        return Err(RouterError::InvalidArgument(
-            "instruction budget is already exhausted; increase instruction_budget or retry".into(),
-        ));
-    }
-    #[cfg(feature = "batch-instr-log")]
-    {
-        let ingress_total = current_instruction_counter().saturating_sub(ingress_start_instr);
-        log_batch_phase(
-            &format!("ingress_summary items={} total", cursor - start_cursor),
-            ingress_total,
-        );
-    }
-    let instruction_counter = current_instruction_counter();
-    let result = types::GqlExecuteIdempotentBatchResult {
-        results,
-        next_index: (cursor < args.mutations.len()).then_some(cursor as u32),
-        instruction_counter,
-    };
-    let response_bytes = Encode!(&result).map_err(|error| {
-        RouterError::InvalidArgument(format!("gql_execute_batch response encode failed: {error}"))
-    })?;
-    if response_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_batch response exceeds the safe payload limit of {} bytes",
-            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    }
-    Ok(result)
-}
-
-/// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
+/// ADR 0029 Phase 4: pull-based status of a GQL/prepared mutation for the calling principal.
 #[query]
-fn get_mutation_status(
+fn mutation_status(
     logical_graph_name: String,
     client_mutation_key: String,
 ) -> Result<types::MutationStatus, RouterError> {
     let caller = ic_cdk::api::msg_caller();
     let store = crate::facade::store::RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    mutation_status_for(&store, caller, &logical_graph_name, &client_mutation_key)
+}
+
+/// Return the exact durable receipt for an ordered atomic insert.
+#[query]
+fn atomic_insert_status(
+    logical_graph_name: String,
+    client_mutation_key: String,
+) -> Result<types::AtomicInsertResponse, RouterError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = crate::facade::store::RouterStore::new();
+    atomic_insert_status_for(&store, caller, &logical_graph_name, &client_mutation_key)
+}
+
+fn mutation_status_record(
+    store: &crate::facade::store::RouterStore,
+    caller: candid::Principal,
+    logical_graph_name: &str,
+    client_mutation_key: &str,
+) -> Result<
+    (
+        gleaph_graph_kernel::entry::GraphId,
+        crate::facade::stable::label_stats::RouterMutationRecord,
+    ),
+    RouterError,
+> {
+    let graph_id = store.resolve_graph_id_authorized(logical_graph_name, caller)?;
     let record = store
-        .router_mutation_record(caller, graph_id, &client_mutation_key)
-        .ok_or_else(|| {
-            RouterError::InvalidArgument(
-                "no mutation found for this client_mutation_key".to_string(),
-            )
-        })?;
+        .router_mutation_record(caller, graph_id, client_mutation_key)
+        .ok_or_else(|| RouterError::NotFound(client_mutation_key.to_owned()))?;
+    Ok((graph_id, record))
+}
+
+fn mutation_status_for(
+    store: &crate::facade::store::RouterStore,
+    caller: candid::Principal,
+    logical_graph_name: &str,
+    client_mutation_key: &str,
+) -> Result<types::MutationStatus, RouterError> {
+    let (_, record) =
+        mutation_status_record(store, caller, logical_graph_name, client_mutation_key)?;
+    record.ensure_gql_mutation_family()?;
     Ok(types::MutationStatus::from_record(&record))
 }
 
-/// ADR 0049: classify and execute one order-preserving public batch.
+fn atomic_insert_status_for(
+    store: &crate::facade::store::RouterStore,
+    caller: candid::Principal,
+    logical_graph_name: &str,
+    client_mutation_key: &str,
+) -> Result<types::AtomicInsertResponse, RouterError> {
+    let (graph_id, record) =
+        mutation_status_record(store, caller, logical_graph_name, client_mutation_key)?;
+    record.ensure_atomic_insert_family()?;
+    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+    Ok(types::AtomicInsertResponse::from_record_with_encoding_key(
+        &record,
+        &encoding_key,
+    ))
+}
+
+/// ADR 0049: classify and execute one order-preserving public atomic insert.
 #[update]
-async fn batch_insert(request: types::BatchRequest) -> Result<types::BatchResponse, RouterError> {
-    crate::gql::batch_public(request).await
+async fn atomic_insert(
+    request: types::AtomicInsertRequest,
+) -> Result<types::AtomicInsertResponse, RouterError> {
+    crate::gql::atomic_insert_public(request).await
+}
+
+/// Start, append, finalize, or abort one durable graph-scoped bulk-load job (ADR 0057).
+#[update]
+async fn bulk_load(
+    command: types::BulkLoadCommand,
+) -> Result<types::BulkLoadResponse, RouterError> {
+    crate::bulk_load::bulk_load_public(command).await
+}
+
+/// Return a bounded page of committed durable bulk-load chunk receipts (ADR 0057).
+#[query]
+fn bulk_load_status(
+    logical_graph_name: String,
+    client_bulk_key: String,
+    receipt_cursor: Option<u32>,
+    max_receipts: u32,
+) -> Result<types::BulkLoadStatusPage, RouterError> {
+    crate::bulk_load::bulk_load_status_public(
+        logical_graph_name,
+        client_bulk_key,
+        receipt_cursor,
+        max_receipts,
+    )
 }
 
 #[update]
@@ -246,25 +162,25 @@ fn list_prepared(graph_name: String) -> Result<gleaph_prepared_api::PreparedMani
 
 /// Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.
 #[query(composite = true)]
-async fn execute_prepared(
+async fn prepared_query(
     name: String,
     params: Vec<u8>,
     sort: Option<Vec<gleaph_prepared_api::PreparedSortSpec>>,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::execute_prepared(name, params, sort, read_mode).await
+    prepared::prepared_query(name, params, sort, read_mode).await
 }
 
 /// Idempotent prepared update. Returns the richer
 /// [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
 /// federated mutation lifecycle `phase`.
 #[update]
-async fn execute_prepared_update(
+async fn prepared_mutate(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::execute_prepared_update(name, params, client_mutation_key).await
+    prepared::prepared_mutate(name, params, client_mutation_key).await
 }
 
 /// Read-only exact `ivf_flat` vector search: composite query that resolves the named vector index
@@ -332,14 +248,23 @@ async fn vector_search(
 
 #[cfg(test)]
 mod tests {
+    use crate::facade::stable::ROUTER_MUTATION_BY_CLIENT_KEY;
+    use crate::facade::stable::graph_catalog::lookup_graph_id;
+    use crate::facade::stable::label_stats::{
+        ClientMutationKey, RouterMutationPayloadV1, RouterMutationRecord,
+        RouterMutationRequestIdentityV1,
+    };
     use crate::facade::store::RouterStore;
     use crate::facade::store::tests::graph_type_catalog_vocabulary::{
         register_vector_def, setup_one_shard_graph,
     };
     use crate::facade::store::tests::{graph_principal, register_test_graph, test_init_args};
     use crate::state::RouterError;
-    use crate::types::{AdminAttachVectorIndexShardArgs, ShardId};
+    use crate::types::{AdminAttachVectorIndexShardArgs, AtomicInsertReceiptV1, ShardId};
     use candid::Principal;
+    use gleaph_graph_kernel::plan_exec::{
+        GraphOrderedEdgeBatchReceiptV1, MutationLifecyclePhase, MutationTokenShard,
+    };
 
     // `vector_search` orchestration tests (ADR 0056: relocated from `facade/store/tests.rs` so the
     // api layer owns activation gating, missing index/target, and prevalidation coverage).
@@ -351,6 +276,124 @@ mod tests {
             vec![0u8; 16 * 4],
             top_k,
         )
+    }
+
+    fn setup_status_graph() -> (RouterStore, Principal) {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[caller]);
+        register_test_graph(&store, caller, "tenant.main");
+        (store, caller)
+    }
+
+    fn insert_status_record(caller: Principal, client_key: &str, record: RouterMutationRecord) {
+        let graph_id = lookup_graph_id("tenant.main").expect("graph id");
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|records| {
+            records.insert(
+                ClientMutationKey::new(caller, graph_id, client_key.into()),
+                record,
+            );
+        });
+    }
+
+    #[test]
+    fn status_endpoints_return_exact_not_found_for_missing_key() {
+        let (store, caller) = setup_status_graph();
+        assert_eq!(
+            super::mutation_status_for(&store, caller, "tenant.main", "missing"),
+            Err(RouterError::NotFound("missing".into()))
+        );
+        assert_eq!(
+            super::atomic_insert_status_for(&store, caller, "tenant.main", "missing"),
+            Err(RouterError::NotFound("missing".into()))
+        );
+    }
+
+    #[test]
+    fn atomic_status_recovers_receipt_and_both_status_gates_reject_wrong_family() {
+        let (store, caller) = setup_status_graph();
+
+        let gql_record = RouterMutationRecord::new(1, 0, b"gql".to_vec());
+        insert_status_record(caller, "gql", gql_record);
+        assert_eq!(
+            super::mutation_status_for(&store, caller, "tenant.main", "gql")
+                .expect("GQL status")
+                .mutation_id,
+            1
+        );
+        assert_eq!(
+            super::atomic_insert_status_for(&store, caller, "tenant.main", "gql"),
+            Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into()
+            ))
+        );
+
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: 3,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: Vec::new(),
+        };
+        let mut atomic_record = RouterMutationRecord::new(2, 0, vec![7; 32]);
+        atomic_record.as_v1_mut().request_identity =
+            RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint: [7; 32],
+                public_item_count: 3,
+            };
+        atomic_record.as_v1_mut().routing_in_progress = false;
+        atomic_record.as_v1_mut().completed_row_count = Some(3);
+        atomic_record.as_v1_mut().payload = RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+            receipt,
+            projection_watermark: MutationTokenShard {
+                shard_id: ShardId::new(0),
+                label_stats_seq: None,
+            },
+        };
+        insert_status_record(caller, "atomic", atomic_record);
+
+        let recovered = super::atomic_insert_status_for(&store, caller, "tenant.main", "atomic")
+            .expect("recover atomic receipt after response loss");
+        assert_eq!(recovered.status.phase, MutationLifecyclePhase::Completed);
+        assert_eq!(
+            recovered.receipt,
+            Some(AtomicInsertReceiptV1 {
+                logical_operation_count: 3,
+                logical_vertex_count: 0,
+                logical_edge_count: 3,
+                allocated_vertex_ids: Vec::new(),
+            })
+        );
+        assert_eq!(
+            super::mutation_status_for(&store, caller, "tenant.main", "atomic"),
+            Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation family".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn status_endpoints_reject_inconsistent_identity_and_payload() {
+        let (store, caller) = setup_status_graph();
+        let mut corrupt = RouterMutationRecord::new(3, 0, vec![8; 32]);
+        corrupt.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+            public_fingerprint: [8; 32],
+            public_item_count: 1,
+        };
+        insert_status_record(caller, "corrupt", corrupt);
+        let expected = Err(RouterError::Conflict(
+            "mutation record request identity and payload families disagree".into(),
+        ));
+        assert_eq!(
+            super::mutation_status_for(&store, caller, "tenant.main", "corrupt"),
+            expected
+        );
+        assert_eq!(
+            super::atomic_insert_status_for(&store, caller, "tenant.main", "corrupt"),
+            Err(RouterError::Conflict(
+                "mutation record request identity and payload families disagree".into()
+            ))
+        );
     }
 
     #[test]

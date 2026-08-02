@@ -6,8 +6,8 @@
 //! in the full integration suite.
 
 use gleaph_pocket_ic_tests::{
-    ensure_property, create_vertex_property_index, e2e_insert_vertex_with_property,
-    gql_query_as_admin, install_federation, check_registry_invariants,
+    check_registry_invariants, create_vertex_property_index, e2e_insert_vertex_with_property,
+    ensure_property, gql_query_as_admin, install_federation,
 };
 
 #[test]

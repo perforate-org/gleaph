@@ -1,12 +1,22 @@
+use super::super::stable::bulk_load::{
+    BulkLoadChunkEnvelopeV1, BulkLoadChunkProgressV1, BulkLoadChunkReceiptKey,
+    BulkLoadChunkReceiptRecordV1, BulkLoadGraphReceiptV1, BulkLoadGraphRequestV1,
+};
 use super::super::stable::label_stats::{
-    ClientMutationKey, LabelStats, RouterMutationRecord, RouterMutationShardV1,
+    BulkLoadCoordinatorV1, BulkLoadLifecycleV1, BulkLoadTargetV1,
+};
+use super::super::stable::label_stats::{
+    ClientMutationKey, LabelStats, RouterMutationPayloadV1, RouterMutationRecord,
+    RouterMutationShardV1,
 };
 use super::*;
-use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
+use crate::facade::stable::{
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS, ROUTER_EDGE_INLINE_PROPERTY_PROFILES,
+};
 use crate::init::RouterInitArgs;
 use crate::types::{
-    AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
-    ProvisioningState,
+    AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, AtomicInsertVertexV1, BulkLoadChunkV1,
+    GraphRegistryEntry, GraphStatus, ProvisioningState,
 };
 use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
@@ -15,12 +25,16 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    LabelStatsDelta, LabelStatsDeltaEventWire, ResolvedInlineSchema, ResolvedLabelTable,
-    ResolvedPropertyTable,
+    GraphOrderedVertexBatchReceiptV1, LabelStatsDelta, LabelStatsDeltaEventWire,
+    OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequestV1, ResolvedInlineSchema,
+    ResolvedLabelTable, ResolvedPropertyTable,
 };
 use std::collections::BTreeSet;
+use std::ops::Bound;
 
 use crate::facade::stable::graph_catalog::lookup_graph_id;
+#[cfg(test)]
+use crate::facade::store::bulk_load::BULK_LOAD_RECEIPT_ROW_READS;
 use crate::facade::store::registry_invariants::assert_registry_invariants;
 
 pub(crate) fn graph_principal(byte: u8) -> Principal {
@@ -1574,14 +1588,15 @@ fn client_mutation_key_rejects_expired_key() {
         crate::facade::stable::graph_catalog::lookup_graph_id("tenant.main").expect("graph id");
     let key = ClientMutationKey::new(caller, graph_id, "client-key-1".into());
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-        m.insert(
-            key,
-            RouterMutationRecord::new(
-                1,
-                0u64.saturating_sub(CLIENT_MUTATION_KEY_TTL_NS + 1),
-                b"a".to_vec(),
-            ),
+        let mut record = RouterMutationRecord::new(
+            1,
+            0u64.saturating_sub(CLIENT_MUTATION_KEY_TTL_NS + 1),
+            b"a".to_vec(),
         );
+        record.as_v1_mut().routing_in_progress = false;
+        record.as_v1_mut().completed_row_count = Some(0);
+        record.mark_terminal_at_ns(0u64.saturating_sub(CLIENT_MUTATION_KEY_TTL_NS + 1));
+        m.insert(key, record);
     });
 
     assert_eq!(
@@ -1613,6 +1628,22 @@ fn insert_mutation_record(
     key
 }
 
+fn insert_completed_mutation_record(
+    caller: Principal,
+    client_key: &str,
+    terminal_at_ns: u64,
+) -> ClientMutationKey {
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
+    let mut record = RouterMutationRecord::new(1, terminal_at_ns, b"fp".to_vec());
+    record.as_v1_mut().routing_in_progress = false;
+    record.as_v1_mut().completed_row_count = Some(0);
+    record.mark_terminal_at_ns(terminal_at_ns);
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+        m.insert(key.clone(), record);
+    });
+    key
+}
+
 fn mutation_journal_len() -> u64 {
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.len())
 }
@@ -1635,257 +1666,633 @@ fn insert_mutation_record_with_shards(
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().payload =
         crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
+    record.mark_terminal_at_ns(created_at_ns);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
     });
     key
 }
 
-#[test]
-fn typed_recovery_lifecycle_and_scan() {
-    use crate::facade::stable::label_stats::{
-        RouterMutationPayloadV1, TypedSeedBulkOperationV1, TypedSeedBulkReplayV1,
-        TypedSeedBulkSharedHeaderV1, TypedSeedBulkTargetV1,
+fn bulk_load_gc_fixture_row(
+    graph_id: GraphId,
+    target: &BulkLoadTargetV1,
+    parent_mutation_id: u64,
+    chunk_index: u32,
+    progress: BulkLoadChunkProgressV1,
+) -> (BulkLoadChunkReceiptKey, BulkLoadChunkReceiptRecordV1) {
+    let graph_request = BulkLoadGraphRequestV1::Vertex(OrderedVertexBatchGraphRequestV1 {
+        graph_id,
+        target_shard_id: target.shard_id,
+        target_graph_canister: target.graph_canister,
+        resolved_labels: ResolvedLabelTable::default(),
+        resolved_properties: ResolvedPropertyTable::default(),
+        items: vec![OrderedVertexBatchGraphItemV1 {
+            resolved_vertex_labels: Vec::new(),
+            resolved_initial_properties: Vec::new(),
+        }],
+    });
+    let graph_request_fingerprint = graph_request.fingerprint().expect("Graph fingerprint");
+    let chunk = BulkLoadChunkV1::Vertices(vec![AtomicInsertVertexV1 {
+        vertex_labels: Vec::new(),
+        initial_properties: Vec::new(),
+    }]);
+    let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
+    let chunk_fingerprint = chunk_envelope.fingerprint().expect("chunk fingerprint");
+    let (public_receipt, graph_receipt, completed_at_ns) = match progress {
+        BulkLoadChunkProgressV1::CanonicalPending => (None, None, None),
+        BulkLoadChunkProgressV1::CanonicalCommitted
+        | BulkLoadChunkProgressV1::ProjectionPending
+        | BulkLoadChunkProgressV1::RetirementPending
+        | BulkLoadChunkProgressV1::Completed => {
+            let graph_receipt = BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
+                logical_vertex_count: 1,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices: Vec::new(),
+                allocated_vertex_ids: vec![chunk_index + 1],
+            });
+            let public_receipt = crate::types::AtomicInsertReceiptV1 {
+                logical_operation_count: 1,
+                logical_vertex_count: 1,
+                logical_edge_count: 0,
+                allocated_vertex_ids: vec![vec![
+                    0;
+                    gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+                ]],
+            };
+            let completed_at_ns = (progress == BulkLoadChunkProgressV1::Completed).then_some(10);
+            (Some(public_receipt), Some(graph_receipt), completed_at_ns)
+        }
     };
-    use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, SeedBindingsWire};
+    let row = BulkLoadChunkReceiptRecordV1 {
+        chunk_fingerprint,
+        chunk_envelope,
+        graph_request,
+        graph_request_fingerprint,
+        child_mutation_id: parent_mutation_id + chunk_index as u64 + 1,
+        progress,
+        public_receipt,
+        graph_receipt,
+        completed_at_ns,
+    };
+    row.validate().expect("valid bulk-load fixture row");
+    (
+        BulkLoadChunkReceiptKey::new(parent_mutation_id, chunk_index),
+        row,
+    )
+}
 
+fn insert_bulk_load_gc_fixture(
+    caller: Principal,
+    client_key: &str,
+    parent_mutation_id: u64,
+    lifecycle: BulkLoadLifecycleV1,
+    chunk_count: u32,
+    terminal_at_ns: Option<u64>,
+) -> ClientMutationKey {
+    let graph_id = tenant_main_graph_id();
+    let target = BulkLoadTargetV1 {
+        shard_id: ShardId::new(0),
+        graph_canister: graph_principal(200),
+    };
+    let mut coordinator = BulkLoadCoordinatorV1::new(target.clone());
+    coordinator.logical_operation_count = chunk_count as u64;
+    coordinator.logical_vertex_count = chunk_count as u64;
+    coordinator.next_chunk_index = match &lifecycle {
+        BulkLoadLifecycleV1::AppendPending { .. } => chunk_count.saturating_sub(1),
+        BulkLoadLifecycleV1::Open
+        | BulkLoadLifecycleV1::FinalizePending { .. }
+        | BulkLoadLifecycleV1::Completed
+        | BulkLoadLifecycleV1::Aborted
+        | BulkLoadLifecycleV1::Failed { .. } => chunk_count,
+        BulkLoadLifecycleV1::AbortPending { active_chunk } => *active_chunk,
+    };
+    coordinator.committed_chunk_count = match &lifecycle {
+        BulkLoadLifecycleV1::AppendPending { .. } | BulkLoadLifecycleV1::AbortPending { .. } => {
+            coordinator.next_chunk_index
+        }
+        _ => chunk_count,
+    };
+    coordinator.completed_chunk_count = match &lifecycle {
+        BulkLoadLifecycleV1::AppendPending { .. } | BulkLoadLifecycleV1::AbortPending { .. } => {
+            coordinator.next_chunk_index
+        }
+        _ => chunk_count,
+    };
+    coordinator.lifecycle = lifecycle.clone();
+    coordinator
+        .validate()
+        .expect("valid bulk-load coordinator fixture");
+    let mut record = RouterMutationRecord::new_bulk_load(parent_mutation_id, 0, coordinator)
+        .expect("bulk-load parent");
+    if let Some(terminal_at_ns) = terminal_at_ns {
+        record.mark_terminal_at_ns(terminal_at_ns);
+    }
+    let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key.clone(), record));
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| {
+        for chunk_index in 0..chunk_count {
+            let progress = if matches!(&lifecycle, BulkLoadLifecycleV1::AppendPending { .. })
+                && chunk_index == chunk_count.saturating_sub(1)
+            {
+                BulkLoadChunkProgressV1::CanonicalPending
+            } else {
+                BulkLoadChunkProgressV1::Completed
+            };
+            let (row_key, row) = bulk_load_gc_fixture_row(
+                graph_id,
+                &target,
+                parent_mutation_id,
+                chunk_index,
+                progress,
+            );
+            map.insert(row_key, row);
+        }
+    });
+    key
+}
+
+#[test]
+fn bulk_load_gc_owner_keeps_nonterminal_retryable_and_pending_child() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
-    let caller = graph_principal(1);
-    let client_key = "typed-recovery-group";
-
-    // Insert a pristine scalar reservation (routing lease active, empty shards, no completion).
-    let _key = insert_mutation_record(caller, client_key, 0, true);
-    let graph_canister = graph_principal(9);
-
-    // Build a valid typed replay payload with two ordered operations.
-    let replay = TypedSeedBulkReplayV1 {
-        total_ops: 2,
-        target: TypedSeedBulkTargetV1::new(ShardId::new(0), graph_canister),
-        shared: TypedSeedBulkSharedHeaderV1 {
-            element_id_encoding_key: [0u8; 16],
-            plan_blob: b"plan".to_vec(),
-            mode: GqlExecutionMode::Update,
-            indexed_properties: None,
+    let caller = graph_principal(210);
+    let pending_key = insert_bulk_load_gc_fixture(
+        caller,
+        "pending",
+        9_700_001,
+        BulkLoadLifecycleV1::AppendPending {
+            chunk_index: 0,
+            fingerprint: [1; 32],
+            child_mutation_id: 9_700_002,
         },
-        operations: vec![
-            TypedSeedBulkOperationV1 {
-                params: vec![0u8; 8],
-                seed_bindings: SeedBindingsWire {
-                    entries: vec![],
-                    rows: vec![],
-                    complete_prefix_rows: true,
-                },
-            },
-            TypedSeedBulkOperationV1 {
-                params: vec![1u8; 8],
-                seed_bindings: SeedBindingsWire {
-                    entries: vec![],
-                    rows: vec![],
-                    complete_prefix_rows: true,
-                },
-            },
-        ],
-        logical_operation_chunk_counts: None,
-    };
+        1,
+        None,
+    );
+    let retryable_key = insert_mutation_record(caller, "retryable", 0, false);
 
-    // Transition succeeds only with the matching fingerprint and active lease.
     store
-        .transition_to_typed_seed_bulk(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            b"fp",
-            Default::default(),
-            Default::default(),
-            replay.clone(),
+        .admin_sweep_expired_client_mutation_keys_at(
+            admin,
+            None,
+            100,
+            CLIENT_MUTATION_KEY_TTL_NS + 1,
         )
-        .expect("transition to typed bulk");
+        .expect("sweep");
 
-    // The record is now recoverable even though legacy shards() is empty.
-    let (recoverable, _, _) = store.scan_recoverable_mutations(None, 100);
-    assert!(
-        recoverable.iter().any(|k| k.client_key == client_key),
-        "typed bulk record must appear in recoverable scan"
+    assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&retryable_key).is_some()));
+    assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&pending_key).is_some()));
+    assert!(ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| {
+        map.get(&BulkLoadChunkReceiptKey::new(9_700_001, 0))
+            .is_some_and(|row| row.progress == BulkLoadChunkProgressV1::CanonicalPending)
+    }));
+}
+
+#[test]
+fn bulk_load_gc_owner_retains_terminal_parent_before_ttl() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    let key = insert_bulk_load_gc_fixture(
+        graph_principal(211),
+        "fresh-terminal",
+        9_700_101,
+        BulkLoadLifecycleV1::Completed,
+        1,
+        Some(now - CLIENT_MUTATION_KEY_TTL_NS),
+    );
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
+        .expect("sweep at retention boundary");
+
+    assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&key).is_some()));
+    assert!(ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| {
+        map.get(&BulkLoadChunkReceiptKey::new(9_700_101, 0))
+            .is_some()
+    }));
+}
+
+#[test]
+fn bulk_load_gc_owner_resumes_bounded_cursor_and_removes_parent_last() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS + 1;
+    let parent_id = 9_700_201;
+    let chunk_count = crate::facade::stable::bulk_load::BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP + 1;
+    let key = insert_bulk_load_gc_fixture(
+        graph_principal(212),
+        "large-terminal",
+        parent_id,
+        BulkLoadLifecycleV1::Completed,
+        chunk_count,
+        Some(0),
     );
 
-    let typed_snapshot = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
-        .expect("typed record present");
-    assert!(
-        store
-            .record_router_mutation_shards(
-                caller,
-                tenant_main_graph_id(),
-                client_key,
-                Default::default(),
-                Default::default(),
-                vec![shard_with(0, false, false)],
-            )
-            .is_err(),
-        "legacy shard writer must reject a typed payload"
-    );
-    assert!(
-        store
-            .record_router_mutation_completed_without_shards(
-                caller,
-                tenant_main_graph_id(),
-                client_key,
-                Default::default(),
-                Default::default(),
-                99,
-            )
-            .is_err(),
-        "scalar completion writer must reject a typed payload"
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
+        .expect("first bounded sweep");
+    let first = store
+        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .expect("parent retained while receipts remain");
+    let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = first.payload() else {
+        panic!("bulk parent payload");
+    };
+    assert_eq!(coordinator.lifecycle, BulkLoadLifecycleV1::Completed);
+    assert_eq!(first.as_v1().terminal_at_ns, Some(0));
+    assert_eq!(
+        coordinator.receipt_gc_cursor,
+        Some(crate::facade::stable::bulk_load::BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP)
     );
     assert_eq!(
-        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
-        Some(typed_snapshot.clone()),
-        "cross-variant writes must leave the typed record unchanged"
-    );
-    assert!(
-        store
-            .record_typed_bulk_target_projection_advanced(
-                caller,
-                tenant_main_graph_id(),
-                client_key,
-                ShardId::new(0),
-            )
-            .is_err(),
-        "projection cannot advance before canonical completion"
-    );
-    assert_eq!(
-        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
-        Some(typed_snapshot),
-        "rejected projection transition must not mutate stable state"
+        ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| {
+            map.range((
+                Bound::Included(BulkLoadChunkReceiptKey::new(parent_id, 0)),
+                Bound::Unbounded,
+            ))
+            .take_while(|entry| entry.key().job_mutation_id == parent_id)
+            .count()
+        }),
+        1
     );
 
-    // Wrong shard id is rejected for completion.
+    // A later sweep resumes from the durable parent cursor rather than restarting the scan.
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
+        .expect("resumed bounded sweep");
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
+        .expect("parent removal sweep");
+    assert!(ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| map.is_empty()));
+    assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&key).is_none()));
+}
+
+#[test]
+fn bulk_load_finalize_step_stops_at_ssot_bound() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.clear_new());
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.clear_new());
+
+    let caller = graph_principal(214);
+    let parent_id = 9_700_401;
+    let page = crate::facade::stable::bulk_load::BULK_LOAD_FINALIZE_SCAN_ROWS_PER_STEP;
+    let chunk_count = page * 3 + 1;
+    let key = insert_bulk_load_gc_fixture(
+        caller,
+        "finalize-large",
+        parent_id,
+        BulkLoadLifecycleV1::FinalizePending {
+            stage: crate::facade::stable::label_stats::BulkLoadFinalizeStageV1::VerifyReceipts,
+            cursor: 0,
+        },
+        chunk_count,
+        None,
+    );
+
+    for expected_cursor in [page, page * 2, page * 3] {
+        BULK_LOAD_RECEIPT_ROW_READS.with(|reads| reads.set(0));
+        let coordinator = store
+            .finalize_bulk_load_step(caller, key.graph_id, &key.client_key, 10)
+            .expect("bounded Finalize step");
+        assert!(matches!(
+            coordinator.lifecycle,
+            BulkLoadLifecycleV1::FinalizePending { cursor, .. } if cursor == expected_cursor
+        ));
+        assert!(
+            BULK_LOAD_RECEIPT_ROW_READS.with(|reads| reads.get()) <= page as usize,
+            "Finalize read more than one SSOT page"
+        );
+    }
+
+    BULK_LOAD_RECEIPT_ROW_READS.with(|reads| reads.set(0));
+    let completed = store
+        .finalize_bulk_load_step(caller, key.graph_id, &key.client_key, 10)
+        .expect("final bounded Finalize step");
+    assert_eq!(completed.lifecycle, BulkLoadLifecycleV1::Completed);
+    assert!(
+        BULK_LOAD_RECEIPT_ROW_READS.with(|reads| reads.get()) <= page as usize,
+        "finalize completion rescanned the full job"
+    );
+}
+
+#[test]
+fn bulk_load_finalize_rejects_hole_and_extra_receipt_ranges() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let caller = graph_principal(215);
+    let page = crate::facade::stable::bulk_load::BULK_LOAD_FINALIZE_SCAN_ROWS_PER_STEP;
+
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.clear_new());
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.clear_new());
+    let hole_parent = 9_700_501;
+    let hole_key = insert_bulk_load_gc_fixture(
+        caller,
+        "finalize-hole",
+        hole_parent,
+        BulkLoadLifecycleV1::FinalizePending {
+            stage: crate::facade::stable::label_stats::BulkLoadFinalizeStageV1::VerifyReceipts,
+            cursor: 0,
+        },
+        2,
+        None,
+    );
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| {
+        map.remove(&BulkLoadChunkReceiptKey::new(hole_parent, 1));
+        let (row_key, row) = bulk_load_gc_fixture_row(
+            hole_key.graph_id,
+            &BulkLoadTargetV1 {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_principal(200),
+            },
+            hole_parent,
+            2,
+            BulkLoadChunkProgressV1::Completed,
+        );
+        map.insert(row_key, row);
+    });
+    assert!(matches!(
+        store.finalize_bulk_load_step(caller, hole_key.graph_id, &hole_key.client_key, 10),
+        Err(RouterError::Conflict(message)) if message.contains("contiguous")
+    ));
+
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.clear_new());
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.clear_new());
+    let extra_parent = 9_700_502;
+    let extra_key = insert_bulk_load_gc_fixture(
+        caller,
+        "finalize-extra",
+        extra_parent,
+        BulkLoadLifecycleV1::FinalizePending {
+            stage: crate::facade::stable::label_stats::BulkLoadFinalizeStageV1::VerifyReceipts,
+            cursor: 0,
+        },
+        2,
+        None,
+    );
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| {
+        let (row_key, row) = bulk_load_gc_fixture_row(
+            extra_key.graph_id,
+            &BulkLoadTargetV1 {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_principal(200),
+            },
+            extra_parent,
+            2,
+            BulkLoadChunkProgressV1::Completed,
+        );
+        map.insert(row_key, row);
+    });
+    assert!(matches!(
+        store.finalize_bulk_load_step(caller, extra_key.graph_id, &extra_key.client_key, 10),
+        Err(RouterError::Conflict(message)) if message.contains("aggregate counters")
+    ));
+    assert_eq!(page, 32);
+}
+
+#[test]
+fn bulk_load_receipt_gc_step_deletes_bound_and_persists_cursor() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.clear_new());
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.clear_new());
+
+    let caller = graph_principal(216);
+    let parent_id = 9_700_601;
+    let page = crate::facade::stable::bulk_load::BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP;
+    let chunk_count = page * 3 + 1;
+    let key = insert_bulk_load_gc_fixture(
+        caller,
+        "gc-large",
+        parent_id,
+        BulkLoadLifecycleV1::Completed,
+        chunk_count,
+        Some(0),
+    );
+    let now = CLIENT_MUTATION_KEY_TTL_NS + 1;
+
+    for expected_cursor in [page, page * 2, page * 3, page * 3 + 1] {
+        BULK_LOAD_RECEIPT_ROW_READS.with(|reads| reads.set(0));
+        let result = store
+            .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
+            .expect("bounded receipt GC step");
+        assert!(result.removed <= page);
+        let record = store
+            .router_mutation_record(caller, key.graph_id, &key.client_key)
+            .expect("terminal parent retained while rows remain");
+        let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = record.payload() else {
+            panic!("bulk parent payload");
+        };
+        assert_eq!(coordinator.receipt_gc_cursor, Some(expected_cursor));
+        assert!(
+            BULK_LOAD_RECEIPT_ROW_READS.with(|reads| reads.get()) <= page as usize,
+            "receipt GC rescanned beyond its bounded page"
+        );
+    }
+
+    let done = store
+        .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
+        .expect("parent removal step");
+    assert!(done.done);
     assert!(
         store
-            .record_typed_bulk_target_completed(
+            .router_mutation_record(caller, key.graph_id, &key.client_key)
+            .is_none()
+    );
+}
+
+#[test]
+fn bulk_load_receipt_gc_rewinds_stale_cursor_before_parent_removal() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.clear_new());
+    ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.clear_new());
+
+    let caller = graph_principal(217);
+    let parent_id = 9_700_701;
+    let key = insert_bulk_load_gc_fixture(
+        caller,
+        "gc-stale-cursor",
+        parent_id,
+        BulkLoadLifecycleV1::Completed,
+        1,
+        Some(0),
+    );
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| {
+        let mut record = map.get(&key).expect("bulk parent");
+        let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = record.payload_mut() else {
+            panic!("bulk parent payload");
+        };
+        coordinator.receipt_gc_cursor = Some(99);
+        map.insert(key.clone(), record);
+    });
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS + 1;
+    let rewound = store
+        .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
+        .expect("stale cursor rewind");
+    assert_eq!(rewound.removed, 0);
+    assert!(!rewound.done);
+    let record = store
+        .router_mutation_record(caller, key.graph_id, &key.client_key)
+        .expect("parent retained after rewind");
+    let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = record.payload() else {
+        panic!("bulk parent payload");
+    };
+    assert_eq!(coordinator.receipt_gc_cursor, Some(0));
+
+    let removed = store
+        .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
+        .expect("rewound row delete");
+    assert_eq!(removed.removed, 1);
+    let done = store
+        .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
+        .expect("parent removal");
+    assert!(done.done);
+    assert!(
+        store
+            .router_mutation_record(caller, key.graph_id, &key.client_key)
+            .is_none()
+    );
+}
+
+#[test]
+fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let caller = graph_principal(213);
+    let graph_id = tenant_main_graph_id();
+    let parent_id = 9_700_301;
+    let chunk_count = crate::facade::stable::bulk_load::BULK_LOAD_RECEIPT_GC_ROWS_PER_STEP + 1;
+    let key = insert_bulk_load_gc_fixture(
+        caller,
+        "delayed-child",
+        parent_id,
+        BulkLoadLifecycleV1::Completed,
+        chunk_count,
+        Some(0),
+    );
+    let target = BulkLoadTargetV1 {
+        shard_id: ShardId::new(0),
+        graph_canister: graph_principal(200),
+    };
+    let (_new_key, new_child) = bulk_load_gc_fixture_row(
+        graph_id,
+        &target,
+        parent_id,
+        chunk_count,
+        BulkLoadChunkProgressV1::CanonicalPending,
+    );
+    store
+        .admin_sweep_expired_client_mutation_keys_at(
+            admin,
+            None,
+            100,
+            CLIENT_MUTATION_KEY_TTL_NS + 1,
+        )
+        .expect("first GC step");
+    let admit = store.admit_bulk_load_child(
+        caller,
+        graph_id,
+        &key.client_key,
+        parent_id,
+        chunk_count,
+        new_child.chunk_fingerprint,
+        new_child,
+    );
+    assert!(matches!(admit, Err(RouterError::Conflict(_))));
+    let existing = store
+        .bulk_load_chunk_receipt(parent_id, chunk_count - 1)
+        .expect("last retained receipt");
+    let graph_receipt = existing.graph_receipt.clone().expect("Graph receipt");
+    let public_receipt = existing.public_receipt.clone().expect("public receipt");
+    let commit = store.record_bulk_load_canonical_committed(
+        caller,
+        graph_id,
+        &key.client_key,
+        parent_id,
+        chunk_count - 1,
+        existing.chunk_fingerprint,
+        graph_receipt,
+        public_receipt,
+    );
+    assert!(matches!(commit, Err(RouterError::Conflict(_))));
+
+    store
+        .admin_sweep_expired_client_mutation_keys_at(
+            admin,
+            None,
+            100,
+            CLIENT_MUTATION_KEY_TTL_NS + 1,
+        )
+        .expect("final GC step");
+    store
+        .admin_sweep_expired_client_mutation_keys_at(
+            admin,
+            None,
+            100,
+            CLIENT_MUTATION_KEY_TTL_NS + 1,
+        )
+        .expect("parent removal step");
+    let (_late_key, late_child) = bulk_load_gc_fixture_row(
+        graph_id,
+        &target,
+        parent_id,
+        chunk_count,
+        BulkLoadChunkProgressV1::CanonicalPending,
+    );
+    assert!(matches!(
+        store.admit_bulk_load_child(
+            caller,
+            graph_id,
+            &key.client_key,
+            parent_id,
+            chunk_count,
+            late_child.chunk_fingerprint,
+            late_child,
+        ),
+        Err(RouterError::NotFound(_))
+    ));
+    assert!(
+        store
+            .record_bulk_load_canonical_committed(
                 caller,
-                tenant_main_graph_id(),
-                client_key,
-                ShardId::new(99),
-                7,
-                vec![3, 4],
+                graph_id,
+                &key.client_key,
+                parent_id,
+                chunk_count - 1,
+                existing.chunk_fingerprint,
+                existing.graph_receipt.unwrap(),
+                existing.public_receipt.unwrap(),
             )
             .is_err()
-    );
-
-    let before_invalid_counts = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
-        .expect("typed record before invalid row counts");
-    assert!(
-        store
-            .record_typed_bulk_target_completed(
-                caller,
-                tenant_main_graph_id(),
-                client_key,
-                ShardId::new(0),
-                7,
-                vec![7],
-            )
-            .is_err(),
-        "typed completion must reject the wrong operation cardinality"
-    );
-    assert!(
-        store
-            .record_typed_bulk_target_completed(
-                caller,
-                tenant_main_graph_id(),
-                client_key,
-                ShardId::new(0),
-                7,
-                vec![3, 3],
-            )
-            .is_err(),
-        "typed completion must reject an aggregate mismatch"
-    );
-    assert_eq!(
-        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
-        Some(before_invalid_counts),
-        "invalid typed result cardinalities must not mutate stable state"
-    );
-
-    // Complete the typed target with a row count.
-    store
-        .record_typed_bulk_target_completed(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            ShardId::new(0),
-            7,
-            vec![3, 4],
-        )
-        .expect("complete typed target");
-    store
-        .record_typed_bulk_target_completed(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            ShardId::new(0),
-            7,
-            vec![3, 4],
-        )
-        .expect("exact typed completion repeat is idempotent");
-    let completed_snapshot = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
-        .expect("completed typed target");
-    assert!(
-        store
-            .record_typed_bulk_target_completed(
-                caller,
-                tenant_main_graph_id(),
-                client_key,
-                ShardId::new(0),
-                7,
-                vec![4, 3],
-            )
-            .is_err(),
-        "a conflicting ordered outcome must be rejected"
-    );
-    assert_eq!(
-        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
-        Some(completed_snapshot),
-        "a conflicting repeat must not mutate stable state"
-    );
-
-    // Advance projection; this compacts to CompletedBulk because completed is already true.
-    store
-        .record_typed_bulk_target_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            ShardId::new(0),
-        )
-        .expect("advance typed projection");
-
-    // Terminal typed record is no longer recoverable and is compacted.
-    let (recoverable_after, _, _) = store.scan_recoverable_mutations(None, 100);
-    assert!(
-        !recoverable_after.iter().any(|k| k.client_key == client_key),
-        "terminal typed bulk record must not be recoverable"
-    );
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
-        .expect("record present");
-    assert_eq!(record.as_v1().completed_row_count, Some(7));
-    assert!(
-        matches!(
-            record.payload(),
-            RouterMutationPayloadV1::CompletedBulk {
-                total_ops,
-                operation_row_counts,
-            } if *total_ops == 2 && operation_row_counts == &[3, 4]
-        ),
-        "completed typed bulk must retain ordered row counts"
     );
 }
 
@@ -2178,6 +2585,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         emitted_delta_first_seq: None,
         emitted_delta_last_seq: None,
         hot_forward_vertices: Vec::new(),
+        allocated_vertex_ids: vec![7],
     };
     store
         .record_ordered_mixed_batch_canonical_committed(
@@ -2265,7 +2673,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
 // reclaim terminal ones; the old "not routing" rule wrongly stranded committed-but-unprojected
 // federated mutations.
 #[test]
-fn ttl_eviction_retains_nonterminal_saga_but_evicts_terminal() {
+fn ttl_eviction_retains_retryable_failure_until_later_terminal_completion_expires() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::from_slice(&[1; 29]);
@@ -2280,20 +2688,50 @@ fn ttl_eviction_retains_nonterminal_saga_but_evicts_terminal() {
         0,
         vec![shard_with(0, true, false)],
     );
-    // Terminal: routing released without an envelope and no canonical write -> Failed.
+    // Retryable failure: routing released without an envelope and no canonical write. Its age does
+    // not start terminal retention, so it survives no matter how old `created_at_ns` is.
     let failed = insert_mutation_record(graph_principal(2), "failed", 0, false);
 
     let result = store
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
         .expect("sweep");
-    assert_eq!(result.removed, 1, "only the terminal saga is evicted");
+    assert_eq!(result.removed, 0);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
         assert!(
             m.get(&pending).is_some(),
             "non-terminal saga must be retained as a recovery target"
         );
-        assert!(m.get(&failed).is_none(), "terminal saga must be evicted");
+        let retryable = m.get(&failed).expect("retryable failure survives");
+        assert!(!retryable.is_terminal());
+        assert_eq!(retryable.as_v1().terminal_at_ns, None);
     });
+
+    // A successful same-key retry can later complete. That transition starts, rather than
+    // backdates, the seven-day retention window.
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+        let mut record = m.get(&failed).expect("retryable record");
+        record.as_v1_mut().completed_row_count = Some(0);
+        record.mark_terminal_at_ns(now);
+        m.insert(failed.clone(), record);
+    });
+    store
+        .admin_sweep_expired_client_mutation_keys_at(
+            admin,
+            None,
+            100,
+            now + CLIENT_MUTATION_KEY_TTL_NS,
+        )
+        .expect("sweep at retention boundary");
+    assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&failed).is_some()));
+    store
+        .admin_sweep_expired_client_mutation_keys_at(
+            admin,
+            None,
+            100,
+            now + CLIENT_MUTATION_KEY_TTL_NS + 1,
+        )
+        .expect("sweep after retention boundary");
+    assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&failed).is_none()));
 }
 
 // ADR 0029 Phase 4: an unexpired routing lease blocks a concurrent owner, but a lease past
@@ -2529,6 +2967,8 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
     // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
     let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
+    record.as_v1_mut().terminal_failure = Some("permanent".into());
+    record.mark_terminal_at_ns(0);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
     assert!(
         store
@@ -2583,6 +3023,8 @@ fn gc_pin_retains_terminal_record_until_pending_effect_removed() {
     // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
     let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
+    record.as_v1_mut().terminal_failure = Some("permanent".into());
+    record.mark_terminal_at_ns(0);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
 
     // Pin it via a pending-effect row (no reservation reverse-row exists for this mutation).
@@ -2643,10 +3085,11 @@ fn scan_recoverable_selects_only_nonterminal_with_envelope() {
     assert!(keys.contains(&pending));
 }
 
-// ADR 0029 Phase 4: recovery diagnostics attach to live sagas and never resurrect a terminal
+// ADR 0029 Phase 4: recovery diagnostics attach to every non-terminal state, including retryable
+// failure, remain bounded for public status sizing, and never resurrect an irreversible terminal
 // record.
 #[test]
-fn record_last_error_sets_diagnostic_and_skips_terminal() {
+fn record_last_error_bounds_live_diagnostics_and_skips_terminal() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::from_slice(&[1; 29]);
@@ -2669,11 +3112,47 @@ fn record_last_error_sets_diagnostic_and_skips_terminal() {
 
     let failed = insert_mutation_record(graph_principal(2), "failed", 0, false);
     store
-        .record_router_mutation_last_error(&failed, "ignored".into())
-        .expect("no-op on terminal");
-    let terminal = ROUTER_MUTATION_BY_CLIENT_KEY
+        .record_router_mutation_last_error(
+            &failed,
+            format!(
+                "a{}",
+                "é".repeat(
+                    crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES
+                )
+            ),
+        )
+        .expect("record bounded retryable diagnostic");
+    let retryable = ROUTER_MUTATION_BY_CLIENT_KEY
         .with_borrow(|m| m.get(&failed))
         .expect("record");
+    assert!(!retryable.is_terminal());
+    assert_eq!(
+        retryable.as_v1().last_error.as_ref().unwrap().len(),
+        crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES - 1,
+        "the byte bound must not split the final two-byte character"
+    );
+    assert!(
+        retryable
+            .as_v1()
+            .last_error
+            .as_ref()
+            .unwrap()
+            .ends_with('é')
+    );
+
+    let terminal = insert_mutation_record_with_shards(
+        graph_principal(3),
+        "terminal",
+        0,
+        vec![shard_with(0, false, false)],
+    );
+    assert!(store.terminally_fail_uncommitted_dispatch(&terminal, 1, "permanent".into()));
+    store
+        .record_router_mutation_last_error(&terminal, "ignored".into())
+        .expect("no-op on terminal");
+    let terminal = ROUTER_MUTATION_BY_CLIENT_KEY
+        .with_borrow(|m| m.get(&terminal))
+        .expect("terminal record");
     assert!(
         terminal.as_v1().last_error.is_none(),
         "a terminal record must not record a recovery diagnostic"
@@ -2689,8 +3168,8 @@ fn sweep_removes_expired_but_keeps_fresh_and_in_progress() {
     register_test_graph(&store, admin, "tenant.main");
 
     let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
-    let expired = insert_mutation_record(graph_principal(1), "expired", 0, false);
-    let fresh = insert_mutation_record(graph_principal(2), "fresh", now, false);
+    let expired = insert_completed_mutation_record(graph_principal(1), "expired", 0);
+    let fresh = insert_completed_mutation_record(graph_principal(2), "fresh", now);
     // Expired in wall-clock terms but still actively routing: must not be yanked.
     let expired_in_progress = insert_mutation_record(graph_principal(3), "stuck", 0, true);
     assert_eq!(mutation_journal_len(), 3);
@@ -2726,7 +3205,7 @@ fn sweep_paginates_with_cursor_until_done() {
 
     let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
     for i in 0..5u8 {
-        insert_mutation_record(graph_principal(100 + i), "expired", 0, false);
+        insert_completed_mutation_record(graph_principal(100 + i), "expired", 0);
     }
     assert_eq!(mutation_journal_len(), 5);
 
@@ -3052,9 +3531,9 @@ fn amortized_gc_evicts_expired_and_keeps_fresh() {
 
     let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
     for i in 0..5u8 {
-        insert_mutation_record(graph_principal(50 + i), "old", 0, false);
+        insert_completed_mutation_record(graph_principal(50 + i), "old", 0);
     }
-    let fresh = insert_mutation_record(graph_principal(200), "fresh", now, false);
+    let fresh = insert_completed_mutation_record(graph_principal(200), "fresh", now);
     assert_eq!(mutation_journal_len(), 6);
 
     // The heap round-robin cursor laps the keyspace; a bounded number of GC steps

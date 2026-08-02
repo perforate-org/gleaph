@@ -1,9 +1,9 @@
 # 0025. Client-mutation idempotency journal retention, compaction, and GC
 
 Date: 2026-06-20
-Status: implemented (eviction predicate and timer stance revised by ADR 0029 Phase 4; ordered retirement specialization planned by ADR 0049)
-Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Status: implemented (terminal-completion retention anchor added by ADR 0057; eviction predicate and timer stance revised by ADR 0029 Phase 4)
+Last revised: 2026-08-02
+Anchor timestamp: 2026-08-02 14:44:33 UTC +0000
 
 ## Context
 
@@ -25,9 +25,20 @@ There was no eviction, sweep, or bound anywhere; only `clear_new()` at full re-i
 
 ## Decision
 
-Keep `created_at_ns` on the record as the single source of truth for age, and bound the
-journal in **size** and **count** without adding any stable region or timer, via three
+Keep `created_at_ns` for admission diagnostics and use the versioned
+`terminal_at_ns: Option<u64>` as the single source of truth for terminal retention age.
+Bound the journal in **size** and **count** without adding any stable region or timer, via three
 complementary mechanisms:
+
+### Terminal-completion retention anchor (ADR 0057, 2026-08-02)
+
+The Router sets `terminal_at_ns` exactly once, in the same durable message segment as the first
+irreversible terminal transition. This anchor is measured from terminal completion rather than
+record creation, so an ordered atomic-insert receipt remains recoverable for seven days even when
+Graph dispatch or projection work kept the record non-terminal for longer. The shared GC and retry
+expiry policy uses `terminal_at_ns` for scalar, durable bulk-load, and ordered atomic-insert records.
+Non-terminal records retain `None` and remain ineligible for ordinary GC. There is no expiry tombstone;
+after the seven-day terminal window, physical deletion may produce the ordinary not-found result.
 
 ### E — compact completed records (bound per-record size)
 
@@ -37,11 +48,11 @@ fan-out are never read again: replay short-circuits on `completed_row_count`
 (`run_gql_dml` returns at the `router_mutation_completed_row_count` check before touching
 the heavy fields). At that point `record_router_mutation_shard_projection_advanced` pins
 the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and any
-shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; active bulk payloads
-(both `SharedSeedBulk` and `TypedSeedBulk`) compact to `CompletedBulk`. Shared-seed completion retains only
-`total_ops`; typed completion additionally retains exactly `total_ops` ordered row counts so a
-same-key retry reproduces each operation's original result rather than repeating the aggregate.
-The bounded row-count vector is the only typed result state retained for replay and TTL eviction.
+shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; ordered terminal
+records retain only their bounded family receipt and projection watermark. Durable bulk-load jobs
+retain their terminal lifecycle and aggregate state in `BulkLoadCoordinator`; chunk receipts remain
+in the dedicated MemoryId 49 map until the bounded receipt-GC pass removes them. No typed/shared
+GQL seed payload is retained or decoded.
 
 ### B — amortized GC on the write path (bound count, automatic)
 
@@ -81,14 +92,14 @@ ADR 0029 Phase 4 makes the shared eviction core (`evict_expired_client_mutation_
 evictable **iff the record is terminal** — `RouterMutationRecord::is_terminal()`, i.e. the
 lifecycle phase is `Completed` or `Failed`. Non-terminal sagas (`Routing`,
 `CanonicalPending`, `CanonicalCommitted`, `ProjectionPending`) are retained as recovery
-targets regardless of age. ADR 0049's planned ordered specialization additionally
+targets regardless of age. The implemented ordered atomic-insert lifecycle additionally
 keeps `ProjectionAdvanced` and `RetirementPending` non-terminal until
 the Graph retirement proof has been durably accepted and the Router record is
 atomically compacted to `CompletedOrderedEdgeBatch`. This subsumes the old
 `routing_in_progress` exclusion (a routing record is non-terminal) and
-additionally protects committed-but-unprojected sagas. Age is still tracked
-solely by `created_at_ns`; terminal records past the TTL evict exactly as
-before.
+additionally protects committed-but-unprojected sagas. Terminal age is tracked by
+`terminal_at_ns`; a non-terminal record has no terminal anchor and cannot satisfy the retention
+predicate. Terminal records past the TTL evict exactly as before.
 
 ### Alternatives considered
 
@@ -117,8 +128,9 @@ before.
   as new on re-presentation (a fresh mutation id) instead of returning
   `client_mutation_key expired`. This only affects keys reused beyond 7 days, far past any
   reasonable retry window; the rejection still applies to expired-but-unevicted keys.
-- `created_at_ns` remains the only source of truth for record age; B/E/sweep add no
-  duplicated stable state (the GC cursor is ephemeral heap).
+- `terminal_at_ns` is the source of truth for terminal retention age; `created_at_ns` remains
+  available for admission diagnostics. B/E/sweep add no duplicated stable state (the GC cursor is
+  ephemeral heap).
 - If mutation traffic stops, B stops too (no growth either); the operator sweep can still
   reclaim the final aged-out working set on demand.
 
@@ -130,4 +142,6 @@ before.
 `sweep_removes_expired_but_keeps_fresh_and_in_progress`,
 `sweep_paginates_with_cursor_until_done`,
 `sweep_requires_admin_and_nonzero_budget`,
-`ttl_eviction_retains_nonterminal_saga_but_evicts_terminal` (ADR 0029 Phase 4 predicate).
+`ttl_eviction_retains_nonterminal_saga_but_evicts_terminal` (ADR 0029 Phase 4 predicate),
+and shared terminal-anchor retention cases for scalar, durable bulk-load, and ordered atomic-insert
+records (ADR 0057).

@@ -199,7 +199,7 @@ async fn execute_social_demo_scenario(
     let router = router_canister()?;
     let (name, params) = scenario_to_request(scenario);
 
-    // Router L1 `execute_prepared` (ADR 0056): bounded-wait composite query with an Eventual
+    // Router L1 `prepared_query` (ADR 0057): bounded-wait composite query with an Eventual
     // read-consistency contract and no caller-selected sort. The Gateway never supplies GQL,
     // query names, graph names, or parameters beyond the fixed scenario blob.
     let args = candid::utils::encode_args((
@@ -208,15 +208,15 @@ async fn execute_social_demo_scenario(
         Option::<Vec<gleaph_prepared_api::PreparedSortSpec>>::None,
         ReadMode::Eventual,
     ))
-    .expect("Candid encode execute_prepared arguments");
+    .expect("Candid encode prepared_query arguments");
     let response: Result<Response, CallFailed> =
-        ic_cdk::call::Call::bounded_wait(router, "execute_prepared")
+        ic_cdk::call::Call::bounded_wait(router, "prepared_query")
             .with_raw_args(&args)
             .await;
     let router_result: Result<GqlQueryResult, RouterError> = response
-        .map_err(|e| SocialDemoGatewayError::CallFailed(format!("execute_prepared call: {e:?}")))?
+        .map_err(|e| SocialDemoGatewayError::CallFailed(format!("prepared_query call: {e:?}")))?
         .candid::<Result<GqlQueryResult, RouterError>>()
-        .map_err(|e| SocialDemoGatewayError::CallFailed(format!("decode execute_prepared: {e}")))?;
+        .map_err(|e| SocialDemoGatewayError::CallFailed(format!("decode prepared_query: {e}")))?;
     router_result.map_err(SocialDemoGatewayError::Router)
 }
 

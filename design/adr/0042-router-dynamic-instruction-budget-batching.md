@@ -1,10 +1,10 @@
 # ADR 0042: Router instruction-budget mutation batching API
 
-Status: Implemented
+Status: Implemented (historical public cursor contract; superseded by ADR 0057 for client loading)
 
 ## Decision
 
-Make `gql_execute_idempotent_batch` a cursor-based continuation API. This is a
+The former public cursor-list operation used a cursor-based continuation API. This was a
 breaking replacement for the former separate dynamic endpoint. The caller
 supplies a mutation list, `start_index`, an optional instruction budget, and an
 optional maximum item count. There is no caller-visible item-count cap when
@@ -32,7 +32,7 @@ changes one sizing constant without changing every caller's formula. The 40B
 update ceiling, 5B query ceiling, and 35B dynamic update budget remain owned by
 `gleaph-graph-kernel`.
 
-The social-demo seeder uses the generated WASM adapter from the same
+The historical social-demo seeder used the generated WASM adapter from the same
 `gleaph-message-sizing` crate. It measures the complete binary Candid batch
 envelope with `@icp-sdk/core/candid`; it does not estimate from source-text
 length or maintain a second sizing algorithm in JavaScript.
@@ -48,7 +48,7 @@ The Graph journal preflight read uses the per-message instruction counter
 that the Router's earlier work in the same ingress call is not counted against
 the read's local budget.
 
-This API does not attempt to interrupt a mutation or a Graph batch wave. The
+This internal transport does not attempt to interrupt a mutation or a Graph batch wave. The
 atomicity unit remains one mutation, and the wave remains a transport grouping
 only. The instruction counter is the current Router canister call context; it
 is not a cross-canister aggregate. Graph execution retains its own per-call

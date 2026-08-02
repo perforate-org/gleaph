@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-31
-Anchor timestamp: 2026-07-31 10:45:43 UTC +0000
+Last updated: 2026-08-02
+Anchor timestamp: 2026-08-02 14:40:37 UTC +0000
 
 ## Purpose
 
@@ -41,11 +41,11 @@ remain in `gleaph-graph-kernel` (`MAX_QUERY_CALL_INSTRUCTIONS`,
 The canister handlers separate the intermediate incomplete journal write from the
 final completed journal write. Scalar single-message updates (`execute_plan_update`)
 keep only the completed journal entry because the whole message is atomic and there
-is no resumable boundary before completion. Batch updates (`execute_plan_update_batch`, typed V1,
-and shared V2) and non-bulk operations inside a batch still write the incomplete journal so the
-Router can resume or replay per-operation progress across calls. Typed V1 carries per-operation
-decoded seeds; shared V2 encodes one seed-invariant plan/catalog/seed/search header plus
-per-operation params.
+is no resumable boundary before completion. The internal independent-operation path
+(`execute_plan_update_batch`) and non-bulk operations inside that path still write the incomplete
+journal so the Router can resume or replay per-operation progress across calls. The retired typed
+and shared seed envelopes are not decoded. `atomic_insert` and `bulk_load` use their ordered Graph
+mutation families rather than plan aggregation.
 
 Flow:
 
@@ -69,12 +69,12 @@ seeds into `PlanRow`s. It validates local existence, tombstones, and required la
 may then skip the supported leading scan/index anchor while retaining residual `PropertyFilter`
 operators.
 
-`SeedBindingsWire.complete_prefix_rows` (ADR 0046 Phase 1/2) signals that the supplied `rows` are
+`SeedBindingsWire.complete_prefix_rows` (ADR 0046 Phase 1/2 historical transport) signals that the supplied `rows` are
 complete for the entire read prefix. When set, Graph executes the read prefix starting from the seed
 rows, skips the leading index/label scan operators, and re-validates those skipped operators against
 current canonical Graph state. Residual `PropertyFilter`s, joins, and Cartesian products run normally;
 the surviving rows are then fed into the no-await canonical mutation segment. This is currently used
-for multi-variable leading prefixes on the bulk path: Router resolves each variable's equality
+for multi-variable leading prefixes on the historical GQL bulk path: Router resolved each variable's equality
 anchors on the target shard, multiplies the per-variable candidate domains with checked arithmetic
   (retaining the domains and materializing only the request-sized chunk needed for the current
   dispatch), and sends one complete row per Cartesian-product tuple in that chunk. Empty domains are
@@ -83,10 +83,9 @@ short-circuit.
 
 A multi-variable prefix is only seeded when every anchored variable has at least one non-label
 equality anchor. Label-only or unsupported multi-variable prefixes still fall back to Graph-local
-execution. Single-variable parameter-dependent seeds continue to fall back to the sequential path;
-the implemented bulk group envelope would otherwise reuse the first item's dispatch.
+execution. Single-variable parameter-dependent seeds continue to use the sequential path.
 
-ADR 0046 defines the planned general pipeline:
+ADR 0046 records the historical planned general pipeline:
 
 ```mermaid
 flowchart LR

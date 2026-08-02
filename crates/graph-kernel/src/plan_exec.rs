@@ -25,25 +25,6 @@ pub type MutationId = u64;
 /// Shard-local label stats delta sequence. `0` is reserved; ids are never reused.
 pub type ShardEventSeq = u64;
 
-/// Maximum UTF-8 byte length of an error returned by the typed V1 batch endpoint.
-///
-/// Typed admission includes this bound in its worst-case response-size proof. Keep the truncation
-/// policy beside the public wire contract so the classifier and Graph response path cannot drift.
-pub const MAX_TYPED_BATCH_ERROR_BYTES: usize = 4 * 1024;
-
-/// Bound one typed-batch error without splitting a UTF-8 code point.
-pub fn bound_typed_batch_error(mut error: String) -> String {
-    if error.len() <= MAX_TYPED_BATCH_ERROR_BYTES {
-        return error;
-    }
-    let mut end = MAX_TYPED_BATCH_ERROR_BYTES;
-    while !error.is_char_boundary(end) {
-        end -= 1;
-    }
-    error.truncate(end);
-    error
-}
-
 /// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GqlExecutionMode {
@@ -111,7 +92,7 @@ pub struct ExecutePlanArgs {
 /// A bounded group of independent plan executions sent in one Router → Graph call.
 ///
 /// Each item retains its own mutation identity and execution payload. The Graph executes items
-/// independently; this type is a transport aggregation only and does not make the group atomic.
+/// independently; this type is an internal transport aggregation and does not make the group atomic.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanBatchArgs {
     pub operations: Vec<ExecutePlanArgs>,
@@ -124,99 +105,12 @@ pub enum ExecutePlanBatchMode {
     Dynamic,
 }
 
-/// Per-item outcomes for [`ExecutePlanBatchArgs`]. Keeping the result at item granularity lets the
-/// Router continue its existing saga/recovery handling after a later item fails.
+/// Per-item outcomes for [`ExecutePlanBatchArgs`].
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanBatchResult {
     pub results: Vec<Result<ExecutePlanResult, String>>,
-    /// Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
+    /// Index of the first operation not attempted when Dynamic mode hit the Graph budget.
     pub next_index: Option<u32>,
-}
-
-/// Router → graph: shared typed bulk execution envelope (ADR 0047).
-///
-/// This is the production transport for homogeneous groups where every operation has the same
-/// target shard and shares immutable plan/catalog context. Per-operation data is reduced to the
-/// params blob and the already-decoded complete-row seed relation.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub struct ExecutePlanBatchTypedArgs {
-    pub shared: ExecutePlanBatchTypedShared,
-    pub operations: Vec<ExecutePlanTypedOp>,
-    pub batch_mode: ExecutePlanBatchMode,
-}
-
-/// Router → Graph: shared execution envelope for seed-invariant homogeneous bulk groups.
-///
-/// Unlike [`ExecutePlanBatchArgs`], immutable plan/catalog context and the common seed/search
-/// relation are encoded once. Per-operation data is only the parameter blob. The entire ordered
-/// operation domain belongs to one `mutation_id`; callers must resend this same domain when
-/// continuing from Graph journal progress.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub struct ExecutePlanBatchSharedV2Args {
-    pub shared: ExecutePlanBatchSharedV2,
-    pub operations: Vec<ExecutePlanSharedV2Op>,
-    pub batch_mode: ExecutePlanBatchMode,
-}
-
-/// Immutable context shared by every operation in a shared V2 bulk group.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub struct ExecutePlanBatchSharedV2 {
-    pub target_shard_id: ShardId,
-    pub element_id_encoding_key: [u8; 16],
-    pub mutation_id: MutationId,
-    pub plan_blob: Vec<u8>,
-    pub seed_bindings_blob: Option<Vec<u8>>,
-    pub resolved_labels: Option<ResolvedLabelTable>,
-    pub resolved_properties: Option<ResolvedPropertyTable>,
-    pub indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
-    pub indexed_embeddings: Option<crate::vector_index::IndexedEmbeddingCatalog>,
-    pub resolved_search_blob: Option<Vec<u8>>,
-}
-
-/// Per-operation data for a shared V2 bulk group.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub struct ExecutePlanSharedV2Op {
-    pub params_blob: Vec<u8>,
-}
-
-/// Router → Graph: the unified bulk execution envelope (ADR 0047).
-///
-/// One versionless entrypoint replaces the former `typed_v1` (per-operation complete-row seeds)
-/// and `shared_v2` (one shared seed relation) endpoints; the variant carries the seed placement
-/// while immutable plan/catalog context stays shared inside each arm. Future envelope shapes are
-/// added as new variants rather than new method-name versions.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub enum ExecutePlanBulkBatch {
-    /// Every operation carries its own already-decoded complete-row seed relation.
-    PerItemSeed(ExecutePlanBatchTypedArgs),
-    /// All operations share one encoded seed relation carried in the shared context.
-    SharedSeed(ExecutePlanBatchSharedV2Args),
-}
-
-/// Immutable context shared by every operation in a typed bulk group.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub struct ExecutePlanBatchTypedShared {
-    pub target_shard_id: ShardId,
-    /// Per-graph key for ELEMENT_ID/path id encoding.
-    pub element_id_encoding_key: [u8; 16],
-    /// Router-issued idempotency key for the whole bulk group.
-    pub mutation_id: MutationId,
-    pub plan_blob: Vec<u8>,
-    /// Router-resolved label names referenced by the physical plan.
-    pub resolved_labels: Option<ResolvedLabelTable>,
-    /// Router-resolved property names referenced by the physical plan.
-    pub resolved_properties: Option<ResolvedPropertyTable>,
-    /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
-    pub indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
-}
-
-/// One typed bulk operation with an already-decoded complete-row seed.
-#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
-pub struct ExecutePlanTypedOp {
-    /// Per-operation GQL parameter map, already encoded.
-    pub params_blob: Vec<u8>,
-    /// Required complete-row seed relation. Zero matches use an empty `rows` vector.
-    pub seed: SeedBindingsWire,
 }
 
 /// Canonical compact GQL value bytes carried across an independently encoded boundary.
@@ -925,72 +819,6 @@ pub fn ordered_mixed_batch_graph_request_fingerprint(
     Ok(hasher.finalize().into())
 }
 
-impl ExecutePlanBatchTypedArgs {
-    /// Structural validation shared by Router admission and Graph entry.
-    ///
-    /// Checks cardinality, complete-row shape, per-operation bounds, and the encoded request size.
-    /// It does not re-encode individual seeds; the one full-request encode is the only byte proof.
-    pub fn validate(&self) -> Result<(), String> {
-        let ops = self.operations.len();
-        if ops == 0 {
-            return Err(format!(
-                "typed batch V1 requires at least one operation, got {ops}"
-            ));
-        }
-        for (i, op) in self.operations.iter().enumerate() {
-            if !op.seed.entries.is_empty() {
-                return Err(format!(
-                    "typed batch V1 op {i} contains grouped seed entries"
-                ));
-            }
-            if !op.seed.complete_prefix_rows {
-                return Err(format!(
-                    "typed batch V1 op {i} requires complete_prefix_rows=true"
-                ));
-            }
-            if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(format!(
-                    "typed batch V1 op {i} params exceed safe payload bound"
-                ));
-            }
-        }
-        let encoded =
-            Encode!(self).map_err(|e| format!("typed batch V1 request encode failed: {e}"))?;
-        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err(format!(
-                "typed batch V1 request exceeds the safe payload limit of {}",
-                MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl ExecutePlanBatchSharedV2Args {
-    /// Structural and encoded-size validation shared by Router and Graph.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.operations.is_empty() {
-            return Err("shared batch V2 requires at least one operation".into());
-        }
-        for (i, op) in self.operations.iter().enumerate() {
-            if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(format!(
-                    "shared batch V2 op {i} params exceed safe payload bound"
-                ));
-            }
-        }
-        let encoded =
-            Encode!(self).map_err(|e| format!("shared batch V2 request encode failed: {e}"))?;
-        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err(format!(
-                "shared batch V2 request exceeds the safe payload limit of {}",
-                MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-            ));
-        }
-        Ok(())
-    }
-}
-
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
 ///
 /// `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
@@ -1218,8 +1046,8 @@ pub enum GraphMutationRetirementWireV1 {
 
 /// Validate the request-kind-specific combinations allowed in the Graph journal.
 ///
-/// PlanExecution retains the existing scalar/bulk state machine. OrderedEdgeBatch is a
-/// single completed request and therefore cannot carry continuation or partial-progress state.
+/// PlanExecution retains the scalar state machine. Ordered mutation families are completed
+/// requests and therefore cannot carry partial-progress state.
 pub fn validate_graph_mutation_journal_fields(
     identity: &GraphMutationRequestIdentityV1,
     retirement: GraphMutationRetirementWireV1,
@@ -1304,6 +1132,68 @@ pub fn validate_graph_mutation_journal_fields(
     Ok(())
 }
 
+/// Validate the ordered-insert allocated-ID appendix against the journal request family.
+///
+/// Vertex and mixed ordered mutations must persist the exact request-local vertex allocation
+/// sequence. Edge-only and legacy plan mutations must not carry this appendix; treating an
+/// absent vertex receipt as an empty successful result would make old v1 bytes replayable with a
+/// different contract.
+pub fn validate_allocated_vertex_ids_appendix(
+    identity: &GraphMutationRequestIdentityV1,
+    allocated_vertex_ids: Option<&[LocalVertexId]>,
+) -> Result<(), &'static str> {
+    validate_allocated_vertex_id_count(identity, allocated_vertex_ids.map(<[LocalVertexId]>::len))
+}
+
+/// Validate the allocated-ID appendix cardinality without requiring the encoded IDs themselves.
+///
+/// Graph uses this form during journal-record admission, before canonical vertex allocation can
+/// produce the actual local IDs. The cardinality rule remains owned by the Graph journal identity
+/// contract so admission and decode cannot drift.
+pub fn validate_allocated_vertex_id_count(
+    identity: &GraphMutationRequestIdentityV1,
+    allocated_vertex_count: Option<usize>,
+) -> Result<(), &'static str> {
+    match identity {
+        GraphMutationRequestIdentityV1::PlanExecution => {
+            if allocated_vertex_count.is_some() {
+                return Err("PlanExecution journal entry must not have allocated vertex ids");
+            }
+        }
+        GraphMutationRequestIdentityV1::OrderedEdgeBatch { .. } => {
+            if allocated_vertex_count.is_some() {
+                return Err("ordered edge journal entry must not have allocated vertex ids");
+            }
+        }
+        GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            logical_item_count, ..
+        } => {
+            let Some(count) = allocated_vertex_count else {
+                return Err("ordered vertex journal entry requires allocated vertex ids");
+            };
+            if count != *logical_item_count as usize {
+                return Err(
+                    "ordered vertex allocated vertex id count must equal logical item count",
+                );
+            }
+        }
+        GraphMutationRequestIdentityV1::OrderedMixedBatch {
+            logical_vertex_count,
+            ..
+        } => {
+            let Some(count) = allocated_vertex_count else {
+                return Err("ordered mixed journal entry requires allocated vertex ids");
+            };
+            if count != *logical_vertex_count as usize {
+                return Err(
+                    "ordered mixed allocated vertex id count must equal logical vertex count",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Durable aggregate receipt returned by a completed ordered Graph edge batch.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GraphOrderedEdgeBatchReceiptV1 {
@@ -1320,6 +1210,8 @@ pub struct GraphOrderedVertexBatchReceiptV1 {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     pub hot_forward_vertices: Vec<LocalVertexId>,
+    /// Vertex IDs in request-local vertex-operation ordinal order.
+    pub allocated_vertex_ids: Vec<LocalVertexId>,
 }
 
 /// Durable aggregate receipt returned by a completed mixed Graph batch.
@@ -1331,6 +1223,8 @@ pub struct GraphOrderedMixedBatchReceiptV1 {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     pub hot_forward_vertices: Vec<LocalVertexId>,
+    /// Vertex IDs in request-local vertex-operation ordinal order.
+    pub allocated_vertex_ids: Vec<LocalVertexId>,
 }
 
 impl GraphOrderedMixedBatchReceiptV1 {
@@ -1351,6 +1245,13 @@ impl GraphOrderedMixedBatchReceiptV1 {
         {
             return Err("ordered mixed receipt hot-forward vertices must be sorted and unique");
         }
+        let expected_vertex_count = usize::try_from(self.logical_vertex_count)
+            .map_err(|_| "ordered mixed receipt logical vertex count overflows usize")?;
+        if self.allocated_vertex_ids.len() != expected_vertex_count {
+            return Err(
+                "ordered mixed receipt allocated vertex id count must equal logical vertex count",
+            );
+        }
         let encoded = Encode!(self).map_err(|_| "ordered mixed receipt encode failed")?;
         if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("ordered mixed receipt exceeds the safe payload limit");
@@ -1367,6 +1268,13 @@ impl GraphOrderedVertexBatchReceiptV1 {
             .any(|pair| pair[0] >= pair[1])
         {
             return Err("ordered vertex receipt hot-forward vertices must be sorted and unique");
+        }
+        let expected_vertex_count = usize::try_from(self.logical_vertex_count)
+            .map_err(|_| "ordered vertex receipt logical vertex count overflows usize")?;
+        if self.allocated_vertex_ids.len() != expected_vertex_count {
+            return Err(
+                "ordered vertex receipt allocated vertex id count must equal logical vertex count",
+            );
         }
         let encoded = Encode!(self).map_err(|_| "ordered vertex receipt encode failed")?;
         if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
@@ -1551,7 +1459,7 @@ pub struct OrderedVertexMutationRetirementArgsV1 {
     pub graph_request_fingerprint: [u8; 32],
 }
 
-/// Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
+/// Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0027, ADR 0057).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GraphMutationJournalEntryWire {
     V1(GraphMutationJournalEntryWireV1),
@@ -1566,11 +1474,13 @@ pub struct GraphMutationJournalEntryWireV1 {
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     /// Forward hubs observed during DML, persisted so router recovery can still finalize.
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
-    /// Bulk operation cursor: for a bulk mutation, points at the next unexecuted
-    /// operation index. For a single mutation it is `None`.
+    /// Ordered local vertex allocations. `Some` is mandatory for ordered vertex/mixed entries;
+    /// edge-only and plan-execution entries must keep this `None` so the appendix remains absent.
+    pub allocated_vertex_ids: Option<Vec<crate::federation::LocalVertexId>>,
+    /// Internal plan-batch cursor: the first unexecuted operation.
     #[serde(default)]
     pub next_index: Option<u32>,
-    /// Bulk-specific progress metadata; present only when `next_index` is used.
+    /// Internal plan-batch progress metadata.
     #[serde(default)]
     pub bulk_progress: Option<GraphBulkMutationProgress>,
     #[serde(default = "default_graph_mutation_request_identity")]
@@ -1587,7 +1497,7 @@ fn default_graph_mutation_retirement_wire() -> GraphMutationRetirementWireV1 {
     GraphMutationRetirementWireV1::NotApplicable
 }
 
-/// Versioned bulk mutation progress metadata stored in a Graph journal entry (ADR 0044).
+/// Versioned internal plan-batch progress stored in a Graph journal entry.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GraphBulkMutationProgress {
     V1(GraphBulkMutationProgressV1),
@@ -1597,8 +1507,6 @@ pub enum GraphBulkMutationProgress {
 pub struct GraphBulkMutationProgressV1 {
     pub operation_count: u32,
     pub completed_count: u32,
-    /// Ordered row counts for the committed prefix. Persisted so a completed replay can return the
-    /// same per-operation result cardinality instead of synthetic zeroes.
     #[serde(default)]
     pub operation_row_counts: Vec<u64>,
 }
@@ -1619,6 +1527,7 @@ impl GraphMutationJournalEntryWire {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices,
+            allocated_vertex_ids: None,
             next_index: None,
             bulk_progress: None,
             request_identity: GraphMutationRequestIdentityV1::PlanExecution,
@@ -1656,6 +1565,9 @@ impl GraphMutationJournalEntryWire {
     pub fn hot_forward_vertices(&self) -> &Vec<crate::federation::LocalVertexId> {
         &self.as_v1().hot_forward_vertices
     }
+    pub fn allocated_vertex_ids(&self) -> Option<&[crate::federation::LocalVertexId]> {
+        self.as_v1().allocated_vertex_ids.as_deref()
+    }
     pub fn next_index(&self) -> Option<u32> {
         self.as_v1().next_index
     }
@@ -1682,6 +1594,10 @@ impl GraphMutationJournalEntryWire {
             entry.row_count,
             entry.next_index,
             &entry.bulk_progress,
+        )?;
+        validate_allocated_vertex_ids_appendix(
+            &entry.request_identity,
+            entry.allocated_vertex_ids.as_deref(),
         )
     }
 
@@ -1699,6 +1615,12 @@ impl GraphMutationJournalEntryWire {
     }
     pub fn set_hot_forward_vertices(&mut self, vertices: Vec<crate::federation::LocalVertexId>) {
         self.as_v1_mut().hot_forward_vertices = vertices;
+    }
+    pub fn set_allocated_vertex_ids(
+        &mut self,
+        allocated_vertex_ids: Option<Vec<crate::federation::LocalVertexId>>,
+    ) {
+        self.as_v1_mut().allocated_vertex_ids = allocated_vertex_ids;
     }
     pub fn set_next_index(&mut self, next_index: Option<u32>) {
         self.as_v1_mut().next_index = next_index;
@@ -1725,19 +1647,19 @@ impl GraphBulkMutationProgress {
 
     pub fn operation_count(&self) -> u32 {
         match self {
-            GraphBulkMutationProgress::V1(v1) => v1.operation_count,
+            Self::V1(v1) => v1.operation_count,
         }
     }
 
     pub fn completed_count(&self) -> u32 {
         match self {
-            GraphBulkMutationProgress::V1(v1) => v1.completed_count,
+            Self::V1(v1) => v1.completed_count,
         }
     }
 
     pub fn operation_row_counts(&self) -> &[u64] {
         match self {
-            GraphBulkMutationProgress::V1(v1) => &v1.operation_row_counts,
+            Self::V1(v1) => &v1.operation_row_counts,
         }
     }
 }
@@ -2085,6 +2007,47 @@ mod tests {
     }
 
     #[test]
+    fn ordered_vertex_receipt_preserves_allocated_vertex_operation_order() {
+        let receipt = GraphOrderedVertexBatchReceiptV1 {
+            logical_vertex_count: 2,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: vec![3, 9],
+            allocated_vertex_ids: vec![9, 3],
+        };
+        receipt
+            .validate()
+            .expect("allocated IDs are ordinal, not sorted");
+        let bytes = Encode!(&receipt).expect("encode receipt");
+        let decoded: GraphOrderedVertexBatchReceiptV1 =
+            Decode!(&bytes, GraphOrderedVertexBatchReceiptV1).expect("decode receipt");
+        assert_eq!(decoded.allocated_vertex_ids, vec![9, 3]);
+    }
+
+    #[test]
+    fn allocated_vertex_id_appendix_is_required_only_for_vertex_families() {
+        let edge_identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [0; 32],
+            logical_item_count: 1,
+        };
+        assert_eq!(
+            validate_allocated_vertex_ids_appendix(&edge_identity, Some(&[7])),
+            Err("ordered edge journal entry must not have allocated vertex ids")
+        );
+        let vertex_identity = GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [0; 32],
+            logical_item_count: 1,
+        };
+        assert_eq!(
+            validate_allocated_vertex_ids_appendix(&vertex_identity, None),
+            Err("ordered vertex journal entry requires allocated vertex ids")
+        );
+        assert!(validate_allocated_vertex_ids_appendix(&vertex_identity, Some(&[7])).is_ok());
+    }
+
+    #[test]
     fn ordered_result_and_retirement_ack_roundtrip() {
         let receipt = GraphOrderedEdgeBatchReceiptV1 {
             logical_edge_count: 2,
@@ -2405,24 +2368,12 @@ mod tests {
     }
 
     #[test]
-    fn ordered_journal_validation_rejects_continuation_and_wrong_row_count() {
+    fn ordered_journal_validation_rejects_wrong_row_count() {
         let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
             canonical_encoding_version: 1,
             graph_request_fingerprint: [0; 32],
             logical_item_count: 2,
         };
-        let no_progress = None;
-        assert_eq!(
-            validate_graph_mutation_journal_fields(
-                &identity,
-                GraphMutationRetirementWireV1::Active,
-                MutationJournalState::Completed,
-                2,
-                Some(0),
-                &no_progress,
-            ),
-            Err("ordered journal entry must not have next_index")
-        );
         assert_eq!(
             validate_graph_mutation_journal_fields(
                 &identity,
@@ -2430,7 +2381,7 @@ mod tests {
                 MutationJournalState::Completed,
                 1,
                 None,
-                &no_progress,
+                &None,
             ),
             Err("ordered journal row_count must equal logical_item_count")
         );
@@ -2438,7 +2389,6 @@ mod tests {
 
     #[test]
     fn plan_execution_journal_validation_rejects_retirement() {
-        let no_progress = None;
         assert_eq!(
             validate_graph_mutation_journal_fields(
                 &GraphMutationRequestIdentityV1::PlanExecution,
@@ -2446,7 +2396,7 @@ mod tests {
                 MutationJournalState::Completed,
                 0,
                 None,
-                &no_progress,
+                &None,
             ),
             Err("PlanExecution journal entry must not have retirement state")
         );
@@ -2481,77 +2431,6 @@ mod tests {
         let decoded: ExecutePlanBatchResult =
             Decode!(&bytes, ExecutePlanBatchResult).expect("decode");
         assert_eq!(result, decoded);
-    }
-
-    #[test]
-    fn typed_batch_error_bound_is_utf8_safe_and_exact() {
-        let prefix = "x".repeat(MAX_TYPED_BATCH_ERROR_BYTES - 1);
-        let bounded = bound_typed_batch_error(format!("{prefix}étail"));
-        assert_eq!(bounded.len(), MAX_TYPED_BATCH_ERROR_BYTES - 1);
-        assert_eq!(bounded, prefix);
-        assert_eq!(
-            bound_typed_batch_error("short error".to_string()),
-            "short error"
-        );
-    }
-
-    #[test]
-    fn execute_plan_batch_args_roundtrip_preserves_dynamic_mode() {
-        let args = ExecutePlanBatchArgs {
-            operations: Vec::new(),
-            mode: ExecutePlanBatchMode::Dynamic,
-        };
-        let bytes = Encode!(&args).expect("encode");
-        let decoded: ExecutePlanBatchArgs = Decode!(&bytes, ExecutePlanBatchArgs).expect("decode");
-        assert_eq!(args, decoded);
-    }
-
-    #[test]
-    fn execute_plan_bulk_batch_candid_roundtrip_all_variants() {
-        let per_item = ExecutePlanBulkBatch::PerItemSeed(ExecutePlanBatchTypedArgs {
-            shared: ExecutePlanBatchTypedShared {
-                target_shard_id: ShardId(1),
-                element_id_encoding_key: [0u8; 16],
-                mutation_id: 42,
-                plan_blob: vec![1, 2, 3],
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-            },
-            operations: vec![ExecutePlanTypedOp {
-                params_blob: vec![9],
-                seed: SeedBindingsWire {
-                    entries: Vec::new(),
-                    rows: Vec::new(),
-                    complete_prefix_rows: true,
-                },
-            }],
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        });
-        let shared = ExecutePlanBulkBatch::SharedSeed(ExecutePlanBatchSharedV2Args {
-            shared: ExecutePlanBatchSharedV2 {
-                target_shard_id: ShardId(1),
-                element_id_encoding_key: [0u8; 16],
-                mutation_id: 42,
-                plan_blob: vec![1, 2, 3],
-                seed_bindings_blob: None,
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-                indexed_embeddings: None,
-                resolved_search_blob: None,
-            },
-            operations: vec![ExecutePlanSharedV2Op {
-                params_blob: vec![9],
-            }],
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        });
-        for envelope in [per_item, shared] {
-            let bytes = Encode!(&envelope).expect("encode bulk envelope");
-            let decoded: ExecutePlanBulkBatch =
-                Decode!(&bytes, ExecutePlanBulkBatch).expect("decode bulk envelope");
-            assert_eq!(envelope, decoded);
-        }
     }
 
     #[test]
@@ -3028,87 +2907,5 @@ mod tests {
             Some(ResolvedInlineSchema::Scalar { property_id })
             if property_id == PropertyId::from_raw(42)
         ));
-    }
-    #[test]
-    fn execute_plan_batch_typed_args_roundtrip_and_validation() {
-        let args = ExecutePlanBatchTypedArgs {
-            shared: ExecutePlanBatchTypedShared {
-                target_shard_id: ShardId(1),
-                element_id_encoding_key: [0u8; 16],
-                mutation_id: 42,
-                plan_blob: vec![1, 2, 3],
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-            },
-            operations: vec![ExecutePlanTypedOp {
-                params_blob: vec![7, 8, 9],
-                seed: SeedBindingsWire {
-                    entries: vec![],
-                    rows: vec![],
-                    complete_prefix_rows: true,
-                },
-            }],
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        };
-        args.validate().expect("valid typed args");
-        let bytes = Encode!(&args).expect("encode");
-        let decoded: ExecutePlanBatchTypedArgs =
-            Decode!(&bytes, ExecutePlanBatchTypedArgs).expect("decode");
-        assert_eq!(args, decoded);
-    }
-
-    #[test]
-    fn execute_plan_batch_typed_args_rejects_grouped_entries() {
-        let args = ExecutePlanBatchTypedArgs {
-            shared: ExecutePlanBatchTypedShared {
-                target_shard_id: ShardId(1),
-                element_id_encoding_key: [0u8; 16],
-                mutation_id: 42,
-                plan_blob: vec![1, 2, 3],
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-            },
-            operations: vec![ExecutePlanTypedOp {
-                params_blob: vec![],
-                seed: SeedBindingsWire {
-                    entries: vec![SeedBindingEntry {
-                        variable: "x".into(),
-                        local_vertex_ids: vec![1],
-                        local_edge_postings: vec![],
-                    }],
-                    rows: vec![],
-                    complete_prefix_rows: true,
-                },
-            }],
-            batch_mode: ExecutePlanBatchMode::Fixed,
-        };
-        assert!(args.validate().is_err());
-    }
-
-    #[test]
-    fn execute_plan_batch_typed_args_rejects_incomplete_prefix_rows() {
-        let args = ExecutePlanBatchTypedArgs {
-            shared: ExecutePlanBatchTypedShared {
-                target_shard_id: ShardId(1),
-                element_id_encoding_key: [0u8; 16],
-                mutation_id: 42,
-                plan_blob: vec![1, 2, 3],
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-            },
-            operations: vec![ExecutePlanTypedOp {
-                params_blob: vec![],
-                seed: SeedBindingsWire {
-                    entries: vec![],
-                    rows: vec![],
-                    complete_prefix_rows: false,
-                },
-            }],
-            batch_mode: ExecutePlanBatchMode::Fixed,
-        };
-        assert!(args.validate().is_err());
     }
 }

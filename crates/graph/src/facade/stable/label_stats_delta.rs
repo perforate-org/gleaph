@@ -6,6 +6,7 @@ use gleaph_graph_kernel::plan_exec::{
     GraphBulkMutationProgress, GraphBulkMutationProgressV1, GraphMutationJournalEntryWire,
     GraphMutationRequestIdentityV1, GraphMutationRetirementV1, GraphMutationRetirementWireV1,
     LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
+    validate_allocated_vertex_id_count, validate_allocated_vertex_ids_appendix,
     validate_graph_mutation_journal_fields,
 };
 use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
@@ -16,7 +17,7 @@ use std::ops::Bound as StdBound;
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope as canbench_scope;
 
-/// Versioned graph-local mutation journal entry (ADR 0015, ADR 0044).
+/// Versioned graph-local mutation journal entry (ADR 0015, ADR 0027, ADR 0057).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum GraphMutationJournalEntry {
     V1(GraphMutationJournalEntryV1),
@@ -30,6 +31,9 @@ pub struct GraphMutationJournalEntryV1 {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     pub hot_forward_vertices: Vec<LocalVertexId>,
+    /// Ordered vertex allocations in request-local vertex-operation order. `None` keeps the
+    /// appendix absent for edge-only and plan-execution entries.
+    pub allocated_vertex_ids: Option<Vec<LocalVertexId>>,
     /// IC time (ns) when this entry was last recorded, the sole basis for time-based
     /// retention (ADR 0027). The current fixed-length stable layout writes the
     /// timestamp slot for every persisted entry; `None` remains an in-memory
@@ -62,6 +66,7 @@ impl GraphMutationJournalEntry {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices: Vec::new(),
+            allocated_vertex_ids: None,
             recorded_at_ns: Some(recorded_at_ns),
             next_index: None,
             bulk_progress: None,
@@ -85,6 +90,7 @@ impl GraphMutationJournalEntry {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices,
+            allocated_vertex_ids: None,
             recorded_at_ns: Some(recorded_at_ns),
             next_index: None,
             bulk_progress: None,
@@ -123,6 +129,9 @@ impl GraphMutationJournalEntry {
     pub fn hot_forward_vertices(&self) -> &Vec<LocalVertexId> {
         &self.as_v1().hot_forward_vertices
     }
+    pub fn allocated_vertex_ids(&self) -> Option<&[LocalVertexId]> {
+        self.as_v1().allocated_vertex_ids.as_deref()
+    }
     pub fn recorded_at_ns(&self) -> Option<u64> {
         self.as_v1().recorded_at_ns
     }
@@ -154,6 +163,9 @@ impl GraphMutationJournalEntry {
     pub fn set_hot_forward_vertices(&mut self, vertices: Vec<LocalVertexId>) {
         self.as_v1_mut().hot_forward_vertices = vertices;
     }
+    pub fn set_allocated_vertex_ids(&mut self, ids: Option<Vec<LocalVertexId>>) {
+        self.as_v1_mut().allocated_vertex_ids = ids;
+    }
     pub fn set_recorded_at_ns(&mut self, recorded_at_ns: Option<u64>) {
         self.as_v1_mut().recorded_at_ns = recorded_at_ns;
     }
@@ -179,6 +191,7 @@ impl GraphMutationJournalEntry {
             self.as_v1().emitted_delta_last_seq,
             self.as_v1().hot_forward_vertices.clone(),
         );
+        wire.set_allocated_vertex_ids(self.as_v1().allocated_vertex_ids.clone());
         wire.set_next_index(self.as_v1().next_index);
         wire.set_bulk_progress(self.as_v1().bulk_progress.clone());
         wire.set_request_identity(self.as_v1().request_identity.clone());
@@ -223,6 +236,184 @@ const APPENDIX_HOT_FORWARD: u8 = 0x01;
 const APPENDIX_BULK_PROGRESS: u8 = 0x02;
 const APPENDIX_REQUEST_IDENTITY: u8 = 0x04;
 const APPENDIX_RETIREMENT: u8 = 0x08;
+const APPENDIX_ALLOCATED_VERTEX_IDS: u8 = 0x10;
+const KNOWN_APPENDIX_FLAGS: u8 = APPENDIX_HOT_FORWARD
+    | APPENDIX_BULK_PROGRESS
+    | APPENDIX_REQUEST_IDENTITY
+    | APPENDIX_RETIREMENT
+    | APPENDIX_ALLOCATED_VERTEX_IDS;
+const LOCAL_VERTEX_ID_APPENDIX_BYTES: usize = 4;
+
+fn checked_appendix_add(
+    total: &mut usize,
+    additional: usize,
+    appendix_name: &str,
+) -> Result<(), String> {
+    *total = total
+        .checked_add(additional)
+        .ok_or_else(|| format!("{appendix_name} journal appendix size overflows usize"))?;
+    Ok(())
+}
+
+fn checked_counted_appendix_len(
+    count: usize,
+    item_width: usize,
+    appendix_name: &str,
+) -> Result<usize, String> {
+    if count > u32::MAX as usize {
+        return Err(format!("{appendix_name} count exceeds u32"));
+    }
+    count
+        .checked_mul(item_width)
+        .and_then(|bytes| bytes.checked_add(4))
+        .ok_or_else(|| format!("{appendix_name} journal appendix size overflows usize"))
+}
+
+fn request_identity_appendix_len(identity: &GraphMutationRequestIdentityV1) -> usize {
+    match identity {
+        GraphMutationRequestIdentityV1::PlanExecution => 0,
+        GraphMutationRequestIdentityV1::OrderedEdgeBatch { .. }
+        | GraphMutationRequestIdentityV1::OrderedVertexBatch { .. } => 1 + 2 + 32 + 4,
+        GraphMutationRequestIdentityV1::OrderedMixedBatch { .. } => 1 + 2 + 32 + 4 + 4 + 4,
+    }
+}
+
+fn retirement_appendix_len(retirement: &GraphMutationRetirementV1) -> usize {
+    match retirement {
+        GraphMutationRetirementV1::NotApplicable => 0,
+        GraphMutationRetirementV1::Active => 1,
+        GraphMutationRetirementV1::Retired { .. } => 1 + 8,
+    }
+}
+
+/// Compute the exact encoded MemoryId 39 journal record size from one canonical entry shape.
+///
+/// The encoder and the ordered-handler admission both call this helper. The latter supplies
+/// cardinalities before allocation, while the former supplies the cardinalities of the actual
+/// vectors. Keeping request identity, retirement, hot-forward, allocated-ID, and bulk appendices
+/// in one calculation prevents an admission guard from silently omitting a newly enabled field.
+fn checked_journal_record_size(
+    entry: &GraphMutationJournalEntryV1,
+    hot_forward_vertex_count: usize,
+    allocated_vertex_id_count: Option<usize>,
+) -> Result<usize, String> {
+    let retirement_wire = match &entry.retirement {
+        GraphMutationRetirementV1::NotApplicable => GraphMutationRetirementWireV1::NotApplicable,
+        GraphMutationRetirementV1::Active => GraphMutationRetirementWireV1::Active,
+        GraphMutationRetirementV1::Retired { .. } => GraphMutationRetirementWireV1::Retired,
+    };
+    validate_graph_mutation_journal_fields(
+        &entry.request_identity,
+        retirement_wire,
+        entry.state,
+        entry.row_count,
+        entry.next_index,
+        &entry.bulk_progress,
+    )
+    .map_err(str::to_string)?;
+    validate_allocated_vertex_id_count(&entry.request_identity, allocated_vertex_id_count)
+        .map_err(str::to_string)?;
+
+    let mut appendix_len = 0usize;
+    if hot_forward_vertex_count != 0 {
+        checked_appendix_add(
+            &mut appendix_len,
+            checked_counted_appendix_len(
+                hot_forward_vertex_count,
+                LOCAL_VERTEX_ID_APPENDIX_BYTES,
+                "hot_forward vertex",
+            )?,
+            "hot_forward vertex",
+        )?;
+    }
+    if let Some(GraphBulkMutationProgress::V1(progress)) = &entry.bulk_progress {
+        let row_count_len = progress.operation_row_counts.len();
+        if row_count_len > progress.operation_count as usize {
+            return Err(format!(
+                "bulk operation_row_counts length {row_count_len} exceeds operation count {}",
+                progress.operation_count
+            ));
+        }
+        let progress_len = 12usize
+            .checked_add(
+                row_count_len
+                    .checked_mul(8)
+                    .ok_or_else(|| "bulk progress appendix size overflows usize".to_string())?,
+            )
+            .ok_or_else(|| "bulk progress appendix size overflows usize".to_string())?;
+        checked_appendix_add(&mut appendix_len, progress_len, "bulk progress")?;
+    }
+    if !matches!(
+        entry.request_identity,
+        GraphMutationRequestIdentityV1::PlanExecution
+    ) {
+        checked_appendix_add(
+            &mut appendix_len,
+            request_identity_appendix_len(&entry.request_identity),
+            "request identity",
+        )?;
+    }
+    if !matches!(entry.retirement, GraphMutationRetirementV1::NotApplicable) {
+        checked_appendix_add(
+            &mut appendix_len,
+            retirement_appendix_len(&entry.retirement),
+            "retirement",
+        )?;
+    }
+    if let Some(count) = allocated_vertex_id_count {
+        checked_appendix_add(
+            &mut appendix_len,
+            checked_counted_appendix_len(
+                count,
+                LOCAL_VERTEX_ID_APPENDIX_BYTES,
+                "allocated vertex id",
+            )?,
+            "allocated vertex id",
+        )?;
+    }
+    if appendix_len > u32::MAX as usize {
+        return Err("journal appendix length exceeds u32".into());
+    }
+    let record_len = JOURNAL_PRIMARY_SIZE
+        .checked_add(appendix_len)
+        .ok_or_else(|| "journal record size overflows usize".to_string())?;
+    if record_len > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err(format!(
+            "graph mutation journal record exceeds the safe payload limit: {record_len} bytes"
+        ));
+    }
+    Ok(record_len)
+}
+
+/// Preflight the complete ordered journal record before the first canonical vertex write.
+pub(crate) fn preflight_ordered_journal_record_capacity(
+    request_identity: &GraphMutationRequestIdentityV1,
+    hot_forward_vertex_count: usize,
+    allocated_vertex_id_count: Option<usize>,
+) -> Result<(), String> {
+    let row_count = match request_identity {
+        GraphMutationRequestIdentityV1::PlanExecution => 0,
+        GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            logical_item_count, ..
+        }
+        | GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            logical_item_count, ..
+        } => u64::from(*logical_item_count),
+        GraphMutationRequestIdentityV1::OrderedMixedBatch {
+            logical_operation_count,
+            ..
+        } => u64::from(*logical_operation_count),
+    };
+    let mut entry = GraphMutationJournalEntry::completed(0, row_count, None, None, Vec::new(), 0);
+    entry.set_request_identity(request_identity.clone());
+    entry.set_retirement(GraphMutationRetirementV1::Active);
+    checked_journal_record_size(
+        entry.as_v1(),
+        hot_forward_vertex_count,
+        allocated_vertex_id_count,
+    )
+    .map(|_| ())
+}
 
 fn encode_u8(buf: &mut Vec<u8>, val: u8) {
     buf.push(val);
@@ -412,21 +603,13 @@ fn decode_retirement(bytes: &[u8], offset: &mut usize) -> GraphMutationRetiremen
 }
 
 fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
-    let retirement = match &v1.retirement {
-        GraphMutationRetirementV1::NotApplicable => GraphMutationRetirementWireV1::NotApplicable,
-        GraphMutationRetirementV1::Active => GraphMutationRetirementWireV1::Active,
-        GraphMutationRetirementV1::Retired { .. } => GraphMutationRetirementWireV1::Retired,
-    };
-    validate_graph_mutation_journal_fields(
-        &v1.request_identity,
-        retirement,
-        v1.state,
-        v1.row_count,
-        v1.next_index,
-        &v1.bulk_progress,
+    let encoded_len = checked_journal_record_size(
+        v1,
+        v1.hot_forward_vertices.len(),
+        v1.allocated_vertex_ids.as_ref().map(Vec::len),
     )
     .expect("invalid graph mutation journal entry");
-    let mut buf = Vec::with_capacity(JOURNAL_PRIMARY_SIZE);
+    let mut buf = Vec::with_capacity(encoded_len);
 
     encode_u8(&mut buf, JOURNAL_LAYOUT_VERSION);
     encode_u64_le(&mut buf, v1.mutation_id);
@@ -469,6 +652,9 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
     if !matches!(&v1.retirement, GraphMutationRetirementV1::NotApplicable) {
         flags |= APPENDIX_RETIREMENT;
     }
+    if v1.allocated_vertex_ids.is_some() {
+        flags |= APPENDIX_ALLOCATED_VERTEX_IDS;
+    }
     encode_u8(&mut buf, flags);
 
     // Compute and reserve appendix length slot.
@@ -487,7 +673,6 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
         for &vid in &v1.hot_forward_vertices {
             encode_u32_le(&mut buf, vid);
         }
-        assert_payload_limit(&buf, "graph mutation journal entry");
     }
 
     if let Some(GraphBulkMutationProgress::V1(progress)) = &v1.bulk_progress {
@@ -508,35 +693,35 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
         for &rc in &progress.operation_row_counts {
             encode_u64_le(&mut buf, rc);
         }
-        assert_payload_limit(&buf, "graph mutation journal entry");
     }
 
     if flags & APPENDIX_REQUEST_IDENTITY != 0 {
         encode_request_identity(&mut buf, &v1.request_identity);
-        assert_payload_limit(&buf, "graph mutation journal entry");
     }
     if flags & APPENDIX_RETIREMENT != 0 {
         encode_retirement(&mut buf, &v1.retirement);
-        assert_payload_limit(&buf, "graph mutation journal entry");
+    }
+    if let Some(allocated_vertex_ids) = &v1.allocated_vertex_ids {
+        assert!(
+            allocated_vertex_ids.len() <= u32::MAX as usize,
+            "allocated vertex id count exceeds u32"
+        );
+        encode_u32_le(&mut buf, allocated_vertex_ids.len() as u32);
+        for &vertex_id in allocated_vertex_ids {
+            encode_u32_le(&mut buf, vertex_id);
+        }
     }
 
-    let appendix_len = (buf.len() - appendix_start) as u32;
+    let appendix_len =
+        u32::try_from(buf.len() - appendix_start).expect("journal appendix length exceeds u32");
     buf[appendix_len_offset..appendix_len_offset + 4].copy_from_slice(&appendix_len.to_le_bytes());
+    assert_eq!(
+        buf.len(),
+        encoded_len,
+        "journal encoded length disagrees with its preflight"
+    );
 
     buf
-}
-
-#[inline(always)]
-fn assert_payload_limit(bytes: &[u8], kind: &str) {
-    if bytes.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        payload_limit_violation(kind);
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn payload_limit_violation(kind: &str) -> ! {
-    panic!("{kind} exceeds the safe payload limit");
 }
 
 fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
@@ -584,6 +769,12 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     };
 
     let flags = decode_u8(bytes, &mut offset);
+    assert_eq!(
+        flags & !KNOWN_APPENDIX_FLAGS,
+        0,
+        "unknown graph mutation journal appendix flags 0x{:02x}",
+        flags & !KNOWN_APPENDIX_FLAGS
+    );
     let appendix_len = decode_u32_le(bytes, &mut offset) as usize;
 
     assert!(
@@ -591,7 +782,9 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         "journal entry exceeds the safe payload limit"
     );
 
-    let expected_len = JOURNAL_PRIMARY_SIZE + appendix_len;
+    let expected_len = JOURNAL_PRIMARY_SIZE
+        .checked_add(appendix_len)
+        .expect("journal entry length overflows usize");
     assert_eq!(
         bytes.len(),
         expected_len,
@@ -600,8 +793,11 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         expected_len
     );
 
-    let appendix_end = JOURNAL_PRIMARY_SIZE + appendix_len;
+    let appendix_end = JOURNAL_PRIMARY_SIZE
+        .checked_add(appendix_len)
+        .expect("journal appendix end overflows usize");
     let mut hot_forward_vertices = Vec::new();
+    let mut allocated_vertex_ids = None;
     let mut bulk_progress = None;
     let mut request_identity = GraphMutationRequestIdentityV1::PlanExecution;
     let mut retirement = GraphMutationRetirementV1::NotApplicable;
@@ -609,8 +805,11 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     let mut appendix_offset = JOURNAL_PRIMARY_SIZE;
     if flags & APPENDIX_HOT_FORWARD != 0 {
         let count = decode_u32_le(bytes, &mut appendix_offset) as usize;
+        let bytes_needed = count
+            .checked_mul(LOCAL_VERTEX_ID_APPENDIX_BYTES)
+            .expect("hot_forward appendix size overflow");
         assert!(
-            appendix_offset + count * 4 <= appendix_end,
+            bytes_needed <= appendix_end.saturating_sub(appendix_offset),
             "hot_forward appendix overflow"
         );
         hot_forward_vertices.reserve(count);
@@ -652,6 +851,21 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     if flags & APPENDIX_RETIREMENT != 0 {
         retirement = decode_retirement(bytes, &mut appendix_offset);
     }
+    if flags & APPENDIX_ALLOCATED_VERTEX_IDS != 0 {
+        let count = decode_u32_le(bytes, &mut appendix_offset) as usize;
+        let bytes_needed = count
+            .checked_mul(LOCAL_VERTEX_ID_APPENDIX_BYTES)
+            .expect("allocated vertex id appendix size overflow");
+        assert!(
+            bytes_needed <= appendix_end.saturating_sub(appendix_offset),
+            "allocated vertex id appendix overflow"
+        );
+        let mut ids = Vec::with_capacity(count);
+        for _ in 0..count {
+            ids.push(decode_u32_le(bytes, &mut appendix_offset));
+        }
+        allocated_vertex_ids = Some(ids);
+    }
 
     assert_eq!(
         appendix_offset, appendix_end,
@@ -666,6 +880,7 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         emitted_delta_first_seq,
         emitted_delta_last_seq,
         hot_forward_vertices,
+        allocated_vertex_ids,
         recorded_at_ns,
         next_index,
         bulk_progress,
@@ -685,6 +900,12 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         entry.next_index,
         &entry.bulk_progress,
     )
+    .and_then(|()| {
+        validate_allocated_vertex_ids_appendix(
+            &entry.request_identity,
+            entry.allocated_vertex_ids.as_deref(),
+        )
+    })
     .expect("invalid graph mutation journal entry");
     entry
 }
@@ -1075,6 +1296,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
+            allocated_vertex_ids: None,
             recorded_at_ns: None,
             next_index: None,
             bulk_progress: None,
@@ -1173,6 +1395,7 @@ mod tests {
             emitted_delta_first_seq: Some(10),
             emitted_delta_last_seq: Some(11),
             hot_forward_vertices: vec![3, 9],
+            allocated_vertex_ids: None,
             recorded_at_ns: Some(77),
             next_index: None,
             bulk_progress: None,
@@ -1201,6 +1424,7 @@ mod tests {
             emitted_delta_first_seq: Some(12),
             emitted_delta_last_seq: Some(14),
             hot_forward_vertices: vec![4, 8],
+            allocated_vertex_ids: Some(vec![7]),
             recorded_at_ns: Some(78),
             next_index: None,
             bulk_progress: None,
@@ -1220,6 +1444,113 @@ mod tests {
             decoded.wire().request_identity(),
             original.request_identity()
         );
+        assert_eq!(decoded.allocated_vertex_ids(), Some(&[7][..]));
+    }
+
+    #[test]
+    fn roundtrip_journal_ordered_vertex_allocated_ids_preserves_input_order() {
+        let mut original = GraphMutationJournalEntry::completed(127, 2, None, None, vec![3, 9], 80);
+        original.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [9; 32],
+            logical_item_count: 2,
+        });
+        original.set_allocated_vertex_ids(Some(vec![9, 3]));
+        original.set_retirement(GraphMutationRetirementV1::Active);
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+        assert_eq!(decoded.allocated_vertex_ids(), Some(&[9, 3][..]));
+    }
+
+    #[test]
+    #[should_panic(expected = "ordered vertex journal entry requires allocated vertex ids")]
+    fn ordered_vertex_bytes_without_allocated_id_appendix_are_rejected() {
+        let mut entry = GraphMutationJournalEntry::completed(129, 1, None, None, vec![7], 0);
+        entry.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [0x0a; 32],
+            logical_item_count: 1,
+        });
+        entry.set_allocated_vertex_ids(Some(vec![7]));
+        entry.set_retirement(GraphMutationRetirementV1::Active);
+        let mut bytes = entry.into_bytes();
+        let appendix_len = u32::from_le_bytes(bytes[48..52].try_into().expect("length slot"));
+        let allocated_appendix_len = 4 + LOCAL_VERTEX_ID_APPENDIX_BYTES;
+        bytes[47] &= !APPENDIX_ALLOCATED_VERTEX_IDS;
+        bytes.truncate(bytes.len() - allocated_appendix_len);
+        bytes[48..52]
+            .copy_from_slice(&(appendix_len - allocated_appendix_len as u32).to_le_bytes());
+        GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    fn ordered_journal_preflight_matches_full_encoded_record_at_payload_boundary() {
+        let identity_for = |vertex_count: usize| {
+            let vertex_count = u32::try_from(vertex_count).expect("test vertex count");
+            GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: [0x0b; 32],
+                logical_operation_count: vertex_count + 1,
+                logical_vertex_count: vertex_count,
+                logical_edge_count: 1,
+            }
+        };
+        let mut low = 1usize;
+        let mut high = (u32::MAX - 1) as usize;
+        while low < high {
+            let count = low + (high - low).div_ceil(2);
+            if preflight_ordered_journal_record_capacity(&identity_for(count), count, Some(count))
+                .is_ok()
+            {
+                low = count;
+            } else {
+                high = count - 1;
+            }
+        }
+
+        let identity = identity_for(low);
+        let mut entry = GraphMutationJournalEntry::completed(
+            130,
+            (low + 1) as u64,
+            None,
+            None,
+            vec![0; low],
+            0,
+        );
+        entry.set_request_identity(identity.clone());
+        entry.set_allocated_vertex_ids(Some(vec![0; low]));
+        entry.set_retirement(GraphMutationRetirementV1::Active);
+        let bytes = entry.clone().into_bytes();
+        assert!(bytes.len() <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
+        assert_eq!(
+            bytes.len(),
+            checked_journal_record_size(entry.as_v1(), low, Some(low))
+                .expect("encoded boundary record size")
+        );
+        assert!(
+            preflight_ordered_journal_record_capacity(&identity, low, Some(low)).is_ok(),
+            "the production admission must accept the record that the codec accepts"
+        );
+        let too_many = low + 1;
+        assert!(
+            preflight_ordered_journal_record_capacity(
+                &identity_for(too_many),
+                too_many,
+                Some(too_many),
+            )
+            .is_err(),
+            "one more hot-forward and allocated ID must exceed the exact record bound"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown graph mutation journal appendix flags")]
+    fn malformed_journal_unknown_appendix_flag_is_rejected() {
+        let mut bytes =
+            GraphMutationJournalEntry::completed(128, 1, None, None, Vec::new(), 0).into_bytes();
+        bytes[JOURNAL_PRIMARY_SIZE - 5] = 0x80;
+        GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
     }
 
     #[test]
@@ -1232,6 +1563,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
+            allocated_vertex_ids: Some(vec![7]),
             recorded_at_ns: Some(79),
             next_index: None,
             bulk_progress: None,
@@ -1257,6 +1589,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
+            allocated_vertex_ids: None,
             recorded_at_ns: Some(77),
             next_index: None,
             bulk_progress: None,
@@ -1434,6 +1767,15 @@ mod tests {
         )));
         let bytes = entry.clone().into_bytes();
         assert!(bytes.len() < MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
+        assert_eq!(
+            bytes.len(),
+            checked_journal_record_size(
+                entry.as_v1(),
+                entry.as_v1().hot_forward_vertices.len(),
+                None,
+            )
+            .expect("bulk journal record size")
+        );
         assert_eq!(
             GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes)),
             entry

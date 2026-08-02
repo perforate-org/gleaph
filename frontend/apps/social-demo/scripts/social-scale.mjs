@@ -257,7 +257,17 @@ export const scaleUserEmbeddings = (userEmbeddingsById, userScale, postScale) =>
 // Convenience: parse environment variables used by the demo scripts
 // ---------------------------------------------------------------------------
 
-export const readScaleEnv = () => ({
-  userScale: parseInt(process.env.SOCIAL_DEMO_USER_SCALE ?? "1", 10) || 1,
-  postScale: parseInt(process.env.SOCIAL_DEMO_POST_SCALE ?? "1", 10) || 1,
+// Keep the checked-in social workload at the intended scale when callers do
+// not provide an override.  Both the graph/load generator and avatar generator
+// consume these defaults through this single helper.
+export const DEFAULT_USER_SCALE = 5;
+export const DEFAULT_POST_SCALE = 20;
+
+export const readScaleEnv = (env = process.env) => ({
+  userScale:
+    parseInt(env.SOCIAL_DEMO_USER_SCALE ?? String(DEFAULT_USER_SCALE), 10) ||
+    DEFAULT_USER_SCALE,
+  postScale:
+    parseInt(env.SOCIAL_DEMO_POST_SCALE ?? String(DEFAULT_POST_SCALE), 10) ||
+    DEFAULT_POST_SCALE,
 });

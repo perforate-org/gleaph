@@ -2,7 +2,7 @@ export type {
   ApiExecutionResult,
   ApiExecutionSummary,
   ApiExecutePreparedRequest,
-  ApiListPreparedResponse,
+  ApiPreparedMutationRequest,
   ApiPlanResponse,
   ApiPlanSummary,
   ApiPrepareRequest,
@@ -33,9 +33,30 @@ export type {
   PreparedOptions,
   PreparedSortKey,
   PreparedSortSpec,
+  ReadMode,
 } from "./types";
 export type { GraphClient, GraphTransport } from "./client";
 export type { IcGraphTransportOptions } from "./ic";
+export {
+  makeBulkLoadAbortCommand,
+  makeBulkLoadAppendCommand,
+  makeBulkLoadCommand,
+  makeBulkLoadFinalizeCommand,
+  makeBulkLoadStartCommand,
+  makeBulkLoadStatusRequest,
+} from "./bulk";
+export type {
+  AtomicInsertReceipt,
+  BulkLoadChunk,
+  BulkLoadChunkReceipt,
+  BulkLoadCommand,
+  BulkLoadCommandInput,
+  BulkLoadEdge,
+  BulkLoadPublicState,
+  BulkLoadResponse,
+  BulkLoadStatusPage,
+  BulkLoadStatusRequest,
+} from "./bulk";
 export {
   isUnsupportedUseGraphPushdown,
   unsupportedUseGraphPushdowns,
@@ -43,22 +64,22 @@ export {
 } from "./helpers";
 export { GleaphCanisterError, GleaphSdkError } from "./errors";
 export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value";
-export { makeBatchRequest } from "./batch";
+export { makeAtomicInsertRequest } from "./atomic";
 export type {
-  BatchEdgeInsert,
-  BatchEdgeInsertInput,
-  BatchEndpoint,
-  BatchEndpointInput,
-  BatchOperation,
-  BatchOperationInput,
-  BatchProperty,
-  BatchRequest,
-  BatchRequestInput,
-  BatchRequestV1,
-  BatchVertexInsert,
-  BatchVertexInsertInput,
+  AtomicInsertEdge,
+  AtomicInsertEdgeInput,
+  AtomicInsertEndpoint,
+  AtomicInsertEndpointInput,
+  AtomicInsertOperation,
+  AtomicInsertOperationInput,
+  AtomicInsertProperty,
+  AtomicInsertRequest,
+  AtomicInsertRequestInput,
+  AtomicInsertRequestV1,
+  AtomicInsertVertex,
+  AtomicInsertVertexInput,
   CandidOption,
-} from "./batch";
+} from "./atomic";
 export {
   fromApiValue,
   isApiValue,

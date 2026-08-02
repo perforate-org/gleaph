@@ -20,14 +20,13 @@
 
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    GRAPH_NAME, sweep_mutation_keys, advance_past_journal_eviction,
-    arm_graph_unique_ack_fault_all_shards, arm_router_fault, drain_maintenance_via_timer,
-    evict_graph_mutation_journal_all_shards, gql_execute_as_admin,
-    gql_execute_as_admin_expect_err, gql_execute_as_admin_expect_trap,
-    gql_execute_pair_concurrent_as_admin, graph_mutation_journal_len_all_shards,
+    GRAPH_NAME, advance_past_journal_eviction, arm_graph_unique_ack_fault_all_shards,
+    arm_router_fault, drain_maintenance_via_timer, evict_graph_mutation_journal_all_shards,
+    gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_mutate_as_admin_expect_trap,
+    gql_mutate_pair_concurrent_as_admin, graph_mutation_journal_len_all_shards,
     graph_unique_outbox_len_all_shards, install_federation,
     run_router_recovery_after_reservation_ttl, start_graph_shards_all, stop_graph_shards_all,
-    test_declare_unique_constraint, test_force_reclaiming,
+    sweep_mutation_keys, test_declare_unique_constraint, test_force_reclaiming,
 };
 
 const CONSTRAINT: &str = "acct_email";
@@ -55,19 +54,16 @@ fn try_then_router_trap_rolls_back_reservation() {
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     arm_router_fault(&env, FAULT_TRAP_AFTER_TRY);
-    gql_execute_as_admin_expect_trap(&env, &insert_account("t@example.com"), "try-trap");
+    gql_mutate_as_admin_expect_trap(&env, &insert_account("t@example.com"), "try-trap");
     // Clear the fault in its own committed message (the trap rolled back only the trapping message).
     arm_router_fault(&env, FAULT_NONE);
 
     // The value is free: a fresh insert of the same value under a new key commits.
-    gql_execute_as_admin(&env, &insert_account("t@example.com"), "try-trap-reuse");
+    gql_mutate_as_admin(&env, &insert_account("t@example.com"), "try-trap-reuse");
 
     // And it is now genuinely reserved: a same-value duplicate is non-retryable.
-    let dup = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("t@example.com"),
-        "try-trap-dup",
-    );
+    let dup =
+        gql_mutate_as_admin_expect_err(&env, &insert_account("t@example.com"), "try-trap-dup");
     assert!(
         matches!(dup, RouterError::UniquenessViolation(_)),
         "after the successful reuse the value is committed, got {dup:?}"
@@ -83,22 +79,15 @@ fn confirm_then_trap_reservation_is_reconfirmed_by_recovery() {
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     arm_router_fault(&env, FAULT_TRAP_BEFORE_CONFIRM);
-    gql_execute_as_admin_expect_trap(
-        &env,
-        &insert_account("c@example.com"),
-        "confirm-trap",
-    );
+    gql_mutate_as_admin_expect_trap(&env, &insert_account("c@example.com"), "confirm-trap");
     arm_router_fault(&env, FAULT_NONE);
 
     // Recovery reads the proof, sees the `Acquire` present, and Confirms the held reservation.
     run_router_recovery_after_reservation_ttl(&env);
 
     // The reservation is now Committed: a same-value duplicate is refused non-retryably.
-    let dup = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("c@example.com"),
-        "confirm-trap-dup",
-    );
+    let dup =
+        gql_mutate_as_admin_expect_err(&env, &insert_account("c@example.com"), "confirm-trap-dup");
     assert!(
         matches!(dup, RouterError::UniquenessViolation(_)),
         "after recovery re-Confirms, the committed value is non-retryable, got {dup:?}"
@@ -125,7 +114,7 @@ fn confirm_ack_failure_is_reacked_by_recovery() {
     // Committed + pending_acquire_ack persisted) but the ack call rejects, so the effect stays
     // pinned; the mutation itself succeeds because Confirm is best-effort.
     arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
-    gql_execute_as_admin(&env, &insert_account("ack@example.com"), "ack-fault");
+    gql_mutate_as_admin(&env, &insert_account("ack@example.com"), "ack-fault");
     assert_eq!(
         graph_unique_outbox_len_all_shards(&env),
         1,
@@ -144,11 +133,8 @@ fn confirm_ack_failure_is_reacked_by_recovery() {
     );
 
     // The value stayed committed throughout: a same-value duplicate is refused non-retryably.
-    let dup = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("ack@example.com"),
-        "ack-fault-dup",
-    );
+    let dup =
+        gql_mutate_as_admin_expect_err(&env, &insert_account("ack@example.com"), "ack-fault-dup");
     assert!(
         matches!(dup, RouterError::UniquenessViolation(_)),
         "after the re-ack the value is still committed, got {dup:?}"
@@ -157,12 +143,12 @@ fn confirm_ack_failure_is_reacked_by_recovery() {
     // delete the vertex and reuse the value. A still-set pending ack would hold the `DELETE`'s
     // `Release` (Release-before-Acquire) and the reuse would be refused; success means the marker is
     // gone and the `Release` freed the value.
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         &env,
         &format!("MATCH (n:{LABEL}) DETACH DELETE n"),
         "ack-fault-del",
     );
-    gql_execute_as_admin(&env, &insert_account("ack@example.com"), "ack-fault-reuse");
+    gql_mutate_as_admin(&env, &insert_account("ack@example.com"), "ack-fault-reuse");
     // The successful same-value insert proves the Release was applied and
     // `pending_acquire_ack` no longer held the reservation.
 }
@@ -179,7 +165,7 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
 
     // Keep the `Acquire` pinned no matter how often recovery runs: every ack traps until cleared.
     arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
-    gql_execute_as_admin(&env, &insert_account("o@example.com"), "outbox");
+    gql_mutate_as_admin(&env, &insert_account("o@example.com"), "outbox");
 
     // Baselines (shard reachable): the graph journaled the completed write, and the `Acquire` is
     // pinned in the outbox.
@@ -227,11 +213,7 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
         "after the fault clears, recovery re-acks and unpins the surviving Acquire"
     );
 
-    let dup = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("o@example.com"),
-        "outbox-dup",
-    );
+    let dup = gql_mutate_as_admin_expect_err(&env, &insert_account("o@example.com"), "outbox-dup");
     assert!(
         matches!(dup, RouterError::UniquenessViolation(_)),
         "the value was Confirmed via the pinned outbox, never cancelled, got {dup:?}"
@@ -251,11 +233,7 @@ fn reclaiming_fences_same_claim_retry() {
     // Held reservation: stop both shards so the no-`await` Try persists `Reserved` but the canonical
     // dispatch (to whichever shard owns the value) fails — no `Acquire` is ever written.
     stop_graph_shards_all(&env);
-    let _ = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("r@example.com"),
-        "reclaim-retry",
-    );
+    let _ = gql_mutate_as_admin_expect_err(&env, &insert_account("r@example.com"), "reclaim-retry");
 
     // Drive the held reservation into `Reclaiming` (a reclaim proof is now logically in flight).
     let moved = test_force_reclaiming(&env, GRAPH_NAME, LABEL, PROPERTY, "r@example.com");
@@ -263,11 +241,8 @@ fn reclaiming_fences_same_claim_retry() {
 
     // The same-key (same `ClaimId`) retry is fenced by `Reclaiming` — it returns in-flight without
     // dispatching a fresh canonical write.
-    let fenced = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("r@example.com"),
-        "reclaim-retry",
-    );
+    let fenced =
+        gql_mutate_as_admin_expect_err(&env, &insert_account("r@example.com"), "reclaim-retry");
     assert!(
         matches!(fenced, RouterError::UniquenessReservationInFlight(_)),
         "a same-ClaimId retry during Reclaiming is fenced as in-flight, got {fenced:?}"
@@ -278,7 +253,7 @@ fn reclaiming_fences_same_claim_retry() {
     start_graph_shards_all(&env);
     run_router_recovery_after_reservation_ttl(&env);
 
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         &env,
         &insert_account("r@example.com"),
         "reclaim-retry-fresh",
@@ -296,7 +271,7 @@ fn release_before_acquire_is_held_until_acquire_reconciled() {
     // Commit the canonical write but trap before Confirm: the reservation is `Reserved` with no
     // stamped owner, while the vertex + pinned `Acquire` are durable on the shard.
     arm_router_fault(&env, FAULT_TRAP_BEFORE_CONFIRM);
-    gql_execute_as_admin_expect_trap(&env, &insert_account("b@example.com"), "rba-ins");
+    gql_mutate_as_admin_expect_trap(&env, &insert_account("b@example.com"), "rba-ins");
     arm_router_fault(&env, FAULT_NONE);
     // The canonical write is durable, but its label/property projection may still lag the trapped
     // mutation. Drain it before the DELETE so the constrained vertex is actually selected.
@@ -304,18 +279,15 @@ fn release_before_acquire_is_held_until_acquire_reconciled() {
     drain_maintenance_via_timer(&env, env.graph_dest);
     // Delete the constrained vertex: the shard removes it and emits a `Release`, but the value is
     // still `Reserved` (owner undetermined), so the Release is held — not acked.
-    gql_execute_as_admin(
+    gql_mutate_as_admin(
         &env,
         &format!("MATCH (n:{LABEL}) WHERE n.{PROPERTY} = 'b@example.com' DETACH DELETE n"),
         "rba-del",
     );
     // The held Release did not free the value: a fresh same-value insert is still refused, because
     // the underlying `Acquire` has not been reconciled (Release-before-Acquire).
-    let blocked = gql_execute_as_admin_expect_err(
-        &env,
-        &insert_account("b@example.com"),
-        "rba-blocked",
-    );
+    let blocked =
+        gql_mutate_as_admin_expect_err(&env, &insert_account("b@example.com"), "rba-blocked");
     assert!(
         matches!(
             blocked,
@@ -327,7 +299,7 @@ fn release_before_acquire_is_held_until_acquire_reconciled() {
     // `Release` applies and frees the value.
     run_router_recovery_after_reservation_ttl(&env);
 
-    gql_execute_as_admin(&env, &insert_account("b@example.com"), "rba-reuse");
+    gql_mutate_as_admin(&env, &insert_account("b@example.com"), "rba-reuse");
 }
 
 /// Two ingress messages racing the same constrained value: exactly one commits, the loser is
@@ -339,7 +311,7 @@ fn concurrent_same_value_one_wins_loser_rejected() {
 
     let insert = insert_account("race@example.com");
     let (result_a, result_b) =
-        gql_execute_pair_concurrent_as_admin(&env, &insert, "race-a", &insert, "race-b");
+        gql_mutate_pair_concurrent_as_admin(&env, &insert, "race-a", &insert, "race-b");
 
     let winners = [&result_a, &result_b].iter().filter(|r| r.is_ok()).count();
     assert_eq!(

@@ -283,6 +283,7 @@ export const idlFactory = ({ IDL }) => {
   });
   const GraphOrderedMixedBatchReceiptV1 = IDL.Record({
     'logical_edge_count' : IDL.Nat64,
+    'allocated_vertex_ids' : IDL.Vec(IDL.Nat32),
     'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
     'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
     'logical_vertex_count' : IDL.Nat64,
@@ -323,6 +324,7 @@ export const idlFactory = ({ IDL }) => {
     'V1' : OrderedVertexBatchGraphArgsV1,
   });
   const GraphOrderedVertexBatchReceiptV1 = IDL.Record({
+    'allocated_vertex_ids' : IDL.Vec(IDL.Nat32),
     'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
     'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
     'logical_vertex_count' : IDL.Nat64,
@@ -398,76 +400,6 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : ExecutePlanBatchResult,
     'Err' : IDL.Text,
   });
-  const ExecutePlanBatchSharedV2 = IDL.Record({
-    'mutation_id' : IDL.Nat64,
-    'indexed_properties' : IDL.Opt(IndexedPropertyCatalog),
-    'plan_blob' : IDL.Vec(IDL.Nat8),
-    'resolved_labels' : IDL.Opt(ResolvedLabelTable),
-    'target_shard_id' : IDL.Nat32,
-    'indexed_embeddings' : IDL.Opt(IndexedEmbeddingCatalog),
-    'resolved_search_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-    'resolved_properties' : IDL.Opt(ResolvedPropertyTable),
-    'element_id_encoding_key' : IDL.Vec(IDL.Nat8),
-    'seed_bindings_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-  });
-  const ExecutePlanSharedV2Op = IDL.Record({
-    'params_blob' : IDL.Vec(IDL.Nat8),
-  });
-  const ExecutePlanBatchSharedV2Args = IDL.Record({
-    'batch_mode' : ExecutePlanBatchMode,
-    'shared' : ExecutePlanBatchSharedV2,
-    'operations' : IDL.Vec(ExecutePlanSharedV2Op),
-  });
-  const ExecutePlanBatchTypedShared = IDL.Record({
-    'mutation_id' : IDL.Nat64,
-    'indexed_properties' : IDL.Opt(IndexedPropertyCatalog),
-    'plan_blob' : IDL.Vec(IDL.Nat8),
-    'resolved_labels' : IDL.Opt(ResolvedLabelTable),
-    'target_shard_id' : IDL.Nat32,
-    'resolved_properties' : IDL.Opt(ResolvedPropertyTable),
-    'element_id_encoding_key' : IDL.Vec(IDL.Nat8),
-  });
-  const SeedFloat64Binding = IDL.Record({
-    'value' : IDL.Float64,
-    'variable' : IDL.Text,
-  });
-  const SeedVertexBinding = IDL.Record({
-    'local_vertex_id' : IDL.Nat32,
-    'variable' : IDL.Text,
-    'required_vertex_label_ids' : IDL.Vec(IDL.Nat16),
-  });
-  const SeedRowWire = IDL.Record({
-    'float64_bindings' : IDL.Vec(SeedFloat64Binding),
-    'vertex_bindings' : IDL.Vec(SeedVertexBinding),
-  });
-  const LocalEdgePosting = IDL.Record({
-    'label_id' : IDL.Nat16,
-    'slot_index' : IDL.Nat32,
-    'owner_vertex_id' : IDL.Nat32,
-  });
-  const SeedBindingEntry = IDL.Record({
-    'variable' : IDL.Text,
-    'local_edge_postings' : IDL.Vec(LocalEdgePosting),
-    'local_vertex_ids' : IDL.Vec(IDL.Nat32),
-  });
-  const SeedBindingsWire = IDL.Record({
-    'rows' : IDL.Vec(SeedRowWire),
-    'entries' : IDL.Vec(SeedBindingEntry),
-    'complete_prefix_rows' : IDL.Bool,
-  });
-  const ExecutePlanTypedOp = IDL.Record({
-    'seed' : SeedBindingsWire,
-    'params_blob' : IDL.Vec(IDL.Nat8),
-  });
-  const ExecutePlanBatchTypedArgs = IDL.Record({
-    'batch_mode' : ExecutePlanBatchMode,
-    'shared' : ExecutePlanBatchTypedShared,
-    'operations' : IDL.Vec(ExecutePlanTypedOp),
-  });
-  const ExecutePlanBulkBatch = IDL.Variant({
-    'SharedSeed' : ExecutePlanBatchSharedV2Args,
-    'PerItemSeed' : ExecutePlanBatchTypedArgs,
-  });
   const BulkIngestFinalizeArgs = IDL.Record({
     'forward_vertices' : IDL.Vec(IDL.Nat32),
     'target_shard_id' : IDL.Nat32,
@@ -528,6 +460,7 @@ export const idlFactory = ({ IDL }) => {
   });
   const GraphMutationJournalEntryWireV1 = IDL.Record({
     'mutation_id' : IDL.Nat64,
+    'allocated_vertex_ids' : IDL.Opt(IDL.Vec(IDL.Nat32)),
     'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
     'next_index' : IDL.Opt(IDL.Nat32),
     'request_identity' : GraphMutationRequestIdentityV1,
@@ -685,11 +618,6 @@ export const idlFactory = ({ IDL }) => {
     'execute_plan_update' : IDL.Func([ExecutePlanArgs], [Result_9], []),
     'execute_plan_update_batch' : IDL.Func(
         [ExecutePlanBatchArgs],
-        [Result_10],
-        [],
-      ),
-    'execute_plan_update_batch_bulk' : IDL.Func(
-        [ExecutePlanBulkBatch],
         [Result_10],
         [],
       ),

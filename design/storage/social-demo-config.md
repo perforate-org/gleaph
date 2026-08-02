@@ -3,23 +3,24 @@
 Date: 2026-07-17
 Status: Implemented
 Anchor timestamp: 2026-07-17 03:17:35 UTC +0000
-Last updated: 2026-07-29 UTC
+Last updated: 2026-08-02 UTC
 
 ## Purpose
 
 The social-demo sample graph is authored as per-file YAML under
 `frontend/apps/social-demo/config/` rather than as a single hand-maintained JSON
-file and inline shell literals. A single build script emits the four artifacts
+file and inline shell literals. A single build script emits the five artifacts
 that the rest of the pipeline already consumes:
 
 1. `frontend/apps/social-demo/seeds/social-graph.json` — graph topology.
-2. `frontend/apps/social-demo/seeds/social-seeds.json` — seed GQL strings.
+2. `frontend/apps/social-demo/seeds/social-load.json` — ordered typed vertices, edges, and embeddings.
 3. `frontend/apps/social-demo/src/data/scenarios.generated.ts` — TypeScript
    scenario definitions for the React app.
 4. `frontend/apps/social-demo/src/data/scenarios.generated.json` — scenario
    metadata for deploy tooling.
+5. `frontend/apps/social-demo/src/data/userAvatars.generated.ts` — avatar lookup metadata.
 
-All four artifacts are committed to the repository (option A), so the React app
+All five artifacts are committed to the repository (option A), so the React app
 and deploy script can run without first regenerating them.
 
 The current fixture has 23 users, 61 Posts (60 public and one private), 8 reply
@@ -55,9 +56,8 @@ the Candid wire). Allocation is users, communities, topics, posts, then feeds; e
 by its configuration path. The current fixture therefore allocates users `1..23`, its community
 as `24`, topics `25..26`, Posts `27..87`, and `public-feed` as `88`.
 
-The emitted seed GQL strings use plain integer literals `demo_id: <N>` (no `: u64`
-cast — the graph mutation property-expression evaluator does not support
-`ExprKind::Cast`). The id-to-string mapping is emitted as `DEMO_ID_MAP` in
+The typed load artifact emits each `demo_id` as the logical value `{ "Int64": <N> }` and the
+loader passes it through the JS SDK canonical value encoder. The id-to-string mapping is emitted as `DEMO_ID_MAP` in
 `scenarios.generated.ts` so the React app can convert textual keys to numeric
 values when needed.
 
@@ -78,7 +78,7 @@ values when needed.
 | Field        | Type              | Use                                                                                               |
 | ------------ | ----------------- | ------------------------------------------------------------------------------------------------- |
 | `body`       | string            | Post `body` property and display label.                                                           |
-| `created_at` | nat64 (optional)  | Defaults to a deterministic value derived from the file path.                                     |
+| `created_at` | 12-digit integer (optional) | `YYYYMMDDHHmm`; normalized to UTC `DateTime`, with two-digit hour/minute overflow carried forward. Defaults deterministically from the file path. |
 | `is_public`  | bool (optional)   | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
 | `topics`     | list of topic ids | Generates `HAS_TOPIC` edges.                                                                      |
 | `reply_to`   | `<author>/<stem>` (optional) | Resolves a parent config path and generates one canonical outgoing `REPLY_TO` edge.       |
@@ -131,10 +131,10 @@ truth for the emitted artifacts:
    canonical `POSTED`, `FOLLOWS`, and `is_public` facts, emitting a deterministic
    author-mixed order per recipient so the Graph's fixed-label scan does not group
    one author's posts together.
-6. Emit ordinary edge `INSERT` mutations. Graph-owned deferred storage prepares a
-   dense leaf before the next write, so source fan-out is not a seed-writer concern.
-7. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
-   by the social-demo seed application path.
+6. Emit vertices before edges in manifest order. Edge endpoints retain application `source_id`
+   references and are converted to canonical IDs only from replay-proven vertex receipts.
+7. Emit `social-graph.json` and `social-load.json` in the exact shape consumed
+   by the social-demo typed-load path.
 8. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
    scenario YAMLs.
 
@@ -185,18 +185,17 @@ declared insertion-ordered, the prepared queries must retain an ordinary propert
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.
 
-The seed runner submits through Router `gql_execute_idempotent_batch`; without an explicit page size,
-the Router consumes as many remaining mutations as fit its instruction and encoded-payload budgets.
-Each item remains an independent idempotent mutation with its own stable client mutation key; the
-Router may have partially committed a request when an item fails or the continuation budget is
-reached. Replaying from the returned cursor is safe through the existing idempotent journal. The
-`SEED_PAGE_SIZE` environment variable or fifth CLI argument can impose a smaller client-side page
-when desired. The legacy single-mutation method remains available when an explicit method name is
-passed to the runner.
+The loader creates and retires five catalog sentinels through `gql_mutate`, then uses one fixed-key
+durable `bulk_load` job. Every restart replays the exact ordered vertex chunks from index zero before
+using their receipts, reconstructs the `source_id -> encoded vertex ID` map by chunk/item ordinal,
+and only then builds and replays edge chunks. `bulk_load_status` is lifecycle evidence, not artifact
+identity. A permanent `SeedLoad` vertex stores the full artifact SHA-256 and remains `Prepared` until
+bulk completion and every receipt-ID-addressed embedding update succeed; only `Complete` permits a
+later deployment to skip the load after Router receipt retention expires. Missing, duplicate,
+malformed, or mismatched markers fail closed and require an explicit graph reset.
 
-The runner does not issue `GLEAPH.FINALIZE_*` before ordinary edges. Storage owns write-safety
-preparation; finalize procedures remain optional batch-ingest reclaim controls rather than social
-state or a per-mutation protocol.
+The loader never resolves endpoint IDs through `Post.demo_id`, Property Index, or GQL element-ID
+queries. The existing Post index remains application query schema, not recovery authority.
 
 ## Reply threads
 
@@ -224,7 +223,7 @@ The 6 scenario `preparedQuery` strings share a common set of RETURN columns:
 | ---------------------------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------- |
 | `post_id`                                            | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id`         | Stable deterministic post id from the global allocator. |
 | `body`                                               | text                                       | `p.body`            | The post content rendered by the React app.             |
-| `created_at`                                         | nat64                                      | `p.created_at`      | Chronological ordering for non-semantic scenarios.      |
+| `created_at`                                         | UTC DateTime                               | `p.created_at`      | Deterministic chronological value for non-semantic scenarios. |
 | `parent_post_id`                                     | numeric or `NULL`                          | `parent.demo_id`    | Optional canonical reply parent for timeline tree display. |
 | `distance`                                           | float32                                    | vector SEARCH       | L2-squared distance for semantic scenarios only.        |
 | `follows_edge_id`, `second_follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text | edge `demo_edge_id` | Four-hop relationship trail explanation in `TopicPath`. |

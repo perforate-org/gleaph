@@ -583,8 +583,163 @@ pub struct PreparedSortSpec {
     pub direction: String,
 }
 
-pub fn encode_prepared_query_args(name: impl Into<String>, params: Vec<u8>) -> Vec<u8> {
-    encode_prepared_query_args_with_sort(name, params, None)
+/// Per-shard watermarks carried by a Router mutation token.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct MutationTokenShard {
+    pub shard_id: u32,
+    pub label_stats_seq: Option<u64>,
+}
+
+/// Read-your-writes token returned by an idempotent Router mutation.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct MutationToken {
+    pub mutation_id: u64,
+    pub shards: Vec<MutationTokenShard>,
+}
+
+/// Read freshness contract accepted by Router query entry points.
+#[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Deserialize)]
+pub enum ReadMode {
+    #[default]
+    Eventual,
+    AtLeast(MutationToken),
+}
+
+/// Maximum number of chunk receipts accepted by one Router bulk-load status page.
+pub const MAX_BULK_LOAD_RECEIPTS_PER_PAGE: u32 = 64;
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct AtomicInsertPropertyV1 {
+    pub property_name: String,
+    pub value: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct AtomicInsertVertexV1 {
+    pub vertex_labels: Vec<String>,
+    pub initial_properties: Vec<AtomicInsertPropertyV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct BulkLoadEdgeV1 {
+    pub source: Vec<u8>,
+    pub target: Vec<u8>,
+    pub directed: bool,
+    pub edge_label_name: Option<String>,
+    pub inline_property: Option<Vec<u8>>,
+    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BulkLoadChunkV1 {
+    Vertices(Vec<AtomicInsertVertexV1>),
+    Edges(Vec<BulkLoadEdgeV1>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BulkLoadCommand {
+    Start {
+        logical_graph_name: String,
+        client_bulk_key: String,
+    },
+    Append {
+        logical_graph_name: String,
+        client_bulk_key: String,
+        chunk_index: u32,
+        chunk: BulkLoadChunkV1,
+    },
+    Finalize {
+        logical_graph_name: String,
+        client_bulk_key: String,
+    },
+    Abort {
+        logical_graph_name: String,
+        client_bulk_key: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct AtomicInsertReceiptV1 {
+    pub logical_operation_count: u64,
+    pub logical_vertex_count: u64,
+    pub logical_edge_count: u64,
+    pub allocated_vertex_ids: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BulkLoadPublicStateV1 {
+    Open,
+    AppendPending,
+    FinalizePending,
+    AbortPending,
+    Completed,
+    Aborted,
+    Failed { reason: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BulkLoadResponse {
+    Started {
+        next_chunk_index: u32,
+    },
+    Appended {
+        chunk_index: u32,
+        receipt: AtomicInsertReceiptV1,
+    },
+    FinalizeAccepted {
+        state: BulkLoadPublicStateV1,
+    },
+    AbortAccepted {
+        state: BulkLoadPublicStateV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct BulkLoadChunkReceiptV1 {
+    pub chunk_index: u32,
+    pub receipt: AtomicInsertReceiptV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct BulkLoadStatusPage {
+    pub state: BulkLoadPublicStateV1,
+    pub next_chunk_index: u32,
+    pub committed_chunk_count: u32,
+    pub completed_chunk_count: u32,
+    pub terminal_at_ns: Option<u64>,
+    pub expires_at_ns: Option<u64>,
+    pub receipts: Vec<BulkLoadChunkReceiptV1>,
+    pub next_receipt_cursor: Option<u32>,
+}
+
+/// Candid-encode one Router `bulk_load` command.
+pub fn encode_bulk_load_args(command: BulkLoadCommand) -> Vec<u8> {
+    candid::utils::encode_args((command,)).expect("Candid encode bulk-load command arguments")
+}
+
+/// Candid-encode one Router `bulk_load_status` query.
+pub fn encode_bulk_load_status_args(
+    logical_graph_name: impl Into<String>,
+    client_bulk_key: impl Into<String>,
+    receipt_cursor: Option<u32>,
+    max_receipts: u32,
+) -> Vec<u8> {
+    candid::utils::encode_args((
+        logical_graph_name.into(),
+        client_bulk_key.into(),
+        receipt_cursor,
+        max_receipts,
+    ))
+    .expect("Candid encode bulk-load status arguments")
+}
+
+/// Candid-encode the Router `prepared_query` arguments.
+pub fn encode_prepared_query_args(
+    name: impl Into<String>,
+    params: Vec<u8>,
+    read_mode: ReadMode,
+) -> Vec<u8> {
+    encode_prepared_query_args_with_sort(name, params, None, read_mode)
 }
 
 /// Candid-encode prepared-query arguments with an optional caller-selected sort.
@@ -592,8 +747,9 @@ pub fn encode_prepared_query_args_with_sort(
     name: impl Into<String>,
     params: Vec<u8>,
     sort: Option<Vec<PreparedSortSpec>>,
+    read_mode: ReadMode,
 ) -> Vec<u8> {
-    candid::utils::encode_args((name.into(), params, sort))
+    candid::utils::encode_args((name.into(), params, sort, read_mode))
         .expect("Candid encode prepared query arguments")
 }
 
@@ -606,11 +762,12 @@ pub async fn call_prepared_query<R>(
     canister_id: Principal,
     name: impl Into<String>,
     params: Vec<u8>,
+    read_mode: ReadMode,
 ) -> Result<R, PreparedCallError>
 where
     R: CandidType + for<'de> Deserialize<'de>,
 {
-    call_prepared_query_with_sort(canister_id, name, params, None).await
+    call_prepared_query_with_sort(canister_id, name, params, None, read_mode).await
 }
 
 /// Make a bounded-wait prepared query call with an optional caller-selected sort.
@@ -619,11 +776,12 @@ pub async fn call_prepared_query_with_sort<R>(
     name: impl Into<String>,
     params: Vec<u8>,
     sort: Option<Vec<PreparedSortSpec>>,
+    read_mode: ReadMode,
 ) -> Result<R, PreparedCallError>
 where
     R: CandidType + for<'de> Deserialize<'de>,
 {
-    let args = encode_prepared_query_args_with_sort(name, params, sort);
+    let args = encode_prepared_query_args_with_sort(name, params, sort, read_mode);
     call_prepared_method(canister_id, "prepared_query", args).await
 }
 
@@ -632,6 +790,7 @@ pub async fn call_gql_query<R>(
     canister_id: Principal,
     query: impl Into<String>,
     params: GqlParams,
+    read_mode: ReadMode,
 ) -> Result<R, PreparedCallError>
 where
     R: CandidType + for<'de> Deserialize<'de>,
@@ -639,29 +798,13 @@ where
     let params = encode_gql_params(params).map_err(|error| PreparedCallError::Decode {
         message: format!("failed to encode GQL params: {error:?}"),
     })?;
-    let args = candid::utils::encode_args((query.into(), params))
+    let args = candid::utils::encode_args((query.into(), params, read_mode))
         .expect("Candid encode GQL query arguments");
     call_prepared_method(canister_id, "gql_query", args).await
 }
 
-/// Make a bounded-wait call to `prepared_update` on `canister_id`.
-///
-/// The returned type is normally `u64` for the current Router endpoint. The generic form keeps
-/// the helper usable with a future result-wire contract without duplicating call error handling.
-pub async fn call_prepared_update<R>(
-    canister_id: Principal,
-    name: impl Into<String>,
-    params: Vec<u8>,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    let args = encode_prepared_query_args(name, params);
-    call_prepared_method(canister_id, "prepared_update", args).await
-}
-
-/// Make a bounded-wait call to `prepared_update_idempotent` on `canister_id`.
-pub async fn call_prepared_update_idempotent<R>(
+/// Make a bounded-wait call to `prepared_mutate` on `canister_id`.
+pub async fn call_prepared_mutate<R>(
     canister_id: Principal,
     name: impl Into<String>,
     params: Vec<u8>,
@@ -671,8 +814,43 @@ where
     R: CandidType + for<'de> Deserialize<'de>,
 {
     let args = candid::utils::encode_args((name.into(), params, client_mutation_key.into()))
-        .expect("Candid encode prepared idempotent update arguments");
-    call_prepared_method(canister_id, "prepared_update_idempotent", args).await
+        .expect("Candid encode prepared mutation arguments");
+    call_prepared_method(canister_id, "prepared_mutate", args).await
+}
+
+/// Make a bounded-wait call to the Router `bulk_load` update.
+pub async fn call_bulk_load<R>(
+    canister_id: Principal,
+    command: BulkLoadCommand,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    call_prepared_method(canister_id, "bulk_load", encode_bulk_load_args(command)).await
+}
+
+/// Make a bounded-wait call to the Router `bulk_load_status` query.
+pub async fn call_bulk_load_status<R>(
+    canister_id: Principal,
+    logical_graph_name: impl Into<String>,
+    client_bulk_key: impl Into<String>,
+    receipt_cursor: Option<u32>,
+    max_receipts: u32,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    call_prepared_method(
+        canister_id,
+        "bulk_load_status",
+        encode_bulk_load_status_args(
+            logical_graph_name,
+            client_bulk_key,
+            receipt_cursor,
+            max_receipts,
+        ),
+    )
+    .await
 }
 
 async fn call_prepared_method<R>(
@@ -721,15 +899,16 @@ impl GleaphClient {
     }
 
     /// Execute a named prepared query through the configured Router canister.
-    pub async fn execute<R>(
+    pub async fn prepared_query<R>(
         &self,
         name: impl Into<String>,
         params: Vec<u8>,
+        read_mode: ReadMode,
     ) -> Result<R, PreparedCallError>
     where
         R: CandidType + for<'de> Deserialize<'de>,
     {
-        call_prepared_query(self.canister_id, name, params).await
+        call_prepared_query(self.canister_id, name, params, read_mode).await
     }
 
     /// Execute a named prepared query with an optional caller-selected sort.
@@ -738,11 +917,12 @@ impl GleaphClient {
         name: impl Into<String>,
         params: Vec<u8>,
         sort: Option<Vec<PreparedSortSpec>>,
+        read_mode: ReadMode,
     ) -> Result<R, PreparedCallError>
     where
         R: CandidType + for<'de> Deserialize<'de>,
     {
-        call_prepared_query_with_sort(self.canister_id, name, params, sort).await
+        call_prepared_query_with_sort(self.canister_id, name, params, sort, read_mode).await
     }
 
     /// Execute a named prepared query from logical GQL parameters.
@@ -750,6 +930,7 @@ impl GleaphClient {
         &self,
         name: impl Into<String>,
         params: GqlParams,
+        read_mode: ReadMode,
     ) -> Result<R, PreparedCallError>
     where
         R: CandidType + for<'de> Deserialize<'de>,
@@ -757,7 +938,7 @@ impl GleaphClient {
         let params = encode_gql_params(params).map_err(|error| PreparedCallError::Decode {
             message: format!("failed to encode GQL params: {error:?}"),
         })?;
-        call_prepared_query(self.canister_id, name, params).await
+        call_prepared_query(self.canister_id, name, params, read_mode).await
     }
 
     /// Execute dynamic GQL through the configured Router canister.
@@ -765,27 +946,16 @@ impl GleaphClient {
         &self,
         query: impl Into<String>,
         params: GqlParams,
+        read_mode: ReadMode,
     ) -> Result<R, PreparedCallError>
     where
         R: CandidType + for<'de> Deserialize<'de>,
     {
-        call_gql_query(self.canister_id, query, params).await
+        call_gql_query(self.canister_id, query, params, read_mode).await
     }
 
-    /// Execute a named prepared update through the configured Router canister.
-    pub async fn execute_update<R>(
-        &self,
-        name: impl Into<String>,
-        params: Vec<u8>,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_prepared_update(self.canister_id, name, params).await
-    }
-
-    /// Execute an idempotent named prepared update through the configured Router canister.
-    pub async fn execute_update_idempotent<R>(
+    /// Execute a named prepared mutation through the configured Router canister.
+    pub async fn prepared_mutate<R>(
         &self,
         name: impl Into<String>,
         params: Vec<u8>,
@@ -794,7 +964,36 @@ impl GleaphClient {
     where
         R: CandidType + for<'de> Deserialize<'de>,
     {
-        call_prepared_update_idempotent(self.canister_id, name, params, client_mutation_key).await
+        call_prepared_mutate(self.canister_id, name, params, client_mutation_key).await
+    }
+
+    /// Execute one durable Router bulk-load command.
+    pub async fn bulk_load<R>(&self, command: BulkLoadCommand) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        call_bulk_load(self.canister_id, command).await
+    }
+
+    /// Read one bounded page of durable Router bulk-load status.
+    pub async fn bulk_load_status<R>(
+        &self,
+        logical_graph_name: impl Into<String>,
+        client_bulk_key: impl Into<String>,
+        receipt_cursor: Option<u32>,
+        max_receipts: u32,
+    ) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        call_bulk_load_status(
+            self.canister_id,
+            logical_graph_name,
+            client_bulk_key,
+            receipt_cursor,
+            max_receipts,
+        )
+        .await
     }
 }
 
@@ -806,17 +1005,19 @@ mod tests {
     fn encode_prepared_query_args_round_trips() {
         let name = "alice_home_feed";
         let params: Vec<u8> = vec![0, 1, 2, 255];
-        let encoded = encode_prepared_query_args(name, params.clone());
+        let encoded = encode_prepared_query_args(name, params.clone(), ReadMode::Eventual);
 
-        let (decoded_name, decoded_params, decoded_sort): (
+        let (decoded_name, decoded_params, decoded_sort, decoded_read_mode): (
             String,
             Vec<u8>,
             Option<Vec<PreparedSortSpec>>,
+            ReadMode,
         ) = candid::utils::decode_args(&encoded).expect("decode args");
 
         assert_eq!(decoded_name, name);
         assert_eq!(decoded_params, params);
         assert_eq!(decoded_sort, None);
+        assert_eq!(decoded_read_mode, ReadMode::Eventual);
     }
 
     #[test]
@@ -831,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_prepared_idempotent_update_args_round_trips() {
+    fn encode_prepared_mutate_args_round_trips() {
         let encoded = candid::utils::encode_args((
             "increment".to_string(),
             vec![1_u8, 2, 3],
@@ -843,6 +1044,41 @@ mod tests {
         assert_eq!(
             decoded,
             ("increment".into(), vec![1, 2, 3], "request-1".into())
+        );
+    }
+
+    #[test]
+    fn encode_bulk_load_args_round_trips_all_command_fields() {
+        let command = BulkLoadCommand::Append {
+            logical_graph_name: "tenant.main".into(),
+            client_bulk_key: "bulk-1".into(),
+            chunk_index: 3,
+            chunk: BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
+                source: vec![1; 8],
+                target: vec![2; 8],
+                directed: true,
+                edge_label_name: Some("follows".into()),
+                inline_property: Some(vec![7, 8]),
+                initial_edge_properties: vec![AtomicInsertPropertyV1 {
+                    property_name: "weight".into(),
+                    value: vec![9],
+                }],
+            }]),
+        };
+        let encoded = encode_bulk_load_args(command.clone());
+        let (decoded,): (BulkLoadCommand,) =
+            candid::utils::decode_args(&encoded).expect("decode bulk-load args");
+        assert_eq!(decoded, command);
+    }
+
+    #[test]
+    fn encode_bulk_load_status_args_round_trips_optional_cursor() {
+        let encoded = encode_bulk_load_status_args("tenant.main", "bulk-1", Some(8), 16);
+        let decoded: (String, String, Option<u32>, u32) =
+            candid::utils::decode_args(&encoded).expect("decode bulk-load status args");
+        assert_eq!(
+            decoded,
+            ("tenant.main".into(), "bulk-1".into(), Some(8), 16)
         );
     }
 

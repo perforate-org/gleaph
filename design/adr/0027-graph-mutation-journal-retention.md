@@ -2,7 +2,7 @@
 
 Date: 2026-06-21
 Status: implemented (ordered-batch retirement revision planned by ADR 0049)
-Last revised: 2026-07-24
+Last revised: 2026-08-02
 Anchor timestamp: 2026-07-24 00:28:53 UTC +0000
 
 ## Context
@@ -53,6 +53,15 @@ It is **unsound** as an eviction trigger for three independent reasons:
 So ack proves "deltas were projected," not "the router will never replay this id."
 
 ## Decision
+
+### Router terminal-anchor interaction (ADR 0057, 2026-08-02)
+
+The Router's `terminal_at_ns` changes only the seven-day recovery and GC anchor for Router
+mutation records. Graph's journal retirement contract is unchanged: the existing nine-day
+`GRAPH_MUTATION_JOURNAL_RETENTION_NS` window and its retirement timestamp remain the source of
+Graph replay evidence. The nine-day margin still covers the Router's seven-day terminal receipt
+window plus delayed retirement and GC work; no Graph retention reduction or second anchor is
+introduced by the atomic-insert receipt.
 
 Retain journal entries on a **time bound ≥ the router's replay TTL**, swept by an
 amortized write-path GC. This is the implemented

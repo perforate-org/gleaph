@@ -1,6 +1,6 @@
 # ADR 0041: Router-to-Graph batch mutation dispatch
 
-Status: Implemented
+Status: Implemented (internal transport; the former public cursor-list ingress was removed by ADR 0057)
 
 ## Context
 
@@ -72,16 +72,15 @@ selects each Graph transport chunk from the encoded payload ceiling and the
 shared instruction-budget cutoff; the continuation cursor is the safety
 boundary when the current ingress can no longer admit another mutation.
 
-The public `gql_execute_idempotent_batch` ingress and its response use the same
-current portable payload check. This prevents a caller from bypassing the
-transport chunking rule at the Router boundary; Graph also validates direct
-`execute_plan_update_batch` calls independently.
+The former public cursor-list ingress used the same current portable payload check. That public
+workflow is removed by ADR 0057; Graph still validates direct `execute_plan_update_batch` calls
+independently because ordinary `gql_mutate` retains this internal aggregation path.
 
 ## Implementation status
 
-Implemented as the transport layer of the cursor-based
-`gql_execute_idempotent_batch` endpoint. The endpoint advances all items
-concurrently through Router planning and mutation-journal preparation.
+Implemented as the internal transport layer retained for ordinary GQL mutation dispatch. The
+former cursor-based public workflow advanced all items concurrently through Router planning and
+mutation-journal preparation; it is no longer a client API.
 Prepared Graph operations rendezvous at the dispatch boundary and are grouped
 by target Graph canister, so a request issues as few size-bounded batch calls per
 target canister as the Router instruction budget permits. Early-completed

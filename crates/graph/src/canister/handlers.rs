@@ -2,6 +2,9 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use crate::facade::mutation_executor::insert_vertices_with;
 use crate::facade::{BatchEdgeInput, FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -27,7 +30,6 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs, ExecutePlanBulkBatch,
     ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
     GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
     GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
@@ -35,7 +37,7 @@ use gleaph_graph_kernel::plan_exec::{
     OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck,
     OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
     OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
-    SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
+    SeedBindingsWire, ShardEventSeq,
 };
 
 use super::types::GraphInitArgs;
@@ -43,6 +45,35 @@ use gleaph_graph_kernel::vector_index::{
     IndexedEmbeddingCatalog, IndexedEmbeddingSpec, VertexEmbeddingIngestionArgs,
     VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome,
 };
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CORRUPT_ORDERED_MIXED_RESULT_AFTER_COMMIT: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+struct TestCorruptOrderedMixedResultAfterCommitGuard;
+
+#[cfg(test)]
+impl Drop for TestCorruptOrderedMixedResultAfterCommitGuard {
+    fn drop(&mut self) {
+        TEST_CORRUPT_ORDERED_MIXED_RESULT_AFTER_COMMIT.with(|enabled| {
+            assert!(
+                enabled.replace(false),
+                "test ordered mixed result corruption was already cleared"
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+fn test_corrupt_ordered_mixed_result_after_commit() -> TestCorruptOrderedMixedResultAfterCommitGuard
+{
+    TEST_CORRUPT_ORDERED_MIXED_RESULT_AFTER_COMMIT.with(|enabled| {
+        assert!(!enabled.replace(true));
+    });
+    TestCorruptOrderedMixedResultAfterCommitGuard
+}
 
 pub async fn init(args: GraphInitArgs) {
     // ADR 0031 Slice 3 (setter deferral C, A-compatible): the Router resolves vector-index targets
@@ -189,6 +220,61 @@ fn ensure_ordered_batch_instruction_budget(
     Ok(())
 }
 
+fn ordered_edge_hot_forward_vertex_count(
+    items: &[gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphItemV1],
+) -> Result<usize, String> {
+    let mut source_counts = BTreeMap::<u32, u32>::new();
+    for item in items {
+        let count = source_counts
+            .entry(item.source_local_vertex_id)
+            .or_default();
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| "ordered edge source count overflows u32".to_string())?;
+    }
+    Ok(source_counts
+        .values()
+        .filter(|&&count| {
+            count >= gleaph_graph_kernel::federation::HOT_FORWARD_EDGE_INSERT_THRESHOLD
+        })
+        .count())
+}
+
+fn ordered_mixed_hot_forward_vertex_count(
+    operations: &[OrderedMixedGraphOperationV1],
+    allocation_start: u32,
+) -> Result<usize, String> {
+    // Resolve NewVertexOrdinal against the append frontier that the production allocator will use.
+    // This keeps the count exact even when an Existing endpoint names the same local id as a new
+    // ordinal would receive (a malformed request will still fail later at edge validation).
+    let mut source_counts = BTreeMap::<(u8, u32), u32>::new();
+    for operation in operations {
+        let OrderedMixedGraphOperationV1::Edge(item) = operation else {
+            continue;
+        };
+        let source_id = match item.source {
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::Existing(vertex_id) => {
+                vertex_id
+            }
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::NewVertexOrdinal(
+                ordinal,
+            ) => allocation_start
+                .checked_add(ordinal)
+                .ok_or_else(|| "ordered mixed allocated vertex id overflows u32".to_string())?,
+        };
+        let count = source_counts.entry((0, source_id)).or_default();
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| "ordered mixed source count overflows u32".to_string())?;
+    }
+    Ok(source_counts
+        .values()
+        .filter(|&&count| {
+            count >= gleaph_graph_kernel::federation::HOT_FORWARD_EDGE_INSERT_THRESHOLD
+        })
+        .count())
+}
+
 /// Conservative budget for the synchronous derived-index drain that follows
 /// a successful batch. Observed cost is ~1.5K instructions; this reserve is
 /// deliberately large to absorb spikes under index pressure.
@@ -304,6 +390,12 @@ pub fn execute_ordered_edge_batch(
     {
         return Ok(result);
     }
+    let hot_forward_vertex_count = ordered_edge_hot_forward_vertex_count(&request.items)?;
+    crate::facade::stable::label_stats_delta::preflight_ordered_journal_record_capacity(
+        &identity,
+        hot_forward_vertex_count,
+        None,
+    )?;
     let edges = request
         .items
         .iter()
@@ -427,6 +519,11 @@ pub fn execute_ordered_vertex_batch(
     {
         return Ok(result);
     }
+    crate::facade::stable::label_stats_delta::preflight_ordered_journal_record_capacity(
+        &identity,
+        request.items.len(),
+        Some(request.items.len()),
+    )?;
 
     let vertices = request
         .items
@@ -457,6 +554,7 @@ pub fn execute_ordered_vertex_batch(
     let ids = insert_vertices_with(&store, vertices).map_err(|error| error.to_string())?;
     let mut hot_forward_vertices: Vec<_> = ids.iter().copied().map(u32::from).collect();
     hot_forward_vertices.sort_unstable();
+    let allocated_vertex_ids: Vec<_> = ids.iter().copied().map(u32::from).collect();
     store.commit_record_completed_ordered_vertex_batch_journal(
         args.mutation_id,
         identity,
@@ -464,6 +562,7 @@ pub fn execute_ordered_vertex_batch(
         None,
         None,
         hot_forward_vertices.clone(),
+        allocated_vertex_ids.clone(),
     );
     Ok(GraphOrderedVertexBatchResult::V1(
         GraphOrderedVertexBatchResultV1::Completed(
@@ -472,6 +571,7 @@ pub fn execute_ordered_vertex_batch(
                 emitted_delta_first_seq: None,
                 emitted_delta_last_seq: None,
                 hot_forward_vertices,
+                allocated_vertex_ids,
             },
         ),
     ))
@@ -520,6 +620,14 @@ pub fn execute_ordered_mixed_batch(
     {
         return Ok(result);
     }
+    let allocation_start = u32::from(store.vertex_count());
+    let hot_forward_vertex_count =
+        ordered_mixed_hot_forward_vertex_count(&request.operations, allocation_start)?;
+    crate::facade::stable::label_stats_delta::preflight_ordered_journal_record_capacity(
+        &identity,
+        hot_forward_vertex_count,
+        Some(logical_vertex_count as usize),
+    )?;
 
     // Decode every fallible property value before the first canonical vertex write.
     let mut vertices = Vec::new();
@@ -612,11 +720,35 @@ pub fn execute_ordered_mixed_batch(
             &edges,
             u64::from(logical_vertex_count),
             u64::from(logical_operation_count),
+            allocated_local_ids,
         )
         .unwrap_or_else(|error| {
             panic!("ordered mixed edge phase failed after vertex write: {error}")
         });
-    result.validate().map_err(str::to_string)?;
+    #[cfg(test)]
+    let result = {
+        let mut result = result;
+        TEST_CORRUPT_ORDERED_MIXED_RESULT_AFTER_COMMIT.with(|enabled| {
+            if enabled.get() {
+                let GraphOrderedMixedBatchResult::V1(
+                    gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(
+                        receipt,
+                    ),
+                ) = &mut result
+                else {
+                    panic!("test expected a completed ordered mixed result");
+                };
+                receipt.logical_operation_count = receipt
+                    .logical_operation_count
+                    .checked_add(1)
+                    .expect("test ordered mixed operation count must be incrementable");
+            }
+        });
+        result
+    };
+    result.validate().unwrap_or_else(|error| {
+        panic!("ordered mixed result validation failed after journal commit: {error}")
+    });
     Ok(result)
 }
 
@@ -624,120 +756,6 @@ pub async fn execute_plan_update_batch(
     args: ExecutePlanBatchArgs,
 ) -> Result<ExecutePlanBatchResult, String> {
     execute_plan_batch(args, "execute_plan_update_batch").await
-}
-
-/// Router → Graph: the unified versionless bulk execution entrypoint (ADR 0047).
-///
-/// The envelope variant selects the seed placement: per-operation complete-row seeds
-/// ([`ExecutePlanBulkBatch::PerItemSeed`]) or one shared seed relation
-/// ([`ExecutePlanBulkBatch::SharedSeed`]). The Graph re-validates the plan/seed shape and
-/// response bound fail-closed for every variant, independent of the Router.
-pub async fn execute_plan_update_batch_bulk(
-    args: ExecutePlanBulkBatch,
-) -> Result<ExecutePlanBatchResult, String> {
-    match args {
-        ExecutePlanBulkBatch::PerItemSeed(args) => execute_plan_update_batch_typed_impl(args)
-            .await
-            .map_err(bound_typed_batch_error),
-        ExecutePlanBulkBatch::SharedSeed(args) => execute_plan_update_batch_shared_impl(args).await,
-    }
-}
-
-async fn execute_plan_update_batch_shared_impl(
-    args: ExecutePlanBatchSharedV2Args,
-) -> Result<ExecutePlanBatchResult, String> {
-    args.validate()
-        .map_err(|e| format!("execute_plan_update_batch_bulk(shared_seed) validation: {e}"))?;
-    let ExecutePlanBatchSharedV2Args {
-        shared,
-        operations,
-        batch_mode,
-    } = args;
-    ensure_target_shard(shared.target_shard_id)?;
-    let seed = match shared.seed_bindings_blob {
-        Some(blob) => Some(
-            Decode!(&blob, SeedBindingsWire)
-                .map_err(|e| format!("shared bulk seed_bindings decode: {e}"))?,
-        ),
-        None => None,
-    };
-    let operations = operations
-        .into_iter()
-        .map(|op| {
-            PlanExecutionInput::decoded(
-                ExecutePlanArgs {
-                    target_shard_id: shared.target_shard_id,
-                    element_id_encoding_key: shared.element_id_encoding_key,
-                    mutation_id: Some(shared.mutation_id),
-                    plan_blob: shared.plan_blob.clone(),
-                    params_blob: op.params_blob,
-                    mode: GqlExecutionMode::Update,
-                    seed_bindings_blob: None,
-                    resolved_labels: shared.resolved_labels.clone(),
-                    resolved_properties: shared.resolved_properties.clone(),
-                    indexed_properties: shared.indexed_properties.clone(),
-                    unique_claims: None,
-                    constrained_properties: None,
-                    local_unique_claims: None,
-                    local_constrained_properties: None,
-                    indexed_embeddings: shared.indexed_embeddings.clone(),
-                    resolved_search_blob: shared.resolved_search_blob.clone(),
-                },
-                seed.clone(),
-            )
-        })
-        .collect();
-    execute_plan_batch_internal(
-        operations,
-        batch_mode,
-        BatchResponseContract::TypedV1,
-        "execute_plan_update_batch_bulk",
-    )
-    .await
-}
-
-async fn execute_plan_update_batch_typed_impl(
-    args: ExecutePlanBatchTypedArgs,
-) -> Result<ExecutePlanBatchResult, String> {
-    args.validate()
-        .map_err(|e| format!("execute_plan_update_batch_bulk(per_item_seed) validation: {e}"))?;
-    gleaph_gql_integration::typed_batch::validate_typed_batch_eligibility_for_graph(&args)
-        .map_err(|e| format!("execute_plan_update_batch_bulk(per_item_seed) eligibility: {e}"))?;
-    ensure_target_shard(args.shared.target_shard_id)?;
-    let operations: Vec<PlanExecutionInput> = args
-        .operations
-        .into_iter()
-        .map(|op| {
-            PlanExecutionInput::typed(
-                ExecutePlanArgs {
-                    target_shard_id: args.shared.target_shard_id,
-                    element_id_encoding_key: args.shared.element_id_encoding_key,
-                    mutation_id: Some(args.shared.mutation_id),
-                    plan_blob: args.shared.plan_blob.clone(),
-                    params_blob: op.params_blob,
-                    mode: GqlExecutionMode::Update,
-                    seed_bindings_blob: None,
-                    resolved_labels: args.shared.resolved_labels.clone(),
-                    resolved_properties: args.shared.resolved_properties.clone(),
-                    indexed_properties: args.shared.indexed_properties.clone(),
-                    unique_claims: None,
-                    constrained_properties: None,
-                    local_unique_claims: None,
-                    local_constrained_properties: None,
-                    indexed_embeddings: None,
-                    resolved_search_blob: None,
-                },
-                op.seed,
-            )
-        })
-        .collect();
-    execute_plan_batch_internal(
-        operations,
-        args.batch_mode,
-        BatchResponseContract::TypedV1,
-        "execute_plan_update_batch_bulk(per_item_seed)",
-    )
-    .await
 }
 
 #[cfg(feature = "batch-instr-log")]
@@ -872,13 +890,12 @@ async fn execute_plan_batch(
         .into_iter()
         .map(PlanExecutionInput::legacy)
         .collect();
-    execute_plan_batch_internal(operations, mode, BatchResponseContract::Legacy, entrypoint).await
+    execute_plan_batch_internal(operations, mode, entrypoint).await
 }
 
 enum SeedBindingsInput {
     Absent,
     LegacyBlob(Vec<u8>),
-    Typed(SeedBindingsWire),
 }
 
 struct PlanExecutionInput {
@@ -897,45 +914,11 @@ impl PlanExecutionInput {
             seed_bindings,
         }
     }
-
-    fn typed(args: ExecutePlanArgs, seed: SeedBindingsWire) -> Self {
-        debug_assert!(args.seed_bindings_blob.is_none());
-        Self {
-            args,
-            seed_bindings: SeedBindingsInput::Typed(seed),
-        }
-    }
-
-    fn decoded(args: ExecutePlanArgs, seed: Option<SeedBindingsWire>) -> Self {
-        debug_assert!(args.seed_bindings_blob.is_none());
-        Self {
-            args,
-            seed_bindings: seed
-                .map(SeedBindingsInput::Typed)
-                .unwrap_or(SeedBindingsInput::Absent),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum BatchResponseContract {
-    Legacy,
-    TypedV1,
-}
-
-impl BatchResponseContract {
-    fn error(self, error: String) -> String {
-        match self {
-            Self::Legacy => error,
-            Self::TypedV1 => bound_typed_batch_error(error),
-        }
-    }
 }
 
 async fn execute_plan_batch_internal(
     operations: Vec<PlanExecutionInput>,
     mode: ExecutePlanBatchMode,
-    response_contract: BatchResponseContract,
     entrypoint: &str,
 ) -> Result<ExecutePlanBatchResult, String> {
     if operations.is_empty() {
@@ -949,7 +932,8 @@ async fn execute_plan_batch_internal(
     let mut min_instr = u64::MAX;
     let mut errors = 0usize;
 
-    // ADR 0044: a bulk group is one batch where every operation carries the same mutation_id.
+    // The internal plan-batch path may carry one mutation id across its independently journaled
+    // operations; atomic-insert and bulk-load requests use their ordered Graph handlers instead.
     let bulk_mutation_id = detect_bulk_mutation_id(&operations);
     let is_bulk = bulk_mutation_id.is_some();
     let mut bulk_state = if let Some(mutation_id) = bulk_mutation_id {
@@ -1094,8 +1078,7 @@ async fn execute_plan_batch_internal(
                 .await
             }
             Err(err) => Err(err),
-        }
-        .map_err(|error| response_contract.error(error));
+        };
         let after = current_instruction_counter();
         let cost = after.saturating_sub(before);
         total_instr += cost;
@@ -1310,7 +1293,6 @@ async fn execute_plan_impl(
         SeedBindingsInput::LegacyBlob(blob) => Some(
             Decode!(&blob, SeedBindingsWire).map_err(|e| format!("seed_bindings decode: {e}"))?,
         ),
-        SeedBindingsInput::Typed(seed) => Some(seed),
     };
     let resolved_search = match args.resolved_search_blob {
         Some(blob) => Some(
@@ -2565,27 +2547,22 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
-    use gleaph_graph_kernel::entry::{
-        EdgeInlinePropertyProfile, EdgeLabelId, GraphId, PropertyId, VertexLabelId,
-    };
+    use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId};
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanBatchMode, ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args,
-        ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared, ExecutePlanSharedV2Op,
-        ExecutePlanTypedOp, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResultV1,
-        OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1,
-        OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs,
-        OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest,
-        OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1,
-        OrderedMixedGraphOperationV1, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1,
-        OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest,
-        OrderedVertexBatchGraphRequestV1, ResolvedEdgeLabel, ResolvedLabelTable,
-        ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedBindingsWire,
-        SeedRowWire, SeedVertexBinding, ordered_edge_batch_graph_request_fingerprint,
+        GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResultV1, OrderedEdgeBatchGraphArgs,
+        OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest,
+        OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1,
+        OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1,
+        OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1,
+        OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1,
+        OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1, ResolvedLabelTable,
+        ResolvedPropertyTable, SeedBindingEntry, SeedBindingsWire,
+        ordered_edge_batch_graph_request_fingerprint,
         ordered_mixed_batch_graph_request_fingerprint,
         ordered_vertex_batch_graph_request_fingerprint,
     };
-    use ic_stable_lara::CsrEdge;
+    use ic_stable_lara::{CsrEdge, VertexId};
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
     const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;
@@ -2633,209 +2610,6 @@ mod tests {
         GraphStore::new()
             .set_metadata(metadata)
             .expect("attach federation routing");
-    }
-
-    #[test]
-    fn typed_batch_rejects_wrong_target_before_creating_journal() {
-        attach_test_federation(TEST_SHARD_ID);
-        let mutation_id = 9_901_104;
-        let plan = PhysicalPlan::from_ops(vec![
-            PlanOp::NodeScan {
-                variable: "u".into(),
-                label: Some("User".into()),
-                property_projection: None,
-            },
-            PlanOp::InsertVertex {
-                variable: Some("p".into()),
-                labels: vec!["Post".into()],
-                properties: Vec::new(),
-            },
-            PlanOp::InsertEdge {
-                variable: None,
-                src: "u".into(),
-                dst: "p".into(),
-                direction: gleaph_gql::types::EdgeDirection::PointingRight,
-                labels: vec!["POSTED".into()],
-                properties: Vec::new(),
-            },
-        ]);
-        let args = ExecutePlanBatchTypedArgs {
-            shared: ExecutePlanBatchTypedShared {
-                target_shard_id: ShardId::new(1),
-                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
-                mutation_id,
-                plan_blob: encode_block_plans(&[plan], true).expect("encode typed plan"),
-                resolved_labels: Some(ResolvedLabelTable {
-                    vertex: vec![
-                        ResolvedVertexLabel {
-                            name: "User".into(),
-                            id: VertexLabelId::from_raw(1),
-                        },
-                        ResolvedVertexLabel {
-                            name: "Post".into(),
-                            id: VertexLabelId::from_raw(2),
-                        },
-                    ],
-                    edge: vec![ResolvedEdgeLabel {
-                        name: "POSTED".into(),
-                        id: EdgeLabelId::from_raw(1),
-                        inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
-                        inline_schema: None,
-                        ordering: gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered,
-                    }],
-                }),
-                resolved_properties: None,
-                indexed_properties: None,
-            },
-            operations: vec![ExecutePlanTypedOp {
-                params_blob: encode_gql_params_blob(vec![]).expect("encode params"),
-                seed: SeedBindingsWire {
-                    entries: Vec::new(),
-                    rows: vec![SeedRowWire {
-                        vertex_bindings: vec![SeedVertexBinding {
-                            variable: "u".into(),
-                            local_vertex_id: 0,
-                            required_vertex_label_ids: Vec::new(),
-                        }],
-                        float64_bindings: Vec::new(),
-                    }],
-                    complete_prefix_rows: true,
-                },
-            }],
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        };
-
-        let err = pollster::block_on(execute_plan_update_batch_typed_impl(args))
-            .expect_err("wrong target shard must fail before dispatch");
-        assert!(err.contains("does not match this graph shard"), "{err}");
-        assert!(
-            GraphStore::new()
-                .mutation_journal_entry(mutation_id)
-                .is_none(),
-            "invalid target must not reserve a journal entry"
-        );
-    }
-
-    #[test]
-    fn typed_v1_batch_executes_feed_edge_cartesian_anchor_bundle() {
-        // The production feed-edge shape (`MATCH (a:Post {demo_id}), (b:User {user_id})
-        // INSERT (a)-[:IN_HOME_FEED]->(b)`) plans as a leading CartesianProduct of IndexScan
-        // arms. Complete rows must let the typed V1 endpoint skip both scans (no index client) and
-        // still insert the edge: the Graph revalidates the stripped anchors against canonical state.
-        use gleaph_gql::{parser, type_check::NoSchema};
-        use gleaph_gql_planner::build_block_plan_with_schema;
-        use gleaph_gql_planner::plan::PlanOp;
-        use gleaph_gql_planner::stats::TableStats;
-        use gleaph_gql_planner::wire::encode_block_plans;
-        use gleaph_graph_kernel::plan_exec::{
-            ExecutePlanTypedOp, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
-        };
-        use std::collections::BTreeMap;
-
-        attach_test_federation(TEST_SHARD_ID);
-        let store = GraphStore::new();
-        let a_id = store
-            .insert_vertex_named(
-                ["Post"],
-                [
-                    ("demo_id", Value::Uint64(4284)),
-                    ("demo_graph", Value::Text("social".into())),
-                ],
-            )
-            .expect("insert post a");
-        let b_id = store
-            .insert_vertex_named(
-                ["User"],
-                [
-                    ("user_id", Value::Text("alice".into())),
-                    ("demo_graph", Value::Text("social".into())),
-                ],
-            )
-            .expect("insert user b");
-
-        let mut params = BTreeMap::new();
-        params.insert("$a_demo_id".to_string(), Value::Uint64(4284));
-        params.insert("$b_user_id".to_string(), Value::Text("alice".into()));
-        let params_blob =
-            encode_gql_params_blob(params.into_iter().collect()).expect("encode params");
-        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:User {user_id: $b_user_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'e', demo_kind: 'feed'}]->(b)";
-        let program = parser::parse(gql).unwrap();
-        let block = program
-            .transaction_activity
-            .as_ref()
-            .unwrap()
-            .body
-            .as_ref()
-            .unwrap();
-        let mut stats = TableStats::default();
-        stats
-            .indexed_vertex_properties
-            .insert("demo_id".to_string());
-        stats
-            .indexed_vertex_properties
-            .insert("user_id".to_string());
-        let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema).unwrap();
-        assert!(
-            plan.ops
-                .iter()
-                .any(|op| matches!(op, PlanOp::CartesianProduct { .. })),
-            "feed-edge plan must be a CartesianProduct of scans"
-        );
-        let plan_blob = encode_block_plans(&[plan], true).expect("encode plan");
-
-        let args = ExecutePlanBatchTypedArgs {
-            shared: ExecutePlanBatchTypedShared {
-                target_shard_id: TEST_SHARD_ID,
-                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
-                mutation_id: 57,
-                plan_blob,
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-            },
-            operations: vec![ExecutePlanTypedOp {
-                params_blob,
-                seed: SeedBindingsWire {
-                    entries: Vec::new(),
-                    rows: vec![SeedRowWire {
-                        vertex_bindings: vec![
-                            SeedVertexBinding {
-                                variable: "a".into(),
-                                local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
-                                required_vertex_label_ids: Vec::new(),
-                            },
-                            SeedVertexBinding {
-                                variable: "b".into(),
-                                local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
-                                required_vertex_label_ids: Vec::new(),
-                            },
-                        ],
-                        float64_bindings: Vec::new(),
-                    }],
-                    complete_prefix_rows: true,
-                },
-            }],
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        };
-        let result = pollster::block_on(execute_plan_update_batch_typed_impl(args))
-            .expect("typed V1 feed-edge bundle must execute");
-        assert_eq!(result.results.len(), 1);
-        assert_eq!(
-            result.results[0].as_ref().expect("result").row_count,
-            0,
-            "edge inserts report no procedure rows"
-        );
-        // The edge must be durably inserted in the canonical store (slot 0 on the source vertex).
-        let label_id = crate::test_labels::edge_label_id_for_name("IN_HOME_FEED");
-        let handle = crate::facade::EdgeHandle {
-            owner_vertex_id: a_id,
-            label_id: ic_stable_lara::BucketLabelKey::from_raw(label_id.raw()),
-            slot_index: 0.into(),
-        };
-        assert!(
-            store.find_outgoing_edge_record(handle).is_ok(),
-            "IN_HOME_FEED edge must exist after typed V1 execution"
-        );
     }
 
     fn label_intersection_plan_with_seeds(
@@ -2919,14 +2693,195 @@ mod tests {
         };
         assert_eq!(receipt.logical_vertex_count, 1);
         assert_eq!(receipt.hot_forward_vertices.len(), 1);
+        assert_eq!(receipt.allocated_vertex_ids.len(), 1);
         let replay = execute_ordered_vertex_batch(args).expect("vertex batch replay");
         assert_eq!(result, replay);
     }
 
     #[test]
-    fn ordered_mixed_handler_allocates_vertices_then_commits_and_replays_edges() {
+    fn ordered_vertex_handler_preserves_non_sorted_allocator_order_through_journal_replay() {
+        let property_id = PropertyId::from_raw(74);
+        let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(74),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![
+                OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id,
+                            value: Value::Int64(101)
+                                .to_binary_bytes()
+                                .expect("encode first vertex property"),
+                        },
+                    ],
+                },
+                OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id,
+                            value: Value::Int64(202)
+                                .to_binary_bytes()
+                                .expect("encode second vertex property"),
+                        },
+                    ],
+                },
+            ],
+        });
+        let fingerprint =
+            ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
+            mutation_id: 74_001,
+            graph_request_fingerprint: fingerprint,
+            request,
+        });
+
+        let allocation_order_guard =
+            crate::facade::mutation_executor::test_bulk_vertex_allocation_order(vec![1, 0]);
+        let result = execute_ordered_vertex_batch(args.clone()).expect("vertex batch execution");
+        let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
+            &result
+        else {
+            panic!("expected completed vertex receipt");
+        };
+        assert_eq!(receipt.allocated_vertex_ids.len(), 2);
+        assert!(
+            receipt.allocated_vertex_ids[0] > receipt.allocated_vertex_ids[1],
+            "the test allocator deliberately returns a non-sorted ordinal sequence"
+        );
+        let store = GraphStore::new();
+        assert_eq!(
+            store.vertex_property(VertexId::from(receipt.allocated_vertex_ids[0]), property_id),
+            Some(Value::Int64(101)),
+            "first returned ID must own the first input vertex contents"
+        );
+        assert_eq!(
+            store.vertex_property(VertexId::from(receipt.allocated_vertex_ids[1]), property_id),
+            Some(Value::Int64(202)),
+            "second returned ID must own the second input vertex contents"
+        );
+        let journal = store
+            .mutation_journal_entry(74_001)
+            .expect("ordered vertex journal entry");
+        assert_eq!(
+            journal.allocated_vertex_ids(),
+            Some(receipt.allocated_vertex_ids.as_slice())
+        );
+        drop(allocation_order_guard);
+
+        let replay = execute_ordered_vertex_batch(args).expect("vertex batch replay");
+        assert_eq!(result, replay);
+    }
+
+    #[test]
+    fn ordered_mixed_handler_preserves_non_sorted_allocator_order_through_journal_replay() {
+        let property_id = PropertyId::from_raw(73);
         let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(73),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            operations: vec![
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id,
+                            value: Value::Int64(303)
+                                .to_binary_bytes()
+                                .expect("encode first mixed vertex property"),
+                        },
+                    ],
+                }),
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id,
+                            value: Value::Int64(404)
+                                .to_binary_bytes()
+                                .expect("encode second mixed vertex property"),
+                        },
+                    ],
+                }),
+                OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                    source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                    target: OrderedMixedGraphEndpointV1::NewVertexOrdinal(1),
+                    directed: true,
+                    catalog_edge_label_id: None,
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        let fingerprint =
+            ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
+            mutation_id: 73_001,
+            graph_request_fingerprint: fingerprint,
+            request,
+        });
+        let allocation_start = u32::from(GraphStore::new().vertex_count());
+        let expected_allocated_vertex_ids = vec![
+            allocation_start
+                .checked_add(1)
+                .expect("second allocated vertex id"),
+            allocation_start,
+        ];
+        let allocation_order_guard =
+            crate::facade::mutation_executor::test_bulk_vertex_allocation_order(vec![1, 0]);
+        let result = execute_ordered_mixed_batch(args.clone()).expect("mixed batch execution");
+        let GraphOrderedMixedBatchResult::V1(
+            gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(receipt),
+        ) = &result
+        else {
+            panic!("expected completed mixed receipt");
+        };
+        assert_eq!(receipt.logical_operation_count, 3);
+        assert_eq!(receipt.logical_vertex_count, 2);
+        assert_eq!(receipt.logical_edge_count, 1);
+        assert_eq!(
+            receipt.allocated_vertex_ids, expected_allocated_vertex_ids,
+            "mixed receipt must preserve vertex-operation ordinal order"
+        );
+        assert!(
+            receipt.allocated_vertex_ids[0] > receipt.allocated_vertex_ids[1],
+            "the test allocator deliberately returns a non-sorted ordinal sequence"
+        );
+        let store = GraphStore::new();
+        assert_eq!(
+            store.vertex_property(VertexId::from(receipt.allocated_vertex_ids[0]), property_id),
+            Some(Value::Int64(303)),
+            "first returned ID must own the first mixed input vertex contents"
+        );
+        assert_eq!(
+            store.vertex_property(VertexId::from(receipt.allocated_vertex_ids[1]), property_id),
+            Some(Value::Int64(404)),
+            "second returned ID must own the second mixed input vertex contents"
+        );
+        let journal = store
+            .mutation_journal_entry(73_001)
+            .expect("ordered mixed journal entry");
+        assert_eq!(
+            journal.allocated_vertex_ids(),
+            Some(expected_allocated_vertex_ids.as_slice())
+        );
+        drop(allocation_order_guard);
+
+        let replay = execute_ordered_mixed_batch(args).expect("mixed batch replay");
+        assert_eq!(result, replay);
+    }
+
+    #[test]
+    fn ordered_mixed_post_write_result_validation_failure_panics_instead_of_returning_error() {
+        let mutation_id = 73_002;
+        let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(75),
             target_shard_id: TEST_SHARD_ID,
             target_graph_canister: Principal::management_canister(),
             resolved_labels: ResolvedLabelTable::default(),
@@ -2953,25 +2908,48 @@ mod tests {
         let fingerprint =
             ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
-            mutation_id: 73_001,
+            mutation_id,
             graph_request_fingerprint: fingerprint,
             request,
         });
-        let result = execute_ordered_mixed_batch(args.clone()).expect("mixed batch execution");
-        let GraphOrderedMixedBatchResult::V1(
-            gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(receipt),
-        ) = &result
-        else {
-            panic!("expected completed mixed receipt");
-        };
-        assert_eq!(receipt.logical_operation_count, 3);
-        assert_eq!(receipt.logical_vertex_count, 2);
-        assert_eq!(receipt.logical_edge_count, 1);
-        let replay = execute_ordered_mixed_batch(args).expect("mixed batch replay");
-        assert_eq!(result, replay);
+        let store = GraphStore::new();
+        let allocation_start = u32::from(store.vertex_count());
+        let corruption_guard = test_corrupt_ordered_mixed_result_after_commit();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            execute_ordered_mixed_batch(args)
+        }));
+
+        assert!(
+            outcome.is_err(),
+            "invalid post-write mixed result must panic, not return a recoverable Err"
+        );
+        assert_eq!(
+            u32::from(store.vertex_count()),
+            allocation_start + 2,
+            "the host-only corruption seam must run after both canonical vertex writes"
+        );
+        let source = VertexId::from(allocation_start);
+        let target = VertexId::from(allocation_start + 1);
+        assert!(
+            store
+                .directed_out_edges(source)
+                .expect("committed mixed edge row")
+                .iter()
+                .any(|edge| edge.neighbor_vid() == target),
+            "the host-only corruption seam must run after the canonical edge write"
+        );
+        assert!(
+            store
+                .mutation_journal_entry(mutation_id)
+                .expect("committed mixed journal entry")
+                .is_completed(),
+            "the host-only corruption seam must run after journal completion"
+        );
+        drop(corruption_guard);
     }
 
-    /// ADR 0044 scalar handler contract: `execute_plan_update` (single-message update) must omit
+    /// Scalar handler contract: `execute_plan_update` (single-message update) must omit
     /// the intermediate incomplete journal and keep only the completed journal. Replaying the
     /// same mutation id must therefore not re-execute the mutation.
     #[test]
@@ -3032,64 +3010,6 @@ mod tests {
             !(final_vertex_count > initial_vertex_count),
             "completed-journal replay must not re-execute the mutation"
         );
-    }
-
-    #[test]
-    fn shared_v2_batch_keeps_one_operation_domain_across_replay() {
-        attach_test_federation(TEST_SHARD_ID);
-        let mutation_id = 56;
-        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
-            variable: Some("n".into()),
-            labels: vec!["HandlerSharedV2Vertex".into()],
-            properties: vec![],
-        }]);
-        let shared_seed = SeedBindingsWire {
-            entries: Vec::new(),
-            rows: Vec::new(),
-            complete_prefix_rows: false,
-        };
-        let args = ExecutePlanBatchSharedV2Args {
-            shared: ExecutePlanBatchSharedV2 {
-                target_shard_id: TEST_SHARD_ID,
-                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
-                mutation_id,
-                plan_blob: encode_block_plans(&[plan], true).expect("encode mutation plan"),
-                seed_bindings_blob: Some(Encode!(&shared_seed).expect("encode shared seed")),
-                resolved_labels: None,
-                resolved_properties: None,
-                indexed_properties: None,
-                indexed_embeddings: None,
-                resolved_search_blob: None,
-            },
-            operations: vec![
-                ExecutePlanSharedV2Op {
-                    params_blob: encode_gql_params_blob(vec![]).expect("encode params 0"),
-                },
-                ExecutePlanSharedV2Op {
-                    params_blob: encode_gql_params_blob(vec![]).expect("encode params 1"),
-                },
-            ],
-            batch_mode: ExecutePlanBatchMode::Dynamic,
-        };
-
-        let first = pollster::block_on(execute_plan_update_batch_shared_impl(args.clone()))
-            .expect("first shared V2 batch");
-        assert_eq!(first.results.len(), 2);
-        assert!(first.next_index.is_none());
-
-        let journal = GraphStore::new()
-            .mutation_journal_entry(mutation_id)
-            .expect("shared V2 journal");
-        assert!(journal.is_completed());
-        let progress = journal.bulk_progress().as_ref().expect("bulk progress");
-        assert_eq!(progress.operation_count(), 2);
-        assert_eq!(progress.completed_count(), 2);
-        assert_eq!(progress.operation_row_counts().len(), 2);
-
-        let replay = pollster::block_on(execute_plan_update_batch_shared_impl(args))
-            .expect("shared V2 replay");
-        assert_eq!(replay.results.len(), 2);
-        assert!(replay.next_index.is_none());
     }
 
     #[test]

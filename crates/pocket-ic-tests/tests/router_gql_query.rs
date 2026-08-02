@@ -12,12 +12,12 @@ use gleaph_pocket_ic_tests::{
     create_undirected_edge_property_index, create_vertex_property_index,
     drop_vertex_property_index, e2e_insert_directed_edge_with_property,
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
-    e2e_insert_vertex_with_two_properties, ensure_edge_label, ensure_property,
-    get_mutation_status_as_admin, gql_execute_as_admin, gql_execute_as_admin_expect_err,
-    gql_execute_result_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
-    gql_query_as_admin_with_read_mode, graph_index_pending_min_mutation_id, install_federation,
-    install_single_shard_federation, run_router_recovery_timer, start_graph_shard,
-    stop_graph_shard, test_inject_projection_pending_saga,
+    e2e_insert_vertex_with_two_properties, ensure_edge_label, ensure_property, gql_mutate_as_admin,
+    gql_mutate_as_admin_expect_err, gql_mutate_result_as_admin, gql_query_as_admin,
+    gql_query_as_admin_expect_err, gql_query_as_admin_with_read_mode,
+    graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
+    mutation_status_as_admin, run_router_recovery_timer, start_graph_shard, stop_graph_shard,
+    test_inject_projection_pending_saga,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -249,7 +249,7 @@ fn assert_scan_fallback_after_drop(
 }
 
 fn assert_missing_index_drop_error(env: &gleaph_pocket_ic_tests::FederationEnv) {
-    let err = gql_execute_as_admin_expect_err(
+    let err = gql_mutate_as_admin_expect_err(
         env,
         &format!("DROP INDEX {INDEX_AGE_NAME}"),
         "lifecycle_drop_missing_age",
@@ -330,7 +330,7 @@ fn router_rejects_federated_match_based_multi_dml_bundle_before_dispatch() {
 
     let env = install_federation();
 
-    let err = gql_execute_as_admin_expect_err(
+    let err = gql_mutate_as_admin_expect_err(
         &env,
         "MATCH (n:Person) SET n.x = 1 NEXT MATCH (m:Project) SET m.y = 2",
         "router_rejects_federated_match_based_multi_dml_bundle_before_dispatch",
@@ -354,7 +354,7 @@ fn router_allows_multi_dml_bundle_on_single_shard() {
     // segment on the one shard.
     let env = install_single_shard_federation();
 
-    let result = gql_execute_result_as_admin(
+    let result = gql_mutate_result_as_admin(
         &env,
         "INSERT (:Person) NEXT INSERT (:Project)",
         "router_allows_multi_dml_bundle_on_single_shard",
@@ -377,7 +377,7 @@ fn federated_pure_insert_placement_lifecycle() {
     let env = install_federation();
 
     // Single completely-new INSERT: no index anchor, placed on the graph's latest shard.
-    let single = gql_execute_result_as_admin(
+    let single = gql_mutate_result_as_admin(
         &env,
         "INSERT (:Person)",
         "federated_pure_insert_placement_single",
@@ -396,7 +396,7 @@ fn federated_pure_insert_placement_lifecycle() {
     );
 
     // Completely-new INSERT-only bundle: still co-placed on the latest shard atomically.
-    let bundle = gql_execute_result_as_admin(
+    let bundle = gql_mutate_result_as_admin(
         &env,
         "INSERT (:Project) NEXT INSERT (:Thing)",
         "federated_pure_insert_placement_bundle",
@@ -433,7 +433,7 @@ fn router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard() {
     let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
     assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
 
-    let result = gql_execute_result_as_admin(
+    let result = gql_mutate_result_as_admin(
         &env,
         "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)",
         "router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard",
@@ -476,7 +476,7 @@ fn router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga() {
     assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
     assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
 
-    let result = gql_execute_result_as_admin(
+    let result = gql_mutate_result_as_admin(
         &env,
         "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)",
         "router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga",
@@ -535,13 +535,13 @@ fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
     let bundle = "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)";
 
     stop_graph_shard(&env, env.graph_dest);
-    let err = gql_execute_as_admin_expect_err(&env, bundle, key);
+    let err = gql_mutate_as_admin_expect_err(&env, bundle, key);
     assert!(
         matches!(err, RouterError::InvalidArgument(_)),
         "a crashed shard fails the federated bundle, got {err:?}"
     );
 
-    let pending = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status for the in-flight bundle saga");
     assert_eq!(
         pending.phase,
@@ -550,7 +550,7 @@ fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
     );
 
     run_router_recovery_timer(&env);
-    let still_pending = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let still_pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status after a recovery tick with the shard still down");
     assert_eq!(
         still_pending.phase,
@@ -559,7 +559,7 @@ fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
     );
 
     start_graph_shard(&env, env.graph_dest);
-    let resumed = gql_execute_result_as_admin(&env, bundle, key);
+    let resumed = gql_mutate_result_as_admin(&env, bundle, key);
     assert_eq!(
         resumed.phase,
         Some(MutationLifecyclePhase::Completed),
@@ -598,7 +598,7 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
     // postings give the graph-index pending watermark something real to track, so the
     // `graph_index_pending_min_mutation_id == None` assertion below verifies inline flush rather
     // than a no-work path.
-    let result = gql_execute_result_as_admin(
+    let result = gql_mutate_result_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
         key,
@@ -664,7 +664,7 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
     assert_eq!(eventual.row_count, 1);
 
     // Phase 4 status contract for the completed saga.
-    let status = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let status = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status for a known client_mutation_key");
     assert_eq!(status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(status.target_shard, None);
@@ -674,7 +674,7 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
     // The autonomous recovery timer must not disturb a completed saga.
     run_router_recovery_timer(&env);
 
-    let after = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let after = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status after a recovery tick");
     assert_eq!(
         after.phase,
@@ -683,8 +683,7 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
     );
 
     // An unknown key is rejected.
-    let missing =
-        get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, "no-such-key");
+    let missing = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, "no-such-key");
     assert!(
         matches!(missing, Err(RouterError::InvalidArgument(_))),
         "unknown client_mutation_key returns InvalidArgument, got {missing:?}"
@@ -723,13 +722,13 @@ fn router_recovers_non_terminal_federated_saga_via_idempotent_retry() {
     // non-terminal saga (the dispatch envelope, with both shards' seeds, is recorded before any
     // shard executes).
     stop_graph_shard(&env, env.graph_dest);
-    let err = gql_execute_as_admin_expect_err(&env, "MATCH (n {age: 5}) SET n.age = 6", key);
+    let err = gql_mutate_as_admin_expect_err(&env, "MATCH (n {age: 5}) SET n.age = 6", key);
     assert!(
         matches!(err, RouterError::InvalidArgument(_)),
         "a crashed shard fails the federated DML, got {err:?}"
     );
 
-    let pending = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status for the in-flight saga");
     assert_eq!(
         pending.phase,
@@ -751,7 +750,7 @@ fn router_recovers_non_terminal_federated_saga_via_idempotent_retry() {
     // The autonomous recovery timer must not converge or corrupt the saga while the shard is down:
     // it never re-dispatches canonical DML, and the unavailable shard cannot be projected.
     run_router_recovery_timer(&env);
-    let still_pending = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let still_pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status after a recovery tick with the shard still down");
     assert_eq!(
         still_pending.phase,
@@ -762,14 +761,14 @@ fn router_recovers_non_terminal_federated_saga_via_idempotent_retry() {
     // Restart the shard and retry the same idempotent mutation. The already-committed shard is a
     // no-op (deduplicated by mutation_id); the recovered shard applies and the saga finalizes.
     start_graph_shard(&env, env.graph_dest);
-    let resumed = gql_execute_result_as_admin(&env, "MATCH (n {age: 5}) SET n.age = 6", key);
+    let resumed = gql_mutate_result_as_admin(&env, "MATCH (n {age: 5}) SET n.age = 6", key);
     assert_eq!(
         resumed.phase,
         Some(MutationLifecyclePhase::Completed),
         "the idempotent retry converges the saga to Completed"
     );
 
-    let completed = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let completed = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status after convergence");
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
     assert_eq!(completed.target_shard, None);
@@ -808,7 +807,7 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
     assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
 
     // A real federated DML commits a mutation on both shards and advances both projections inline.
-    let real = gql_execute_result_as_admin(
+    let real = gql_mutate_result_as_admin(
         &env,
         "MATCH (n {age: 5}) SET n.age = 6",
         "projection_pending_seed_mutation",
@@ -828,7 +827,7 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
         1,
     );
 
-    let pending = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status for the injected saga");
     assert_eq!(
         pending.phase,
@@ -844,7 +843,7 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
     // The autonomous timer converges the saga without any client retry.
     run_router_recovery_timer(&env);
 
-    let completed = get_mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+    let completed = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status after autonomous recovery");
     assert_eq!(
         completed.phase,
@@ -863,7 +862,7 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
 fn single_shard_relationship_rows_from_insert() {
     let env = install_single_shard_federation();
 
-    let row_count = gql_execute_as_admin(
+    let row_count = gql_mutate_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
         "single_shard_relationship_rows_from_insert",

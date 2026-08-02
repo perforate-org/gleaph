@@ -371,6 +371,7 @@ impl GraphStore {
         edges: &[BatchEdgeInput],
         logical_vertex_count: u64,
         logical_operation_count: u64,
+        allocated_vertex_ids: Vec<LocalVertexId>,
     ) -> Result<GraphOrderedMixedBatchResult, OrderedEdgeBatchExecutionError> {
         let classification = self
             .classify_batch_edge_insertion(edges)
@@ -428,6 +429,7 @@ impl GraphStore {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices: ordered_hot_forward_vertices(edges),
+            allocated_vertex_ids: allocated_vertex_ids.clone(),
         };
         receipt
             .validate()
@@ -439,6 +441,7 @@ impl GraphStore {
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             receipt.hot_forward_vertices.clone(),
+            allocated_vertex_ids,
         );
         Ok(GraphOrderedMixedBatchResult::V1(
             GraphOrderedMixedBatchResultV1::Completed(receipt),
