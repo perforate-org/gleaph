@@ -15,11 +15,11 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_cdk::api::msg_caller;
 
-const VECTOR_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
-const VECTOR_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
+pub(crate) const VECTOR_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
+pub(crate) const VECTOR_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
 
 #[inline]
-fn instruction_counter() -> u64 {
+pub(crate) fn instruction_counter() -> u64 {
     #[cfg(target_family = "wasm")]
     {
         ic_cdk::api::instruction_counter()

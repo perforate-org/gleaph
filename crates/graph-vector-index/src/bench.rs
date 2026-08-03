@@ -15,13 +15,14 @@
 use crate::facade::{SearchTuning, VectorIndexStore};
 use crate::init::VectorIndexInitArgs;
 use canbench_rs::bench;
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceStepRequest,
-    VectorMetric, VectorRebuildPhase, VectorSearchRequest, VectorSubject,
+    VectorMetric, VectorRebuildPhase, VectorSearchRequest, VectorSubject, VectorSyncBatchProgress,
 };
+use std::cell::Cell;
 use std::hint::black_box;
 
 const INDEX_ID: u32 = 1;
@@ -643,3 +644,111 @@ filtered_search_bench!(bench_filtered_search_d384_c4096_k10, 384, 4096, 10);
 filtered_search_bench!(bench_filtered_search_d768_c128_k10, 768, 128, 10);
 filtered_search_bench!(bench_filtered_search_d768_c1024_k10, 768, 1024, 10);
 filtered_search_bench!(bench_filtered_search_d768_c4096_k10, 768, 4096, 10);
+
+// --- `vector_sync_batch` loop acceptance (GAP-2026-07-17-001) ---
+//
+// The canister `vector_sync_batch` loop (graph-vector-index/src/canister.rs) applies each
+// operation with an instruction-budget exhausted check that reserves
+// `VECTOR_BATCH_RESERVE_INSTRUCTIONS` (100M) below `VECTOR_BATCH_MAX_INSTRUCTIONS` (32B). These
+// benches mirror that loop with the authorized attached-shard caller (a canbench query caller is
+// not an attached shard) to measure the representative and adversarial per-operation cost plus
+// the exhausted-check overhead. The measured maximum single-operation cost must stay far below
+// the 100M reserve, and the response-construction bench bounds the tail the ceiling leaves below
+// the 40B platform limit.
+
+thread_local! {
+    static SYNC_BENCH_SEQ: Cell<u32> = const { Cell::new(0) };
+}
+
+fn sync_ops(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
+    let seq = SYNC_BENCH_SEQ.with(|c| {
+        let n = c.get();
+        c.set(n.wrapping_add(1));
+        n
+    });
+    (0..count)
+        .map(|index| VectorEmbeddingSyncOp {
+            index_id: INDEX_ID,
+            embedding_name_id: 0,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: seq.wrapping_add(index as u32),
+            },
+            embedding_incarnation: 1,
+            embedding_version: 1,
+            encoding: VectorEncoding::F32,
+            dims,
+            metric: VectorMetric::L2Squared,
+            bytes: vec_bytes(dims, index as f32),
+            remove: false,
+        })
+        .collect()
+}
+
+fn sync_batch_round(
+    store: &VectorIndexStore,
+    caller: Principal,
+    ops: &[VectorEmbeddingSyncOp],
+) -> u32 {
+    let baseline = crate::canister::instruction_counter();
+    let mut applied = 0u32;
+    for operation in ops {
+        let exhausted = crate::canister::instruction_counter()
+            .saturating_sub(baseline)
+            .saturating_add(crate::canister::VECTOR_BATCH_RESERVE_INSTRUCTIONS)
+            >= crate::canister::VECTOR_BATCH_MAX_INSTRUCTIONS;
+        if exhausted {
+            break;
+        }
+        if operation.remove {
+            store
+                .vector_remove(caller, operation)
+                .expect("vector remove");
+        } else {
+            store
+                .vector_upsert(caller, operation)
+                .expect("vector upsert");
+        }
+        applied = applied.saturating_add(1);
+    }
+    applied
+}
+
+/// The `vector_sync_batch` loop processing 256 upserts of 8-dimensional embeddings
+/// (representative per-operation cost).
+#[bench(raw)]
+fn bench_vector_sync_batch_256() -> canbench_rs::BenchResult {
+    let store = setup_search_store(8, 0);
+    let ops = sync_ops(256, 8);
+    canbench_rs::bench_fn(|| {
+        let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
+        black_box(applied)
+    })
+}
+
+/// Adversarial: 256 upserts of 768-dimensional embeddings (3072 bytes each) — the maximum
+/// single-operation cost the 100M reserve must cover.
+#[bench(raw)]
+fn bench_vector_sync_batch_256_768_dims() -> canbench_rs::BenchResult {
+    let store = setup_search_store(768, 0);
+    let ops = sync_ops(256, 768);
+    canbench_rs::bench_fn(|| {
+        let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
+        black_box(applied)
+    })
+}
+
+/// Response construction: `VectorSyncBatchProgress` encode — the tail the 32B ceiling leaves
+/// below the 40B platform limit.
+#[bench(raw)]
+fn bench_vector_sync_batch_progress_encode() -> canbench_rs::BenchResult {
+    let progress = VectorSyncBatchProgress {
+        applied: 256,
+        next_index: None,
+        instruction_budget_exhausted: false,
+    };
+    canbench_rs::bench_fn(|| {
+        let encoded = Encode!(black_box(&progress)).expect("encode sync progress");
+        black_box(encoded)
+    })
+}

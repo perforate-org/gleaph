@@ -172,6 +172,20 @@ defect from being rediscovered without its prior reasoning.
   prematurely bound realistic batches. The posting_batch path needs no PocketIC boundary test:
   the loop is fully local and the reserve/ceiling acceptance is covered by the canbench
   measurements alone.
+- **Progress (2026-08-03, graph-vector-index `vector_sync_batch` path):** canbench targets added
+  in `crates/graph-vector-index/src/bench.rs`, persisted in
+  `crates/graph-vector-index/canbench_results.yml`. The canister `vector_sync_batch` loop
+  (`VECTOR_BATCH_MAX_INSTRUCTIONS` 32B with `VECTOR_BATCH_RESERVE_INSTRUCTIONS` 100M) is mirrored
+  in the bench with the authorized attached-shard caller. Measured (canbench, 2026-08-03): 256
+  upserts of 8-dimensional embeddings cost 280.41M instructions (≈1.10M per operation); 256
+  upserts of 768-dimensional embeddings (3072 bytes each) cost 287.42M instructions (≈1.12M per
+  operation, effectively flat in dims — the cost is dominated by the slab write machinery, not
+  the embedding bytes); the `VectorSyncBatchProgress` response encodes in 37.71K instructions.
+  Derived acceptance: the maximum single-operation cost (≈1.12M) plus response construction
+  (≈38K) is two orders of magnitude below the 100M reserve; the 32B ceiling leaves an 8B gap
+  below the 40B platform limit for the response; and at ≈1.1M per operation the ceiling cuts off
+  only after ~29K operations per call, so it does not prematurely bound realistic sync batches.
+  Like posting_batch, this loop is fully local and needs no PocketIC boundary test.
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
