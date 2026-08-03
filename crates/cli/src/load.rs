@@ -74,6 +74,13 @@ pub struct LoadArgs {
     /// Artifact format; inferred from the file extension when omitted.
     #[arg(long, value_name = "FORMAT")]
     format: Option<Format>,
+    /// NDJSON vertices file only (no edges). Mutually exclusive with positional ARTIFACT.
+    #[arg(long, value_name = "FILE")]
+    vertices: Option<PathBuf>,
+    /// NDJSON edges file only (no vertices). Requires property-based endpoints (planned);
+    /// source_id endpoints cannot resolve without vertices in the same artifact.
+    #[arg(long, value_name = "FILE")]
+    edges: Option<PathBuf>,
     /// Start a new job under a derived key instead of resuming or skipping; the effective key is
     /// printed and recorded in `--state-file` when given.
     #[arg(long)]
@@ -202,31 +209,87 @@ struct SingleFileArtifact {
 
 // ──── format detection and reading ────
 
-fn resolve_format(args: &LoadArgs) -> Result<Format, LoadError> {
-    let count = args.artifacts.len();
-    if let Some(format) = args.format {
-        let expected = match format {
-            Format::Jsonl => 2,
-            Format::Yaml | Format::Json => 1,
-        };
-        if count != expected {
+/// Resolved artifact input: one YAML/JSON file, or NDJSON files designated by positionals or
+/// `--vertices` / `--edges`.
+#[derive(Debug)]
+enum ArtifactInput {
+    /// One YAML/JSON file containing `vertices` and `edges`.
+    SingleFile { path: PathBuf, format: Format },
+    /// NDJSON vertices and edges files.
+    Both { vertices: PathBuf, edges: PathBuf },
+    /// NDJSON vertices file only.
+    VerticesOnly { path: PathBuf },
+    /// NDJSON edges file only.
+    EdgesOnly { path: PathBuf },
+}
+
+fn resolve_input(args: &LoadArgs) -> Result<ArtifactInput, LoadError> {
+    if args.vertices.is_some() || args.edges.is_some() {
+        if !args.artifacts.is_empty() {
+            return Err(LoadError::Usage(
+                "cannot combine positional ARTIFACT with --vertices/--edges".into(),
+            ));
+        }
+        if let Some(format) = args.format
+            && format != Format::Jsonl
+        {
             return Err(LoadError::Usage(format!(
-                "--format {format:?} expects {expected} artifact file(s), got {count}"
+                "--format {format:?} does not apply to --vertices/--edges (NDJSON)"
             )));
         }
-        return Ok(format);
+        let require_jsonl = |path: &Path, flag: &str| -> Result<PathBuf, LoadError> {
+            let ext = extension(path)?;
+            if !matches!(ext.as_str(), "jsonl" | "ndjson") {
+                return Err(LoadError::Usage(format!(
+                    "{flag} requires an NDJSON (.jsonl) file; got extension {ext:?}"
+                )));
+            }
+            Ok(path.to_owned())
+        };
+        return match (&args.vertices, &args.edges) {
+            (Some(vertices), Some(edges)) => Ok(ArtifactInput::Both {
+                vertices: require_jsonl(vertices, "--vertices")?,
+                edges: require_jsonl(edges, "--edges")?,
+            }),
+            (Some(vertices), None) => Ok(ArtifactInput::VerticesOnly {
+                path: require_jsonl(vertices, "--vertices")?,
+            }),
+            (None, Some(edges)) => Ok(ArtifactInput::EdgesOnly {
+                path: require_jsonl(edges, "--edges")?,
+            }),
+            (None, None) => unreachable!("at least one of --vertices/--edges is present"),
+        };
     }
-    match count {
-        1 => match extension(&args.artifacts[0])?.as_str() {
-            "json" => Ok(Format::Json),
-            "yaml" | "yml" => Ok(Format::Yaml),
-            "jsonl" | "ndjson" => Err(LoadError::Usage(
-                "NDJSON artifacts require two files: <VERTICES> <EDGES>".into(),
-            )),
-            other => Err(LoadError::Usage(format!(
-                "cannot infer artifact format from extension {other:?}; pass --format yaml|json|jsonl"
-            ))),
-        },
+    match args.artifacts.len() {
+        1 => {
+            let path = &args.artifacts[0];
+            let format = match args.format {
+                Some(Format::Jsonl) => {
+                    return Err(LoadError::Usage(
+                        "a single NDJSON file is ambiguous; use --vertices or --edges".into(),
+                    ));
+                }
+                Some(format @ (Format::Yaml | Format::Json)) => format,
+                None => match extension(path)?.as_str() {
+                    "json" => Format::Json,
+                    "yaml" | "yml" => Format::Yaml,
+                    "jsonl" | "ndjson" => {
+                        return Err(LoadError::Usage(
+                            "a single NDJSON file is ambiguous; use --vertices or --edges".into(),
+                        ));
+                    }
+                    other => {
+                        return Err(LoadError::Usage(format!(
+                            "cannot infer artifact format from extension {other:?}; pass --format yaml|json|jsonl"
+                        )));
+                    }
+                },
+            };
+            Ok(ArtifactInput::SingleFile {
+                path: path.clone(),
+                format,
+            })
+        }
         2 => {
             for path in &args.artifacts {
                 let ext = extension(path)?;
@@ -236,7 +299,10 @@ fn resolve_format(args: &LoadArgs) -> Result<Format, LoadError> {
                     )));
                 }
             }
-            Ok(Format::Jsonl)
+            Ok(ArtifactInput::Both {
+                vertices: args.artifacts[0].clone(),
+                edges: args.artifacts[1].clone(),
+            })
         }
         other => Err(LoadError::Usage(format!(
             "expected one YAML/JSON artifact or two NDJSON artifacts, got {other}"
@@ -251,10 +317,18 @@ fn extension(path: &Path) -> Result<String, LoadError> {
         .ok_or_else(|| LoadError::Usage(format!("artifact path {path:?} has no extension")))
 }
 
-fn read_artifact(paths: &[PathBuf], format: Format) -> Result<LoadArtifact, LoadError> {
-    match format {
-        Format::Json | Format::Yaml => read_single_file(&paths[0], format),
-        Format::Jsonl => read_jsonl(&paths[0], &paths[1]),
+fn read_artifact(input: &ArtifactInput) -> Result<LoadArtifact, LoadError> {
+    match input {
+        ArtifactInput::SingleFile { path, format } => read_single_file(path, *format),
+        ArtifactInput::Both { vertices, edges } => read_jsonl(vertices, edges),
+        ArtifactInput::VerticesOnly { path } => Ok(LoadArtifact {
+            vertices: read_jsonl_rows(path)?,
+            edges: Vec::new(),
+        }),
+        ArtifactInput::EdgesOnly { path } => Ok(LoadArtifact {
+            vertices: Vec::new(),
+            edges: read_jsonl_rows(path)?,
+        }),
     }
 }
 
@@ -321,6 +395,13 @@ fn validate_artifact(
     graph: Option<&str>,
     key: &str,
 ) -> Result<(), LoadError> {
+    if artifact.vertices.is_empty() && !artifact.edges.is_empty() {
+        return Err(LoadError::Artifact(
+            "edges-only artifacts require property-based endpoints, which are not implemented yet; \
+             every edge endpoint must resolve to a vertex source_id in the same artifact"
+                .into(),
+        ));
+    }
     if let Some(name) = graph
         && (name.is_empty() || name.len() > 256)
     {
@@ -391,21 +472,22 @@ fn validate_properties(index: usize, properties: &Properties) -> Result<(), Load
 
 // ──── digest and state file ────
 
-fn artifact_digest(paths: &[PathBuf], format: Format) -> Result<String, LoadError> {
+fn artifact_digest(input: &ArtifactInput) -> Result<String, LoadError> {
     let mut hasher = Sha256::new();
-    match format {
-        Format::Json | Format::Yaml => {
-            let bytes = fs::read(&paths[0])
-                .map_err(|error| LoadError::Artifact(format!("read {:?}: {error}", paths[0])))?;
-            hasher.update(bytes);
+    let mut update = |path: &Path| -> Result<(), LoadError> {
+        let bytes = fs::read(path)
+            .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
+        hasher.update(bytes);
+        Ok(())
+    };
+    match input {
+        ArtifactInput::SingleFile { path, .. } => update(path)?,
+        ArtifactInput::Both { vertices, edges } => {
+            update(vertices)?;
+            update(edges)?;
         }
-        Format::Jsonl => {
-            for path in paths {
-                let bytes = fs::read(path)
-                    .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
-                hasher.update(bytes);
-            }
-        }
+        ArtifactInput::VerticesOnly { path } => update(path)?,
+        ArtifactInput::EdgesOnly { path } => update(path)?,
     }
     Ok(hex_digest(&hasher.finalize()))
 }
@@ -883,10 +965,10 @@ fn effective_key(args: &LoadArgs) -> Result<String, LoadError> {
 
 /// Validate and run one `gleaph load` invocation.
 pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
-    let format = resolve_format(args)?;
-    let artifact = read_artifact(&args.artifacts, format)?;
+    let input = resolve_input(args)?;
+    let artifact = read_artifact(&input)?;
     validate_artifact(&artifact, args.graph.as_deref(), &args.key)?;
-    let digest = artifact_digest(&args.artifacts, format)?;
+    let digest = artifact_digest(&input)?;
     let key = effective_key(args)?;
     let mut transport = RemoteBulkLoadTransport::connect(
         &args.canister,
@@ -935,6 +1017,8 @@ mod tests {
             identity: None,
             fetch_root_key: false,
             format: None,
+            vertices: None,
+            edges: None,
             fresh: false,
             state_file: None,
         }
@@ -1004,8 +1088,11 @@ mod tests {
                 ]
             }"#,
         );
-        let artifact =
-            read_artifact(std::slice::from_ref(&path), Format::Json).expect("parse JSON artifact");
+        let artifact = read_artifact(&ArtifactInput::SingleFile {
+            path: path.clone(),
+            format: Format::Json,
+        })
+        .expect("parse JSON artifact");
         assert_eq!(artifact.vertices.len(), 1);
         assert_eq!(artifact.vertices[0].properties.0.len(), 2);
         assert_eq!(
@@ -1023,8 +1110,11 @@ mod tests {
             &path,
             "format_version: 1\nvertices:\n  - source_id: v1\n    labels: [Person]\n    properties:\n      age: {Int64: 30}\n",
         );
-        let artifact =
-            read_artifact(std::slice::from_ref(&path), Format::Yaml).expect("parse YAML artifact");
+        let artifact = read_artifact(&ArtifactInput::SingleFile {
+            path: path.clone(),
+            format: Format::Yaml,
+        })
+        .expect("parse YAML artifact");
         assert_eq!(artifact.vertices[0].properties.0[0].1, Value::Int64(30));
         fs::remove_file(path).expect("cleanup");
     }
@@ -1041,8 +1131,11 @@ mod tests {
             &edges,
             "{\"source\":\"v1\",\"target\":\"v2\",\"label\":\"KNOWS\"}\n",
         );
-        let artifact = read_artifact(&[vertices.clone(), edges.clone()], Format::Jsonl)
-            .expect("parse NDJSON artifacts");
+        let artifact = read_artifact(&ArtifactInput::Both {
+            vertices: vertices.clone(),
+            edges: edges.clone(),
+        })
+        .expect("parse NDJSON artifacts");
         assert_eq!(artifact.vertices.len(), 2);
         assert_eq!(artifact.edges.len(), 1);
         fs::remove_file(vertices).expect("cleanup");
@@ -1053,9 +1146,12 @@ mod tests {
     fn rejects_unknown_format_version_and_duplicate_properties() {
         let path = temp_path("bad-version.json");
         write_temp(&path, r#"{"format_version": 2, "vertices": []}"#);
-        let error = read_artifact(std::slice::from_ref(&path), Format::Json)
-            .err()
-            .expect("unknown format_version must be rejected");
+        let error = read_artifact(&ArtifactInput::SingleFile {
+            path: path.clone(),
+            format: Format::Json,
+        })
+        .err()
+        .expect("unknown format_version must be rejected");
         assert!(error.to_string().contains("format_version"));
         fs::remove_file(path).expect("cleanup");
 
@@ -1064,9 +1160,12 @@ mod tests {
             &path,
             r#"{"format_version": 1, "vertices": [{"source_id": "v1", "labels": ["P"], "properties": {"a": {"Int64": 1}, "a": {"Int64": 2}}}]}"#,
         );
-        let error = read_artifact(std::slice::from_ref(&path), Format::Json)
-            .err()
-            .expect("duplicate property names must be rejected");
+        let error = read_artifact(&ArtifactInput::SingleFile {
+            path: path.clone(),
+            format: Format::Json,
+        })
+        .err()
+        .expect("duplicate property names must be rejected");
         assert!(error.to_string().contains("duplicate property"));
         fs::remove_file(path).expect("cleanup");
     }
@@ -1090,6 +1189,51 @@ mod tests {
         let reused = effective_key(&args).expect("recorded key");
         assert_eq!(reused, "recorded-key");
         fs::remove_file(state).expect("cleanup");
+    }
+
+    #[test]
+    fn vertices_only_flag_loads_a_single_jsonl_file() {
+        let path = temp_path("vertices-only.jsonl");
+        write_temp(&path, "{\"source_id\":\"v1\",\"labels\":[\"Person\"]}\n");
+        let mut args = load_args(&[]);
+        args.vertices = Some(path.clone());
+        let input = resolve_input(&args).expect("resolve");
+        let artifact = read_artifact(&input).expect("read");
+        assert_eq!(artifact.vertices.len(), 1);
+        assert!(artifact.edges.is_empty());
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn edges_only_flag_is_rejected_until_property_endpoints_exist() {
+        let path = temp_path("edges-only.jsonl");
+        write_temp(
+            &path,
+            "{\"source\":\"v1\",\"target\":\"v2\",\"label\":\"KNOWS\"}\n",
+        );
+        let mut args = load_args(&[]);
+        args.edges = Some(path.clone());
+        let input = resolve_input(&args).expect("resolve");
+        let artifact = read_artifact(&input).expect("read");
+        let error = validate_artifact(&artifact, None, "k")
+            .expect_err("edges-only must be rejected without property endpoints");
+        assert!(error.to_string().contains("property-based endpoints"));
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn flags_and_positionals_are_mutually_exclusive() {
+        let mut args = load_args(&["v.jsonl"]);
+        args.vertices = Some("v.jsonl".into());
+        let error = resolve_input(&args).expect_err("mixing flags and positionals must fail");
+        assert!(error.to_string().contains("cannot combine"));
+    }
+
+    #[test]
+    fn single_positional_jsonl_is_ambiguous() {
+        let args = load_args(&["v.jsonl"]);
+        let error = resolve_input(&args).expect_err("a bare .jsonl positional is ambiguous");
+        assert!(error.to_string().contains("--vertices or --edges"));
     }
 
     #[test]

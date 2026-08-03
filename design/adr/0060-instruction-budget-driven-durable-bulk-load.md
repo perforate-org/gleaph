@@ -207,16 +207,33 @@ command is implemented:
 - artifact: versioned YAML/JSON single-file (`format_version: 1`) with `vertices` (unique
   `source_id`, labels, canonical GQL value properties) and `edges` (endpoints by source/target,
   label, directed), plus NDJSON as the large-data form (`vertices.jsonl` + `edges.jsonl`, one row
-  per vertex/edge with the same row schema);
+  per vertex/edge with the same row schema). Single-file NDJSON is designated with
+  `--vertices FILE` / `--edges FILE` (mutually exclusive with positional ARTIFACT); `--edges`-only
+  loads require property-based endpoints and are rejected until that capability lands;
 - remote connection: `--canister`, `-n/--network`, `--identity`, `--fetch-root-key` (same convention
   as `gleaph migration`); `--graph` (omitted → the caller's default graph), `-k/--key` (default
   `initial-load-v1`); `--format` is optional and inferred from the file extension when omitted;
-- lifecycle: skip on `Completed`, resume from `bulk_load_status` receipt boundaries, `--fresh` as the
-  proof for the marker-absent path, digest verification via an optional `--state-file`;
+- lifecycle: skip on `Completed` (state-file digest must match), resume from `bulk_load_status`
+  receipt boundaries, `--fresh` derives a fresh job key (`{key}.{nonce}`, since durable bulk-load
+  keys are single-use after a terminal state), digest verification via an optional `--state-file`
+  that also records the effective key for later resume/skip identity;
 - exit codes: 0 complete/skip, 1 operator action required, 2 input validation, 3 remote/auth.
 
 The CLI never hardcodes an operation cap; it references the shared wire constant only if it ever
 exposes an `atomic_insert`-style bound.
+
+**Planned extension — property-based edge endpoints (decision, not yet implemented).** For
+incremental edge loads (`--edges`), endpoints reference existing vertices by property
+(`{ label, property, value }`) instead of an in-artifact `source_id`. Resolution will be
+**Router-side** (Option A): `BulkLoadEdgeV1` endpoints become an `Existing | ByProperty` enum and
+the Router resolves `ByProperty` through the graph property index during Append. Two design
+requirements are fixed: (1) a **pre-resolution pass** rejects the whole candidate chunk before any
+operation executes when any endpoint is missing or non-unique, so failures never surface as a
+partial commit mid-chunk; (2) resolution requires an existing, converged property index on the
+`(label, property)` pair (the CLI reports the missing index as an operator action), and endpoint
+property values are restricted to sortable (indexable) value types. Replay safety is preserved
+because the durable child row stores the resolved request and `drive_bulk_child` replays it
+without re-resolution.
 
 ## Alternatives
 
