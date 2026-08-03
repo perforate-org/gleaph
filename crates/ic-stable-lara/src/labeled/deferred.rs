@@ -1178,14 +1178,7 @@ impl Storable for MaintenanceWorkItem {
 
 #[inline]
 fn current_instruction_counter() -> u64 {
-    #[cfg(target_family = "wasm")]
-    {
-        ic_cdk::api::instruction_counter()
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        0
-    }
+    gleaph_instruction_budget::instruction_counter()
 }
 
 /// Errors returned by deferred labeled graph operations.
@@ -1583,10 +1576,13 @@ where
                 || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
             if should_check
                 && budget.max_instructions > 0
-                && current_instruction_counter()
-                    .saturating_sub(baseline)
-                    .saturating_add(budget.reserve_instructions)
-                    >= budget.max_instructions
+                && gleaph_instruction_budget::should_cutoff(
+                    budget.max_instructions,
+                    current_instruction_counter().saturating_sub(baseline),
+                    0,
+                    budget.reserve_instructions,
+                    0,
+                )
             {
                 break;
             }

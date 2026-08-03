@@ -342,14 +342,7 @@ pub struct MaintenanceReport {
 
 #[inline]
 fn current_instruction_counter() -> u64 {
-    #[cfg(target_family = "wasm")]
-    {
-        ic_cdk::api::instruction_counter()
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        0
-    }
+    gleaph_instruction_budget::instruction_counter()
 }
 
 /// Single-orientation LARA graph with deferred maintenance.
@@ -699,10 +692,13 @@ where
                 || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
             if should_check
                 && budget.max_instructions > 0
-                && report
-                    .instructions_used
-                    .saturating_add(budget.reserve_instructions)
-                    >= budget.max_instructions
+                && gleaph_instruction_budget::should_cutoff(
+                    budget.max_instructions,
+                    report.instructions_used,
+                    0,
+                    budget.reserve_instructions,
+                    0,
+                )
             {
                 report.instruction_budget_exhausted = true;
                 break;
@@ -719,10 +715,13 @@ where
 
         report.instructions_used = current_instruction_counter().saturating_sub(baseline);
         report.instruction_budget_exhausted = budget.max_instructions > 0
-            && report
-                .instructions_used
-                .saturating_add(budget.reserve_instructions)
-                >= budget.max_instructions;
+            && gleaph_instruction_budget::should_cutoff(
+                budget.max_instructions,
+                report.instructions_used,
+                0,
+                budget.reserve_instructions,
+                0,
+            );
         report.work.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }

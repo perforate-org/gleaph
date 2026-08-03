@@ -33,6 +33,7 @@ bucket_row_grow_double = []
 canbench-rs = { workspace = true, optional = true }
 candid = { workspace = true, optional = true }
 derive_more = { version = "2", features = ["display", "from", "into"] }
+gleaph-instruction-budget = { workspace = true, features = ["ic-cdk"] }
 ic-cdk.workspace = true
 ic-stable-paged-ordered-map.workspace = true
 ic-stable-roaring.workspace = true

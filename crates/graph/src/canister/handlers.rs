@@ -206,18 +206,12 @@ fn ensure_ordered_batch_instruction_budget(
     operation_count: usize,
     entrypoint: &str,
 ) -> Result<(), String> {
-    let estimated = u64::try_from(operation_count)
-        .ok()
-        .and_then(|count| {
-            count.checked_mul(gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION)
-        })
-        .ok_or_else(|| format!("{entrypoint} operation count overflows instruction estimate"))?;
-    if estimated > gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS {
-        return Err(format!(
-            "{entrypoint} exceeds the dynamic instruction budget estimate"
-        ));
-    }
-    Ok(())
+    gleaph_instruction_budget::preflight_operation_count(
+        operation_count,
+        gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION,
+        gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS,
+    )
+    .map_err(|_| format!("{entrypoint} exceeds the dynamic instruction budget estimate"))
 }
 
 fn ordered_edge_hot_forward_vertex_count(
@@ -280,23 +274,9 @@ fn ordered_mixed_hot_forward_vertex_count(
 /// deliberately large to absorb spikes under index pressure.
 const BATCH_DRAIN_BUDGET_ESTIMATE: u64 = 500_000_000;
 
-/// Returns true if starting another operation would risk exceeding the per-
-/// update-call instruction limit before we can safely return `next_index`.
-/// Uses the largest op cost seen so far as the next-op estimate; on the first
-/// op a conservative fallback is used.
-fn should_cutoff_batch(
-    current_instr: u64,
-    max_op_instr_so_far: u64,
-    drain_budget: u64,
-    headroom: u64,
-) -> bool {
-    let next_op_estimate = max_op_instr_so_far.max(50_000_000);
-    let projected = current_instr
-        .saturating_add(next_op_estimate)
-        .saturating_add(drain_budget)
-        .saturating_add(headroom);
-    projected >= gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS
-}
+/// Conservative next-operation cost used by the plan-batch cutoff before any
+/// operation in the batch has been measured.
+const MIN_OP_INSTRUCTION_ESTIMATE: u64 = 50_000_000;
 
 fn ensure_execute_plan_result_payload(
     result: &ExecutePlanResult,
@@ -313,14 +293,9 @@ fn ensure_execute_plan_result_payload(
     Ok(())
 }
 
-#[cfg(target_family = "wasm")]
+/// Call-context instruction counter for the current ingress; host builds return 0.
 fn current_instruction_counter() -> u64 {
-    ic_cdk::api::call_context_instruction_counter()
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn current_instruction_counter() -> u64 {
-    0
+    gleaph_instruction_budget::call_context_instruction_counter()
 }
 
 /// Instruction counter for the current message only.
@@ -329,14 +304,8 @@ fn current_instruction_counter() -> u64 {
 /// path. Using the call-context counter would count the Router's earlier work against this
 /// read's local budget and cause premature cutoff; the per-message counter measures only the
 /// journal lookup itself.
-#[cfg(target_family = "wasm")]
 fn message_instruction_counter() -> u64 {
-    ic_cdk::api::instruction_counter()
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn message_instruction_counter() -> u64 {
-    0
+    gleaph_instruction_budget::instruction_counter()
 }
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
@@ -1036,11 +1005,12 @@ async fn execute_plan_batch_internal(
         // final bookkeeping. The Router will re-invoke the batch with the
         // continuation cursor (next_index) inside the same ingress call.
         if mode == ExecutePlanBatchMode::Dynamic
-            && should_cutoff_batch(
+            && gleaph_instruction_budget::should_cutoff(
+                gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS,
                 before,
-                max_instr,
-                BATCH_DRAIN_BUDGET_ESTIMATE,
+                max_instr.max(MIN_OP_INSTRUCTION_ESTIMATE),
                 gleaph_graph_kernel::GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM,
+                BATCH_DRAIN_BUDGET_ESTIMATE,
             )
         {
             next_index = Some(index as u32);

@@ -15,7 +15,7 @@ use gleaph_router::types::{
     BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs,
     RegisterGraphShard, RegisterVectorIndexArgs,
 };
-use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
+// use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -481,7 +481,7 @@ pub fn install_two_graph_federation() -> FederationEnv {
 pub fn install_single_shard_federation() -> FederationEnv {
     install_single_shard_federation_with_graph_admins(Default::default())
 }
-
+/*
 /// Router + index + one federated graph shard, with a social-demo Gateway canister
 /// installed and registered as a graph administrator from the start. The Gateway is returned
 /// alongside the federation environment so tests can make anonymous composite-query calls
@@ -551,7 +551,7 @@ pub fn install_single_shard_federation_with_gateway() -> (FederationEnv, Princip
     };
     (env, gateway)
 }
-
+*/
 /// Router + index + one federated graph shard, with `graph_scoped_callers` added to
 /// the graph's `admins` set so those default-Executor principals can execute
 /// administrator-registered prepared queries scoped to this graph. The callers are
@@ -1784,7 +1784,7 @@ pub fn prepared_query_with_params_as(
         Err(err) => panic!("decode prepared_query: {err}"),
     }
 }
-
+/*
 /// Install the social-demo-gateway canister, wiring it to the given Router.
 pub fn install_social_demo_gateway(pic: &PocketIc, router: Principal) -> Principal {
     let gateway = create_funded_canister(pic);
@@ -1826,7 +1826,7 @@ pub fn execute_social_demo_scenario_as(
         Ok(Err(err)) => panic!("gateway scenario failed: {err:?}"),
         Err(err) => panic!("decode execute_social_demo_scenario: {err}"),
     }
-}
+} */
 
 /// Router composite `gql_query` as `caller`, returning the raw `Result` so a test can
 /// assert the exact rejection reason when ad-hoc GQL is forbidden.
@@ -2858,8 +2858,8 @@ pub fn gql_mutate_pair_concurrent_as_admin(
     (result_a, result_b)
 }
 
-const SOCIAL_LOAD_JSON: &str =
-    include_str!("../../../frontend/apps/social-demo/seeds/social-load.json");
+// const SOCIAL_LOAD_JSON: &str =
+//     include_str!("../../../frontend/apps/social-demo/seeds/social-load.json");
 
 const UPGRADE_FIXTURE_QUERY: &str = "\
 MATCH ()-[e:UPGRADE_EDGE]->() WHERE e.fixture_edge_id IS NOT NULL \
@@ -2890,6 +2890,8 @@ pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
 pub fn upgrade_fixture_query() -> &'static str {
     UPGRADE_FIXTURE_QUERY
 }
+
+/*
 /// Seed the social demo graph through Router `gql_mutate`, then assert
 /// that the materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges return their source posts
 /// in creation order (the deterministic fixed-label scan order, no ORDER BY).
@@ -3202,7 +3204,7 @@ pub fn seed_social_graph(env: &FederationEnv) -> std::collections::BTreeMap<Stri
     }
     source_ids
 }
-
+*/
 #[cfg(test)]
 mod pocket_ic_server_binary_tests {
     use super::validate_pocket_ic_server_binary;

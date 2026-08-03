@@ -1801,6 +1801,7 @@ dependencies = [
  "gleaph-gql-integration",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "gleaph-instruction-budget",
  "gleaph-message-sizing",
  "gleaph-prepared-runtime",
  "half 2.7.1",
@@ -1864,6 +1865,7 @@ dependencies = [
  "canbench-rs",
  "candid",
  "ethnum",
+ "gleaph-instruction-budget",
  "gleaph-message-sizing",
  "half 2.7.1",
  "ic-cdk",
@@ -1899,6 +1901,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-instruction-budget"
+version = "0.1.0"
+dependencies = [
+ "ic-cdk",
+]
+
+[[package]]
 name = "gleaph-message-sizing"
 version = "0.1.0"
 
@@ -1927,7 +1936,6 @@ dependencies = [
  "gleaph-prepared-api",
  "gleaph-provision",
  "gleaph-router",
- "gleaph-social-demo-gateway",
  "pocket-ic",
  "serde",
  "serde_json",
@@ -1982,6 +1990,7 @@ dependencies = [
  "gleaph-graph-catalog",
  "gleaph-graph-kernel",
  "gleaph-index-ddl",
+ "gleaph-instruction-budget",
  "gleaph-message-sizing",
  "gleaph-migration-api",
  "gleaph-prepared-api",
@@ -2436,6 +2445,7 @@ dependencies = [
  "canbench-rs",
  "candid",
  "derive_more",
+ "gleaph-instruction-budget",
  "ic-cdk",
  "ic-stable-paged-ordered-map",
  "ic-stable-roaring",

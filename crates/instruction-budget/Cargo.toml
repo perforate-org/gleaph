@@ -1,0 +1,16 @@
+[package]
+name = "gleaph-instruction-budget"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Shared instruction-budget policy, cutoff predicate, and measured per-operation cost learning"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["ic-cdk"]
+ic-cdk = ["dep:ic-cdk"]
+
+[dependencies]
+ic-cdk = { workspace = true, optional = true }

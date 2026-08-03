@@ -3818,11 +3818,11 @@ fn graph_batch_chunk_len_for_dispatches(
         )),
     })?
     .ok_or_else(|| RouterError::InvalidArgument("empty Graph batch dispatch".into()))?;
-    let instr_limited = (gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
-        / gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION)
-        .try_into()
-        .unwrap_or(usize::MAX)
-        .max(1);
+    let instr_limited = gleaph_instruction_budget::max_operation_count(
+        gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION,
+        gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS,
+    )
+    .max(1);
     let chunk_len = best.entry_count.min(instr_limited);
     Ok((chunk_len, SizeHint::new(chunk_len)))
 }

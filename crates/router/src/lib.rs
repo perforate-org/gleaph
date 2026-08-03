@@ -77,14 +77,9 @@ use ic_cdk_macros::{init, post_upgrade};
 
 use crate::facade::auth;
 
-#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
+#[cfg(feature = "batch-instr-log")]
 fn current_instruction_counter() -> u64 {
-    ic_cdk::api::call_context_instruction_counter()
-}
-
-#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
-fn current_instruction_counter() -> u64 {
-    0
+    gleaph_instruction_budget::call_context_instruction_counter()
 }
 
 #[init]

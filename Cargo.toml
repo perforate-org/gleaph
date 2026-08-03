@@ -23,6 +23,7 @@ members = [
     "crates/ic-stable-variable-memory-manager",
     "crates/ic-stable-vec-deque",
     "crates/index-ddl",
+    "crates/instruction-budget",
     "crates/pocket-ic-tests",
     "crates/prepared-api",
     "crates/provision",
@@ -53,6 +54,7 @@ gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
 gleaph-index-ddl = { path = "crates/index-ddl" }
+gleaph-instruction-budget = { path = "crates/instruction-budget", default-features = false }
 gleaph-message-sizing = { path = "crates/message-sizing" }
 gleaph-migration-api = { path = "crates/migration-api" }
 gleaph-prepared-runtime = { path = "crates/prepared-runtime" }
