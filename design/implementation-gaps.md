@@ -136,6 +136,19 @@ defect from being rediscovered without its prior reasoning.
   headroom independently. Record the resulting values and acceptance evidence in the owning ADR or
   design document; do not justify a numeric value solely by copying another canister's constant or
   citing an existing ADR statement.
+- **Progress (2026-08-03, Graph plan-batch path):** canbench targets added in
+  `crates/graph/src/bench/plan_batch.rs` and `crates/graph/src/bench/mod.rs`, persisted in
+  `crates/graph/canbench_results.yml`. Measured (canbench, 2026-08-03): adversarial single
+  operation (INSERT vertex with a 1 MiB text property) costs 32.98M instructions; a fully
+  completed 256-operation plan-batch response encodes in 273.5K instructions, or 580.7K with a
+  large hot-forward hub list per result. Derived acceptance for the plan-batch path: the measured
+  single-operation maximum (32.98M) stays below the `MIN_OP_INSTRUCTION_ESTIMATE` (50M) used by
+  the cutoff and far below the ~37.5B single-operation trap threshold (40B − 2B bookkeeping −
+  500M drain reserves), and the measured response tail (≤ 581K) is negligible against the 2.5B
+  combined reserve. The remaining unmeasured tail component is the derived-index drain
+  (`sync_drain_derived_index_outbox`), which is inter-canister and therefore not canbench-
+  measurable; the bounded PocketIC boundary test for the plan-batch drain is the next step for
+  this path.
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),

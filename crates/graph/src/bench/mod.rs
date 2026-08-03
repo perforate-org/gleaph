@@ -9,6 +9,7 @@ mod index_export;
 #[cfg(feature = "canbench_large")]
 mod large;
 mod ordered_batch;
+mod plan_batch;
 mod stable_layout;
 
 use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
@@ -2326,6 +2327,27 @@ fn bench_graph_canonical_segment_insert_vertex_with_property() -> canbench_rs::B
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("canonical_segment_insert_vertex_with_property");
+        run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
+/// Canonical segment: insert one labeled vertex carrying a large (1 MiB) text property — the
+/// adversarial single-operation cost bound for the plan-batch cutoff estimate
+/// (GAP-2026-07-17-001).
+#[bench(raw)]
+fn bench_graph_canonical_segment_insert_vertex_with_large_property() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let plan = insert_vertex_mutation_plan(
+        "BenchMutVertexLargeProp",
+        vec![PropertyAssignment {
+            name: "body".into(),
+            value: Expr::new(ExprKind::Literal(Value::Text("x".repeat(1024 * 1024)))),
+        }],
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("canonical_segment_insert_vertex_with_large_property");
         run_canonical_segment(black_box(store), black_box(&plan));
     })
 }
