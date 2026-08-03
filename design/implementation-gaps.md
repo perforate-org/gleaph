@@ -148,7 +148,13 @@ defect from being rediscovered without its prior reasoning.
   combined reserve. The remaining unmeasured tail component is the derived-index drain
   (`sync_drain_derived_index_outbox`), which is inter-canister and therefore not canbench-
   measurable; the bounded PocketIC boundary test for the plan-batch drain is the next step for
-  this path.
+  this path. The drain boundary test is in place as of 2026-08-03
+  (`crates/pocket-ic-tests/tests/adr0060_plan_batch_instruction_boundary.rs`): a 300-operation
+  NEXT-chained mutation program on a converged `Person.age` index dispatches as Dynamic
+  plan-batch chunks and completes without trapping (mutation token issued), the inserted data is
+  queryable, and the index serves the drained posting at physical index id 1 — so the plan-batch
+  path now has complete acceptance evidence (per-op bound, response bound, and end-to-end drain
+  convergence).
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
