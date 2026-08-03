@@ -3811,7 +3811,7 @@ async fn execute_prepared_mutation(
     Ok(result)
 }
 
-fn graph_batch_chunk_len_for_dispatches(
+pub(crate) fn graph_batch_chunk_len_for_dispatches(
     dispatches: &[ShardDispatch],
     build_execute_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
     hint: Option<SizeHint>,

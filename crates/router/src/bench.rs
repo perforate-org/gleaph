@@ -1016,3 +1016,114 @@ fn bench_bulk_load_receipt_gc_max_delete() -> canbench_rs::BenchResult {
         }
     })
 }
+
+// -----------------------------------------------------------------------------
+// GAP-2026-07-17-001 Router batch chunk-decision benchmarks.
+//
+// `graph_batch_chunk_len_for_dispatches` decides each Router → Graph batch chunk: it runs the
+// message-sizing adaptive probe (`adaptive_fitting_prefix` over the inter-canister policy) and
+// then caps the count by the shared instruction budget
+// (`GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION` at 500M against the 35B dynamic budget ⇒ at
+// most 70 operations per chunk). These benches measure the **decision** cost only — the encode
+// probes performed before a chunk is dispatched. The Router's per-chunk dispatch reserve
+// (`ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM`, 4B) must cover one chunk's dispatch, response
+// construction, and cross-canister call; the decision cost measured here must be trivial against
+// that reserve. Payload shapes mirror the `build_execute_args` closure in
+// `execute_prepared_mutation`: a shared plan blob and params blob per operation plus per-dispatch
+// seed bindings.
+// -----------------------------------------------------------------------------
+
+use crate::gql::graph_batch_chunk_len_for_dispatches;
+use gleaph_graph_kernel::plan_exec::{ExecutePlanArgs, GqlExecutionMode};
+
+/// Mirrors the `build_execute_args` closure in `execute_prepared_mutation`: one operation per
+/// dispatch carrying the shared plan blob and params blob plus per-dispatch bindings.
+fn bench_execute_args(
+    dispatch: &ShardDispatch,
+    plan_blob: Vec<u8>,
+    params_blob: Vec<u8>,
+) -> ExecutePlanArgs {
+    ExecutePlanArgs {
+        target_shard_id: dispatch.shard_id,
+        element_id_encoding_key: [7; 16],
+        mutation_id: Some(1),
+        plan_blob,
+        params_blob,
+        mode: GqlExecutionMode::Update,
+        seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
+        resolved_labels: Some(ResolvedLabelTable::default()),
+        resolved_properties: Some(ResolvedPropertyTable::default()),
+        indexed_properties: None,
+        unique_claims: None,
+        constrained_properties: None,
+        local_unique_claims: None,
+        local_constrained_properties: None,
+        indexed_embeddings: None,
+        resolved_search_blob: dispatch.resolved_search_blob.clone(),
+    }
+}
+
+fn bench_dispatches(count: usize, seed_binding_bytes: usize) -> Vec<ShardDispatch> {
+    (0..count)
+        .map(|i| ShardDispatch {
+            shard_id: ShardId::new(i as u32),
+            graph_canister: Principal::self_authenticating([9; 32]),
+            seed_bindings_blob: (seed_binding_bytes > 0).then(|| vec![i as u8; seed_binding_bytes]),
+            resolved_search_blob: None,
+        })
+        .collect()
+}
+
+fn bench_chunk_decision(
+    dispatches: Vec<ShardDispatch>,
+    plan_blob: Vec<u8>,
+    params_blob: Vec<u8>,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let build_execute_args = |dispatch: &ShardDispatch| {
+        bench_execute_args(dispatch, plan_blob.clone(), params_blob.clone())
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = graph_batch_chunk_len_for_dispatches(
+            black_box(&dispatches),
+            &build_execute_args,
+            black_box(None),
+        )
+        .expect("bench chunk decision");
+        black_box(result);
+    })
+}
+
+/// Nominal single-chunk decision: 70 dispatches (the instruction-cap chunk size) with small
+/// uniform payloads that fit the sizing target in one probe pass.
+#[bench(raw)]
+fn bench_graph_batch_chunk_len_for_dispatches_small() -> canbench_rs::BenchResult {
+    bench_chunk_decision(
+        bench_dispatches(70, 0),
+        vec![7; 1024],
+        Vec::new(),
+        "graph_batch_chunk_len_small",
+    )
+}
+
+/// Adversarial decision: heterogeneous per-dispatch payload sizes (a small leading sample, then
+/// large plan blobs and seed bindings) make the fixed-sample estimate overshoot the hard limit,
+/// forcing the proportional-reduction loop over a multi-MiB candidate encode.
+#[bench(raw)]
+fn bench_graph_batch_chunk_len_for_dispatches_adversarial() -> canbench_rs::BenchResult {
+    let mut dispatches = bench_dispatches(512, 0);
+    // First `sample_entries` (96) stay small; the rest carry a large plan blob and seed binding
+    // so the sample-derived estimate overshoots and the while loop re-probes large prefixes.
+    for dispatch in dispatches.iter_mut().skip(96) {
+        dispatch.seed_bindings_blob = Some(vec![7; 2048]);
+    }
+    let mut plan_blob = vec![7; 1024];
+    plan_blob.resize(64 * 1024, 7);
+    bench_chunk_decision(
+        dispatches,
+        plan_blob,
+        Vec::new(),
+        "graph_batch_chunk_len_adversarial",
+    )
+}

@@ -201,6 +201,30 @@ defect from being rediscovered without its prior reasoning.
   shape. Note: `instruction_counter_near_budget(false)` (the 1B update lookahead,
   `UPDATE_BUDGET_HEADROOM`) has no current caller — the update-side lookahead is reserved for
   future update-path bounded loops and needs no acceptance evidence until one exists.
+- **Progress (2026-08-04, Router mutation batching chunk decision):** canbench targets added in
+  `crates/router/src/bench.rs` (`bench_graph_batch_chunk_len_for_dispatches_small` and
+  `_adversarial`), persisted in `crates/router/canbench_results.yml`;
+  `graph_batch_chunk_len_for_dispatches` was made `pub(crate)` so the bench can exercise the
+  production decision. The bench mirrors the `build_execute_args` closure of
+  `execute_prepared_mutation`: each operation carries a shared plan blob, params blob, and
+  per-dispatch seed bindings. Measured (canbench, 2026-08-04): a nominal single-chunk decision
+  for 70 dispatches (the instruction cap: 500M per operation × 70 = the 35B dynamic budget,
+  with uniform 1 KiB payloads that fit the sizing target in one probe pass) costs 6.01M
+  instructions; an adversarial decision for 512 heterogeneous-payload dispatches (a small
+  96-entry leading sample, then 64 KiB plan blobs and 2 KiB seed bindings) costs 37.34M
+  instructions, dominated by a ~27 MiB overshoot probe that forces the adaptive loop's
+  proportional-reduction re-measurement. Derived acceptance: the decision logic runs once per
+  chunk, and its worst measured cost (37.34M) is ≈0.9% of the 4B
+  `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` reserved for one chunk's dispatch, response
+  construction, and cross-canister call — so the decision cannot consume a meaningful fraction
+  of the reserve even when the size estimate overshoots, and the nominal single-chunk decision
+  (6.01M) is ≈0.15% of it. The per-chunk decision cost is further amortized by the instruction
+  cap (at most one decision per 70 dispatched operations). The remaining Router-side per-chunk
+  tail — the final batch Candid encode and the inter-canister call plus response decode — is
+  bounded by the inter-canister sizing policy (≤2 MiB per chunk) and is not canbench-measurable
+  from the Router alone (the cross-canister leg, like the Graph plan-batch drain, needs an
+  end-to-end harness; the Router chunk-dispatch path serves the GQL mutation path whose
+  dispatch count is bounded by live shard count, so no dedicated boundary test is added here).
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
