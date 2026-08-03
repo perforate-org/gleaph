@@ -13,4 +13,4 @@ proc-macro = true
 gleaph-gql-keywords = { path = "../gql-keywords" }
 proc-macro2 = "1"
 quote = "1"
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }

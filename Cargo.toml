@@ -64,7 +64,7 @@ ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
-bitflags = "2.13.0"
+bitflags = "2.13.1"
 canbench-rs = "0.6"
 candid = "0.10"
 clap = { version = "4.6", features = ["derive"] }
@@ -80,7 +80,7 @@ ic-cdk-timers = "1.0"
 ic-agent = "0.49.2"
 ic-stable-roaring = "0.1"
 ic-stable-structures = "0.7.2"
-jiff = "0.2.32"
+jiff = "0.2.35"
 nohash-hasher = "0.2"
 num-bigint = "0.5"
 num-traits = "0.2"
