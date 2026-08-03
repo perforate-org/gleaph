@@ -203,6 +203,9 @@ export type AtomicInsertEndpointV1 = {
     'NewVertexOrdinal' : number
   } |
   { 'Existing' : Uint8Array };
+/**
+ * One logical operation in an ordered atomic insert.
+ */
 export type AtomicInsertOperationV1 = { 'Edge' : AtomicInsertEdgeV1 } |
   { 'Vertex' : AtomicInsertVertexV1 };
 export interface AtomicInsertPropertyV1 {

@@ -763,8 +763,7 @@ use crate::facade::stable::{
 };
 use crate::facade::store::bulk_load::BulkLoadGcStepResult;
 use crate::types::{
-    AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadStatusPage,
-    MAX_ATOMIC_INSERT_OPERATIONS,
+    AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkV1, MAX_ATOMIC_INSERT_OPERATIONS,
 };
 use candid::Principal;
 use gleaph_graph_kernel::plan_exec::{
@@ -963,7 +962,7 @@ fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
 fn bench_bulk_load_status_page_max_public_projection() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bulk_load_status_page_max_public_projection");
-        BulkLoadStatusPage::validate_max_receipts(black_box(MAX_BULK_LOAD_RECEIPTS_PER_PAGE))
+        crate::types::validate_max_receipts(black_box(MAX_BULK_LOAD_RECEIPTS_PER_PAGE))
             .expect("maximum bulk-load status page fits the response bound");
     })
 }

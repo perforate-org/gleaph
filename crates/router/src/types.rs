@@ -26,6 +26,13 @@ use sha2::{Digest, Sha256};
 pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
 use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRecord;
 
+pub use gleaph_bulk_load_api::{
+    AtomicInsertEdgeV1, AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertPropertyV1,
+    AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1,
+    BulkLoadCommand, BulkLoadEdgeV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
+    MAX_ATOMIC_INSERT_OPERATIONS, MAX_BULK_LOAD_RECEIPTS_PER_PAGE,
+};
+
 /// Registry-local summary row for one logical graph (ADR 0056 §7). Computed from Router stable
 /// state only; no cross-canister calls, so `list_graphs` stays cheap for UI/CLI polling.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
@@ -101,26 +108,12 @@ pub struct MutationStatus {
     pub next_action: String,
 }
 
-/// Maximum number of logical operations admitted by one public atomic insert.
-pub const MAX_ATOMIC_INSERT_OPERATIONS: usize = 1024;
-
 /// Public result for one Router atomic insert.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AtomicInsertResponse {
     pub status: MutationStatus,
     /// Present after Graph commits the canonical vertex and/or edge operations.
     pub receipt: Option<AtomicInsertReceiptV1>,
-}
-
-/// Router-owned projection of the Graph-specific durable receipts.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AtomicInsertReceiptV1 {
-    pub logical_operation_count: u64,
-    pub logical_vertex_count: u64,
-    pub logical_edge_count: u64,
-    /// Opaque graph-scoped encoded IDs in vertex-operation ordinal order.
-    /// Edge-only inserts always return an empty list.
-    pub allocated_vertex_ids: Vec<Vec<u8>>,
 }
 
 impl AtomicInsertResponse {
@@ -144,19 +137,19 @@ impl AtomicInsertResponse {
                 | OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
                 | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
                 | OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => {
-                    Some(AtomicInsertReceiptV1::edge(receipt.logical_edge_count))
+                    Some(edge_receipt(receipt.logical_edge_count))
                 }
                 OrderedEdgeBatchTargetProgressV1::CanonicalPending => None,
             },
             RouterMutationPayloadV1::CompletedOrderedEdgeBatch { receipt, .. } => {
-                Some(AtomicInsertReceiptV1::edge(receipt.logical_edge_count))
+                Some(edge_receipt(receipt.logical_edge_count))
             }
             RouterMutationPayloadV1::OrderedVertexBatch(replay) => match &replay.target.progress {
                 OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
                 | OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
                 | OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
                 | OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => {
-                    Some(AtomicInsertReceiptV1::vertex(
+                    Some(vertex_receipt(
                         receipt.logical_vertex_count,
                         replay.target.request.target_shard_id,
                         &receipt.allocated_vertex_ids,
@@ -168,7 +161,7 @@ impl AtomicInsertResponse {
             RouterMutationPayloadV1::CompletedOrderedVertexBatch {
                 receipt,
                 projection_watermark,
-            } => Some(AtomicInsertReceiptV1::vertex(
+            } => Some(vertex_receipt(
                 receipt.logical_vertex_count,
                 projection_watermark.shard_id,
                 &receipt.allocated_vertex_ids,
@@ -179,7 +172,7 @@ impl AtomicInsertResponse {
                 | OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
                 | OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
                 | OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => {
-                    Some(AtomicInsertReceiptV1::mixed(
+                    Some(mixed_receipt(
                         receipt.logical_operation_count,
                         receipt.logical_vertex_count,
                         receipt.logical_edge_count,
@@ -193,7 +186,7 @@ impl AtomicInsertResponse {
             RouterMutationPayloadV1::CompletedOrderedMixedBatch {
                 receipt,
                 projection_watermark,
-            } => Some(AtomicInsertReceiptV1::mixed(
+            } => Some(mixed_receipt(
                 receipt.logical_operation_count,
                 receipt.logical_vertex_count,
                 receipt.logical_edge_count,
@@ -220,377 +213,116 @@ impl AtomicInsertResponse {
     }
 }
 
-impl AtomicInsertReceiptV1 {
-    pub fn validate(&self) -> Result<(), String> {
-        let expected_operations = self
-            .logical_vertex_count
-            .checked_add(self.logical_edge_count)
-            .ok_or_else(|| "atomic insert receipt logical counts overflow".to_string())?;
-        if expected_operations != self.logical_operation_count {
-            return Err(
-                "atomic insert receipt logical counts must sum to logical operation count".into(),
-            );
-        }
-        let expected_vertex_count = usize::try_from(self.logical_vertex_count)
-            .map_err(|_| "atomic insert receipt logical vertex count overflows usize")?;
-        if self.allocated_vertex_ids.len() != expected_vertex_count {
-            return Err(
-                "atomic insert receipt allocated vertex ID count must equal logical vertex count"
-                    .into(),
-            );
-        }
-        for (ordinal, id) in self.allocated_vertex_ids.iter().enumerate() {
-            if id.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES {
-                return Err(format!(
-                    "atomic insert receipt allocated vertex ID {ordinal} must be exactly {} bytes",
-                    gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
-                ));
-            }
-        }
-        let encoded = Encode!(self)
-            .map_err(|error| format!("atomic insert receipt encode failed: {error}"))?;
-        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err("atomic insert receipt exceeds the safe payload bound".into());
-        }
-        Ok(())
-    }
-
-    fn encoded_vertex_ids(
-        shard_id: ShardId,
-        local_ids: &[LocalVertexId],
-        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
-    ) -> Vec<Vec<u8>> {
-        local_ids
-            .iter()
-            .copied()
-            .map(|local_id| {
-                gleaph_graph_kernel::federation::encode_global_vertex_id(
-                    encoding_key,
-                    GlobalVertexId::new(shard_id, local_id),
-                )
-                .0
-                .to_vec()
-            })
-            .collect()
-    }
-
-    fn vertex(
-        count: u64,
-        shard_id: ShardId,
-        local_ids: &[LocalVertexId],
-        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
-    ) -> Self {
-        Self {
-            logical_operation_count: count,
-            logical_vertex_count: count,
-            logical_edge_count: 0,
-            allocated_vertex_ids: Self::encoded_vertex_ids(shard_id, local_ids, encoding_key),
-        }
-    }
-
-    fn edge(count: u64) -> Self {
-        Self {
-            logical_operation_count: count,
-            logical_vertex_count: 0,
-            logical_edge_count: count,
-            allocated_vertex_ids: Vec::new(),
-        }
-    }
-
-    fn mixed(
-        operation_count: u64,
-        vertex_count: u64,
-        edge_count: u64,
-        shard_id: ShardId,
-        local_ids: &[LocalVertexId],
-        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
-    ) -> Self {
-        Self {
-            logical_operation_count: operation_count,
-            logical_vertex_count: vertex_count,
-            logical_edge_count: edge_count,
-            allocated_vertex_ids: Self::encoded_vertex_ids(shard_id, local_ids, encoding_key),
-        }
-    }
-}
-
-/// Maximum number of committed bulk-load chunk receipts returned by one status page.
+/// Encode the graph-scoped local IDs allocated by Graph into the opaque Router-owned receipt IDs.
 ///
-/// The value is owned by the Router receipt-map implementation so the public wire and every
-/// caller share one bound rather than copying an independently changeable cap.
-pub use crate::facade::stable::bulk_load::MAX_BULK_LOAD_RECEIPTS_PER_PAGE;
-
-/// Public durable bulk-load command family (ADR 0057).
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BulkLoadCommand {
-    Start {
-        graph_name: Option<String>,
-        client_bulk_key: String,
-    },
-    Append {
-        graph_name: Option<String>,
-        client_bulk_key: String,
-        chunk_index: u32,
-        chunk: BulkLoadChunkV1,
-    },
-    Finalize {
-        graph_name: Option<String>,
-        client_bulk_key: String,
-    },
-    Abort {
-        graph_name: Option<String>,
-        client_bulk_key: String,
-    },
+/// Graph owns allocation and persists local IDs; the Router derives the public IDs at the
+/// response boundary, so the encoded list is never persisted as a second source of truth.
+fn encoded_vertex_ids(
+    shard_id: ShardId,
+    local_ids: &[LocalVertexId],
+    encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+) -> Vec<Vec<u8>> {
+    local_ids
+        .iter()
+        .copied()
+        .map(|local_id| {
+            gleaph_graph_kernel::federation::encode_global_vertex_id(
+                encoding_key,
+                GlobalVertexId::new(shard_id, local_id),
+            )
+            .0
+            .to_vec()
+        })
+        .collect()
 }
 
-/// Self-contained vertex-only or existing-ID edge-only chunk.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BulkLoadChunkV1 {
-    Vertices(Vec<AtomicInsertVertexV1>),
-    Edges(Vec<BulkLoadEdgeV1>),
-}
-
-/// One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BulkLoadEdgeV1 {
-    pub source: Vec<u8>,
-    pub target: Vec<u8>,
-    pub directed: bool,
-    pub edge_label_name: Option<String>,
-    pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
-}
-
-/// Response to one public bulk-load command.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BulkLoadResponse {
-    Started {
-        next_chunk_index: u32,
-    },
-    Appended {
-        chunk_index: u32,
-        /// Operations of this candidate batch committed as this chunk. The client resumes the
-        /// remainder at `chunk_index + 1` (ADR 0060 `Resumable` execution).
-        next_offset: u32,
-        receipt: AtomicInsertReceiptV1,
-    },
-    FinalizeAccepted {
-        state: BulkLoadPublicStateV1,
-    },
-    AbortAccepted {
-        state: BulkLoadPublicStateV1,
-    },
-}
-
-/// Public projection of the durable bulk-load lifecycle. Internal placement and cursors are never
-/// exposed through this enum.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BulkLoadPublicStateV1 {
-    Open,
-    AppendPending,
-    FinalizePending,
-    AbortPending,
-    Completed,
-    Aborted,
-    Failed { reason: String },
-}
-
-/// One committed chunk receipt in a status page.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BulkLoadChunkReceiptV1 {
-    pub chunk_index: u32,
-    pub receipt: AtomicInsertReceiptV1,
-}
-
-/// Bounded status response for one graph-scoped durable bulk-load job.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BulkLoadStatusPage {
-    pub state: BulkLoadPublicStateV1,
-    pub next_chunk_index: u32,
-    pub committed_chunk_count: u32,
-    pub completed_chunk_count: u32,
-    pub terminal_at_ns: Option<u64>,
-    pub expires_at_ns: Option<u64>,
-    pub receipts: Vec<BulkLoadChunkReceiptV1>,
-    pub next_receipt_cursor: Option<u32>,
-}
-
-impl BulkLoadCommand {
-    /// Validate the public command before graph resolution, stable lookup, or dispatch.
-    pub fn validate(&self) -> Result<(), String> {
-        let (graph_name, key) = match self {
-            Self::Start {
-                graph_name,
-                client_bulk_key,
-            }
-            | Self::Finalize {
-                graph_name,
-                client_bulk_key,
-            }
-            | Self::Abort {
-                graph_name,
-                client_bulk_key,
-            }
-            | Self::Append {
-                graph_name,
-                client_bulk_key,
-                ..
-            } => (graph_name, client_bulk_key),
-        };
-        if let Some(name) = graph_name
-            && (name.is_empty() || name.len() > 256)
-        {
-            return Err("graph_name must be 1..=256 UTF-8 bytes when present".into());
-        }
-        if key.is_empty() || key.len() > 256 {
-            return Err("client_bulk_key must be 1..=256 UTF-8 bytes".into());
-        }
-        if let Self::Append { chunk, .. } = self {
-            chunk.validate()?;
-        }
-        let encoded =
-            Encode!(self).map_err(|error| format!("bulk-load command encode: {error}"))?;
-        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err("bulk-load command exceeds the safe payload bound".into());
-        }
-        Ok(())
+/// Project an edge-only Graph receipt into the public receipt shape.
+fn edge_receipt(count: u64) -> AtomicInsertReceiptV1 {
+    AtomicInsertReceiptV1 {
+        logical_operation_count: count,
+        logical_vertex_count: 0,
+        logical_edge_count: count,
+        allocated_vertex_ids: Vec::new(),
     }
 }
 
-impl BulkLoadChunkV1 {
-    pub fn operation_count(&self) -> usize {
-        match self {
-            Self::Vertices(items) => items.len(),
-            Self::Edges(items) => items.len(),
-        }
-    }
-
-    /// Validate one self-contained chunk and its exact envelope bound.
-    ///
-    /// `Resumable` bulk-load chunks (ADR 0060) are not capped by
-    /// [`MAX_ATOMIC_INSERT_OPERATIONS`]: the runtime instruction budget decides the committed
-    /// prefix, and the message payload bound and the durable receipt-row bound bound the
-    /// candidate size.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.operation_count() == 0 {
-            return Err("bulk-load chunk must contain at least one operation".into());
-        }
-        let vertex_count = match self {
-            Self::Vertices(items) => items.len() as u32,
-            Self::Edges(_) => 0,
-        };
-        let operations: Vec<AtomicInsertOperationV1> = match self {
-            Self::Vertices(items) => items
-                .iter()
-                .cloned()
-                .map(AtomicInsertOperationV1::Vertex)
-                .collect(),
-            Self::Edges(items) => items
-                .iter()
-                .cloned()
-                .map(|item| {
-                    AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
-                        source: AtomicInsertEndpointV1::Existing(item.source),
-                        target: AtomicInsertEndpointV1::Existing(item.target),
-                        directed: item.directed,
-                        edge_label_name: item.edge_label_name,
-                        inline_property: item.inline_property,
-                        initial_edge_properties: item.initial_edge_properties,
-                    })
-                })
-                .collect(),
-        };
-        validate_atomic_insert_operations(&operations, vertex_count)?;
-        let encoded = Encode!(self).map_err(|error| format!("bulk-load chunk encode: {error}"))?;
-        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err("bulk-load chunk exceeds the safe payload bound".into());
-        }
-        Ok(())
-    }
-
-    /// Compute the canonical chunk fingerprint used by Router admission and durable replay.
-    pub fn fingerprint(&self) -> Result<[u8; 32], String> {
-        self.validate()?;
-        let mut normalized = self.clone();
-        match &mut normalized {
-            Self::Vertices(items) => {
-                for item in items {
-                    item.vertex_labels
-                        .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-                    item.initial_properties.sort_by(|left, right| {
-                        left.property_name
-                            .as_bytes()
-                            .cmp(right.property_name.as_bytes())
-                    });
-                }
-            }
-            Self::Edges(items) => {
-                for item in items {
-                    item.initial_edge_properties.sort_by(|left, right| {
-                        left.property_name
-                            .as_bytes()
-                            .cmp(right.property_name.as_bytes())
-                    });
-                }
-            }
-        }
-        let encoded = Encode!(&normalized)
-            .map_err(|error| format!("bulk-load chunk fingerprint encode: {error}"))?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"gleaph:bulk-load-chunk:v1\0");
-        hasher.update(encoded);
-        Ok(hasher.finalize().into())
+/// Project a vertex-only Graph receipt into the public receipt shape.
+fn vertex_receipt(
+    count: u64,
+    shard_id: ShardId,
+    local_ids: &[LocalVertexId],
+    encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+) -> AtomicInsertReceiptV1 {
+    AtomicInsertReceiptV1 {
+        logical_operation_count: count,
+        logical_vertex_count: count,
+        logical_edge_count: 0,
+        allocated_vertex_ids: encoded_vertex_ids(shard_id, local_ids, encoding_key),
     }
 }
 
-impl BulkLoadStatusPage {
-    /// Reject invalid page caps before stable iteration and prove the maximum public page fits the
-    /// IC response bound. The `64` value is imported from the receipt-map owner above.
-    pub fn validate_max_receipts(max_receipts: u32) -> Result<(), String> {
-        if max_receipts == 0 || max_receipts > MAX_BULK_LOAD_RECEIPTS_PER_PAGE {
-            return Err(format!(
-                "max_receipts must be in 1..={MAX_BULK_LOAD_RECEIPTS_PER_PAGE}"
-            ));
-        }
-        if max_receipts != MAX_BULK_LOAD_RECEIPTS_PER_PAGE {
-            return Ok(());
-        }
-        let receipt =
-            AtomicInsertReceiptV1 {
-                logical_operation_count: MAX_ATOMIC_INSERT_OPERATIONS as u64,
-                logical_vertex_count: MAX_ATOMIC_INSERT_OPERATIONS as u64,
-                logical_edge_count: 0,
-                allocated_vertex_ids: vec![
-                vec![0; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES];
-                MAX_ATOMIC_INSERT_OPERATIONS
-            ],
-            };
-        let page = Self {
-            state: BulkLoadPublicStateV1::Failed {
-                reason: "x".repeat(
-                    crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES,
-                ),
-            },
-            next_chunk_index: u32::MAX,
-            committed_chunk_count: u32::MAX,
-            completed_chunk_count: u32::MAX,
-            terminal_at_ns: Some(u64::MAX),
-            expires_at_ns: Some(u64::MAX),
-            receipts: (0..MAX_BULK_LOAD_RECEIPTS_PER_PAGE)
-                .map(|chunk_index| BulkLoadChunkReceiptV1 {
-                    chunk_index,
-                    receipt: receipt.clone(),
-                })
-                .collect(),
-            next_receipt_cursor: Some(u32::MAX),
-        };
-        let encoded = Encode!(&Result::<Self, crate::state::RouterError>::Ok(page))
-            .map_err(|error| format!("bulk-load status page proof encode: {error}"))?;
-        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Err("bulk-load status page exceeds the safe payload bound".into());
-        }
-        Ok(())
+/// Project a mixed Graph receipt into the public receipt shape.
+fn mixed_receipt(
+    operation_count: u64,
+    vertex_count: u64,
+    edge_count: u64,
+    shard_id: ShardId,
+    local_ids: &[LocalVertexId],
+    encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+) -> AtomicInsertReceiptV1 {
+    AtomicInsertReceiptV1 {
+        logical_operation_count: operation_count,
+        logical_vertex_count: vertex_count,
+        logical_edge_count: edge_count,
+        allocated_vertex_ids: encoded_vertex_ids(shard_id, local_ids, encoding_key),
     }
+}
+
+/// Reject invalid page caps before stable iteration and prove the maximum public page fits the
+/// IC response bound. The `64` value is owned by `gleaph-bulk-load-api`; this Router-side
+/// admission additionally proves the worst-case page fits the canister response bound.
+pub(crate) fn validate_max_receipts(max_receipts: u32) -> Result<(), String> {
+    if max_receipts == 0 || max_receipts > MAX_BULK_LOAD_RECEIPTS_PER_PAGE {
+        return Err(format!(
+            "max_receipts must be in 1..={MAX_BULK_LOAD_RECEIPTS_PER_PAGE}"
+        ));
+    }
+    if max_receipts != MAX_BULK_LOAD_RECEIPTS_PER_PAGE {
+        return Ok(());
+    }
+    let receipt = AtomicInsertReceiptV1 {
+        logical_operation_count: MAX_ATOMIC_INSERT_OPERATIONS as u64,
+        logical_vertex_count: MAX_ATOMIC_INSERT_OPERATIONS as u64,
+        logical_edge_count: 0,
+        allocated_vertex_ids: vec![
+            vec![0; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES];
+            MAX_ATOMIC_INSERT_OPERATIONS
+        ],
+    };
+    let page = BulkLoadStatusPage {
+        state: BulkLoadPublicStateV1::Failed {
+            reason: "x"
+                .repeat(crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES),
+        },
+        next_chunk_index: u32::MAX,
+        committed_chunk_count: u32::MAX,
+        completed_chunk_count: u32::MAX,
+        terminal_at_ns: Some(u64::MAX),
+        expires_at_ns: Some(u64::MAX),
+        receipts: (0..MAX_BULK_LOAD_RECEIPTS_PER_PAGE)
+            .map(|chunk_index| BulkLoadChunkReceiptV1 {
+                chunk_index,
+                receipt: receipt.clone(),
+            })
+            .collect(),
+        next_receipt_cursor: Some(u32::MAX),
+    };
+    let encoded = Encode!(&Result::<BulkLoadStatusPage, crate::state::RouterError>::Ok(page))
+        .map_err(|error| format!("bulk-load status page proof encode: {error}"))?;
+    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err("bulk-load status page exceeds the safe payload bound".into());
+    }
+    Ok(())
 }
 
 /// Versioned public request for Router-owned ordered batch mutation.
@@ -608,84 +340,10 @@ pub struct AtomicInsertRequestV1 {
     pub operations: Vec<AtomicInsertOperationV1>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum AtomicInsertOperationV1 {
-    Vertex(AtomicInsertVertexV1),
-    Edge(AtomicInsertEdgeV1),
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AtomicInsertVertexV1 {
-    pub vertex_labels: Vec<String>,
-    pub initial_properties: Vec<AtomicInsertPropertyV1>,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AtomicInsertEdgeV1 {
-    pub source: AtomicInsertEndpointV1,
-    pub target: AtomicInsertEndpointV1,
-    pub directed: bool,
-    pub edge_label_name: Option<String>,
-    pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum AtomicInsertEndpointV1 {
-    Existing(Vec<u8>),
-    /// Ordinal among vertex operations, not the position in the mixed operation array.
-    NewVertexOrdinal(u32),
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AtomicInsertPropertyV1 {
-    pub property_name: String,
-    pub value: Vec<u8>,
-}
-
 pub(crate) enum ClassifiedAtomicInsertRequest {
     Edge(OrderedEdgeBatchRequest),
     Vertex(OrderedVertexBatchRequest),
     Mixed(OrderedMixedBatchRequest),
-}
-
-/// Validate per-operation labels, properties, and endpoints shared by atomic insert and
-/// bulk-load chunks. `vertex_count` bounds `NewVertexOrdinal` endpoints; bulk-load edge chunks
-/// pass zero because their endpoints are always `Existing`.
-fn validate_atomic_insert_operations(
-    operations: &[AtomicInsertOperationV1],
-    vertex_count: u32,
-) -> Result<(), String> {
-    for (ordinal, operation) in operations.iter().enumerate() {
-        match operation {
-            AtomicInsertOperationV1::Vertex(item) => {
-                if item.vertex_labels.iter().any(String::is_empty) {
-                    return Err(format!(
-                        "atomic insert operation {ordinal} contains an empty vertex label"
-                    ));
-                }
-                validate_batch_properties(ordinal, &item.initial_properties)?;
-            }
-            AtomicInsertOperationV1::Edge(item) => {
-                validate_batch_endpoint(ordinal, "source", &item.source, vertex_count)?;
-                validate_batch_endpoint(ordinal, "target", &item.target, vertex_count)?;
-                if item.edge_label_name.as_deref() == Some("") {
-                    return Err(format!(
-                        "atomic insert operation {ordinal} contains an empty edge label"
-                    ));
-                }
-                if let Some(inline) = &item.inline_property
-                    && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
-                {
-                    return Err(format!(
-                        "atomic insert operation {ordinal} inline property exceeds the byte bound"
-                    ));
-                }
-                validate_batch_properties(ordinal, &item.initial_edge_properties)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 impl AtomicInsertRequest {
@@ -711,7 +369,7 @@ impl AtomicInsertRequest {
             .filter(|operation| matches!(operation, AtomicInsertOperationV1::Vertex(_)))
             .count() as u32;
         preflight_atomic_insert_response_size(request.operations.len(), vertex_count as usize)?;
-        validate_atomic_insert_operations(&request.operations, vertex_count)?;
+        gleaph_bulk_load_api::validate_atomic_insert_operations(&request.operations, vertex_count)?;
         let encoded =
             Encode!(self).map_err(|error| format!("atomic insert request encode: {error}"))?;
         if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
@@ -836,32 +494,6 @@ impl AtomicInsertRequest {
     }
 }
 
-fn validate_batch_endpoint(
-    ordinal: usize,
-    name: &str,
-    endpoint: &AtomicInsertEndpointV1,
-    vertex_count: u32,
-) -> Result<(), String> {
-    match endpoint {
-        AtomicInsertEndpointV1::Existing(bytes)
-            if bytes.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES =>
-        {
-            Err(format!(
-                "atomic insert operation {ordinal} {name} must be exactly {} bytes",
-                gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
-            ))
-        }
-        AtomicInsertEndpointV1::NewVertexOrdinal(vertex_ordinal)
-            if *vertex_ordinal >= vertex_count =>
-        {
-            Err(format!(
-                "atomic insert operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
-            ))
-        }
-        _ => Ok(()),
-    }
-}
-
 /// Exact encoded size of the largest reachable successful public response for this request shape.
 ///
 /// Every lifecycle phase is encoded with its real `next_action`, a maximum bounded recovery
@@ -934,34 +566,6 @@ fn preflight_atomic_insert_response_size_at_limit(
 ) -> Result<(), String> {
     if worst_case_atomic_insert_response_size(operation_count, vertex_count)? > response_limit {
         return Err("atomic insert worst-case response exceeds the safe payload bound".into());
-    }
-    Ok(())
-}
-
-fn validate_batch_properties(
-    ordinal: usize,
-    properties: &[AtomicInsertPropertyV1],
-) -> Result<(), String> {
-    let mut names = BTreeSet::new();
-    for property in properties {
-        if property.property_name.is_empty() {
-            return Err(format!(
-                "atomic insert operation {ordinal} contains an empty property name"
-            ));
-        }
-        if !names.insert(&property.property_name) {
-            return Err(format!(
-                "atomic insert operation {ordinal} repeats property name {}",
-                property.property_name
-            ));
-        }
-        if property.value.len()
-            > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        {
-            return Err(format!(
-                "atomic insert operation {ordinal} property value exceeds the payload bound"
-            ));
-        }
     }
     Ok(())
 }
@@ -2503,13 +2107,13 @@ mod tests {
 
     #[test]
     fn bulk_load_status_page_64_fits_safe_candid_bound() {
-        BulkLoadStatusPage::validate_max_receipts(MAX_BULK_LOAD_RECEIPTS_PER_PAGE)
+        validate_max_receipts(MAX_BULK_LOAD_RECEIPTS_PER_PAGE)
             .expect("maximum status page must fit the safe response bound");
     }
 
     #[test]
     fn bulk_load_status_page_65_rejects_before_iteration() {
-        let error = BulkLoadStatusPage::validate_max_receipts(MAX_BULK_LOAD_RECEIPTS_PER_PAGE + 1)
+        let error = validate_max_receipts(MAX_BULK_LOAD_RECEIPTS_PER_PAGE + 1)
             .expect_err("status page cap must reject before stable iteration");
         assert!(error.contains("1..=64"), "{error}");
     }

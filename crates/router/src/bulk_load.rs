@@ -769,7 +769,7 @@ pub(crate) fn bulk_load_status_public(
     receipt_cursor: Option<u32>,
     max_receipts: u32,
 ) -> Result<BulkLoadStatusPage, RouterError> {
-    BulkLoadStatusPage::validate_max_receipts(max_receipts).map_err(invalid)?;
+    crate::types::validate_max_receipts(max_receipts).map_err(invalid)?;
     BulkLoadCommand::Start {
         graph_name: graph_name.clone(),
         client_bulk_key: client_bulk_key.clone(),

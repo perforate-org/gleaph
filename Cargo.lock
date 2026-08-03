@@ -1655,6 +1655,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-bulk-load-api"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "gleaph-graph-kernel",
+ "gleaph-message-sizing",
+ "serde",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "gleaph-cdk"
 version = "0.1.0"
 dependencies = [
@@ -1674,13 +1685,13 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "clap",
+ "gleaph-bulk-load-api",
  "gleaph-codegen",
  "gleaph-gql",
  "gleaph-graph-kernel",
  "gleaph-index-ddl",
  "gleaph-message-sizing",
  "gleaph-migration-api",
- "gleaph-router",
  "ic-agent",
  "serde",
  "serde_json",
@@ -1992,6 +2003,7 @@ dependencies = [
  "candid_parser",
  "futures",
  "gleaph-auth",
+ "gleaph-bulk-load-api",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-gql-integration",

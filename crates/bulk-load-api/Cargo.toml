@@ -1,0 +1,13 @@
+[package]
+name = "gleaph-bulk-load-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Versioned Router bulk-load and ordered atomic-insert wire contract"
+
+[dependencies]
+candid.workspace = true
+gleaph-graph-kernel.workspace = true
+gleaph-message-sizing.workspace = true
+serde.workspace = true
+sha2.workspace = true

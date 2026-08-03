@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 candid.workspace = true
 futures.workspace = true
 gleaph-auth.workspace = true
+gleaph-bulk-load-api.workspace = true
 gleaph-gql = { workspace = true, features = ["f128", "f256", "gleaph"] }
 gleaph-gql-ic.workspace = true
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }

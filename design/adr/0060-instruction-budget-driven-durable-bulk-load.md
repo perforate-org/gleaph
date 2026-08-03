@@ -356,9 +356,12 @@ caller's default graph via the `Option<String>` wire); the driver fits each requ
 inter-canister payload bound with `gleaph-message-sizing` and loops on `next_offset`; `--fresh`
 derives a fresh job key (durable bulk-load keys are single-use); an optional `--state-file` records
 the effective key and artifact digest for skip-on-Completed verification; exit codes are 0
-complete/skip, 1 operator action, 2 input validation, 3 remote/auth. The CLI depends on
-`gleaph-router` for the wire types; a shared bulk-load wire crate remains the longer-term
-consolidation alongside the Router/SDK duplication. No further wire change is planned, and there is
+complete/skip, 1 operator action, 2 input validation, 3 remote/auth. The CLI depends on the
+shared wire crate `gleaph-bulk-load-api` (extracted as of 2026-08-03 from
+`gleaph_router::types`), which owns the versioned bulk-load and ordered atomic-insert wire
+contract that both the CLI and the Router encode and validate; the Router re-exports the same
+types so its public surface is unchanged, and the CLI no longer links the Router crate (its
+`ic-cdk` canister surface). No further wire change is planned, and there is
 no development stable-layout change: no
 Router or Graph stable region is added, and the existing receipt map, coordinator lifecycle, and
 client-key identity remain the durable substrate. The static-admission inconsistency is confirmed

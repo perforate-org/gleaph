@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/auth",
+    "crates/bulk-load-api",
     "crates/cli",
     "crates/codegen",
     "crates/gql",
@@ -40,6 +41,7 @@ license = "MIT or Apache-2.0"
 
 [workspace.dependencies]
 gleaph-auth = { path = "crates/auth" }
+gleaph-bulk-load-api = { path = "crates/bulk-load-api" }
 gleaph-cli = { path = "crates/cli" }
 gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-codegen = { path = "crates/codegen" }

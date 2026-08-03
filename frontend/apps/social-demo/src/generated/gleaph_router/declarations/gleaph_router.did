@@ -132,6 +132,7 @@ type AtomicInsertEndpointV1 = variant {
   NewVertexOrdinal : nat32;
   Existing : blob;
 };
+// One logical operation in an ordered atomic insert.
 type AtomicInsertOperationV1 = variant {
   Edge : AtomicInsertEdgeV1;
   Vertex : AtomicInsertVertexV1;

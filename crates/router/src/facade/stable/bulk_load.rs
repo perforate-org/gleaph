@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 /// Maximum number of receipt rows returned by one status page.
-pub const MAX_BULK_LOAD_RECEIPTS_PER_PAGE: u32 = 64;
+pub use gleaph_bulk_load_api::MAX_BULK_LOAD_RECEIPTS_PER_PAGE;
 
 /// Maximum consecutive child rows verified by one bounded Finalize step.
 pub const BULK_LOAD_FINALIZE_SCAN_ROWS_PER_STEP: u32 = 32;

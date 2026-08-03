@@ -15,13 +15,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use candid::Encode;
 use clap::Args;
-use gleaph_gql::value::Value;
-use gleaph_graph_kernel::federation::RouterError;
-use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
-use gleaph_router::types::{
+use gleaph_bulk_load_api::{
     AtomicInsertPropertyV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1,
     BulkLoadCommand, BulkLoadEdgeV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
 };
+use gleaph_gql::value::Value;
+use gleaph_graph_kernel::federation::RouterError;
+use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -990,7 +990,7 @@ pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_router::types::AtomicInsertReceiptV1;
+    use gleaph_bulk_load_api::AtomicInsertReceiptV1;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
