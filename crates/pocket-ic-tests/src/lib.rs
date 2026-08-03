@@ -1947,6 +1947,56 @@ pub fn atomic_insert_as_admin(
     .expect("decode atomic_insert")
 }
 
+/// Create an active vertex property index on `(vertex_label, property)` through the admin
+/// compat endpoint (ADR 0009 immediate-publication bridge).
+pub fn index_vertex_property(env: &FederationEnv, vertex_label: &str, property: &str) {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "index_vertex_property",
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &vertex_label.to_string(),
+                &property.to_string()
+            )
+            .expect("encode index_vertex_property"),
+        )
+        .unwrap_or_else(|e| panic!("index_vertex_property on {}: {e:?}", env.router));
+    match Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("index_vertex_property rejected: {err:?}"),
+        Err(err) => panic!("decode index_vertex_property: {err}"),
+    }
+}
+
+/// Advance one bounded unit of graph-index repair work of the given kind across every shard.
+/// Call in a loop until `all_done` (mirrors the `advance_backfill` admin endpoint).
+pub fn advance_backfill_as_admin(
+    env: &FederationEnv,
+    kind: gleaph_router::types::BackfillKind,
+    max_work: u32,
+) -> gleaph_router::types::AdvanceBackfillResult {
+    use gleaph_router::types::{AdvanceBackfillResult, BackfillKind};
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "advance_backfill",
+            Encode!(&GRAPH_NAME.to_string(), &kind, &max_work).expect("encode advance_backfill"),
+        )
+        .unwrap_or_else(|e| panic!("advance_backfill on {}: {e:?}", env.router));
+    match Decode!(&bytes, Result<AdvanceBackfillResult, gleaph_graph_kernel::federation::RouterError>)
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => panic!("advance_backfill rejected: {err:?}"),
+        Err(err) => panic!("decode advance_backfill: {err}"),
+    }
+}
+
 /// Execute one durable Router bulk-load command as the bootstrap admin.
 pub fn bulk_load_as_admin(
     env: &FederationEnv,

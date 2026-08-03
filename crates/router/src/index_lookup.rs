@@ -11,10 +11,10 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
-    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PhysicalIndexId, PostingHit, ValuePostingCount,
-    ValuePostingCountPage,
+    LookupEqualBatchRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupValuePostingCountPageRequest,
+    MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS,
+    PhysicalIndexId, PostingHit, ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -333,6 +333,86 @@ fn merge_value_posting_counts(counts: Vec<Vec<ValuePostingCount>>) -> Vec<ValueP
             count,
         })
         .collect()
+}
+
+/// Per-value equality hits for one batched resolution bucket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedEqualValue {
+    /// Index-key bytes of the requested value.
+    pub value: Vec<u8>,
+    /// Live postings for `value`, up to `limit` per index target.
+    pub hits: Vec<PostingHit>,
+    /// `true` when every index target returned the complete bucket (`done`), so `hits` is the
+    /// full posting list when it contains at most one hit.
+    pub complete: bool,
+}
+
+impl RouterIndexLookup {
+    /// Resolve many vertex `(property, value)` buckets to per-value postings across every
+    /// registered index canister (ADR 0060 property-endpoint resolution).
+    ///
+    /// Buckets are answered at bucket granularity with the index's resume cursor, so the caller
+    /// never sees a partial bucket; `values` must already be deduplicated. `limit` bounds hits per
+    /// bucket: the resolution pre-pass uses `2` to detect uniqueness without materializing a full
+    /// bucket. `complete` is `false` when any target stopped before the bucket tail, which with
+    /// `limit == 2` means the bucket holds more than one posting.
+    pub(crate) async fn batch_equal_per_value(
+        &self,
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        values: Vec<Vec<u8>>,
+        limit: u32,
+    ) -> Result<Vec<ResolvedEqualValue>, String> {
+        let mut results: Vec<ResolvedEqualValue> = values
+            .iter()
+            .map(|value| ResolvedEqualValue {
+                value: value.clone(),
+                hits: Vec::new(),
+                complete: true,
+            })
+            .collect();
+        let specs: Vec<IndexEqualSpec> = values
+            .iter()
+            .map(|value| IndexEqualSpec::vertex(physical_index_id, property_id, value.clone()))
+            .collect();
+        for principal in &self.targets {
+            let client = RouterIndexClient::new(*principal);
+            let mut start = 0usize;
+            loop {
+                let result = client
+                    .lookup_equal_batch(LookupEqualBatchRequest {
+                        specs: specs[start..].to_vec(),
+                        limit,
+                    })
+                    .await?;
+                let answered = result.pages.len();
+                for (index, page) in result.pages.iter().enumerate() {
+                    let entry = &mut results[start + index];
+                    entry.hits.extend(page.hits.iter().copied());
+                    entry.complete = entry.complete && page.done;
+                }
+                match result.next {
+                    Some(0) if answered == 0 => {
+                        return Err(
+                            "index batch equality lookup made no progress across a resume".into(),
+                        );
+                    }
+                    Some(_) => {
+                        start += answered;
+                        if start >= specs.len() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+        for entry in &mut results {
+            let hits = std::mem::take(&mut entry.hits);
+            entry.hits = merge_posting_hits(self.retain_live_vertex_hits(hits));
+        }
+        Ok(results)
+    }
 }
 
 pub(crate) trait IndexLookup {

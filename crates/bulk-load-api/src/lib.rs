@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use candid::{CandidType, Encode};
 use gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES;
+use gleaph_graph_kernel::index::validate_index_value_key_bytes;
 use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -133,15 +134,39 @@ pub enum BulkLoadChunkV1 {
     Edges(Vec<BulkLoadEdgeV1>),
 }
 
-/// One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
+/// One edge in a durable bulk-load chunk.
+///
+/// Endpoints reference existing vertices either by their graph-scoped encoded ID
+/// ([`BulkLoadEndpointV1::Existing`]) or by vertex label + property equality
+/// ([`BulkLoadEndpointV1::ByProperty`]); the Router resolves `ByProperty` endpoints through the
+/// graph property index before the chunk is admitted (ADR 0060 planned extension).
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BulkLoadEdgeV1 {
-    pub source: Vec<u8>,
-    pub target: Vec<u8>,
+    pub source: BulkLoadEndpointV1,
+    pub target: BulkLoadEndpointV1,
     pub directed: bool,
     pub edge_label_name: Option<String>,
     pub inline_property: Option<Vec<u8>>,
     pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
+}
+
+/// One edge endpoint in a durable bulk-load chunk.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BulkLoadEndpointV1 {
+    /// Graph-scoped encoded existing vertex ID (`encode_global_vertex_id` output).
+    Existing(Vec<u8>),
+    /// Vertex referenced by label + property equality, resolved by the Router through the
+    /// converged property index on `(vertex_label, property_name)`.
+    ByProperty(BulkLoadPropertyEndpointV1),
+}
+
+/// Property-based vertex reference for a bulk-load edge endpoint.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BulkLoadPropertyEndpointV1 {
+    pub vertex_label: String,
+    pub property_name: String,
+    /// Sortable index key bytes for the GQL value (`gleaph_gql::value_to_index_key_bytes`).
+    pub value: Vec<u8>,
 }
 
 /// Response to one public bulk-load command.
@@ -258,32 +283,36 @@ impl BulkLoadChunkV1 {
         if self.operation_count() == 0 {
             return Err("bulk-load chunk must contain at least one operation".into());
         }
-        let vertex_count = match self {
-            Self::Vertices(items) => items.len() as u32,
-            Self::Edges(_) => 0,
-        };
-        let operations: Vec<AtomicInsertOperationV1> = match self {
-            Self::Vertices(items) => items
-                .iter()
-                .cloned()
-                .map(AtomicInsertOperationV1::Vertex)
-                .collect(),
-            Self::Edges(items) => items
-                .iter()
-                .cloned()
-                .map(|item| {
-                    AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
-                        source: AtomicInsertEndpointV1::Existing(item.source),
-                        target: AtomicInsertEndpointV1::Existing(item.target),
-                        directed: item.directed,
-                        edge_label_name: item.edge_label_name,
-                        inline_property: item.inline_property,
-                        initial_edge_properties: item.initial_edge_properties,
-                    })
-                })
-                .collect(),
-        };
-        validate_atomic_insert_operations(&operations, vertex_count)?;
+        match self {
+            Self::Vertices(items) => {
+                let vertex_count = items.len() as u32;
+                let operations: Vec<AtomicInsertOperationV1> = items
+                    .iter()
+                    .cloned()
+                    .map(AtomicInsertOperationV1::Vertex)
+                    .collect();
+                validate_atomic_insert_operations(&operations, vertex_count)?;
+            }
+            Self::Edges(items) => {
+                for (ordinal, item) in items.iter().enumerate() {
+                    validate_bulk_load_endpoint(ordinal, "source", &item.source)?;
+                    validate_bulk_load_endpoint(ordinal, "target", &item.target)?;
+                    if item.edge_label_name.as_deref() == Some("") {
+                        return Err(format!(
+                            "bulk-load edge {ordinal} contains an empty edge label"
+                        ));
+                    }
+                    if let Some(inline) = &item.inline_property
+                        && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
+                    {
+                        return Err(format!(
+                            "bulk-load edge {ordinal} inline property exceeds the byte bound"
+                        ));
+                    }
+                    validate_batch_properties(ordinal, &item.initial_edge_properties)?;
+                }
+            }
+        }
         let encoded = Encode!(self).map_err(|error| format!("bulk-load chunk encode: {error}"))?;
         if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("bulk-load chunk exceeds the safe payload bound".into());
@@ -323,6 +352,38 @@ impl BulkLoadChunkV1 {
         hasher.update(b"gleaph:bulk-load-chunk:v1\0");
         hasher.update(encoded);
         Ok(hasher.finalize().into())
+    }
+}
+
+/// Validate one bulk-load edge endpoint: `Existing` must carry a full-width encoded vertex ID,
+/// and `ByProperty` must carry a non-empty label/property plus a valid index-value key.
+fn validate_bulk_load_endpoint(
+    ordinal: usize,
+    name: &str,
+    endpoint: &BulkLoadEndpointV1,
+) -> Result<(), String> {
+    match endpoint {
+        BulkLoadEndpointV1::Existing(bytes) if bytes.len() != ENCODED_VERTEX_ID_BYTES => {
+            Err(format!(
+                "bulk-load edge {ordinal} {name} must be exactly {ENCODED_VERTEX_ID_BYTES} bytes"
+            ))
+        }
+        BulkLoadEndpointV1::Existing(_) => Ok(()),
+        BulkLoadEndpointV1::ByProperty(property) => {
+            if property.vertex_label.is_empty() || property.vertex_label.len() > 256 {
+                return Err(format!(
+                    "bulk-load edge {ordinal} {name} vertex label must be 1..=256 bytes"
+                ));
+            }
+            if property.property_name.is_empty() || property.property_name.len() > 256 {
+                return Err(format!(
+                    "bulk-load edge {ordinal} {name} property name must be 1..=256 bytes"
+                ));
+            }
+            validate_index_value_key_bytes(&property.value)
+                .map_err(|error| format!("bulk-load edge {ordinal} {name}: {error}"))?;
+            Ok(())
+        }
     }
 }
 
@@ -461,6 +522,77 @@ mod tests {
         };
         items[0].initial_properties.swap(0, 1);
         assert_eq!(chunk.fingerprint().expect("fingerprint"), first);
+    }
+
+    #[test]
+    fn edge_chunk_validates_existing_width_and_by_property_endpoints() {
+        let by_property = BulkLoadEndpointV1::ByProperty(BulkLoadPropertyEndpointV1 {
+            vertex_label: "Person".into(),
+            property_name: "email".into(),
+            value: b"a@b.c".to_vec(),
+        });
+        let chunk = BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
+            source: BulkLoadEndpointV1::Existing(vec![0; ENCODED_VERTEX_ID_BYTES]),
+            target: by_property,
+            directed: true,
+            edge_label_name: Some("Knows".into()),
+            inline_property: None,
+            initial_edge_properties: Vec::new(),
+        }]);
+        chunk
+            .validate()
+            .expect("existing + by-property endpoints must validate");
+
+        let wrong_width = BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
+            source: BulkLoadEndpointV1::Existing(vec![0; ENCODED_VERTEX_ID_BYTES - 1]),
+            target: BulkLoadEndpointV1::Existing(vec![0; ENCODED_VERTEX_ID_BYTES]),
+            directed: true,
+            edge_label_name: None,
+            inline_property: None,
+            initial_edge_properties: Vec::new(),
+        }]);
+        assert!(
+            wrong_width.validate().is_err(),
+            "short Existing endpoint must reject"
+        );
+
+        let empty_label = BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
+            source: BulkLoadEndpointV1::ByProperty(BulkLoadPropertyEndpointV1 {
+                vertex_label: String::new(),
+                property_name: "email".into(),
+                value: vec![1],
+            }),
+            target: BulkLoadEndpointV1::Existing(vec![0; ENCODED_VERTEX_ID_BYTES]),
+            directed: true,
+            edge_label_name: None,
+            inline_property: None,
+            initial_edge_properties: Vec::new(),
+        }]);
+        assert!(
+            empty_label.validate().is_err(),
+            "empty ByProperty vertex label must reject"
+        );
+    }
+
+    #[test]
+    fn edge_chunk_rejects_by_property_value_beyond_index_key_bound() {
+        let oversized = vec![0; gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES + 1];
+        let chunk = BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
+            source: BulkLoadEndpointV1::ByProperty(BulkLoadPropertyEndpointV1 {
+                vertex_label: "Person".into(),
+                property_name: "email".into(),
+                value: oversized,
+            }),
+            target: BulkLoadEndpointV1::Existing(vec![0; ENCODED_VERTEX_ID_BYTES]),
+            directed: true,
+            edge_label_name: None,
+            inline_property: None,
+            initial_edge_properties: Vec::new(),
+        }]);
+        let error = chunk
+            .validate()
+            .expect_err("oversized ByProperty value must reject");
+        assert!(error.contains("index value key"), "{error}");
     }
 
     #[test]

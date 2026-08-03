@@ -58,6 +58,11 @@ name = "adr0057_durable_bulk_load"
 path = "tests/adr0057_durable_bulk_load.rs"
 harness = true
 
+[[test]]
+name = "adr0060_property_endpoint_resolution"
+path = "tests/adr0060_property_endpoint_resolution.rs"
+harness = true
+
 [dependencies]
 candid.workspace = true
 gleaph-codegen.workspace = true

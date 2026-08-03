@@ -3,8 +3,10 @@
 //!
 //! The artifact is a YAML/JSON single file (`format_version: 1`, `vertices` + `edges`) or two
 //! NDJSON files (`vertices.jsonl` + `edges.jsonl`). The CLI validates everything before any remote
-//! call, then drives the lifecycle: `Start` → vertex chunks → edge chunks (endpoints resolved to
-//! the encoded vertex IDs allocated by the Router) → `Finalize` → poll `Completed`. Chunk
+//! call, then drives the lifecycle: `Start` → vertex chunks → edge chunks → `Finalize` → poll
+//! `Completed`. An edge endpoint is either an in-artifact `source_id` reference (resolved to the
+//! encoded vertex IDs allocated by the Router) or a `{ label, property, value }` reference that
+//! the Router resolves through the graph property index (ADR 0060 planned extension). Chunk
 //! boundaries are Router-owned (`Resumable` execution commits a budget-fitting prefix and returns
 //! `next_offset`); the CLI only fits each request to the ingress payload bound and loops.
 
@@ -17,9 +19,11 @@ use candid::Encode;
 use clap::Args;
 use gleaph_bulk_load_api::{
     AtomicInsertPropertyV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1,
-    BulkLoadCommand, BulkLoadEdgeV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
+    BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1, BulkLoadPropertyEndpointV1,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
 };
 use gleaph_gql::value::Value;
+use gleaph_gql::value_to_index_key_bytes;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -77,8 +81,9 @@ pub struct LoadArgs {
     /// NDJSON vertices file only (no edges). Mutually exclusive with positional ARTIFACT.
     #[arg(long, value_name = "FILE")]
     vertices: Option<PathBuf>,
-    /// NDJSON edges file only (no vertices). Requires property-based endpoints (planned);
-    /// source_id endpoints cannot resolve without vertices in the same artifact.
+    /// NDJSON edges file only (no vertices). Endpoints must use the property-based
+    /// `{ label, property, value }` form; `source_id` references cannot resolve without vertices
+    /// in the same artifact.
     #[arg(long, value_name = "FILE")]
     edges: Option<PathBuf>,
     /// Start a new job under a derived key instead of resuming or skipping; the effective key is
@@ -180,10 +185,10 @@ struct VertexRow {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EdgeRow {
-    /// Source vertex `source_id`.
-    source: String,
-    /// Target vertex `source_id`.
-    target: String,
+    /// Source vertex: an in-artifact `source_id` reference, or a property-based endpoint.
+    source: EdgeEndpointRow,
+    /// Target vertex: an in-artifact `source_id` reference, or a property-based endpoint.
+    target: EdgeEndpointRow,
     label: String,
     #[serde(default = "default_directed")]
     directed: bool,
@@ -191,6 +196,25 @@ struct EdgeRow {
     inline_value: Option<Value>,
     #[serde(default)]
     properties: Properties,
+}
+
+/// One edge endpoint in an artifact row. A bare string is an in-artifact `source_id` reference
+/// resolved against the vertices loaded in the same artifact; an object references an existing
+/// vertex by `{ label, property, value }` and is resolved by the Router through the graph
+/// property index.
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+enum EdgeEndpointRow {
+    SourceId(String),
+    ByProperty(PropertyEndpointRow),
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct PropertyEndpointRow {
+    label: String,
+    property: String,
+    value: Value,
 }
 
 fn default_directed() -> bool {
@@ -395,13 +419,6 @@ fn validate_artifact(
     graph: Option<&str>,
     key: &str,
 ) -> Result<(), LoadError> {
-    if artifact.vertices.is_empty() && !artifact.edges.is_empty() {
-        return Err(LoadError::Artifact(
-            "edges-only artifacts require property-based endpoints, which are not implemented yet; \
-             every edge endpoint must resolve to a vertex source_id in the same artifact"
-                .into(),
-        ));
-    }
     if let Some(name) = graph
         && (name.is_empty() || name.len() > 256)
     {
@@ -432,17 +449,10 @@ fn validate_artifact(
         }
         validate_properties(index, &vertex.properties)?;
     }
+    let has_vertices = !artifact.vertices.is_empty();
     for (index, edge) in artifact.edges.iter().enumerate() {
-        if edge.source.is_empty() || edge.target.is_empty() {
-            return Err(LoadError::Artifact(format!(
-                "edges[{index}] source/target must not be empty"
-            )));
-        }
-        if !source_ids.contains(&edge.source) || !source_ids.contains(&edge.target) {
-            return Err(LoadError::Artifact(format!(
-                "edges[{index}] endpoint does not resolve to a vertex source_id"
-            )));
-        }
+        validate_edge_endpoint(index, "source", &edge.source, has_vertices, &source_ids)?;
+        validate_edge_endpoint(index, "target", &edge.target, has_vertices, &source_ids)?;
         if edge.label.is_empty() {
             return Err(LoadError::Artifact(format!(
                 "edges[{index}] label must not be empty"
@@ -451,6 +461,62 @@ fn validate_artifact(
         validate_properties(index, &edge.properties)?;
     }
     Ok(())
+}
+
+/// Validate one edge endpoint. A `source_id` reference must resolve against the vertices loaded
+/// in the same artifact; an edges-only artifact must use property-based endpoints exclusively.
+/// A property-based endpoint must name a non-empty label/property and carry an indexable value.
+fn validate_edge_endpoint(
+    index: usize,
+    name: &str,
+    endpoint: &EdgeEndpointRow,
+    has_vertices: bool,
+    source_ids: &HashSet<String>,
+) -> Result<(), LoadError> {
+    match endpoint {
+        EdgeEndpointRow::SourceId(source_id) => {
+            if source_id.is_empty() {
+                return Err(LoadError::Artifact(format!(
+                    "edges[{index}] {name} source_id must not be empty"
+                )));
+            }
+            if !has_vertices {
+                return Err(LoadError::Artifact(format!(
+                    "edges[{index}] {name} is a source_id reference but the artifact has no vertices; \
+                     use a {{ label, property, value }} endpoint for edges-only loads"
+                )));
+            }
+            if !source_ids.contains(source_id) {
+                return Err(LoadError::Artifact(format!(
+                    "edges[{index}] {name} does not resolve to a vertex source_id"
+                )));
+            }
+            Ok(())
+        }
+        EdgeEndpointRow::ByProperty(property) => {
+            if property.label.is_empty() {
+                return Err(LoadError::Artifact(format!(
+                    "edges[{index}] {name} label must not be empty"
+                )));
+            }
+            if property.property.is_empty() {
+                return Err(LoadError::Artifact(format!(
+                    "edges[{index}] {name} property must not be empty"
+                )));
+            }
+            if value_to_index_key_bytes(&property.value)
+                .map_err(|error| {
+                    LoadError::Artifact(format!("edges[{index}] {name} value encode: {error}"))
+                })?
+                .is_none()
+            {
+                return Err(LoadError::Artifact(format!(
+                    "edges[{index}] {name} value is not a sortable (indexable) type"
+                )));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn validate_properties(index: usize, properties: &Properties) -> Result<(), LoadError> {
@@ -556,7 +622,12 @@ trait BulkLoadTransport {
         max_receipts: u32,
     ) -> Result<Result<BulkLoadStatusPage, RouterError>, String>;
 
-    fn command(&mut self, command: BulkLoadCommand) -> Result<BulkLoadResponse, String>;
+    /// One `bulk_load` command. The outer error is a transport failure; the inner `Err` is the
+    /// Router's typed rejection.
+    fn command(
+        &mut self,
+        command: BulkLoadCommand,
+    ) -> Result<Result<BulkLoadResponse, RouterError>, String>;
 }
 
 struct RemoteBulkLoadTransport {
@@ -593,14 +664,12 @@ impl BulkLoadTransport for RemoteBulkLoadTransport {
         self.remote.query("bulk_load_status", &args)
     }
 
-    fn command(&mut self, command: BulkLoadCommand) -> Result<BulkLoadResponse, String> {
-        match self
-            .remote
-            .update::<BulkLoadResponse, RouterError>("bulk_load", &command)?
-        {
-            Ok(response) => Ok(response),
-            Err(error) => Err(format!("Router rejected bulk_load: {error:?}")),
-        }
+    fn command(
+        &mut self,
+        command: BulkLoadCommand,
+    ) -> Result<Result<BulkLoadResponse, RouterError>, String> {
+        self.remote
+            .update::<BulkLoadResponse, RouterError>("bulk_load", &command)
     }
 }
 
@@ -662,6 +731,25 @@ fn resume_point(page: &BulkLoadStatusPage, receipts: &[BulkLoadChunkReceiptV1]) 
     }
 }
 
+/// Execute one `bulk_load` command and map a typed Router rejection to the documented exit
+/// code: an `InvalidArgument` / `NotFound` rejection reflects graph state that needs an operator
+/// action (missing property index, unresolved or non-unique property endpoints, unknown label or
+/// property), while transport-level failures and other rejections stay remote/auth (exit 3).
+fn send_command(
+    transport: &mut impl BulkLoadTransport,
+    command: BulkLoadCommand,
+) -> Result<BulkLoadResponse, LoadError> {
+    match transport.command(command).map_err(LoadError::Remote)? {
+        Ok(response) => Ok(response),
+        Err(RouterError::InvalidArgument(message)) | Err(RouterError::NotFound(message)) => Err(
+            LoadError::Operator(format!("Router rejected bulk_load: {message}")),
+        ),
+        Err(error) => Err(LoadError::Remote(format!(
+            "Router rejected bulk_load: {error:?}"
+        ))),
+    }
+}
+
 /// Drive one durable bulk-load job to `Completed` (ADR 0060 §3 client loop).
 fn run_load(
     transport: &mut impl BulkLoadTransport,
@@ -706,12 +794,13 @@ fn run_load(
         write_state_file(path, digest, key, graph)?;
     }
 
-    let started = transport
-        .command(BulkLoadCommand::Start {
+    let started = send_command(
+        transport,
+        BulkLoadCommand::Start {
             graph_name: graph.map(str::to_owned),
             client_bulk_key: key.to_owned(),
-        })
-        .map_err(LoadError::Remote)?;
+        },
+    )?;
     match started {
         BulkLoadResponse::Started { .. } => {}
         other => {
@@ -736,14 +825,15 @@ fn run_load(
             encode_append_command(graph, key, chunk_index, chunk)
         })?;
         let chunk = vertex_chunk(&artifact.vertices[offset..offset + candidate_count])?;
-        let response = transport
-            .command(BulkLoadCommand::Append {
+        let response = send_command(
+            transport,
+            BulkLoadCommand::Append {
                 graph_name: graph.map(str::to_owned),
                 client_bulk_key: key.to_owned(),
                 chunk_index,
                 chunk,
-            })
-            .map_err(LoadError::Remote)?;
+            },
+        )?;
         let (next_offset, receipt) = match response {
             BulkLoadResponse::Appended {
                 next_offset,
@@ -784,14 +874,15 @@ fn run_load(
             &artifact.edges[offset..offset + candidate_count],
             &id_by_source,
         )?;
-        let response = transport
-            .command(BulkLoadCommand::Append {
+        let response = send_command(
+            transport,
+            BulkLoadCommand::Append {
                 graph_name: graph.map(str::to_owned),
                 client_bulk_key: key.to_owned(),
                 chunk_index,
                 chunk,
-            })
-            .map_err(LoadError::Remote)?;
+            },
+        )?;
         let next_offset = match response {
             BulkLoadResponse::Appended { next_offset, .. } => next_offset,
             other => {
@@ -810,12 +901,13 @@ fn run_load(
         hint = Some(SizeHint::new(candidate_count));
     }
 
-    let finalized = transport
-        .command(BulkLoadCommand::Finalize {
+    let finalized = send_command(
+        transport,
+        BulkLoadCommand::Finalize {
             graph_name: graph.map(str::to_owned),
             client_bulk_key: key.to_owned(),
-        })
-        .map_err(LoadError::Remote)?;
+        },
+    )?;
     match finalized {
         BulkLoadResponse::FinalizeAccepted { .. } => {}
         other => {
@@ -924,15 +1016,11 @@ fn edge_chunk(
     let items = rows
         .iter()
         .map(|row| {
-            let source = id_by_source.get(&row.source).ok_or_else(|| {
-                LoadError::Artifact(format!("edge source {:?} lacks an encoded id", row.source))
-            })?;
-            let target = id_by_source.get(&row.target).ok_or_else(|| {
-                LoadError::Artifact(format!("edge target {:?} lacks an encoded id", row.target))
-            })?;
+            let source = resolve_edge_endpoint(&row.source, id_by_source)?;
+            let target = resolve_edge_endpoint(&row.target, id_by_source)?;
             Ok(BulkLoadEdgeV1 {
-                source: source.clone(),
-                target: target.clone(),
+                source,
+                target,
                 directed: row.directed,
                 edge_label_name: Some(row.label.clone()),
                 inline_property: row.inline_value.as_ref().map(encode_value).transpose()?,
@@ -941,6 +1029,40 @@ fn edge_chunk(
         })
         .collect::<Result<Vec<_>, LoadError>>()?;
     Ok(BulkLoadChunkV1::Edges(items))
+}
+
+/// Build one wire endpoint: a `source_id` reference becomes an encoded existing vertex ID from
+/// the vertices loaded in this artifact; a property endpoint carries the sortable index key.
+fn resolve_edge_endpoint(
+    endpoint: &EdgeEndpointRow,
+    id_by_source: &HashMap<String, Vec<u8>>,
+) -> Result<BulkLoadEndpointV1, LoadError> {
+    match endpoint {
+        EdgeEndpointRow::SourceId(source_id) => {
+            let encoded = id_by_source.get(source_id).ok_or_else(|| {
+                LoadError::Artifact(format!(
+                    "edge endpoint {source_id:?} lacks an encoded vertex id"
+                ))
+            })?;
+            Ok(BulkLoadEndpointV1::Existing(encoded.clone()))
+        }
+        EdgeEndpointRow::ByProperty(property) => {
+            let value = value_to_index_key_bytes(&property.value)
+                .map_err(|error| {
+                    LoadError::Artifact(format!("edge endpoint by property value encode: {error}"))
+                })?
+                .ok_or_else(|| {
+                    LoadError::Artifact(
+                        "edge endpoint by property value is not a sortable (indexable) type".into(),
+                    )
+                })?;
+            Ok(BulkLoadEndpointV1::ByProperty(BulkLoadPropertyEndpointV1 {
+                vertex_label: property.label.clone(),
+                property_name: property.property.clone(),
+                value,
+            }))
+        }
+    }
 }
 
 // ──── entry point ────
@@ -1034,12 +1156,20 @@ mod tests {
 
     fn edge(source: &str, target: &str, label: &str) -> EdgeRow {
         EdgeRow {
-            source: source.into(),
-            target: target.into(),
+            source: EdgeEndpointRow::SourceId(source.into()),
+            target: EdgeEndpointRow::SourceId(target.into()),
             label: label.into(),
             directed: true,
             inline_value: None,
             properties: Properties::default(),
+        }
+    }
+
+    fn property_endpoint(label: &str, property: &str, value: Value) -> PropertyEndpointRow {
+        PropertyEndpointRow {
+            label: label.into(),
+            property: property.into(),
+            value,
         }
     }
 
@@ -1205,7 +1335,81 @@ mod tests {
     }
 
     #[test]
-    fn edges_only_flag_is_rejected_until_property_endpoints_exist() {
+    fn edge_chunk_builds_by_property_endpoints_with_index_keys() {
+        let row = EdgeRow {
+            source: EdgeEndpointRow::ByProperty(property_endpoint(
+                "Person",
+                "email",
+                Value::Text("a@b.c".into()),
+            )),
+            target: EdgeEndpointRow::SourceId("v2".into()),
+            label: "KNOWS".into(),
+            directed: true,
+            inline_value: None,
+            properties: Properties::default(),
+        };
+        let mut id_by_source = HashMap::new();
+        id_by_source.insert("v2".to_owned(), vec![7; 32]);
+        let BulkLoadChunkV1::Edges(items) =
+            edge_chunk(&[row], &id_by_source).expect("build edge chunk")
+        else {
+            panic!("edge chunk");
+        };
+        let item = &items[0];
+        let BulkLoadEndpointV1::ByProperty(property) = &item.source else {
+            panic!("property endpoint");
+        };
+        assert_eq!(property.vertex_label, "Person");
+        assert_eq!(property.property_name, "email");
+        assert_eq!(
+            property.value,
+            value_to_index_key_bytes(&Value::Text("a@b.c".into()))
+                .expect("indexable")
+                .expect("text is indexable")
+        );
+        assert_eq!(item.target, BulkLoadEndpointV1::Existing(vec![7; 32]));
+    }
+
+    #[test]
+    fn send_command_classifies_router_invalid_argument_as_operator() {
+        struct RejectingTransport;
+        impl BulkLoadTransport for RejectingTransport {
+            fn status(
+                &mut self,
+                _graph: Option<&str>,
+                _key: &str,
+                _cursor: Option<u32>,
+                _max_receipts: u32,
+            ) -> Result<Result<BulkLoadStatusPage, RouterError>, String> {
+                unreachable!("status is not called")
+            }
+
+            fn command(
+                &mut self,
+                _command: BulkLoadCommand,
+            ) -> Result<Result<BulkLoadResponse, RouterError>, String> {
+                Ok(Err(RouterError::InvalidArgument(
+                    "no active vertex property index namespace for property 3".into(),
+                )))
+            }
+        }
+        let error = send_command(
+            &mut RejectingTransport,
+            BulkLoadCommand::Append {
+                graph_name: None,
+                client_bulk_key: "k".into(),
+                chunk_index: 0,
+                chunk: BulkLoadChunkV1::Vertices(Vec::new()),
+            },
+        )
+        .expect_err("InvalidArgument must surface as operator action");
+        assert!(matches!(error, LoadError::Operator(_)));
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().contains("property index"));
+    }
+
+    #[test]
+    fn edges_only_artifact_rejects_source_id_endpoints_and_accepts_property_endpoints() {
         let path = temp_path("edges-only.jsonl");
         write_temp(
             &path,
@@ -1216,8 +1420,21 @@ mod tests {
         let input = resolve_input(&args).expect("resolve");
         let artifact = read_artifact(&input).expect("read");
         let error = validate_artifact(&artifact, None, "k")
-            .expect_err("edges-only must be rejected without property endpoints");
-        assert!(error.to_string().contains("property-based endpoints"));
+            .expect_err("edges-only source_id endpoint must be rejected");
+        assert!(error.to_string().contains("has no vertices"), "{error}");
+        fs::remove_file(path).expect("cleanup");
+
+        let path = temp_path("edges-only-property.jsonl");
+        write_temp(
+            &path,
+            "{\"source\":{\"label\":\"Person\",\"property\":\"email\",\"value\":{\"Text\":\"a@b.c\"}},\"target\":{\"label\":\"Person\",\"property\":\"email\",\"value\":{\"Text\":\"c@d.e\"}},\"label\":\"KNOWS\"}\n",
+        );
+        let mut args = load_args(&[]);
+        args.edges = Some(path.clone());
+        let input = resolve_input(&args).expect("resolve");
+        let artifact = read_artifact(&input).expect("read");
+        validate_artifact(&artifact, None, "k")
+            .expect("edges-only property endpoints must validate");
         fs::remove_file(path).expect("cleanup");
     }
 
@@ -1295,12 +1512,15 @@ mod tests {
             }))
         }
 
-        fn command(&mut self, command: BulkLoadCommand) -> Result<BulkLoadResponse, String> {
+        fn command(
+            &mut self,
+            command: BulkLoadCommand,
+        ) -> Result<Result<BulkLoadResponse, RouterError>, String> {
             match command {
                 BulkLoadCommand::Start { .. } => match &self.job {
-                    Some(job) => Ok(BulkLoadResponse::Started {
+                    Some(job) => Ok(Ok(BulkLoadResponse::Started {
                         next_chunk_index: job.next_chunk_index,
-                    }),
+                    })),
                     None => {
                         self.job = Some(FakeJob {
                             next_chunk_index: 0,
@@ -1308,9 +1528,9 @@ mod tests {
                             state: BulkLoadPublicStateV1::Open,
                             next_vertex_ordinal: 0,
                         });
-                        Ok(BulkLoadResponse::Started {
+                        Ok(Ok(BulkLoadResponse::Started {
                             next_chunk_index: 0,
-                        })
+                        }))
                     }
                 },
                 BulkLoadCommand::Append {
@@ -1352,25 +1572,25 @@ mod tests {
                     });
                     job.next_chunk_index += 1;
                     job.state = BulkLoadPublicStateV1::AppendPending;
-                    Ok(BulkLoadResponse::Appended {
+                    Ok(Ok(BulkLoadResponse::Appended {
                         chunk_index,
                         next_offset: commit as u32,
                         receipt,
-                    })
+                    }))
                 }
                 BulkLoadCommand::Finalize { .. } => {
                     let job = self.job.as_mut().ok_or("finalize without start")?;
                     job.state = BulkLoadPublicStateV1::FinalizePending;
-                    Ok(BulkLoadResponse::FinalizeAccepted {
+                    Ok(Ok(BulkLoadResponse::FinalizeAccepted {
                         state: job.state.clone(),
-                    })
+                    }))
                 }
                 BulkLoadCommand::Abort { .. } => {
                     let job = self.job.as_mut().ok_or("abort without start")?;
                     job.state = BulkLoadPublicStateV1::AbortPending;
-                    Ok(BulkLoadResponse::AbortAccepted {
+                    Ok(Ok(BulkLoadResponse::AbortAccepted {
                         state: job.state.clone(),
-                    })
+                    }))
                 }
             }
         }

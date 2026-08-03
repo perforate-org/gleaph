@@ -29,8 +29,9 @@ use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRec
 pub use gleaph_bulk_load_api::{
     AtomicInsertEdgeV1, AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertPropertyV1,
     AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1, BulkLoadChunkV1,
-    BulkLoadCommand, BulkLoadEdgeV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
-    MAX_ATOMIC_INSERT_OPERATIONS, MAX_BULK_LOAD_RECEIPTS_PER_PAGE,
+    BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1, BulkLoadPropertyEndpointV1,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, MAX_ATOMIC_INSERT_OPERATIONS,
+    MAX_BULK_LOAD_RECEIPTS_PER_PAGE,
 };
 
 /// Registry-local summary row for one logical graph (ADR 0056 §7). Computed from Router stable

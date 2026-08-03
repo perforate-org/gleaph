@@ -2,11 +2,13 @@
 //!
 //! The parent and receipt-map transitions live in the Router store facade. This module owns only
 //! public command validation, graph-request construction, pinned-shard dispatch, and public status
-//! projection. Canonical work is dispatched only from an explicitly submitted client command.
+//! canonical work is dispatched only from an explicitly submitted client command.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResult,
     GraphOrderedVertexBatchResultV1, MutationId, OrderedBatchExecutionModeV1,
@@ -32,11 +34,12 @@ use crate::graph_client::{
     execute_ordered_edge_batch_on_graph, execute_ordered_vertex_batch_on_graph,
     retire_ordered_mutation_on_graph, retire_ordered_vertex_mutation_on_graph,
 };
+use crate::index_lookup::RouterIndexLookup;
 use crate::state::RouterError;
 use crate::types::{
     AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertRequest, AtomicInsertRequestV1,
-    BulkLoadChunkReceiptV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadPublicStateV1,
-    BulkLoadResponse, BulkLoadStatusPage,
+    BulkLoadChunkReceiptV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadEndpointV1,
+    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
 };
 
 fn invalid(message: impl Into<String>) -> RouterError {
@@ -126,7 +129,7 @@ fn atomic_request_from_chunk(
     graph_name: Option<String>,
     client_bulk_key: &str,
     chunk: &BulkLoadChunkV1,
-) -> AtomicInsertRequest {
+) -> Result<AtomicInsertRequest, RouterError> {
     let operations = match chunk {
         BulkLoadChunkV1::Vertices(items) => items
             .iter()
@@ -137,22 +140,196 @@ fn atomic_request_from_chunk(
             .iter()
             .cloned()
             .map(|item| {
-                AtomicInsertOperationV1::Edge(crate::types::AtomicInsertEdgeV1 {
-                    source: AtomicInsertEndpointV1::Existing(item.source),
-                    target: AtomicInsertEndpointV1::Existing(item.target),
-                    directed: item.directed,
-                    edge_label_name: item.edge_label_name,
-                    inline_property: item.inline_property,
-                    initial_edge_properties: item.initial_edge_properties,
-                })
+                let source = existing_endpoint_bytes(item.source)?;
+                let target = existing_endpoint_bytes(item.target)?;
+                Ok(AtomicInsertOperationV1::Edge(
+                    crate::types::AtomicInsertEdgeV1 {
+                        source: AtomicInsertEndpointV1::Existing(source),
+                        target: AtomicInsertEndpointV1::Existing(target),
+                        directed: item.directed,
+                        edge_label_name: item.edge_label_name,
+                        inline_property: item.inline_property,
+                        initial_edge_properties: item.initial_edge_properties,
+                    },
+                ))
             })
-            .collect(),
+            .collect::<Result<Vec<_>, RouterError>>()?,
     };
-    AtomicInsertRequest::V1(AtomicInsertRequestV1 {
+    Ok(AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: client_bulk_key.to_owned(),
         graph_name,
         operations,
-    })
+    }))
+}
+
+/// Extract the encoded existing vertex ID from a bulk-load endpoint. Property-based endpoints
+/// must have been resolved by [`resolve_by_property_endpoints`] before the graph request is
+/// built; reaching this point with one is a Router invariant violation and fails closed.
+fn existing_endpoint_bytes(endpoint: BulkLoadEndpointV1) -> Result<Vec<u8>, RouterError> {
+    match endpoint {
+        BulkLoadEndpointV1::Existing(bytes) => Ok(bytes),
+        BulkLoadEndpointV1::ByProperty(_) => Err(invalid(
+            "bulk-load chunk reached graph-request construction with an unresolved property endpoint",
+        )),
+    }
+}
+
+/// Distinct `(vertex_label, property_name, value)` reference within one edge chunk.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ByPropertyRef {
+    vertex_label: String,
+    property_name: String,
+    value: Vec<u8>,
+}
+
+/// Resolve every `ByProperty` edge endpoint in the chunk through the graph property index
+/// (ADR 0060 planned extension). The whole candidate chunk is rejected before any operation
+/// executes when any endpoint is missing or non-unique, or when the required converged property
+/// index on `(vertex_label, property_name)` does not exist. Endpoints are grouped by
+/// `(label, property)` and resolved with one batched equality request per group (values
+/// deduplicated), following the index resume cursor until every bucket is answered. The durable
+/// child row later stores the resolved graph request, so replay never re-resolves. Chunks
+/// without `ByProperty` endpoints are returned unchanged and never touch the index.
+async fn resolve_by_property_endpoints(
+    store: &RouterStore,
+    graph_id: GraphId,
+    encoding_key: &ElementIdEncodingKey,
+    chunk: &BulkLoadChunkV1,
+) -> Result<BulkLoadChunkV1, RouterError> {
+    let BulkLoadChunkV1::Edges(items) = chunk else {
+        return Ok(chunk.clone());
+    };
+    let has_by_property = items.iter().any(|item| {
+        matches!(item.source, BulkLoadEndpointV1::ByProperty(_))
+            || matches!(item.target, BulkLoadEndpointV1::ByProperty(_))
+    });
+    if !has_by_property {
+        return Ok(chunk.clone());
+    }
+
+    let mut distinct = BTreeSet::new();
+    for item in items {
+        for endpoint in [&item.source, &item.target] {
+            if let BulkLoadEndpointV1::ByProperty(property) = endpoint {
+                distinct.insert(ByPropertyRef {
+                    vertex_label: property.vertex_label.clone(),
+                    property_name: property.property_name.clone(),
+                    value: property.value.clone(),
+                });
+            }
+        }
+    }
+    let mut groups: BTreeMap<(String, String), Vec<Vec<u8>>> = BTreeMap::new();
+    for reference in &distinct {
+        groups
+            .entry((
+                reference.vertex_label.clone(),
+                reference.property_name.clone(),
+            ))
+            .or_default()
+            .push(reference.value.clone());
+    }
+
+    let shards = store.list_live_shards_for_graph_id(graph_id)?;
+    let lookup = RouterIndexLookup::from_shards(graph_id, &shards).map_err(invalid)?;
+    let mut resolved: BTreeMap<ByPropertyRef, Vec<u8>> = BTreeMap::new();
+    for ((vertex_label, property_name), values) in groups {
+        let label_id = store.lookup_vertex_label_id(graph_id, &vertex_label)?;
+        let property_id = store.lookup_property_id(graph_id, &property_name)?;
+        let physical_index_id =
+            crate::facade::stable::indexed_catalog::active_vertex_physical_index(
+                graph_id,
+                Some(label_id),
+                property_id,
+            )?;
+        let per_value = lookup
+            .batch_equal_per_value(
+                physical_index_id,
+                property_id.raw(),
+                values,
+                // Uniqueness detection needs at most two postings per bucket.
+                2,
+            )
+            .await
+            .map_err(invalid)?;
+        let group_resolved = classify_resolved_values(&vertex_label, &property_name, per_value)?;
+        for (value, hit) in group_resolved {
+            let encoded = gleaph_graph_kernel::federation::encode_global_vertex_id(
+                encoding_key,
+                GlobalVertexId::new(hit.shard_id, hit.vertex_id),
+            )
+            .0
+            .to_vec();
+            resolved.insert(
+                ByPropertyRef {
+                    vertex_label: vertex_label.clone(),
+                    property_name: property_name.clone(),
+                    value,
+                },
+                encoded,
+            );
+        }
+    }
+
+    let items = items
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            item.source = resolve_endpoint(item.source, &resolved)?;
+            item.target = resolve_endpoint(item.target, &resolved)?;
+            Ok(item)
+        })
+        .collect::<Result<Vec<_>, RouterError>>()?;
+    Ok(BulkLoadChunkV1::Edges(items))
+}
+
+/// Replace a resolved `ByProperty` endpoint with its encoded `Existing` vertex ID.
+fn resolve_endpoint(
+    endpoint: BulkLoadEndpointV1,
+    resolved: &BTreeMap<ByPropertyRef, Vec<u8>>,
+) -> Result<BulkLoadEndpointV1, RouterError> {
+    match endpoint {
+        BulkLoadEndpointV1::Existing(bytes) => Ok(BulkLoadEndpointV1::Existing(bytes)),
+        BulkLoadEndpointV1::ByProperty(property) => {
+            let reference = ByPropertyRef {
+                vertex_label: property.vertex_label,
+                property_name: property.property_name,
+                value: property.value,
+            };
+            let encoded = resolved.get(&reference).ok_or_else(|| {
+                RouterError::Internal(
+                    "resolved property endpoint map is missing a reference".into(),
+                )
+            })?;
+            Ok(BulkLoadEndpointV1::Existing(encoded.clone()))
+        }
+    }
+}
+
+/// Classify one group's per-value postings: exactly one live posting resolves the value, zero is
+/// missing, and more than one (or a truncated bucket) is non-unique. The whole candidate chunk is
+/// rejected before any operation executes, so failures never surface as a partial commit.
+fn classify_resolved_values(
+    vertex_label: &str,
+    property_name: &str,
+    per_value: Vec<crate::index_lookup::ResolvedEqualValue>,
+) -> Result<BTreeMap<Vec<u8>, gleaph_graph_kernel::index::PostingHit>, RouterError> {
+    let mut resolved = BTreeMap::new();
+    for result in per_value {
+        let unique = result.hits.len() == 1 && result.complete;
+        if result.hits.is_empty() {
+            return Err(invalid(format!(
+                "bulk-load edge endpoint by property ({vertex_label}, {property_name}) value does not resolve to a vertex"
+            )));
+        }
+        if !unique {
+            return Err(invalid(format!(
+                "bulk-load edge endpoint by property ({vertex_label}, {property_name}) value resolves to multiple vertices"
+            )));
+        }
+        resolved.insert(result.value, result.hits[0]);
+    }
+    Ok(resolved)
 }
 
 fn build_graph_request(
@@ -164,7 +341,7 @@ fn build_graph_request(
     chunk: &BulkLoadChunkV1,
     encoding_key: &ElementIdEncodingKey,
 ) -> Result<(BulkLoadGraphRequestV1, [u8; 32]), RouterError> {
-    let request = atomic_request_from_chunk(graph_name, client_bulk_key, chunk);
+    let request = atomic_request_from_chunk(graph_name, client_bulk_key, chunk)?;
     let (classified, _) = request.into_classified().map_err(invalid)?;
     match classified {
         crate::types::ClassifiedAtomicInsertRequest::Vertex(request) => {
@@ -624,13 +801,19 @@ async fn append_bulk_load(
             "bulk-load append is not the next admissible chunk".into(),
         ));
     }
+    // Resolve property-based endpoints before any admission or dispatch: the whole candidate
+    // chunk is rejected when any endpoint is missing or non-unique, so failures never surface as
+    // a partial commit mid-chunk. The durable child row stores the resolved graph request, so
+    // replay never re-resolves.
+    let resolved_chunk =
+        resolve_by_property_endpoints(&store, graph_id, &encoding_key, &chunk).await?;
     let (graph_request, graph_request_fingerprint) = build_graph_request(
         &store,
         graph_id,
         graph_name,
         &client_bulk_key,
         &coordinator.target,
-        &chunk,
+        &resolved_chunk,
         &encoding_key,
     )?;
     let child = BulkLoadChunkReceiptRecordV1 {
@@ -818,6 +1001,52 @@ pub(crate) fn bulk_load_status_public(
 mod tests {
     use super::*;
     use crate::facade::store::tests::test_init_args;
+    use crate::index_lookup::ResolvedEqualValue;
+
+    #[test]
+    fn classify_resolved_values_resolves_unique_and_rejects_missing_or_non_unique() {
+        let hit = |shard: u32, vertex: u32| gleaph_graph_kernel::index::PostingHit {
+            shard_id: ShardId::new(shard),
+            vertex_id: vertex,
+        };
+        let unique = ResolvedEqualValue {
+            value: b"a".to_vec(),
+            hits: vec![hit(0, 7)],
+            complete: true,
+        };
+        let resolved = classify_resolved_values("Person", "email", vec![unique])
+            .expect("unique value must resolve");
+        assert_eq!(resolved[&b"a".to_vec()], hit(0, 7));
+
+        let missing = ResolvedEqualValue {
+            value: b"b".to_vec(),
+            hits: Vec::new(),
+            complete: true,
+        };
+        let error = classify_resolved_values("Person", "email", vec![missing])
+            .expect_err("missing value must reject the whole chunk");
+        assert!(error.to_string().contains("does not resolve"), "{error}");
+
+        let non_unique = ResolvedEqualValue {
+            value: b"c".to_vec(),
+            hits: vec![hit(0, 1), hit(1, 2)],
+            complete: true,
+        };
+        let error = classify_resolved_values("Person", "email", vec![non_unique])
+            .expect_err("non-unique value must reject the whole chunk");
+        assert!(error.to_string().contains("multiple vertices"), "{error}");
+
+        // A truncated bucket (more postings than the limit) is non-unique even when only one
+        // posting was materialized.
+        let truncated = ResolvedEqualValue {
+            value: b"d".to_vec(),
+            hits: vec![hit(0, 3)],
+            complete: false,
+        };
+        let error = classify_resolved_values("Person", "email", vec![truncated])
+            .expect_err("truncated bucket must reject as non-unique");
+        assert!(error.to_string().contains("multiple vertices"), "{error}");
+    }
 
     #[test]
     fn start_rejects_wrong_mutation_family_before_shard_routing() {
