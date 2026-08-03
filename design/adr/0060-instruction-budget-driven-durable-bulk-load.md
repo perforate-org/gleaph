@@ -233,7 +233,14 @@ partial commit mid-chunk; (2) resolution requires an existing, converged propert
 `(label, property)` pair (the CLI reports the missing index as an operator action), and endpoint
 property values are restricted to sortable (indexable) value types. Replay safety is preserved
 because the durable child row stores the resolved request and `drive_bulk_child` replays it
-without re-resolution.
+without re-resolution. Resolution batches: endpoints are grouped by `(label, property)` and
+resolved with a batched equality index request (one call per group when the value set fits the
+inter-canister payload bound, split into the minimum number of calls otherwise, with duplicate
+values deduplicated), so a typical one-property edge chunk resolves in a single index call. The
+existing index API already sends multiple `IndexEqualSpec`s in one call, but only with
+intersection (AND) semantics and no per-value result association; resolution needs a
+union/batch-equality request (values of one property → per-value postings), which is a small
+extension of that existing spec-vector machinery.
 
 ## Alternatives
 
