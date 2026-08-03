@@ -370,7 +370,10 @@ regenerated. Also as of 2026-08-03, the L1 data-plane wire changed `logical_grap
 admin control surface keeps explicit graph names. Decision 4 is implemented as of 2026-08-03:
 the CLI gains a `load` subcommand (`gleaph load`) that drives the batch-plus-cursor protocol to
 `Completed`. The artifact is a versioned YAML/JSON single file (`format_version: 1`, `vertices` +
-`edges`) or two NDJSON files (`vertices.jsonl` + `edges.jsonl`) with the same row schema; `--format`
+`edges`) or two NDJSON files (`vertices.jsonl` + `edges.jsonl`) with the same row schema; NDJSON
+inputs are streamed (a validating pre-scan pass hashes the raw bytes for the digest, then a dispatch
+pass re-reads the files), so peak CLI memory is bounded by one chunk plus the compact vertex-id index
+rather than the file size while the single-file family stays capped at 64 MiB; `--format`
 is optional and inferred from the file extension when omitted; `--graph` is optional (omitted → the
 caller's default graph via the `Option<String>` wire); the driver fits each request to the
 inter-canister payload bound with `gleaph-message-sizing` and loops on `next_offset`; `--fresh`

@@ -2,16 +2,22 @@
 //! durable Router `bulk_load` lifecycle (ADR 0057, ADR 0060 Decision 4).
 //!
 //! The artifact is a YAML/JSON single file (`format_version: 1`, `vertices` + `edges`) or two
-//! NDJSON files (`vertices.jsonl` + `edges.jsonl`). The CLI validates everything before any remote
-//! call, then drives the lifecycle: `Start` → vertex chunks → edge chunks → `Finalize` → poll
-//! `Completed`. An edge endpoint is either an in-artifact `source_id` reference (resolved to the
-//! encoded vertex IDs allocated by the Router) or a `{ label, property, value }` reference that
-//! the Router resolves through the graph property index (ADR 0060 planned extension). Chunk
-//! boundaries are Router-owned (`Resumable` execution commits a budget-fitting prefix and returns
-//! `next_offset`); the CLI only fits each request to the ingress payload bound and loops.
+//! NDJSON files (`vertices.jsonl` + `edges.jsonl`). NDJSON files are read as a row stream: a
+//! first pass validates every row and computes the artifact digest without materializing rows,
+//! and a second pass re-reads the files to build budget-fitted chunks, so peak memory stays
+//! bounded by one chunk plus the compact `source_id`/vertex-id index rather than the file size.
+//! The CLI validates everything before any remote call, then drives the lifecycle: `Start` →
+//! vertex chunks → edge chunks → `Finalize` → poll `Completed`. An edge endpoint is either an
+//! in-artifact `source_id` reference (resolved to the encoded vertex IDs allocated by the Router)
+//! or a `{ label, property, value }` reference that the Router resolves through the graph
+//! property index. Chunk boundaries are Router-owned (`Resumable` execution commits a
+//! budget-fitting prefix and returns `next_offset`); the CLI only fits each request to the
+//! ingress payload bound and loops.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{BufRead, BufReader};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -37,6 +43,11 @@ const FORMAT_VERSION: u32 = 1;
 /// Bounded single-file input. Larger artifacts must use NDJSON, which is the streaming family.
 /// The cap also bounds YAML alias-expansion work for untrusted artifacts.
 const MAX_SINGLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// NDJSON streaming: rows accumulated before the first chunk fit when no size hint exists yet.
+const INITIAL_CHUNK_ROWS: usize = 4096;
+/// NDJSON streaming: raw-line bytes bound for one candidate chunk window. Keeps peak memory
+/// independent of property-value size when individual rows are large.
+const MAX_ACCUMULATED_RAW_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_BULK_KEY: &str = "initial-load-v1";
 const STATUS_PAGE_SIZE: u32 = 64;
 const MAX_FINALIZE_POLL_ATTEMPTS: usize = 120;
@@ -130,13 +141,14 @@ pub enum LoadOutcome {
 
 // ──── artifact model ────
 
+#[derive(Debug)]
 struct LoadArtifact {
     vertices: Vec<VertexRow>,
     edges: Vec<EdgeRow>,
 }
 
 /// Order-preserving property map with duplicate-name rejection (the wire requires unique names).
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct Properties(Vec<(String, Value)>);
 
 impl<'de> Deserialize<'de> for Properties {
@@ -173,7 +185,7 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VertexRow {
     source_id: String,
@@ -182,7 +194,7 @@ struct VertexRow {
     properties: Properties,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EdgeRow {
     /// Source vertex: an in-artifact `source_id` reference, or a property-based endpoint.
@@ -202,14 +214,14 @@ struct EdgeRow {
 /// resolved against the vertices loaded in the same artifact; an object references an existing
 /// vertex by `{ label, property, value }` and is resolved by the Router through the graph
 /// property index.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(untagged)]
 enum EdgeEndpointRow {
     SourceId(String),
     ByProperty(PropertyEndpointRow),
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 struct PropertyEndpointRow {
     label: String,
@@ -229,6 +241,67 @@ struct SingleFileArtifact {
     vertices: Vec<VertexRow>,
     #[serde(default)]
     edges: Vec<EdgeRow>,
+}
+
+/// A validated artifact ready for the loader: either bounded in-memory rows (YAML/JSON single
+/// file) or validated NDJSON streams that are re-read during dispatch. `digest` is the sha256 of
+/// the raw artifact bytes (state-file identity).
+#[derive(Debug)]
+enum PreparedLoad {
+    SingleFile {
+        artifact: LoadArtifact,
+        digest: String,
+    },
+    Njson {
+        vertices: Option<PathBuf>,
+        edges: Option<PathBuf>,
+        digest: String,
+        vertex_count: usize,
+    },
+}
+
+impl PreparedLoad {
+    fn digest(&self) -> &str {
+        match self {
+            PreparedLoad::SingleFile { digest, .. } | PreparedLoad::Njson { digest, .. } => digest,
+        }
+    }
+
+    fn vertex_count(&self) -> usize {
+        match self {
+            PreparedLoad::SingleFile { artifact, .. } => artifact.vertices.len(),
+            PreparedLoad::Njson { vertex_count, .. } => *vertex_count,
+        }
+    }
+
+    /// Row source for the vertex phase, starting at the first row of the artifact. Rows committed
+    /// by a prior run are matched to their recorded ids by the phase, not skipped.
+    fn vertex_stream(&self) -> Result<RowStream<'_, VertexRow>, LoadError> {
+        match self {
+            PreparedLoad::SingleFile { artifact, .. } => {
+                Ok(RowStream::Memory(artifact.vertices.iter()))
+            }
+            PreparedLoad::Njson {
+                vertices: Some(path),
+                ..
+            } => Ok(RowStream::File(NjsonRowReader::new(path)?)),
+            PreparedLoad::Njson { vertices: None, .. } => Ok(RowStream::Empty),
+        }
+    }
+
+    /// Row source for the edge phase, starting at the first row of the artifact; the phase skips
+    /// rows committed by a prior run.
+    fn edge_stream(&self) -> Result<RowStream<'_, EdgeRow>, LoadError> {
+        match self {
+            PreparedLoad::SingleFile { artifact, .. } => {
+                Ok(RowStream::Memory(artifact.edges.iter()))
+            }
+            PreparedLoad::Njson {
+                edges: Some(path), ..
+            } => Ok(RowStream::File(NjsonRowReader::new(path)?)),
+            PreparedLoad::Njson { edges: None, .. } => Ok(RowStream::Empty),
+        }
+    }
 }
 
 // ──── format detection and reading ────
@@ -341,22 +414,7 @@ fn extension(path: &Path) -> Result<String, LoadError> {
         .ok_or_else(|| LoadError::Usage(format!("artifact path {path:?} has no extension")))
 }
 
-fn read_artifact(input: &ArtifactInput) -> Result<LoadArtifact, LoadError> {
-    match input {
-        ArtifactInput::SingleFile { path, format } => read_single_file(path, *format),
-        ArtifactInput::Both { vertices, edges } => read_jsonl(vertices, edges),
-        ArtifactInput::VerticesOnly { path } => Ok(LoadArtifact {
-            vertices: read_jsonl_rows(path)?,
-            edges: Vec::new(),
-        }),
-        ArtifactInput::EdgesOnly { path } => Ok(LoadArtifact {
-            vertices: Vec::new(),
-            edges: read_jsonl_rows(path)?,
-        }),
-    }
-}
-
-fn read_single_file(path: &Path, format: Format) -> Result<LoadArtifact, LoadError> {
+fn read_single_file(path: &Path, format: Format) -> Result<(LoadArtifact, String), LoadError> {
     let metadata = fs::metadata(path)
         .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
     if metadata.len() > MAX_SINGLE_FILE_BYTES {
@@ -367,6 +425,7 @@ fn read_single_file(path: &Path, format: Format) -> Result<LoadArtifact, LoadErr
     }
     let bytes =
         fs::read(path).map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
+    let digest = digest_bytes(&bytes);
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| LoadError::Artifact(format!("artifact {path:?} is not UTF-8")))?;
     let parsed: SingleFileArtifact = match format {
@@ -382,43 +441,240 @@ fn read_single_file(path: &Path, format: Format) -> Result<LoadArtifact, LoadErr
             parsed.format_version
         )));
     }
-    Ok(LoadArtifact {
-        vertices: parsed.vertices,
-        edges: parsed.edges,
-    })
+    Ok((
+        LoadArtifact {
+            vertices: parsed.vertices,
+            edges: parsed.edges,
+        },
+        digest,
+    ))
 }
 
-fn read_jsonl(vertices_path: &Path, edges_path: &Path) -> Result<LoadArtifact, LoadError> {
-    Ok(LoadArtifact {
-        vertices: read_jsonl_rows(vertices_path)?,
-        edges: read_jsonl_rows(edges_path)?,
-    })
+fn digest_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_digest(&hasher.finalize())
 }
 
-fn read_jsonl_rows<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>, LoadError> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
-    let mut rows = Vec::new();
-    for (line_index, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+/// One row at a time from either the bounded single-file rows or an NDJSON file stream. The
+/// memory variant is used by the single-file path (rows already validated and capped at
+/// `MAX_SINGLE_FILE_BYTES`); the file variant owns the reader and re-parses on demand.
+enum RowStream<'a, T> {
+    Empty,
+    Memory(std::slice::Iter<'a, T>),
+    File(NjsonRowReader<T>),
+}
+
+impl<T: for<'de> Deserialize<'de> + Clone> RowStream<'_, T> {
+    /// Next row plus the raw source bytes it occupied (0 for the memory variant).
+    fn next_row_with_bytes(&mut self) -> Result<Option<(T, usize)>, LoadError> {
+        match self {
+            RowStream::Empty => Ok(None),
+            RowStream::Memory(iter) => Ok(iter.next().cloned().map(|row| (row, 0))),
+            RowStream::File(reader) => reader.next_row_with_bytes(),
         }
-        let row: T = serde_json::from_str(line).map_err(|error| {
-            LoadError::Artifact(format!("parse {path:?} line {}: {error}", line_index + 1))
-        })?;
-        rows.push(row);
     }
-    Ok(rows)
+
+    /// Discard `count` rows without parsing (rows committed by a prior run).
+    fn skip(&mut self, count: usize) -> Result<(), LoadError> {
+        match self {
+            RowStream::Empty => Ok(()),
+            RowStream::Memory(iter) => {
+                for _ in 0..count {
+                    if iter.next().is_none() {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            RowStream::File(reader) => reader.skip_rows(count),
+        }
+    }
+}
+
+/// NDJSON row reader owned by [`RowStream::File`]. `line_index` counts every line (including
+/// blanks) so parse errors carry the same 1-based line numbers as the pre-scan.
+struct NjsonRowReader<T> {
+    path: PathBuf,
+    reader: BufReader<fs::File>,
+    line_index: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> NjsonRowReader<T> {
+    fn new(path: &Path) -> Result<Self, LoadError> {
+        let file = fs::File::open(path)
+            .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
+        Ok(Self {
+            path: path.to_owned(),
+            reader: BufReader::new(file),
+            line_index: 0,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<T: for<'de> Deserialize<'de>> NjsonRowReader<T> {
+    fn next_row_with_bytes(&mut self) -> Result<Option<(T, usize)>, LoadError> {
+        let mut raw = String::new();
+        loop {
+            raw.clear();
+            let n = self
+                .reader
+                .read_line(&mut raw)
+                .map_err(|error| LoadError::Artifact(format!("read {:?}: {error}", self.path)))?;
+            if n == 0 {
+                return Ok(None);
+            }
+            self.line_index += 1;
+            if raw.trim().is_empty() {
+                continue;
+            }
+            let row: T = serde_json::from_str(raw.trim()).map_err(|error| {
+                LoadError::Artifact(format!(
+                    "parse {:?} line {}: {error}",
+                    self.path, self.line_index
+                ))
+            })?;
+            return Ok(Some((row, n)));
+        }
+    }
+
+    fn skip_rows(&mut self, count: usize) -> Result<(), LoadError> {
+        let mut raw = String::new();
+        let mut skipped = 0usize;
+        while skipped < count {
+            raw.clear();
+            let n = self
+                .reader
+                .read_line(&mut raw)
+                .map_err(|error| LoadError::Artifact(format!("read {:?}: {error}", self.path)))?;
+            if n == 0 {
+                break;
+            }
+            self.line_index += 1;
+            if !raw.trim().is_empty() {
+                skipped += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Outcome of the NDJSON streaming pre-scan: validation results and the raw-file digest.
+#[derive(Debug)]
+struct NjsonScan {
+    digest: String,
+    vertex_count: usize,
+}
+
+/// Stream-validate every NDJSON row and hash the raw file bytes (the state-file digest). No row
+/// is materialized; only the vertex `source_id` set is retained for cross-row checks.
+fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan, LoadError> {
+    let mut hasher = Sha256::new();
+    let mut source_ids = HashSet::new();
+    let mut vertex_count = 0usize;
+    if let Some(path) = vertices {
+        for_each_njson_line(path, &mut hasher, |index, line| {
+            let row: VertexRow = serde_json::from_str(line).map_err(|error| {
+                LoadError::Artifact(format!("parse {path:?} line {}: {error}", index + 1))
+            })?;
+            validate_vertex_row(vertex_count, &row, &mut source_ids)
+        })?;
+        vertex_count = source_ids.len();
+    }
+    let has_vertices = vertex_count > 0;
+    let mut edge_count = 0usize;
+    if let Some(path) = edges {
+        for_each_njson_line(path, &mut hasher, |index, line| {
+            let row: EdgeRow = serde_json::from_str(line).map_err(|error| {
+                LoadError::Artifact(format!("parse {path:?} line {}: {error}", index + 1))
+            })?;
+            validate_edge_row(edge_count, &row, has_vertices, &source_ids)?;
+            edge_count += 1;
+            Ok(())
+        })?;
+    }
+    Ok(NjsonScan {
+        digest: hex_digest(&hasher.finalize()),
+        vertex_count,
+    })
+}
+
+fn for_each_njson_line(
+    path: &Path,
+    hasher: &mut Sha256,
+    mut visit: impl FnMut(usize, &str) -> Result<(), LoadError>,
+) -> Result<(), LoadError> {
+    let file = fs::File::open(path)
+        .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
+    let mut reader = BufReader::new(file);
+    let mut raw = String::new();
+    let mut line_index = 0usize;
+    loop {
+        raw.clear();
+        let n = reader
+            .read_line(&mut raw)
+            .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
+        if n == 0 {
+            return Ok(());
+        }
+        hasher.update(raw.as_bytes());
+        let line = raw.trim();
+        if !line.is_empty() {
+            visit(line_index, line)?;
+        }
+        line_index += 1;
+    }
+}
+
+/// Read, validate, and digest one artifact without any remote call. NDJSON is stream-validated
+/// (rows are not materialized); the YAML/JSON single file is bounded by `MAX_SINGLE_FILE_BYTES`.
+fn prepare_artifact(
+    input: &ArtifactInput,
+    graph: Option<&str>,
+    key: &str,
+) -> Result<PreparedLoad, LoadError> {
+    validate_load_options(graph, key)?;
+    match input {
+        ArtifactInput::SingleFile { path, format } => {
+            let (artifact, digest) = read_single_file(path, *format)?;
+            validate_artifact(&artifact)?;
+            Ok(PreparedLoad::SingleFile { artifact, digest })
+        }
+        ArtifactInput::Both { vertices, edges } => {
+            let scan = scan_njson(Some(vertices), Some(edges))?;
+            Ok(PreparedLoad::Njson {
+                vertices: Some(vertices.clone()),
+                edges: Some(edges.clone()),
+                digest: scan.digest,
+                vertex_count: scan.vertex_count,
+            })
+        }
+        ArtifactInput::VerticesOnly { path } => {
+            let scan = scan_njson(Some(path), None)?;
+            Ok(PreparedLoad::Njson {
+                vertices: Some(path.clone()),
+                edges: None,
+                digest: scan.digest,
+                vertex_count: scan.vertex_count,
+            })
+        }
+        ArtifactInput::EdgesOnly { path } => {
+            let scan = scan_njson(None, Some(path))?;
+            Ok(PreparedLoad::Njson {
+                vertices: None,
+                edges: Some(path.clone()),
+                digest: scan.digest,
+                vertex_count: scan.vertex_count,
+            })
+        }
+    }
 }
 
 // ──── validation ────
 
-fn validate_artifact(
-    artifact: &LoadArtifact,
-    graph: Option<&str>,
-    key: &str,
-) -> Result<(), LoadError> {
+fn validate_load_options(graph: Option<&str>, key: &str) -> Result<(), LoadError> {
     if let Some(name) = graph
         && (name.is_empty() || name.len() > 256)
     {
@@ -429,38 +685,61 @@ fn validate_artifact(
     if key.is_empty() || key.len() > 256 {
         return Err(LoadError::Usage("--key must be 1..=256 UTF-8 bytes".into()));
     }
+    Ok(())
+}
+
+/// Validate the bounded single-file artifact rows with the same per-row rules as the NDJSON
+/// streaming pre-scan.
+fn validate_artifact(artifact: &LoadArtifact) -> Result<(), LoadError> {
     let mut source_ids = HashSet::new();
     for (index, vertex) in artifact.vertices.iter().enumerate() {
-        if vertex.source_id.is_empty() {
-            return Err(LoadError::Artifact(format!(
-                "vertices[{index}] source_id must not be empty"
-            )));
-        }
-        if !source_ids.insert(vertex.source_id.clone()) {
-            return Err(LoadError::Artifact(format!(
-                "duplicate vertex source_id {:?}",
-                vertex.source_id
-            )));
-        }
-        if vertex.labels.is_empty() || vertex.labels.iter().any(String::is_empty) {
-            return Err(LoadError::Artifact(format!(
-                "vertices[{index}] requires non-empty labels"
-            )));
-        }
-        validate_properties(index, &vertex.properties)?;
+        validate_vertex_row(index, vertex, &mut source_ids)?;
     }
     let has_vertices = !artifact.vertices.is_empty();
     for (index, edge) in artifact.edges.iter().enumerate() {
-        validate_edge_endpoint(index, "source", &edge.source, has_vertices, &source_ids)?;
-        validate_edge_endpoint(index, "target", &edge.target, has_vertices, &source_ids)?;
-        if edge.label.is_empty() {
-            return Err(LoadError::Artifact(format!(
-                "edges[{index}] label must not be empty"
-            )));
-        }
-        validate_properties(index, &edge.properties)?;
+        validate_edge_row(index, edge, has_vertices, &source_ids)?;
     }
     Ok(())
+}
+
+fn validate_vertex_row(
+    index: usize,
+    vertex: &VertexRow,
+    source_ids: &mut HashSet<String>,
+) -> Result<(), LoadError> {
+    if vertex.source_id.is_empty() {
+        return Err(LoadError::Artifact(format!(
+            "vertices[{index}] source_id must not be empty"
+        )));
+    }
+    if !source_ids.insert(vertex.source_id.clone()) {
+        return Err(LoadError::Artifact(format!(
+            "duplicate vertex source_id {:?}",
+            vertex.source_id
+        )));
+    }
+    if vertex.labels.is_empty() || vertex.labels.iter().any(String::is_empty) {
+        return Err(LoadError::Artifact(format!(
+            "vertices[{index}] requires non-empty labels"
+        )));
+    }
+    validate_properties(index, &vertex.properties)
+}
+
+fn validate_edge_row(
+    index: usize,
+    edge: &EdgeRow,
+    has_vertices: bool,
+    source_ids: &HashSet<String>,
+) -> Result<(), LoadError> {
+    validate_edge_endpoint(index, "source", &edge.source, has_vertices, source_ids)?;
+    validate_edge_endpoint(index, "target", &edge.target, has_vertices, source_ids)?;
+    if edge.label.is_empty() {
+        return Err(LoadError::Artifact(format!(
+            "edges[{index}] label must not be empty"
+        )));
+    }
+    validate_properties(index, &edge.properties)
 }
 
 /// Validate one edge endpoint. A `source_id` reference must resolve against the vertices loaded
@@ -537,26 +816,6 @@ fn validate_properties(index: usize, properties: &Properties) -> Result<(), Load
 }
 
 // ──── digest and state file ────
-
-fn artifact_digest(input: &ArtifactInput) -> Result<String, LoadError> {
-    let mut hasher = Sha256::new();
-    let mut update = |path: &Path| -> Result<(), LoadError> {
-        let bytes = fs::read(path)
-            .map_err(|error| LoadError::Artifact(format!("read {path:?}: {error}")))?;
-        hasher.update(bytes);
-        Ok(())
-    };
-    match input {
-        ArtifactInput::SingleFile { path, .. } => update(path)?,
-        ArtifactInput::Both { vertices, edges } => {
-            update(vertices)?;
-            update(edges)?;
-        }
-        ArtifactInput::VerticesOnly { path } => update(path)?,
-        ArtifactInput::EdgesOnly { path } => update(path)?,
-    }
-    Ok(hex_digest(&hasher.finalize()))
-}
 
 fn hex_digest(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -753,12 +1012,12 @@ fn send_command(
 /// Drive one durable bulk-load job to `Completed` (ADR 0060 §3 client loop).
 fn run_load(
     transport: &mut impl BulkLoadTransport,
-    artifact: &LoadArtifact,
+    prepared: &PreparedLoad,
     graph: Option<&str>,
     key: &str,
-    digest: &str,
     state_file: Option<&Path>,
 ) -> Result<LoadOutcome, LoadError> {
+    let digest = prepared.digest();
     if let Some((page, _)) = status_paged(transport, graph, key)? {
         match &page.state {
             BulkLoadPublicStateV1::Completed => {
@@ -812,94 +1071,45 @@ fn run_load(
 
     let (page, receipts) = status_paged(transport, graph, key)?
         .ok_or_else(|| LoadError::Remote("bulk-load job disappeared after Start".into()))?;
-    let resume = resume_point(&page, &receipts);
-    let mut encoded_ids = resume.encoded_ids;
-    let mut chunk_index = resume.next_chunk_index;
-
-    // Vertex phase: append fitted candidates; each Append commits a budget-fitting prefix.
-    let mut offset = resume.committed_vertices;
-    let mut hint: Option<SizeHint> = None;
-    while offset < artifact.vertices.len() {
-        let candidate_count = fit_candidate(artifact.vertices.len() - offset, hint, |count| {
-            let chunk = vertex_chunk(&artifact.vertices[offset..offset + count])?;
-            encode_append_command(graph, key, chunk_index, chunk)
-        })?;
-        let chunk = vertex_chunk(&artifact.vertices[offset..offset + candidate_count])?;
-        let response = send_command(
-            transport,
-            BulkLoadCommand::Append {
-                graph_name: graph.map(str::to_owned),
-                client_bulk_key: key.to_owned(),
-                chunk_index,
-                chunk,
-            },
-        )?;
-        let (next_offset, receipt) = match response {
-            BulkLoadResponse::Appended {
-                next_offset,
-                receipt,
-                ..
-            } => (next_offset, receipt),
-            other => {
-                return Err(LoadError::Remote(format!(
-                    "unexpected Append response: {other:?}"
-                )));
-            }
-        };
-        if next_offset == 0 {
-            return Err(LoadError::Remote(
-                "bulk-load Append committed zero operations".into(),
-            ));
-        }
-        encoded_ids.extend(receipt.allocated_vertex_ids);
-        offset += next_offset as usize;
-        chunk_index += 1;
-        hint = Some(SizeHint::new(candidate_count));
-    }
-
-    // Edge phase: resolve endpoints to the encoded vertex IDs allocated in vertex order.
+    let Resume {
+        committed_vertices,
+        committed_edges,
+        next_chunk_index,
+        encoded_ids,
+    } = resume_point(&page, &receipts);
+    let mut chunk_index = next_chunk_index;
     let mut id_by_source: HashMap<String, Vec<u8>> =
-        HashMap::with_capacity(artifact.vertices.len());
-    for (row, id) in artifact.vertices.iter().zip(encoded_ids.iter()) {
-        id_by_source.insert(row.source_id.clone(), id.clone());
-    }
-    let mut offset = resume.committed_edges;
-    let mut hint: Option<SizeHint> = None;
-    while offset < artifact.edges.len() {
-        let candidate_count = fit_candidate(artifact.edges.len() - offset, hint, |count| {
-            let chunk = edge_chunk(&artifact.edges[offset..offset + count], &id_by_source)?;
-            encode_append_command(graph, key, chunk_index, chunk)
-        })?;
-        let chunk = edge_chunk(
-            &artifact.edges[offset..offset + candidate_count],
-            &id_by_source,
-        )?;
-        let response = send_command(
-            transport,
-            BulkLoadCommand::Append {
-                graph_name: graph.map(str::to_owned),
-                client_bulk_key: key.to_owned(),
-                chunk_index,
-                chunk,
-            },
-        )?;
-        let next_offset = match response {
-            BulkLoadResponse::Appended { next_offset, .. } => next_offset,
-            other => {
-                return Err(LoadError::Remote(format!(
-                    "unexpected Append response: {other:?}"
-                )));
-            }
-        };
-        if next_offset == 0 {
-            return Err(LoadError::Remote(
-                "bulk-load Append committed zero operations".into(),
-            ));
-        }
-        offset += next_offset as usize;
-        chunk_index += 1;
-        hint = Some(SizeHint::new(candidate_count));
-    }
+        HashMap::with_capacity(prepared.vertex_count());
+
+    // Vertex phase: stream rows into budget-fitted chunks; each Append commits a budget-fitting
+    // prefix and the uncommitted tail stays buffered for the next chunk. Rows committed by a
+    // prior run are matched to their recorded ids instead of being re-dispatched.
+    let mut vertex_stream = prepared.vertex_stream()?;
+    run_vertex_phase(
+        &mut vertex_stream,
+        transport,
+        graph,
+        key,
+        CommittedVertices {
+            rows: committed_vertices,
+            ids: encoded_ids,
+        },
+        &mut chunk_index,
+        &mut id_by_source,
+    )?;
+
+    // Edge phase: stream edge rows and resolve each endpoint against the vertex ids allocated in
+    // vertex order.
+    let mut edge_stream = prepared.edge_stream()?;
+    run_edge_phase(
+        &mut edge_stream,
+        transport,
+        graph,
+        key,
+        committed_edges,
+        &mut chunk_index,
+        &id_by_source,
+    )?;
 
     let finalized = send_command(
         transport,
@@ -941,6 +1151,171 @@ fn run_load(
     Err(LoadError::Operator(format!(
         "bulk load finalize did not complete after {MAX_FINALIZE_POLL_ATTEMPTS} polls; re-run the command to resume"
     )))
+}
+
+/// Rows already committed by a prior run, in artifact order, together with their recorded vertex
+/// ids (one per committed row, in commit order).
+struct CommittedVertices {
+    rows: usize,
+    ids: Vec<Vec<u8>>,
+}
+
+/// Rows to accumulate into one candidate chunk window before fitting. With a hint the window is
+/// the previously fitted count (steady-state chunk size); without one, a generous initial batch
+/// lets the first estimate extrapolate beyond the 96-row measurement sample.
+fn chunk_accumulation_target(hint: Option<SizeHint>) -> usize {
+    hint.map(|hint| hint.entry_count)
+        .unwrap_or(INITIAL_CHUNK_ROWS)
+}
+
+/// Stream vertices into budget-fitted chunks. Rows committed by a prior run are matched to their
+/// recorded ids without re-dispatch; the uncommitted tail of a budget-truncated chunk stays
+/// buffered for the next Append.
+fn run_vertex_phase(
+    source: &mut RowStream<'_, VertexRow>,
+    transport: &mut impl BulkLoadTransport,
+    graph: Option<&str>,
+    key: &str,
+    committed: CommittedVertices,
+    chunk_index: &mut u32,
+    id_by_source: &mut HashMap<String, Vec<u8>>,
+) -> Result<(), LoadError> {
+    let mut committed_ids = committed.ids.into_iter();
+    let mut committed_remaining = committed.rows;
+    let mut buffer: Vec<VertexRow> = Vec::new();
+    let mut hint: Option<SizeHint> = None;
+    loop {
+        let target = chunk_accumulation_target(hint);
+        let mut accumulated_bytes = 0usize;
+        while buffer.len() < target && accumulated_bytes < MAX_ACCUMULATED_RAW_BYTES {
+            match source.next_row_with_bytes()? {
+                Some((row, bytes)) => {
+                    if committed_remaining > 0 {
+                        let id = committed_ids.next().ok_or_else(|| {
+                            LoadError::Remote(
+                                "resume receipts do not cover the committed vertex rows".into(),
+                            )
+                        })?;
+                        id_by_source.insert(row.source_id.clone(), id);
+                        committed_remaining -= 1;
+                    } else {
+                        accumulated_bytes += bytes;
+                        buffer.push(row);
+                    }
+                }
+                None => break,
+            }
+        }
+        if buffer.is_empty() {
+            break;
+        }
+        let candidate_count = fit_candidate(buffer.len(), hint, |count| {
+            let chunk = vertex_chunk(&buffer[..count])?;
+            encode_append_command(graph, key, *chunk_index, chunk)
+        })?;
+        let chunk = vertex_chunk(&buffer[..candidate_count])?;
+        let response = send_command(
+            transport,
+            BulkLoadCommand::Append {
+                graph_name: graph.map(str::to_owned),
+                client_bulk_key: key.to_owned(),
+                chunk_index: *chunk_index,
+                chunk,
+            },
+        )?;
+        let next_offset = match response {
+            BulkLoadResponse::Appended {
+                next_offset,
+                receipt,
+                ..
+            } => {
+                for (row, id) in buffer[..next_offset as usize]
+                    .iter()
+                    .zip(receipt.allocated_vertex_ids.iter())
+                {
+                    id_by_source.insert(row.source_id.clone(), id.clone());
+                }
+                next_offset
+            }
+            other => {
+                return Err(LoadError::Remote(format!(
+                    "unexpected Append response: {other:?}"
+                )));
+            }
+        };
+        if next_offset == 0 {
+            return Err(LoadError::Remote(
+                "bulk-load Append committed zero operations".into(),
+            ));
+        }
+        buffer.drain(..next_offset as usize);
+        *chunk_index += 1;
+        hint = Some(SizeHint::new(candidate_count));
+    }
+    Ok(())
+}
+
+/// Stream edges into budget-fitted chunks, resolving each endpoint against the vertex ids
+/// allocated during the vertex phase. Rows committed by a prior run are skipped without parsing.
+fn run_edge_phase(
+    source: &mut RowStream<'_, EdgeRow>,
+    transport: &mut impl BulkLoadTransport,
+    graph: Option<&str>,
+    key: &str,
+    committed_rows: usize,
+    chunk_index: &mut u32,
+    id_by_source: &HashMap<String, Vec<u8>>,
+) -> Result<(), LoadError> {
+    source.skip(committed_rows)?;
+    let mut buffer: Vec<EdgeRow> = Vec::new();
+    let mut hint: Option<SizeHint> = None;
+    loop {
+        let target = chunk_accumulation_target(hint);
+        let mut accumulated_bytes = 0usize;
+        while buffer.len() < target && accumulated_bytes < MAX_ACCUMULATED_RAW_BYTES {
+            match source.next_row_with_bytes()? {
+                Some((row, bytes)) => {
+                    accumulated_bytes += bytes;
+                    buffer.push(row);
+                }
+                None => break,
+            }
+        }
+        if buffer.is_empty() {
+            break;
+        }
+        let candidate_count = fit_candidate(buffer.len(), hint, |count| {
+            let chunk = edge_chunk(&buffer[..count], id_by_source)?;
+            encode_append_command(graph, key, *chunk_index, chunk)
+        })?;
+        let chunk = edge_chunk(&buffer[..candidate_count], id_by_source)?;
+        let response = send_command(
+            transport,
+            BulkLoadCommand::Append {
+                graph_name: graph.map(str::to_owned),
+                client_bulk_key: key.to_owned(),
+                chunk_index: *chunk_index,
+                chunk,
+            },
+        )?;
+        let next_offset = match response {
+            BulkLoadResponse::Appended { next_offset, .. } => next_offset,
+            other => {
+                return Err(LoadError::Remote(format!(
+                    "unexpected Append response: {other:?}"
+                )));
+            }
+        };
+        if next_offset == 0 {
+            return Err(LoadError::Remote(
+                "bulk-load Append committed zero operations".into(),
+            ));
+        }
+        buffer.drain(..next_offset as usize);
+        *chunk_index += 1;
+        hint = Some(SizeHint::new(candidate_count));
+    }
+    Ok(())
 }
 
 /// Fit the next candidate batch to the inter-canister payload bound using measured encoded sizes.
@@ -1088,9 +1463,7 @@ fn effective_key(args: &LoadArgs) -> Result<String, LoadError> {
 /// Validate and run one `gleaph load` invocation.
 pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
     let input = resolve_input(args)?;
-    let artifact = read_artifact(&input)?;
-    validate_artifact(&artifact, args.graph.as_deref(), &args.key)?;
-    let digest = artifact_digest(&input)?;
+    let prepared = prepare_artifact(&input, args.graph.as_deref(), &args.key)?;
     let key = effective_key(args)?;
     let mut transport = RemoteBulkLoadTransport::connect(
         &args.canister,
@@ -1100,10 +1473,9 @@ pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
     )?;
     let outcome = run_load(
         &mut transport,
-        &artifact,
+        &prepared,
         args.graph.as_deref(),
         &key,
-        &digest,
         args.state_file.as_deref(),
     )?;
     Ok(outcome)
@@ -1179,24 +1551,21 @@ mod tests {
             vertices: vec![vertex("a", &["Person"]), vertex("a", &["Person"])],
             edges: Vec::new(),
         };
-        let error = validate_artifact(&artifact, None, "k")
-            .expect_err("duplicate source_id must be rejected");
+        let error = validate_artifact(&artifact).expect_err("duplicate source_id must be rejected");
         assert!(error.to_string().contains("duplicate vertex source_id"));
 
         let artifact = LoadArtifact {
             vertices: vec![vertex("a", &["Person"])],
             edges: vec![edge("a", "missing", "KNOWS")],
         };
-        let error = validate_artifact(&artifact, None, "k")
-            .expect_err("unresolved endpoint must be rejected");
+        let error = validate_artifact(&artifact).expect_err("unresolved endpoint must be rejected");
         assert!(error.to_string().contains("does not resolve"));
 
         let artifact = LoadArtifact {
             vertices: vec![vertex("a", &[])],
             edges: Vec::new(),
         };
-        let error =
-            validate_artifact(&artifact, None, "k").expect_err("empty labels must be rejected");
+        let error = validate_artifact(&artifact).expect_err("empty labels must be rejected");
         assert!(error.to_string().contains("non-empty labels"));
     }
 
@@ -1218,11 +1587,8 @@ mod tests {
                 ]
             }"#,
         );
-        let artifact = read_artifact(&ArtifactInput::SingleFile {
-            path: path.clone(),
-            format: Format::Json,
-        })
-        .expect("parse JSON artifact");
+        let (artifact, digest) =
+            read_single_file(&path, Format::Json).expect("parse JSON artifact");
         assert_eq!(artifact.vertices.len(), 1);
         assert_eq!(artifact.vertices[0].properties.0.len(), 2);
         assert_eq!(
@@ -1230,6 +1596,7 @@ mod tests {
             Value::DateTime(1_700_000_000, 5)
         );
         assert!(!artifact.edges[0].directed);
+        assert_eq!(digest.len(), 64, "single-file digest must be sha256 hex");
         fs::remove_file(path).expect("cleanup");
     }
 
@@ -1240,48 +1607,49 @@ mod tests {
             &path,
             "format_version: 1\nvertices:\n  - source_id: v1\n    labels: [Person]\n    properties:\n      age: {Int64: 30}\n",
         );
-        let artifact = read_artifact(&ArtifactInput::SingleFile {
-            path: path.clone(),
-            format: Format::Yaml,
-        })
-        .expect("parse YAML artifact");
+        let (artifact, _) = read_single_file(&path, Format::Yaml).expect("parse YAML artifact");
         assert_eq!(artifact.vertices[0].properties.0[0].1, Value::Int64(30));
         fs::remove_file(path).expect("cleanup");
     }
 
     #[test]
-    fn parses_jsonl_artifacts() {
+    fn scans_jsonl_artifacts_streaming_and_hashes_raw_bytes() {
         let vertices = temp_path("vertices.jsonl");
         let edges = temp_path("edges.jsonl");
-        write_temp(
-            &vertices,
-            "{\"source_id\":\"v1\",\"labels\":[\"Person\"]}\n\n{\"source_id\":\"v2\",\"labels\":[\"Person\"]}\n",
-        );
-        write_temp(
-            &edges,
-            "{\"source\":\"v1\",\"target\":\"v2\",\"label\":\"KNOWS\"}\n",
-        );
-        let artifact = read_artifact(&ArtifactInput::Both {
-            vertices: vertices.clone(),
-            edges: edges.clone(),
-        })
-        .expect("parse NDJSON artifacts");
-        assert_eq!(artifact.vertices.len(), 2);
-        assert_eq!(artifact.edges.len(), 1);
+        let vertices_content = "{\"source_id\":\"v1\",\"labels\":[\"Person\"]}\n\n{\"source_id\":\"v2\",\"labels\":[\"Person\"]}\n";
+        let edges_content = "{\"source\":\"v1\",\"target\":\"v2\",\"label\":\"KNOWS\"}\n";
+        write_temp(&vertices, vertices_content);
+        write_temp(&edges, edges_content);
+        let scan = scan_njson(Some(&vertices), Some(&edges)).expect("scan NDJSON artifacts");
+        assert_eq!(scan.vertex_count, 2);
+        // The digest hashes the raw file bytes in vertex-then-edge order (state-file identity).
+        let mut hasher = Sha256::new();
+        hasher.update(vertices_content.as_bytes());
+        hasher.update(edges_content.as_bytes());
+        assert_eq!(scan.digest, hex_digest(&hasher.finalize()));
         fs::remove_file(vertices).expect("cleanup");
         fs::remove_file(edges).expect("cleanup");
+    }
+
+    #[test]
+    fn scan_reports_ndjson_parse_error_line_numbers() {
+        let vertices = temp_path("bad-vertices.jsonl");
+        write_temp(
+            &vertices,
+            "{\"source_id\":\"v1\",\"labels\":[\"Person\"]}\nnot-json\n",
+        );
+        let error =
+            scan_njson(Some(&vertices), None).expect_err("a malformed NDJSON row must be rejected");
+        assert!(error.to_string().contains("line 2"), "{error}");
+        fs::remove_file(vertices).expect("cleanup");
     }
 
     #[test]
     fn rejects_unknown_format_version_and_duplicate_properties() {
         let path = temp_path("bad-version.json");
         write_temp(&path, r#"{"format_version": 2, "vertices": []}"#);
-        let error = read_artifact(&ArtifactInput::SingleFile {
-            path: path.clone(),
-            format: Format::Json,
-        })
-        .err()
-        .expect("unknown format_version must be rejected");
+        let error = read_single_file(&path, Format::Json)
+            .expect_err("unknown format_version must be rejected");
         assert!(error.to_string().contains("format_version"));
         fs::remove_file(path).expect("cleanup");
 
@@ -1290,12 +1658,8 @@ mod tests {
             &path,
             r#"{"format_version": 1, "vertices": [{"source_id": "v1", "labels": ["P"], "properties": {"a": {"Int64": 1}, "a": {"Int64": 2}}}]}"#,
         );
-        let error = read_artifact(&ArtifactInput::SingleFile {
-            path: path.clone(),
-            format: Format::Json,
-        })
-        .err()
-        .expect("duplicate property names must be rejected");
+        let error = read_single_file(&path, Format::Json)
+            .expect_err("duplicate property names must be rejected");
         assert!(error.to_string().contains("duplicate property"));
         fs::remove_file(path).expect("cleanup");
     }
@@ -1322,15 +1686,17 @@ mod tests {
     }
 
     #[test]
-    fn vertices_only_flag_loads_a_single_jsonl_file() {
+    fn vertices_only_flag_scans_a_single_jsonl_file() {
         let path = temp_path("vertices-only.jsonl");
         write_temp(&path, "{\"source_id\":\"v1\",\"labels\":[\"Person\"]}\n");
         let mut args = load_args(&[]);
         args.vertices = Some(path.clone());
         let input = resolve_input(&args).expect("resolve");
-        let artifact = read_artifact(&input).expect("read");
-        assert_eq!(artifact.vertices.len(), 1);
-        assert!(artifact.edges.is_empty());
+        let prepared = prepare_artifact(&input, None, "k").expect("prepare");
+        assert_eq!(prepared.vertex_count(), 1);
+        let PreparedLoad::Njson { edges: None, .. } = &prepared else {
+            panic!("vertices-only must prepare an NDJSON load without edges");
+        };
         fs::remove_file(path).expect("cleanup");
     }
 
@@ -1418,8 +1784,7 @@ mod tests {
         let mut args = load_args(&[]);
         args.edges = Some(path.clone());
         let input = resolve_input(&args).expect("resolve");
-        let artifact = read_artifact(&input).expect("read");
-        let error = validate_artifact(&artifact, None, "k")
+        let error = prepare_artifact(&input, None, "k")
             .expect_err("edges-only source_id endpoint must be rejected");
         assert!(error.to_string().contains("has no vertices"), "{error}");
         fs::remove_file(path).expect("cleanup");
@@ -1432,9 +1797,7 @@ mod tests {
         let mut args = load_args(&[]);
         args.edges = Some(path.clone());
         let input = resolve_input(&args).expect("resolve");
-        let artifact = read_artifact(&input).expect("read");
-        validate_artifact(&artifact, None, "k")
-            .expect("edges-only property endpoints must validate");
+        prepare_artifact(&input, None, "k").expect("edges-only property endpoints must validate");
         fs::remove_file(path).expect("cleanup");
     }
 
@@ -1607,15 +1970,22 @@ mod tests {
         }
     }
 
+    fn prepared_single(artifact: LoadArtifact) -> PreparedLoad {
+        PreparedLoad::SingleFile {
+            artifact,
+            digest: "digest".into(),
+        }
+    }
+
     #[test]
     fn loader_loads_vertices_then_edges_and_loops_on_next_offset() {
-        let artifact = sample_artifact(5, 2);
+        let prepared = prepared_single(sample_artifact(5, 2));
         let mut transport = FakeBulkLoadTransport {
             job: None,
             budget: 3, // forces multiple Append calls per phase
         };
-        let outcome = run_load(&mut transport, &artifact, None, "k", "digest", None)
-            .expect("load should complete");
+        let outcome =
+            run_load(&mut transport, &prepared, None, "k", None).expect("load should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         let vertex_chunks = job
@@ -1635,7 +2005,7 @@ mod tests {
 
     #[test]
     fn loader_resumes_from_receipts_without_reloading_committed_prefix() {
-        let artifact = sample_artifact(5, 2);
+        let prepared = prepared_single(sample_artifact(5, 2));
         let mut transport = FakeBulkLoadTransport {
             job: Some(FakeJob {
                 next_chunk_index: 2,
@@ -1664,8 +2034,8 @@ mod tests {
             }),
             budget: usize::MAX,
         };
-        let outcome = run_load(&mut transport, &artifact, None, "k", "digest", None)
-            .expect("resume should complete");
+        let outcome =
+            run_load(&mut transport, &prepared, None, "k", None).expect("resume should complete");
         assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
         let job = transport.job.expect("job exists");
         // The vertex phase resumes at 4 committed vertices: one more vertex chunk.
@@ -1681,7 +2051,7 @@ mod tests {
 
     #[test]
     fn loader_skips_a_completed_job_with_matching_digest() {
-        let artifact = sample_artifact(1, 0);
+        let prepared = prepared_single(sample_artifact(1, 0));
         let mut transport = FakeBulkLoadTransport {
             job: Some(FakeJob {
                 next_chunk_index: 1,
@@ -1696,7 +2066,7 @@ mod tests {
             &state,
             r#"{"format_version": 1, "artifact_sha256": "digest", "bulk_key": "k", "graph": null}"#,
         );
-        let outcome = run_load(&mut transport, &artifact, None, "k", "digest", Some(&state))
+        let outcome = run_load(&mut transport, &prepared, None, "k", Some(&state))
             .expect("matching completed job must skip");
         assert_eq!(outcome, LoadOutcome::Skipped { key: "k".into() });
         fs::remove_file(state).expect("cleanup");
@@ -1704,7 +2074,10 @@ mod tests {
 
     #[test]
     fn loader_rejects_completed_job_when_the_artifact_changed() {
-        let artifact = sample_artifact(1, 0);
+        let prepared = PreparedLoad::SingleFile {
+            artifact: sample_artifact(1, 0),
+            digest: "new-digest".into(),
+        };
         let mut transport = FakeBulkLoadTransport {
             job: Some(FakeJob {
                 next_chunk_index: 1,
@@ -1719,22 +2092,15 @@ mod tests {
             &state,
             r#"{"format_version": 1, "artifact_sha256": "old-digest", "bulk_key": "k", "graph": null}"#,
         );
-        let error = run_load(
-            &mut transport,
-            &artifact,
-            None,
-            "k",
-            "new-digest",
-            Some(&state),
-        )
-        .expect_err("changed artifact must not be silently skipped");
+        let error = run_load(&mut transport, &prepared, None, "k", Some(&state))
+            .expect_err("changed artifact must not be silently skipped");
         assert_eq!(error.exit_code(), 1);
         fs::remove_file(state).expect("cleanup");
     }
 
     #[test]
     fn loader_rejects_a_terminal_failed_job() {
-        let artifact = sample_artifact(1, 0);
+        let prepared = prepared_single(sample_artifact(1, 0));
         let mut transport = FakeBulkLoadTransport {
             job: Some(FakeJob {
                 next_chunk_index: 3,
@@ -1746,9 +2112,122 @@ mod tests {
             }),
             budget: usize::MAX,
         };
-        let error = run_load(&mut transport, &artifact, None, "k", "digest", None)
+        let error = run_load(&mut transport, &prepared, None, "k", None)
             .expect_err("terminal failed job must be reported");
         assert!(error.to_string().contains("use a new --key"));
         assert_eq!(error.exit_code(), 1);
+    }
+
+    fn write_njson_artifact(vertices: usize, edges: usize) -> (PathBuf, PathBuf) {
+        let vertices_path = temp_path("stream-vertices.jsonl");
+        let edges_path = temp_path("stream-edges.jsonl");
+        let mut vertices_content = String::new();
+        for index in 0..vertices {
+            vertices_content.push_str(&format!(
+                "{{\"source_id\":\"v{index}\",\"labels\":[\"Person\"]}}\n"
+            ));
+        }
+        let mut edges_content = String::new();
+        for index in 0..edges {
+            edges_content.push_str(&format!(
+                "{{\"source\":\"v0\",\"target\":\"v{}\",\"label\":\"KNOWS\"}}\n",
+                index + 1
+            ));
+        }
+        write_temp(&vertices_path, &vertices_content);
+        write_temp(&edges_path, &edges_content);
+        (vertices_path, edges_path)
+    }
+
+    #[test]
+    fn streaming_loader_loads_ndjson_files_with_budget_truncation() {
+        let (vertices, edges) = write_njson_artifact(5, 2);
+        let prepared = prepare_artifact(
+            &ArtifactInput::Both {
+                vertices: vertices.clone(),
+                edges: edges.clone(),
+            },
+            None,
+            "k",
+        )
+        .expect("prepare streaming artifact");
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: 3, // forces multiple Append calls per phase
+        };
+        let outcome = run_load(&mut transport, &prepared, None, "k", None)
+            .expect("streaming load should complete");
+        assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
+        let job = transport.job.expect("job exists");
+        let vertex_chunks = job
+            .receipts
+            .iter()
+            .filter(|row| row.receipt.logical_vertex_count > 0)
+            .count();
+        assert_eq!(vertex_chunks, 2, "5 vertices at budget 3 need 2 chunks");
+        let edge_chunks = job
+            .receipts
+            .iter()
+            .filter(|row| row.receipt.logical_edge_count > 0)
+            .count();
+        assert_eq!(edge_chunks, 1);
+        assert!(matches!(job.state, BulkLoadPublicStateV1::Completed));
+        fs::remove_file(vertices).expect("cleanup");
+        fs::remove_file(edges).expect("cleanup");
+    }
+
+    #[test]
+    fn streaming_loader_resumes_from_ndjson_receipts() {
+        let (vertices, edges) = write_njson_artifact(5, 1);
+        let prepared = prepare_artifact(
+            &ArtifactInput::Both {
+                vertices: vertices.clone(),
+                edges: edges.clone(),
+            },
+            None,
+            "k",
+        )
+        .expect("prepare streaming artifact");
+        let mut transport = FakeBulkLoadTransport {
+            job: Some(FakeJob {
+                next_chunk_index: 2,
+                receipts: vec![
+                    BulkLoadChunkReceiptV1 {
+                        chunk_index: 0,
+                        receipt: AtomicInsertReceiptV1 {
+                            logical_operation_count: 2,
+                            logical_vertex_count: 2,
+                            logical_edge_count: 0,
+                            allocated_vertex_ids: vec![vec![0], vec![1]],
+                        },
+                    },
+                    BulkLoadChunkReceiptV1 {
+                        chunk_index: 1,
+                        receipt: AtomicInsertReceiptV1 {
+                            logical_operation_count: 2,
+                            logical_vertex_count: 2,
+                            logical_edge_count: 0,
+                            allocated_vertex_ids: vec![vec![2], vec![3]],
+                        },
+                    },
+                ],
+                state: BulkLoadPublicStateV1::AppendPending,
+                next_vertex_ordinal: 4,
+            }),
+            budget: usize::MAX,
+        };
+        let outcome = run_load(&mut transport, &prepared, None, "k", None)
+            .expect("streaming resume should complete");
+        assert_eq!(outcome, LoadOutcome::Loaded { key: "k".into() });
+        let job = transport.job.expect("job exists");
+        let vertex_chunks = job
+            .receipts
+            .iter()
+            .filter(|row| row.receipt.logical_vertex_count > 0)
+            .count();
+        assert_eq!(vertex_chunks, 3, "resume plus one vertex chunk");
+        assert!(matches!(job.state, BulkLoadPublicStateV1::Completed));
+        fs::remove_file(vertices).expect("cleanup");
+        fs::remove_file(edges).expect("cleanup");
     }
 }
