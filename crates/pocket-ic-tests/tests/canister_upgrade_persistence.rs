@@ -14,7 +14,9 @@ use gleaph_codegen::{generate_typescript, parse_manifest};
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation, PostingHit};
+use gleaph_graph_kernel::index::{
+    IndexPostingBatchProgress, IndexPostingMutation, PhysicalIndexId, PostingHit,
+};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_mutate_as_admin,
@@ -224,16 +226,20 @@ NEXT INSERT (a)-[:UPGRADE_EDGE {fixture_edge_id: 'edge-post-upgrade', fixture_ki
 fn graph_index_batch_posting_survives_index_upgrade() {
     let env = install_single_shard_federation();
     let value = vec![0x42, 0x01];
+    const PHYSICAL_INDEX_ID: PhysicalIndexId =
+        PhysicalIndexId::new(1).expect("test physical index id");
     let args = Encode!(
         &ShardId::new(0),
         &vec![
             IndexPostingMutation::VertexProperty {
+                physical_index_id: PHYSICAL_INDEX_ID,
                 remove: false,
                 property_id: 77,
                 value: value.clone(),
                 vertex_id: 11,
             },
             IndexPostingMutation::VertexProperty {
+                physical_index_id: PHYSICAL_INDEX_ID,
                 remove: false,
                 property_id: 77,
                 value: value.clone(),
@@ -261,7 +267,7 @@ fn graph_index_batch_posting_survives_index_upgrade() {
             env.index,
             env.router,
             "lookup_equal",
-            Encode!(&77u32, &value).expect("encode lookup"),
+            Encode!(&PHYSICAL_INDEX_ID, &77u32, &value).expect("encode lookup"),
         )
         .expect("lookup after index upgrade");
     let hits = Decode!(&lookup, Vec<PostingHit>).expect("decode lookup hits");
