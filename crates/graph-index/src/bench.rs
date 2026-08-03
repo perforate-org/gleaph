@@ -7,15 +7,16 @@ use crate::build_key::IndexBuildTouchedKey;
 use crate::facade::stable::INDEX_BUILD_TOUCHED_SUBJECTS;
 use crate::init::IndexInitArgs;
 use canbench_rs::bench;
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_graph_kernel::canonical_export::CanonicalIndexableFact;
 use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
 use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardId};
 use gleaph_graph_kernel::index::{
     IndexBuildControlRequest, IndexBuildDmlRequest, IndexBuildSeedPageRequest, IndexBuildSubject,
-    IndexBuildTarget, IndexEqualSpec, IndexIntersectionRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
+    IndexBuildTarget, IndexEqualSpec, IndexIntersectionRequest, IndexPostingBatchProgress,
+    IndexPostingMutation, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageRequest, MAX_INDEX_VALUE_KEY_BYTES,
     PhysicalIndexId, PostingHit, PostingRangeRequest, RegisterIndexBuildRequest,
 };
 use std::cell::Cell;
@@ -86,6 +87,122 @@ fn bench_layout_index_posting_insert_64() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("layout_index_posting_insert");
         posting_insert_round(black_box(&store), owner);
+    })
+}
+
+// --- `posting_batch` loop acceptance (GAP-2026-07-17-001) ---
+//
+// The canister `posting_batch` loop (graph-index/src/canister.rs) applies each operation with
+// an instruction-budget exhausted check that reserves `INDEX_BATCH_RESERVE_INSTRUCTIONS` (100M)
+// below `INDEX_BATCH_MAX_INSTRUCTIONS` (32B). These benches mirror that loop with the authorized
+// attached-shard caller (a canbench query caller is not an attached shard) to measure the
+// representative and adversarial per-operation cost plus the exhausted-check overhead. The
+// measured maximum single-operation cost must stay far below the 100M reserve, and the
+// response-construction bench bounds the tail the ceiling leaves below the 40B platform limit.
+
+fn vertex_property_ops(count: usize, value_len: usize) -> Vec<IndexPostingMutation> {
+    let seq = POSTING_BENCH_SEQ.with(|c| {
+        let n = c.get();
+        c.set(n.wrapping_add(1));
+        n
+    });
+    (0..count)
+        .map(|index| IndexPostingMutation::VertexProperty {
+            physical_index_id: BENCH_PHYSICAL_INDEX_ID,
+            remove: false,
+            property_id: 7,
+            value: vec![0u8; value_len],
+            vertex_id: seq.wrapping_add(index as u32),
+        })
+        .collect()
+}
+
+fn posting_batch_round(
+    store: &IndexStore,
+    owner: Principal,
+    operations: &[IndexPostingMutation],
+) -> u32 {
+    let baseline = crate::canister::instruction_counter();
+    let mut applied = 0u32;
+    for operation in operations {
+        let exhausted = crate::canister::instruction_counter()
+            .saturating_sub(baseline)
+            .saturating_add(crate::canister::INDEX_BATCH_RESERVE_INSTRUCTIONS)
+            >= crate::canister::INDEX_BATCH_MAX_INSTRUCTIONS;
+        if exhausted {
+            break;
+        }
+        let IndexPostingMutation::VertexProperty {
+            physical_index_id,
+            remove,
+            property_id,
+            value,
+            vertex_id,
+        } = operation
+        else {
+            panic!("bench covers vertex-property postings only");
+        };
+        let result = if *remove {
+            store.posting_remove(
+                owner,
+                ShardId::new(0),
+                *physical_index_id,
+                *property_id,
+                value.clone(),
+                *vertex_id,
+            )
+        } else {
+            store.posting_insert(
+                owner,
+                ShardId::new(0),
+                *physical_index_id,
+                *property_id,
+                value.clone(),
+                *vertex_id,
+            )
+        };
+        result.expect("posting batch operation");
+        applied = applied.saturating_add(1);
+    }
+    applied
+}
+
+/// The `posting_batch` loop processing 256 vertex-property postings with small values
+/// (representative per-operation cost).
+#[bench(raw)]
+fn bench_index_posting_batch_256() -> canbench_rs::BenchResult {
+    let (store, _router, owner) = setup_index_store();
+    let operations = vertex_property_ops(256, 32);
+    canbench_rs::bench_fn(|| {
+        let applied = posting_batch_round(black_box(&store), owner, black_box(&operations));
+        black_box(applied)
+    })
+}
+
+/// Adversarial: 256 postings at the maximum index value key size (4096 bytes) — the maximum
+/// single-operation cost the 100M reserve must cover.
+#[bench(raw)]
+fn bench_index_posting_batch_256_max_values() -> canbench_rs::BenchResult {
+    let (store, _router, owner) = setup_index_store();
+    let operations = vertex_property_ops(256, MAX_INDEX_VALUE_KEY_BYTES);
+    canbench_rs::bench_fn(|| {
+        let applied = posting_batch_round(black_box(&store), owner, black_box(&operations));
+        black_box(applied)
+    })
+}
+
+/// Response construction: `IndexPostingBatchProgress` encode — the tail the 32B ceiling leaves
+/// below the 40B platform limit.
+#[bench(raw)]
+fn bench_index_posting_batch_progress_encode() -> canbench_rs::BenchResult {
+    let progress = IndexPostingBatchProgress {
+        applied: 256,
+        next_index: None,
+        instruction_budget_exhausted: false,
+    };
+    canbench_rs::bench_fn(|| {
+        let encoded = Encode!(black_box(&progress)).expect("encode posting progress");
+        black_box(encoded)
     })
 }
 

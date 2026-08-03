@@ -155,6 +155,23 @@ defect from being rediscovered without its prior reasoning.
   queryable, and the index serves the drained posting at physical index id 1 — so the plan-batch
   path now has complete acceptance evidence (per-op bound, response bound, and end-to-end drain
   convergence).
+- **Progress (2026-08-03, graph-index `posting_batch` path):** canbench targets added in
+  `crates/graph-index/src/bench.rs`, persisted in `crates/graph-index/canbench_results.yml`. The
+  canister `posting_batch` loop (`INDEX_BATCH_MAX_INSTRUCTIONS` 32B with
+  `INDEX_BATCH_RESERVE_INSTRUCTIONS` 100M) is mirrored in the bench with the authorized
+  attached-shard caller (a canbench query caller is not an attached shard). Measured (canbench,
+  2026-08-03): 256 vertex-property postings with 32-byte values cost 20.28M instructions
+  (≈79K per operation); 256 postings at the maximum index value key size (4096 bytes) cost
+  490.54M instructions (≈1.92M per operation, the adversarial maximum); the
+  `IndexPostingBatchProgress` response encodes in 37.92K instructions. Derived acceptance: the
+  maximum single-operation cost (≈1.92M) plus response construction (≈38K) is two orders of
+  magnitude below the 100M reserve, so the exhausted check always fires with the final
+  operation and response well inside the message; the 32B ceiling leaves an 8B gap below the
+  40B platform limit for the response; and at the measured per-operation costs the ceiling cuts
+  off only after ~16.6K max-value or ~400K small-value postings per call, so it does not
+  prematurely bound realistic batches. The posting_batch path needs no PocketIC boundary test:
+  the loop is fully local and the reserve/ceiling acceptance is covered by the canbench
+  measurements alone.
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
