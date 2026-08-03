@@ -8,6 +8,7 @@ mod capacity;
 mod index_export;
 #[cfg(feature = "canbench_large")]
 mod large;
+mod ordered_batch;
 mod stable_layout;
 
 use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;

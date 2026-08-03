@@ -678,7 +678,7 @@ async fn execute_ordered_vertex_batch_impl(
 /// `instruction_source` reads the current per-message instruction count; `perform(item_index)`
 /// executes one pre-validated item and must be infallible — an unexpected failure traps so the IC
 /// rolls back the whole message instead of exposing a partially committed prefix.
-fn resumable_prefix_len(
+pub(crate) fn resumable_prefix_len(
     item_count: usize,
     mut instruction_source: impl FnMut() -> u64,
     mut perform: impl FnMut(usize),

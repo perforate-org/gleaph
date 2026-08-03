@@ -393,6 +393,11 @@ Router or Graph stable region is added, and the existing receipt map, coordinato
 client-key identity remain the durable substrate. The static-admission inconsistency is confirmed
 by the 2026-08-03 PocketIC probe (70 admitted, 71 and 256 rejected) and is eliminated by the
 `Resumable` dispatch (256-operation chunks are admitted and commit within the runtime budget).
+The Required-tests benchmarks are in place as of 2026-08-03: the `Resumable` op-by-op loop costs
+17.28M instructions for 256 one-at-a-time vertex inserts versus 11.65M for the same count as one
+whole batch (≈22K instructions of loop overhead per operation, ≈48% over whole-batch), and the
+`Atomic`-mode preflight for a 1024-operation request costs 330 instructions — rejecting at the
+500M seed estimate (35B/500M admits at most 70) and admitting at a measured 30M estimate.
 
 ## Required tests
 
