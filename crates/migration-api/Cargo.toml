@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-migration-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Versioned Router schema-migration wire contract"
+
+[dependencies]
+candid.workspace = true
+serde.workspace = true
+sha2.workspace = true

@@ -553,6 +553,48 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
         (profile, schema)
     }
 
+    /// Validate that a proposed named inline schema is compatible with the existing canonical
+    /// record without writing it. Catalog DDL uses this read-only gate before inserting a graph
+    /// binding so a later inline-profile conflict cannot leave a partial migration commit.
+    pub fn validate_proposed_record(
+        &self,
+        graph_id: GraphId,
+        label: EdgeLabelId,
+        proposed: &EdgeInlinePropertySchemaRecord,
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
+        if !label.is_catalog_allocatable() {
+            return Err(EdgeInlinePropertyProfileStoreError::InvalidCatalogLabel(
+                label,
+            ));
+        }
+        let Some(existing) = self.get_record(graph_id, label) else {
+            return Ok(());
+        };
+        if existing == proposed.clone() {
+            return Ok(());
+        }
+        match existing {
+            EdgeInlinePropertySchemaRecord::UnnamedProfile { profile }
+                if profile == EdgeInlinePropertyProfile::no_inline_property() =>
+            {
+                Ok(())
+            }
+            EdgeInlinePropertySchemaRecord::UnnamedProfile { .. } => Err(
+                EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(format!(
+                    "edge label {} has a legacy unnamed inline property profile; install inline schema before the legacy profile",
+                    label.raw()
+                )),
+            ),
+            EdgeInlinePropertySchemaRecord::InlineScalar { .. }
+            | EdgeInlinePropertySchemaRecord::InlineStruct { .. } => Err(
+                EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(format!(
+                    "edge label {} already has a different inline schema",
+                    label.raw()
+                )),
+            ),
+        }
+    }
+
     fn insert_record(
         &mut self,
         graph_id: GraphId,

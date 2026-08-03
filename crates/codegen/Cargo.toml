@@ -7,9 +7,10 @@ description = "Generate typed clients and canister adapters for Gleaph prepared 
 
 [dependencies]
 candid = { workspace = true, features = ["value"] }
+clap.workspace = true
 gleaph-prepared-api.workspace = true
-ic-agent = "0.49.2"
+ic-agent.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio.workspace = true

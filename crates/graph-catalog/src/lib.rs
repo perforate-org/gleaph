@@ -347,6 +347,28 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         Ok(Some(definition))
     }
 
+    /// Resolves a named graph type definition by its stable catalog id.
+    ///
+    /// This read-only accessor lets owning facades preflight a `TYPED` binding before the graph
+    /// binding is inserted. The source string in `type_map` remains canonical; the parsed value
+    /// is only a heap cache and is rebuilt on demand after upgrade.
+    pub fn graph_type_definition_for_type_id(
+        &self,
+        type_id: GraphTypeId,
+    ) -> Result<Option<GraphTypeDefinition>, CatalogError> {
+        if let Some(definition) = self.type_cache.borrow().get(&type_id) {
+            return Ok(Some(definition.clone()));
+        }
+        let Some(value) = self.type_map.get(&type_id) else {
+            return Ok(None);
+        };
+        let definition = parse_definition_source(value.as_str())?;
+        self.type_cache
+            .borrow_mut()
+            .insert(type_id, definition.clone());
+        Ok(Some(definition))
+    }
+
     pub fn remove_graph_binding(&mut self, graph_id: GraphId) {
         self.binding_map.remove(&graph_id);
         self.binding_cache.borrow_mut().remove(&graph_id);

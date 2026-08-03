@@ -22,7 +22,7 @@ pub use rust::client::generate_rust;
 pub use rust::format::{RustFormatMode, format_rust};
 pub use typescript::generate_typescript;
 
-pub use cli::run as run_cli;
+pub use cli::{CodegenArgs, CodegenError, run};
 
 use std::collections::BTreeSet;
 

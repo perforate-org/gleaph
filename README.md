@@ -134,8 +134,8 @@ or trusted peer shards.
 
 ## Command-line interface
 
-The top-level `gleaph` command currently exposes code generation through the same options as
-`gleaph-codegen`:
+The top-level `gleaph` command exposes code generation through the same options as
+`gleaph-codegen` and local schema-migration artifact commands:
 
 ```sh
 cargo run -p gleaph-cli -- codegen \
@@ -143,6 +143,22 @@ cargo run -p gleaph-cli -- codegen \
   --target typescript \
   --output src/generated.ts
 ```
+
+Migration packages live under `./migrations` by default. `new` creates the next
+six-digit package containing `migration.toml` and `up.gql`; `plan` validates and
+prints the local parent chain. `status` and `apply` are Router-backed commands;
+both require `--canister` and accept the network/identity options shown below:
+
+```sh
+cargo run -p gleaph-cli -- migration new init_graph --description "Initial graph"
+cargo run -p gleaph-cli -- migration plan
+cargo run -p gleaph-cli -- migration status --canister <router-principal> -n local
+cargo run -p gleaph-cli -- migration apply --canister <router-principal> -n local --identity path/to/admin.pem
+```
+
+Migration v1 accepts exactly one additive `CREATE GRAPH TYPE` or `CREATE GRAPH …
+TYPED` statement per package. The Router records the immutable checksum and parent
+link in its canonical ledger; see [ADR 0058](design/adr/0058-versioned-additive-schema-migrations.md).
 
 ## Design Documentation
 

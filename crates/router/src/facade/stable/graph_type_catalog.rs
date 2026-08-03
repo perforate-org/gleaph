@@ -315,6 +315,18 @@ pub(crate) fn parsed_graph_type_definition_for_graph_id(
     })
 }
 
+/// Returns the canonical named graph-type definition for a stable type id. This read-only helper
+/// is used by migration preflight before a `CREATE GRAPH ... TYPED` binding is inserted.
+pub(crate) fn parsed_graph_type_definition_for_type_id(
+    type_id: gleaph_graph_kernel::entry::GraphTypeId,
+) -> Result<Option<gleaph_gql::ast::GraphTypeDefinition>, RouterError> {
+    ROUTER_GQL_GRAPH_CATALOG.with_borrow(|catalog| {
+        catalog
+            .graph_type_definition_for_type_id(type_id)
+            .map_err(catalog_error_to_router)
+    })
+}
+
 fn validate_inline_graph_type_schemas(
     definition: &gleaph_gql::ast::GraphTypeDefinition,
 ) -> Result<(), RouterError> {

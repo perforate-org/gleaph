@@ -12,8 +12,8 @@ use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
 use crate::facade::stable::edge_inline_property_profiles::{
-    EdgeInlinePropertyProfileStoreError, InlineScalarType, InlineStructFieldSpec,
-    InlineStructLayout,
+    EdgeInlinePropertyProfileStoreError, EdgeInlinePropertySchemaRecord, InlineScalarType,
+    InlineStructFieldSpec, InlineStructLayout,
 };
 use crate::facade::stable::graph_catalog::{
     catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
@@ -282,6 +282,114 @@ impl RouterStore {
             Self::commit_intern_property_name(graph_id, name)?;
         }
         Self::commit_graph_type_inline_schemas(graph_id, def)?;
+        Ok(())
+    }
+
+    /// Read-only preflight for graph-type vocabulary and named inline schemas. Existing catalog
+    /// ids are inspected without interning; missing names are safe because the commit will create
+    /// their first profile. This prevents an inline schema conflict from being discovered only
+    /// after the GraphCatalog binding has been inserted.
+    pub(crate) fn preflight_graph_type_vocabulary(
+        graph_id: GraphId,
+        def: &GraphTypeDefinition,
+    ) -> Result<(), RouterError> {
+        for element in &def.elements {
+            let GraphTypeElement::Edge(edge) = element else {
+                continue;
+            };
+            let mut inline = edge.properties.iter().filter(|property| property.inline);
+            let Some(property) = inline.next() else {
+                continue;
+            };
+            if inline.next().is_some() {
+                return Err(RouterError::InvalidArgument(format!(
+                    "edge type `{}` declares more than one INLINE property",
+                    edge.name.as_deref().unwrap_or("<unnamed>")
+                )));
+            }
+            let labels = edge_schema_keys(edge);
+            if labels.is_empty() {
+                return Err(RouterError::InvalidArgument(
+                    "an INLINE edge property requires an edge name or label".into(),
+                ));
+            }
+            let Some(property_id) = ROUTER_PROPERTY_CATALOG
+                .with_borrow(|catalog| catalog.get_id(graph_id, &property.name))
+            else {
+                // The property id is allocated during commit; no existing named schema can use
+                // the missing id, although an existing non-zero unnamed profile is still checked
+                // below.
+                for label in labels {
+                    let Some(label_id) = ROUTER_EDGE_LABEL_CATALOG
+                        .with_borrow(|catalog| catalog.get_id(graph_id, &label))
+                    else {
+                        continue;
+                    };
+                    let conflict = ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
+                        store.get_record(graph_id, label_id).is_some_and(|record| {
+                            record.is_named_inline()
+                                || matches!(
+                                    &record,
+                                    EdgeInlinePropertySchemaRecord::UnnamedProfile { profile }
+                                        if *profile != EdgeInlinePropertyProfile::no_inline_property()
+                                )
+                        })
+                    });
+                    if conflict {
+                        return Err(RouterError::Conflict(format!(
+                            "edge label `{label}` already has an incompatible inline schema"
+                        )));
+                    }
+                }
+                continue;
+            };
+
+            let proposed = match &property.value_type {
+                ValueType::Record { fields, .. } => {
+                    let mut flattened = Vec::new();
+                    flatten_inline_record_fields("", fields, 0, &mut flattened)?;
+                    let layout = InlineStructLayout::from_fields_with_record_bound(
+                        flattened
+                            .iter()
+                            .map(|field| (field.name.clone(), field.scalar_type))
+                            .collect(),
+                        crate::facade::stable::edge_inline_property_profiles::
+                            MAX_INLINE_STRUCT_RECORD_BYTES,
+                    )
+                    .map_err(|error| RouterError::InvalidArgument(error.to_string()))?;
+                    EdgeInlinePropertySchemaRecord::InlineStruct {
+                        property_id,
+                        field_specs: layout.field_specs().to_vec(),
+                    }
+                }
+                value_type => EdgeInlinePropertySchemaRecord::InlineScalar {
+                    property_id,
+                    scalar_type: inline_scalar_type(value_type)?,
+                },
+            };
+            for label in labels {
+                let Some(label_id) = ROUTER_EDGE_LABEL_CATALOG
+                    .with_borrow(|catalog| catalog.get_id(graph_id, &label))
+                else {
+                    continue;
+                };
+                if matches!(
+                    &proposed,
+                    EdgeInlinePropertySchemaRecord::InlineStruct { .. }
+                ) && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
+                {
+                    return Err(RouterError::Conflict(format!(
+                        "edge label `{label}` already has a property index on `{}`; inline struct field indexes are not supported",
+                        property.name
+                    )));
+                }
+                ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
+                    store
+                        .validate_proposed_record(graph_id, label_id, &proposed)
+                        .map_err(map_edge_inline_property_profile_err)
+                })?;
+            }
+        }
         Ok(())
     }
 

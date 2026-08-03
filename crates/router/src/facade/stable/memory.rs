@@ -125,6 +125,9 @@ const ROUTER_PROVISION_CONFIG: MemoryId = MemoryId::new(48);
 // --- durable bulk-load chunk receipts (ADR 0057) ---
 pub(crate) const ROUTER_BULK_LOAD_CHUNK_RECEIPTS: MemoryId = MemoryId::new(49);
 
+// --- schema migration ledger (ADR 0058) ---
+pub(crate) const ROUTER_SCHEMA_MIGRATIONS: MemoryId = MemoryId::new(50);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -273,6 +276,9 @@ pub(crate) type StableProvisionConfig = Cell<ProvisionRuntimeConfig, Memory>;
 
 pub(crate) type StableBulkLoadChunkReceiptMap = super::bulk_load::StableBulkLoadChunkReceiptMap;
 
+pub(crate) type StableSchemaMigrationMap =
+    BTreeMap<String, super::schema_migration::StableSchemaMigrationRecord, Memory>;
+
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
     BTreeMap<super::label_stats::GraphLabelKey, super::label_stats::LabelStats, Memory>;
@@ -342,6 +348,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_PROVISIONING_INTENT_LOCK, 4),
     (ROUTER_PROVISION_CONFIG, 1),
     (ROUTER_BULK_LOAD_CHUNK_RECEIPTS, 16),
+    (ROUTER_SCHEMA_MIGRATIONS, 16),
 ];
 
 thread_local! {
@@ -525,6 +532,10 @@ pub(crate) fn init_bulk_load_chunk_receipts() -> StableBulkLoadChunkReceiptMap {
     super::bulk_load::init_bulk_load_chunk_receipts()
 }
 
+pub(crate) fn init_schema_migrations() -> StableSchemaMigrationMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_SCHEMA_MIGRATIONS)))
+}
+
 // --- control ---
 /// Global derived-vector-dispatch activation flag (ADR 0031 Slice 4). `false` (default, off) keeps
 /// production dispatch/backfill fail-closed; an RBAC-gated admin endpoint flips it. Reversible.
@@ -578,17 +589,17 @@ mod tests {
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 50);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 51);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..50)
+                (0..=50)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 50);
-        for id in 0..50 {
+        assert_eq!(ids.len(), 51);
+        for id in 0..=50 {
             assert!(ids.contains(&id));
         }
     }

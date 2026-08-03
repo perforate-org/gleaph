@@ -18,6 +18,7 @@ pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
 pub(crate) mod provision_config;
 pub(crate) mod reservation_catalog;
+pub(crate) mod schema_migration;
 pub(crate) mod unique_effect_pending;
 pub(crate) mod vector_activation;
 pub(crate) mod vector_index_catalog;
@@ -159,6 +160,11 @@ thread_local! {
     pub(crate) static ROUTER_BULK_LOAD_CHUNK_RECEIPTS:
         RefCell<memory::StableBulkLoadChunkReceiptMap> =
         RefCell::new(memory::init_bulk_load_chunk_receipts());
+
+    /// `migration_id → immutable schema migration record` (ADR 0058). The parent link is the
+    /// canonical chain relation; head/order are derived on read and are not duplicated here.
+    pub(crate) static ROUTER_SCHEMA_MIGRATIONS: RefCell<memory::StableSchemaMigrationMap> =
+        RefCell::new(memory::init_schema_migrations());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

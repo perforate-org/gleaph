@@ -23,6 +23,24 @@ fn my_role() -> Result<String, RouterError> {
     Ok(auth::caller_role(&msg_caller()).to_string())
 }
 
+/// Apply one versioned, additive schema migration. Authorization, checksum verification, AST
+/// validation, catalog mutation, and durable ledger insertion are owned by the Router store so
+/// the public Candid surface cannot bypass those invariants.
+#[update]
+fn apply_schema_migration(
+    args: gleaph_migration_api::ApplySchemaMigrationArgs,
+) -> Result<gleaph_migration_api::ApplySchemaMigrationResult, RouterError> {
+    RouterStore::new().admin_apply_schema_migration(msg_caller(), args)
+}
+
+/// List the bounded global schema-migration chain in canonical parent order.
+#[query]
+fn list_schema_migrations(
+    args: gleaph_migration_api::ListSchemaMigrationsArgs,
+) -> Result<gleaph_migration_api::ListSchemaMigrationsResult, RouterError> {
+    RouterStore::new().list_schema_migrations(args)
+}
+
 #[update]
 fn grant_role(args: types::GrantRoleArgs) -> Result<(), RouterError> {
     let role = auth::parse_role(&args.role).map_err(RouterError::InvalidArgument)?;

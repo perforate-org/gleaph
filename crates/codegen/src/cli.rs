@@ -1,134 +1,250 @@
 //! Command-line implementation shared by `gleaph-codegen` and `gleaph codegen`.
 
 use candid::{Decode, Encode, IDLArgs, IDLValue, Principal};
+use clap::Args;
 use ic_agent::identity::Secp256k1Identity;
 use std::fs;
 use std::path::PathBuf;
+use thiserror::Error;
 
 use crate::{
     RustFormatMode, format_rust, generate_javascript, generate_motoko, generate_rust,
-    generate_rust_canister, generate_typescript, parse_manifest,
+    generate_rust_canister, generate_typescript, validate_manifest,
 };
 
 const DEFAULT_IC_URL: &str = "https://icp-api.io";
 const DEFAULT_LOCAL_URL: &str = "http://localhost:8000";
 
-/// Run the `gleaph-codegen` command with the supplied arguments.
-pub fn run(args: Vec<String>) -> Result<(), String> {
-    let mut manifest_path = None;
-    let mut canister = None;
-    let mut graph = None;
-    let mut network = "ic".to_string();
-    let mut fetch_root_key = false;
-    let mut identity_path = None;
-    let mut target = None;
-    let mut output = None;
+/// Arguments shared by the standalone and top-level codegen commands.
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct CodegenArgs {
+    /// Read a prepared manifest from a local JSON file.
+    #[arg(long, value_name = "PATH")]
+    pub manifest: Option<PathBuf>,
+    /// Query a Router canister for the prepared manifest.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub canister: Option<String>,
+    /// Graph name used with `--canister`.
+    #[arg(long, value_name = "NAME")]
+    pub graph: Option<String>,
+    /// Network name (`ic` or `local`) or an HTTP(S) endpoint URL.
+    #[arg(short = 'n', long, default_value = "ic", value_name = "NETWORK")]
+    pub network: String,
+    /// PEM file containing a Secp256k1 identity for Router queries.
+    #[arg(long, value_name = "PATH")]
+    pub identity: Option<PathBuf>,
+    /// Fetch the network root key before querying a custom endpoint.
+    #[arg(long)]
+    pub fetch_root_key: bool,
+    /// Output profile (`typescript`, `javascript`, `rust`, `rust-canister`, or `motoko`).
+    #[arg(long, value_name = "TARGET")]
+    pub target: String,
+    /// Write generated source to this path instead of stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+    /// Rust formatting policy, for example `rust=never`.
+    #[arg(long, value_name = "LANGUAGE=MODE")]
+    pub format: Vec<String>,
+}
+
+/// Errors produced while loading a manifest or rendering generated source.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum CodegenError {
+    /// Both local and remote manifest sources were selected.
+    #[error("--manifest and --canister are mutually exclusive")]
+    ConflictingManifestSources,
+    /// A remote manifest source was not given both required fields.
+    #[error("--canister and --graph must be provided together")]
+    IncompleteRemoteSource,
+    /// No manifest source was selected.
+    #[error("one manifest source is required: --manifest or --canister/--graph")]
+    MissingManifestSource,
+    /// No output profile was selected by a programmatic caller.
+    #[error("--target is required")]
+    MissingTarget,
+    /// The selected target is not supported.
+    #[error(
+        "unsupported target {0:?}; expected typescript, javascript, rust, rust-canister, or motoko"
+    )]
+    UnsupportedTarget(String),
+    /// A format option did not use the `language=mode` shape.
+    #[error("invalid format {0:?}; expected rust=<auto|rustfmt|never>")]
+    InvalidFormat(String),
+    /// A Rust formatting mode is not supported.
+    #[error("{0}")]
+    InvalidRustFormatMode(String),
+    /// A format option named a language other than Rust.
+    #[error("unsupported format language {0:?}; expected rust")]
+    UnsupportedFormatLanguage(String),
+    /// More than one format option selected the same language.
+    #[error("duplicate format target {0:?}")]
+    DuplicateFormatTarget(String),
+    /// A custom network URL did not opt into root-key fetching.
+    #[error("a custom network URL requires --fetch-root-key (icp-cli --root-key fetch equivalent)")]
+    CustomNetworkRootKeyRequired,
+    /// The network selector is not a supported name or URL.
+    #[error("unknown network {0:?}; expected \"ic\", \"local\", or an http(s) URL")]
+    UnknownNetwork(String),
+    /// A local manifest could not be read.
+    #[error("read {path}: {error}")]
+    ReadManifest {
+        /// Path of the manifest that was read.
+        path: PathBuf,
+        /// Operating-system error text.
+        error: String,
+    },
+    /// An asynchronous runtime could not be created for a remote query.
+    #[error("create async runtime: {0}")]
+    CreateRuntime(String),
+    /// The supplied Router canister principal is invalid.
+    #[error("invalid canister principal {canister:?}: {error}")]
+    InvalidCanisterPrincipal {
+        /// Principal text supplied by the caller.
+        canister: String,
+        /// Principal parser error text.
+        error: String,
+    },
+    /// The identity PEM file could not be read or decoded.
+    #[error("read identity {path}: {error}")]
+    ReadIdentity {
+        /// Path of the identity file that was read.
+        path: PathBuf,
+        /// Identity parser error text.
+        error: String,
+    },
+    /// The IC agent could not be constructed.
+    #[error("create IC agent: {0}")]
+    CreateAgent(String),
+    /// The network root key could not be fetched.
+    #[error("fetch IC root key: {0}")]
+    FetchRootKey(String),
+    /// The graph name could not be encoded for the Router query.
+    #[error("encode graph name: {0}")]
+    EncodeGraph(String),
+    /// The Router query failed.
+    #[error("query list_prepared: {0}")]
+    QueryListPrepared(String),
+    /// The Router response envelope could not be decoded.
+    #[error("decode list_prepared response: {0}")]
+    DecodeResponse(String),
+    /// The manifest payload in a successful Router response could not be decoded.
+    #[error("decode list_prepared payload: {0}")]
+    DecodePayload(String),
+    /// The Router returned a rejected result variant.
+    #[error("Router rejected list_prepared: {0}")]
+    RouterRejected(String),
+    /// The manifest failed schema or semantic validation.
+    #[error(transparent)]
+    Manifest(#[from] crate::ManifestError),
+    /// Generated Rust could not be formatted.
+    #[error("format generated Rust: {0}")]
+    FormatRust(String),
+    /// Generated source could not be written.
+    #[error("write {path}: {error}")]
+    WriteOutput {
+        /// Path of the output file that was written.
+        path: PathBuf,
+        /// Operating-system error text.
+        error: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Typescript,
+    Javascript,
+    Rust,
+    RustCanister,
+    Motoko,
+}
+
+fn parse_target(target: &str) -> Result<Target, CodegenError> {
+    match target {
+        "typescript" | "ts" => Ok(Target::Typescript),
+        "javascript" | "js" => Ok(Target::Javascript),
+        "rust" | "rs" => Ok(Target::Rust),
+        "rust-canister" => Ok(Target::RustCanister),
+        "motoko" | "mo" => Ok(Target::Motoko),
+        other => Err(CodegenError::UnsupportedTarget(other.to_owned())),
+    }
+}
+
+fn parse_format(formats: &[String]) -> Result<RustFormatMode, CodegenError> {
     let mut rust_format = RustFormatMode::Auto;
     let mut format_targets = std::collections::BTreeSet::new();
-    let mut index = 0;
-    while index < args.len() {
-        let flag = &args[index];
-        let value = || {
-            args.get(index + 1)
-                .filter(|value| !value.starts_with('-'))
-                .ok_or_else(|| format!("missing value for {flag}"))
-        };
-        match flag.as_str() {
-            "--manifest" => manifest_path = Some(PathBuf::from(value()?.clone())),
-            "--canister" => canister = Some(value()?.clone()),
-            "--graph" => graph = Some(value()?.clone()),
-            "-n" | "--network" => network = value()?.clone(),
-            "--identity" => identity_path = Some(PathBuf::from(value()?.clone())),
-            "--fetch-root-key" => {
-                fetch_root_key = true;
-                index += 1;
-                continue;
-            }
-            "--target" => target = Some(value()?.clone()),
-            "--output" => output = Some(PathBuf::from(value()?.clone())),
-            "--format" => {
-                let format = value()?;
-                let (language, mode) = format.split_once('=').ok_or_else(|| {
-                    format!("invalid format {format:?}; expected rust=<auto|rustfmt|never>")
-                })?;
-                if language != "rust" {
-                    return Err(format!(
-                        "unsupported format language {language:?}; expected rust"
-                    ));
-                }
-                if !format_targets.insert(language.to_string()) {
-                    return Err("duplicate format target \"rust\"".into());
-                }
-                rust_format = RustFormatMode::parse(mode)?;
-            }
-            "-h" | "--help" => {
-                println!(
-                    "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--identity <pem>] [--fetch-root-key]"
-                );
-                return Ok(());
-            }
-            other => return Err(format!("unknown argument {other:?}")),
+    for format in formats {
+        let (language, mode) = format
+            .split_once('=')
+            .ok_or_else(|| CodegenError::InvalidFormat(format.clone()))?;
+        if language != "rust" {
+            return Err(CodegenError::UnsupportedFormatLanguage(language.to_owned()));
         }
-        index += 2;
+        if !format_targets.insert(language.to_owned()) {
+            return Err(CodegenError::DuplicateFormatTarget(language.to_owned()));
+        }
+        rust_format = RustFormatMode::parse(mode).map_err(CodegenError::InvalidRustFormatMode)?;
     }
+    Ok(rust_format)
+}
 
-    if manifest_path.is_some() && canister.is_some() {
-        return Err("--manifest and --canister are mutually exclusive".into());
+/// Run code generation with parsed [`CodegenArgs`].
+pub fn run(args: CodegenArgs) -> Result<(), CodegenError> {
+    let rust_format = parse_format(&args.format)?;
+    if args.manifest.is_some() && args.canister.is_some() {
+        return Err(CodegenError::ConflictingManifestSources);
     }
-    if canister.is_some() != graph.is_some() {
-        return Err("--canister and --graph must be provided together".into());
+    if args.canister.is_some() != args.graph.is_some() {
+        return Err(CodegenError::IncompleteRemoteSource);
     }
-    let target = target.ok_or("--target is required")?;
-    if !matches!(
-        target.as_str(),
-        "typescript"
-            | "ts"
-            | "javascript"
-            | "js"
-            | "rust"
-            | "rs"
-            | "rust-canister"
-            | "motoko"
-            | "mo"
-    ) {
-        return Err(format!(
-            "unsupported target {target:?}; expected typescript, javascript, rust, rust-canister, or motoko"
-        ));
+    if args.target.trim().is_empty() {
+        return Err(CodegenError::MissingTarget);
     }
-    let input = if let Some(manifest_path) = manifest_path {
-        fs::read_to_string(&manifest_path)
-            .map_err(|error| format!("read {}: {error}", manifest_path.display()))?
-    } else if let Some(canister) = canister {
+    let target = parse_target(&args.target)?;
+    let manifest = if let Some(manifest_path) = args.manifest {
+        let input =
+            fs::read_to_string(&manifest_path).map_err(|error| CodegenError::ReadManifest {
+                path: manifest_path,
+                error: error.to_string(),
+            })?;
+        serde_json::from_str(&input).map_err(|error| {
+            CodegenError::Manifest(crate::ManifestError::Json(error.to_string()))
+        })?
+    } else if let Some(canister) = args.canister {
+        let graph = args
+            .graph
+            .as_deref()
+            .ok_or(CodegenError::IncompleteRemoteSource)?;
         tokio::runtime::Runtime::new()
-            .map_err(|error| format!("create async runtime: {error}"))?
+            .map_err(|error| CodegenError::CreateRuntime(error.to_string()))?
             .block_on(fetch_manifest(
                 &canister,
-                &graph.expect("graph was validated"),
-                &network,
-                fetch_root_key,
-                identity_path.as_deref(),
+                graph,
+                &args.network,
+                args.fetch_root_key,
+                args.identity.as_deref(),
             ))?
     } else {
-        return Err("one manifest source is required: --manifest or --canister/--graph".into());
+        return Err(CodegenError::MissingManifestSource);
     };
-    let manifest = parse_manifest(&input).map_err(|error| error.to_string())?;
-    let generated = match target.as_str() {
-        "typescript" | "ts" => generate_typescript(&manifest),
-        "javascript" | "js" => generate_javascript(&manifest),
-        "rust" | "rs" => generate_rust(&manifest),
-        "rust-canister" => generate_rust_canister(&manifest),
-        "motoko" | "mo" => generate_motoko(&manifest),
-        _ => unreachable!("target was validated above"),
-    }
-    .map_err(|error| error.to_string())?;
-    let generated = if matches!(target.as_str(), "rust" | "rs" | "rust-canister") {
-        format_rust(generated, rust_format, output.as_deref())?
+    validate_manifest(&manifest)?;
+    let generated = match target {
+        Target::Typescript => generate_typescript(&manifest),
+        Target::Javascript => generate_javascript(&manifest),
+        Target::Rust => generate_rust(&manifest),
+        Target::RustCanister => generate_rust_canister(&manifest),
+        Target::Motoko => generate_motoko(&manifest),
+    }?;
+    let generated = if matches!(target, Target::Rust | Target::RustCanister) {
+        format_rust(generated, rust_format, args.output.as_deref())
+            .map_err(CodegenError::FormatRust)?
     } else {
         generated
     };
-    if let Some(output) = output {
-        fs::write(&output, generated)
-            .map_err(|error| format!("write {}: {error}", output.display()))?;
+    if let Some(output) = args.output {
+        fs::write(&output, generated).map_err(|error| CodegenError::WriteOutput {
+            path: output,
+            error: error.to_string(),
+        })?;
     } else {
         print!("{generated}");
     }
@@ -141,83 +257,88 @@ async fn fetch_manifest(
     network: &str,
     fetch_root_key_flag: bool,
     identity_path: Option<&std::path::Path>,
-) -> Result<String, String> {
+) -> Result<gleaph_prepared_api::PreparedManifest, CodegenError> {
     let (url, fetch_root_key) = resolve_network(network, fetch_root_key_flag)?;
-    let canister_id = Principal::from_text(canister)
-        .map_err(|error| format!("invalid canister principal {canister:?}: {error}"))?;
+    let canister_id =
+        Principal::from_text(canister).map_err(|error| CodegenError::InvalidCanisterPrincipal {
+            canister: canister.to_owned(),
+            error: error.to_string(),
+        })?;
     let agent = if let Some(identity_path) = identity_path {
-        let identity = Secp256k1Identity::from_pem_file(identity_path)
-            .map_err(|error| format!("read identity {}: {error}", identity_path.display()))?;
+        let identity = Secp256k1Identity::from_pem_file(identity_path).map_err(|error| {
+            CodegenError::ReadIdentity {
+                path: identity_path.to_owned(),
+                error: error.to_string(),
+            }
+        })?;
         ic_agent::Agent::builder()
             .with_url(url)
             .with_identity(identity)
             .build()
-            .map_err(|error| format!("create IC agent: {error}"))?
+            .map_err(|error| CodegenError::CreateAgent(error.to_string()))?
     } else {
         ic_agent::Agent::builder()
             .with_url(url)
             .build()
-            .map_err(|error| format!("create IC agent: {error}"))?
+            .map_err(|error| CodegenError::CreateAgent(error.to_string()))?
     };
     if fetch_root_key {
         agent
             .fetch_root_key()
             .await
-            .map_err(|error| format!("fetch IC root key: {error}"))?;
+            .map_err(|error| CodegenError::FetchRootKey(error.to_string()))?;
     }
-    let args =
-        Encode!(&graph.to_string()).map_err(|error| format!("encode graph name: {error}"))?;
+    let args = Encode!(&graph.to_string())
+        .map_err(|error| CodegenError::EncodeGraph(error.to_string()))?;
     let response = agent
         .query(&canister_id, "list_prepared")
         .with_arg(args)
         .call()
         .await
-        .map_err(|error| format!("query list_prepared: {error}"))?;
+        .map_err(|error| CodegenError::QueryListPrepared(error.to_string()))?;
     decode_manifest_response(&response)
 }
 
-fn resolve_network(network: &str, fetch_root_key_flag: bool) -> Result<(&str, bool), String> {
+fn resolve_network(network: &str, fetch_root_key_flag: bool) -> Result<(&str, bool), CodegenError> {
     match network {
         "ic" => Ok((DEFAULT_IC_URL, false)),
         "local" => Ok((DEFAULT_LOCAL_URL, true)),
         url if url.starts_with("http://") || url.starts_with("https://") => {
             if !fetch_root_key_flag {
-                return Err(
-                    "a custom network URL requires --fetch-root-key (icp-cli --root-key fetch equivalent)"
-                        .into(),
-                );
+                return Err(CodegenError::CustomNetworkRootKeyRequired);
             }
             Ok((url, true))
         }
-        other => Err(format!(
-            "unknown network {other:?}; expected \"ic\", \"local\", or an http(s) URL"
-        )),
+        other => Err(CodegenError::UnknownNetwork(other.to_owned())),
     }
 }
 
-fn decode_manifest_response(response: &[u8]) -> Result<String, String> {
+fn decode_manifest_response(
+    response: &[u8],
+) -> Result<gleaph_prepared_api::PreparedManifest, CodegenError> {
     let args = IDLArgs::from_bytes(response)
-        .map_err(|error| format!("decode list_prepared response: {error}"))?;
+        .map_err(|error| CodegenError::DecodeResponse(error.to_string()))?;
     let Some(IDLValue::Variant(result)) = args.args.first() else {
-        return Err("decode list_prepared response: expected Result variant".into());
+        return Err(CodegenError::DecodeResponse(
+            "expected Result variant".to_string(),
+        ));
     };
     let value = &result.0.val;
     if result.0.id.get_id() != candid::idl_hash("Ok") {
-        return Err(format!("Router rejected list_prepared: {value:?}"));
+        return Err(CodegenError::RouterRejected(format!("{value:?}")));
     }
     let payload = IDLArgs::new(std::slice::from_ref(value))
         .to_bytes()
-        .map_err(|error| format!("decode list_prepared payload: {error}"))?;
-    let manifest = Decode!(&payload, gleaph_prepared_api::PreparedManifest)
-        .map_err(|error| format!("decode list_prepared payload: {error}"))?;
-    serde_json::to_string(&manifest)
-        .map_err(|error| format!("serialize prepared manifest: {error}"))
+        .map_err(|error| CodegenError::DecodePayload(error.to_string()))?;
+    Decode!(&payload, gleaph_prepared_api::PreparedManifest)
+        .map_err(|error| CodegenError::DecodePayload(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{CodegenArgs, run};
     use candid::Encode;
+    use clap::Parser;
     use gleaph_prepared_api::{GraphIdentity, MANIFEST_VERSION, PreparedManifest};
     use std::fs;
     use std::path::PathBuf;
@@ -225,6 +346,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT_TEMPORARY_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        args: CodegenArgs,
+    }
+
+    fn parse_args(arguments: &[&str]) -> CodegenArgs {
+        let mut argv = vec!["gleaph-codegen"];
+        argv.extend(arguments.iter().copied());
+        TestCli::try_parse_from(argv)
+            .expect("test arguments should satisfy clap parsing")
+            .args
+    }
 
     fn temporary_output_path() -> PathBuf {
         let nonce = SystemTime::now()
@@ -239,20 +374,43 @@ mod tests {
     }
 
     #[test]
+    fn clap_arguments_preserve_shared_option_shape() {
+        let args = parse_args(&[
+            "--manifest",
+            "manifest.json",
+            "--target",
+            "ts",
+            "-n",
+            "local",
+            "--identity",
+            "identity.pem",
+            "--fetch-root-key",
+            "--format",
+            "rust=never",
+        ]);
+
+        assert_eq!(args.target, "ts");
+        assert_eq!(args.network, "local");
+        assert_eq!(args.identity, Some(PathBuf::from("identity.pem")));
+        assert!(args.fetch_root_key);
+        assert_eq!(args.format, vec!["rust=never"]);
+    }
+
+    #[test]
     fn generates_typescript_alias_to_explicit_output() {
         let fixture_dir =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/typescript-basic");
         let manifest = fixture_dir.join("manifest.json");
         let output = temporary_output_path();
 
-        run(vec![
-            "--manifest".into(),
-            manifest.to_string_lossy().into_owned(),
-            "--target".into(),
-            "ts".into(),
-            "--output".into(),
-            output.to_string_lossy().into_owned(),
-        ])
+        run(parse_args(&[
+            "--manifest",
+            manifest.to_string_lossy().as_ref(),
+            "--target",
+            "ts",
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ]))
         .expect("CLI should generate the TypeScript fixture");
 
         let generated = fs::read_to_string(&output).expect("CLI should write the output file");
@@ -268,25 +426,21 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/typescript-advanced");
         let output = temporary_output_path();
 
-        run(vec![
-            "--manifest".into(),
-            fixture_dir
-                .join("manifest.json")
-                .to_string_lossy()
-                .into_owned(),
-            "--target".into(),
-            "typescript".into(),
-            "--output".into(),
-            output.to_string_lossy().into_owned(),
-        ])
+        let manifest = fixture_dir.join("manifest.json");
+        run(parse_args(&[
+            "--manifest",
+            manifest.to_string_lossy().as_ref(),
+            "--target",
+            "typescript",
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ]))
         .expect("CLI should generate the advanced TypeScript fixture");
 
         let generated = fs::read_to_string(&output).expect("CLI should write the output file");
         let expected = fs::read_to_string(fixture_dir.join("generated.ts"))
             .expect("advanced TypeScript fixture should exist");
         assert_eq!(generated, expected);
-        assert!(generated.contains("PreparedSortSpec"));
-        assert!(generated.contains("ApiPathElement"));
         fs::remove_file(output).expect("temporary output should be removable");
     }
 
@@ -296,19 +450,18 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/rust-client-basic");
         let output = temporary_output_path();
 
-        run(vec![
-            "--manifest".into(),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/typescript-basic/manifest.json")
-                .to_string_lossy()
-                .into_owned(),
-            "--target".into(),
-            "rust".into(),
-            "--format".into(),
-            "rust=never".into(),
-            "--output".into(),
-            output.to_string_lossy().into_owned(),
-        ])
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/typescript-basic/manifest.json");
+        run(parse_args(&[
+            "--manifest",
+            manifest.to_string_lossy().as_ref(),
+            "--target",
+            "rust",
+            "--format",
+            "rust=never",
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ]))
         .expect("CLI should generate the Rust client fixture");
 
         let generated = fs::read_to_string(&output).expect("CLI should write the output file");
@@ -323,100 +476,108 @@ mod tests {
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/motoko-basic");
         let output = temporary_output_path();
 
-        run(vec![
-            "--manifest".into(),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/typescript-basic/manifest.json")
-                .to_string_lossy()
-                .into_owned(),
-            "--target".into(),
-            "motoko".into(),
-            "--output".into(),
-            output.to_string_lossy().into_owned(),
-        ])
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/typescript-basic/manifest.json");
+        run(parse_args(&[
+            "--manifest",
+            manifest.to_string_lossy().as_ref(),
+            "--target",
+            "motoko",
+            "--output",
+            output.to_string_lossy().as_ref(),
+        ]))
         .expect("CLI should generate the Motoko fixture");
 
         let generated = fs::read_to_string(&output).expect("CLI should write the output file");
         let expected = fs::read_to_string(fixture_dir.join("src/generated.mo"))
             .expect("Motoko fixture should exist");
         assert_eq!(generated, expected);
-        assert!(generated.contains("module {"));
         fs::remove_file(output).expect("temporary output should be removable");
     }
 
     #[test]
     fn rejects_duplicate_format_targets() {
-        let error = run(vec![
-            "--manifest".into(),
-            "manifest.json".into(),
-            "--target".into(),
-            "rust".into(),
-            "--format".into(),
-            "rust=never".into(),
-            "--format".into(),
-            "rust=auto".into(),
-        ])
+        let error = run(parse_args(&[
+            "--manifest",
+            "manifest.json",
+            "--target",
+            "rust",
+            "--format",
+            "rust=never",
+            "--format",
+            "rust=auto",
+        ]))
         .expect_err("duplicate format targets must fail");
 
-        assert_eq!(error, "duplicate format target \"rust\"");
+        assert_eq!(error.to_string(), "duplicate format target \"rust\"");
     }
 
     #[test]
     fn rejects_unknown_rust_format_mode() {
-        let error = run(vec![
-            "--manifest".into(),
-            "manifest.json".into(),
-            "--target".into(),
-            "rust".into(),
-            "--format".into(),
-            "rust=prettyplease".into(),
-        ])
+        let error = run(parse_args(&[
+            "--manifest",
+            "manifest.json",
+            "--target",
+            "rust",
+            "--format",
+            "rust=prettyplease",
+        ]))
         .expect_err("unknown Rust format modes must fail");
 
-        assert!(error.contains("expected auto, rustfmt, or never"));
+        assert!(
+            error
+                .to_string()
+                .contains("expected auto, rustfmt, or never")
+        );
     }
 
     #[test]
     fn rejects_unknown_target() {
-        let error = run(vec![
-            "--manifest".into(),
-            "manifest.json".into(),
-            "--target".into(),
-            "swift".into(),
-        ])
+        let error = run(parse_args(&[
+            "--manifest",
+            "manifest.json",
+            "--target",
+            "swift",
+        ]))
         .expect_err("unknown targets must fail before reading the manifest");
 
-        assert!(error.contains("unsupported target \"swift\""));
+        assert!(error.to_string().contains("unsupported target \"swift\""));
     }
 
     #[test]
     fn rejects_incomplete_remote_source() {
-        let error = run(vec![
-            "--canister".into(),
-            "aaaaa-aa".into(),
-            "--target".into(),
-            "typescript".into(),
-        ])
+        let error = run(parse_args(&[
+            "--canister",
+            "aaaaa-aa",
+            "--target",
+            "typescript",
+        ]))
         .expect_err("remote source requires a graph name");
 
-        assert_eq!(error, "--canister and --graph must be provided together");
+        assert_eq!(
+            error.to_string(),
+            "--canister and --graph must be provided together"
+        );
     }
 
     #[test]
     fn rejects_multiple_manifest_sources() {
-        let error = run(vec![
-            "--manifest".into(),
-            "manifest.json".into(),
-            "--canister".into(),
-            "aaaaa-aa".into(),
-            "--graph".into(),
-            "default".into(),
-            "--target".into(),
-            "typescript".into(),
-        ])
+        let error = run(parse_args(&[
+            "--manifest",
+            "manifest.json",
+            "--canister",
+            "aaaaa-aa",
+            "--graph",
+            "default",
+            "--target",
+            "typescript",
+        ]))
         .expect_err("manifest sources must be mutually exclusive");
 
-        assert_eq!(error, "--manifest and --canister are mutually exclusive");
+        assert_eq!(
+            error.to_string(),
+            "--manifest and --canister are mutually exclusive"
+        );
     }
 
     #[test]
@@ -432,9 +593,9 @@ mod tests {
         let response = Encode!(&Result::<PreparedManifest, String>::Ok(manifest))
             .expect("manifest response should encode");
 
-        let json = super::decode_manifest_response(&response).expect("manifest should decode");
-        assert!(json.contains("\"manifest_version\":1"));
-        assert!(json.contains("\"id\":\"default\""));
+        let decoded = super::decode_manifest_response(&response).expect("manifest should decode");
+        assert_eq!(decoded.manifest_version, MANIFEST_VERSION);
+        assert_eq!(decoded.graph.id, "default");
     }
 
     #[test]
@@ -453,6 +614,6 @@ mod tests {
     fn custom_network_url_requires_root_key_fetch() {
         let error = super::resolve_network("http://127.0.0.1:8000", false)
             .expect_err("custom networks must opt into fetched root keys");
-        assert!(error.contains("requires --fetch-root-key"));
+        assert!(error.to_string().contains("requires --fetch-root-key"));
     }
 }

@@ -1101,6 +1101,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "(job_mutation_id, chunk_index) → immutable ordered Graph request, child mutation id, +             public/Graph receipts, and projection/retirement progress",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_SCHEMA_MIGRATIONS",
+            50,
+            StableMemoryClass::Canonical,
+            "schema migrations",
+            "Migration id → versioned immutable SchemaMigrationRecord; parent links are canonical and root-to-head order is derived with a bounded chain walk (ADR 0058)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1619,8 +1627,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 50);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(49));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 51);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(50));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry
@@ -1643,6 +1651,14 @@ mod tests {
         );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[49].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[50].symbol,
+            "ROUTER_SCHEMA_MIGRATIONS"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[50].class,
             StableMemoryClass::Canonical
         );
     }

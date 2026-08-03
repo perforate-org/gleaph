@@ -46,6 +46,8 @@ fn router_stable_reopen_round() {
     black_box(memory::init_provisioning_by_graph());
     black_box(memory::init_provisioning_intent_locks());
     black_box(memory::init_provision_config());
+    // schema migrations
+    black_box(memory::init_schema_migrations());
     // telemetry
     black_box(memory::init_vertex_label_stats());
     black_box(memory::init_edge_label_stats());

@@ -15,6 +15,7 @@ mod label_stats_projection;
 pub(crate) mod provisioning;
 mod registry;
 mod registry_invariants;
+mod schema_migration;
 pub(crate) mod uniqueness;
 
 #[cfg(test)]
@@ -26,9 +27,9 @@ use super::stable::{
     ROUTER_GRAPH_TYPE_CATALOG, ROUTER_GRAPHS, ROUTER_INDEX_NAME_CATALOG,
     ROUTER_LABEL_STATS_PROJECTION, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
     ROUTER_PROPERTY_CATALOG, ROUTER_PROVISIONING_BY_GRAPH, ROUTER_PROVISIONING_INTENT_LOCK,
-    ROUTER_PROVISIONING_REQUESTS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
-    ROUTER_UNIQUE_CONSTRAINTS, ROUTER_UNIQUE_RESERVATIONS, ROUTER_VERTEX_LABEL_CATALOG,
-    ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
+    ROUTER_PROVISIONING_REQUESTS, ROUTER_SCHEMA_MIGRATIONS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
+    ROUTER_SHARDS_BY_GRAPH_ID, ROUTER_UNIQUE_CONSTRAINTS, ROUTER_UNIQUE_RESERVATIONS,
+    ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
@@ -71,6 +72,7 @@ impl RouterStore {
         });
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
         ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|m| m.clear_new());
+        ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|m| m.clear_new());
         ROUTER_GRAPH_CATALOG.with_borrow_mut(|c| c.clear_new());
         ROUTER_GRAPH_TYPE_CATALOG.with_borrow_mut(|c| c.clear_new());
         ROUTER_INDEX_NAME_CATALOG.with_borrow_mut(|c| c.clear_new());

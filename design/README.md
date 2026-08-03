@@ -58,6 +58,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [adr/0038-provisioning-authorization-and-cycles-funding.md](adr/0038-provisioning-authorization-and-cycles-funding.md) | proposed | Provisioning authorization and cycles funding |
 | [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) | proposed | Unordered logical chunks, LARA slab/log batch placement, pending-aware growth, vertex/inline/property batching |
 | [adr/0052-per-label-adjacency-order-and-tombstone-reuse.md](adr/0052-per-label-adjacency-order-and-tombstone-reuse.md) | planned | Per-label insertion-order capability, unordered tombstone reuse, policy-specific batch placement and compaction |
+| [adr/0058-versioned-additive-schema-migrations.md](adr/0058-versioned-additive-schema-migrations.md) | implemented | Versioned additive migration artifacts, Router ledger, and CLI workflow |
 
 ## Conventions
 

@@ -41,10 +41,18 @@ cargo run -p gleaph-cli -- codegen \
   --output src/generated.ts
 ```
 
+Both entrypoints parse the same public `gleaph_codegen::CodegenArgs` clap
+arguments and execute `gleaph_codegen::run`. This keeps option validation,
+manifest retrieval, and generated output behavior identical between the
+standalone and top-level commands.
+
+Schema migrations are a separate top-level `gleaph migration` workflow owned by
+`gleaph-cli`; they do not change the prepared-query code-generation contract.
+
 The default output is stdout. Use `--output` to write a file instead.
 
 The manifest can also be fetched from a Router using its graph-scoped
-`prepared_manifest` query:
+`list_prepared` query:
 
 ```sh
 cargo run -p gleaph-codegen -- \

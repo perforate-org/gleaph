@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
 Last updated: 2026-08-02
-Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, with reserved holes 35 and 47–50 = 51 registry regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations + Plan 0088 durable derived-index outbox storage; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 50 regions, 0–49; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
-Anchor timestamp: 2026-08-02 12:43:54 UTC +0000
+Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, with reserved holes 35 and 47–50 = 51 registry regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations + Plan 0088 durable derived-index outbox storage; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058 schema-migration ledger at MemoryId 50 (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 51 regions, 0–50; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
+Anchor timestamp: 2026-08-02 23:10:19 UTC +0000
 
 Plan 0171 update (2026-07-24 23:03:51 UTC +0000): the implemented mate owner is explicitly
 the leaf-scoped five-byte locator plus one multi-bucket blob per orientation/leaf. A contract test
@@ -56,7 +56,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Canister           | Regions | Id range | Registry constant + test                                                       |
 | ------------------ | ------- | -------- | ------------------------------------------------------------------------------ |
 | Graph              | 51      | 0–50     | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline`               |
-| Router             | 50      | 0–49     | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline`             |
+| Router             | 51      | 0–50     | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline`             |
 | Graph-index        | 7       | 0–6      | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline`               |
 | Graph-vector-index | 15      | 0–14     | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
 | Provision          | 12      | 0–11     | `PROVISION_STABLE_LAYOUT` — `provision_layout_registry_matches_baseline`       |
@@ -318,8 +318,9 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 47 | `ROUTER_PROVISIONING_INTENT_LOCK` | `ROUTER_PROVISIONING_INTENT_LOCK` | `init_provisioning_intent_locks` | canonical | provisioning intent lock | **`(deployment_id, resource_kind, logical_resource_key) → IntentLockMarker`** (ADR 0035 Slice 1). Canonical intent lock held while a request targeting this intent is non-terminal |
 | 48 | `ROUTER_PROVISION_CONFIG` | `ROUTER_PROVISION_CONFIG` | `init_provision_config` | canonical | provisioning runtime config | **`() → ProvisionRuntimeConfig`** (ADR 0035 Slice 5). Durable Router provision-canister bootstrap binding; re-seeds the heap `PROVISION_CANISTER` threadlocal in `post_upgrade` |
 | 49 | `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` | `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` | `init_bulk_load_chunk_receipts` | canonical | durable bulk-load receipts | **`(bulk_job_mutation_id, chunk_index) → BulkLoadChunkReceiptRecordV1`** ([ADR 0057](../adr/0057-router-operation-api-and-durable-bulk-load.md)). Owns the immutable chunk envelope/fingerprint, pinned Graph request and child mutation ID, exact canonical/public receipt, progress, and completion anchor. Terminal parent retention is anchored in region 7; bounded receipt GC deletes at most 32 consecutive rows per step, persists its cursor in the parent, and removes the parent binding only after an empty-range proof. |
+| 50 | `ROUTER_SCHEMA_MIGRATIONS` | `ROUTER_SCHEMA_MIGRATIONS` | `init_schema_migrations` | canonical | schema migrations | **`migration_id → SchemaMigrationRecord`** (ADR 0058). Values use a Router-local Candid `Storable` wrapper around the shared versioned record. Parent links are the sole ordering source; root-to-head order and the current head are reconstructed on each bounded operation. The ledger is globally linear, capped at 4,096 records, and list pages at 16 records. Apply is admin-only/non-anonymous and commits catalog DDL plus the immutable record in one synchronous update. |
 
-Router **50 regions** total (0–49).
+Router **51 regions** total (0–50).
 
 Router uses `ic-stable-variable-memory-manager` with the same shared-capacity, append-only
 extent model as Graph. The initial policy is intentionally asymmetric: the default is 2 pages;
@@ -329,9 +330,10 @@ reservation, pending-effect, and provisioning request rows use 16 pages. These v
 capacity/slack hypothesis to validate with Router canbench and stable-memory measurements, not a
 claim that every region should retain its current quantum. The development layout is deliberately
 incompatible with the prior upstream `MemoryManager` format; no compatibility reader is provided.
-The Router stable-layout canbench implementation touches all 50 regions, including the ADR 0057
-receipt map. Its persisted baseline must be refreshed by the final unfiltered `canbench --persist`
-run before benchmark artifacts can be described as including MemoryId 49.
+The Router stable-layout canbench implementation touches all 51 regions, including the ADR 0057
+receipt map and ADR 0058 schema-migration ledger. Its persisted baseline must be refreshed by the
+final unfiltered `canbench --persist` run before benchmark artifacts can be described as including
+MemoryId 50.
 Capacity probes currently measure a 2-page property catalog at 1,024 rows and a 16-page prepared
 plan catalog at 32 × 256 KiB. They are growth-slope guards; they do not establish the maximum
 cardinality of an unbounded catalog or replace canister-level stable-memory monitoring.
