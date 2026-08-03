@@ -1,7 +1,7 @@
 # 0060. Instruction-budget-driven durable bulk load and shared budget cutoff
 
 Date: 2026-08-03
-Status: proposed
+Status: implemented
 Last revised: 2026-08-03
 Anchor timestamp: 2026-08-03 13:54:52 UTC +0000
 
@@ -79,9 +79,9 @@ cursor. Measured operation cost remains authoritative for continuation paths." T
 path is the last endpoint without a resumable cursor.
 
 `gleaph-message-sizing` centralizes byte-budget fitting (`SizingPolicy`, `adaptive_fitting_prefix`,
-the 2 MiB ceiling constant) with no Candid or canister-type dependency because the future `gleaph
-build` CLI consumes it on the host. Instruction-budget logic has no host consumer: Router, Graph,
-index, vector, and LARA all run inside canisters, so an `ic-cdk` dependency is acceptable. The
+the 2 MiB ceiling constant) with no Candid or canister-type dependency because the `gleaph load`
+CLI consumes it on the host. Instruction-budget logic has no host consumer: Router, Graph, index,
+vector, and LARA all run inside canisters, so an `ic-cdk` dependency is acceptable. The
 dependency direction requires a standalone crate below both `gleaph-graph-kernel` and
 `ic-stable-lara` (graph-kernel already depends on lara, and lara currently reads the instruction
 counter itself), mirroring where `gleaph-message-sizing` sits.
@@ -209,7 +209,8 @@ command is implemented:
   label, directed), plus NDJSON as the large-data form (`vertices.jsonl` + `edges.jsonl`, one row
   per vertex/edge with the same row schema). Single-file NDJSON is designated with
   `--vertices FILE` / `--edges FILE` (mutually exclusive with positional ARTIFACT); `--edges`-only
-  loads require property-based endpoints and are rejected until that capability lands;
+  loads require property-based endpoints (a `source_id` reference cannot resolve without vertices
+  in the same artifact);
 - remote connection: `--canister`, `-n/--network`, `--identity`, `--fetch-root-key` (same convention
   as `gleaph migration`); `--graph` (omitted → the caller's default graph), `-k/--key` (default
   `initial-load-v1`); `--format` is optional and inferred from the file extension when omitted;
@@ -301,7 +302,7 @@ achieve the dynamic boundary this decision needs.
 
 ### Extend `gleaph-message-sizing` with an instruction-budget module
 
-Rejected. `gleaph-message-sizing` is consumed on the host by the future `gleaph build` CLI and must
+Rejected. `gleaph-message-sizing` is consumed on the host by the `gleaph load` CLI and must
 stay free of `ic-cdk` and canister types; the instruction-budget logic is canister-only and needs a
 feature-gated `ic-cdk` dependency. Keeping the two dimensions in separate crates preserves
 `message-sizing`'s host contract, and the standalone position is forced anyway by the
@@ -411,8 +412,9 @@ by the 2026-08-03 PocketIC probe (70 admitted, 71 and 256 rejected) and is elimi
   execution at the same operation count; verify the `Atomic`-mode preflight effect on 1024-operation
   requests (`bench_atomic_insert_max_receipt` measures receipt encoding only and is unaffected, but
   admission of a 1024-operation request changes with the measured estimate).
-- `gleaph build` CLI: cursor-loop driver against a fake transport (lost responses, resume, skip,
-  `--fresh`), artifact validation, and an e2e run through `bulk_load_as_admin`.
+- `gleaph load` CLI (driver and artifact validation implemented as of 2026-08-03): cursor-loop
+  driver against a fake transport (lost responses, resume, skip, `--fresh`) and artifact
+  validation; the CLI-to-Router e2e run through `bulk_load_as_admin` remains deferred.
 
 ## Related decisions
 
@@ -423,5 +425,5 @@ by the 2026-08-03 PocketIC probe (70 admitted, 71 and 256 rejected) and is elimi
   `gleaph-graph-kernel` re-export.
 - [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md): ordered atomic-insert contract
   and `ORDER BY INSERTION` semantics preserved by the `Resumable` prefix-commit design.
-- [ADR 0058](0058-versioned-additive-schema-migrations.md): unchanged; `gleaph build` composes with
+- [ADR 0058](0058-versioned-additive-schema-migrations.md): unchanged; `gleaph load` composes with
   `gleaph migration apply` but owns only the data load.
