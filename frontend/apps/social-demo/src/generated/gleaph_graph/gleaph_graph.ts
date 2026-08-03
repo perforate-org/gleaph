@@ -1001,6 +1001,13 @@ export interface OrderedMixedBatchGraphArgsV1 {
     graph_request_fingerprint: Uint8Array;
     execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedMixedBatchGraphRequest;
+    /**
+     * Router-sourced indexed-property catalog scoped to the vertex properties and edge
+     * `(label_id, property_id)` scopes this batch writes (ADR 0023 D1/D3). Transport metadata
+     * like [`Self::execution_mode`]: carried outside the fingerprinted request, so catalog
+     * changes do not perturb replay identity.
+     */
+    indexed_property_catalog: IndexedPropertyCatalog;
 }
 export type Result_14 = {
     __kind__: "Ok";
@@ -3218,17 +3225,20 @@ function to_candid_record_n130(value: {
     graph_request_fingerprint: Uint8Array;
     execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedMixedBatchGraphRequest;
+    indexed_property_catalog: IndexedPropertyCatalog;
 }): {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
     execution_mode: _OrderedBatchExecutionModeV1;
     request: _OrderedMixedBatchGraphRequest;
+    indexed_property_catalog: _IndexedPropertyCatalog;
 } {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
         execution_mode: to_candid_OrderedBatchExecutionModeV1_n96(value.execution_mode),
-        request: to_candid_OrderedMixedBatchGraphRequest_n131(value.request)
+        request: to_candid_OrderedMixedBatchGraphRequest_n131(value.request),
+        indexed_property_catalog: to_candid_IndexedPropertyCatalog_n66(value.indexed_property_catalog)
     };
 }
 function to_candid_record_n134(value: {

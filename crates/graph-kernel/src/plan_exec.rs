@@ -488,6 +488,11 @@ pub struct OrderedMixedBatchGraphArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
     pub execution_mode: OrderedBatchExecutionModeV1,
+    /// Router-sourced indexed-property catalog scoped to the vertex properties and edge
+    /// `(label_id, property_id)` scopes this batch writes (ADR 0023 D1/D3). Transport metadata
+    /// like [`Self::execution_mode`]: carried outside the fingerprinted request, so catalog
+    /// changes do not perturb replay identity.
+    pub indexed_property_catalog: crate::index::IndexedPropertyCatalog,
     pub request: OrderedMixedBatchGraphRequest,
 }
 

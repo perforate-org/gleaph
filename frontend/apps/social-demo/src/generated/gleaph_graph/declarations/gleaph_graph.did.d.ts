@@ -884,6 +884,13 @@ export interface OrderedMixedBatchGraphArgsV1 {
   'graph_request_fingerprint' : Uint8Array,
   'execution_mode' : OrderedBatchExecutionModeV1,
   'request' : OrderedMixedBatchGraphRequest,
+  /**
+   * Router-sourced indexed-property catalog scoped to the vertex properties and edge
+   * `(label_id, property_id)` scopes this batch writes (ADR 0023 D1/D3). Transport metadata
+   * like [`Self::execution_mode`]: carried outside the fingerprinted request, so catalog
+   * changes do not perturb replay identity.
+   */
+  'indexed_property_catalog' : IndexedPropertyCatalog,
 }
 /**
  * Versioned Graph envelope for a mixed vertex/edge batch.

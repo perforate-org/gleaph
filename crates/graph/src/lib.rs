@@ -104,10 +104,10 @@ async fn execute_ordered_vertex_batch(
 
 /// Router → graph: journal-first mixed vertex/edge batch execution (ADR 0049).
 #[update(guard = "guard_router_canister")]
-fn execute_ordered_mixed_batch(
+async fn execute_ordered_mixed_batch(
     args: gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs,
 ) -> Result<gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResult, String> {
-    canister::handlers::execute_ordered_mixed_batch(args)
+    canister::handlers::execute_ordered_mixed_batch(args).await
 }
 
 #[update(guard = "guard_router_canister")]

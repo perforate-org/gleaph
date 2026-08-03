@@ -242,24 +242,25 @@ batch equality machinery reuses the existing `LookupEqualBatchRequest` (bucket-g
 pages + resume cursor), which already provides union/batch-equality semantics with per-value
 result association.
 
-**Ordered-batch postings (implemented as of 2026-08-03).** Ordered vertex and edge batches now
-push property-index postings during chunk processing instead of depending on a post-load
-backfill pass. The Router loads the active indexed-property catalog, **subsets it to the
-properties (and, for edges, the `(label, property)` pairs) the batch actually writes**, and
+**Ordered-batch postings (implemented as of 2026-08-03).** Ordered vertex, edge, and mixed
+batches now push property-index postings during chunk processing instead of depending on a
+post-load backfill pass. The Router loads the active indexed-property catalog, **subsets it to
+the properties (and, for edges, the `(label, property)` pairs) the batch actually writes**, and
 carries the subset on the args envelope (`OrderedVertexBatchGraphArgsV1` /
-`OrderedEdgeBatchGraphArgsV1`) outside the fingerprinted request, mirroring
-`OrderedBatchExecutionModeV1` as transport metadata; the fingerprint therefore ignores catalog
-changes. The Graph batch handlers enter the subset catalog, and after the journal commit flush
-the volatile pending queues through the existing `flush_all_pending` — one `posting_batch` call
-that batches vertex, edge, and label postings, message-size paging via
-`gleaph-message-sizing` and following the index canister's instruction budget, with the
-remainder journaled for durable repair (ADR 0023 D5) on failure. Per chunk the flow costs two
-inter-canister calls (Router → Graph, Graph → index) and zero extra calls for chunks without
-indexed properties. Postings are therefore pushed at load time (proportional to data written)
-rather than by an all-vertices backfill scan; backfill remains for indexes created after data
-was loaded and for repair convergence. This applies uniformly to the ordered vertex, edge, and
-mixed batch paths regardless of each edge label's `EdgeOrderingPolicy` (ADR 0052), because
-placement policy is orthogonal to property-index maintenance.
+`OrderedEdgeBatchGraphArgsV1` / `OrderedMixedBatchGraphArgsV1`) outside the fingerprinted
+request, mirroring `OrderedBatchExecutionModeV1` as transport metadata; the fingerprint
+therefore ignores catalog changes. The Graph batch handlers enter the subset catalog, and
+after the journal commit flush the volatile pending queues through the existing
+`flush_all_pending` — one `posting_batch` call that batches vertex, edge, and label postings,
+message-size paging via `gleaph-message-sizing` and following the index canister's instruction
+budget, with the remainder journaled for durable repair (ADR 0023 D5) on failure. Per chunk
+the flow costs two inter-canister calls (Router → Graph, Graph → index) and zero extra calls
+for chunks without indexed properties. Postings are therefore pushed at load time
+(proportional to data written) rather than by an all-vertices backfill scan; backfill remains
+for indexes created after data was loaded and for repair convergence. This applies uniformly
+to the ordered vertex, edge, and mixed batch paths regardless of each edge label's
+`EdgeOrderingPolicy` (ADR 0052), because placement policy is orthogonal to property-index
+maintenance.
 
 ## Alternatives
 

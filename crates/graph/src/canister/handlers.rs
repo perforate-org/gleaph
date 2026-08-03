@@ -797,7 +797,7 @@ async fn execute_ordered_vertex_batch_resumable(
 /// resolves new endpoints and the existing ordered edge writer performs the edge phase.
 /// Any failure after vertex allocation is an invariant violation and traps so a Graph update
 /// cannot expose stranded vertices as an ordinary recoverable error.
-pub fn execute_ordered_mixed_batch(
+pub async fn execute_ordered_mixed_batch(
     args: OrderedMixedBatchGraphArgs,
 ) -> Result<GraphOrderedMixedBatchResult, String> {
     args.recompute_and_validate_fingerprint()?;
@@ -902,6 +902,7 @@ pub fn execute_ordered_mixed_batch(
         }
     }
 
+    let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
     let allocated_vertex_ids = insert_vertices_with(&store, vertices).unwrap_or_else(|error| {
         panic!("ordered mixed vertex phase failed after preflight: {error}")
     });
@@ -966,6 +967,9 @@ pub fn execute_ordered_mixed_batch(
     result.validate().unwrap_or_else(|error| {
         panic!("ordered mixed result validation failed after journal commit: {error}")
     });
+    flush_ordered_batch_postings(args.mutation_id)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(result)
 }
 
@@ -3295,6 +3299,7 @@ mod tests {
             mutation_id: 73_001,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
         let allocation_start = u32::from(GraphStore::new().vertex_count());
@@ -3306,7 +3311,8 @@ mod tests {
         ];
         let allocation_order_guard =
             crate::facade::mutation_executor::test_bulk_vertex_allocation_order(vec![1, 0]);
-        let result = execute_ordered_mixed_batch(args.clone()).expect("mixed batch execution");
+        let result = pollster::block_on(execute_ordered_mixed_batch(args.clone()))
+            .expect("mixed batch execution");
         let GraphOrderedMixedBatchResult::V1(
             gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(receipt),
         ) = &result
@@ -3344,7 +3350,8 @@ mod tests {
         );
         drop(allocation_order_guard);
 
-        let replay = execute_ordered_mixed_batch(args).expect("mixed batch replay");
+        let replay =
+            pollster::block_on(execute_ordered_mixed_batch(args)).expect("mixed batch replay");
         assert_eq!(result, replay);
     }
 
@@ -3382,6 +3389,7 @@ mod tests {
             mutation_id,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
         let store = GraphStore::new();
@@ -3389,7 +3397,7 @@ mod tests {
         let corruption_guard = test_corrupt_ordered_mixed_result_after_commit();
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute_ordered_mixed_batch(args)
+            pollster::block_on(execute_ordered_mixed_batch(args))
         }));
 
         assert!(
@@ -3419,6 +3427,112 @@ mod tests {
             "the host-only corruption seam must run after journal completion"
         );
         drop(corruption_guard);
+    }
+
+    #[test]
+    fn ordered_mixed_batch_queues_vertex_and_edge_postings_for_cataloged_scopes() {
+        attach_test_federation(TEST_SHARD_ID);
+        let vertex_property = PropertyId::from_raw(90);
+        let edge_property = PropertyId::from_raw(91);
+        let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(81),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            operations: vec![
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: vec![90],
+                    resolved_initial_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id: vertex_property,
+                            value: Value::Text("indexed".into())
+                                .to_binary_bytes()
+                                .expect("encode property"),
+                        },
+                    ],
+                }),
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: vec![90],
+                    resolved_initial_properties: Vec::new(),
+                }),
+                OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                    source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                    target: OrderedMixedGraphEndpointV1::NewVertexOrdinal(1),
+                    directed: true,
+                    catalog_edge_label_id: Some(EdgeLabelId::from_raw(90)),
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id: edge_property,
+                            value: Value::Int64(5).to_binary_bytes().expect("encode property"),
+                        },
+                    ],
+                }),
+            ],
+        });
+        let fingerprint =
+            ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
+            mutation_id: 81_001,
+            graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog {
+                vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_090)
+                        .expect("test physical id"),
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                    property_id: vertex_property.raw(),
+                    label_id: 90,
+                }],
+                edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_091)
+                        .expect("test physical id"),
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                    label_id: 90,
+                    property_id: edge_property.raw(),
+                    direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+                    field_path: String::new(),
+                }],
+            },
+            request,
+        });
+        pollster::block_on(execute_ordered_mixed_batch(args.clone())).expect("mixed batch");
+        let vertex_pending = crate::index::pending::take_pending();
+        let edge_pending = crate::index::edge_pending::take_pending();
+        assert!(
+            vertex_pending.iter().any(|op| matches!(
+                op,
+                crate::index::pending::PendingPostingOp::Insert {
+                    property_id: 90,
+                    ..
+                }
+            )),
+            "cataloged mixed vertex property must queue a posting op: {vertex_pending:?}"
+        );
+        assert!(
+            edge_pending.iter().any(|op| matches!(
+                op,
+                crate::index::edge_pending::PendingEdgePostingOp::Insert {
+                    label_id,
+                    property_id: 91,
+                    ..
+                } if *label_id & gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX == 90
+            )),
+            "cataloged mixed edge property must queue a posting op: {edge_pending:?}"
+        );
+        // Replay returns the stored journal result without re-executing, so it must not re-queue.
+        pollster::block_on(execute_ordered_mixed_batch(args)).expect("mixed batch replay");
+        assert!(
+            crate::index::pending::take_pending().is_empty(),
+            "mixed replay must not re-queue vertex postings"
+        );
+        assert!(
+            crate::index::edge_pending::take_pending().is_empty(),
+            "mixed replay must not re-queue edge postings"
+        );
     }
 
     /// Scalar handler contract: `execute_plan_update` (single-message update) must omit

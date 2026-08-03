@@ -502,6 +502,43 @@ pub(crate) fn ordered_edge_batch_catalog(
     edge_batch_indexed_property_catalog(request.graph_id, &scopes)
 }
 
+/// Subset the active indexed-property catalog to one ordered mixed batch request's written vertex
+/// properties and edge `(label_id, property_id)` scopes.
+pub(crate) fn ordered_mixed_batch_catalog(
+    request: &gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequestV1,
+) -> IndexedPropertyCatalog {
+    let mut catalog = load_active_indexed_property_catalog(request.graph_id);
+    let mut vertex_properties = std::collections::BTreeSet::new();
+    let mut edge_scopes = std::collections::BTreeSet::new();
+    for operation in &request.operations {
+        match operation {
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Vertex(item) => {
+                for property in &item.resolved_initial_properties {
+                    vertex_properties.insert(property.property_id.raw());
+                }
+            }
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Edge(item) => {
+                let Some(label) = item
+                    .catalog_edge_label_id
+                    .map(gleaph_graph_kernel::entry::EdgeLabelId::raw)
+                else {
+                    continue;
+                };
+                for property in &item.resolved_initial_edge_properties {
+                    edge_scopes.insert((label, property.property_id.raw()));
+                }
+            }
+        }
+    }
+    catalog
+        .vertex_indexes
+        .retain(|membership| vertex_properties.contains(&membership.property_id));
+    catalog
+        .edge_indexes
+        .retain(|membership| edge_scopes.contains(&(membership.label_id, membership.property_id)));
+    catalog
+}
+
 fn maintenance_phase(record: &IndexDefRecord) -> Option<(u64, IndexMaintenancePhase)> {
     match record.lifecycle {
         IndexLifecycleState::Preparing { .. } | IndexLifecycleState::Aborting { .. } => None,

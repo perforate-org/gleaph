@@ -1715,6 +1715,11 @@ async fn execute_ordered_mixed_batch_classified(
                 "ordered mixed Graph request missing after durable transition".into(),
             )
         })?;
+    let indexed_property_catalog = {
+        let gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1(request) =
+            &graph_request;
+        crate::facade::stable::indexed_catalog::ordered_mixed_batch_catalog(request)
+    };
     let graph_result = execute_ordered_mixed_batch_on_graph(
         target_shard.graph_canister,
         gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs::V1(
@@ -1722,6 +1727,7 @@ async fn execute_ordered_mixed_batch_classified(
                 mutation_id,
                 graph_request_fingerprint,
                 execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
+                indexed_property_catalog,
                 request: graph_request,
             },
         ),

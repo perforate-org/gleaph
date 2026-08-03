@@ -394,6 +394,7 @@ export const idlFactory = ({ IDL }) => {
     'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
     'execution_mode' : OrderedBatchExecutionModeV1,
     'request' : OrderedMixedBatchGraphRequest,
+    'indexed_property_catalog' : IndexedPropertyCatalog,
   });
   const OrderedMixedBatchGraphArgs = IDL.Variant({
     'V1' : OrderedMixedBatchGraphArgsV1,
