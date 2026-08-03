@@ -380,7 +380,9 @@ caller's default graph via the `Option<String>` wire); the driver fits each requ
 inter-canister payload bound with `gleaph-message-sizing` and loops on `next_offset`; `--fresh`
 derives a fresh job key (durable bulk-load keys are single-use); an optional `--state-file` records
 the effective key and artifact digest for skip-on-Completed verification; exit codes are 0
-complete/skip, 1 operator action, 2 input validation, 3 remote/auth. The CLI depends on the
+complete/skip, 1 operator action, 2 input validation, 3 remote/auth. The user-facing
+specification (artifact schema, flags, lifecycle, and exit codes) is maintained at
+`crates/cli/docs/load.md`, and the CLI crate README covers the whole tool. The CLI depends on the
 shared wire crate `gleaph-bulk-load-api` (extracted as of 2026-08-03 from
 `gleaph_router::types`), which owns the versioned bulk-load and ordered atomic-insert wire
 contract that both the CLI and the Router encode and validate; the Router re-exports the same
