@@ -34,7 +34,7 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
 
         moved: EdgeSlotMove,
     ) {
-        GraphStore::move_edge_sidecars(orientation, vid, moved);
+        GraphStore::move_edge_sidecars(orientation, vid, moved, 0);
         if orientation == LabeledOrientation::Forward {
             self.inline_moves.push((vid, moved));
         }

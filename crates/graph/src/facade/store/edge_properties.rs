@@ -49,7 +49,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, super::error::GraphStoreError> {
-        self.commit_edge_property_write(occurrence, property_id, value)
+        self.commit_edge_property_write(occurrence, property_id, value, 0)
     }
 
     pub fn remove_edge_property(
@@ -57,7 +57,28 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
     ) -> Result<Option<Value>, super::error::GraphStoreError> {
-        self.commit_edge_property_remove(occurrence, property_id)
+        self.commit_edge_property_remove(occurrence, property_id, 0)
+    }
+
+    /// Write an edge property under an explicit canonical mutation identity for the fence.
+    pub(crate) fn set_edge_property_with_mutation_id(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+        property_id: PropertyId,
+        value: Value,
+        mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        self.commit_edge_property_write(occurrence, property_id, value, mutation_id)
+    }
+
+    /// Remove an edge property under an explicit canonical mutation identity for the fence.
+    pub(crate) fn remove_edge_property_with_mutation_id(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+        property_id: PropertyId,
+        mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        self.commit_edge_property_remove(occurrence, property_id, mutation_id)
     }
 
     pub fn edge_properties(
@@ -136,7 +157,7 @@ impl GraphStore {
         owner_vertex_id: ic_stable_lara::VertexId,
         label_id: u16,
         slot_index: u32,
-        mut f: impl FnMut(PropertyId, Vec<u8>),
+        mut f: impl FnMut(crate::index::catalog_context::IndexMembershipRef, PropertyId, Vec<u8>),
     ) {
         use crate::index::catalog_context;
         use crate::property::sortable_index_key;
@@ -147,13 +168,40 @@ impl GraphStore {
                 label_id,
                 slot_index,
                 |pid, value| {
-                    if !catalog_context::is_edge_property_indexed(pid) {
-                        return;
-                    }
                     let Some(inline_property_bytes) = sortable_index_key(&value) else {
                         return;
                     };
-                    f(pid, inline_property_bytes);
+                    for membership in catalog_context::edge_index_memberships(label_id, pid) {
+                        f(membership, pid, inline_property_bytes.clone());
+                    }
+                },
+            );
+        });
+    }
+
+    /// Invoke `f` with each indexed property value on an edge (for index-build admission
+    /// planning, which needs the canonical `Value`, not the encoded posting key).
+    pub(crate) fn for_each_indexed_edge_property_value_on_edge(
+        owner_vertex_id: ic_stable_lara::VertexId,
+        label_id: u16,
+        slot_index: u32,
+        mut f: impl FnMut(crate::index::catalog_context::IndexMembershipRef, PropertyId, Value),
+    ) {
+        use crate::index::catalog_context;
+        use crate::property::sortable_index_key;
+
+        EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.for_each_property_for_edge(
+                owner_vertex_id,
+                label_id,
+                slot_index,
+                |pid, value| {
+                    if sortable_index_key(&value).is_none() {
+                        return;
+                    }
+                    for membership in catalog_context::edge_index_memberships(label_id, pid) {
+                        f(membership, pid, value.clone());
+                    }
                 },
             );
         });

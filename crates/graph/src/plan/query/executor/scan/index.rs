@@ -88,11 +88,17 @@ pub(crate) async fn execute_index_scan(
     let Some(bytes) = resolve_scan_payload_bytes(scan_value, ctx.parameters)? else {
         return Ok(Vec::new());
     };
+    let physical_index_id = crate::index::catalog_context::unique_active_vertex_physical_index_id(
+        gleaph_graph_kernel::entry::PropertyId::from_raw(pid),
+    )
+    .ok_or(PlanQueryError::UnsupportedOp(
+        "IndexScan(no unique physical index namespace)",
+    ))?;
     let hits = if cmp == CmpOp::Eq {
-        ix.lookup_equal(pid, bytes).await?
+        ix.lookup_equal(physical_index_id, pid, bytes).await?
     } else {
         let req = cmp_to_posting_range_request(cmp, bytes)?;
-        ix.lookup_range(pid, &req).await?
+        ix.lookup_range(physical_index_id, pid, &req).await?
     };
     Ok(ctx
         .federation
@@ -125,11 +131,18 @@ pub(crate) async fn execute_conditional_index_scan(
                 ));
             };
             let pid = property_id_for_scan(&ctx.execution, c.property.as_ref())?;
+            let physical_index_id =
+                crate::index::catalog_context::unique_active_vertex_physical_index_id(
+                    gleaph_graph_kernel::entry::PropertyId::from_raw(pid),
+                )
+                .ok_or(PlanQueryError::UnsupportedOp(
+                    "ConditionalIndexScan(no unique physical index namespace)",
+                ))?;
             let hits = if c.cmp == CmpOp::Eq {
-                ix.lookup_equal(pid, bytes).await?
+                ix.lookup_equal(physical_index_id, pid, bytes).await?
             } else {
                 let req = cmp_to_posting_range_request(c.cmp, bytes)?;
-                ix.lookup_range(pid, &req).await?
+                ix.lookup_range(physical_index_id, pid, &req).await?
             };
             return Ok(ctx.federation.bind_index_hits(
                 ctx.store,
@@ -168,7 +181,14 @@ pub(crate) async fn execute_index_intersection(
         let Some(bytes) = resolve_scan_payload_bytes(&spec.value, ctx.parameters)? else {
             return Ok(Vec::new());
         };
-        specs.push(IndexEqualSpec::vertex(pid, bytes));
+        let physical_index_id =
+            crate::index::catalog_context::unique_active_vertex_physical_index_id(
+                gleaph_graph_kernel::entry::PropertyId::from_raw(pid),
+            )
+            .ok_or(PlanQueryError::UnsupportedOp(
+                "IndexIntersection(no unique physical index namespace)",
+            ))?;
+        specs.push(IndexEqualSpec::vertex(physical_index_id, pid, bytes));
     }
     if specs.len() < 2 {
         return Ok(Vec::new());

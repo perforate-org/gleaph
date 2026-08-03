@@ -2,28 +2,29 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-20  
-Anchor timestamp: 2026-06-20 02:10:05 UTC +0000
+Last revised: 2026-08-03
+Anchor timestamp: 2026-08-03 01:51:50 UTC +0000
 
 ## Revision history
 
-| Date | Change |
-|------|--------|
-| 2026-06-12 | Proposed; edge postings on graph-index, mixed intersection, opt-in `CREATE INDEX` / `DROP INDEX` DDL. |
-| 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §Implementation phases. |
-| 2026-06-12 | Phase A implemented: shard index registry, opt-in DML gate, router fan-out admin APIs. |
-| 2026-06-12 | Phase B implemented: `INDEX_EDGE_POSTINGS` on graph-index; federated edge DML flush; edge backfill API. |
-| 2026-06-12 | Phase C implemented: `IndexSubject` / `IndexIntersectionResult`; mixed vertex/edge intersection on graph-index. |
-| 2026-06-12 | Phase D (partial): router `EdgeIndexScan` / all-edge intersection seeds; `LocalEdgePosting` wire; graph edge seed apply + skip leading `EdgeIndexScan`. `EDGE_EQUALITY_POSTINGS` retire pending. |
-| 2026-06-12 | Phase D implemented: retired graph `EDGE_EQUALITY_POSTINGS`; MemoryId repack (40 regions); expand/edge scan via graph-index client, router seeds, or `EDGE_PROPERTIES` scan fallback. |
-| 2026-06-12 | Phase E implemented: router `CREATE INDEX` / `DROP INDEX` extension DDL via `gql_execute*`; named index catalog; shard `unregister_indexed_property`. |
-| 2026-06-12 | Index catalog stable layout: row-oriented `ROUTER_NAMED_INDEXES` + `ROUTER_INDEXED_PROPERTY_SET` with `PropertyId` / label ids (replaces per-graph Candid blob). |
-| 2026-06-13 | Planner stats: `RouterGraphStats` loads `PropertyId` membership; `GraphStats` adapter resolves names via property catalog; one stats load per GQL execution. |
-| 2026-06-13 | Phase E PocketIC e2e: `DROP INDEX` standalone scan fallback + federated anchor loss; planner `PropertyFilter`/`Filter` contribute to `property_uses` for shard `resolved_properties`. |
-| 2026-06-13 | Phase E PocketIC e2e: edge `CREATE INDEX` / `DROP INDEX` via `e2e_insert_directed_edge_with_property`; standalone scan fallback and federated anchor loss for `()-[e:L {p: v}]->` queries. |
-| 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) accepted: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule; slash `FOR` rejected (amends §1 `label_id`, §4 edge DDL). |
-| 2026-06-20 | Vertex-only intersection streamed via server-side `lookup_intersection_page` (paged walk + in-heap merge-join sieve); see [lookup-intersection.md](../index/lookup-intersection.md). **Edge / mixed intersection (§3) marked dormant** — implemented at store/wire layer but unreachable from GQL/planner; streaming intentionally not applied (see §3 status note). |
+| Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-06-12 | Proposed; edge postings on graph-index, mixed intersection, opt-in `CREATE INDEX` / `DROP INDEX` DDL.                                                                                                                                                                                                                                                                                                                    |
+| 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §Implementation phases.                                                                                                                                                                                                                                                                                                                                     |
+| 2026-06-12 | Phase A implemented: shard index registry, opt-in DML gate, router fan-out admin APIs.                                                                                                                                                                                                                                                                                                                                   |
+| 2026-06-12 | Phase B implemented: `INDEX_EDGE_POSTINGS` on graph-index; federated edge DML flush; edge backfill API.                                                                                                                                                                                                                                                                                                                  |
+| 2026-06-12 | Phase C implemented: `IndexSubject` / `IndexIntersectionResult`; mixed vertex/edge intersection on graph-index.                                                                                                                                                                                                                                                                                                          |
+| 2026-06-12 | Phase D (partial): router `EdgeIndexScan` / all-edge intersection seeds; `LocalEdgePosting` wire; graph edge seed apply + skip leading `EdgeIndexScan`. `EDGE_EQUALITY_POSTINGS` retire pending.                                                                                                                                                                                                                         |
+| 2026-06-12 | Phase D implemented: retired graph `EDGE_EQUALITY_POSTINGS`; MemoryId repack (40 regions); expand/edge scan via graph-index client, router seeds, or `EDGE_PROPERTIES` scan fallback.                                                                                                                                                                                                                                    |
+| 2026-06-12 | Phase E implemented: router `CREATE INDEX` / `DROP INDEX` extension DDL via `gql_execute*`; named index catalog; shard `unregister_indexed_property`.                                                                                                                                                                                                                                                                    |
+| 2026-06-12 | Index catalog stable layout: row-oriented `ROUTER_NAMED_INDEXES` + `ROUTER_INDEXED_PROPERTY_SET` with `PropertyId` / label ids (replaces per-graph Candid blob).                                                                                                                                                                                                                                                         |
+| 2026-06-13 | Planner stats: `RouterGraphStats` loads `PropertyId` membership; `GraphStats` adapter resolves names via property catalog; one stats load per GQL execution.                                                                                                                                                                                                                                                             |
+| 2026-06-13 | Phase E PocketIC e2e: `DROP INDEX` standalone scan fallback + federated anchor loss; planner `PropertyFilter`/`Filter` contribute to `property_uses` for shard `resolved_properties`.                                                                                                                                                                                                                                    |
+| 2026-06-13 | Phase E PocketIC e2e: edge `CREATE INDEX` / `DROP INDEX` via `e2e_insert_directed_edge_with_property`; standalone scan fallback and federated anchor loss for `()-[e:L {p: v}]->` queries.                                                                                                                                                                                                                               |
+| 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) accepted: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule; slash `FOR` rejected (amends §1 `label_id`, §4 edge DDL).                                                                                                                                                                                              |
+| 2026-06-20 | Vertex-only intersection streamed via server-side `lookup_intersection_page` (paged walk + in-heap merge-join sieve); see [lookup-intersection.md](../index/lookup-intersection.md). **Edge / mixed intersection (§3) marked dormant** — implemented at store/wire layer but unreachable from GQL/planner; streaming intentionally not applied (see §3 status note).                                                     |
 | 2026-06-20 | [ADR 0023](0023-federated-index-consistency-upgrade-compaction.md) accepted: the Phase A shard index registry (`registry.rs`) is a **volatile** derived gate that does not survive the upgrade boundary or the router-less timer-compaction context (stale/orphan postings). 0023 removes it in favour of a router-sourced **ephemeral per-operation catalog**, precise emit, and a failure-only durable repair journal. |
+| 2026-08-03 | [ADR 0059](0059-create-index-migration-backfill.md) accepted as a partially implemented amendment for migration-driven `CREATE INDEX` backfill and activation (production Router driver implemented; PocketIC E2E/upgrade validation pending). It does not rewrite the implemented non-migration DDL or posting semantics in this ADR.                                                                                   |
 
 ## Context
 
@@ -35,14 +36,14 @@ on each graph shard as derived stable `EDGE_EQUALITY_POSTINGS`
 
 ### Problems today
 
-| Area | Issue |
-|------|--------|
-| **Asymmetric ownership** | Vertex anchors use `lookup_equal` / `lookup_intersection` on graph-index; edge equality uses shard-local `EDGE_EQUALITY_POSTINGS` during Expand only. |
-| **No federated edge anchor** | Leading `EdgeIndexScan` (`()-[e:L {p: v}]->(b)`) cannot be resolved once per logical graph; each shard maintains its own posting set. |
-| **No vertex ∩ edge intersection** | `lookup_intersection` accepts vertex property arms only (`PostingHit` = `(shard_id, vertex_id)`). Queries such as `WHERE a.age = 30 AND e.weight = 5` cannot narrow seeds in the index plane. |
-| **Over-broad DML maintenance** | Graph DML enqueues vertex/edge postings for every **indexable** property value (`sortable_index_key`), while the planner uses indexes only when `RouterGraphStats` lists the property — **write/storage work without query benefit**. |
-| **Admin surface** | Vertex: `admin_set_indexed_vertex_property` (canister API). Edge: `indexed_edge_properties` exists in stats types but has **no** admin/DDL path. ISO/IEC 39075 §12 primitive DDL has **no** `CREATE INDEX` ([gleaph-gql](../../crates/gql) implements SCHEMA/GRAPH/GRAPH TYPE only). |
-| **Key shape** | Shard-local edge keys are `(property_id, value, owner, label, slot)` with **no** `shard_id` and **label after owner**, which weakens labeled prefix probes. |
+| Area                              | Issue                                                                                                                                                                                                                                                                                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Asymmetric ownership**          | Vertex anchors use `lookup_equal` / `lookup_intersection` on graph-index; edge equality uses shard-local `EDGE_EQUALITY_POSTINGS` during Expand only.                                                                                                                                |
+| **No federated edge anchor**      | Leading `EdgeIndexScan` (`()-[e:L {p: v}]->(b)`) cannot be resolved once per logical graph; each shard maintains its own posting set.                                                                                                                                                |
+| **No vertex ∩ edge intersection** | `lookup_intersection` accepts vertex property arms only (`PostingHit` = `(shard_id, vertex_id)`). Queries such as `WHERE a.age = 30 AND e.weight = 5` cannot narrow seeds in the index plane.                                                                                        |
+| **Over-broad DML maintenance**    | Graph DML enqueues vertex/edge postings for every **indexable** property value (`sortable_index_key`), while the planner uses indexes only when `RouterGraphStats` lists the property — **write/storage work without query benefit**.                                                |
+| **Admin surface**                 | Vertex: `admin_set_indexed_vertex_property` (canister API). Edge: `indexed_edge_properties` exists in stats types but has **no** admin/DDL path. ISO/IEC 39075 §12 primitive DDL has **no** `CREATE INDEX` ([gleaph-gql](../../crates/gql) implements SCHEMA/GRAPH/GRAPH TYPE only). |
+| **Key shape**                     | Shard-local edge keys are `(property_id, value, owner, label, slot)` with **no** `shard_id` and **label after owner**, which weakens labeled prefix probes.                                                                                                                          |
 
 ### Prerequisites (met or in flight)
 
@@ -75,14 +76,14 @@ entity kinds in one key space without an explicit tag).
 (property_id, value, label_id, shard_id, owner_vertex_id, slot_index)
 ```
 
-| Field | Role |
-|-------|------|
-| `property_id` | Router-issued `PropertyId` (same as vertex postings) |
-| `value` | Sortable index key bytes (`value_to_index_key_bytes`) |
-| `label_id` | `EdgeLabelId` raw; sentinel for unlabeled edges (see §1.1). **Amended by [ADR 0012](0012-edge-index-direction-in-ddl.md):** store LARA **`wire_label_id`** (`BucketLabelKey` raw, directed MSB included) in graph-index keys; catalog id remains in router registry together with `EdgeDirection`. |
-| `shard_id` | Owning graph shard |
-| `owner_vertex_id` | Forward CSR owner (`VertexId` on that shard) |
-| `slot_index` | Edge slot within labeled adjacency |
+| Field             | Role                                                                                                                                                                                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `property_id`     | Router-issued `PropertyId` (same as vertex postings)                                                                                                                                                                                                                                               |
+| `value`           | Sortable index key bytes (`value_to_index_key_bytes`)                                                                                                                                                                                                                                              |
+| `label_id`        | `EdgeLabelId` raw; sentinel for unlabeled edges (see §1.1). **Amended by [ADR 0012](0012-edge-index-direction-in-ddl.md):** store LARA **`wire_label_id`** (`BucketLabelKey` raw, directed MSB included) in graph-index keys; catalog id remains in router registry together with `EdgeDirection`. |
+| `shard_id`        | Owning graph shard                                                                                                                                                                                                                                                                                 |
+| `owner_vertex_id` | Forward CSR owner (`VertexId` on that shard)                                                                                                                                                                                                                                                       |
+| `slot_index`      | Edge slot within labeled adjacency                                                                                                                                                                                                                                                                 |
 
 **Invariants**
 
@@ -109,12 +110,12 @@ After cutover:
 (§4). Graph DML MUST NOT insert edge (or vertex) postings for properties that are not registered for
 that logical graph and entity kind.
 
-| Layer | Responsibility |
-|-------|----------------|
-| **Router catalog** | SSOT: which `(entity, label?, property)` tuples are indexed per logical graph |
-| **Planner** | `is_vertex_property_indexed` / `is_edge_property_indexed` from that catalog |
-| **Graph DML** | `dispatch_property_index_ops` → enqueue vertex/edge ops **iff** property is registered |
-| **graph-index** | Store postings only for registered properties (reject or no-op unknown ids — implementation choice; prefer no-op at index with catalog gate on graph) |
+| Layer              | Responsibility                                                                                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Router catalog** | SSOT: which `(entity, label?, property)` tuples are indexed per logical graph                                                                         |
+| **Planner**        | `is_vertex_property_indexed` / `is_edge_property_indexed` from that catalog                                                                           |
+| **Graph DML**      | `dispatch_property_index_ops` → enqueue vertex/edge ops **iff** property is registered                                                                |
+| **graph-index**    | Store postings only for registered properties (reject or no-op unknown ids — implementation choice; prefer no-op at index with catalog gate on graph) |
 
 **Rationale:** Aligns write cost with query benefit; matches the usual operational model for explicit
 secondary indexes; fixes
@@ -135,7 +136,7 @@ Extend graph-index beyond vertex-only `lookup_intersection`.
 > it today**:
 >
 > - `PlanOp::IndexIntersection` carries `Vec<IndexScanSpec>` where `IndexScanSpec { property, value,
->   cmp }` has **no edge/subject field**, and the planner binds the intersection variable as a
+cmp }` has **no edge/subject field**, and the planner binds the intersection variable as a
 >   **vertex** (`output_schema.rs`, `binding_layout.rs`). It is generated only for a node variable
 >   with ≥2 indexed equality predicates (`find_index_intersection` in
 >   `gql-planner/.../path/filters.rs`), e.g. `MATCH (n:User WHERE n.uid = '…' AND n.email = '…')`.
@@ -153,7 +154,7 @@ Extend graph-index beyond vertex-only `lookup_intersection`.
 > 2. **Key-layout limitation** — the canonical edge key orders `label_id` **before** `shard_id`/
 >    `owner_vertex_id` (§1), so per-owner existence for an **unlabeled** (`label_id: None`) edge arm is
 >    **not a contiguous range** and cannot be sieved cheaply without scanning the whole `(property,
->    value)` bucket or probing every label. A cheap streamed sieve would therefore only cover labeled
+value)` bucket or probing every label. A cheap streamed sieve would therefore only cover labeled
 >    arms; the unlabeled case would need a secondary edge-owner index (Alternative E) or a key reorder
 >    (Alternative B).
 >
@@ -199,19 +200,19 @@ v1 equality only; `specs.len() >= 2` for pure vertex arms unchanged. Single arm 
 
 For each spec, range-scan the appropriate store with prefix:
 
-| Subject | Prefix |
-|---------|--------|
-| `VertexProperty` | `(property_id, value)` → keys `(…, shard_id, vertex_id)` |
-| `EdgeProperty { label_id: Some(L) }` | `(property_id, value, L)` |
-| `EdgeProperty { label_id: None }` | `(property_id, value)` (all labels) |
+| Subject                              | Prefix                                                   |
+| ------------------------------------ | -------------------------------------------------------- |
+| `VertexProperty`                     | `(property_id, value)` → keys `(…, shard_id, vertex_id)` |
+| `EdgeProperty { label_id: Some(L) }` | `(property_id, value, L)`                                |
+| `EdgeProperty { label_id: None }`    | `(property_id, value)` (all labels)                      |
 
 Collect sets of **intersection keys**:
 
-| Result kind | Intersection key per arm | Emitted hits |
-|-------------|--------------------------|--------------|
-| All vertex arms | `(shard_id, vertex_id)` | `PostingHit` |
-| Mixed vertex + edge | `(shard_id, vertex_id)` with edge arm **projected** to `owner_vertex_id` | `PostingHit` (seed for expand source) |
-| All edge arms (same label policy) | `(shard_id, owner, label, slot)` | `EdgePostingHit` |
+| Result kind                       | Intersection key per arm                                                 | Emitted hits                          |
+| --------------------------------- | ------------------------------------------------------------------------ | ------------------------------------- |
+| All vertex arms                   | `(shard_id, vertex_id)`                                                  | `PostingHit`                          |
+| Mixed vertex + edge               | `(shard_id, vertex_id)` with edge arm **projected** to `owner_vertex_id` | `PostingHit` (seed for expand source) |
+| All edge arms (same label policy) | `(shard_id, owner, label, slot)`                                         | `EdgePostingHit`                      |
 
 **Complexity:** O(Σ |posting_i|); no graph canister calls (same as [lookup-intersection.md](../index/lookup-intersection.md)).
 
@@ -250,13 +251,13 @@ DROP INDEX knows_weight IF EXISTS;
 
 **Rules**
 
-| Rule | Detail |
-|------|--------|
-| **Authorization** | Router Admin / Manager+ role per [rbac-and-prepared.md](../security/rbac-and-prepared.md) |
-| **Name resolution** | `Person`, `KNOWS`, property names interned via existing router catalogs → ids stored in index registry |
-| **Index identity** | `index_name` unique per logical graph; maps to `(entity, label_id?, property_id)`; edge indexes also store **`EdgeDirection`** per [ADR 0012](0012-edge-index-direction-in-ddl.md) |
-| **No side effects on CREATE GRAPH** | Creating a graph or graph type does **not** create indexes |
-| **DROP** | Removes registry entry; optional async posting purge job or synchronous `posting_remove` scan per property (implementation phase; must complete before returning OK or document eventual consistency) |
+| Rule                                | Detail                                                                                                                                                                                                |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Authorization**                   | Router Admin / Manager+ role per [rbac-and-prepared.md](../security/rbac-and-prepared.md)                                                                                                             |
+| **Name resolution**                 | `Person`, `KNOWS`, property names interned via existing router catalogs → ids stored in index registry                                                                                                |
+| **Index identity**                  | `index_name` unique per logical graph; maps to `(entity, label_id?, property_id)`; edge indexes also store **`EdgeDirection`** per [ADR 0012](0012-edge-index-direction-in-ddl.md)                    |
+| **No side effects on CREATE GRAPH** | Creating a graph or graph type does **not** create indexes                                                                                                                                            |
+| **DROP**                            | Removes registry entry; optional async posting purge job or synchronous `posting_remove` scan per property (implementation phase; must complete before returning OK or document eventual consistency) |
 
 `SHOW INDEXES` is a follow-up (informational); not required for ADR acceptance.
 
@@ -265,23 +266,23 @@ entry as `CREATE INDEX … ON (n.prop)` or is removed after DDL lands.
 
 ### 5. Planner and executor contract (unchanged surface, new backend)
 
-| Plan feature | Index backend after 0009 |
-|--------------|---------------------------|
-| `IndexScan` / `IndexIntersection` (vertex) | graph-index vertex postings; **registered properties only** |
-| `indexed_edge_equality` / `EdgeIndexScan` | graph-index edge postings; router seeds or federated lookup |
+| Plan feature                                                  | Index backend after 0009                                                       |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `IndexScan` / `IndexIntersection` (vertex)                    | graph-index vertex postings; **registered properties only**                    |
+| `indexed_edge_equality` / `EdgeIndexScan`                     | graph-index edge postings; router seeds or federated lookup                    |
 | `edge_inline_property_predicate` (edge inline property bytes) | Unchanged — LARA inline property bytes path (ADR 0008), **not** property index |
 
 ---
 
 ## Implementation phases
 
-| Phase | Deliverable | Verification |
-|-------|-------------|--------------|
-| **A — Registry + opt-in DML** | Router index registry (vertex + edge); gate `dispatch_property_index_ops` on registration; migrate `admin_set_indexed_vertex_property` | Unit tests: unregistered property writes no posting; registered does |
-| **B — Edge postings on graph-index** | `EdgePostingKey` store; `posting_insert`/`remove` edge API; backfill from `EDGE_PROPERTIES` | graph-index tests; parity with vertex posting tests |
-| **C — Lookup + mixed intersection** | `lookup_edge_equal`, extended `lookup_intersection`; `graph-kernel` types | graph-index + router client tests |
-| **D — Router seeds + graph retire local** | Remove `EDGE_EQUALITY_POSTINGS`; expand/edge scan use seeds; MemoryId repack | pocket-ic; reopen; canbench delta |
-| **E — Index DDL** | Parse/execute `CREATE INDEX` / `DROP INDEX`; RBAC; docs sync | planner fusion tests with DDL setup; PocketIC e2e (`router_gql_query`: vertex + edge CREATE/DROP, standalone scan fallback, federated anchor loss, idempotent/missing DROP) |
+| Phase                                     | Deliverable                                                                                                                            | Verification                                                                                                                                                                |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A — Registry + opt-in DML**             | Router index registry (vertex + edge); gate `dispatch_property_index_ops` on registration; migrate `admin_set_indexed_vertex_property` | Unit tests: unregistered property writes no posting; registered does                                                                                                        |
+| **B — Edge postings on graph-index**      | `EdgePostingKey` store; `posting_insert`/`remove` edge API; backfill from `EDGE_PROPERTIES`                                            | graph-index tests; parity with vertex posting tests                                                                                                                         |
+| **C — Lookup + mixed intersection**       | `lookup_edge_equal`, extended `lookup_intersection`; `graph-kernel` types                                                              | graph-index + router client tests                                                                                                                                           |
+| **D — Router seeds + graph retire local** | Remove `EDGE_EQUALITY_POSTINGS`; expand/edge scan use seeds; MemoryId repack                                                           | pocket-ic; reopen; canbench delta                                                                                                                                           |
+| **E — Index DDL**                         | Parse/execute `CREATE INDEX` / `DROP INDEX`; RBAC; docs sync                                                                           | planner fusion tests with DDL setup; PocketIC e2e (`router_gql_query`: vertex + edge CREATE/DROP, standalone scan fallback, federated anchor loss, idempotent/missing DROP) |
 
 Phases A–B may land before D; **main** should not maintain two edge posting SSOTs beyond one merge window.
 
@@ -305,12 +306,12 @@ Phases A–B may land before D; **main** should not maintain two edge posting SS
 
 ### Risks
 
-| Risk | Mitigation |
-|------|------------|
-| Posting lag vs canonical | Same pending/backfill contract as vertex index; document in derived-state semantics |
-| DDL DROP leaves stale postings | Purge job or range delete by `(property_id)` prefix |
-| Label omitted in DDL but required in query | Parser requires edge label in `FOR ()-[e:L]-()` pattern |
-| Intersection projection too loose | Prefer specs with `label_id: Some(L)` when planner knows `L` |
+| Risk                                       | Mitigation                                                                          |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Posting lag vs canonical                   | Same pending/backfill contract as vertex index; document in derived-state semantics |
+| DDL DROP leaves stale postings             | Purge job or range delete by `(property_id)` prefix                                 |
+| Label omitted in DDL but required in query | Parser requires edge label in `FOR ()-[e:L]-()` pattern                             |
+| Intersection projection too loose          | Prefer specs with `label_id: Some(L)` when planner knows `L`                        |
 
 ---
 
@@ -360,7 +361,7 @@ retryable. The stable cursor records (`BackfillShardState` /
 **Wedge recovery is automatic on upgrade.** Heap state is wiped by a canister
 upgrade, and outstanding inter-canister calls do not resume across an upgrade, so
 any claim is implicitly released on upgrade and a wedged claim cannot survive one.
-The only residual wedge is a router-side trap *during the reply callback* (an
+The only residual wedge is a router-side trap _during the reply callback_ (an
 instruction/cycles trap after the call returned) with no intervening upgrade. The
 normal reject/return paths all release the claim; for that residual case,
 `admin_reset_backfill_claim(logical_graph_name, shard_id, kind)` (`Role::Admin`)

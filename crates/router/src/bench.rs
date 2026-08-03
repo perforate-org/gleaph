@@ -28,7 +28,7 @@ fn router_stable_reopen_round() {
     black_box(memory::init_graph_catalog());
     black_box(memory::init_index_name_catalog());
     black_box(memory::init_named_indexes());
-    black_box(memory::init_indexed_property_set());
+    black_box(memory::init_next_physical_index_id());
     black_box(memory::init_edge_inline_property_profiles());
     black_box(memory::init_gql_graph_catalog());
     black_box(memory::init_graph_type_name_catalog());

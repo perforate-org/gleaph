@@ -6,6 +6,8 @@
 //! - [`label_postings`] — vertex label membership postings read/write
 
 mod authorization;
+mod build_cleanup;
+mod build_state;
 mod edge_postings;
 mod intersection;
 mod label_postings;

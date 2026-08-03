@@ -1,5 +1,10 @@
 //! Router-owned schema migration ledger and catalog commit boundary (ADR 0058).
 
+mod driver;
+mod index;
+
+pub(crate) use driver::real_index_migration_driver;
+
 use candid::Principal;
 use gleaph_gql::ast::{GraphTypeSpec, Statement, StatementBlock};
 use gleaph_gql::parser;
@@ -7,7 +12,8 @@ use gleaph_gql::type_check::{GraphTypePropertySchema, collect_graph_type_vocabul
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationChecksumAlgorithm,
-    SchemaMigrationRecord, SchemaMigrationRecordV1, SchemaMigrationStatementProfile,
+    SchemaMigrationGraphSelector, SchemaMigrationRecord, SchemaMigrationRecordState,
+    SchemaMigrationRecordV1, SchemaMigrationStatementProfile,
 };
 
 use super::{RouterStore, validate_metadata_name};
@@ -19,6 +25,21 @@ use crate::facade::stable::{
 use crate::state::RouterError;
 
 impl RouterStore {
+    /// Control-plane apply entrypoint. Non-index migrations keep the synchronous ADR 0058
+    /// co-write; CREATE INDEX delegates one bounded, resumable step to ADR 0059 orchestration.
+    pub(crate) async fn admin_apply_schema_migration_control<D: index::IndexMigrationDriver>(
+        &self,
+        caller: Principal,
+        args: ApplySchemaMigrationArgs,
+        driver: &D,
+    ) -> Result<ApplySchemaMigrationResult, RouterError> {
+        let ApplySchemaMigrationArgs::V1(inner) = &args;
+        if gleaph_index_ddl::try_parse(&inner.statement).is_some() {
+            return index::apply_index_migration(self, caller, args, driver).await;
+        }
+        self.admin_apply_schema_migration(caller, args)
+    }
+
     /// Apply one immutable, additive schema migration and record it in the canonical ledger.
     ///
     /// All validation, catalog mutation, and ledger insertion happen in this synchronous update
@@ -40,6 +61,12 @@ impl RouterStore {
         {
             let existing = existing.0;
             let existing_v1 = record_v1(&existing)?;
+            validate_graph_selector_for_profile(&existing_v1.graph_selector, &existing_v1.profile)?;
+            if existing_v1.resolved_graph.is_some() {
+                return Err(RouterError::InvalidArgument(
+                    "schema migration record uses an unsupported graph-specific lifecycle".into(),
+                ));
+            }
             if record_matches_args(existing_v1, &args) {
                 return Ok(ApplySchemaMigrationResult::V1(
                     ApplySchemaMigrationResultV1 {
@@ -108,6 +135,7 @@ impl RouterStore {
         let expected_checksum = gleaph_migration_api::schema_migration_checksum(
             &args.id,
             args.parent.as_deref(),
+            &args.graph_selector,
             args.statement.as_bytes(),
         );
         if args.checksum != expected_checksum {
@@ -119,6 +147,7 @@ impl RouterStore {
 
         // The migration dialect is intentionally narrower than the general Router GQL surface;
         // parsing/profile/checksum validation above completed before this preflight.
+        validate_graph_selector_for_profile(&args.graph_selector, &profile)?;
         preflight_catalog_statement(&block)?;
 
         // Catalog application and ledger insertion are one synchronous co-write boundary. Any
@@ -128,14 +157,20 @@ impl RouterStore {
         {
             ic_cdk::trap(format!("schema migration catalog commit failed: {error}"));
         }
+        let recorded_at = super::ic_time_ns();
         let record = SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
             id: args.id.clone(),
             parent: args.parent.clone(),
+            graph_selector: args.graph_selector.clone(),
+            resolved_graph: None,
             checksum: args.checksum.clone(),
             actor: caller,
-            applied_at: super::ic_time_ns(),
+            recorded_at,
             statement: args.statement,
             profile,
+            state: SchemaMigrationRecordState::Applied {
+                applied_at: recorded_at,
+            },
         });
         ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
             ledger.insert(args.id, StableSchemaMigrationRecord(record.clone()));
@@ -208,7 +243,44 @@ fn validate_apply_args(args: &ApplySchemaMigrationArgsV1) -> Result<(), RouterEr
             gleaph_migration_api::SCHEMA_MIGRATION_CHECKSUM_BYTES
         )));
     }
+    validate_graph_selector(&args.graph_selector)?;
     Ok(())
+}
+
+fn validate_graph_selector(selector: &SchemaMigrationGraphSelector) -> Result<(), RouterError> {
+    if let SchemaMigrationGraphSelector::Named(name) = selector {
+        if name.is_empty() {
+            return Err(RouterError::InvalidArgument(
+                "schema migration graph selector name must not be empty".into(),
+            ));
+        }
+        if name.len() > gleaph_migration_api::MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES {
+            return Err(RouterError::InvalidArgument(format!(
+                "schema migration graph selector name exceeds {} UTF-8 bytes",
+                gleaph_migration_api::MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_graph_selector_for_profile(
+    selector: &SchemaMigrationGraphSelector,
+    profile: &SchemaMigrationStatementProfile,
+) -> Result<(), RouterError> {
+    validate_graph_selector(selector)?;
+    match (selector, profile) {
+        (SchemaMigrationGraphSelector::Named(_), SchemaMigrationStatementProfile::CreateGraphType)
+        | (SchemaMigrationGraphSelector::Named(_), SchemaMigrationStatementProfile::CreateTypedGraph) => {
+            Err(RouterError::InvalidArgument(
+                "named graph selectors are only supported for CREATE INDEX migrations".into(),
+            ))
+        }
+        (_, SchemaMigrationStatementProfile::CreateIndex) => Err(RouterError::InvalidArgument(
+            "CREATE INDEX migrations require the planned backfill lifecycle and are not supported yet".into(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn validate_id(id: &str, field: &str) -> Result<(), RouterError> {
@@ -226,6 +298,7 @@ fn record_matches_args(
 ) -> bool {
     existing.id == args.id
         && existing.parent == args.parent
+        && existing.graph_selector == args.graph_selector
         && existing.checksum == args.checksum
         && existing.statement == args.statement
 }
@@ -331,6 +404,17 @@ fn inspect_canonical_chain(
 }
 
 fn parse_and_validate_statement(source: &str) -> Result<StatementBlock, RouterError> {
+    if let Some(index_ddl) = gleaph_index_ddl::try_parse(source) {
+        return match index_ddl {
+            Ok(_) => Err(RouterError::InvalidArgument(
+                "CREATE INDEX migrations require the planned backfill lifecycle and are not supported yet"
+                    .into(),
+            )),
+            Err(error) => Err(RouterError::InvalidArgument(format!(
+                "invalid migration CREATE INDEX syntax: {error}"
+            ))),
+        };
+    }
     let program = parser::parse(source)
         .map_err(|error| RouterError::InvalidArgument(format!("invalid migration GQL: {error}")))?;
     gleaph_gql::validate::validate(&program)
@@ -531,19 +615,36 @@ mod tests {
     use crate::facade::store::tests::{register_test_graph, test_init_args};
     use candid::Principal;
     use gleaph_gql::types::EdgeDirection;
-    use gleaph_graph_kernel::index::IndexedPropertyKind;
+    use gleaph_graph_kernel::index::{EdgeIndexDirection, IndexedPropertyKind};
+    use gleaph_migration_api::ResolvedSchemaMigrationGraph;
     use ic_stable_structures::{BTreeMap, Storable, VectorMemory};
     use std::borrow::Cow;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     fn migration_args(id: &str, parent: Option<&str>, statement: &str) -> ApplySchemaMigrationArgs {
+        migration_args_with_selector(
+            id,
+            parent,
+            &SchemaMigrationGraphSelector::Default,
+            statement,
+        )
+    }
+
+    fn migration_args_with_selector(
+        id: &str,
+        parent: Option<&str>,
+        graph_selector: &SchemaMigrationGraphSelector,
+        statement: &str,
+    ) -> ApplySchemaMigrationArgs {
         ApplySchemaMigrationArgs::V1(ApplySchemaMigrationArgsV1 {
             id: id.to_owned(),
             parent: parent.map(str::to_owned),
+            graph_selector: graph_selector.clone(),
             checksum: gleaph_migration_api::schema_migration_checksum(
                 id,
                 parent,
+                graph_selector,
                 statement.as_bytes(),
             ),
             statement: statement.to_owned(),
@@ -902,6 +1003,144 @@ mod tests {
     }
 
     #[test]
+    fn named_selector_is_rejected_for_existing_schema_profiles_before_writes() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([19; 32]);
+        auth::grant_admin(admin);
+        let args = migration_args_with_selector(
+            "000001_type",
+            None,
+            &SchemaMigrationGraphSelector::Named("social".into()),
+            "CREATE GRAPH TYPE typed_type { NODE Person }",
+        );
+        assert!(matches!(
+            store.admin_apply_schema_migration(admin, args),
+            Err(RouterError::InvalidArgument(message))
+                if message.contains("named graph selectors")
+        ));
+        assert_eq!(
+            ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.len()),
+            0
+        );
+        assert!(
+            ROUTER_GRAPH_TYPE_CATALOG
+                .with_borrow(|catalog| { catalog.get_id("typed_type").is_none() })
+        );
+    }
+
+    #[test]
+    fn create_index_migration_is_rejected_before_catalog_or_ledger_writes() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([20; 32]);
+        auth::grant_admin(admin);
+        let args = migration_args(
+            "000001_age_index",
+            None,
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)",
+        );
+        assert!(matches!(
+            store.admin_apply_schema_migration(admin, args),
+            Err(RouterError::InvalidArgument(message))
+                if message.contains("backfill lifecycle")
+        ));
+        assert_eq!(
+            ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.len()),
+            0
+        );
+        assert!(
+            ROUTER_GRAPH_TYPE_CATALOG.with_borrow(|catalog| { catalog.get_id("Person").is_none() })
+        );
+    }
+
+    #[test]
+    fn unsupported_create_index_record_does_not_replay_before_lifecycle_validation() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([21; 32]);
+        auth::grant_admin(admin);
+        let statement = "CREATE INDEX person_age FOR (n:Person) ON (n.age)";
+        let selector = SchemaMigrationGraphSelector::Default;
+        let record = SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
+            id: "000001_age_index".into(),
+            parent: None,
+            graph_selector: selector.clone(),
+            resolved_graph: None,
+            checksum: gleaph_migration_api::schema_migration_checksum(
+                "000001_age_index",
+                None,
+                &selector,
+                statement.as_bytes(),
+            ),
+            actor: admin,
+            recorded_at: 1,
+            statement: statement.into(),
+            profile: SchemaMigrationStatementProfile::CreateIndex,
+            state: SchemaMigrationRecordState::Applied { applied_at: 1 },
+        });
+        ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
+            ledger.insert(
+                "000001_age_index".into(),
+                StableSchemaMigrationRecord(record),
+            );
+        });
+
+        assert!(matches!(
+            store.admin_apply_schema_migration(
+                admin,
+                migration_args_with_selector(
+                    "000001_age_index",
+                    None,
+                    &selector,
+                    statement,
+                ),
+            ),
+            Err(RouterError::InvalidArgument(message))
+                if message.contains("backfill lifecycle")
+        ));
+    }
+
+    #[test]
+    fn named_schema_record_does_not_replay_before_selector_validation() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([22; 32]);
+        auth::grant_admin(admin);
+        let statement = "CREATE GRAPH TYPE typed_type { NODE Person }";
+        let selector = SchemaMigrationGraphSelector::Named("social".into());
+        let record = SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
+            id: "000001_type".into(),
+            parent: None,
+            graph_selector: selector.clone(),
+            resolved_graph: None,
+            checksum: gleaph_migration_api::schema_migration_checksum(
+                "000001_type",
+                None,
+                &selector,
+                statement.as_bytes(),
+            ),
+            actor: admin,
+            recorded_at: 1,
+            statement: statement.into(),
+            profile: SchemaMigrationStatementProfile::CreateGraphType,
+            state: SchemaMigrationRecordState::Applied { applied_at: 1 },
+        });
+        ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
+            ledger.insert("000001_type".into(), StableSchemaMigrationRecord(record));
+        });
+
+        assert!(matches!(
+            store.admin_apply_schema_migration(
+                admin,
+                migration_args_with_selector("000001_type", None, &selector, statement),
+            ),
+            Err(RouterError::InvalidArgument(message))
+                if message.contains("named graph selectors")
+        ));
+    }
+
+    #[test]
     fn typed_graph_preflight_rejects_existing_inline_struct_index_without_mutation() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
@@ -936,7 +1175,7 @@ mod tests {
             },
             property_id,
             label_id.raw(),
-            1,
+            Some(EdgeIndexDirection::Any),
             false,
         )
         .expect("pre-existing edge index");
@@ -1066,15 +1305,19 @@ mod tests {
         let record = SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
             id: "000001_root".into(),
             parent: None,
+            graph_selector: SchemaMigrationGraphSelector::Default,
+            resolved_graph: None,
             checksum: gleaph_migration_api::schema_migration_checksum(
                 "000001_root",
                 None,
+                &SchemaMigrationGraphSelector::Default,
                 b"CREATE GRAPH TYPE root_type { NODE Person }",
             ),
             actor: Principal::from_slice(&[12; 29]),
-            applied_at: 42,
+            recorded_at: 42,
             statement: "CREATE GRAPH TYPE root_type { NODE Person }".into(),
             profile: SchemaMigrationStatementProfile::CreateGraphType,
+            state: SchemaMigrationRecordState::Applied { applied_at: 42 },
         });
         let stored = StableSchemaMigrationRecord(record.clone());
         let encoded = stored.to_bytes();
@@ -1103,6 +1346,7 @@ mod tests {
             "p".repeat(gleaph_migration_api::MAX_SCHEMA_MIGRATION_ID_BYTES - 7)
         );
         let statement = "x".repeat(gleaph_migration_api::MAX_SCHEMA_MIGRATION_STATEMENT_BYTES);
+        let graph_name = "g".repeat(gleaph_migration_api::MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES);
         assert_eq!(
             id.len(),
             gleaph_migration_api::MAX_SCHEMA_MIGRATION_ID_BYTES
@@ -1115,15 +1359,26 @@ mod tests {
             StableSchemaMigrationRecord(SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
                 id: id.clone(),
                 parent: Some(parent.clone()),
+                graph_selector: SchemaMigrationGraphSelector::Named(graph_name.clone()),
+                resolved_graph: Some(ResolvedSchemaMigrationGraph {
+                    graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(u32::MAX),
+                    graph_name,
+                }),
                 checksum: gleaph_migration_api::schema_migration_checksum(
                     &id,
                     Some(&parent),
+                    &SchemaMigrationGraphSelector::Named(
+                        "g".repeat(gleaph_migration_api::MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES),
+                    ),
                     statement.as_bytes(),
                 ),
                 actor: Principal::from_slice(&[0xff; 29]),
-                applied_at: u64::MAX,
+                recorded_at: u64::MAX,
                 statement,
                 profile: SchemaMigrationStatementProfile::CreateGraphType,
+                state: SchemaMigrationRecordState::Applied {
+                    applied_at: u64::MAX,
+                },
             }));
         let encoded = record.to_bytes();
         let ic_stable_structures::storable::Bound::Bounded {

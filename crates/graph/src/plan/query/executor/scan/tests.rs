@@ -59,6 +59,9 @@ fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("age"),
+    ]);
     let rows = pollster::block_on(execute_plan_query_bindings(
         &store,
         &plan,
@@ -92,6 +95,9 @@ fn executes_equality_index_scan_with_sortable_key() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("age"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -144,6 +150,9 @@ fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("price"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -197,6 +206,9 @@ fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("score"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -249,6 +261,9 @@ fn equality_index_scan_final_filter_drops_inexact_float_decimal_candidate() {
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("score"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -294,6 +309,9 @@ fn equality_index_scan_matches_list_valued_posting() {
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("tags"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -352,6 +370,9 @@ fn equality_index_scan_matches_record_valued_posting_independent_of_field_order(
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("profile"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -406,6 +427,9 @@ fn equality_index_scan_final_filter_drops_inexact_nested_numeric_candidate() {
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("profile"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -448,6 +472,9 @@ fn executes_range_index_scan_with_lookup_range() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("age"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -516,6 +543,9 @@ fn executes_list_range_index_scan_with_lookup_range() {
         },
     ]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("tags"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -575,6 +605,9 @@ fn executes_record_range_index_scan_with_lookup_range() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("profile"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -624,6 +657,9 @@ fn executes_orderable_extension_equality_index_scan() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("principal"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -672,6 +708,9 @@ fn executes_orderable_extension_range_index_scan() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("principal"),
+    ]);
     let result = pollster::block_on(execute_plan_query(
         &store,
         &plan,
@@ -2134,6 +2173,10 @@ fn index_intersection_returns_vertices_in_both_postings() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("uid"),
+        crate::test_labels::property_id_for_name("email"),
+    ]);
     let rows = pollster::block_on(execute_plan_query_bindings(
         &store,
         &plan,
@@ -2208,6 +2251,10 @@ fn index_intersection_empty_when_disjoint() {
         property_projection: None,
     }]);
 
+    let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
+        crate::test_labels::property_id_for_name("uid"),
+        crate::test_labels::property_id_for_name("email"),
+    ]);
     let rows = pollster::block_on(execute_plan_query_bindings(
         &store,
         &plan,

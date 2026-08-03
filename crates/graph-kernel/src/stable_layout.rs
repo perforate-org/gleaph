@@ -242,7 +242,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–50), 51 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–51), 52 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -679,6 +679,14 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Former adaptive counterpart free-span index; not allocated",
             RebuildPath::None,
         ),
+        region(
+            "CANONICAL_EXPORT_SCOPES",
+            51,
+            StableMemoryClass::Canonical,
+            "canonical export",
+            "PhysicalIndexId → immutable Graph-owned canonical export scope and inline decode projection (ADR 0059)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -847,11 +855,11 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::None,
         ),
         region(
-            "ROUTER_INDEXED_PROPERTY_SET",
+            "ROUTER_NEXT_PHYSICAL_INDEX_ID",
             20,
-            StableMemoryClass::Catalog,
+            StableMemoryClass::Canonical,
             "index planner catalog",
-            "(graph_id, kind, property_id) membership for planner + shard fan-out",
+            "Monotonic PhysicalIndexId allocator cell; zero is reserved and ids are never reused (ADR 0059)",
             RebuildPath::None,
         ),
         region(
@@ -1109,6 +1117,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Migration id → versioned immutable SchemaMigrationRecord; parent links are canonical and root-to-head order is derived with a bounded chain walk (ADR 0058)",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_INDEX_CATALOG_EPOCH",
+            51,
+            StableMemoryClass::Canonical,
+            "schema migrations",
+            "Cell<u64> global index catalog epoch fence advanced at prepare/seal/activate/drop (ADR 0059)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1282,6 +1298,22 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "edge property postings",
             "Global edge property equality posting set (ADR 0009)",
             RebuildPath::Named("backfill_edge_property_postings"),
+        ),
+        region(
+            "INDEX_BUILD_STATES",
+            7,
+            StableMemoryClass::Maintenance,
+            "physical index build",
+            "PhysicalIndexId -> immutable scope, bounded pull progress, and O(1) last-page replay receipt (ADR 0059)",
+            RebuildPath::None,
+        ),
+        region(
+            "INDEX_BUILD_TOUCHED_SUBJECTS",
+            8,
+            StableMemoryClass::Maintenance,
+            "physical index build",
+            "Fixed-width (PhysicalIndexId, canonical subject) touched set for online base-seed exclusion (ADR 0059)",
+            RebuildPath::None,
         ),
     ],
 };
@@ -1589,8 +1621,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 51);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(50));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 52);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(51));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1619,6 +1651,10 @@ mod tests {
         );
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[47].symbol, "RESERVED_47");
         assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[51].symbol,
+            "CANONICAL_EXPORT_SCOPES"
+        );
+        assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
             StableMemoryClass::Maintenance
         );
@@ -1627,8 +1663,16 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 51);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(50));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 52);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(51));
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[20].symbol,
+            "ROUTER_NEXT_PHYSICAL_INDEX_ID"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[20].class,
+            StableMemoryClass::Canonical
+        );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry
@@ -1659,6 +1703,14 @@ mod tests {
         );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[50].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[51].symbol,
+            "ROUTER_INDEX_CATALOG_EPOCH"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[51].class,
             StableMemoryClass::Canonical
         );
     }
@@ -1757,8 +1809,8 @@ mod tests {
     #[test]
     fn index_layout_registry_matches_baseline() {
         assert_layout(&INDEX_STABLE_LAYOUT);
-        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 7);
-        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(6));
+        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 9);
+        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(8));
     }
 
     #[test]

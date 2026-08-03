@@ -9,6 +9,7 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexSubject,
     LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult, LookupEdgeEqualPageRequest,
+    PhysicalIndexId,
 };
 use std::ops::Bound;
 
@@ -17,6 +18,7 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -26,6 +28,7 @@ impl IndexStore {
         ensure_index_value_key(&value)?;
         self.assert_shard_canister(caller, shard_id)?;
         let key = EdgePostingKey {
+            physical_index_id,
             property_id,
             value,
             label_id,
@@ -43,6 +46,7 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -51,6 +55,7 @@ impl IndexStore {
     ) -> Result<(), IndexError> {
         self.assert_shard_canister(caller, shard_id)?;
         let key = EdgePostingKey {
+            physical_index_id,
             property_id,
             value,
             label_id,
@@ -68,6 +73,7 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -77,6 +83,7 @@ impl IndexStore {
         self.commit_edge_posting_insert(
             caller,
             shard_id,
+            physical_index_id,
             property_id,
             value,
             label_id,
@@ -89,6 +96,7 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -98,6 +106,7 @@ impl IndexStore {
         self.commit_edge_posting_remove(
             caller,
             shard_id,
+            physical_index_id,
             property_id,
             value,
             label_id,
@@ -108,6 +117,7 @@ impl IndexStore {
 
     pub fn lookup_edge_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: &[u8],
         label_id: Option<u16>,
@@ -115,12 +125,12 @@ impl IndexStore {
         ensure_index_value_key(value)?;
         let (lo, hi) = match label_id {
             Some(label) => (
-                EdgePostingKey::prefix_lower_labeled(property_id, value, label),
-                EdgePostingKey::prefix_upper_labeled(property_id, value, label),
+                EdgePostingKey::prefix_lower_labeled(physical_index_id, property_id, value, label),
+                EdgePostingKey::prefix_upper_labeled(physical_index_id, property_id, value, label),
             ),
             None => (
-                EdgePostingKey::prefix_lower(property_id, value),
-                EdgePostingKey::prefix_upper(property_id, value),
+                EdgePostingKey::prefix_lower(physical_index_id, property_id, value),
+                EdgePostingKey::prefix_upper(physical_index_id, property_id, value),
             ),
         };
         Ok(INDEX_EDGE_POSTINGS.with_borrow(|postings| {
@@ -146,17 +156,28 @@ impl IndexStore {
         let limit = clamp_posting_page_limit(req.limit);
         let (lo, hi) = match req.label_id {
             Some(label) => (
-                EdgePostingKey::prefix_lower_labeled(req.property_id, &req.value, label),
-                EdgePostingKey::prefix_upper_labeled(req.property_id, &req.value, label),
+                EdgePostingKey::prefix_lower_labeled(
+                    req.physical_index_id,
+                    req.property_id,
+                    &req.value,
+                    label,
+                ),
+                EdgePostingKey::prefix_upper_labeled(
+                    req.physical_index_id,
+                    req.property_id,
+                    &req.value,
+                    label,
+                ),
             ),
             None => (
-                EdgePostingKey::prefix_lower(req.property_id, &req.value),
-                EdgePostingKey::prefix_upper(req.property_id, &req.value),
+                EdgePostingKey::prefix_lower(req.physical_index_id, req.property_id, &req.value),
+                EdgePostingKey::prefix_upper(req.physical_index_id, req.property_id, &req.value),
             ),
         };
         let upper = Bound::Included(hi);
         let lower = match &req.after {
             Some(cursor) => Bound::Excluded(EdgePostingKey {
+                physical_index_id: req.physical_index_id,
                 property_id: req.property_id,
                 value: cursor.value.clone(),
                 label_id: cursor.label_id,
@@ -237,6 +258,7 @@ impl IndexStore {
                     unreachable!("subject validated above")
                 };
                 self.lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+                    physical_index_id: spec.physical_index_id,
                     property_id: spec.property_id,
                     value: spec.value.clone(),
                     label_id,

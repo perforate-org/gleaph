@@ -1,6 +1,7 @@
 //! Graph canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
 //! and `facade/stable/layout.rs` (ADR 0007 registry).
 
+use super::canonical_export::CanonicalExportScopeStore;
 use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::vertex_embeddings::VertexEmbeddingStore;
@@ -94,6 +95,8 @@ const VERTEX_EMBEDDING_INCARNATIONS: MemoryId = MemoryId::new(45);
 const DERIVED_INDEX_OUTBOX: MemoryId = MemoryId::new(46);
 
 // MemoryIds 47-50 remain reserved after removal of the former adaptive counterpart substrate.
+// --- ADR 0059 canonical export scopes (1 memory) ---
+const CANONICAL_EXPORT_SCOPES: MemoryId = MemoryId::new(51);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -170,6 +173,7 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (VERTEX_EMBEDDINGS, 32),
     (VERTEX_EMBEDDING_INCARNATIONS, 8),
     (DERIVED_INDEX_OUTBOX, 16),
+    (CANONICAL_EXPORT_SCOPES, 8),
 ];
 #[cfg(any(
     feature = "canbench_uniform_4",
@@ -200,6 +204,8 @@ pub(crate) type StableUniqueEffectOutbox = super::unique_effect_outbox::UniqueEf
 pub(crate) type StableGraphLocalUniqueTable = super::local_unique::GraphLocalUniqueTable<Memory>;
 /// Durable derived-index operations awaiting their first delivery attempt (0088).
 pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedIndexOutbox<Memory>;
+/// Frozen Graph-owned canonical export scope per physical posting namespace (ADR 0059).
+pub(crate) type StableCanonicalExportScopes = CanonicalExportScopeStore<Memory>;
 
 #[cfg(feature = "canbench_standard_manager")]
 fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
@@ -402,6 +408,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             VERTEX_EMBEDDING_INCARNATIONS,
         ),
         ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
+        ("canonical_export_scopes", 51, CANONICAL_EXPORT_SCOPES),
     ];
 
     let regions: Vec<_> = REGIONS
@@ -513,6 +520,12 @@ pub(crate) fn init_graph_local_unique_table() -> StableGraphLocalUniqueTable {
 pub(crate) fn init_derived_index_outbox() -> StableDerivedIndexOutbox {
     super::derived_index_outbox::DerivedIndexOutbox::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(DERIVED_INDEX_OUTBOX)),
+    )
+}
+
+pub(crate) fn init_canonical_export_scopes() -> StableCanonicalExportScopes {
+    CanonicalExportScopeStore::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(CANONICAL_EXPORT_SCOPES)),
     )
 }
 

@@ -16,9 +16,136 @@ use gleaph_graph_kernel::index::{
     LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
     LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyPostingCursor, ValuePostingCountCursor,
+    LookupValuePostingCountPageRequest, PhysicalIndexId, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount, ValuePostingCountCursor,
 };
+
+const TEST_PHYSICAL_INDEX_ID: PhysicalIndexId = PhysicalIndexId::new(1).expect("test physical id");
+
+impl IndexStore {
+    fn test_posting_insert(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        self.posting_insert(
+            caller,
+            shard_id,
+            TEST_PHYSICAL_INDEX_ID,
+            property_id,
+            value,
+            vertex_id,
+        )
+    }
+
+    fn test_posting_remove(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        self.posting_remove(
+            caller,
+            shard_id,
+            TEST_PHYSICAL_INDEX_ID,
+            property_id,
+            value,
+            vertex_id,
+        )
+    }
+
+    fn test_lookup_equal(
+        &self,
+        property_id: u32,
+        value: &[u8],
+    ) -> Result<Vec<PostingHit>, IndexError> {
+        self.lookup_equal(TEST_PHYSICAL_INDEX_ID, property_id, value)
+    }
+
+    fn test_lookup_range(
+        &self,
+        property_id: u32,
+        request: &PostingRangeRequest,
+    ) -> Result<Vec<PostingHit>, IndexError> {
+        self.lookup_range(TEST_PHYSICAL_INDEX_ID, property_id, request)
+    }
+
+    fn test_count_postings_by_value(
+        &self,
+        property_id: u32,
+        min_count: u64,
+        max_groups: usize,
+        vertex_filter: Option<&nohash_hasher::IntSet<u64>>,
+    ) -> Vec<ValuePostingCount> {
+        self.count_postings_by_value(
+            TEST_PHYSICAL_INDEX_ID,
+            property_id,
+            min_count,
+            max_groups,
+            vertex_filter,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_edge_posting_insert(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: u16,
+        owner_vertex_id: u32,
+        slot_index: u32,
+    ) -> Result<(), IndexError> {
+        self.edge_posting_insert(
+            caller,
+            shard_id,
+            TEST_PHYSICAL_INDEX_ID,
+            property_id,
+            value,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_edge_posting_remove(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: u16,
+        owner_vertex_id: u32,
+        slot_index: u32,
+    ) -> Result<(), IndexError> {
+        self.edge_posting_remove(
+            caller,
+            shard_id,
+            TEST_PHYSICAL_INDEX_ID,
+            property_id,
+            value,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        )
+    }
+
+    fn test_lookup_edge_equal(
+        &self,
+        property_id: u32,
+        value: &[u8],
+        label_id: Option<u16>,
+    ) -> Result<Vec<EdgePostingHit>, IndexError> {
+        self.lookup_edge_equal(TEST_PHYSICAL_INDEX_ID, property_id, value, label_id)
+    }
+}
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
     value_to_index_key_bytes(&value).unwrap().unwrap()
@@ -77,19 +204,19 @@ fn count_postings_by_value_groups_across_shards() {
         (ShardId::new(0), shard_a, 4),
     ] {
         store
-            .posting_insert(owner, shard, property_id, us.clone(), vid)
+            .test_posting_insert(owner, shard, property_id, us.clone(), vid)
             .expect("insert us");
     }
     store
-        .posting_insert(shard_a, ShardId::new(0), property_id, uk.clone(), 5)
+        .test_posting_insert(shard_a, ShardId::new(0), property_id, uk.clone(), 5)
         .expect("insert uk");
 
-    let counts = store.count_postings_by_value(property_id, 2, 100, None);
+    let counts = store.test_count_postings_by_value(property_id, 2, 100, None);
     assert_eq!(counts.len(), 1);
     assert_eq!(counts[0].encoded_value, us);
     assert_eq!(counts[0].count, 4);
 
-    let all = store.count_postings_by_value(property_id, 1, 100, None);
+    let all = store.test_count_postings_by_value(property_id, 1, 100, None);
     assert_eq!(all.len(), 2);
 }
 
@@ -104,18 +231,18 @@ fn count_postings_by_value_respects_vertex_filter() {
     let us = index_key(Value::Text("US".into()));
     let uk = index_key(Value::Text("UK".into()));
     store
-        .posting_insert(shard_a, ShardId::new(0), property_id, us.clone(), 1)
+        .test_posting_insert(shard_a, ShardId::new(0), property_id, us.clone(), 1)
         .expect("us");
     store
-        .posting_insert(shard_a, ShardId::new(0), property_id, us.clone(), 2)
+        .test_posting_insert(shard_a, ShardId::new(0), property_id, us.clone(), 2)
         .expect("us");
     store
-        .posting_insert(shard_a, ShardId::new(0), property_id, uk.clone(), 3)
+        .test_posting_insert(shard_a, ShardId::new(0), property_id, uk.clone(), 3)
         .expect("uk");
 
     let mut filter = nohash_hasher::IntSet::default();
     filter.insert(pack_posting_vertex(ShardId::new(0), 1));
-    let counts = store.count_postings_by_value(property_id, 1, 100, Some(&filter));
+    let counts = store.test_count_postings_by_value(property_id, 1, 100, Some(&filter));
     assert_eq!(counts.len(), 1);
     assert_eq!(counts[0].encoded_value, us);
     assert_eq!(counts[0].count, 1);
@@ -130,11 +257,12 @@ fn count_postings_by_value_page_resumes_after_value_cursor() {
 
     for (value, vertex_id) in [(b"a", 1), (b"a", 2), (b"b", 3), (b"c", 4)] {
         store
-            .posting_insert(shard, ShardId::new(0), 42, value.to_vec(), vertex_id)
+            .test_posting_insert(shard, ShardId::new(0), 42, value.to_vec(), vertex_id)
             .expect("posting");
     }
 
     let first = store.count_postings_by_value_page(&LookupValuePostingCountPageRequest {
+        physical_index_id: TEST_PHYSICAL_INDEX_ID,
         property_id: 42,
         min_count: 1,
         vertex_filter_packed: None,
@@ -152,6 +280,7 @@ fn count_postings_by_value_page_resumes_after_value_cursor() {
     assert!(!first.done);
 
     let second = store.count_postings_by_value_page(&LookupValuePostingCountPageRequest {
+        physical_index_id: TEST_PHYSICAL_INDEX_ID,
         property_id: 42,
         min_count: 1,
         vertex_filter_packed: None,
@@ -176,12 +305,13 @@ fn count_postings_by_value_page_applies_label_filter_and_clamps_limit() {
         .expect("label 3");
     for (value, vertex_id) in [(b"a", 1), (b"b", 2), (b"c", 3)] {
         store
-            .posting_insert(shard, ShardId::new(0), 42, value.to_vec(), vertex_id)
+            .test_posting_insert(shard, ShardId::new(0), 42, value.to_vec(), vertex_id)
             .expect("posting");
     }
 
     let page = store.count_postings_by_value_for_label_page(
         &LookupValuePostingCountPageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             min_count: 1,
             vertex_filter_packed: None,
@@ -210,10 +340,10 @@ fn insert_and_lookup_equal() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
-        .posting_insert(shard_principal, ShardId::new(0), 42, b"v".to_vec(), 100)
+        .test_posting_insert(shard_principal, ShardId::new(0), 42, b"v".to_vec(), 100)
         .expect("insert");
 
-    let hits = store.lookup_equal(42, b"v").expect("lookup_equal");
+    let hits = store.test_lookup_equal(42, b"v").expect("lookup_equal");
     assert_eq!(
         hits,
         vec![PostingHit {
@@ -221,6 +351,122 @@ fn insert_and_lookup_equal() {
             vertex_id: 100
         }]
     );
+}
+
+#[test]
+fn physical_index_namespaces_are_isolated_idempotent_and_purged_independently() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    let shard_id = ShardId::new(0);
+    attach_shard_canister(&store, router, shard_id, shard);
+
+    let index_a = PhysicalIndexId::new(11).expect("non-zero physical index id");
+    let index_b = PhysicalIndexId::new(12).expect("non-zero physical index id");
+
+    for physical_index_id in [index_a, index_a, index_b] {
+        store
+            .posting_insert(shard, shard_id, physical_index_id, 42, b"same".to_vec(), 7)
+            .expect("insert namespaced vertex posting");
+        store
+            .edge_posting_insert(
+                shard,
+                shard_id,
+                physical_index_id,
+                42,
+                b"same".to_vec(),
+                3,
+                7,
+                0,
+            )
+            .expect("insert namespaced edge posting");
+    }
+
+    assert_eq!(store.lookup_equal(index_a, 42, b"same").unwrap().len(), 1);
+    assert_eq!(store.lookup_equal(index_b, 42, b"same").unwrap().len(), 1);
+    assert_eq!(
+        store
+            .lookup_edge_equal(index_a, 42, b"same", Some(3))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .lookup_edge_equal(index_b, 42, b"same", Some(3))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let vertex_purge = store
+        .purge_property_postings_step_for_test(index_a, IndexPurgeKind::Vertex, 42, 0, None, 100)
+        .unwrap();
+    assert!(vertex_purge.done);
+    assert_eq!(vertex_purge.removed, 1);
+    let edge_purge = store
+        .purge_property_postings_step_for_test(index_a, IndexPurgeKind::Edge, 42, 3, None, 100)
+        .unwrap();
+    assert!(edge_purge.done);
+    assert_eq!(edge_purge.removed, 1);
+
+    assert!(store.lookup_equal(index_a, 42, b"same").unwrap().is_empty());
+    assert_eq!(store.lookup_equal(index_b, 42, b"same").unwrap().len(), 1);
+    assert!(
+        store
+            .lookup_edge_equal(index_a, 42, b"same", Some(3))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .lookup_edge_equal(index_b, 42, b"same", Some(3))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn namespaced_postings_survive_stable_reopen_in_separate_vertex_and_edge_regions() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    let shard_id = ShardId::new(0);
+    attach_shard_canister(&store, router, shard_id, shard);
+
+    let vertex_index_id = PhysicalIndexId::new(21).expect("non-zero physical index id");
+    let edge_index_id = PhysicalIndexId::new(22).expect("non-zero physical index id");
+    store
+        .posting_insert(shard, shard_id, vertex_index_id, 5, b"vertex".to_vec(), 9)
+        .expect("insert vertex posting");
+    store
+        .edge_posting_insert(shard, shard_id, edge_index_id, 5, b"edge".to_vec(), 3, 9, 0)
+        .expect("insert edge posting");
+
+    let vertex_key = crate::key::PostingKey {
+        physical_index_id: vertex_index_id,
+        property_id: 5,
+        value: b"vertex".to_vec(),
+        shard_id,
+        vertex_id: 9,
+    };
+    let edge_key = crate::edge_key::EdgePostingKey {
+        physical_index_id: edge_index_id,
+        property_id: 5,
+        value: b"edge".to_vec(),
+        label_id: 3,
+        shard_id,
+        owner_vertex_id: 9,
+        slot_index: 0,
+    };
+
+    let reopened_vertex = crate::facade::stable::memory::init_index_vertex_postings();
+    let reopened_edge = crate::facade::stable::memory::init_index_edge_postings();
+    assert!(reopened_vertex.contains(&vertex_key));
+    assert!(reopened_edge.contains(&edge_key));
+    assert_eq!(reopened_vertex.len(), 1);
+    assert_eq!(reopened_edge.len(), 1);
 }
 
 #[test]
@@ -234,10 +480,10 @@ fn insert_and_lookup_equal_principal_value_index_key() {
     let key = index_key(Value::from(PrincipalValue(p)));
 
     store
-        .posting_insert(shard_principal, ShardId::new(0), 42, key.clone(), 100)
+        .test_posting_insert(shard_principal, ShardId::new(0), 42, key.clone(), 100)
         .expect("insert");
 
-    let hits = store.lookup_equal(42, &key).expect("lookup_equal");
+    let hits = store.test_lookup_equal(42, &key).expect("lookup_equal");
     assert_eq!(
         hits,
         vec![PostingHit {
@@ -260,12 +506,12 @@ fn lookup_range_ge_and_lt_use_encoded_lex_order() {
         (300u32, vec![3u8]),
     ] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 42, val, vid)
+            .test_posting_insert(shard_principal, ShardId::new(0), 42, val, vid)
             .expect("insert");
     }
 
     let mut ge2: Vec<u32> = store
-        .lookup_range(42, &PostingRangeRequest::Ge(vec![2]))
+        .test_lookup_range(42, &PostingRangeRequest::Ge(vec![2]))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -274,7 +520,7 @@ fn lookup_range_ge_and_lt_use_encoded_lex_order() {
     assert_eq!(ge2, vec![200, 300]);
 
     let mut lt2: Vec<u32> = store
-        .lookup_range(42, &PostingRangeRequest::Lt(vec![2]))
+        .test_lookup_range(42, &PostingRangeRequest::Lt(vec![2]))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -297,13 +543,13 @@ fn lookup_range_respects_sortable_value_key_boundaries() {
         (40u32, gleaph_gql::Value::Uint64(9)),
     ] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 42, index_key(value), vid)
+            .test_posting_insert(shard_principal, ShardId::new(0), 42, index_key(value), vid)
             .expect("insert");
     }
 
     let five = index_key(gleaph_gql::Value::Uint8(5));
     let mut ge5: Vec<u32> = store
-        .lookup_range(42, &PostingRangeRequest::Ge(five.clone()))
+        .test_lookup_range(42, &PostingRangeRequest::Ge(five.clone()))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -312,7 +558,7 @@ fn lookup_range_respects_sortable_value_key_boundaries() {
     assert_eq!(ge5, vec![30, 40]);
 
     let mut lt5: Vec<u32> = store
-        .lookup_range(42, &PostingRangeRequest::Lt(five))
+        .test_lookup_range(42, &PostingRangeRequest::Lt(five))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -334,18 +580,18 @@ fn lookup_range_text_prefix_boundaries_are_exact() {
         (3u32, gleaph_gql::Value::Text("aa".into())),
     ] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 77, index_key(value), vid)
+            .test_posting_insert(shard_principal, ShardId::new(0), 77, index_key(value), vid)
             .expect("insert");
     }
 
     let a = index_key(gleaph_gql::Value::Text("a".into()));
     assert_eq!(
-        store.lookup_equal(77, &a).expect("lookup_equal")[0].vertex_id,
+        store.test_lookup_equal(77, &a).expect("lookup_equal")[0].vertex_id,
         1
     );
 
     let mut gt_a: Vec<u32> = store
-        .lookup_range(77, &PostingRangeRequest::Gt(a))
+        .test_lookup_range(77, &PostingRangeRequest::Gt(a))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -381,7 +627,7 @@ fn lookup_range_respects_list_value_key_boundaries() {
     ];
     for (vid, value) in values {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 88, index_key(value), vid)
+            .test_posting_insert(shard_principal, ShardId::new(0), 88, index_key(value), vid)
             .expect("insert");
     }
 
@@ -389,7 +635,7 @@ fn lookup_range_respects_list_value_key_boundaries() {
     let two = index_key(gleaph_gql::Value::List(vec![gleaph_gql::Value::Int64(2)]));
 
     let mut ge_one: Vec<u32> = store
-        .lookup_range(88, &PostingRangeRequest::Ge(one))
+        .test_lookup_range(88, &PostingRangeRequest::Ge(one))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -398,7 +644,7 @@ fn lookup_range_respects_list_value_key_boundaries() {
     assert_eq!(ge_one, vec![20, 30, 40]);
 
     let mut lt_two: Vec<u32> = store
-        .lookup_range(88, &PostingRangeRequest::Lt(two))
+        .test_lookup_range(88, &PostingRangeRequest::Lt(two))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -429,7 +675,7 @@ fn lookup_range_respects_record_value_key_boundaries() {
         ),
     ] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 99, index_key(value), vid)
+            .test_posting_insert(shard_principal, ShardId::new(0), 99, index_key(value), vid)
             .expect("insert");
     }
 
@@ -450,7 +696,7 @@ fn lookup_range_respects_record_value_key_boundaries() {
         gleaph_gql::Value::Int64(2),
     )]));
     let mut ge_bound: Vec<u32> = store
-        .lookup_range(99, &PostingRangeRequest::Ge(bound))
+        .test_lookup_range(99, &PostingRangeRequest::Ge(bound))
         .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
@@ -515,11 +761,11 @@ fn init_from_args_rejects_anonymous_router_without_clearing_state() {
     let property_id = 42;
     let value = index_key(Value::Text("US".into()));
     store
-        .posting_insert(shard, ShardId::new(0), property_id, value.clone(), 100)
+        .test_posting_insert(shard, ShardId::new(0), property_id, value.clone(), 100)
         .expect("seed posting");
     assert_eq!(
         store
-            .lookup_equal(property_id, &value)
+            .test_lookup_equal(property_id, &value)
             .expect("lookup_equal"),
         vec![PostingHit {
             shard_id: ShardId::new(0),
@@ -540,7 +786,7 @@ fn init_from_args_rejects_anonymous_router_without_clearing_state() {
     // principal was not persisted as the router.
     assert_eq!(
         store
-            .lookup_equal(property_id, &value)
+            .test_lookup_equal(property_id, &value)
             .expect("lookup_equal"),
         vec![PostingHit {
             shard_id: ShardId::new(0),
@@ -652,27 +898,27 @@ fn admin_detach_shard_canister_purges_shard_postings() {
         .expect("attach shard 0");
 
     store
-        .posting_insert(shard_a, ShardId::new(0), 42, b"v".to_vec(), 10)
+        .test_posting_insert(shard_a, ShardId::new(0), 42, b"v".to_vec(), 10)
         .expect("insert shard0 vertex posting");
     store
         .label_posting_insert(shard_a, ShardId::new(0), 7, 10)
         .expect("insert shard0 label posting");
     store
-        .edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, 0)
+        .test_edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, 0)
         .expect("insert shard0 edge posting");
 
     drive_detach_to_completion(&store, router, ShardId::new(0));
 
     assert!(
         store
-            .lookup_equal(42, b"v")
+            .test_lookup_equal(42, b"v")
             .expect("lookup_equal")
             .is_empty()
     );
     assert!(store.lookup_label(7).is_empty());
     assert!(
         store
-            .lookup_edge_equal(88, b"e", Some(3))
+            .test_lookup_edge_equal(88, b"e", Some(3))
             .expect("lookup_edge_equal")
             .is_empty()
     );
@@ -728,10 +974,10 @@ fn bounded_detach_resumes_and_only_purges_target_shard() {
     // Several vertex postings on each shard under the same property.
     for vid in 0..5u32 {
         store
-            .posting_insert(shard0, ShardId::new(0), 42, b"v".to_vec(), vid)
+            .test_posting_insert(shard0, ShardId::new(0), 42, b"v".to_vec(), vid)
             .expect("insert shard0 posting");
         store
-            .posting_insert(shard1, ShardId::new(1), 42, b"v".to_vec(), vid)
+            .test_posting_insert(shard1, ShardId::new(1), 42, b"v".to_vec(), vid)
             .expect("insert shard1 posting");
     }
 
@@ -754,7 +1000,7 @@ fn bounded_detach_resumes_and_only_purges_target_shard() {
     assert_eq!(removed_total, 5, "all shard 0 postings purged");
     assert!(steps > 5, "scan was actually bounded across multiple steps");
     // Shard 1 postings survive the targeted detach.
-    let survivors = store.lookup_equal(42, b"v").expect("lookup_equal");
+    let survivors = store.test_lookup_equal(42, b"v").expect("lookup_equal");
     assert_eq!(survivors.len(), 5);
     assert!(survivors.iter().all(|hit| hit.shard_id == ShardId::new(1)));
 }
@@ -773,10 +1019,10 @@ fn bounded_vertex_purge_removes_only_target_property() {
     for vid in 0..4u32 {
         for pid in [41u32, 42, 43] {
             store
-                .posting_insert(shard0, ShardId::new(0), pid, b"v".to_vec(), vid)
+                .test_posting_insert(shard0, ShardId::new(0), pid, b"v".to_vec(), vid)
                 .expect("insert shard0 posting");
             store
-                .posting_insert(shard1, ShardId::new(1), pid, b"v".to_vec(), vid)
+                .test_posting_insert(shard1, ShardId::new(1), pid, b"v".to_vec(), vid)
                 .expect("insert shard1 posting");
         }
     }
@@ -786,8 +1032,16 @@ fn bounded_vertex_purge_removes_only_target_property() {
     let mut steps = 0u32;
     let mut removed_total = 0u32;
     loop {
-        let step =
-            store.purge_property_postings_step_for_test(IndexPurgeKind::Vertex, 42, 0, resume, 1);
+        let step = store
+            .purge_property_postings_step_for_test(
+                TEST_PHYSICAL_INDEX_ID,
+                IndexPurgeKind::Vertex,
+                42,
+                0,
+                resume,
+                1,
+            )
+            .unwrap();
         steps += 1;
         removed_total += step.removed;
         assert!(step.examined <= 1);
@@ -807,9 +1061,20 @@ fn bounded_vertex_purge_removes_only_target_property() {
         steps >= 8,
         "scan was actually bounded across multiple steps"
     );
-    assert!(store.lookup_equal(42, b"v").expect("lookup 42").is_empty());
-    assert_eq!(store.lookup_equal(41, b"v").expect("lookup 41").len(), 8);
-    assert_eq!(store.lookup_equal(43, b"v").expect("lookup 43").len(), 8);
+    assert!(
+        store
+            .test_lookup_equal(42, b"v")
+            .expect("lookup 42")
+            .is_empty()
+    );
+    assert_eq!(
+        store.test_lookup_equal(41, b"v").expect("lookup 41").len(),
+        8
+    );
+    assert_eq!(
+        store.test_lookup_equal(43, b"v").expect("lookup 43").len(),
+        8
+    );
 }
 
 #[test]
@@ -824,13 +1089,13 @@ fn bounded_edge_purge_removes_only_target_label() {
     // must purge only its postings.
     for owner in 0..4u32 {
         store
-            .edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 3, owner, 0)
+            .test_edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 3, owner, 0)
             .expect("insert label 3");
         store
-            .edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 7, owner, 0)
+            .test_edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 7, owner, 0)
             .expect("insert label 7");
         store
-            .edge_posting_insert(shard0, ShardId::new(0), 89, b"e".to_vec(), 3, owner, 0)
+            .test_edge_posting_insert(shard0, ShardId::new(0), 89, b"e".to_vec(), 3, owner, 0)
             .expect("insert other property");
     }
 
@@ -838,8 +1103,16 @@ fn bounded_edge_purge_removes_only_target_label() {
     let mut removed_total = 0u32;
     let mut steps = 0u32;
     loop {
-        let step =
-            store.purge_property_postings_step_for_test(IndexPurgeKind::Edge, 88, 3, resume, 1);
+        let step = store
+            .purge_property_postings_step_for_test(
+                TEST_PHYSICAL_INDEX_ID,
+                IndexPurgeKind::Edge,
+                88,
+                3,
+                resume,
+                1,
+            )
+            .unwrap();
         steps += 1;
         removed_total += step.removed;
         match step.next {
@@ -855,20 +1128,20 @@ fn bounded_edge_purge_removes_only_target_label() {
     );
     assert!(
         store
-            .lookup_edge_equal(88, b"e", Some(3))
+            .test_lookup_edge_equal(88, b"e", Some(3))
             .expect("lookup label 3")
             .is_empty()
     );
     assert_eq!(
         store
-            .lookup_edge_equal(88, b"e", Some(7))
+            .test_lookup_edge_equal(88, b"e", Some(7))
             .expect("lookup label 7")
             .len(),
         4
     );
     assert_eq!(
         store
-            .lookup_edge_equal(89, b"e", Some(3))
+            .test_lookup_edge_equal(89, b"e", Some(3))
             .expect("lookup property 89")
             .len(),
         4
@@ -882,9 +1155,107 @@ fn admin_purge_property_postings_requires_router_caller() {
     let intruder = Principal::from_slice(&[200]);
     assert_eq!(
         store
-            .admin_purge_property_postings(intruder, IndexPurgeKind::Vertex, 42, 0, None)
+            .admin_purge_property_postings(
+                intruder,
+                TEST_PHYSICAL_INDEX_ID,
+                IndexPurgeKind::Vertex,
+                42,
+                0,
+                None,
+            )
             .err(),
         Some(IndexError::NotAuthorized)
+    );
+}
+
+#[test]
+fn max_physical_and_property_bucket_is_scanned_counted_and_purged() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let max_physical_index_id = PhysicalIndexId::new(u64::MAX).expect("max id is non-zero");
+    store
+        .posting_insert(
+            shard,
+            ShardId::new(0),
+            max_physical_index_id,
+            u32::MAX,
+            b"v".to_vec(),
+            7,
+        )
+        .expect("insert posting in terminal bucket");
+
+    // lookup_equal finds the terminal (u64::MAX, u32::MAX) bucket posting.
+    assert_eq!(
+        store
+            .lookup_equal(max_physical_index_id, u32::MAX, b"v")
+            .expect("terminal lookup"),
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 7,
+        }]
+    );
+
+    // Range scans cover the terminal bucket instead of treating it as empty.
+    assert_eq!(
+        store
+            .lookup_range(
+                max_physical_index_id,
+                u32::MAX,
+                &PostingRangeRequest::Ge(b"v".to_vec()),
+            )
+            .expect("terminal Ge range")
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .lookup_range(
+                max_physical_index_id,
+                u32::MAX,
+                &PostingRangeRequest::Lt(b"z".to_vec()),
+            )
+            .expect("terminal Lt range")
+            .len(),
+        1
+    );
+
+    // Count walks the terminal bucket and reports the group.
+    let counts = store.count_postings_by_value(max_physical_index_id, u32::MAX, 1, 100, None);
+    assert_eq!(counts.len(), 1);
+    assert_eq!(counts[0].count, 1);
+    let page = store.count_postings_by_value_page(&LookupValuePostingCountPageRequest {
+        physical_index_id: max_physical_index_id,
+        property_id: u32::MAX,
+        min_count: 1,
+        vertex_filter_packed: None,
+        after: None,
+        limit: 10,
+    });
+    assert!(page.done);
+    assert_eq!(page.counts.len(), 1);
+    assert_eq!(page.counts[0].count, 1);
+
+    // The terminal bucket is purged and removable like any other scope.
+    let step = store
+        .purge_property_postings_step_for_test(
+            max_physical_index_id,
+            IndexPurgeKind::Vertex,
+            u32::MAX,
+            0,
+            None,
+            100,
+        )
+        .expect("purge terminal bucket");
+    assert!(step.done);
+    assert_eq!(step.removed, 1);
+    assert!(
+        store
+            .lookup_equal(max_physical_index_id, u32::MAX, b"v")
+            .expect("post-purge lookup")
+            .is_empty()
     );
 }
 
@@ -896,23 +1267,23 @@ fn lookup_intersection_returns_vertices_in_all_specs() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
-        .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
+        .test_posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
         .expect("uid alice v10");
     store
-        .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 20)
+        .test_posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 20)
         .expect("uid alice v20");
     store
-        .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 20)
+        .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 20)
         .expect("email v20");
     store
-        .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
+        .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
         .expect("email v30");
 
     let result = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::vertex(1, b"alice".to_vec()),
-                IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c".to_vec()),
             ],
         })
         .expect("lookup_intersection");
@@ -933,10 +1304,10 @@ fn filter_hits_by_equal_keeps_arm_members_only() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
-        .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 20)
+        .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 20)
         .expect("email v20");
     store
-        .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
+        .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
         .expect("email v30");
 
     let hits = vec![
@@ -954,7 +1325,7 @@ fn filter_hits_by_equal_keeps_arm_members_only() {
         },
     ];
     let filtered = store
-        .filter_hits_by_equal(2, b"a@b.c", hits)
+        .filter_hits_by_equal(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c", hits)
         .expect("filter_hits_by_equal");
     assert_eq!(
         filtered,
@@ -980,7 +1351,7 @@ fn filter_hits_by_equal_sorts_unsorted_input() {
 
     for v in [10u32, 20, 30] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
+            .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
             .expect("arm insert");
     }
 
@@ -1000,7 +1371,7 @@ fn filter_hits_by_equal_sorts_unsorted_input() {
         },
     ];
     let filtered = store
-        .filter_hits_by_equal(2, b"a@b.c", hits)
+        .filter_hits_by_equal(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c", hits)
         .expect("filter_hits_by_equal");
     assert_eq!(
         filtered,
@@ -1026,20 +1397,20 @@ fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
 
     for v in [10u32, 20, 30, 40] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), v)
+            .test_posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), v)
             .expect("arm 1");
     }
     for v in [20u32, 30] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
+            .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
             .expect("arm 2");
     }
 
     let IndexIntersectionResult::Vertices(mut expected) = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::vertex(1, b"alice".to_vec()),
-                IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c".to_vec()),
             ],
         })
         .expect("lookup_intersection")
@@ -1055,6 +1426,7 @@ fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
     loop {
         let page = store
             .lookup_equal_page(&LookupEqualPageRequest {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
                 property_id: 1,
                 value: b"alice".to_vec(),
                 after,
@@ -1062,7 +1434,7 @@ fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
             })
             .expect("lookup_equal_page");
         let survivors = store
-            .filter_hits_by_equal(2, b"a@b.c", page.hits)
+            .filter_hits_by_equal(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c", page.hits)
             .expect("filter_hits_by_equal");
         streamed.extend(survivors);
         if page.done {
@@ -1084,20 +1456,20 @@ fn lookup_intersection_page_paginates_and_matches_lookup_intersection() {
 
     for v in [10u32, 20, 30, 40] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), v)
+            .test_posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), v)
             .expect("arm 1");
     }
     for v in [20u32, 30] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
+            .test_posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
             .expect("arm 2");
     }
 
     let IndexIntersectionResult::Vertices(mut expected) = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::vertex(1, b"alice".to_vec()),
-                IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c".to_vec()),
             ],
         })
         .expect("lookup_intersection")
@@ -1114,8 +1486,8 @@ fn lookup_intersection_page_paginates_and_matches_lookup_intersection() {
         let page = store
             .lookup_intersection_page(&LookupIntersectionPageRequest {
                 specs: vec![
-                    IndexEqualSpec::vertex(1, b"alice".to_vec()),
-                    IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+                    IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"alice".to_vec()),
+                    IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, b"a@b.c".to_vec()),
                 ],
                 after,
                 limit: 1,
@@ -1139,12 +1511,16 @@ fn lookup_intersection_page_empty_for_fewer_than_two_specs() {
     let shard_principal = Principal::from_slice(&[1]);
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
     store
-        .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
+        .test_posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
         .expect("arm");
 
     let page = store
         .lookup_intersection_page(&LookupIntersectionPageRequest {
-            specs: vec![IndexEqualSpec::vertex(1, b"alice".to_vec())],
+            specs: vec![IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                1,
+                b"alice".to_vec(),
+            )],
             after: None,
             limit: 16,
         })
@@ -1161,8 +1537,8 @@ fn lookup_intersection_page_rejects_non_vertex_spec() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     let specs: Vec<IndexEqualSpec> = vec![
-        IndexEqualSpec::vertex(1, b"v".to_vec()),
-        IndexEqualSpec::edge(2, b"v".to_vec(), Some(1)),
+        IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"v".to_vec()),
+        IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 2, b"v".to_vec(), Some(1)),
     ];
     let err = store
         .lookup_intersection_page(&LookupIntersectionPageRequest {
@@ -1187,20 +1563,26 @@ fn lookup_intersection_page_deterministic_walk_arm_for_eight_specs() {
     for prop in 1u32..=8 {
         let value = format!("p{prop}").into_bytes();
         store
-            .posting_insert(shard_principal, ShardId::new(0), prop, value.clone(), prop)
+            .test_posting_insert(shard_principal, ShardId::new(0), prop, value.clone(), prop)
             .expect("unique arm vertex");
         store
-            .posting_insert(shard_principal, ShardId::new(0), prop, value.clone(), 5)
+            .test_posting_insert(shard_principal, ShardId::new(0), prop, value.clone(), 5)
             .expect("shared arm vertex");
     }
     store
-        .posting_insert(shard_principal, ShardId::new(0), 1, b"p1".to_vec(), 6)
+        .test_posting_insert(shard_principal, ShardId::new(0), 1, b"p1".to_vec(), 6)
         .expect("extra walk arm posting after survivor");
 
     // Reverse the spec order; the endpoint must canonicalize and still find the same hit.
     let specs: Vec<IndexEqualSpec> = (1u32..=8)
         .rev()
-        .map(|prop| IndexEqualSpec::vertex(prop, format!("p{prop}").into_bytes()))
+        .map(|prop| {
+            IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                prop,
+                format!("p{prop}").into_bytes(),
+            )
+        })
         .collect();
 
     // Walk the canonical arm one hit at a time. The first walk hit (vertex 1) is unique to the
@@ -1250,7 +1632,13 @@ fn lookup_intersection_page_deterministic_walk_arm_for_eight_specs() {
 
     // A fresh call with the canonical (ascending) order must produce the same final survivor.
     let canonical_specs: Vec<IndexEqualSpec> = (1u32..=8)
-        .map(|prop| IndexEqualSpec::vertex(prop, format!("p{prop}").into_bytes()))
+        .map(|prop| {
+            IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                prop,
+                format!("p{prop}").into_bytes(),
+            )
+        })
         .collect();
     let mut canonical_after: Option<PropertyPostingCursor> = None;
     let mut canonical_found: Option<PostingHit> = None;
@@ -1285,12 +1673,12 @@ fn lookup_intersection_page_rejects_more_than_max_arms() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
     for prop in 1u32..=9 {
         store
-            .posting_insert(shard_principal, ShardId::new(0), prop, b"v".to_vec(), 1)
+            .test_posting_insert(shard_principal, ShardId::new(0), prop, b"v".to_vec(), 1)
             .expect("arm");
     }
 
     let specs: Vec<IndexEqualSpec> = (1u32..=9)
-        .map(|prop| IndexEqualSpec::vertex(prop, b"v".to_vec()))
+        .map(|prop| IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, prop, b"v".to_vec()))
         .collect();
     let err = store
         .lookup_intersection_page(&LookupIntersectionPageRequest {
@@ -1314,17 +1702,17 @@ fn lookup_intersection_empty_when_disjoint() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
-        .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
+        .test_posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
         .expect("uid");
     store
-        .posting_insert(shard_principal, ShardId::new(0), 2, b"bob".to_vec(), 20)
+        .test_posting_insert(shard_principal, ShardId::new(0), 2, b"bob".to_vec(), 20)
         .expect("email");
 
     let result = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::vertex(1, b"alice".to_vec()),
-                IndexEqualSpec::vertex(2, b"bob".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, b"bob".to_vec()),
             ],
         })
         .expect("lookup_intersection");
@@ -1336,7 +1724,11 @@ fn lookup_intersection_requires_two_specs() {
     let store = IndexStore::new();
     let result = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-            specs: vec![IndexEqualSpec::vertex(1, b"x".to_vec())],
+            specs: vec![IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                1,
+                b"x".to_vec(),
+            )],
         })
         .expect("lookup_intersection");
     assert_eq!(result, IndexIntersectionResult::Vertices(vec![]));
@@ -1350,20 +1742,20 @@ fn lookup_intersection_mixed_vertex_and_edge_projects_owners() {
     attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     store
-        .posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), 100)
+        .test_posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), 100)
         .expect("age");
     store
-        .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 100, 2)
+        .test_edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 100, 2)
         .expect("weight edge");
     store
-        .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 101, 0)
+        .test_edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 101, 0)
         .expect("other owner");
 
     let result = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::vertex(10, b"30".to_vec()),
-                IndexEqualSpec::edge(20, b"5".to_vec(), Some(7)),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 10, b"30".to_vec()),
+                IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 20, b"5".to_vec(), Some(7)),
             ],
         })
         .expect("lookup_intersection");
@@ -1384,17 +1776,17 @@ fn lookup_intersection_all_edge_arms_returns_edge_hits() {
     attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     store
-        .edge_posting_insert(owner, ShardId::new(0), 30, b"1".to_vec(), 9, 50, 1)
+        .test_edge_posting_insert(owner, ShardId::new(0), 30, b"1".to_vec(), 9, 50, 1)
         .expect("prop a");
     store
-        .edge_posting_insert(owner, ShardId::new(0), 31, b"2".to_vec(), 9, 50, 1)
+        .test_edge_posting_insert(owner, ShardId::new(0), 31, b"2".to_vec(), 9, 50, 1)
         .expect("prop b");
 
     let result = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::edge(30, b"1".to_vec(), Some(9)),
-                IndexEqualSpec::edge(31, b"2".to_vec(), Some(9)),
+                IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 30, b"1".to_vec(), Some(9)),
+                IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 31, b"2".to_vec(), Some(9)),
             ],
         })
         .expect("lookup_intersection");
@@ -1418,7 +1810,7 @@ fn lookup_property_intersection_page_paginates_all_edge_arms() {
 
     for owner_vertex_id in [50, 60, 70] {
         store
-            .edge_posting_insert(
+            .test_edge_posting_insert(
                 owner,
                 ShardId::new(0),
                 30,
@@ -1429,7 +1821,7 @@ fn lookup_property_intersection_page_paginates_all_edge_arms() {
             )
             .expect("walk arm");
         store
-            .edge_posting_insert(
+            .test_edge_posting_insert(
                 owner,
                 ShardId::new(0),
                 31,
@@ -1442,8 +1834,8 @@ fn lookup_property_intersection_page_paginates_all_edge_arms() {
     }
 
     let specs = vec![
-        IndexEqualSpec::edge(30, b"1".to_vec(), Some(9)),
-        IndexEqualSpec::edge(31, b"2".to_vec(), Some(9)),
+        IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 30, b"1".to_vec(), Some(9)),
+        IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 31, b"2".to_vec(), Some(9)),
     ];
     let mut after = None;
     let mut streamed = Vec::new();
@@ -1485,12 +1877,12 @@ fn lookup_property_intersection_page_paginates_mixed_arms() {
 
     for vertex_id in [50, 60, 70] {
         store
-            .posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), vertex_id)
+            .test_posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), vertex_id)
             .expect("vertex arm");
     }
     for vertex_id in [50, 70] {
         store
-            .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, vertex_id, 0)
+            .test_edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, vertex_id, 0)
             .expect("edge arm");
     }
 
@@ -1500,8 +1892,8 @@ fn lookup_property_intersection_page_paginates_mixed_arms() {
         let page = store
             .lookup_property_intersection_page(&LookupPropertyIntersectionPageRequest {
                 specs: vec![
-                    IndexEqualSpec::vertex(10, b"30".to_vec()),
-                    IndexEqualSpec::edge(20, b"5".to_vec(), Some(7)),
+                    IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 10, b"30".to_vec()),
+                    IndexEqualSpec::edge(TEST_PHYSICAL_INDEX_ID, 20, b"5".to_vec(), Some(7)),
                 ],
                 after,
                 limit: 1,
@@ -1627,7 +2019,7 @@ fn lookup_equal_page_for_label_sieves_inside_index_call() {
     let value = index_key(Value::Int64(7));
     for vertex_id in [10, 20, 30] {
         store
-            .posting_insert(
+            .test_posting_insert(
                 shard_principal,
                 ShardId::new(0),
                 5,
@@ -1644,6 +2036,7 @@ fn lookup_equal_page_for_label_sieves_inside_index_call() {
 
     let page = store
         .lookup_equal_page_for_label(&LookupEqualPageForLabelRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 5,
             value,
             vertex_label_id: 2,
@@ -1676,12 +2069,12 @@ fn lookup_intersection_page_for_label_sieves_inside_index_call() {
 
     for vertex_id in [10, 20, 30] {
         store
-            .posting_insert(shard, ShardId::new(0), 5, b"alice".to_vec(), vertex_id)
+            .test_posting_insert(shard, ShardId::new(0), 5, b"alice".to_vec(), vertex_id)
             .expect("walk posting");
     }
     for vertex_id in [10, 30] {
         store
-            .posting_insert(shard, ShardId::new(0), 6, b"active".to_vec(), vertex_id)
+            .test_posting_insert(shard, ShardId::new(0), 6, b"active".to_vec(), vertex_id)
             .expect("sieve posting");
         store
             .label_posting_insert(shard, ShardId::new(0), 2, vertex_id)
@@ -1691,8 +2084,8 @@ fn lookup_intersection_page_for_label_sieves_inside_index_call() {
     let page = store
         .lookup_intersection_page_for_label(&LookupIntersectionPageForLabelRequest {
             specs: vec![
-                IndexEqualSpec::vertex(5, b"alice".to_vec()),
-                IndexEqualSpec::vertex(6, b"active".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 5, b"alice".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 6, b"active".to_vec()),
             ],
             vertex_label_id: 2,
             after: None,
@@ -1769,7 +2162,7 @@ fn lookup_range_page_for_label_sieves_inside_index_call() {
         (30, index_key(Value::Int64(9))),
     ] {
         store
-            .posting_insert(shard_principal, ShardId::new(0), 5, value, vertex_id)
+            .test_posting_insert(shard_principal, ShardId::new(0), 5, value, vertex_id)
             .expect("posting");
     }
     for vertex_id in [10, 30] {
@@ -1780,6 +2173,7 @@ fn lookup_range_page_for_label_sieves_inside_index_call() {
 
     let page = store
         .lookup_range_page_for_label(&LookupRangePageForLabelRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 5,
             range: PostingRangeRequest::Between {
                 low: index_key(Value::Int64(5)),
@@ -1880,12 +2274,13 @@ fn lookup_equal_page_paginates_and_resumes() {
 
     for vid in [1u32, 2, 3] {
         store
-            .posting_insert(shard_a, ShardId::new(0), 42, b"v".to_vec(), vid)
+            .test_posting_insert(shard_a, ShardId::new(0), 42, b"v".to_vec(), vid)
             .expect("insert");
     }
 
     let page1 = store
         .lookup_equal_page(&LookupEqualPageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             value: b"v".to_vec(),
             after: None,
@@ -1905,6 +2300,7 @@ fn lookup_equal_page_paginates_and_resumes() {
 
     let page2 = store
         .lookup_equal_page(&LookupEqualPageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             value: b"v".to_vec(),
             after: page1.next,
@@ -1930,24 +2326,24 @@ fn lookup_equal_batch_answers_all_buckets_in_order() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_a);
 
     store
-        .posting_insert(shard_a, ShardId::new(0), 1, b"a".to_vec(), 10)
+        .test_posting_insert(shard_a, ShardId::new(0), 1, b"a".to_vec(), 10)
         .expect("insert a");
     store
-        .posting_insert(shard_a, ShardId::new(0), 2, b"b".to_vec(), 20)
+        .test_posting_insert(shard_a, ShardId::new(0), 2, b"b".to_vec(), 20)
         .expect("insert b");
     store
-        .posting_insert(shard_a, ShardId::new(0), 2, b"b".to_vec(), 21)
+        .test_posting_insert(shard_a, ShardId::new(0), 2, b"b".to_vec(), 21)
         .expect("insert b2");
     store
-        .posting_insert(shard_a, ShardId::new(0), 3, b"c".to_vec(), 30)
+        .test_posting_insert(shard_a, ShardId::new(0), 3, b"c".to_vec(), 30)
         .expect("insert c");
 
     let result = store
         .lookup_equal_batch(&LookupEqualBatchRequest {
             specs: vec![
-                IndexEqualSpec::vertex(1, b"a".to_vec()),
-                IndexEqualSpec::vertex(2, b"b".to_vec()),
-                IndexEqualSpec::vertex(3, b"c".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"a".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, b"b".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 3, b"c".to_vec()),
             ],
             limit: 10,
         })
@@ -1986,7 +2382,12 @@ fn lookup_equal_batch_rejects_edge_subject() {
 
     let err = store
         .lookup_equal_batch(&LookupEqualBatchRequest {
-            specs: vec![IndexEqualSpec::edge(7, b"e".to_vec(), Some(3))],
+            specs: vec![IndexEqualSpec::edge(
+                TEST_PHYSICAL_INDEX_ID,
+                7,
+                b"e".to_vec(),
+                Some(3),
+            )],
             limit: 10,
         })
         .expect_err("edge spec rejected");
@@ -2001,12 +2402,17 @@ fn lookup_edge_equal_batch_answers_edge_buckets_and_rejects_vertex_subject() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_a);
 
     store
-        .edge_posting_insert(shard_a, ShardId::new(0), 7, b"e".to_vec(), 3, 9, 0)
+        .test_edge_posting_insert(shard_a, ShardId::new(0), 7, b"e".to_vec(), 3, 9, 0)
         .expect("insert edge posting");
 
     let result = store
         .lookup_edge_equal_batch(&LookupEdgeEqualBatchRequest {
-            specs: vec![IndexEqualSpec::edge(7, b"e".to_vec(), Some(3))],
+            specs: vec![IndexEqualSpec::edge(
+                TEST_PHYSICAL_INDEX_ID,
+                7,
+                b"e".to_vec(),
+                Some(3),
+            )],
             limit: 10,
         })
         .expect("batch");
@@ -2017,7 +2423,11 @@ fn lookup_edge_equal_batch_answers_edge_buckets_and_rejects_vertex_subject() {
 
     let err = store
         .lookup_edge_equal_batch(&LookupEdgeEqualBatchRequest {
-            specs: vec![IndexEqualSpec::vertex(7, b"e".to_vec())],
+            specs: vec![IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                7,
+                b"e".to_vec(),
+            )],
             limit: 10,
         })
         .expect_err("vertex spec rejected");
@@ -2076,7 +2486,7 @@ fn lookup_range_page_walks_values_across_pages() {
         (300u32, vec![3u8]),
     ] {
         store
-            .posting_insert(shard_a, ShardId::new(0), 42, val, vid)
+            .test_posting_insert(shard_a, ShardId::new(0), 42, val, vid)
             .expect("insert");
     }
 
@@ -2085,6 +2495,7 @@ fn lookup_range_page_walks_values_across_pages() {
     loop {
         let page = store
             .lookup_range_page(&LookupRangePageRequest {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
                 property_id: 42,
                 range: PostingRangeRequest::Ge(vec![1]),
                 after,
@@ -2109,12 +2520,13 @@ fn lookup_edge_equal_page_paginates_and_resumes() {
 
     for slot in [0u32, 1, 2] {
         store
-            .edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, slot)
+            .test_edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, slot)
             .expect("insert edge posting");
     }
 
     let page1 = store
         .lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 88,
             value: b"e".to_vec(),
             label_id: Some(3),
@@ -2137,6 +2549,7 @@ fn lookup_edge_equal_page_paginates_and_resumes() {
 
     let page2 = store
         .lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 88,
             value: b"e".to_vec(),
             label_id: Some(3),
@@ -2171,7 +2584,7 @@ fn lookup_range_page_between_is_exact_and_excludes_non_numeric_domain() {
         (500u32, text_a.clone()),
     ] {
         store
-            .posting_insert(shard_a, ShardId::new(0), 42, val, vid)
+            .test_posting_insert(shard_a, ShardId::new(0), 42, val, vid)
             .expect("insert");
     }
 
@@ -2184,6 +2597,7 @@ fn lookup_range_page_between_is_exact_and_excludes_non_numeric_domain() {
 
     let page = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between { low, high },
             after: None,
@@ -2207,12 +2621,13 @@ fn lookup_range_page_between_unpopulated_range_returns_done() {
     let six = index_key(Value::Int64(6));
     let seven = index_key(Value::Int64(7));
     store
-        .posting_insert(shard_a, ShardId::new(0), 42, five.clone(), 1)
+        .test_posting_insert(shard_a, ShardId::new(0), 42, five.clone(), 1)
         .expect("insert");
 
     // [6, 7) is structurally valid but contains no postings in this fixture.
     let page = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: six,
@@ -2237,12 +2652,12 @@ fn lookup_range_page_between_clamps_cursor_below_low_to_inclusive_low() {
     let low = index_key(Value::Int64(2));
     let high = index_key(Value::Int64(4));
     store
-        .posting_insert(shard_a, ShardId::new(0), 42, low.clone(), 0)
+        .test_posting_insert(shard_a, ShardId::new(0), 42, low.clone(), 0)
         .expect("insert low-bound posting");
     // One above low.
     let key3 = index_key(Value::Int64(3));
     store
-        .posting_insert(shard_a, ShardId::new(0), 42, key3, 1)
+        .test_posting_insert(shard_a, ShardId::new(0), 42, key3, 1)
         .expect("insert");
 
     // A cursor below `low` must be clamped to an inclusive low bound, so the posting at vertex 0
@@ -2250,6 +2665,7 @@ fn lookup_range_page_between_clamps_cursor_below_low_to_inclusive_low() {
     let below_low = index_key(Value::Int64(0));
     let page = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: low.clone(),
@@ -2278,7 +2694,7 @@ fn lookup_range_page_between_returns_empty_when_cursor_at_or_above_high() {
     for vid in 0..5u32 {
         let key = index_key(Value::Int64(vid as i64));
         store
-            .posting_insert(shard_a, ShardId::new(0), 42, key, vid + 100)
+            .test_posting_insert(shard_a, ShardId::new(0), 42, key, vid + 100)
             .expect("insert");
     }
 
@@ -2289,6 +2705,7 @@ fn lookup_range_page_between_returns_empty_when_cursor_at_or_above_high() {
     let at_high = index_key(Value::Int64(4));
     let page = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: low.clone(),
@@ -2318,6 +2735,7 @@ fn lookup_range_page_between_rejects_oversized_cursor() {
     let oversized = vec![0u8; gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES + 1];
     let err = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between { low, high },
             after: Some(PropertyPostingCursor {
@@ -2346,7 +2764,7 @@ fn lookup_range_page_between_paginates_and_resumes() {
     for vid in 0..5u32 {
         let key = index_key(Value::Int64(vid as i64));
         store
-            .posting_insert(shard_a, ShardId::new(0), 42, key, vid + 100)
+            .test_posting_insert(shard_a, ShardId::new(0), 42, key, vid + 100)
             .expect("insert");
     }
 
@@ -2356,6 +2774,7 @@ fn lookup_range_page_between_paginates_and_resumes() {
 
     let page1 = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: low.clone(),
@@ -2373,6 +2792,7 @@ fn lookup_range_page_between_paginates_and_resumes() {
 
     let page2 = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between { low, high },
             after: Some(cursor),
@@ -2394,14 +2814,15 @@ fn lookup_range_page_between_is_isolated_per_property_id() {
     let low = index_key(Value::Int64(0));
     let high = index_key(Value::Int64(10));
     store
-        .posting_insert(shard_a, ShardId::new(0), 7, low.clone(), 1)
+        .test_posting_insert(shard_a, ShardId::new(0), 7, low.clone(), 1)
         .expect("insert property 7");
     store
-        .posting_insert(shard_a, ShardId::new(0), 8, low.clone(), 2)
+        .test_posting_insert(shard_a, ShardId::new(0), 8, low.clone(), 2)
         .expect("insert property 8");
 
     let page = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 7,
             range: PostingRangeRequest::Between {
                 low: low.clone(),
@@ -2425,6 +2846,7 @@ fn lookup_range_page_between_rejects_inverted_bounds() {
 
     let err = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: index_key(Value::Int64(9)),
@@ -2452,6 +2874,7 @@ fn lookup_range_page_between_rejects_oversized_bound() {
     let valid = index_key(Value::Int64(1));
     let err = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: oversized,
@@ -2477,11 +2900,12 @@ fn lookup_range_page_between_clamps_zero_limit() {
 
     let key = index_key(Value::Int64(5));
     store
-        .posting_insert(shard_a, ShardId::new(0), 42, key.clone(), 1)
+        .test_posting_insert(shard_a, ShardId::new(0), 42, key.clone(), 1)
         .expect("insert");
 
     let page = store
         .lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: TEST_PHYSICAL_INDEX_ID,
             property_id: 42,
             range: PostingRangeRequest::Between {
                 low: key.clone(),
@@ -2536,7 +2960,7 @@ fn count_postings_by_value_for_label_sieves_by_label() {
     let uk = index_key(Value::Text("UK".into()));
     for vid in [1, 2, 3] {
         store
-            .posting_insert(
+            .test_posting_insert(
                 shard_principal,
                 ShardId::new(0),
                 property_id,
@@ -2549,10 +2973,11 @@ fn count_postings_by_value_for_label_sieves_by_label() {
             .expect("person");
     }
     store
-        .posting_insert(shard_principal, ShardId::new(0), property_id, uk.clone(), 4)
+        .test_posting_insert(shard_principal, ShardId::new(0), property_id, uk.clone(), 4)
         .expect("uk unlabeled");
 
-    let counts = store.count_postings_by_value_for_label(property_id, 5, 1, 100);
+    let counts =
+        store.count_postings_by_value_for_label(TEST_PHYSICAL_INDEX_ID, property_id, 5, 1, 100);
     assert_eq!(counts.len(), 1);
     assert_eq!(counts[0].encoded_value, us);
     assert_eq!(counts[0].count, 3);
@@ -2568,7 +2993,7 @@ fn edge_posting_insert_remove_and_lookup_equal() {
     let property_id = 77;
     let value = index_key(Value::Int64(5));
     store
-        .edge_posting_insert(
+        .test_edge_posting_insert(
             owner,
             ShardId::new(0),
             property_id,
@@ -2579,7 +3004,7 @@ fn edge_posting_insert_remove_and_lookup_equal() {
         )
         .expect("insert");
     store
-        .edge_posting_insert(
+        .test_edge_posting_insert(
             owner,
             ShardId::new(0),
             property_id,
@@ -2591,7 +3016,7 @@ fn edge_posting_insert_remove_and_lookup_equal() {
         .expect("insert other slot");
 
     let hits = store
-        .lookup_edge_equal(property_id, &value, Some(9))
+        .test_lookup_edge_equal(property_id, &value, Some(9))
         .expect("lookup_edge_equal");
     assert_eq!(hits.len(), 2);
     assert!(
@@ -2604,7 +3029,7 @@ fn edge_posting_insert_remove_and_lookup_equal() {
     );
 
     store
-        .edge_posting_remove(
+        .test_edge_posting_remove(
             owner,
             ShardId::new(0),
             property_id,
@@ -2615,7 +3040,7 @@ fn edge_posting_insert_remove_and_lookup_equal() {
         )
         .expect("remove");
     let remaining = store
-        .lookup_edge_equal(property_id, &value, None)
+        .test_lookup_edge_equal(property_id, &value, None)
         .expect("lookup_edge_equal");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].owner_vertex_id, 101);
@@ -2631,22 +3056,22 @@ fn edge_posting_lookup_filters_by_label_prefix() {
     let property_id = 88;
     let value = index_key(Value::Int64(1));
     store
-        .edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 1, 10, 0)
+        .test_edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 1, 10, 0)
         .expect("label 1");
     store
-        .edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 2, 11, 0)
+        .test_edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 2, 11, 0)
         .expect("label 2");
 
     assert_eq!(
         store
-            .lookup_edge_equal(property_id, &value, Some(1))
+            .test_lookup_edge_equal(property_id, &value, Some(1))
             .expect("lookup_edge_equal")
             .len(),
         1
     );
     assert_eq!(
         store
-            .lookup_edge_equal(property_id, &value, None)
+            .test_lookup_edge_equal(property_id, &value, None)
             .expect("lookup_edge_equal")
             .len(),
         2
@@ -2673,27 +3098,27 @@ fn posting_insert_accepts_at_limit_key_and_rejects_over_limit_without_stable_mut
     assert_eq!(over_limit.len(), MAX_INDEX_VALUE_KEY_BYTES + 1);
 
     store
-        .posting_insert(shard, ShardId::new(0), 1, at_limit.clone(), 10)
+        .test_posting_insert(shard, ShardId::new(0), 1, at_limit.clone(), 10)
         .expect("at-limit insert");
     assert_eq!(
         store
-            .lookup_equal(1, &at_limit)
+            .test_lookup_equal(1, &at_limit)
             .expect("lookup_equal")
             .len(),
         1
     );
 
     assert_eq!(
-        store.posting_insert(shard, ShardId::new(0), 1, over_limit.clone(), 11),
+        store.test_posting_insert(shard, ShardId::new(0), 1, over_limit.clone(), 11),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
-        store.lookup_equal(1, &over_limit),
+        store.test_lookup_equal(1, &over_limit),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
         store
-            .lookup_equal(1, &at_limit)
+            .test_lookup_equal(1, &at_limit)
             .expect("lookup_equal")
             .len(),
         1
@@ -2711,11 +3136,11 @@ fn edge_posting_insert_rejects_over_limit_without_stable_mutation() {
 
     let over_limit = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
     assert_eq!(
-        store.edge_posting_insert(owner, ShardId::new(0), 9, over_limit.clone(), 3, 10, 0),
+        store.test_edge_posting_insert(owner, ShardId::new(0), 9, over_limit.clone(), 3, 10, 0),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
-        store.lookup_edge_equal(9, &over_limit, None),
+        store.test_lookup_edge_equal(9, &over_limit, None),
         Err(IndexError::IndexValueKeyTooLarge)
     );
 }
@@ -2731,6 +3156,7 @@ fn posting_remove_accepts_oversized_key_for_legacy_cleanup() {
 
     let oversized = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
     let legacy_key = crate::key::PostingKey {
+        physical_index_id: TEST_PHYSICAL_INDEX_ID,
         property_id: 5,
         value: oversized.clone(),
         shard_id: ShardId::new(0),
@@ -2741,11 +3167,11 @@ fn posting_remove_accepts_oversized_key_for_legacy_cleanup() {
     });
 
     store
-        .posting_remove(shard, ShardId::new(0), 5, oversized.clone(), 7)
+        .test_posting_remove(shard, ShardId::new(0), 5, oversized.clone(), 7)
         .expect("remove oversized legacy posting");
     assert!(!INDEX_VERTEX_POSTINGS.with_borrow(|postings| postings.contains(&legacy_key)));
     assert_eq!(
-        store.lookup_equal(5, &oversized),
+        store.test_lookup_equal(5, &oversized),
         Err(IndexError::IndexValueKeyTooLarge)
     );
 }
@@ -2761,6 +3187,7 @@ fn edge_posting_remove_accepts_oversized_key_for_legacy_cleanup() {
 
     let oversized = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
     let legacy_key = crate::edge_key::EdgePostingKey {
+        physical_index_id: TEST_PHYSICAL_INDEX_ID,
         property_id: 9,
         value: oversized.clone(),
         label_id: 3,
@@ -2773,7 +3200,7 @@ fn edge_posting_remove_accepts_oversized_key_for_legacy_cleanup() {
     });
 
     store
-        .edge_posting_remove(shard, ShardId::new(0), 9, oversized, 3, 10, 0)
+        .test_edge_posting_remove(shard, ShardId::new(0), 9, oversized, 3, 10, 0)
         .expect("remove oversized legacy edge posting");
     assert!(!INDEX_EDGE_POSTINGS.with_borrow(|postings| postings.contains(&legacy_key)));
 }
@@ -2787,22 +3214,22 @@ fn read_boundaries_reject_oversized_keys_without_false_empty_range() {
     let oversized = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
 
     assert_eq!(
-        store.lookup_equal(1, &oversized),
+        store.test_lookup_equal(1, &oversized),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
-        store.lookup_edge_equal(2, &oversized, None),
+        store.test_lookup_edge_equal(2, &oversized, None),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
-        store.lookup_range(3, &PostingRangeRequest::Ge(oversized.clone())),
+        store.test_lookup_range(3, &PostingRangeRequest::Ge(oversized.clone())),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
         store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
-                IndexEqualSpec::vertex(1, b"ok".to_vec()),
-                IndexEqualSpec::vertex(2, oversized),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 1, b"ok".to_vec()),
+                IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, 2, oversized),
             ],
         }),
         Err(IndexError::IndexValueKeyTooLarge)
@@ -2825,12 +3252,12 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
     for vid in [1u32, 2u32, 3u32, 4u32] {
         let price = index_key(Value::Int64(i64::from(vid)));
         store
-            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .test_posting_insert(shard, ShardId::new(0), range_property, price, vid)
             .expect("price insert");
     }
     for vid in [1u32, 3u32] {
         store
-            .posting_insert(
+            .test_posting_insert(
                 shard,
                 ShardId::new(0),
                 eq_property,
@@ -2840,7 +3267,7 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
             .expect("doc insert");
     }
     store
-        .posting_insert(
+        .test_posting_insert(
             shard,
             ShardId::new(0),
             eq_property,
@@ -2854,10 +3281,15 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
             .expect("range bounds");
 
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low,
         high,
-        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc)],
+        equal_specs: vec![IndexEqualSpec::vertex(
+            TEST_PHYSICAL_INDEX_ID,
+            eq_property,
+            category_doc,
+        )],
         after: None,
         limit: 100,
     };
@@ -2879,7 +3311,7 @@ fn lookup_range_intersection_page_for_label_sieves_inside_index_call() {
 
     for vertex_id in [1u32, 2, 3, 4] {
         store
-            .posting_insert(
+            .test_posting_insert(
                 shard,
                 ShardId::new(0),
                 10,
@@ -2890,7 +3322,7 @@ fn lookup_range_intersection_page_for_label_sieves_inside_index_call() {
     }
     for vertex_id in [3u32, 4] {
         store
-            .posting_insert(shard, ShardId::new(0), 11, b"doc".to_vec(), vertex_id)
+            .test_posting_insert(shard, ShardId::new(0), 11, b"doc".to_vec(), vertex_id)
             .expect("equality posting");
     }
     store
@@ -2902,10 +3334,15 @@ fn lookup_range_intersection_page_for_label_sieves_inside_index_call() {
             .expect("range bounds");
     let page = store
         .lookup_range_intersection_page_for_label(&LookupRangeIntersectionPageForLabelRequest {
+            range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
             range_property_id: 10,
             low,
             high,
-            equal_specs: vec![IndexEqualSpec::vertex(11, b"doc".to_vec())],
+            equal_specs: vec![IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                11,
+                b"doc".to_vec(),
+            )],
             vertex_label_id: 2,
             after: None,
             limit: 10,
@@ -2940,12 +3377,12 @@ fn lookup_range_intersection_page_filters_range_walk_by_multiple_equality_arms()
     for vid in [1u32, 2u32, 3u32, 4u32, 5u32, 6u32] {
         let price = index_key(Value::Int64(i64::from(vid)));
         store
-            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .test_posting_insert(shard, ShardId::new(0), range_property, price, vid)
             .expect("price insert");
     }
     for vid in [1u32, 4u32] {
         store
-            .posting_insert(
+            .test_posting_insert(
                 shard,
                 ShardId::new(0),
                 eq_category,
@@ -2956,12 +3393,12 @@ fn lookup_range_intersection_page_filters_range_walk_by_multiple_equality_arms()
     }
     for vid in [3u32, 4u32] {
         store
-            .posting_insert(shard, ShardId::new(0), eq_tenant, tenant_a.clone(), vid)
+            .test_posting_insert(shard, ShardId::new(0), eq_tenant, tenant_a.clone(), vid)
             .expect("tenant insert");
     }
     for vid in [4u32, 5u32] {
         store
-            .posting_insert(shard, ShardId::new(0), eq_org, org_x.clone(), vid)
+            .test_posting_insert(shard, ShardId::new(0), eq_org, org_x.clone(), vid)
             .expect("org insert");
     }
 
@@ -2971,13 +3408,14 @@ fn lookup_range_intersection_page_filters_range_walk_by_multiple_equality_arms()
 
     // Verify canonical sieve order: arms are sorted by (property_id, value), not request order.
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low,
         high,
         equal_specs: vec![
-            IndexEqualSpec::vertex(eq_org, org_x.clone()),
-            IndexEqualSpec::vertex(eq_tenant, tenant_a.clone()),
-            IndexEqualSpec::vertex(eq_category, category_doc.clone()),
+            IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, eq_org, org_x.clone()),
+            IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, eq_tenant, tenant_a.clone()),
+            IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, eq_category, category_doc.clone()),
         ],
         after: None,
         limit: 100,
@@ -2995,6 +3433,7 @@ fn lookup_range_intersection_page_rejects_zero_equal_specs() {
     let store = IndexStore::new();
     init_test_store(&store);
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,
         low: vec![0u8],
         high: vec![1u8],
@@ -3013,9 +3452,10 @@ fn lookup_range_intersection_page_rejects_nine_equal_specs() {
     let store = IndexStore::new();
     init_test_store(&store);
     let specs: Vec<IndexEqualSpec> = (0..9)
-        .map(|i| IndexEqualSpec::vertex(i as u32, vec![i as u8]))
+        .map(|i| IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, i as u32, vec![i as u8]))
         .collect();
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,
         low: vec![0u8],
         high: vec![1u8],
@@ -3044,11 +3484,11 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
     for vid in [1u32, 2u32, 3u32] {
         let price = index_key(Value::Int64(i64::from(vid)));
         store
-            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .test_posting_insert(shard, ShardId::new(0), range_property, price, vid)
             .expect("price insert");
     }
     store
-        .posting_insert(shard, ShardId::new(0), eq_property, category_doc.clone(), 3)
+        .test_posting_insert(shard, ShardId::new(0), eq_property, category_doc.clone(), 3)
         .expect("doc insert");
 
     let (low, high) =
@@ -3057,10 +3497,15 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
 
     // First page: limit 2 captures vids 1,2; neither has category=doc.
     let first = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low: low.clone(),
         high: high.clone(),
-        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc.clone())],
+        equal_specs: vec![IndexEqualSpec::vertex(
+            TEST_PHYSICAL_INDEX_ID,
+            eq_property,
+            category_doc.clone(),
+        )],
         after: None,
         limit: 2,
     };
@@ -3079,10 +3524,15 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
 
     // Second page: captures vid 3, which has category=doc.
     let second = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low: low.clone(),
         high: high.clone(),
-        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc)],
+        equal_specs: vec![IndexEqualSpec::vertex(
+            TEST_PHYSICAL_INDEX_ID,
+            eq_property,
+            category_doc,
+        )],
         after: Some(after),
         limit: 2,
     };
@@ -3110,7 +3560,7 @@ fn build_n_arm_range_intersection_store(
     for vid in [1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32] {
         let price = index_key(Value::Int64(i64::from(vid)));
         store
-            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .test_posting_insert(shard, ShardId::new(0), range_property, price, vid)
             .expect("price insert");
     }
 
@@ -3121,7 +3571,7 @@ fn build_n_arm_range_intersection_store(
         // the rest of the in-range vids are missing it.
         for vid in [matched_vid, 2u32] {
             store
-                .posting_insert(shard, ShardId::new(0), eq_property, value.clone(), vid)
+                .test_posting_insert(shard, ShardId::new(0), eq_property, value.clone(), vid)
                 .expect("eq insert");
         }
         eq_properties.push((eq_property, value));
@@ -3140,11 +3590,14 @@ fn lookup_range_intersection_page_filters_by_four_equality_arms() {
 
     let specs: Vec<IndexEqualSpec> = eq_properties
         .into_iter()
-        .map(|(property_id, value)| IndexEqualSpec::vertex(property_id, value))
+        .map(|(property_id, value)| {
+            IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, property_id, value)
+        })
         .collect();
     assert_eq!(specs.len(), 4);
 
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low,
         high,
@@ -3170,11 +3623,14 @@ fn lookup_range_intersection_page_filters_by_eight_equality_arms() {
 
     let specs: Vec<IndexEqualSpec> = eq_properties
         .into_iter()
-        .map(|(property_id, value)| IndexEqualSpec::vertex(property_id, value))
+        .map(|(property_id, value)| {
+            IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, property_id, value)
+        })
         .collect();
     assert_eq!(specs.len(), 8);
 
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low,
         high,
@@ -3201,10 +3657,16 @@ fn lookup_range_intersection_page_rejects_non_vertex_equal_spec() {
         gleaph_gql::numeric_range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge)
             .expect("range bounds");
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,
         low,
         high,
-        equal_specs: vec![IndexEqualSpec::edge(2, b"v".to_vec(), Some(1))],
+        equal_specs: vec![IndexEqualSpec::edge(
+            TEST_PHYSICAL_INDEX_ID,
+            2,
+            b"v".to_vec(),
+            Some(1),
+        )],
         after: None,
         limit: 10,
     };
@@ -3219,10 +3681,15 @@ fn lookup_range_intersection_page_rejects_malformed_bounds() {
     let store = IndexStore::new();
     init_test_store(&store);
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,
         low: vec![2u8],
         high: vec![1u8],
-        equal_specs: vec![IndexEqualSpec::vertex(2, b"v".to_vec())],
+        equal_specs: vec![IndexEqualSpec::vertex(
+            TEST_PHYSICAL_INDEX_ID,
+            2,
+            b"v".to_vec(),
+        )],
         after: None,
         limit: 10,
     };
@@ -3240,10 +3707,15 @@ fn lookup_range_intersection_page_empty_range_returns_terminal_page() {
         gleaph_gql::numeric_range_bounds(&Value::Int64(10), gleaph_gql::ast::CmpOp::Ge)
             .expect("range bounds");
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: 1,
         low,
         high,
-        equal_specs: vec![IndexEqualSpec::vertex(2, b"v".to_vec())],
+        equal_specs: vec![IndexEqualSpec::vertex(
+            TEST_PHYSICAL_INDEX_ID,
+            2,
+            b"v".to_vec(),
+        )],
         after: None,
         limit: 10,
     };
@@ -3273,11 +3745,11 @@ fn lookup_range_intersection_page_uses_point_lookup_for_far_apart_hits() {
     for vid in [near_vid, far_vid] {
         let price = index_key(Value::Int64(i64::from(vid)));
         store
-            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .test_posting_insert(shard, ShardId::new(0), range_property, price, vid)
             .expect("range insert");
     }
     store
-        .posting_insert(
+        .test_posting_insert(
             shard,
             ShardId::new(0),
             eq_property,
@@ -3289,10 +3761,15 @@ fn lookup_range_intersection_page_uses_point_lookup_for_far_apart_hits() {
     let low = index_key(Value::Int64(-1));
     let high = index_key(Value::Int64(i64::from(far_vid) + 1));
     let req = LookupRangeIntersectionPageRequest {
+        range_physical_index_id: TEST_PHYSICAL_INDEX_ID,
         range_property_id: range_property,
         low,
         high,
-        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc)],
+        equal_specs: vec![IndexEqualSpec::vertex(
+            TEST_PHYSICAL_INDEX_ID,
+            eq_property,
+            category_doc,
+        )],
         after: None,
         limit: 10,
     };

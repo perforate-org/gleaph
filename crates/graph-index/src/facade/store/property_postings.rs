@@ -16,8 +16,8 @@ use gleaph_graph_kernel::index::{
     LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
     LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit,
-    PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    MAX_EQUALITY_INTERSECTION_ARMS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PhysicalIndexId,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
     ValuePostingCountCursor, ValuePostingCountPage,
 };
 use nohash_hasher::IntSet;
@@ -116,6 +116,7 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -123,6 +124,7 @@ impl IndexStore {
         ensure_index_value_key(&value)?;
         self.assert_shard_canister(caller, shard_id)?;
         let key = PostingKey {
+            physical_index_id,
             property_id,
             value,
             shard_id,
@@ -138,12 +140,14 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), IndexError> {
         self.assert_shard_canister(caller, shard_id)?;
         let key = PostingKey {
+            physical_index_id,
             property_id,
             value,
             shard_id,
@@ -159,32 +163,49 @@ impl IndexStore {
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), IndexError> {
-        self.commit_posting_insert(caller, shard_id, property_id, value, vertex_id)
+        self.commit_posting_insert(
+            caller,
+            shard_id,
+            physical_index_id,
+            property_id,
+            value,
+            vertex_id,
+        )
     }
 
     pub fn posting_remove(
         &self,
         caller: Principal,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), IndexError> {
-        self.commit_posting_remove(caller, shard_id, property_id, value, vertex_id)
+        self.commit_posting_remove(
+            caller,
+            shard_id,
+            physical_index_id,
+            property_id,
+            value,
+            vertex_id,
+        )
     }
 
     pub fn lookup_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: &[u8],
     ) -> Result<Vec<PostingHit>, IndexError> {
         ensure_index_value_key(value)?;
-        let lo = PostingKey::prefix_lower(property_id, value);
-        let hi = PostingKey::prefix_upper(property_id, value);
+        let lo = PostingKey::prefix_lower(physical_index_id, property_id, value);
+        let hi = PostingKey::prefix_upper(physical_index_id, property_id, value);
         Ok(INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             postings
                 .range(lo..=hi)
@@ -204,15 +225,24 @@ impl IndexStore {
     ) -> Result<PostingHitPage, IndexError> {
         ensure_index_value_key(&req.value)?;
         let limit = clamp_posting_page_limit(req.limit);
-        let upper = Bound::Included(PostingKey::prefix_upper(req.property_id, &req.value));
+        let upper = Bound::Included(PostingKey::prefix_upper(
+            req.physical_index_id,
+            req.property_id,
+            &req.value,
+        ));
         let lower = match &req.after {
             Some(cursor) => Bound::Excluded(PostingKey {
+                physical_index_id: req.physical_index_id,
                 property_id: req.property_id,
                 value: cursor.value.clone(),
                 shard_id: cursor.shard_id,
                 vertex_id: cursor.vertex_id,
             }),
-            None => Bound::Included(PostingKey::prefix_lower(req.property_id, &req.value)),
+            None => Bound::Included(PostingKey::prefix_lower(
+                req.physical_index_id,
+                req.property_id,
+                &req.value,
+            )),
         };
         Ok(collect_vertex_posting_page(lower, upper, limit))
     }
@@ -224,6 +254,7 @@ impl IndexStore {
         req: &LookupEqualPageForLabelRequest,
     ) -> Result<PostingHitPage, IndexError> {
         let mut page = self.lookup_equal_page(&LookupEqualPageRequest {
+            physical_index_id: req.physical_index_id,
             property_id: req.property_id,
             value: req.value.clone(),
             after: req.after.clone(),
@@ -264,6 +295,7 @@ impl IndexStore {
             |index| {
                 let spec = &req.specs[index];
                 self.lookup_equal_page(&LookupEqualPageRequest {
+                    physical_index_id: spec.physical_index_id,
                     property_id: spec.property_id,
                     value: spec.value.clone(),
                     after: None,
@@ -280,6 +312,7 @@ impl IndexStore {
         req: &LookupRangePageForLabelRequest,
     ) -> Result<PostingHitPage, IndexError> {
         let mut page = self.lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: req.physical_index_id,
             property_id: req.property_id,
             range: req.range.clone(),
             after: req.after.clone(),
@@ -322,13 +355,15 @@ impl IndexStore {
         }
         let mut sorted_specs = req.specs.clone();
         sorted_specs.sort_by(|a, b| {
-            a.property_id
-                .cmp(&b.property_id)
+            a.physical_index_id
+                .cmp(&b.physical_index_id)
+                .then_with(|| a.property_id.cmp(&b.property_id))
                 .then_with(|| a.value.cmp(&b.value))
         });
         let walk = &sorted_specs[0];
         let sieves = &sorted_specs[1..];
         let walk_page = self.lookup_equal_page(&LookupEqualPageRequest {
+            physical_index_id: walk.physical_index_id,
             property_id: walk.property_id,
             value: walk.value.clone(),
             after: req.after.clone(),
@@ -339,7 +374,12 @@ impl IndexStore {
             if survivors.is_empty() {
                 break;
             }
-            survivors = self.filter_hits_by_equal(arm.property_id, &arm.value, survivors)?;
+            survivors = self.filter_hits_by_equal(
+                arm.physical_index_id,
+                arm.property_id,
+                &arm.value,
+                survivors,
+            )?;
         }
         Ok(PostingHitPage {
             hits: survivors,
@@ -369,14 +409,13 @@ impl IndexStore {
     /// are counted (packed as `(shard_id as u64) << 32 | vertex_id as u64`).
     pub fn count_postings_by_value(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         min_count: u64,
         max_groups: usize,
         vertex_filter: Option<&IntSet<u64>>,
     ) -> Vec<ValuePostingCount> {
-        let Some((low, high)) = property_posting_bucket(property_id) else {
-            return Vec::new();
-        };
+        let (low, high) = property_posting_bucket(physical_index_id, property_id);
         let max_groups = max_groups.max(1);
         let mut out = Vec::new();
         let mut current_value: Option<Vec<u8>> = None;
@@ -392,7 +431,7 @@ impl IndexStore {
         };
 
         INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
-            for key in postings.range(low..high) {
+            for key in postings.range((Bound::Included(low), high)) {
                 if let Some(filter) = vertex_filter {
                     let packed = pack_posting_vertex(key.shard_id, key.vertex_id);
                     if !filter.contains(&packed) {
@@ -430,14 +469,13 @@ impl IndexStore {
     /// Walk one property bucket and count groups whose postings belong to `vertex_label_id`.
     pub fn count_postings_by_value_for_label(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         vertex_label_id: u32,
         min_count: u64,
         max_groups: usize,
     ) -> Vec<ValuePostingCount> {
-        let Some((low, high)) = property_posting_bucket(property_id) else {
-            return Vec::new();
-        };
+        let (low, high) = property_posting_bucket(physical_index_id, property_id);
         let max_groups = max_groups.max(1);
         let mut out = Vec::new();
         let mut current_value: Option<Vec<u8>> = None;
@@ -454,7 +492,7 @@ impl IndexStore {
 
         INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|labels| {
-                for key in postings.range(low..high) {
+                for key in postings.range((Bound::Included(low), high)) {
                     if !labels.contains(&LabelPostingKey {
                         vertex_label_id,
                         shard_id: key.shard_id,
@@ -495,28 +533,24 @@ impl IndexStore {
         &self,
         req: &LookupValuePostingCountPageRequest,
     ) -> ValuePostingCountPage {
-        let Some((low, high)) = property_posting_bucket(req.property_id) else {
-            return ValuePostingCountPage {
-                counts: Vec::new(),
-                next: None,
-                done: true,
-            };
-        };
+        let (low, high) = property_posting_bucket(req.physical_index_id, req.property_id);
         let filter = req
             .vertex_filter_packed
             .as_ref()
             .map(|packed| packed.iter().copied().collect::<IntSet<u64>>());
         INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             grouped_count_page(
-                postings.range(low..high).filter_map(|key| {
-                    if filter.as_ref().is_some_and(|filter| {
-                        !filter.contains(&pack_posting_vertex(key.shard_id, key.vertex_id))
-                    }) {
-                        None
-                    } else {
-                        Some(key.value.clone())
-                    }
-                }),
+                postings
+                    .range((Bound::Included(low), high))
+                    .filter_map(|key| {
+                        if filter.as_ref().is_some_and(|filter| {
+                            !filter.contains(&pack_posting_vertex(key.shard_id, key.vertex_id))
+                        }) {
+                            None
+                        } else {
+                            Some(key.value.clone())
+                        }
+                    }),
                 req.min_count,
                 req.after.as_ref(),
                 req.limit,
@@ -529,27 +563,23 @@ impl IndexStore {
         req: &LookupValuePostingCountPageRequest,
         vertex_label_id: u32,
     ) -> ValuePostingCountPage {
-        let Some((low, high)) = property_posting_bucket(req.property_id) else {
-            return ValuePostingCountPage {
-                counts: Vec::new(),
-                next: None,
-                done: true,
-            };
-        };
+        let (low, high) = property_posting_bucket(req.physical_index_id, req.property_id);
         INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|labels| {
                 grouped_count_page(
-                    postings.range(low..high).filter_map(|key| {
-                        if !labels.contains(&LabelPostingKey {
-                            vertex_label_id,
-                            shard_id: key.shard_id,
-                            vertex_id: key.vertex_id,
-                        }) {
-                            None
-                        } else {
-                            Some(key.value.clone())
-                        }
-                    }),
+                    postings
+                        .range((Bound::Included(low), high))
+                        .filter_map(|key| {
+                            if !labels.contains(&LabelPostingKey {
+                                vertex_label_id,
+                                shard_id: key.shard_id,
+                                vertex_id: key.vertex_id,
+                            }) {
+                                None
+                            } else {
+                                Some(key.value.clone())
+                            }
+                        }),
                     req.min_count,
                     req.after.as_ref(),
                     req.limit,
@@ -568,6 +598,7 @@ impl IndexStore {
     /// `Self::filter_hits_by_equal` instead.
     fn filter_hits_by_equal_point_lookup(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: &[u8],
         hits: Vec<PostingHit>,
@@ -577,6 +608,7 @@ impl IndexStore {
             return Ok(Vec::new());
         }
         let mut key = PostingKey {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             shard_id: ShardId::new(0),
@@ -608,6 +640,7 @@ impl IndexStore {
     /// heap stays bounded by the page.
     pub fn filter_hits_by_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: &[u8],
         mut hits: Vec<PostingHit>,
@@ -619,15 +652,16 @@ impl IndexStore {
         hits.sort_unstable_by_key(|hit| (hit.shard_id, hit.vertex_id));
 
         if equal_sieve_dense_threshold_met(&hits) {
-            self.filter_hits_by_equal_dense(property_id, value, hits)
+            self.filter_hits_by_equal_dense(physical_index_id, property_id, value, hits)
         } else {
-            self.filter_hits_by_equal_point_lookup(property_id, value, hits)
+            self.filter_hits_by_equal_point_lookup(physical_index_id, property_id, value, hits)
         }
     }
 
     /// Dense-path equality sieve: single sorted merge over the bounded subject range.
     fn filter_hits_by_equal_dense(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: &[u8],
         hits: Vec<PostingHit>,
@@ -635,12 +669,14 @@ impl IndexStore {
         let first = hits[0];
         let last = hits[hits.len() - 1];
         let lower = Bound::Included(PostingKey {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             shard_id: first.shard_id,
             vertex_id: first.vertex_id,
         });
         let upper = Bound::Included(PostingKey {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             shard_id: last.shard_id,
@@ -673,19 +709,20 @@ impl IndexStore {
     /// Half-open `[low, high)` scan over postings for `property_id` using encoded-value [`PostingRangeRequest`].
     pub fn lookup_range(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, IndexError> {
         ensure_posting_range_request(req)?;
-        let Some((low, high)) = posting_key_half_open_range(property_id, req) else {
-            return Ok(Vec::new());
-        };
-        if low >= high {
+        let (low, high) = posting_key_half_open_range(physical_index_id, property_id, req);
+        if let Bound::Excluded(high_key) = &high
+            && low >= *high_key
+        {
             return Ok(Vec::new());
         }
         Ok(INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             postings
-                .range(low..high)
+                .range((Bound::Included(low), high))
                 .map(|k| PostingHit {
                     shard_id: k.shard_id,
                     vertex_id: k.vertex_id,
@@ -702,18 +739,20 @@ impl IndexStore {
     ) -> Result<PostingHitPage, IndexError> {
         ensure_posting_range_request(&req.range)?;
         let limit = clamp_posting_page_limit(req.limit);
-        let Some((low, high)) = posting_key_half_open_range(req.property_id, &req.range) else {
-            return Ok(empty_posting_page());
-        };
-        if low >= high {
+        let (low, high) =
+            posting_key_half_open_range(req.physical_index_id, req.property_id, &req.range);
+        if let Bound::Excluded(high_key) = &high
+            && low >= *high_key
+        {
             return Ok(empty_posting_page());
         }
-        let upper = Bound::Excluded(high.clone());
+        let upper = high.clone();
         let lower = match &req.after {
             Some(cursor) => {
                 ensure_index_value_key(&cursor.value)
                     .map_err(|_| IndexError::IndexValueKeyTooLarge)?;
                 let cursor_key = PostingKey {
+                    physical_index_id: req.physical_index_id,
                     property_id: req.property_id,
                     value: cursor.value.clone(),
                     shard_id: cursor.shard_id,
@@ -721,7 +760,9 @@ impl IndexStore {
                 };
                 // A cursor outside the requested range would silently change the interval. Clamp it
                 // to the interval boundary; if it is already at or beyond `high` the page is empty.
-                if cursor_key >= high {
+                if let Bound::Excluded(high_key) = &high
+                    && cursor_key >= *high_key
+                {
                     return Ok(empty_posting_page());
                 }
                 if cursor_key < low {
@@ -762,8 +803,9 @@ impl IndexStore {
         }
         let mut equal_specs = req.equal_specs.clone();
         equal_specs.sort_by(|a, b| {
-            a.property_id
-                .cmp(&b.property_id)
+            a.physical_index_id
+                .cmp(&b.physical_index_id)
+                .then_with(|| a.property_id.cmp(&b.property_id))
                 .then_with(|| a.value.cmp(&b.value))
         });
         for spec in &equal_specs {
@@ -773,6 +815,7 @@ impl IndexStore {
             ensure_index_value_key(&spec.value)?;
         }
         let walk_page = self.lookup_range_page(&LookupRangePageRequest {
+            physical_index_id: req.range_physical_index_id,
             property_id: req.range_property_id,
             range: PostingRangeRequest::Between {
                 low: req.low.clone(),
@@ -786,7 +829,12 @@ impl IndexStore {
             if survivors.is_empty() {
                 break;
             }
-            survivors = self.filter_hits_by_equal(spec.property_id, &spec.value, survivors)?;
+            survivors = self.filter_hits_by_equal(
+                spec.physical_index_id,
+                spec.property_id,
+                &spec.value,
+                survivors,
+            )?;
         }
         Ok(PostingHitPage {
             hits: survivors,
@@ -803,6 +851,7 @@ impl IndexStore {
     ) -> Result<PostingHitPage, IndexError> {
         let mut page =
             self.lookup_range_intersection_page(&LookupRangeIntersectionPageRequest {
+                range_physical_index_id: req.range_physical_index_id,
                 range_property_id: req.range_property_id,
                 low: req.low.clone(),
                 high: req.high.clone(),

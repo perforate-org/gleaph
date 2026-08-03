@@ -5,10 +5,11 @@ use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
-    IndexIntersectionResult, IndexPostingBatchProgress, IndexPostingMutation,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangePageRequest, MAX_POSTING_PAGE_HITS, PostingHit, PostingHitPage, PostingRangeRequest,
+    EdgePostingHit, EdgePostingHitPage, IndexBuildDmlRequest, IndexEqualSpec,
+    IndexIntersectionRequest, IndexIntersectionResult, IndexPostingBatchProgress,
+    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangePageRequest, MAX_POSTING_PAGE_HITS,
+    PostingHit, PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -91,6 +92,23 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         true
     }
 
+    async fn apply_index_build_dml(
+        &self,
+        request: IndexBuildDmlRequest,
+    ) -> Result<(), PlanQueryError> {
+        let result: Result<(), String> =
+            Call::bounded_wait(self.index_principal, "apply_index_build_dml")
+                .with_args(&(request,))
+                .await
+                .map_err(|e| ic_wait_err("apply_index_build_dml", e))?
+                .candid()
+                .map_err(|_| ic_candid_decode_err("apply_index_build_dml"))?;
+        result.map_err(|detail| PlanQueryError::FederatedIndexCall {
+            op: "apply_index_build_dml",
+            detail,
+        })
+    }
+
     async fn posting_batch_at(
         &self,
         shard_id: gleaph_graph_kernel::federation::ShardId,
@@ -112,6 +130,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
 
     async fn lookup_equal(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -121,6 +140,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
             let page: PostingHitPage =
                 Call::bounded_wait(self.index_principal, "lookup_equal_page")
                     .with_args(&(LookupEqualPageRequest {
+                        physical_index_id,
                         property_id,
                         value: value.clone(),
                         after,
@@ -141,6 +161,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
 
     async fn lookup_range(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -150,6 +171,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
             let page: PostingHitPage =
                 Call::bounded_wait(self.index_principal, "lookup_range_page")
                     .with_args(&(LookupRangePageRequest {
+                        physical_index_id,
                         property_id,
                         range: req.clone(),
                         after,
@@ -177,6 +199,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
 
     async fn lookup_edge_equal(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: Option<u16>,
@@ -187,6 +210,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
             let page: EdgePostingHitPage =
                 Call::bounded_wait(self.index_principal, "lookup_edge_equal_page")
                     .with_args(&(LookupEdgeEqualPageRequest {
+                        physical_index_id,
                         property_id,
                         value: value.clone(),
                         label_id,
@@ -209,12 +233,19 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     async fn posting_insert_at(
         &self,
         shard_id: gleaph_graph_kernel::federation::ShardId,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "posting_insert")
-            .with_args(&(shard_id.raw(), property_id, value, vertex_id))
+            .with_args(&(
+                shard_id.raw(),
+                physical_index_id,
+                property_id,
+                value,
+                vertex_id,
+            ))
             .await
             .map_err(|e| ic_wait_err("posting_insert", e))?
             .candid()
@@ -225,12 +256,19 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     async fn posting_remove_at(
         &self,
         shard_id: gleaph_graph_kernel::federation::ShardId,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "posting_remove")
-            .with_args(&(shard_id.raw(), property_id, value, vertex_id))
+            .with_args(&(
+                shard_id.raw(),
+                physical_index_id,
+                property_id,
+                value,
+                vertex_id,
+            ))
             .await
             .map_err(|e| ic_wait_err("posting_remove", e))?
             .candid()
@@ -271,6 +309,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     async fn edge_posting_insert_at(
         &self,
         shard_id: gleaph_graph_kernel::federation::ShardId,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -280,6 +319,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         let (): () = Call::bounded_wait(self.index_principal, "edge_posting_insert")
             .with_args(&(
                 shard_id.raw(),
+                physical_index_id,
                 property_id,
                 value,
                 label_id,
@@ -296,6 +336,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     async fn edge_posting_remove_at(
         &self,
         shard_id: gleaph_graph_kernel::federation::ShardId,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -305,6 +346,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         let (): () = Call::bounded_wait(self.index_principal, "edge_posting_remove")
             .with_args(&(
                 shard_id.raw(),
+                physical_index_id,
                 property_id,
                 value,
                 label_id,

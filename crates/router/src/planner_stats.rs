@@ -8,11 +8,11 @@ use std::collections::BTreeSet;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::GraphStats;
 use gleaph_graph_kernel::entry::{GraphId, PropertyId};
-use gleaph_graph_kernel::index::IndexedPropertyKind;
-
-use crate::edge_index_direction::{
-    EdgeIndexDirectionTag, index_applies_to_query, tag_to_direction,
+use gleaph_graph_kernel::index::{
+    EdgeIndexDirection, IndexMaintenancePhase, IndexedPropertyKind, PhysicalIndexId,
 };
+
+use crate::edge_index_direction::index_applies_to_query;
 use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
 use crate::facade::stable::ROUTER_PROPERTY_CATALOG;
 use crate::facade::store::RouterStore;
@@ -30,18 +30,31 @@ pub struct IndexCatalogEntry {
 /// Semantic identity of an edge property index (ADR 0012).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeIndexMembership {
+    pub physical_index_id: PhysicalIndexId,
+    pub catalog_epoch: u64,
     pub property_id: PropertyId,
     pub label_id: u16,
-    pub direction: EdgeIndexDirectionTag,
+    pub direction: EdgeIndexDirection,
     pub field_path: String,
 }
 
-/// Per-graph indexed property membership for cost-based planning.
+/// One active vertex index namespace projected from the Router-owned catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VertexIndexMembership {
+    pub physical_index_id: PhysicalIndexId,
+    pub catalog_epoch: u64,
+    pub property_id: PropertyId,
+    pub label_id: u16,
+}
+
+/// Planner-only projection. The stable catalog constructs this from `Active` index lifecycle rows;
+/// callers must not project Preparing, Building, Sealing, or Aborting definitions into it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RouterGraphStats {
     graph_id: GraphId,
     vertex_property_ids: BTreeSet<PropertyId>,
     edge_property_ids: BTreeSet<PropertyId>,
+    vertex_indexes: BTreeSet<VertexIndexMembership>,
     edge_indexes: BTreeSet<EdgeIndexMembership>,
 }
 
@@ -60,6 +73,23 @@ impl RouterGraphStats {
             graph_id,
             vertex_property_ids,
             edge_property_ids,
+            vertex_indexes: BTreeSet::new(),
+            edge_indexes,
+        }
+    }
+
+    pub(crate) fn from_catalog_with_indexes(
+        graph_id: GraphId,
+        vertex_property_ids: BTreeSet<PropertyId>,
+        edge_property_ids: BTreeSet<PropertyId>,
+        vertex_indexes: BTreeSet<VertexIndexMembership>,
+        edge_indexes: BTreeSet<EdgeIndexMembership>,
+    ) -> Self {
+        Self {
+            graph_id,
+            vertex_property_ids,
+            edge_property_ids,
+            vertex_indexes,
             edge_indexes,
         }
     }
@@ -78,22 +108,34 @@ impl RouterGraphStats {
         )
     }
 
-    /// Export the per-graph indexed catalog in the wire form consumed by graph
-    /// shards (ADR 0023 D1). Carries the same `(vertex, edge, edge-index)`
-    /// membership the shard registry used to hold, sourced fresh per operation.
-    pub(crate) fn to_indexed_property_catalog(
+    /// Export the active per-graph catalog in the wire form consumed by graph shards
+    /// (ADR 0023 D1). Every membership carries its Router-allocated physical namespace;
+    /// logical property sets are not sufficient to maintain postings.
+    pub(crate) fn to_active_indexed_property_catalog(
         &self,
     ) -> gleaph_graph_kernel::index::IndexedPropertyCatalog {
         gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            vertex_property_ids: self.vertex_property_ids.iter().map(|p| p.raw()).collect(),
-            edge_property_ids: self.edge_property_ids.iter().map(|p| p.raw()).collect(),
+            vertex_indexes: self
+                .vertex_indexes
+                .iter()
+                .map(|m| gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: m.physical_index_id,
+                    catalog_epoch: m.catalog_epoch,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: m.property_id.raw(),
+                    label_id: m.label_id,
+                })
+                .collect(),
             edge_indexes: self
                 .edge_indexes
                 .iter()
                 .map(|m| gleaph_graph_kernel::index::IndexedEdgeMembership {
+                    physical_index_id: m.physical_index_id,
+                    catalog_epoch: m.catalog_epoch,
+                    phase: IndexMaintenancePhase::Active,
                     label_id: m.label_id,
                     property_id: m.property_id.raw(),
-                    direction_tag: m.direction as u8,
+                    direction: m.direction,
                     field_path: m.field_path.clone(),
                 })
                 .collect(),
@@ -142,7 +184,7 @@ impl RouterGraphStats {
                     && entry.label_id == label_id
                     && ((entry.field_path.is_empty() && !property.contains('.'))
                         || entry.field_path == property)
-                    && index_applies_to_query(tag_to_direction(entry.direction), query_direction)
+                    && index_applies_to_query(entry.direction, query_direction)
             })
         })
     }
@@ -225,10 +267,10 @@ impl GraphStats for RouterGraphStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edge_index_direction::EdgeIndexDirectionTag;
     use crate::facade::store::RouterStore;
     use crate::init::RouterInitArgs;
     use candid::Principal;
+    use gleaph_graph_kernel::index::EdgeIndexDirection;
 
     use crate::facade::store::catalog_test_support::GRAPH as TEST_GRAPH;
 
@@ -291,9 +333,11 @@ mod tests {
             BTreeSet::new(),
             [property_id].into_iter().collect(),
             [EdgeIndexMembership {
+                physical_index_id: PhysicalIndexId::new(1).expect("physical id"),
+                catalog_epoch: 0,
                 property_id,
                 label_id: 1,
-                direction: EdgeIndexDirectionTag::PointingRight,
+                direction: EdgeIndexDirection::Outgoing,
                 field_path: String::new(),
             }]
             .into_iter()

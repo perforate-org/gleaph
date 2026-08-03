@@ -874,4 +874,34 @@ impl GraphStore {
             .with_borrow(|graph| graph.for_each_undirected_edges_unchecked(vertex_id, order, visit))
             .map_err(GraphStoreError::from)
     }
+
+    /// Visits at most `limit` logical slots for one forward label bucket without rescanning a
+    /// prior cursor prefix. The returned `(next_slot, exhausted)` pair is suitable for a durable
+    /// Graph-owned export cursor; tombstones still consume one bounded logical slot.
+    pub(crate) fn visit_out_edge_window_from_slot<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        directedness: EdgeDirectedness,
+        start_slot: u32,
+        limit: u32,
+        mut visit: Visit,
+    ) -> Result<(u32, bool), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        let storage_label = LaraLabelId::from_raw(label.pack(directedness).raw());
+        let (next_slot, exhausted) = GRAPH
+            .with_borrow(|graph| {
+                graph.visit_forward_edges_from_slot_with_inline_property(
+                    vertex_id,
+                    storage_label,
+                    start_slot,
+                    limit,
+                    |_, edge| visit(edge),
+                )
+            })
+            .map_err(GraphStoreError::from)?;
+        Ok((next_slot, exhausted))
+    }
 }

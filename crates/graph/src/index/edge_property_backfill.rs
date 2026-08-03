@@ -28,39 +28,44 @@ pub async fn backfill_edge_property_postings(
     let mut index_batch = Vec::new();
 
     for (key, value) in batch {
-        if !crate::index::catalog_context::should_maintain_edge_posting(
+        let physical_index_ids = crate::index::catalog_context::active_edge_physical_index_ids(
             key.label_id(),
             key.property_id(),
-        ) {
+        );
+        if physical_index_ids.is_empty() {
             continue;
         }
         let Some(payload_bytes) = sortable_index_key(&value) else {
             continue;
         };
         let owner_raw = u32::from_le_bytes(key.owner_vertex_id().to_le_bytes());
-        if index.supports_posting_batch() {
-            index_batch.push(IndexPostingMutation::EdgeProperty {
-                remove: false,
-                property_id: key.property_id().raw(),
-                value: payload_bytes,
-                label_id: key.label_id(),
-                owner_vertex_id: owner_raw,
-                slot_index: key.slot_index(),
-            });
-        } else {
-            index
-                .edge_posting_insert_at(
-                    shard_id,
-                    key.property_id().raw(),
-                    payload_bytes,
-                    key.label_id(),
-                    owner_raw,
-                    key.slot_index(),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+        for physical_index_id in physical_index_ids {
+            if index.supports_posting_batch() {
+                index_batch.push(IndexPostingMutation::EdgeProperty {
+                    physical_index_id,
+                    remove: false,
+                    property_id: key.property_id().raw(),
+                    value: payload_bytes.clone(),
+                    label_id: key.label_id(),
+                    owner_vertex_id: owner_raw,
+                    slot_index: key.slot_index(),
+                });
+            } else {
+                index
+                    .edge_posting_insert_at(
+                        shard_id,
+                        physical_index_id,
+                        key.property_id().raw(),
+                        payload_bytes.clone(),
+                        key.label_id(),
+                        owner_raw,
+                        key.slot_index(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            postings_synced = postings_synced.saturating_add(1);
         }
-        postings_synced = postings_synced.saturating_add(1);
     }
 
     if !index_batch.is_empty() {
@@ -87,8 +92,8 @@ mod tests {
     use gleaph_graph_kernel::entry::PropertyId;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{
-        IndexIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation, PostingHit,
-        PostingRangeRequest,
+        IndexIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation, PhysicalIndexId,
+        PostingHit, PostingRangeRequest,
     };
     use std::sync::Mutex;
 
@@ -138,6 +143,7 @@ mod tests {
 
         async fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
@@ -146,6 +152,7 @@ mod tests {
 
         async fn lookup_range(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _req: &PostingRangeRequest,
         ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
@@ -167,6 +174,7 @@ mod tests {
         async fn posting_insert_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -177,6 +185,7 @@ mod tests {
         async fn posting_remove_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -205,6 +214,7 @@ mod tests {
         async fn edge_posting_insert_at(
             &self,
             shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             property_id: u32,
             value: Vec<u8>,
             label_id: u16,
@@ -242,11 +252,16 @@ mod tests {
         let index = RecordingEdgeIndex::new();
         let owner = store.insert_vertex().expect("owner");
         let neighbor = store.insert_vertex().expect("neighbor");
+        // Unlabeled wire labels do not map to a catalog label and are intentionally excluded from
+        // index membership resolution, so the fixture must use a dedicated labeled edge that the
+        // membership catalog registers for the backfill under test.
+        let label = crate::test_labels::edge_label_id_for_name("backfill_edge_label");
         let handle = store
-            .insert_directed_edge(owner, neighbor, None)
+            .insert_directed_edge(owner, neighbor, Some(label))
             .expect("edge");
         let weight = PropertyId::from_raw(55);
-        let _catalog = crate::index::catalog_context::enter_edge_indexed(&[weight]);
+        let _catalog =
+            crate::index::catalog_context::enter_edge_indexed_with_label(&[weight], label);
         store
             .set_edge_property(
                 handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
@@ -278,12 +293,16 @@ mod tests {
         let index = RecordingEdgeIndex::batch();
         let owner = store.insert_vertex().expect("owner");
         let neighbor = store.insert_vertex().expect("neighbor");
+        let label = crate::test_labels::edge_label_id_for_name("backfill_edge_label");
         let handle = store
-            .insert_directed_edge(owner, neighbor, None)
+            .insert_directed_edge(owner, neighbor, Some(label))
             .expect("edge");
         let weight = PropertyId::from_raw(55);
         let distance = PropertyId::from_raw(56);
-        let _catalog = crate::index::catalog_context::enter_edge_indexed(&[weight, distance]);
+        let _catalog = crate::index::catalog_context::enter_edge_indexed_with_label(
+            &[weight, distance],
+            label,
+        );
         store
             .set_edge_property(
                 handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),

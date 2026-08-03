@@ -113,6 +113,7 @@ pub async fn admin_detach_shard_canister(
 #[cfg(target_family = "wasm")]
 pub async fn admin_purge_property_postings(
     index_canister: Principal,
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     kind: IndexPurgeKind,
     property_id: u32,
     label_id: u16,
@@ -123,7 +124,7 @@ pub async fn admin_purge_property_postings(
     loop {
         let step: IndexPostingPurgeStepResult =
             Call::unbounded_wait(index_canister, "admin_purge_property_postings")
-                .with_args(&(kind, property_id, label_id, &resume))
+                .with_args(&(physical_index_id, kind, property_id, label_id, &resume))
                 .await
                 .map_err(|e| format!("index admin_purge_property_postings call failed: {e}"))?
                 .candid::<Result<IndexPostingPurgeStepResult, String>>()
@@ -138,6 +139,7 @@ pub async fn admin_purge_property_postings(
 #[cfg(not(target_family = "wasm"))]
 pub async fn admin_purge_property_postings(
     _index_canister: Principal,
+    _physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     _kind: IndexPurgeKind,
     _property_id: u32,
     _label_id: u16,

@@ -11,6 +11,7 @@
 //! drain path.
 
 use candid::{Decode, Encode};
+use gleaph_graph_kernel::index::{IndexMaintenancePhase, PhysicalIndexId};
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
@@ -21,12 +22,18 @@ use std::borrow::Cow;
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum RepairPostingOp {
     VertexProperty {
+        physical_index_id: PhysicalIndexId,
+        catalog_epoch: u64,
+        phase: IndexMaintenancePhase,
         remove: bool,
         property_id: u32,
         payload_bytes: Vec<u8>,
         vertex_id: u32,
     },
     EdgeProperty {
+        physical_index_id: PhysicalIndexId,
+        catalog_epoch: u64,
+        phase: IndexMaintenancePhase,
         remove: bool,
         property_id: u32,
         payload_bytes: Vec<u8>,

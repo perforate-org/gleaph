@@ -9,8 +9,12 @@
 //! upgrade boundary (the defect class ADR 0023 removes structurally).
 
 use crate::facade::catalog_edge_label_from_wire;
+#[cfg(test)]
+use gleaph_graph_kernel::entry::EdgeLabelId;
 use gleaph_graph_kernel::entry::PropertyId;
-use gleaph_graph_kernel::index::IndexedPropertyCatalog;
+use gleaph_graph_kernel::index::{
+    EdgeIndexDirection, IndexMaintenancePhase, IndexedPropertyCatalog, PhysicalIndexId,
+};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use std::cell::RefCell;
 
@@ -23,6 +27,18 @@ thread_local! {
 #[must_use = "the catalog is only active while the guard is alive"]
 pub(crate) struct CatalogGuard {
     previous: Option<IndexedPropertyCatalog>,
+}
+
+/// Exact lifecycle identity projected from one Router catalog membership.
+///
+/// This is a read-only Graph-local view used to tag volatile and durable derived-index work.
+/// The Router-owned membership remains the source of truth; Graph never allocates or rewrites
+/// any of these fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexMembershipRef {
+    pub(crate) physical_index_id: PhysicalIndexId,
+    pub(crate) catalog_epoch: u64,
+    pub(crate) phase: IndexMaintenancePhase,
 }
 
 impl Drop for CatalogGuard {
@@ -45,36 +61,195 @@ fn with_catalog<R>(present: impl FnOnce(&IndexedPropertyCatalog) -> R, absent: R
     })
 }
 
-pub(crate) fn is_vertex_property_indexed(property_id: PropertyId) -> bool {
+/// Cheap early-out for the pre-canonical index-build fence: `true` when any catalog membership is
+/// not Active (Building or Sealing).
+///
+/// Every fence transition is derived from catalog memberships, so when every membership is Active
+/// the fence has no envelope to commit and no Sealing rejection to raise; the per-edge INLINE
+/// decode, sidecar resolution, canonical-handle scans, and planning are then pure overhead and may
+/// be skipped. This is the overwhelmingly common case during normal operation (no in-flight
+/// index build), and keeps the fence's hot-path cost at a single thread-local scan.
+pub(crate) fn has_non_active_membership() -> bool {
+    CURRENT.with(|c| match c.borrow().as_ref() {
+        Some(catalog) => {
+            catalog
+                .vertex_indexes
+                .iter()
+                .any(|membership| !membership.phase.is_active())
+                || catalog
+                    .edge_indexes
+                    .iter()
+                    .any(|membership| !membership.phase.is_active())
+        }
+        None => false,
+    })
+}
+
+/// Return every exact Router-allocated namespace that indexes `property_id` on vertices.
+///
+/// Multiple logical indexes may intentionally cover the same property (for example, separate
+/// label-scoped definitions). Graph emits one namespace-scoped operation per catalog membership;
+/// it never selects or invents a local replacement namespace.
+pub(crate) fn vertex_physical_index_ids(property_id: PropertyId) -> Vec<PhysicalIndexId> {
+    vertex_index_memberships(property_id)
+        .into_iter()
+        .map(|membership| membership.physical_index_id)
+        .collect()
+}
+
+pub(crate) fn vertex_index_memberships(property_id: PropertyId) -> Vec<IndexMembershipRef> {
     with_catalog(
-        |catalog| catalog.vertex_property_ids.contains(&property_id.raw()),
-        false,
+        |catalog| {
+            catalog
+                .vertex_indexes
+                .iter()
+                .filter(|membership| membership.property_id == property_id.raw())
+                .map(|membership| IndexMembershipRef {
+                    physical_index_id: membership.physical_index_id,
+                    catalog_epoch: membership.catalog_epoch,
+                    phase: membership.phase,
+                })
+                .collect()
+        },
+        Vec::new(),
     )
+}
+
+/// Resolve one unambiguous vertex index namespace for a property lookup.
+///
+/// A property can be covered by multiple logical indexes for DML maintenance, but a
+/// property-only lookup has no label/definition discriminator.  Keep that distinction
+/// explicit and fail closed when the router catalog does not identify exactly one
+/// namespace.
+pub(crate) fn active_vertex_physical_index_ids(property_id: PropertyId) -> Vec<PhysicalIndexId> {
+    vertex_index_memberships(property_id)
+        .into_iter()
+        .filter(|membership| membership.phase.is_active())
+        .map(|membership| membership.physical_index_id)
+        .collect()
+}
+
+pub(crate) fn unique_active_vertex_physical_index_id(
+    property_id: PropertyId,
+) -> Option<PhysicalIndexId> {
+    let ids = active_vertex_physical_index_ids(property_id);
+    match ids.as_slice() {
+        [id] => Some(*id),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_vertex_property_indexed(property_id: PropertyId) -> bool {
+    !vertex_physical_index_ids(property_id).is_empty()
 }
 
 pub(crate) fn is_edge_property_indexed(property_id: PropertyId) -> bool {
     with_catalog(
-        |catalog| catalog.edge_property_ids.contains(&property_id.raw()),
+        |catalog| {
+            catalog
+                .edge_indexes
+                .iter()
+                .any(|membership| membership.property_id == property_id.raw())
+        },
         false,
     )
 }
 
-pub(crate) fn should_maintain_edge_posting(wire_label_id: u16, property_id: PropertyId) -> bool {
+/// Return every exact namespace applicable to one edge storage label and property.
+pub(crate) fn edge_physical_index_ids(
+    wire_label_id: u16,
+    property_id: PropertyId,
+) -> Vec<PhysicalIndexId> {
+    edge_index_memberships(wire_label_id, property_id)
+        .into_iter()
+        .map(|membership| membership.physical_index_id)
+        .collect()
+}
+
+pub(crate) fn active_edge_physical_index_ids(
+    wire_label_id: u16,
+    property_id: PropertyId,
+) -> Vec<PhysicalIndexId> {
+    edge_index_memberships(wire_label_id, property_id)
+        .into_iter()
+        .filter(|membership| membership.phase.is_active())
+        .map(|membership| membership.physical_index_id)
+        .collect()
+}
+
+pub(crate) fn edge_index_memberships(
+    wire_label_id: u16,
+    property_id: PropertyId,
+) -> Vec<IndexMembershipRef> {
     with_catalog(
         |catalog| {
-            if !catalog.edge_property_ids.contains(&property_id.raw()) {
-                return false;
-            }
-            if catalog.edge_indexes.is_empty() {
-                return true;
-            }
-            catalog.edge_indexes.iter().any(|m| {
-                m.property_id == property_id.raw()
-                    && edge_posting_matches_registration(wire_label_id, m.label_id, m.direction_tag)
-            })
+            catalog
+                .edge_indexes
+                .iter()
+                .filter(|membership| {
+                    membership.property_id == property_id.raw()
+                        && edge_posting_matches_registration(
+                            wire_label_id,
+                            membership.label_id,
+                            membership.direction,
+                        )
+                })
+                .map(|membership| IndexMembershipRef {
+                    physical_index_id: membership.physical_index_id,
+                    catalog_epoch: membership.catalog_epoch,
+                    phase: membership.phase,
+                })
+                .collect()
         },
-        false,
+        Vec::new(),
     )
+}
+
+/// Return every exact edge-index namespace for a property when the lookup has no
+/// label discriminator.  The caller must query each returned namespace; an empty
+/// result is not a license to use a legacy/default namespace.
+pub(crate) fn edge_physical_index_ids_for_property(
+    property_id: PropertyId,
+) -> Vec<PhysicalIndexId> {
+    with_catalog(
+        |catalog| {
+            let mut ids = catalog
+                .edge_indexes
+                .iter()
+                .filter(|membership| membership.property_id == property_id.raw())
+                .map(|membership| membership.physical_index_id)
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        },
+        Vec::new(),
+    )
+}
+
+pub(crate) fn active_edge_physical_index_ids_for_property(
+    property_id: PropertyId,
+) -> Vec<PhysicalIndexId> {
+    let mut ids = with_catalog(
+        |catalog| {
+            catalog
+                .edge_indexes
+                .iter()
+                .filter(|membership| {
+                    membership.property_id == property_id.raw() && membership.phase.is_active()
+                })
+                .map(|membership| membership.physical_index_id)
+                .collect::<Vec<_>>()
+        },
+        Vec::new(),
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+pub(crate) fn should_maintain_edge_posting(wire_label_id: u16, property_id: PropertyId) -> bool {
+    !edge_physical_index_ids(wire_label_id, property_id).is_empty()
 }
 
 /// Return the indexed edge-property identities applicable to one physical edge label. The
@@ -83,21 +258,38 @@ pub(crate) fn should_maintain_edge_posting(wire_label_id: u16, property_id: Prop
 pub(crate) fn indexed_edge_memberships(
     wire_label_id: u16,
     inline_property_id: PropertyId,
-) -> Vec<(PropertyId, String)> {
+) -> Vec<(IndexMembershipRef, PropertyId, String)> {
     with_catalog(
         |catalog| {
             catalog
                 .edge_indexes
                 .iter()
                 .filter(|m| {
-                    edge_posting_matches_registration(wire_label_id, m.label_id, m.direction_tag)
+                    edge_posting_matches_registration(wire_label_id, m.label_id, m.direction)
                 })
                 .filter_map(|m| {
                     if m.field_path.is_empty() {
-                        (m.property_id == inline_property_id.raw())
-                            .then(|| (PropertyId::from_raw(m.property_id), String::new()))
+                        (m.property_id == inline_property_id.raw()).then(|| {
+                            (
+                                IndexMembershipRef {
+                                    physical_index_id: m.physical_index_id,
+                                    catalog_epoch: m.catalog_epoch,
+                                    phase: m.phase,
+                                },
+                                PropertyId::from_raw(m.property_id),
+                                String::new(),
+                            )
+                        })
                     } else {
-                        Some((PropertyId::from_raw(m.property_id), m.field_path.clone()))
+                        Some((
+                            IndexMembershipRef {
+                                physical_index_id: m.physical_index_id,
+                                catalog_epoch: m.catalog_epoch,
+                                phase: m.phase,
+                            },
+                            PropertyId::from_raw(m.property_id),
+                            m.field_path.clone(),
+                        ))
                     }
                 })
                 .collect()
@@ -106,7 +298,11 @@ pub(crate) fn indexed_edge_memberships(
     )
 }
 
-fn edge_posting_matches_registration(wire_label_id: u16, label_id: u16, direction_tag: u8) -> bool {
+pub(crate) fn edge_posting_matches_registration(
+    wire_label_id: u16,
+    label_id: u16,
+    direction: EdgeIndexDirection,
+) -> bool {
     use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
     let wire = LaraLabelId::from_raw(wire_label_id);
     let Some(catalog) = catalog_edge_label_from_wire(wire) else {
@@ -115,34 +311,64 @@ fn edge_posting_matches_registration(wire_label_id: u16, label_id: u16, directio
     if catalog.raw() != label_id {
         return false;
     }
-    let edge_class = if wire_label_id & BUCKET_LABEL_DIRECTED_BIT != 0 {
-        "directed"
-    } else if wire_label_id == 0 {
+    if wire_label_id == 0 {
         return false;
+    }
+    if wire_label_id & BUCKET_LABEL_DIRECTED_BIT != 0 {
+        direction.includes_directed()
     } else {
-        "undirected"
-    };
-    let maintains_directed = matches!(direction_tag, 1 | 2 | 3 | 7 | 6 | 5);
-    let maintains_undirected = matches!(direction_tag, 4..=7);
-    match edge_class {
-        "directed" => maintains_directed,
-        "undirected" => maintains_undirected,
-        _ => false,
+        direction.includes_undirected()
     }
 }
 
 #[cfg(test)]
 pub(crate) fn enter_vertex_indexed(property_ids: &[PropertyId]) -> CatalogGuard {
     enter(IndexedPropertyCatalog {
-        vertex_property_ids: property_ids.iter().map(|p| p.raw()).collect(),
+        vertex_indexes: property_ids
+            .iter()
+            .enumerate()
+            .map(
+                |(offset, property_id)| gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(101 + offset as u64)
+                        .expect("test physical id"),
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+            )
+            .collect(),
         ..Default::default()
     })
 }
 
 #[cfg(test)]
 pub(crate) fn enter_edge_indexed(property_ids: &[PropertyId]) -> CatalogGuard {
+    enter_edge_indexed_with_label(property_ids, EdgeLabelId::from_raw(1))
+}
+
+#[cfg(test)]
+pub(crate) fn enter_edge_indexed_with_label(
+    property_ids: &[PropertyId],
+    label_id: EdgeLabelId,
+) -> CatalogGuard {
     enter(IndexedPropertyCatalog {
-        edge_property_ids: property_ids.iter().map(|p| p.raw()).collect(),
+        edge_indexes: property_ids
+            .iter()
+            .enumerate()
+            .map(
+                |(offset, property_id)| gleaph_graph_kernel::index::IndexedEdgeMembership {
+                    physical_index_id: PhysicalIndexId::new(102 + offset as u64)
+                        .expect("test physical id"),
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Active,
+                    label_id: label_id.raw(),
+                    property_id: property_id.raw(),
+                    direction: EdgeIndexDirection::Any,
+                    field_path: String::new(),
+                },
+            )
+            .collect(),
         ..Default::default()
     })
 }
@@ -230,11 +456,13 @@ mod tests {
         );
         crate::test_labels::install_test_edge_inline_property(label, property);
         let _catalog = enter(IndexedPropertyCatalog {
-            edge_property_ids: vec![property.raw()],
             edge_indexes: vec![IndexedEdgeMembership {
+                physical_index_id: PhysicalIndexId::new(103).expect("test physical id"),
+                catalog_epoch: 1,
+                phase: IndexMaintenancePhase::Active,
                 label_id: label.raw(),
                 property_id: property.raw(),
-                direction_tag: 1,
+                direction: EdgeIndexDirection::Outgoing,
                 field_path: String::new(),
             }],
             ..Default::default()
@@ -300,11 +528,13 @@ mod tests {
     fn edge_index_membership_filters_by_wire_class() {
         let pid = PropertyId::from_raw(1);
         let _guard = enter(IndexedPropertyCatalog {
-            edge_property_ids: vec![pid.raw()],
             edge_indexes: vec![IndexedEdgeMembership {
+                physical_index_id: PhysicalIndexId::new(104).expect("test physical id"),
+                catalog_epoch: 1,
+                phase: IndexMaintenancePhase::Active,
                 label_id: 1,
                 property_id: 1,
-                direction_tag: 1, // PointingRight: directed only
+                direction: EdgeIndexDirection::Outgoing, // PointingRight: directed only
                 field_path: String::new(),
             }],
             ..Default::default()
@@ -349,11 +579,13 @@ mod tests {
             },
         );
         let _catalog = enter(IndexedPropertyCatalog {
-            edge_property_ids: vec![field_property.raw()],
             edge_indexes: vec![IndexedEdgeMembership {
+                physical_index_id: PhysicalIndexId::new(105).expect("test physical id"),
+                catalog_epoch: 1,
+                phase: IndexMaintenancePhase::Active,
                 label_id: label.raw(),
                 property_id: field_property.raw(),
-                direction_tag: 1,
+                direction: EdgeIndexDirection::Outgoing,
                 field_path: "stats.score".into(),
             }],
             ..Default::default()
@@ -386,5 +618,118 @@ mod tests {
     fn absent_catalog_reports_not_indexed() {
         assert!(!is_vertex_property_indexed(PropertyId::from_raw(7)));
         assert!(!is_edge_property_indexed(PropertyId::from_raw(7)));
+    }
+
+    #[test]
+    fn active_query_namespace_is_hidden_for_building_and_sealing_memberships() {
+        let property_id = PropertyId::from_raw(77);
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(701).expect("test physical id"),
+                    catalog_epoch: 8,
+                    phase: IndexMaintenancePhase::Building,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(702).expect("test physical id"),
+                    catalog_epoch: 9,
+                    phase: IndexMaintenancePhase::Sealing,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+            ],
+            ..Default::default()
+        });
+        assert!(active_vertex_physical_index_ids(property_id).is_empty());
+        assert_eq!(unique_active_vertex_physical_index_id(property_id), None);
+        drop(_guard);
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(703).expect("test physical id"),
+                    catalog_epoch: 10,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(704).expect("test physical id"),
+                    catalog_epoch: 10,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+            ],
+            ..Default::default()
+        });
+        assert_eq!(unique_active_vertex_physical_index_id(property_id), None);
+    }
+
+    #[test]
+    fn dml_preserves_distinct_membership_identity_for_same_property() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::pending::clear_pending();
+        let property_id = PropertyId::from_raw(78);
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(711).expect("test physical id"),
+                    catalog_epoch: 10,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: PhysicalIndexId::new(712).expect("test physical id"),
+                    catalog_epoch: 11,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property_id.raw(),
+                    label_id: 0,
+                },
+            ],
+            ..Default::default()
+        });
+        let value = Value::Int64(42);
+        dispatch_property_index_ops(PropertyValueChange::vertex(
+            ic_stable_lara::VertexId::from(3u32),
+            property_id,
+            None,
+            Some(&value),
+        ));
+        let pending = crate::index::pending::take_pending();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.iter().any(|op| matches!(
+            op,
+            crate::index::pending::PendingPostingOp::Insert {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == PhysicalIndexId::new(711).unwrap()
+                && *catalog_epoch == 10
+                && *phase == IndexMaintenancePhase::Active
+        )));
+        assert!(pending.iter().any(|op| matches!(
+            op,
+            crate::index::pending::PendingPostingOp::Insert {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == PhysicalIndexId::new(712).unwrap()
+                && *catalog_epoch == 11
+                && *phase == IndexMaintenancePhase::Active
+        )));
+        store.set_federation_routing(None).expect("clear routing");
     }
 }

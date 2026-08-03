@@ -74,7 +74,8 @@ mod tests {
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{
-        IndexIntersectionRequest, IndexPostingBatchProgress, PostingHit, PostingRangeRequest,
+        IndexIntersectionRequest, IndexPostingBatchProgress, PhysicalIndexId, PostingHit,
+        PostingRangeRequest,
     };
     use std::sync::Mutex;
 
@@ -104,6 +105,7 @@ mod tests {
 
         async fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
@@ -112,6 +114,7 @@ mod tests {
 
         async fn lookup_range(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _req: &PostingRangeRequest,
         ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
@@ -133,6 +136,7 @@ mod tests {
         async fn posting_insert_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -143,6 +147,7 @@ mod tests {
         async fn posting_remove_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,

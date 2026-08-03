@@ -11,7 +11,8 @@ use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
-use gleaph_graph_kernel::entry::VertexLabelId;
+use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
+use gleaph_graph_kernel::index::PhysicalIndexId;
 use gleaph_graph_kernel::index::{ValuePostingCount, validate_index_value_key_bytes};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
@@ -35,6 +36,7 @@ pub struct LabelCountTelemetryFastPath {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateIndexFastPath {
     pub property_id: u32,
+    pub physical_index_id: PhysicalIndexId,
     pub group_key_column: String,
     pub count_column: String,
     pub min_count: u64,
@@ -191,10 +193,23 @@ pub fn try_aggregate_index_fast_path(
     {
         return None;
     }
+    let label_id = index_anchors.iter().find_map(|anchor| match anchor {
+        IndexAnchor::Label {
+            vertex_label_id, ..
+        } => Some(VertexLabelId::from_raw(*vertex_label_id as u16)),
+        _ => None,
+    });
+    let physical_index_id = crate::facade::stable::indexed_catalog::active_vertex_physical_index(
+        stats.graph_id(),
+        label_id,
+        PropertyId::from_raw(property_id),
+    )
+    .ok()?;
     let min_count = extract_having_min_count(spec.having.as_ref(), &spec.aggregate_columns[0].name)
         .unwrap_or(1);
     Some(AggregateIndexFastPath {
         property_id,
+        physical_index_id,
         group_key_column: spec.group_key_columns[0].clone(),
         count_column: spec.aggregate_columns[0].name.clone(),
         min_count,
@@ -424,10 +439,16 @@ fn equal_anchor(
         .lookup_property_id(graph_id, property)
         .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?
         .raw();
+    let physical_index_id = crate::facade::stable::indexed_catalog::active_vertex_physical_index(
+        graph_id,
+        None,
+        PropertyId::from_raw(property_id),
+    )?;
     Ok(IndexAnchor::Equal(SeedProbe {
         variable: variable.as_ref().to_string(),
         property: property.to_string(),
         property_id,
+        physical_index_id,
         payload_bytes,
     }))
 }
@@ -489,10 +510,17 @@ fn anchor_from_property_predicate(
                 .lookup_property_id(stats.graph_id(), &property)
                 .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?
                 .raw();
+            let physical_index_id =
+                crate::facade::stable::indexed_catalog::active_vertex_physical_index(
+                    stats.graph_id(),
+                    None,
+                    PropertyId::from_raw(property_id),
+                )?;
             Ok(Some(IndexAnchor::Equal(SeedProbe {
                 variable,
                 property,
                 property_id,
+                physical_index_id,
                 payload_bytes,
             })))
         }
@@ -702,6 +730,14 @@ mod tests {
                 "region",
             )
             .expect("intern region");
+        // country is grouped under a Person label anchor in the labeled tests, so it carries the
+        // Person label id (1); region is only resolved label-free.
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 1, "country",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "region",
+        );
         (store, graph_id)
     }
 
@@ -936,6 +972,7 @@ mod tests {
                 variable: "n".into(),
                 property: "region".into(),
                 property_id: 9,
+                physical_index_id: PhysicalIndexId::new(1).expect("physical id"),
                 payload_bytes: vec![1],
             }),
         ];

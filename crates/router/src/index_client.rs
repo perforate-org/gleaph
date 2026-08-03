@@ -8,7 +8,7 @@ use gleaph_graph_kernel::index::{
     LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
     LookupRangePageForLabelRequest, LookupValuePostingCountPageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCountPage,
+    PropertyIntersectionPage, ValuePostingCountPage,
 };
 
 #[derive(Clone, Debug)]
@@ -260,21 +260,12 @@ impl RouterIndexClient {
 
     pub async fn lookup_range_page(
         &self,
-        property_id: u32,
-        range: PostingRangeRequest,
-        after: Option<gleaph_graph_kernel::index::PropertyPostingCursor>,
-        limit: u32,
+        req: gleaph_graph_kernel::index::LookupRangePageRequest,
     ) -> Result<PostingHitPage, String> {
         #[cfg(target_family = "wasm")]
         {
             use ic_cdk::call::Call;
 
-            let req = gleaph_graph_kernel::index::LookupRangePageRequest {
-                property_id,
-                range,
-                after,
-                limit,
-            };
             let page: PostingHitPage = Call::bounded_wait(self.index_canister, "lookup_range_page")
                 .with_args(&(req,))
                 .await
@@ -285,7 +276,7 @@ impl RouterIndexClient {
         }
         #[cfg(not(target_family = "wasm"))]
         {
-            let _ = (property_id, range, after, limit);
+            let _ = req;
             Err("lookup_range_page unavailable in native builds".into())
         }
     }

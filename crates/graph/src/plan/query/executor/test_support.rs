@@ -16,6 +16,7 @@ use gleaph_gql_planner::{
     PlanBuildOptions, build_plan_with_schema_and_options, build_statement_plan_with_schema,
 };
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::index::PhysicalIndexId;
 
 use super::context::QueryExprEvaluator;
 use crate::facade::FederationRouting;
@@ -132,6 +133,7 @@ impl MockPropertyIndex {
 impl PropertyIndexLookup for MockPropertyIndex {
     async fn lookup_equal(
         &self,
+        _physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -146,6 +148,7 @@ impl PropertyIndexLookup for MockPropertyIndex {
 
     async fn lookup_range(
         &self,
+        _physical_index_id: PhysicalIndexId,
         property_id: u32,
         req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -175,6 +178,7 @@ impl PropertyIndexLookup for MockPropertyIndex {
     async fn posting_insert_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,
@@ -185,6 +189,7 @@ impl PropertyIndexLookup for MockPropertyIndex {
     async fn posting_remove_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,

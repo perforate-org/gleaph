@@ -5,6 +5,7 @@
 mod batch_placement;
 #[cfg(feature = "canbench_large")]
 mod capacity;
+mod index_export;
 #[cfg(feature = "canbench_large")]
 mod large;
 mod stable_layout;
@@ -2421,7 +2422,7 @@ fn bench_graph_vertex_insert_scalar_16() -> canbench_rs::BenchResult {
         for _ in 0..16 {
             black_box(
                 store
-                    .insert_vertex_with([label], [(property, Value::Int64(1))])
+                    .insert_vertex_with([label], [(property, Value::Int64(1))], 0)
                     .expect("scalar vertex insert"),
             );
         }
@@ -3685,6 +3686,7 @@ fn bench_inline_scalar_set_inline_property_fixed_edges() -> canbench_rs::BenchRe
             Some(label),
             &1u16.to_le_bytes(),
             Vec::new(),
+            0,
         )
         .expect("insert bench edge");
         vertices.push((src, dst));

@@ -188,6 +188,8 @@ mod tests {
             variable: "u".into(),
             property: "uid".into(),
             property_id: 1,
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(1)
+                .expect("physical id"),
             payload_bytes: vec![1, 2, 3],
         });
         let hits = vec![

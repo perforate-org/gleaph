@@ -3,6 +3,7 @@
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 
 impl GraphStore {
@@ -12,7 +13,21 @@ impl GraphStore {
         handle: EdgeHandle,
         inline_property_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
-        self.commit_update_edge_inline_property_at_handle(handle, inline_property_bytes)
+        self.commit_update_edge_inline_property_at_handle(handle, inline_property_bytes, 0)
+    }
+
+    /// Updates the inline property bytes at `handle` under an explicit canonical mutation identity.
+    pub(crate) fn update_edge_inline_property_at_handle_with_mutation_id(
+        &self,
+        handle: EdgeHandle,
+        inline_property_bytes: &[u8],
+        mutation_id: MutationId,
+    ) -> Result<(), GraphStoreError> {
+        self.commit_update_edge_inline_property_at_handle(
+            handle,
+            inline_property_bytes,
+            mutation_id,
+        )
     }
 
     /// Updates inline property bytes for an orientation-aware live occurrence.
@@ -24,6 +39,6 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
         inline_property_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
-        self.commit_update_edge_inline_property_at_occurrence(occurrence, inline_property_bytes)
+        self.commit_update_edge_inline_property_at_occurrence(occurrence, inline_property_bytes, 0)
     }
 }

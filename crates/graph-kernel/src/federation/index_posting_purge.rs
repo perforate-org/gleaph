@@ -19,6 +19,8 @@
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
+use crate::index::PhysicalIndexId;
+
 /// Which posting set a purge targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum IndexPurgeKind {
@@ -26,12 +28,23 @@ pub enum IndexPurgeKind {
     Edge,
 }
 
-/// Resume point for a bounded posting purge. A `None` resume starts a fresh
-/// purge of the scope.
+/// Resume point for a bounded posting purge. A `None` resume starts a fresh purge of the scope.
+///
+/// The target identity is part of the cursor so a key obtained from one namespace or logical
+/// purge cannot be replayed against another purge.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct IndexPostingPurgeCursor {
-    /// Encoded last-examined posting key; empty starts the scope.
-    pub resume_key: Vec<u8>,
+pub enum IndexPostingPurgeCursor {
+    Vertex {
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        resume_key: Vec<u8>,
+    },
+    Edge {
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        label_id: u16,
+        resume_key: Vec<u8>,
+    },
 }
 
 /// Progress from one bounded purge step.

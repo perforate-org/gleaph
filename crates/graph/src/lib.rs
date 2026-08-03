@@ -22,6 +22,14 @@ pub mod gql_run;
     reason = "index clients include IC/router implementations selected by deployment wiring"
 )]
 mod index;
+/// Graph-owned canonical property-index export API (ADR 0059).
+pub mod canonical_export {
+    pub use crate::index::canonical_export::{
+        abort_scope, activate_scope, export_page, register_scope, remove_scope, scope_status,
+        seal_scope,
+    };
+    pub use gleaph_graph_kernel::canonical_export::CanonicalExportError;
+}
 mod plan_wire_guard;
 mod property;
 #[cfg(feature = "pocket-ic-e2e")]
@@ -44,7 +52,10 @@ pub(crate) use canister::instr_log;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
 use crate::canister::guards::guard_control_plane_admin;
-use crate::canister::{GraphInitArgs, guards::guard_router_canister};
+use crate::canister::{
+    GraphInitArgs,
+    guards::{guard_index_canister, guard_router_canister},
+};
 
 #[init]
 async fn init(args: GraphInitArgs) {
@@ -228,6 +239,94 @@ fn purge_local_unique_constraint(
 #[update(guard = "guard_router_canister")]
 fn admin_set_vector_index_canister(vector_index_canister: candid::Principal) -> Result<(), String> {
     canister::handlers::admin_set_vector_index_canister(vector_index_canister)
+}
+
+/// Router → graph: freeze one immutable canonical export scope for a physical index namespace.
+#[update(guard = "guard_router_canister")]
+fn admin_register_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
+    canister::handlers::admin_register_index_export_scope(physical_index_id, scope)
+}
+
+/// Router → graph: remove an export scope under its complete current owner contract.
+#[update(guard = "guard_router_canister")]
+fn admin_remove_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
+    canister::handlers::admin_remove_index_export_scope(physical_index_id, scope)
+}
+
+/// Router → graph: seal one export scope at a fresh catalog epoch.
+#[update(guard = "guard_router_canister")]
+fn admin_seal_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    expected_scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+    new_epoch: u64,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    canister::handlers::admin_seal_index_export_scope(physical_index_id, expected_scope, new_epoch)
+}
+
+/// Router → graph: publish one export scope `Active` after graph-index convergence.
+#[update(guard = "guard_router_canister")]
+fn admin_activate_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    proof: gleaph_graph_kernel::index::IndexBuildSealStatus,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    canister::handlers::admin_activate_index_export_scope(physical_index_id, proof)
+}
+
+/// Router → graph: mark one export scope `Aborting` under its original registration identity.
+#[update(guard = "guard_router_canister")]
+fn admin_abort_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    expected_scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    canister::handlers::admin_abort_index_export_scope(physical_index_id, expected_scope)
+}
+
+/// Router → graph: exact durable status for one export scope.
+#[query(guard = "guard_router_canister")]
+fn admin_index_export_scope_status(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    canister::handlers::admin_index_export_scope_status(physical_index_id)
+}
+
+/// Router → graph: bounded drain of one namespace's build-DML outbox entries to graph-index.
+#[update(guard = "guard_router_canister")]
+async fn admin_drain_index_build_outbox(
+    request: gleaph_graph_kernel::canonical_export::IndexBuildOutboxDrainRequest,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::IndexBuildOutboxDrainProgress,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    canister::handlers::admin_drain_index_build_outbox(request).await
+}
+
+/// Graph-index → graph: read one bounded page from canonical Graph storage.
+#[update(guard = "guard_index_canister")]
+fn index_export_page(
+    request: gleaph_graph_kernel::canonical_export::CanonicalExportRequest,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportPage,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    canister::handlers::index_export_page(request)
 }
 
 /// Router → graph (plan 0048): bounded canonical vertex-embedding ingestion.

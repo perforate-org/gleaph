@@ -1,18 +1,21 @@
 //! Edge property equality posting key (ADR 0009 §1).
 //!
-//! Lexicographic order: `(property_id, value, label_id, shard_id, owner_vertex_id, slot_index)`.
+//! Lexicographic order: `(physical_index_id, property_id, value, label_id, shard_id,
+//! owner_vertex_id, slot_index)`.
 
 use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::PhysicalIndexId;
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-const EDGE_POSTING_KEY_MAGIC: u8 = 3;
+const EDGE_POSTING_KEY_MAGIC: u8 = 4;
 
 /// Global edge equality posting key on graph-index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EdgePostingKey {
+    pub physical_index_id: PhysicalIndexId,
     pub property_id: u32,
     pub value: Vec<u8>,
     pub label_id: u16,
@@ -29,8 +32,9 @@ impl PartialOrd for EdgePostingKey {
 
 impl Ord for EdgePostingKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.property_id
-            .cmp(&other.property_id)
+        self.physical_index_id
+            .cmp(&other.physical_index_id)
+            .then_with(|| self.property_id.cmp(&other.property_id))
             .then_with(|| self.value.cmp(&other.value))
             .then_with(|| self.label_id.cmp(&other.label_id))
             .then_with(|| self.shard_id.cmp(&other.shard_id))
@@ -57,8 +61,9 @@ impl Storable for EdgePostingKey {
 
 impl EdgePostingKey {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + 4 + 4 + self.value.len() + 2 + 4 + 4 + 4);
+        let mut out = Vec::with_capacity(1 + 8 + 4 + 4 + self.value.len() + 2 + 4 + 4 + 4);
         out.push(EDGE_POSTING_KEY_MAGIC);
+        out.extend_from_slice(&self.physical_index_id.to_le_bytes());
         out.extend_from_slice(&self.property_id.to_le_bytes());
         let len_u32: u32 = self
             .value
@@ -78,10 +83,11 @@ impl EdgePostingKey {
         if bytes.first().copied()? != EDGE_POSTING_KEY_MAGIC {
             return None;
         }
-        let property_id = u32::from_le_bytes(bytes.get(1..5)?.try_into().ok()?);
-        let vlen = u32::from_le_bytes(bytes.get(5..9)?.try_into().ok()?);
+        let physical_index_id = PhysicalIndexId::from_le_bytes(bytes.get(1..9)?.try_into().ok()?)?;
+        let property_id = u32::from_le_bytes(bytes.get(9..13)?.try_into().ok()?);
+        let vlen = u32::from_le_bytes(bytes.get(13..17)?.try_into().ok()?);
         let usize_len = usize::try_from(vlen).ok()?;
-        let val_start = 9usize;
+        let val_start = 17usize;
         let val_end = val_start.checked_add(usize_len)?;
         let value = bytes.get(val_start..val_end)?.to_vec();
         let label_off = val_end;
@@ -95,6 +101,7 @@ impl EdgePostingKey {
         let slot_off = owner_off + 4;
         let slot_index = u32::from_le_bytes(bytes.get(slot_off..slot_off + 4)?.try_into().ok()?);
         Some(Self {
+            physical_index_id,
             property_id,
             value,
             label_id,
@@ -104,8 +111,13 @@ impl EdgePostingKey {
         })
     }
 
-    pub fn prefix_lower(property_id: u32, value: &[u8]) -> Self {
+    pub fn prefix_lower(
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        value: &[u8],
+    ) -> Self {
         Self {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             label_id: 0,
@@ -115,8 +127,13 @@ impl EdgePostingKey {
         }
     }
 
-    pub fn prefix_upper(property_id: u32, value: &[u8]) -> Self {
+    pub fn prefix_upper(
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        value: &[u8],
+    ) -> Self {
         Self {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             label_id: u16::MAX,
@@ -126,8 +143,14 @@ impl EdgePostingKey {
         }
     }
 
-    pub fn prefix_lower_labeled(property_id: u32, value: &[u8], label_id: u16) -> Self {
+    pub fn prefix_lower_labeled(
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        value: &[u8],
+        label_id: u16,
+    ) -> Self {
         Self {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             label_id,
@@ -137,8 +160,14 @@ impl EdgePostingKey {
         }
     }
 
-    pub fn prefix_upper_labeled(property_id: u32, value: &[u8], label_id: u16) -> Self {
+    pub fn prefix_upper_labeled(
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        value: &[u8],
+        label_id: u16,
+    ) -> Self {
         Self {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             label_id,
@@ -156,6 +185,7 @@ mod tests {
     #[test]
     fn edge_posting_key_roundtrip() {
         let k = EdgePostingKey {
+            physical_index_id: PhysicalIndexId::new(11).unwrap(),
             property_id: 9,
             value: vec![4, 5],
             label_id: 7,
@@ -170,6 +200,7 @@ mod tests {
     #[test]
     fn edge_posting_key_orders_label_before_shard() {
         let a = EdgePostingKey {
+            physical_index_id: PhysicalIndexId::new(1).unwrap(),
             property_id: 1,
             value: vec![1],
             label_id: 1,
@@ -178,6 +209,7 @@ mod tests {
             slot_index: 0,
         };
         let b = EdgePostingKey {
+            physical_index_id: PhysicalIndexId::new(1).unwrap(),
             property_id: 1,
             value: vec![1],
             label_id: 2,
@@ -186,5 +218,21 @@ mod tests {
             slot_index: 0,
         };
         assert!(a < b);
+    }
+
+    #[test]
+    fn edge_posting_key_orders_physical_namespace_first() {
+        let lower =
+            EdgePostingKey::prefix_lower(PhysicalIndexId::new(1).unwrap(), u32::MAX, &[255]);
+        let higher = EdgePostingKey::prefix_lower(PhysicalIndexId::new(2).unwrap(), 0, &[]);
+        assert!(lower < higher);
+    }
+
+    #[test]
+    fn edge_posting_key_rejects_reserved_zero_namespace() {
+        let key = EdgePostingKey::prefix_lower(PhysicalIndexId::new(1).unwrap(), 7, b"v");
+        let mut bytes = key.encode();
+        bytes[1..9].copy_from_slice(&0u64.to_le_bytes());
+        assert_eq!(EdgePostingKey::decode(&bytes), None);
     }
 }

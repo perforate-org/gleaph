@@ -5,6 +5,7 @@ use crate::facade::catalog_edge_label_from_wire;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::index::EdgePostingHit;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
@@ -41,9 +42,36 @@ pub(crate) async fn lookup_edge_equal_local(
     label_id: Option<u16>,
 ) -> Result<Vec<LocalEdgePosting>, PlanQueryError> {
     if let Some(ix) = index {
-        let hits = ix
-            .lookup_edge_equal(property_id.raw(), expected.to_vec(), label_id)
-            .await?;
+        let physical_index_ids = match label_id {
+            Some(wire_label_id) => crate::index::catalog_context::active_edge_physical_index_ids(
+                wire_label_id,
+                property_id,
+            ),
+            None => crate::index::catalog_context::active_edge_physical_index_ids_for_property(
+                property_id,
+            ),
+        };
+        if physical_index_ids.is_empty() {
+            return Err(PlanQueryError::UnsupportedOp(
+                "EdgeIndex(no active physical index namespace)",
+            ));
+        }
+        let mut hits: Vec<EdgePostingHit> = Vec::new();
+        for physical_index_id in physical_index_ids {
+            for hit in ix
+                .lookup_edge_equal(
+                    physical_index_id,
+                    property_id.raw(),
+                    expected.to_vec(),
+                    label_id,
+                )
+                .await?
+            {
+                if !hits.contains(&hit) {
+                    hits.push(hit);
+                }
+            }
+        }
         let shard_id = ix.local_shard_id();
         return Ok(hits
             .into_iter()

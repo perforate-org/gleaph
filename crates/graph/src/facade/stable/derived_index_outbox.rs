@@ -7,14 +7,28 @@
 
 use super::repair_journal::RepairPostingOp;
 use candid::{Decode, Encode};
+use gleaph_graph_kernel::index::IndexBuildDmlRequest;
+#[cfg(test)]
+use gleaph_graph_kernel::index::{IndexMaintenancePhase, PhysicalIndexId};
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
+
+/// One durable derived-index operation awaiting its first delivery attempt.
+///
+/// Build DML is intentionally a distinct outbox-only variant. Keeping it out of
+/// [`RepairPostingOp`] makes it impossible for the failure-only MemoryId 41 journal to persist
+/// or replay a Building envelope; exact build retries have one source of truth in MemoryId 46.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub enum DerivedIndexOutboxOp {
+    Ordinary(RepairPostingOp),
+    IndexBuildDml { request: IndexBuildDmlRequest },
+}
 
 /// One durable derived-index operation awaiting its first delivery attempt.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct DerivedIndexOutboxEntry {
     pub mutation_id: u64,
-    pub op: RepairPostingOp,
+    pub op: DerivedIndexOutboxOp,
 }
 
 impl Storable for DerivedIndexOutboxEntry {
@@ -57,8 +71,35 @@ impl<M: Memory> DerivedIndexOutbox<M> {
     pub fn append_all(&mut self, mutation_id: u64, ops: impl IntoIterator<Item = RepairPostingOp>) {
         let mut next = self.next_seq();
         for op in ops {
-            self.map
-                .insert(next, DerivedIndexOutboxEntry { mutation_id, op });
+            self.map.insert(
+                next,
+                DerivedIndexOutboxEntry {
+                    mutation_id,
+                    op: DerivedIndexOutboxOp::Ordinary(op),
+                },
+            );
+            next = next
+                .checked_add(1)
+                .expect("derived-index outbox sequence overflow");
+        }
+    }
+
+    /// Appends exact Building/Sealing envelopes without making them representable in the
+    /// failure-only repair journal.
+    pub fn append_build_dml(
+        &mut self,
+        mutation_id: u64,
+        requests: impl IntoIterator<Item = IndexBuildDmlRequest>,
+    ) {
+        let mut next = self.next_seq();
+        for request in requests {
+            self.map.insert(
+                next,
+                DerivedIndexOutboxEntry {
+                    mutation_id,
+                    op: DerivedIndexOutboxOp::IndexBuildDml { request },
+                },
+            );
             next = next
                 .checked_add(1)
                 .expect("derived-index outbox sequence overflow");
@@ -95,6 +136,9 @@ mod tests {
 
     fn entry(vertex_id: u32) -> RepairPostingOp {
         RepairPostingOp::VertexProperty {
+            physical_index_id: PhysicalIndexId::new(900_102).expect("test physical id"),
+            catalog_epoch: 1,
+            phase: IndexMaintenancePhase::Active,
             remove: false,
             property_id: 7,
             payload_bytes: vec![1, 2, 3],
@@ -112,13 +156,13 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].0, 0);
         assert_eq!(first[0].1.mutation_id, 11);
-        assert_eq!(first[0].1.op, entry(3));
+        assert_eq!(first[0].1.op, DerivedIndexOutboxOp::Ordinary(entry(3)));
 
         outbox.remove(first[0].0);
         let remaining = outbox.peek(10);
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].0, 1);
-        assert_eq!(remaining[0].1.op, entry(4));
+        assert_eq!(remaining[0].1.op, DerivedIndexOutboxOp::Ordinary(entry(4)));
     }
 
     #[test]

@@ -4,12 +4,27 @@ use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult, IndexPostingBatchProgress,
-    IndexPostingMutation, PostingHit, PostingRangeRequest,
+    EdgePostingHit, IndexBuildDmlRequest, IndexIntersectionRequest, IndexIntersectionResult,
+    IndexPostingBatchProgress, IndexPostingMutation, PhysicalIndexId, PostingHit,
+    PostingRangeRequest,
 };
 
 #[async_trait(?Send)]
 pub trait PropertyIndexLookup {
+    /// Deliver one exact namespace-scoped Building/Sealing DML envelope.
+    ///
+    /// The default keeps native/test clients fail-closed. Production graph-index clients
+    /// override this with the idempotent `apply_index_build_dml` wire call; callers retain the
+    /// envelope until this method returns success (including an exact replay success).
+    async fn apply_index_build_dml(
+        &self,
+        _request: IndexBuildDmlRequest,
+    ) -> Result<(), PlanQueryError> {
+        Err(PlanQueryError::UnsupportedOp(
+            "index build DML is unavailable on this property-index client",
+        ))
+    }
+
     fn supports_posting_batch(&self) -> bool {
         false
     }
@@ -23,20 +38,34 @@ pub trait PropertyIndexLookup {
         for operation in operations {
             match operation {
                 IndexPostingMutation::VertexProperty {
+                    physical_index_id,
                     remove,
                     property_id,
                     value,
                     vertex_id,
                 } => {
                     if remove {
-                        self.posting_remove_at(shard_id, property_id, value, vertex_id)
-                            .await?
+                        self.posting_remove_at(
+                            shard_id,
+                            physical_index_id,
+                            property_id,
+                            value,
+                            vertex_id,
+                        )
+                        .await?
                     } else {
-                        self.posting_insert_at(shard_id, property_id, value, vertex_id)
-                            .await?
+                        self.posting_insert_at(
+                            shard_id,
+                            physical_index_id,
+                            property_id,
+                            value,
+                            vertex_id,
+                        )
+                        .await?
                     }
                 }
                 IndexPostingMutation::EdgeProperty {
+                    physical_index_id,
                     remove,
                     property_id,
                     value,
@@ -47,6 +76,7 @@ pub trait PropertyIndexLookup {
                     if remove {
                         self.edge_posting_remove_at(
                             shard_id,
+                            physical_index_id,
                             property_id,
                             value,
                             label_id,
@@ -57,6 +87,7 @@ pub trait PropertyIndexLookup {
                     } else {
                         self.edge_posting_insert_at(
                             shard_id,
+                            physical_index_id,
                             property_id,
                             value,
                             label_id,
@@ -91,12 +122,14 @@ pub trait PropertyIndexLookup {
 
     async fn lookup_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError>;
 
     async fn lookup_range(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError>;
@@ -108,32 +141,47 @@ pub trait PropertyIndexLookup {
 
     async fn lookup_edge_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: Option<u16>,
     ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
-        let _ = (property_id, value, label_id);
+        let _ = (physical_index_id, property_id, value, label_id);
         Ok(vec![])
     }
 
     async fn posting_insert(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
-        self.posting_insert_at(self.local_shard_id(), property_id, value, vertex_id)
-            .await
+        self.posting_insert_at(
+            self.local_shard_id(),
+            physical_index_id,
+            property_id,
+            value,
+            vertex_id,
+        )
+        .await
     }
 
     async fn posting_remove(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
-        self.posting_remove_at(self.local_shard_id(), property_id, value, vertex_id)
-            .await
+        self.posting_remove_at(
+            self.local_shard_id(),
+            physical_index_id,
+            property_id,
+            value,
+            vertex_id,
+        )
+        .await
     }
 
     /// Shard that owns `vertex_id` in [`posting_insert`] / [`posting_remove`].
@@ -142,6 +190,7 @@ pub trait PropertyIndexLookup {
     async fn posting_insert_at(
         &self,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -150,6 +199,7 @@ pub trait PropertyIndexLookup {
     async fn posting_remove_at(
         &self,
         shard_id: ShardId,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -190,6 +240,7 @@ pub trait PropertyIndexLookup {
     async fn edge_posting_insert_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
         _label_id: u16,
@@ -202,6 +253,7 @@ pub trait PropertyIndexLookup {
     async fn edge_posting_remove_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
         _label_id: u16,
@@ -258,6 +310,7 @@ impl PropertyIndexLookup for NoPropertyIndex {
 
     async fn lookup_equal(
         &self,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -266,6 +319,7 @@ impl PropertyIndexLookup for NoPropertyIndex {
 
     async fn lookup_range(
         &self,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -284,6 +338,7 @@ impl PropertyIndexLookup for NoPropertyIndex {
     async fn posting_insert_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,
@@ -294,6 +349,7 @@ impl PropertyIndexLookup for NoPropertyIndex {
     async fn posting_remove_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,

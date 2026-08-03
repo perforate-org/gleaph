@@ -18,7 +18,8 @@ use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{
-    ConstrainedPropertyDispatch, LabelStatsDelta, ResolvedInlineSchema, ResolvedInlineStructField,
+    ConstrainedPropertyDispatch, LabelStatsDelta, MutationId, ResolvedInlineSchema,
+    ResolvedInlineStructField,
 };
 use ic_stable_lara::VertexId;
 #[cfg(test)]
@@ -134,6 +135,10 @@ fn execute_ops_with_bindings(
     execution: GqlExecutionContext,
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
+    // Test/host path: no canonical mutation identity is owned here, so outbox entries bind to
+    // the sentinel mutation id (matching the pending-flush paths). Router-driven plan execution
+    // threads the real id through `apply_mutation_ops_async`.
+    let mutation_id = 0;
     let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
     for op in ops {
         match op {
@@ -146,7 +151,7 @@ fn execute_ops_with_bindings(
                 let label_ids = resolve_vertex_labels(&execution, labels)?;
                 let property_ids = resolve_mutation_properties(&execution, properties)?;
                 let unique_labels = label_ids.iter().copied().collect::<BTreeSet<_>>();
-                let vertex_id = store.insert_vertex_with(label_ids, property_ids)?;
+                let vertex_id = store.insert_vertex_with(label_ids, property_ids, mutation_id)?;
                 for label_id in unique_labels {
                     bindings.add_vertex_label_delta(label_id, 1);
                 }
@@ -186,6 +191,7 @@ fn execute_ops_with_bindings(
                         resolved_label,
                         inline_property.as_ref(),
                         sidecar_properties,
+                        mutation_id,
                     )?,
                     EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
                         store,
@@ -194,6 +200,7 @@ fn execute_ops_with_bindings(
                         resolved_label,
                         inline_property.as_ref(),
                         sidecar_properties,
+                        mutation_id,
                     )?,
                     EdgeDirection::Undirected => insert_undirected_edge_with_inline(
                         store,
@@ -202,6 +209,7 @@ fn execute_ops_with_bindings(
                         resolved_label,
                         inline_property.as_ref(),
                         sidecar_properties,
+                        mutation_id,
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
@@ -221,12 +229,12 @@ fn execute_ops_with_bindings(
             }
             PlanOp::SetProperties { items } => {
                 for item in items {
-                    execute_set_item(store, item, &execution, &evaluator, bindings)?;
+                    execute_set_item(store, item, &execution, &evaluator, bindings, mutation_id)?;
                 }
             }
             PlanOp::RemoveProperties { items } => {
                 for item in items {
-                    execute_remove_item(store, item, &execution, bindings)?;
+                    execute_remove_item(store, item, &execution, bindings, mutation_id)?;
                 }
             }
             PlanOp::DeleteVertex { variable } => {
@@ -246,7 +254,7 @@ fn execute_ops_with_bindings(
                     &execution.local_constrained_properties,
                     bindings,
                 )?;
-                store.delete_vertex(vertex_id)?;
+                store.delete_vertex_with_mutation_id(vertex_id, mutation_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
             PlanOp::DetachDeleteVertex { variable } => {
@@ -266,7 +274,7 @@ fn execute_ops_with_bindings(
                     &execution.local_constrained_properties,
                     bindings,
                 )?;
-                store.detach_delete_vertex(vertex_id)?;
+                store.detach_delete_vertex_with_mutation_id(vertex_id, mutation_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
             PlanOp::DeleteEdge { variable } => {
@@ -278,7 +286,7 @@ fn execute_ops_with_bindings(
                 if let Some(label_id) = edge_label_delta_for_handle(store, handle) {
                     bindings.add_edge_label_delta(label_id, -1);
                 }
-                store.delete_edge_by_handle(handle)?;
+                store.delete_edge_by_handle_with_mutation_id(handle, mutation_id)?;
                 bindings.edges.remove(variable.as_ref());
             }
             PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
@@ -315,7 +323,9 @@ pub(crate) async fn apply_mutation_ops_async(
     parameters: &BTreeMap<String, gleaph_gql::Value>,
     execution: GqlExecutionContext,
     bindings: &mut PlanMutationBindings,
+    mutation_id: Option<MutationId>,
 ) -> Result<(), PlanMutationError> {
+    let mutation_id = mutation_id.unwrap_or(0);
     let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
     for op in ops {
         match op {
@@ -328,7 +338,8 @@ pub(crate) async fn apply_mutation_ops_async(
                 let label_ids = resolve_vertex_labels(&execution, labels)?;
                 let property_ids = resolve_mutation_properties(&execution, properties)?;
                 let unique_labels = label_ids.iter().copied().collect::<BTreeSet<_>>();
-                let vertex_id = insert_vertex_with_async(store, label_ids, property_ids).await?;
+                let vertex_id =
+                    insert_vertex_with_async(store, label_ids, property_ids, mutation_id).await?;
                 for label_id in unique_labels {
                     bindings.add_vertex_label_delta(label_id, 1);
                 }
@@ -368,6 +379,7 @@ pub(crate) async fn apply_mutation_ops_async(
                         resolved_label,
                         inline_property.as_ref(),
                         sidecar_properties,
+                        mutation_id,
                     )?,
                     EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
                         store,
@@ -376,6 +388,7 @@ pub(crate) async fn apply_mutation_ops_async(
                         resolved_label,
                         inline_property.as_ref(),
                         sidecar_properties,
+                        mutation_id,
                     )?,
                     EdgeDirection::Undirected => insert_undirected_edge_with_inline(
                         store,
@@ -384,6 +397,7 @@ pub(crate) async fn apply_mutation_ops_async(
                         resolved_label,
                         inline_property.as_ref(),
                         sidecar_properties,
+                        mutation_id,
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
@@ -405,17 +419,18 @@ pub(crate) async fn apply_mutation_ops_async(
                     parameters,
                     execution.clone(),
                     bindings,
+                    Some(mutation_id),
                 ))
                 .await?
             }
             PlanOp::SetProperties { items } => {
                 for item in items {
-                    execute_set_item(store, item, &execution, &evaluator, bindings)?;
+                    execute_set_item(store, item, &execution, &evaluator, bindings, mutation_id)?;
                 }
             }
             PlanOp::RemoveProperties { items } => {
                 for item in items {
-                    execute_remove_item(store, item, &execution, bindings)?;
+                    execute_remove_item(store, item, &execution, bindings, mutation_id)?;
                 }
             }
             PlanOp::DeleteVertex { variable } => {
@@ -435,7 +450,7 @@ pub(crate) async fn apply_mutation_ops_async(
                     &execution.local_constrained_properties,
                     bindings,
                 )?;
-                store.delete_vertex(vertex_id)?;
+                store.delete_vertex_with_mutation_id(vertex_id, mutation_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
             PlanOp::DetachDeleteVertex { variable } => {
@@ -455,7 +470,7 @@ pub(crate) async fn apply_mutation_ops_async(
                     &execution.local_constrained_properties,
                     bindings,
                 )?;
-                store.detach_delete_vertex(vertex_id)?;
+                store.detach_delete_vertex_with_mutation_id(vertex_id, mutation_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
             PlanOp::DeleteEdge { variable } => {
@@ -467,7 +482,7 @@ pub(crate) async fn apply_mutation_ops_async(
                 if let Some(label_id) = edge_label_delta_for_handle(store, handle) {
                     bindings.add_edge_label_delta(label_id, -1);
                 }
-                store.delete_edge_by_handle(handle)?;
+                store.delete_edge_by_handle_with_mutation_id(handle, mutation_id)?;
                 bindings.edges.remove(variable.as_ref());
             }
             PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
@@ -499,9 +514,15 @@ async fn execute_ops_with_bindings_async(
     parameters: &BTreeMap<String, gleaph_gql::Value>,
     execution: GqlExecutionContext,
     bindings: &mut PlanMutationBindings,
+    mutation_id: Option<MutationId>,
 ) -> Result<(), PlanMutationError> {
     Box::pin(apply_mutation_ops_async(
-        store, ops, parameters, execution, bindings,
+        store,
+        ops,
+        parameters,
+        execution,
+        bindings,
+        mutation_id,
     ))
     .await?;
     finish_hot_forward_vertices(bindings);
@@ -548,6 +569,7 @@ pub async fn execute_mutation_tail_async(
     seed_rows: &[SeededMutationRow],
     parameters: &BTreeMap<String, gleaph_gql::Value>,
     execution: GqlExecutionContext,
+    mutation_id: Option<MutationId>,
 ) -> Result<PlanMutationBindings, PlanMutationError> {
     let mut bindings = PlanMutationBindings::default();
     if seed_rows.is_empty() {
@@ -557,6 +579,7 @@ pub async fn execute_mutation_tail_async(
             parameters,
             execution,
             &mut bindings,
+            mutation_id,
         ))
         .await?;
     } else {
@@ -569,6 +592,7 @@ pub async fn execute_mutation_tail_async(
                 parameters,
                 execution.clone(),
                 &mut bindings,
+                mutation_id,
             ))
             .await?;
         }
@@ -583,6 +607,7 @@ fn execute_set_item(
     execution: &GqlExecutionContext,
     evaluator: &impl MutationPropertyExprEvaluation,
     bindings: &mut PlanMutationBindings,
+    mutation_id: MutationId,
 ) -> Result<(), PlanMutationError> {
     match item {
         SetPlanItem::Property {
@@ -595,9 +620,12 @@ fn execute_set_item(
                 resolve_property_id(execution, top_level_property(property.as_ref()))?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
-                store
-                    .set_vertex_property(*vertex_id, property_id, value)
-                    .map_err(GraphStoreError::from)?;
+                store.set_vertex_property_with_mutation_id(
+                    *vertex_id,
+                    property_id,
+                    value,
+                    mutation_id,
+                )?;
                 return Ok(());
             }
 
@@ -611,13 +639,18 @@ fn execute_set_item(
                         property_id,
                         &value,
                     )?;
-                    store.update_edge_inline_property_at_handle(*edge, &inline_property_bytes)?;
+                    store.update_edge_inline_property_at_handle_with_mutation_id(
+                        *edge,
+                        &inline_property_bytes,
+                        mutation_id,
+                    )?;
                 } else {
                     reject_struct_inline_mutation(execution, *edge)?;
-                    store.set_edge_property(
+                    store.set_edge_property_with_mutation_id(
                         edge.occurrence(LabeledOrientation::Forward),
                         property_id,
                         value,
+                        mutation_id,
                     )?;
                 }
                 return Ok(());
@@ -627,9 +660,15 @@ fn execute_set_item(
                 variable: variable.to_string(),
             })
         }
-        SetPlanItem::AllProperties { variable, value } => {
-            execute_set_all_properties(store, variable, value, execution, evaluator, bindings)
-        }
+        SetPlanItem::AllProperties { variable, value } => execute_set_all_properties(
+            store,
+            variable,
+            value,
+            execution,
+            evaluator,
+            bindings,
+            mutation_id,
+        ),
         SetPlanItem::Label { variable, label } => {
             let label_id = execution
                 .resolved_vertex_label_id(label.as_ref())
@@ -674,7 +713,8 @@ fn execute_set_all_properties(
     value: &gleaph_gql::ast::Expr,
     execution: &GqlExecutionContext,
     evaluator: &impl MutationPropertyExprEvaluation,
-    bindings: &PlanMutationBindings,
+    bindings: &mut PlanMutationBindings,
+    mutation_id: MutationId,
 ) -> Result<(), PlanMutationError> {
     let fields = match evaluator.eval(variable.as_ref(), value)? {
         Value::Record(fields) => fields,
@@ -687,13 +727,16 @@ fn execute_set_all_properties(
 
     if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
         for (property_id, _) in store.vertex_properties(*vertex_id) {
-            store.remove_vertex_property(*vertex_id, property_id);
+            store.remove_vertex_property_with_mutation_id(*vertex_id, property_id, mutation_id)?;
         }
         for (name, value) in fields {
             let property_id = resolve_property_id(execution, &name)?;
-            store
-                .set_vertex_property(*vertex_id, property_id, value)
-                .map_err(GraphStoreError::from)?;
+            store.set_vertex_property_with_mutation_id(
+                *vertex_id,
+                property_id,
+                value,
+                mutation_id,
+            )?;
         }
         return Ok(());
     }
@@ -704,17 +747,25 @@ fn execute_set_all_properties(
         for (property_id, _) in
             store.edge_properties(edge.occurrence(LabeledOrientation::Forward))?
         {
-            store
-                .remove_edge_property(edge.occurrence(LabeledOrientation::Forward), property_id)?;
+            store.remove_edge_property_with_mutation_id(
+                edge.occurrence(LabeledOrientation::Forward),
+                property_id,
+                mutation_id,
+            )?;
         }
         if let Some(bytes) = inline_property_bytes {
-            store.update_edge_inline_property_at_handle(*edge, &bytes)?;
+            store.update_edge_inline_property_at_handle_with_mutation_id(
+                *edge,
+                &bytes,
+                mutation_id,
+            )?;
         }
         for (property_id, value) in sidecar_fields {
-            store.set_edge_property(
+            store.set_edge_property_with_mutation_id(
                 edge.occurrence(LabeledOrientation::Forward),
                 property_id,
                 value,
+                mutation_id,
             )?;
         }
         return Ok(());
@@ -730,6 +781,7 @@ fn execute_remove_item(
     item: &RemovePlanItem,
     execution: &GqlExecutionContext,
     bindings: &mut PlanMutationBindings,
+    mutation_id: MutationId,
 ) -> Result<(), PlanMutationError> {
     match item {
         RemovePlanItem::Property { variable, property } => {
@@ -769,7 +821,11 @@ fn execute_remove_item(
                         &mut bindings.released_local_unique_values,
                     );
                 }
-                store.remove_vertex_property(vertex_id, property_id);
+                store.remove_vertex_property_with_mutation_id(
+                    vertex_id,
+                    property_id,
+                    mutation_id,
+                )?;
                 return Ok(());
             }
 
@@ -780,9 +836,10 @@ fn execute_remove_item(
                         property: property.to_string(),
                     });
                 }
-                store.remove_edge_property(
+                store.remove_edge_property_with_mutation_id(
                     edge.occurrence(LabeledOrientation::Forward),
                     property_id,
+                    mutation_id,
                 )?;
                 return Ok(());
             }
@@ -1569,6 +1626,7 @@ fn insert_directed_edge_with_inline(
     label: Option<EdgeLabelId>,
     inline_property: Option<&InlineScalarProperty>,
     sidecar_properties: Vec<(PropertyId, Value)>,
+    mutation_id: MutationId,
 ) -> Result<EdgeHandle, PlanMutationError> {
     if let Some(inline_property_bytes) = inline_property {
         GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
@@ -1578,6 +1636,7 @@ fn insert_directed_edge_with_inline(
             label,
             &inline_property_bytes.inline_property_bytes,
             sidecar_properties,
+            mutation_id,
         )
         .map_err(PlanMutationError::from)
     } else {
@@ -1587,6 +1646,7 @@ fn insert_directed_edge_with_inline(
             target,
             label,
             sidecar_properties,
+            mutation_id,
         )
         .map_err(PlanMutationError::from)
     }
@@ -1599,6 +1659,7 @@ fn insert_undirected_edge_with_inline(
     label: Option<EdgeLabelId>,
     inline_property: Option<&InlineScalarProperty>,
     sidecar_properties: Vec<(PropertyId, Value)>,
+    mutation_id: MutationId,
 ) -> Result<EdgeHandle, PlanMutationError> {
     if let Some(inline_property_bytes) = inline_property {
         GraphMutationExecutor::insert_undirected_edge_with_inline_property_bytes(
@@ -1608,6 +1669,7 @@ fn insert_undirected_edge_with_inline(
             label,
             &inline_property_bytes.inline_property_bytes,
             sidecar_properties,
+            mutation_id,
         )
         .map_err(PlanMutationError::from)
     } else {
@@ -1617,6 +1679,7 @@ fn insert_undirected_edge_with_inline(
             endpoint_b,
             label,
             sidecar_properties,
+            mutation_id,
         )
         .map_err(PlanMutationError::from)
     }

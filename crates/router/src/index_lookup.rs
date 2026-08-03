@@ -13,7 +13,8 @@ use gleaph_graph_kernel::index::{
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
     LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
-    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, ValuePostingCount, ValuePostingCountPage,
+    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PhysicalIndexId, PostingHit, ValuePostingCount,
+    ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -25,6 +26,7 @@ const INDEX_LOOKUP_PAGE_LIMIT: u32 = MAX_POSTING_PAGE_HITS;
 
 async fn collect_value_count_pages(
     client: &RouterIndexClient,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     min_count: u64,
     vertex_filter_packed: Option<Vec<u64>>,
@@ -34,6 +36,7 @@ async fn collect_value_count_pages(
     loop {
         let page: ValuePostingCountPage = client
             .count_postings_by_value_page(LookupValuePostingCountPageRequest {
+                physical_index_id,
                 property_id,
                 min_count,
                 vertex_filter_packed: vertex_filter_packed.clone(),
@@ -52,6 +55,7 @@ async fn collect_value_count_pages(
 
 async fn collect_value_count_pages_for_label(
     client: &RouterIndexClient,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     vertex_label_id: u32,
     min_count: u64,
@@ -62,6 +66,7 @@ async fn collect_value_count_pages_for_label(
         let page: ValuePostingCountPage = client
             .count_postings_by_value_for_label_page(
                 LookupValuePostingCountPageRequest {
+                    physical_index_id,
                     property_id,
                     min_count,
                     vertex_filter_packed: None,
@@ -122,6 +127,7 @@ async fn collect_property_intersection_pages(
 /// index never builds a full-bucket `Vec` in a single query message.
 async fn collect_equal_hits_paged(
     client: &RouterIndexClient,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
 ) -> Result<Vec<PostingHit>, String> {
@@ -130,6 +136,7 @@ async fn collect_equal_hits_paged(
     loop {
         let page = client
             .lookup_equal_page(LookupEqualPageRequest {
+                physical_index_id,
                 property_id,
                 value: value.clone(),
                 after,
@@ -149,6 +156,7 @@ async fn collect_equal_hits_paged(
 /// paging (no full-bucket heap materialization).
 async fn collect_edge_equal_hits_paged(
     client: &RouterIndexClient,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: Option<u16>,
@@ -158,6 +166,7 @@ async fn collect_edge_equal_hits_paged(
     loop {
         let page = client
             .lookup_edge_equal_page(LookupEdgeEqualPageRequest {
+                physical_index_id,
                 property_id,
                 value: value.clone(),
                 label_id,
@@ -329,6 +338,7 @@ fn merge_value_posting_counts(counts: Vec<Vec<ValuePostingCount>>) -> Vec<ValueP
 pub(crate) trait IndexLookup {
     fn lookup_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
@@ -340,6 +350,7 @@ pub(crate) trait IndexLookup {
 
     fn lookup_edge_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: Option<u16>,
@@ -347,6 +358,7 @@ pub(crate) trait IndexLookup {
 
     fn count_postings_by_value(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         min_count: u64,
         vertex_filter_packed: Option<Vec<u64>>,
@@ -397,6 +409,7 @@ pub(crate) trait IndexLookup {
 
     fn count_postings_by_value_for_label(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         vertex_label_id: u32,
         min_count: u64,
@@ -406,10 +419,16 @@ pub(crate) trait IndexLookup {
 impl IndexLookup for RouterIndexClient {
     fn lookup_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(collect_equal_hits_paged(self, property_id, value))
+        Box::pin(collect_equal_hits_paged(
+            self,
+            physical_index_id,
+            property_id,
+            value,
+        ))
     }
 
     fn lookup_intersection(
@@ -427,12 +446,14 @@ impl IndexLookup for RouterIndexClient {
 
     fn lookup_edge_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: Option<u16>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
         Box::pin(collect_edge_equal_hits_paged(
             self,
+            physical_index_id,
             property_id,
             value,
             label_id,
@@ -441,12 +462,14 @@ impl IndexLookup for RouterIndexClient {
 
     fn count_postings_by_value(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         min_count: u64,
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
         Box::pin(collect_value_count_pages(
             self,
+            physical_index_id,
             property_id,
             min_count,
             vertex_filter_packed,
@@ -484,12 +507,14 @@ impl IndexLookup for RouterIndexClient {
 
     fn count_postings_by_value_for_label(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         vertex_label_id: u32,
         min_count: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
         Box::pin(collect_value_count_pages_for_label(
             self,
+            physical_index_id,
             property_id,
             vertex_label_id,
             min_count,
@@ -500,6 +525,7 @@ impl IndexLookup for RouterIndexClient {
 impl IndexLookup for RouterIndexLookup {
     fn lookup_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
@@ -510,6 +536,7 @@ impl IndexLookup for RouterIndexLookup {
                 merged.extend(
                     collect_equal_hits_paged(
                         &RouterIndexClient::new(principal),
+                        physical_index_id,
                         property_id,
                         value.clone(),
                     )
@@ -561,6 +588,7 @@ impl IndexLookup for RouterIndexLookup {
 
     fn lookup_edge_equal(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: Option<u16>,
@@ -572,6 +600,7 @@ impl IndexLookup for RouterIndexLookup {
                 merged.extend(
                     collect_edge_equal_hits_paged(
                         &RouterIndexClient::new(principal),
+                        physical_index_id,
                         property_id,
                         value.clone(),
                         label_id,
@@ -585,6 +614,7 @@ impl IndexLookup for RouterIndexLookup {
 
     fn count_postings_by_value(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         min_count: u64,
         vertex_filter_packed: Option<Vec<u64>>,
@@ -596,6 +626,7 @@ impl IndexLookup for RouterIndexLookup {
                 groups.push(
                     collect_value_count_pages(
                         &RouterIndexClient::new(principal),
+                        physical_index_id,
                         property_id,
                         min_count,
                         vertex_filter_packed.clone(),
@@ -683,6 +714,7 @@ impl IndexLookup for RouterIndexLookup {
 
     fn count_postings_by_value_for_label(
         &self,
+        physical_index_id: PhysicalIndexId,
         property_id: u32,
         vertex_label_id: u32,
         min_count: u64,
@@ -694,6 +726,7 @@ impl IndexLookup for RouterIndexLookup {
                 groups.push(
                     collect_value_count_pages_for_label(
                         &RouterIndexClient::new(principal),
+                        physical_index_id,
                         property_id,
                         vertex_label_id,
                         min_count,

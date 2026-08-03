@@ -29,8 +29,32 @@ pub enum IndexError {
     /// A batched equality lookup request contained a subject that does not belong to the batch
     /// kind: edge subjects in `lookup_equal_batch`, vertex subjects in `lookup_edge_equal_batch`.
     InvalidBatchSubject,
+    InvalidPostingPurgeCursor,
     /// A batched lookup page could not be encoded for response-size measurement.
     BatchEncodeFailed(String),
+    IndexBuildAlreadyRegistered,
+    UnknownIndexBuild,
+    StaleIndexBuildEpoch,
+    InvalidIndexBuildScope,
+    InvalidIndexBuildTargetShards,
+    InvalidIndexBuildTarget,
+    IndexBuildRequestTooLarge,
+    TooManyIndexBuildRows,
+    InvalidIndexBuildCursor,
+    IndexBuildAlreadyDone,
+    StaleIndexBuildProgress,
+    IndexBuildReplayConflict,
+    IndexBuildReplayTooOld,
+    InvalidIndexBuildSequence,
+    IndexBuildSequenceGap,
+    InvalidIndexBuildControl,
+    IndexBuildNotBuilding,
+    IndexBuildNotReadyToSeal,
+    InvalidIndexBuildSeal,
+    IndexBuildAborted,
+    DuplicateIndexBuildSubject,
+    IndexBuildProgressOverflow,
+    IndexBuildFingerprintFailed(String),
 }
 
 impl std::fmt::Display for IndexError {
@@ -92,11 +116,152 @@ impl std::fmt::Display for IndexError {
                     "batched equality lookup subject does not match the batch kind"
                 )
             }
+            Self::InvalidPostingPurgeCursor => {
+                write!(f, "posting purge cursor does not match the requested scope")
+            }
             Self::BatchEncodeFailed(detail) => {
                 write!(f, "batched lookup page encode failed: {detail}")
+            }
+            Self::IndexBuildAlreadyRegistered => {
+                write!(
+                    f,
+                    "physical index build is already registered with another scope"
+                )
+            }
+            Self::UnknownIndexBuild => write!(f, "physical index build is not registered"),
+            Self::StaleIndexBuildEpoch => write!(f, "physical index build catalog epoch is stale"),
+            Self::InvalidIndexBuildScope => write!(f, "physical index build scope is invalid"),
+            Self::InvalidIndexBuildTargetShards => {
+                write!(f, "physical index build target shard set is invalid")
+            }
+            Self::InvalidIndexBuildTarget => {
+                write!(
+                    f,
+                    "physical index build fact or subject is outside its target"
+                )
+            }
+            Self::IndexBuildRequestTooLarge => {
+                write!(
+                    f,
+                    "physical index build request exceeds the safe byte limit"
+                )
+            }
+            Self::TooManyIndexBuildRows => {
+                write!(f, "physical index build request exceeds the row limit")
+            }
+            Self::InvalidIndexBuildCursor => {
+                write!(f, "physical index build cursor envelope is invalid")
+            }
+            Self::IndexBuildAlreadyDone => write!(f, "physical index build is already complete"),
+            Self::StaleIndexBuildProgress => {
+                write!(
+                    f,
+                    "physical index build page does not match durable progress"
+                )
+            }
+            Self::IndexBuildReplayConflict => {
+                write!(
+                    f,
+                    "physical index build page sequence was reused with another envelope"
+                )
+            }
+            Self::IndexBuildReplayTooOld => {
+                write!(
+                    f,
+                    "physical index build replay is older than the retained receipt"
+                )
+            }
+            Self::InvalidIndexBuildSequence => {
+                write!(f, "physical index build shard sequence must start at one")
+            }
+            Self::IndexBuildSequenceGap => {
+                write!(f, "physical index build shard sequence is not contiguous")
+            }
+            Self::InvalidIndexBuildControl => {
+                write!(
+                    f,
+                    "physical index build control identity does not match registration"
+                )
+            }
+            Self::IndexBuildNotBuilding => {
+                write!(f, "physical index build is not accepting base pages")
+            }
+            Self::IndexBuildNotReadyToSeal => {
+                write!(f, "physical index build base scan is not complete")
+            }
+            Self::InvalidIndexBuildSeal => {
+                write!(f, "physical index build seal envelope is invalid")
+            }
+            Self::IndexBuildAborted => {
+                write!(f, "physical index build namespace is aborting or aborted")
+            }
+            Self::DuplicateIndexBuildSubject => {
+                write!(f, "physical index build page contains a duplicate subject")
+            }
+            Self::IndexBuildProgressOverflow => {
+                write!(f, "physical index build progress overflow")
+            }
+            Self::IndexBuildFingerprintFailed(detail) => {
+                write!(f, "physical index build fingerprint failed: {detail}")
             }
         }
     }
 }
 
 impl std::error::Error for IndexError {}
+
+impl From<IndexError> for gleaph_graph_kernel::index::IndexBuildStoreError {
+    fn from(value: IndexError) -> Self {
+        use gleaph_graph_kernel::index::IndexBuildStoreError as Wire;
+
+        match value {
+            IndexError::NotAuthorized => Wire::NotAuthorized,
+            IndexError::UnknownShard => Wire::UnknownShard,
+            IndexError::WrongShardCanister => Wire::WrongShardCanister,
+            IndexError::IndexValueKeyTooLarge => Wire::IndexValueKeyTooLarge,
+            IndexError::IndexBuildAlreadyRegistered => Wire::AlreadyRegistered,
+            IndexError::UnknownIndexBuild => Wire::UnknownBuild,
+            IndexError::StaleIndexBuildEpoch => Wire::StaleEpoch,
+            IndexError::InvalidIndexBuildScope => Wire::InvalidScope,
+            IndexError::InvalidIndexBuildTargetShards => Wire::InvalidTargetShards,
+            IndexError::InvalidIndexBuildTarget => Wire::InvalidTarget,
+            IndexError::IndexBuildRequestTooLarge => Wire::RequestTooLarge,
+            IndexError::TooManyIndexBuildRows => Wire::TooManyRows,
+            IndexError::InvalidIndexBuildCursor => Wire::InvalidCursor,
+            IndexError::IndexBuildAlreadyDone => Wire::AlreadyDone,
+            IndexError::StaleIndexBuildProgress => Wire::StaleProgress,
+            IndexError::IndexBuildReplayConflict => Wire::ReplayConflict,
+            IndexError::IndexBuildReplayTooOld => Wire::ReplayTooOld,
+            IndexError::InvalidIndexBuildSequence => Wire::InvalidSequence,
+            IndexError::IndexBuildSequenceGap => Wire::SequenceGap,
+            IndexError::InvalidIndexBuildControl => Wire::InvalidControl,
+            IndexError::IndexBuildNotBuilding => Wire::NotBuilding,
+            IndexError::IndexBuildNotReadyToSeal => Wire::NotReadyToSeal,
+            IndexError::InvalidIndexBuildSeal => Wire::InvalidSeal,
+            IndexError::IndexBuildAborted => Wire::Aborted,
+            IndexError::DuplicateIndexBuildSubject => Wire::DuplicateSubject,
+            IndexError::IndexBuildProgressOverflow => Wire::ProgressOverflow,
+            IndexError::IndexBuildFingerprintFailed(_) => Wire::FingerprintFailed,
+            IndexError::InvalidPrincipalInRegistry
+            | IndexError::AnonymousRouter
+            | IndexError::ShardCanisterAlreadyAttached
+            | IndexError::GraphOwnershipMismatch
+            | IndexError::InvalidIndexGroupConfig
+            | IndexError::ShardOutOfRangeForGroup
+            | IndexError::InvalidRangeBounds
+            | IndexError::TooManyEqualityIntersectionArms
+            | IndexError::MissingEqualityIntersectionArms
+            | IndexError::InvalidIntersectionSubject
+            | IndexError::InvalidIntersectionCursor
+            | IndexError::InvalidBatchSubject
+            | IndexError::InvalidPostingPurgeCursor
+            | IndexError::BatchEncodeFailed(_) => Wire::Internal,
+        }
+    }
+}
+
+impl From<IndexError> for gleaph_graph_kernel::index::IndexBuildError {
+    fn from(value: IndexError) -> Self {
+        Self::Store(value.into())
+    }
+}

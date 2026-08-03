@@ -1,16 +1,19 @@
-//! Composite posting key: `(property_id, payload_bytes, shard_id, vertex_id)` ordered for prefix scans.
+//! Composite posting key: `(physical_index_id, property_id, payload_bytes, shard_id, vertex_id)`
+//! ordered for prefix scans.
 
 use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::PhysicalIndexId;
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-const POSTING_KEY_MAGIC: u8 = 2;
+const POSTING_KEY_MAGIC: u8 = 4;
 
-/// Lexicographic order: `property_id`, then `value` (memcmp), then `shard_id`, then `vertex_id`.
+/// Lexicographic order: physical namespace, property, value, shard, then vertex.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostingKey {
+    pub physical_index_id: PhysicalIndexId,
     pub property_id: u32,
     pub value: Vec<u8>,
     pub shard_id: ShardId,
@@ -25,8 +28,9 @@ impl PartialOrd for PostingKey {
 
 impl Ord for PostingKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.property_id
-            .cmp(&other.property_id)
+        self.physical_index_id
+            .cmp(&other.physical_index_id)
+            .then_with(|| self.property_id.cmp(&other.property_id))
             .then_with(|| self.value.cmp(&other.value))
             .then_with(|| self.shard_id.cmp(&other.shard_id))
             .then_with(|| self.vertex_id.cmp(&other.vertex_id))
@@ -51,8 +55,9 @@ impl Storable for PostingKey {
 
 impl PostingKey {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + 4 + 4 + self.value.len() + 4 + 4);
+        let mut out = Vec::with_capacity(1 + 8 + 4 + 4 + self.value.len() + 4 + 4);
         out.push(POSTING_KEY_MAGIC);
+        out.extend_from_slice(&self.physical_index_id.to_le_bytes());
         out.extend_from_slice(&self.property_id.to_le_bytes());
         let len_u32: u32 = self
             .value
@@ -70,10 +75,11 @@ impl PostingKey {
         if bytes.first().copied()? != POSTING_KEY_MAGIC {
             return None;
         }
-        let pid = u32::from_le_bytes(bytes.get(1..5)?.try_into().ok()?);
-        let vlen = u32::from_le_bytes(bytes.get(5..9)?.try_into().ok()?);
+        let physical_index_id = PhysicalIndexId::from_le_bytes(bytes.get(1..9)?.try_into().ok()?)?;
+        let pid = u32::from_le_bytes(bytes.get(9..13)?.try_into().ok()?);
+        let vlen = u32::from_le_bytes(bytes.get(13..17)?.try_into().ok()?);
         let usize_len = usize::try_from(vlen).ok()?;
-        let val_start: usize = 9;
+        let val_start: usize = 17;
         let val_end = val_start.checked_add(usize_len)?;
         let value = bytes.get(val_start..val_end)?.to_vec();
         let shard_off = val_end;
@@ -82,6 +88,7 @@ impl PostingKey {
         let vid_off = shard_off + 4;
         let vertex_id = u32::from_le_bytes(bytes.get(vid_off..vid_off + 4)?.try_into().ok()?);
         Some(Self {
+            physical_index_id,
             property_id: pid,
             value,
             shard_id,
@@ -89,9 +96,14 @@ impl PostingKey {
         })
     }
 
-    /// Lower bound for `range` scans over all postings matching `(property_id, value)`.
-    pub fn prefix_lower(property_id: u32, value: &[u8]) -> Self {
+    /// Lower bound for postings matching `(physical_index_id, property_id, value)`.
+    pub fn prefix_lower(
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        value: &[u8],
+    ) -> Self {
         Self {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             shard_id: ShardId::new(0),
@@ -99,9 +111,14 @@ impl PostingKey {
         }
     }
 
-    /// Upper bound for `range` scans over all postings matching `(property_id, value)`.
-    pub fn prefix_upper(property_id: u32, value: &[u8]) -> Self {
+    /// Upper bound for postings matching `(physical_index_id, property_id, value)`.
+    pub fn prefix_upper(
+        physical_index_id: PhysicalIndexId,
+        property_id: u32,
+        value: &[u8],
+    ) -> Self {
         Self {
+            physical_index_id,
             property_id,
             value: value.to_vec(),
             shard_id: ShardId::new(u32::MAX),
@@ -117,6 +134,7 @@ mod tests {
     #[test]
     fn posting_key_roundtrip() {
         let k = PostingKey {
+            physical_index_id: PhysicalIndexId::new(11).unwrap(),
             property_id: 7,
             value: vec![1, 2, 3],
             shard_id: ShardId::new(1),
@@ -124,5 +142,20 @@ mod tests {
         };
         let bytes = k.encode();
         assert_eq!(PostingKey::decode(&bytes).unwrap(), k);
+    }
+
+    #[test]
+    fn posting_key_orders_physical_namespace_first() {
+        let lower = PostingKey::prefix_lower(PhysicalIndexId::new(1).unwrap(), u32::MAX, &[255]);
+        let higher = PostingKey::prefix_lower(PhysicalIndexId::new(2).unwrap(), 0, &[]);
+        assert!(lower < higher);
+    }
+
+    #[test]
+    fn posting_key_rejects_reserved_zero_namespace() {
+        let key = PostingKey::prefix_lower(PhysicalIndexId::new(1).unwrap(), 7, b"v");
+        let mut bytes = key.encode();
+        bytes[1..9].copy_from_slice(&0u64.to_le_bytes());
+        assert_eq!(PostingKey::decode(&bytes), None);
     }
 }

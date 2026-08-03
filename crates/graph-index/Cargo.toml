@@ -30,5 +30,6 @@ serde.workspace = true
 canbench-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+futures.workspace = true
 gleaph-gql.workspace = true
 gleaph-gql-ic.workspace = true

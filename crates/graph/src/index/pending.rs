@@ -39,18 +39,24 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
-use gleaph_graph_kernel::index::IndexPostingMutation;
+use gleaph_graph_kernel::index::{IndexMaintenancePhase, IndexPostingMutation, PhysicalIndexId};
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
 #[derive(Clone, Debug)]
 pub(crate) enum PendingPostingOp {
     Insert {
+        physical_index_id: PhysicalIndexId,
+        catalog_epoch: u64,
+        phase: IndexMaintenancePhase,
         property_id: u32,
         payload_bytes: Vec<u8>,
         vertex_id: u32,
     },
     Remove {
+        physical_index_id: PhysicalIndexId,
+        catalog_epoch: u64,
+        phase: IndexMaintenancePhase,
         property_id: u32,
         payload_bytes: Vec<u8>,
         vertex_id: u32,
@@ -81,20 +87,32 @@ pub(crate) fn take_pending() -> Vec<PendingPostingOp> {
 pub(crate) fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
     match op {
         PendingPostingOp::Insert {
+            physical_index_id,
+            catalog_epoch,
+            phase,
             property_id,
             payload_bytes,
             vertex_id,
         } => RepairPostingOp::VertexProperty {
+            physical_index_id: *physical_index_id,
+            catalog_epoch: *catalog_epoch,
+            phase: *phase,
             remove: false,
             property_id: *property_id,
             payload_bytes: payload_bytes.clone(),
             vertex_id: *vertex_id,
         },
         PendingPostingOp::Remove {
+            physical_index_id,
+            catalog_epoch,
+            phase,
             property_id,
             payload_bytes,
             vertex_id,
         } => RepairPostingOp::VertexProperty {
+            physical_index_id: *physical_index_id,
+            catalog_epoch: *catalog_epoch,
+            phase: *phase,
             remove: true,
             property_id: *property_id,
             payload_bytes: payload_bytes.clone(),
@@ -127,37 +145,57 @@ pub(crate) fn take_pending_as_outbox() -> Vec<RepairPostingOp> {
     take_pending_as_repair()
 }
 
-pub(crate) fn to_index_mutation(op: &PendingPostingOp) -> IndexPostingMutation {
+pub(crate) fn to_index_mutation(
+    op: &PendingPostingOp,
+) -> Result<IndexPostingMutation, PlanQueryError> {
     match op {
         PendingPostingOp::Insert {
+            physical_index_id,
+            phase,
             property_id,
             payload_bytes,
             vertex_id,
-        } => IndexPostingMutation::VertexProperty {
+            ..
+        } if phase.is_active() => Ok(IndexPostingMutation::VertexProperty {
+            physical_index_id: *physical_index_id,
             remove: false,
             property_id: *property_id,
             value: payload_bytes.clone(),
             vertex_id: *vertex_id,
-        },
+        }),
         PendingPostingOp::Remove {
+            physical_index_id,
+            phase,
             property_id,
             payload_bytes,
             vertex_id,
-        } => IndexPostingMutation::VertexProperty {
+            ..
+        } if phase.is_active() => Ok(IndexPostingMutation::VertexProperty {
+            physical_index_id: *physical_index_id,
             remove: true,
             property_id: *property_id,
             value: payload_bytes.clone(),
             vertex_id: *vertex_id,
-        },
+        }),
+        PendingPostingOp::Insert { .. } | PendingPostingOp::Remove { .. } => {
+            Err(PlanQueryError::UnsupportedOp(
+                "index posting dispatch requires Active maintenance phase",
+            ))
+        }
     }
 }
 
-pub(crate) fn push_vertex_index_op(vertex_id: VertexId, op: PropertyIndexOp) {
-    push_vertex_index_ops(vertex_id, std::iter::once(op));
+pub(crate) fn push_vertex_index_op(
+    vertex_id: VertexId,
+    membership: crate::index::catalog_context::IndexMembershipRef,
+    op: PropertyIndexOp,
+) {
+    push_vertex_index_ops(vertex_id, membership, std::iter::once(op));
 }
 
 pub(crate) fn push_vertex_index_ops(
     vertex_id: VertexId,
+    membership: crate::index::catalog_context::IndexMembershipRef,
     ops: impl IntoIterator<Item = PropertyIndexOp>,
 ) {
     let vid = u32::try_from(u64::from(vertex_id)).unwrap_or(0);
@@ -169,6 +207,9 @@ pub(crate) fn push_vertex_index_ops(
             property_id,
             payload_bytes,
         } => PendingPostingOp::Insert {
+            physical_index_id: membership.physical_index_id,
+            catalog_epoch: membership.catalog_epoch,
+            phase: membership.phase,
             property_id: property_id.raw(),
             payload_bytes,
             vertex_id: vid,
@@ -177,6 +218,9 @@ pub(crate) fn push_vertex_index_ops(
             property_id,
             payload_bytes,
         } => PendingPostingOp::Remove {
+            physical_index_id: membership.physical_index_id,
+            catalog_epoch: membership.catalog_epoch,
+            phase: membership.phase,
             property_id: property_id.raw(),
             payload_bytes,
             vertex_id: vid,
@@ -192,20 +236,34 @@ async fn compensate_index_ops(
     for op in applied.iter().rev() {
         match op {
             PendingPostingOp::Insert {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 vertex_id,
+                ..
             } => {
-                ix.posting_remove(*property_id, payload_bytes.clone(), *vertex_id)
-                    .await?;
+                ix.posting_remove(
+                    *physical_index_id,
+                    *property_id,
+                    payload_bytes.clone(),
+                    *vertex_id,
+                )
+                .await?;
             }
             PendingPostingOp::Remove {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 vertex_id,
+                ..
             } => {
-                ix.posting_insert(*property_id, payload_bytes.clone(), *vertex_id)
-                    .await?;
+                ix.posting_insert(
+                    *physical_index_id,
+                    *property_id,
+                    payload_bytes.clone(),
+                    *vertex_id,
+                )
+                .await?;
             }
         }
     }
@@ -221,20 +279,39 @@ pub(crate) async fn flush_pending(
         clear_pending();
         return Ok(());
     }
-    let Some(ix) = index else {
-        clear_pending();
-        return Err(PlanQueryError::UnsupportedOp(
-            "index mutations dropped (no index client)",
-        ));
-    };
     let ops: Vec<PendingPostingOp> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
     if ops.is_empty() {
         return Ok(());
     }
+    let Some(ix) = index else {
+        GraphStore::new().repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
+        crate::facade::maintenance_timer::arm_if_needed();
+        return Err(PlanQueryError::IndexFlushDeferred {
+            op: "vertex_no_index_client",
+            detail: "index client unavailable; posting batch journaled for repair".into(),
+        });
+    };
+
+    if ops.iter().any(|op| {
+        matches!(
+            op,
+            PendingPostingOp::Insert { phase, .. } | PendingPostingOp::Remove { phase, .. }
+                if !phase.is_active()
+        )
+    }) {
+        GraphStore::new().repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
+        crate::facade::maintenance_timer::arm_if_needed();
+        return Err(PlanQueryError::UnsupportedOp(
+            "index posting dispatch requires Active maintenance phase",
+        ));
+    }
 
     if ix.supports_posting_batch() {
         let shard_id = ix.local_shard_id();
-        let mutations: Vec<IndexPostingMutation> = ops.iter().map(to_index_mutation).collect();
+        let mutations: Vec<IndexPostingMutation> = ops
+            .iter()
+            .map(to_index_mutation)
+            .collect::<Result<_, _>>()?;
         let mut offset = 0usize;
         while offset < ops.len() {
             let chunk_end = offset
@@ -253,7 +330,7 @@ pub(crate) async fn flush_pending(
                 }
             };
             let advanced = usize::try_from(progress.applied).unwrap_or(0);
-            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+            if advanced == 0 || advanced > chunk_end.saturating_sub(offset) {
                 GraphStore::new()
                     .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
                 crate::facade::maintenance_timer::arm_if_needed();
@@ -286,20 +363,34 @@ pub(crate) async fn flush_pending(
     for op in &ops {
         let result = match op {
             PendingPostingOp::Insert {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 vertex_id,
+                ..
             } => {
-                ix.posting_insert(*property_id, payload_bytes.clone(), *vertex_id)
-                    .await
+                ix.posting_insert(
+                    *physical_index_id,
+                    *property_id,
+                    payload_bytes.clone(),
+                    *vertex_id,
+                )
+                .await
             }
             PendingPostingOp::Remove {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 vertex_id,
+                ..
             } => {
-                ix.posting_remove(*property_id, payload_bytes.clone(), *vertex_id)
-                    .await
+                ix.posting_remove(
+                    *physical_index_id,
+                    *property_id,
+                    payload_bytes.clone(),
+                    *vertex_id,
+                )
+                .await
             }
         };
 
@@ -349,8 +440,36 @@ pub(crate) async fn flush_all_pending(
     mutation_id: Option<u64>,
 ) -> Result<(), PlanQueryError> {
     let Some(ix) = index else {
-        flush_pending(None, mutation_id).await?;
-        return Ok(());
+        if !GraphStore::new().federation_configured() {
+            clear_pending();
+            crate::index::edge_pending::clear_pending();
+            crate::index::label_pending::clear_pending();
+            return Ok(());
+        }
+        let vertex_ops = take_pending();
+        let edge_ops = crate::index::edge_pending::take_pending();
+        let label_ops = crate::index::label_pending::take_pending();
+        let mut repairs = Vec::with_capacity(vertex_ops.len() + edge_ops.len() + label_ops.len());
+        repairs.extend(vertex_ops.iter().map(to_repair_op));
+        repairs.extend(
+            edge_ops
+                .iter()
+                .map(crate::index::edge_pending::to_repair_op),
+        );
+        repairs.extend(
+            label_ops
+                .iter()
+                .map(crate::index::label_pending::to_repair_op),
+        );
+        if repairs.is_empty() {
+            return Ok(());
+        }
+        GraphStore::new().repair_journal_append(mutation_id.unwrap_or(0), repairs);
+        crate::facade::maintenance_timer::arm_if_needed();
+        return Err(PlanQueryError::IndexFlushDeferred {
+            op: "property_no_index_client",
+            detail: "index client unavailable; posting batch journaled for repair".into(),
+        });
     };
     if !ix.supports_posting_batch() {
         flush_pending(Some(ix), mutation_id).await?;
@@ -359,30 +478,53 @@ pub(crate) async fn flush_all_pending(
         return Ok(());
     }
 
-    let mut ops: Vec<(IndexPostingMutation, RepairPostingOp)> = take_pending()
-        .into_iter()
-        .map(|op| (to_index_mutation(&op), to_repair_op(&op)))
+    let vertex_pending_ops = take_pending();
+    let edge_pending_ops = crate::index::edge_pending::take_pending();
+    let label_pending_ops = crate::index::label_pending::take_pending();
+    let mut repairs = Vec::with_capacity(
+        vertex_pending_ops.len() + edge_pending_ops.len() + label_pending_ops.len(),
+    );
+    repairs.extend(vertex_pending_ops.iter().map(to_repair_op));
+    repairs.extend(
+        edge_pending_ops
+            .iter()
+            .map(crate::index::edge_pending::to_repair_op),
+    );
+    repairs.extend(
+        label_pending_ops
+            .iter()
+            .map(crate::index::label_pending::to_repair_op),
+    );
+
+    let vertex_ops: Result<Vec<_>, _> = vertex_pending_ops
+        .iter()
+        .map(|op| Ok((to_index_mutation(op)?, to_repair_op(op))))
         .collect();
-    ops.extend(
-        crate::index::edge_pending::take_pending()
-            .into_iter()
-            .map(|op| {
-                (
-                    crate::index::edge_pending::to_index_mutation(&op),
-                    crate::index::edge_pending::to_repair_op(&op),
-                )
-            }),
-    );
-    ops.extend(
-        crate::index::label_pending::take_pending()
-            .into_iter()
-            .map(|op| {
-                (
-                    crate::index::label_pending::to_index_mutation(&op),
-                    crate::index::label_pending::to_repair_op(&op),
-                )
-            }),
-    );
+    let edge_ops: Result<Vec<_>, _> = edge_pending_ops
+        .iter()
+        .map(|op| {
+            Ok((
+                crate::index::edge_pending::to_index_mutation(op)?,
+                crate::index::edge_pending::to_repair_op(op),
+            ))
+        })
+        .collect();
+    let (vertex_ops, edge_ops) = match (vertex_ops, edge_ops) {
+        (Ok(vertex_ops), Ok(edge_ops)) => (vertex_ops, edge_ops),
+        (Err(error), _) | (_, Err(error)) => {
+            GraphStore::new().repair_journal_append(mutation_id.unwrap_or(0), repairs);
+            crate::facade::maintenance_timer::arm_if_needed();
+            return Err(error);
+        }
+    };
+    let mut ops: Vec<(IndexPostingMutation, RepairPostingOp)> = vertex_ops;
+    ops.extend(edge_ops);
+    ops.extend(label_pending_ops.iter().map(|op| {
+        (
+            crate::index::label_pending::to_index_mutation(op),
+            crate::index::label_pending::to_repair_op(op),
+        )
+    }));
     if ops.is_empty() {
         return Ok(());
     }
@@ -410,7 +552,7 @@ pub(crate) async fn flush_all_pending(
             }
         };
         let applied = usize::try_from(progress.applied).unwrap_or(0);
-        if applied == 0 || applied > ops.len().saturating_sub(offset) {
+        if applied == 0 || applied > chunk_end.saturating_sub(offset) {
             GraphStore::new().repair_journal_append(
                 mutation_id.unwrap_or(0),
                 ops[offset..].iter().map(|(_, repair)| repair.clone()),
@@ -447,15 +589,25 @@ pub(crate) async fn flush_all_pending(
 mod tests {
     use super::*;
     use crate::facade::FederationRouting;
+    use crate::index::catalog_context::IndexMembershipRef;
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
-    use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
+    use gleaph_graph_kernel::index::{
+        IndexIntersectionRequest, PhysicalIndexId, PostingHit, PostingRangeRequest,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const TEST_PHYSICAL_INDEX_ID: PhysicalIndexId =
+        PhysicalIndexId::new(900_101).expect("test physical id");
+    const TEST_CATALOG_EPOCH: u64 = 1;
+    const TEST_PHASE: gleaph_graph_kernel::index::IndexMaintenancePhase =
+        gleaph_graph_kernel::index::IndexMaintenancePhase::Active;
 
     struct FlakyIndex {
         fail_after: usize,
         fail_remove: bool,
+        supports_batch: bool,
         insert_calls: AtomicUsize,
         remove_calls: AtomicUsize,
     }
@@ -465,6 +617,7 @@ mod tests {
             Self {
                 fail_after,
                 fail_remove: false,
+                supports_batch: false,
                 insert_calls: AtomicUsize::new(0),
                 remove_calls: AtomicUsize::new(0),
             }
@@ -475,6 +628,17 @@ mod tests {
             Self {
                 fail_after,
                 fail_remove: true,
+                supports_batch: false,
+                insert_calls: AtomicUsize::new(0),
+                remove_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn batch() -> Self {
+            Self {
+                fail_after: usize::MAX,
+                fail_remove: false,
+                supports_batch: true,
                 insert_calls: AtomicUsize::new(0),
                 remove_calls: AtomicUsize::new(0),
             }
@@ -483,8 +647,13 @@ mod tests {
 
     #[async_trait(?Send)]
     impl PropertyIndexLookup for FlakyIndex {
+        fn supports_posting_batch(&self) -> bool {
+            self.supports_batch
+        }
+
         async fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -493,6 +662,7 @@ mod tests {
 
         async fn lookup_range(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _req: &PostingRangeRequest,
         ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -513,6 +683,7 @@ mod tests {
         async fn posting_insert_at(
             &self,
             _shard_id: gleaph_graph_kernel::federation::ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -527,6 +698,7 @@ mod tests {
         async fn posting_remove_at(
             &self,
             _shard_id: gleaph_graph_kernel::federation::ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -573,11 +745,17 @@ mod tests {
         PENDING.with(|p| {
             p.borrow_mut().extend([
                 PendingPostingOp::Insert {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     property_id: 1,
                     payload_bytes: vec![10],
                     vertex_id: 1,
                 },
                 PendingPostingOp::Remove {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     property_id: 1,
                     payload_bytes: vec![11],
                     vertex_id: 2,
@@ -589,12 +767,18 @@ mod tests {
             take_pending_as_repair(),
             vec![
                 RepairPostingOp::VertexProperty {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     remove: false,
                     property_id: 1,
                     payload_bytes: vec![10],
                     vertex_id: 1,
                 },
                 RepairPostingOp::VertexProperty {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     remove: true,
                     property_id: 1,
                     payload_bytes: vec![11],
@@ -624,11 +808,17 @@ mod tests {
         PENDING.with(|p| {
             p.borrow_mut().extend([
                 PendingPostingOp::Insert {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     property_id: 1,
                     payload_bytes: vec![10],
                     vertex_id: 1,
                 },
                 PendingPostingOp::Insert {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     property_id: 1,
                     payload_bytes: vec![11],
                     vertex_id: 2,
@@ -655,12 +845,18 @@ mod tests {
             journaled,
             vec![
                 RepairPostingOp::VertexProperty {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     remove: false,
                     property_id: 1,
                     payload_bytes: vec![10],
                     vertex_id: 1,
                 },
                 RepairPostingOp::VertexProperty {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     remove: false,
                     property_id: 1,
                     payload_bytes: vec![11],
@@ -699,6 +895,9 @@ mod tests {
 
         PENDING.with(|p| {
             p.borrow_mut().push(PendingPostingOp::Insert {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                catalog_epoch: TEST_CATALOG_EPOCH,
+                phase: TEST_PHASE,
                 property_id: 1,
                 payload_bytes: vec![10],
                 vertex_id: 1,
@@ -735,11 +934,17 @@ mod tests {
         PENDING.with(|p| {
             p.borrow_mut().extend([
                 PendingPostingOp::Insert {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     property_id: 7,
                     payload_bytes: vec![20],
                     vertex_id: 3,
                 },
                 PendingPostingOp::Remove {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     property_id: 7,
                     payload_bytes: vec![21],
                     vertex_id: 4,
@@ -760,12 +965,18 @@ mod tests {
             journaled,
             vec![
                 RepairPostingOp::VertexProperty {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     remove: false,
                     property_id: 7,
                     payload_bytes: vec![20],
                     vertex_id: 3,
                 },
                 RepairPostingOp::VertexProperty {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    catalog_epoch: TEST_CATALOG_EPOCH,
+                    phase: TEST_PHASE,
                     remove: true,
                     property_id: 7,
                     payload_bytes: vec![21],
@@ -777,5 +988,211 @@ mod tests {
         drain_test_journal(&graph);
         graph.set_federation_routing(None).expect("clear routing");
         clear_pending();
+    }
+
+    #[test]
+    fn mixed_active_and_building_batch_journals_every_taken_operation() {
+        let graph = GraphStore::new();
+        graph
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("set routing");
+        drain_test_journal(&graph);
+        clear_pending();
+        crate::index::edge_pending::clear_pending();
+        crate::index::label_pending::clear_pending();
+
+        let active = IndexMembershipRef {
+            physical_index_id: PhysicalIndexId::new(901).expect("test physical id"),
+            catalog_epoch: 21,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+        };
+        let building = IndexMembershipRef {
+            physical_index_id: PhysicalIndexId::new(902).expect("test physical id"),
+            catalog_epoch: 22,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Building,
+        };
+        PENDING.with(|pending| {
+            pending.borrow_mut().extend([
+                PendingPostingOp::Insert {
+                    physical_index_id: active.physical_index_id,
+                    catalog_epoch: active.catalog_epoch,
+                    phase: active.phase,
+                    property_id: 91,
+                    payload_bytes: vec![1],
+                    vertex_id: 1,
+                },
+                PendingPostingOp::Insert {
+                    physical_index_id: building.physical_index_id,
+                    catalog_epoch: building.catalog_epoch,
+                    phase: building.phase,
+                    property_id: 91,
+                    payload_bytes: vec![2],
+                    vertex_id: 2,
+                },
+            ]);
+        });
+        crate::index::edge_pending::push_edge_index_op(
+            VertexId::from(3u32),
+            0x8001,
+            0,
+            active,
+            PropertyIndexOp::Insert {
+                property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(92),
+                payload_bytes: vec![3],
+            },
+        );
+        crate::index::edge_pending::push_edge_index_op(
+            VertexId::from(3u32),
+            0x8001,
+            1,
+            building,
+            PropertyIndexOp::Insert {
+                property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(92),
+                payload_bytes: vec![4],
+            },
+        );
+        crate::index::label_pending::record_vertex_label_set(
+            VertexId::from(4u32),
+            &[],
+            &[gleaph_graph_kernel::entry::VertexLabelId::from_raw(9)],
+        );
+
+        let err = pollster::block_on(flush_all_pending(Some(&FlakyIndex::batch()), None))
+            .expect_err("non-active posting must not use the ordinary batch wire");
+        assert!(err.to_string().contains("Active maintenance phase"));
+        let journaled: Vec<_> = graph
+            .repair_journal_peek(16)
+            .into_iter()
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(journaled.len(), 5);
+        assert!(matches!(
+            &journaled[0],
+            RepairPostingOp::VertexProperty {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == active.physical_index_id
+                && *catalog_epoch == active.catalog_epoch
+                && *phase == active.phase
+        ));
+        assert!(matches!(
+            &journaled[1],
+            RepairPostingOp::VertexProperty {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == building.physical_index_id
+                && *catalog_epoch == building.catalog_epoch
+                && *phase == building.phase
+        ));
+        assert!(matches!(
+            &journaled[2],
+            RepairPostingOp::EdgeProperty {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == active.physical_index_id
+                && *catalog_epoch == active.catalog_epoch
+                && *phase == active.phase
+        ));
+        assert!(matches!(journaled[4], RepairPostingOp::Label { .. }));
+
+        drain_test_journal(&graph);
+        crate::index::edge_pending::clear_pending();
+        crate::index::label_pending::clear_pending();
+        graph.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn no_index_client_journals_complete_vertex_edge_and_label_set() {
+        let graph = GraphStore::new();
+        graph
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("set routing");
+        drain_test_journal(&graph);
+        clear_pending();
+        crate::index::edge_pending::clear_pending();
+        crate::index::label_pending::clear_pending();
+
+        let membership = IndexMembershipRef {
+            physical_index_id: PhysicalIndexId::new(904).expect("test physical id"),
+            catalog_epoch: 31,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Building,
+        };
+        PENDING.with(|pending| {
+            pending.borrow_mut().push(PendingPostingOp::Insert {
+                physical_index_id: membership.physical_index_id,
+                catalog_epoch: membership.catalog_epoch,
+                phase: membership.phase,
+                property_id: 93,
+                payload_bytes: vec![5],
+                vertex_id: 5,
+            });
+        });
+        crate::index::edge_pending::push_edge_index_op(
+            VertexId::from(6u32),
+            0x8001,
+            0,
+            membership,
+            PropertyIndexOp::Insert {
+                property_id: gleaph_graph_kernel::entry::PropertyId::from_raw(94),
+                payload_bytes: vec![6],
+            },
+        );
+        crate::index::label_pending::record_vertex_label_set(
+            VertexId::from(7u32),
+            &[],
+            &[gleaph_graph_kernel::entry::VertexLabelId::from_raw(10)],
+        );
+
+        let err = pollster::block_on(flush_all_pending(None, None))
+            .expect_err("missing client must defer complete posting set");
+        assert!(matches!(err, PlanQueryError::IndexFlushDeferred { .. }));
+        let journaled: Vec<_> = graph
+            .repair_journal_peek(16)
+            .into_iter()
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(journaled.len(), 3);
+        assert!(matches!(
+            &journaled[0],
+            RepairPostingOp::VertexProperty {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == membership.physical_index_id
+                && *catalog_epoch == membership.catalog_epoch
+                && *phase == membership.phase
+        ));
+        assert!(matches!(
+            &journaled[1],
+            RepairPostingOp::EdgeProperty {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                ..
+            } if *physical_index_id == membership.physical_index_id
+                && *catalog_epoch == membership.catalog_epoch
+                && *phase == membership.phase
+        ));
+        assert!(matches!(journaled[2], RepairPostingOp::Label { .. }));
+
+        drain_test_journal(&graph);
+        graph.set_federation_routing(None).expect("clear routing");
     }
 }

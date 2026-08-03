@@ -404,7 +404,7 @@ where
             if edge.neighbor_vid() == neighbor {
                 count = count.saturating_add(1);
             }
-            ControlFlow::Continue(())
+            ControlFlow::<()>::Continue(())
         })?;
         Ok(count)
     }
@@ -502,7 +502,7 @@ where
                 return ControlFlow::Break(());
             }
             matching = matching.saturating_add(1);
-            ControlFlow::Continue(())
+            ControlFlow::<()>::Continue(())
         })?;
         Ok(selected)
     }
@@ -1637,6 +1637,67 @@ where
             }
         }
         Ok(ControlFlow::Continue(()))
+    }
+
+    /// Visits a bounded logical-slot window and attaches the edge-inline bytes to each row.
+    ///
+    /// Unlike the offset-based visitors, this method never walks the prefix before `start_slot`.
+    /// It selects at most `limit` logical positions directly and resolves only those positions,
+    /// so callers can persist `next_slot` as an opaque page cursor without turning later pages
+    /// into unbounded rescans. `exhausted` is computed from the bucket's stable logical extent,
+    /// including the overflow-log suffix.
+    pub(crate) fn visit_edges_from_slot_with_inline_property(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        start_slot: u32,
+        limit: u32,
+        mut visit: impl FnMut(BucketEntryPosition, E),
+    ) -> Result<(u32, bool), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if limit == 0 {
+            return Ok((start_slot, false));
+        }
+
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        let logical_extent = if vertex.is_default_edge_labeled() {
+            // Bypass rows have no inline bytes, but their physical slab extent is still the
+            // complete logical slot range accepted by `read_edge_state_internal`.
+            vertex.stored_slots
+        } else {
+            let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
+                return Ok((start_slot, true));
+            };
+            info.stored_edge_slots
+                .checked_add(info.edge_overflow_log_len)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?
+        };
+
+        if start_slot >= logical_extent {
+            return Ok((logical_extent, true));
+        }
+        let end_slot = start_slot.saturating_add(limit).min(logical_extent);
+        let slots: Vec<_> = (start_slot..end_slot)
+            .map(BucketEntryPosition::new)
+            .collect();
+        let _ =
+            self.visit_edges_at_with_inline_property(owner, label, &slots, order, |slot, item| {
+                visit(
+                    slot,
+                    item.edge.with_stored_inline_property_bytes(
+                        item.inline_property.width(),
+                        item.inline_property.bytes(),
+                    ),
+                );
+                ControlFlow::<()>::Continue(())
+            })?;
+        Ok((end_slot, end_slot >= logical_extent))
     }
 
     /// Visits every live edge with inline-property bytes borrowed for the callback.

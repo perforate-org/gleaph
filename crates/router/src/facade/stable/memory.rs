@@ -26,7 +26,7 @@ use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use gleaph_graph_catalog::GraphCatalog;
 
 use super::constraint_catalog::{ConstraintDefRecord, UniqueConstraintKey};
-use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
+use super::indexed_catalog::{IndexDefRecord, NamedIndexKey};
 use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
 use super::vector_maintenance_policy::VectorMaintenancePolicyRecord;
@@ -37,7 +37,7 @@ use crate::types::{
 };
 use candid::CandidType;
 use ic_stable_structures::memory_manager::MemoryId;
-use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
+use ic_stable_structures::{BTreeMap, Cell, DefaultMemoryImpl};
 use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -76,7 +76,7 @@ const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(18);
 
 // --- catalog: index planner + edge inline property bytes + graph type ---
 const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(19);
-const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(20);
+const ROUTER_NEXT_PHYSICAL_INDEX_ID: MemoryId = MemoryId::new(20);
 const ROUTER_EDGE_INLINE_PROPERTY_PROFILES: MemoryId = MemoryId::new(21);
 const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(22);
 const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(23);
@@ -127,6 +127,9 @@ pub(crate) const ROUTER_BULK_LOAD_CHUNK_RECEIPTS: MemoryId = MemoryId::new(49);
 
 // --- schema migration ledger (ADR 0058) ---
 pub(crate) const ROUTER_SCHEMA_MIGRATIONS: MemoryId = MemoryId::new(50);
+
+// --- physical-index catalog epoch fence (ADR 0059) ---
+pub(crate) const ROUTER_INDEX_CATALOG_EPOCH: MemoryId = MemoryId::new(51);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -237,7 +240,8 @@ pub(crate) type StableGraphCatalog =
 pub(crate) type StableIndexNameCatalog =
     GraphScopedNameCatalog<IndexNameId, Memory, Memory, DenseIndexNamePolicy>;
 pub(crate) type StableNamedIndexMap = BTreeMap<NamedIndexKey, IndexDefRecord, Memory>;
-pub(crate) type StableIndexedPropertySet = BTreeSet<IndexedPropertyKey, Memory>;
+pub(crate) type StablePhysicalIndexIdAllocator = Cell<u64, Memory>;
+pub(crate) type StableIndexCatalogEpoch = Cell<u64, Memory>;
 pub(crate) type StableEdgeInlinePropertyProfileStore = EdgeInlinePropertyProfileStore<Memory>;
 pub(crate) type StableGqlGraphCatalog = GraphCatalog<Memory, Memory>;
 pub(crate) type StableGraphTypeNameCatalog =
@@ -318,7 +322,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_INDEX_NAME_BY_NAME, 2),
     (ROUTER_INDEX_NAME_BY_ID, 2),
     (ROUTER_NAMED_INDEXES, 8),
-    (ROUTER_INDEXED_PROPERTY_SET, 4),
+    (ROUTER_NEXT_PHYSICAL_INDEX_ID, 1),
     (ROUTER_EDGE_INLINE_PROPERTY_PROFILES, 8),
     (ROUTER_GRAPH_TYPE_DEFINITIONS, 8),
     (ROUTER_GRAPH_SCHEMA_BINDINGS, 8),
@@ -349,6 +353,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_PROVISION_CONFIG, 1),
     (ROUTER_BULK_LOAD_CHUNK_RECEIPTS, 16),
     (ROUTER_SCHEMA_MIGRATIONS, 16),
+    (ROUTER_INDEX_CATALOG_EPOCH, 1),
 ];
 
 thread_local! {
@@ -442,8 +447,18 @@ pub(crate) fn init_named_indexes() -> StableNamedIndexMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_NAMED_INDEXES)))
 }
 
-pub(crate) fn init_indexed_property_set() -> StableIndexedPropertySet {
-    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEXED_PROPERTY_SET)))
+pub(crate) fn init_next_physical_index_id() -> StablePhysicalIndexIdAllocator {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_NEXT_PHYSICAL_INDEX_ID)),
+        1,
+    )
+}
+
+pub(crate) fn init_index_catalog_epoch() -> StableIndexCatalogEpoch {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEX_CATALOG_EPOCH)),
+        0,
+    )
 }
 
 pub(crate) fn init_edge_inline_property_profiles() -> StableEdgeInlinePropertyProfileStore {
@@ -589,17 +604,17 @@ mod tests {
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 51);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 52);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=50)
+                (0..=51)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 51);
-        for id in 0..=50 {
+        assert_eq!(ids.len(), 52);
+        for id in 0..=51 {
             assert!(ids.contains(&id));
         }
     }

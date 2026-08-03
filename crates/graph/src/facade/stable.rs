@@ -9,6 +9,7 @@ use std::cell::RefCell;
 pub(crate) mod layout;
 pub(crate) mod memory;
 
+pub(crate) mod canonical_export;
 pub(crate) mod derived_index_outbox;
 pub(crate) mod edge_properties;
 pub(crate) mod label_stats_delta;
@@ -71,6 +72,9 @@ thread_local! {
 
     pub(crate) static DERIVED_INDEX_OUTBOX: RefCell<memory::StableDerivedIndexOutbox> =
         RefCell::new(memory::init_derived_index_outbox());
+
+    pub(crate) static CANONICAL_EXPORT_SCOPES: RefCell<memory::StableCanonicalExportScopes> =
+        RefCell::new(memory::init_canonical_export_scopes());
 }
 
 /// Forces the stable graph to initialize now. Called from `post_upgrade` so a

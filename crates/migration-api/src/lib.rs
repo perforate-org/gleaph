@@ -5,6 +5,8 @@
 //! policy; those concerns remain with their owning crates.
 
 use candid::{CandidType, Principal};
+pub use gleaph_graph_kernel::entry::{GraphId, IndexNameId};
+pub use gleaph_graph_kernel::index::PhysicalIndexId;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -14,6 +16,8 @@ pub const SCHEMA_MIGRATION_API_VERSION: u32 = 1;
 pub const SCHEMA_MIGRATION_CHECKSUM_BYTES: usize = 32;
 /// Maximum UTF-8 byte length of a migration id or parent id.
 pub const MAX_SCHEMA_MIGRATION_ID_BYTES: usize = 128;
+/// Maximum UTF-8 byte length accepted for a named graph selector.
+pub const MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES: usize = 256;
 /// Maximum UTF-8 byte length of one raw GQL statement.
 pub const MAX_SCHEMA_MIGRATION_STATEMENT_BYTES: usize = 65_536;
 /// Maximum number of records retained by the Router ledger.
@@ -73,6 +77,28 @@ pub struct SchemaMigrationChecksum {
     pub digest: Vec<u8>,
 }
 
+/// Graph target selector carried by a migration artifact.
+///
+/// `Default` is an explicit wire and checksum value, not an absent field.  The Router resolves
+/// the selector once before any migration-owned effect and persists the resulting graph identity
+/// on records that enter a graph-specific lifecycle.
+#[derive(CandidType, Clone, Debug, Deserialize, Eq, PartialEq)]
+pub enum SchemaMigrationGraphSelector {
+    /// Resolve the Router's canonical default graph.
+    Default,
+    /// Resolve one graph by its canonical catalog name.
+    Named(String),
+}
+
+/// Canonical graph identity resolved by Router from a migration selector.
+#[derive(CandidType, Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct ResolvedSchemaMigrationGraph {
+    /// Router-issued logical graph identity.
+    pub graph_id: GraphId,
+    /// Canonical graph name captured with the id for audit and replay diagnostics.
+    pub graph_name: String,
+}
+
 /// Compute the canonical execution checksum shared by the CLI and Router.
 ///
 /// `statement` is the exact UTF-8 `up.gql` byte sequence, including comments and whitespace.
@@ -81,6 +107,7 @@ pub struct SchemaMigrationChecksum {
 pub fn schema_migration_checksum(
     id: &str,
     parent: Option<&str>,
+    graph_selector: &SchemaMigrationGraphSelector,
     statement: &[u8],
 ) -> SchemaMigrationChecksum {
     let mut hasher = Sha256::new();
@@ -93,6 +120,13 @@ pub fn schema_migration_checksum(
             frame(&mut hasher, parent.as_bytes());
         }
         None => hasher.update([0]),
+    }
+    match graph_selector {
+        SchemaMigrationGraphSelector::Default => hasher.update([0]),
+        SchemaMigrationGraphSelector::Named(name) => {
+            hasher.update([1]);
+            frame(&mut hasher, name.as_bytes());
+        }
     }
     frame(&mut hasher, statement);
     SchemaMigrationChecksum {
@@ -113,6 +147,47 @@ pub enum SchemaMigrationStatementProfile {
     CreateGraphType,
     /// `CREATE GRAPH <name> TYPED <type>`.
     CreateTypedGraph,
+    /// Gleaph `CREATE INDEX` migration, which requires a separate Router backfill lifecycle.
+    CreateIndex,
+}
+
+/// Compact terminal reason for a migration-driven index build.
+///
+/// Operational detail belongs in Router logs. Persisting only this closed enum keeps the durable
+/// protocol bounded and prevents transport text from becoming part of migration identity.
+#[derive(CandidType, Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub enum MigrationFailureCode {
+    /// The live shard/index target set no longer matches the immutable preparation snapshot.
+    TopologyChanged,
+    /// A downstream response did not match the persisted graph, namespace, epoch, or target.
+    StaleOrMismatchedResponse,
+    /// A downstream owner deterministically rejected the immutable build contract.
+    TargetRejected,
+}
+
+/// Durable terminal/pending state of one migration ledger record.
+#[derive(CandidType, Clone, Debug, Deserialize, Eq, PartialEq)]
+pub enum SchemaMigrationRecordState {
+    /// A migration-driven index build is pending. Detailed phase/progress remains owned by the
+    /// Router physical-index lifecycle record addressed by this immutable pointer.
+    PendingIndex {
+        /// Graph-scoped logical index name id.
+        index_name_id: IndexNameId,
+        /// Never-reused physical posting namespace and build generation.
+        physical_index_id: PhysicalIndexId,
+    },
+    /// The migration completed successfully.
+    Applied {
+        /// IC timestamp at which the terminal state was committed.
+        applied_at: u64,
+    },
+    /// Deterministic failure whose cleanup completed and released the global pending gate.
+    Failed {
+        /// IC timestamp at which cleanup and the terminal state were committed.
+        failed_at: u64,
+        /// Bounded machine-readable failure classification.
+        code: MigrationFailureCode,
+    },
 }
 
 /// Durable record retained by the Router migration ledger.
@@ -122,16 +197,23 @@ pub struct SchemaMigrationRecordV1 {
     pub id: String,
     /// Parent migration identifier, or `None` for the root.
     pub parent: Option<String>,
+    /// Graph selector committed by the migration artifact; omission is represented as `Default`.
+    pub graph_selector: SchemaMigrationGraphSelector,
+    /// Router-resolved graph identity when a graph-specific lifecycle has resolved the selector.
+    pub resolved_graph: Option<ResolvedSchemaMigrationGraph>,
     /// Domain checksum of the immutable artifact.
     pub checksum: SchemaMigrationChecksum,
     /// Principal that authorized and applied the migration.
     pub actor: Principal,
-    /// IC timestamp at which the Router recorded the migration.
-    pub applied_at: u64,
+    /// IC timestamp at which the Router first recorded the immutable migration envelope.
+    pub recorded_at: u64,
     /// Exact UTF-8 GQL execution payload sent to the Router.
     pub statement: String,
     /// Narrow additive statement profile derived by the Router.
     pub profile: SchemaMigrationStatementProfile,
+    /// Pending or terminal lifecycle state. CREATE INDEX phase detail is derived from the Router
+    /// physical-index catalog rather than duplicated here.
+    pub state: SchemaMigrationRecordState,
 }
 
 /// Current durable migration record shape.
@@ -155,6 +237,8 @@ pub struct ApplySchemaMigrationArgsV1 {
     pub id: String,
     /// Parent migration identifier, or `None` for the root.
     pub parent: Option<String>,
+    /// Graph selector committed by the migration artifact; omission is represented as `Default`.
+    pub graph_selector: SchemaMigrationGraphSelector,
     /// Domain checksum supplied by the caller.
     pub checksum: SchemaMigrationChecksum,
     /// Exact UTF-8 GQL execution payload.
@@ -168,6 +252,42 @@ pub enum SchemaMigrationApplyStatus {
     Applied,
     /// The same id/checksum was already recorded; no duplicate execution occurred.
     Replay,
+    /// A migration-driven index build made one bounded unit of progress and remains resumable.
+    Progress(SchemaMigrationProgress),
+    /// Deterministic terminal failure after resumable cleanup completed.
+    Failed(MigrationFailureCode),
+}
+
+/// Public phase of a pending migration-driven index build.
+#[derive(CandidType, Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub enum SchemaMigrationProgressPhase {
+    Preparing,
+    Building,
+    Sealing,
+    Aborting,
+}
+
+/// Compact progress returned by one bounded apply call.
+#[derive(CandidType, Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub struct SchemaMigrationProgress {
+    pub phase: SchemaMigrationProgressPhase,
+    pub completed_targets: u32,
+    pub total_targets: u32,
+}
+
+impl std::fmt::Display for SchemaMigrationApplyStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Applied => formatter.write_str("applied"),
+            Self::Replay => formatter.write_str("replay"),
+            Self::Progress(progress) => write!(
+                formatter,
+                "{:?} {}/{}",
+                progress.phase, progress.completed_targets, progress.total_targets
+            ),
+            Self::Failed(code) => write!(formatter, "failed: {code:?}"),
+        }
+    }
 }
 
 /// Versioned apply result envelope.
@@ -261,15 +381,16 @@ mod tests {
         let checksum = schema_migration_checksum(
             "000001_init",
             None,
+            &SchemaMigrationGraphSelector::Default,
             b"CREATE GRAPH TYPE Social { NODE Person }\n",
         );
         assert_eq!(checksum.algorithm, SchemaMigrationChecksumAlgorithm::Sha256);
         assert_eq!(
             checksum.digest.as_slice(),
             &[
-                0xaa, 0x64, 0x57, 0x73, 0x27, 0xeb, 0xae, 0x9e, 0x4a, 0x7f, 0x82, 0x68, 0x2d, 0x31,
-                0x70, 0x07, 0xec, 0xa0, 0xe7, 0x48, 0xc7, 0x7f, 0x71, 0xc3, 0xda, 0xf4, 0x8a, 0x69,
-                0xfb, 0xc9, 0x32, 0x61,
+                0xbd, 0x83, 0x83, 0xba, 0xd6, 0x9f, 0xcb, 0x13, 0xff, 0x7e, 0x2d, 0x8e, 0x69, 0x3c,
+                0xd0, 0x90, 0xef, 0x39, 0xaf, 0xff, 0x35, 0x74, 0x8d, 0xdb, 0x00, 0x08, 0x35, 0xaa,
+                0x59, 0x0a, 0x4a, 0x70,
             ]
         );
     }
@@ -279,15 +400,16 @@ mod tests {
         let checksum = schema_migration_checksum(
             "000002_bind",
             Some("000001_init"),
+            &SchemaMigrationGraphSelector::Default,
             b"CREATE GRAPH social TYPED Social\n",
         );
         assert_eq!(checksum.algorithm, SchemaMigrationChecksumAlgorithm::Sha256);
         assert_eq!(
             checksum.digest.as_slice(),
             &[
-                0x11, 0xc8, 0x8e, 0xcd, 0x6b, 0x30, 0xe6, 0x8a, 0xa5, 0x6a, 0x04, 0xe4, 0x82, 0x14,
-                0xaa, 0x57, 0xa2, 0x29, 0x59, 0x01, 0x45, 0xe7, 0x23, 0xd5, 0xfc, 0xe4, 0x53, 0xe4,
-                0x7a, 0x4e, 0xe2, 0xb8,
+                0x95, 0x49, 0xe8, 0x6a, 0xeb, 0x34, 0x20, 0x5f, 0xc5, 0xe8, 0x81, 0x6f, 0xcd, 0x17,
+                0x11, 0x02, 0xc4, 0xff, 0x36, 0x50, 0x3e, 0xdd, 0xb1, 0x6b, 0x49, 0x26, 0xdb, 0x49,
+                0x76, 0xc9, 0xbf, 0x37,
             ]
         );
     }
@@ -295,29 +417,55 @@ mod tests {
     #[test]
     fn checksum_commits_every_typed_field_and_exact_statement_bytes() {
         let statement = b"// keep this comment\nCREATE GRAPH TYPE Social {}\n";
-        let baseline = schema_migration_checksum("000002_social", Some("000001_init"), statement);
+        let baseline = schema_migration_checksum(
+            "000002_social",
+            Some("000001_init"),
+            &SchemaMigrationGraphSelector::Default,
+            statement,
+        );
 
         assert_eq!(
             baseline,
-            schema_migration_checksum("000002_social", Some("000001_init"), statement)
+            schema_migration_checksum(
+                "000002_social",
+                Some("000001_init"),
+                &SchemaMigrationGraphSelector::Default,
+                statement,
+            )
         );
         assert_ne!(
             baseline,
-            schema_migration_checksum("000003_social", Some("000001_init"), statement)
+            schema_migration_checksum(
+                "000003_social",
+                Some("000001_init"),
+                &SchemaMigrationGraphSelector::Default,
+                statement,
+            )
         );
         assert_ne!(
             baseline,
-            schema_migration_checksum("000002_social", None, statement)
+            schema_migration_checksum(
+                "000002_social",
+                None,
+                &SchemaMigrationGraphSelector::Default,
+                statement,
+            )
         );
         assert_ne!(
             baseline,
-            schema_migration_checksum("000002_social", Some("000001_other"), statement)
+            schema_migration_checksum(
+                "000002_social",
+                Some("000001_other"),
+                &SchemaMigrationGraphSelector::Default,
+                statement,
+            )
         );
         assert_ne!(
             baseline,
             schema_migration_checksum(
                 "000002_social",
                 Some("000001_init"),
+                &SchemaMigrationGraphSelector::Default,
                 b"CREATE GRAPH TYPE Social {}\n"
             )
         );
@@ -326,8 +474,42 @@ mod tests {
             schema_migration_checksum(
                 "000002_social",
                 Some("000001_init"),
+                &SchemaMigrationGraphSelector::Default,
                 b"// keep this comment\nCREATE  GRAPH TYPE Social {}\n"
             )
+        );
+    }
+
+    #[test]
+    fn checksum_commits_default_and_named_graph_selectors_distinctly() {
+        let statement = b"CREATE INDEX person_age FOR (n:Person) ON (n.age)\n";
+        let default = schema_migration_checksum(
+            "000002_age_index",
+            Some("000001_init"),
+            &SchemaMigrationGraphSelector::Default,
+            statement,
+        );
+        let named = schema_migration_checksum(
+            "000002_age_index",
+            Some("000001_init"),
+            &SchemaMigrationGraphSelector::Named("social".into()),
+            statement,
+        );
+        let other_named = schema_migration_checksum(
+            "000002_age_index",
+            Some("000001_init"),
+            &SchemaMigrationGraphSelector::Named("other".into()),
+            statement,
+        );
+        assert_ne!(default, named);
+        assert_ne!(named, other_named);
+        assert_eq!(
+            named.digest.as_slice(),
+            &[
+                0x42, 0x6b, 0x0d, 0x1a, 0xdd, 0x7a, 0xd6, 0x50, 0x85, 0xb8, 0x8a, 0x13, 0xe9, 0x41,
+                0x0d, 0xe8, 0x0f, 0xab, 0x25, 0x7c, 0xcf, 0xbc, 0xc5, 0x79, 0x64, 0x17, 0x92, 0x21,
+                0x74, 0xd4, 0x49, 0x91,
+            ]
         );
     }
 }

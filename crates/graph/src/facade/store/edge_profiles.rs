@@ -1,6 +1,7 @@
 //! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId};
+use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{
     labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
     traits::CsrEdge,
@@ -10,38 +11,96 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{catalog_edge_label_from_wire, validate_edge_inline_property_bytes_for_label};
-use crate::property::{PropertyValueChange, dispatch_property_index_ops, inline_index_values};
+use crate::facade::store::index_build_admission::{
+    FencedTransition, PlannedBuildEnvelope, trap_build_fence, trap_post_fence_commit,
+};
+use crate::property::{
+    PropertyValueChange, dispatch_property_index_ops_for_physical, inline_index_values,
+};
 
 impl GraphStore {
     pub(super) fn rekey_inline_scalar_index_for_move(
         &self,
         owner_vertex_id: ic_stable_lara::VertexId,
         moved: ic_stable_lara::labeled::EdgeSlotMove,
+        mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
+        let old_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.old_slot_index);
         let new_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.new_slot_index);
         let Some((edge, _)) = self.lookup_edge_entry(new_handle)? else {
             return Ok(());
         };
-        for (property_id, value) in
+        let mut old_planned = Vec::new();
+        let mut new_planned = Vec::new();
+        for (membership, property_id, value) in
             inline_index_values(moved.label_id.raw(), edge.edge_inline_property_bytes())
                 .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?
         {
-            dispatch_property_index_ops(PropertyValueChange::edge(
-                owner_vertex_id,
-                moved.label_id.raw(),
-                moved.old_slot_index,
-                property_id,
-                Some(&value),
-                None,
-            ));
-            dispatch_property_index_ops(PropertyValueChange::edge(
-                owner_vertex_id,
-                moved.label_id.raw(),
-                moved.new_slot_index,
-                property_id,
-                None,
-                Some(&value),
-            ));
+            old_planned.extend(
+                self.plan_index_build_admission([FencedTransition {
+                    property_id,
+                    prev: Some(&value),
+                    new: None,
+                    membership,
+                }])
+                .unwrap_or_else(trap_build_fence),
+            );
+            new_planned.extend(
+                self.plan_index_build_admission([FencedTransition {
+                    property_id,
+                    prev: None,
+                    new: Some(&value),
+                    membership,
+                }])
+                .unwrap_or_else(trap_build_fence),
+            );
+        }
+        if !old_planned.is_empty() {
+            self.commit_index_build_admission(
+                mutation_id,
+                self.edge_subject_for_handle(old_handle)
+                    .unwrap_or_else(trap_build_fence),
+                old_planned,
+            );
+        }
+        if !new_planned.is_empty() {
+            self.commit_index_build_admission(
+                mutation_id,
+                self.edge_subject_for_handle(new_handle)
+                    .unwrap_or_else(trap_build_fence),
+                new_planned,
+            );
+        }
+        // The fence commits above are the first stable writes of this slot move, so the final
+        // re-decode (identical to the pre-commit decode of the same live row) must trap rather
+        // than return a recoverable error after the durable admission.
+        for (membership, property_id, value) in
+            inline_index_values(moved.label_id.raw(), edge.edge_inline_property_bytes())
+                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })
+                .unwrap_or_else(trap_post_fence_commit)
+        {
+            dispatch_property_index_ops_for_physical(
+                PropertyValueChange::edge(
+                    owner_vertex_id,
+                    moved.label_id.raw(),
+                    moved.old_slot_index,
+                    property_id,
+                    Some(&value),
+                    None,
+                ),
+                membership,
+            );
+            dispatch_property_index_ops_for_physical(
+                PropertyValueChange::edge(
+                    owner_vertex_id,
+                    moved.label_id.raw(),
+                    moved.new_slot_index,
+                    property_id,
+                    None,
+                    Some(&value),
+                ),
+                membership,
+            );
         }
         Ok(())
     }
@@ -64,10 +123,12 @@ impl GraphStore {
         &self,
         handle: EdgeHandle,
         inline_property_bytes: &[u8],
+        mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         self.commit_update_edge_inline_property_at_occurrence(
             handle.occurrence(LabeledOrientation::Forward),
             inline_property_bytes,
+            mutation_id,
         )
     }
 
@@ -75,6 +136,7 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
         inline_property_bytes: &[u8],
+        mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         let catalog_label = catalog_edge_label_from_wire(occurrence.label_id);
         validate_edge_inline_property_bytes_for_label(catalog_label, inline_property_bytes)?;
@@ -128,39 +190,69 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         };
 
-        if !update_occurrence(canonical_occurrence)? {
-            return Err(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: occurrence.owner_vertex_id,
-                label_id: occurrence.label_id,
-                slot_index: occurrence.slot_index.raw(),
+        let mut transitions = Vec::new();
+        for (membership, property_id, previous) in &previous_index_values {
+            let next = new_index_values
+                .iter()
+                .find(|(next_membership, next_id, _)| {
+                    *next_membership == *membership && *next_id == *property_id
+                })
+                .map(|(_, _, value)| value);
+            transitions.push(FencedTransition {
+                property_id: *property_id,
+                prev: Some(previous),
+                new: next,
+                membership: *membership,
             });
         }
+        let planned: Vec<PlannedBuildEnvelope> = self.plan_index_build_admission(transitions)?;
+        if !planned.is_empty() {
+            self.commit_index_build_admission(
+                mutation_id,
+                self.edge_subject_for_handle(canonical)?,
+                planned,
+            );
+        }
+
+        // The fence commit (or the canonical update that follows) is the first stable write of
+        // this mutation, so no recoverable error may be returned past this point: the IC would
+        // keep the reserved outbox admission while skipping the canonical inline update. The
+        // canonical handle and its counterpart were resolved live above; a trap rolls the whole
+        // message back instead of exposing canonical state without its build-DML.
+        assert!(
+            update_occurrence(canonical_occurrence).unwrap_or_else(trap_post_fence_commit),
+            "edge resolved live at fence plan must remain updatable within the same message"
+        );
         let mirrored = if occurrence == canonical_occurrence {
             counterpart
         } else {
             occurrence
         };
-        if mirrored != canonical_occurrence && !update_occurrence(mirrored)? {
-            return Err(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: mirrored.owner_vertex_id,
-                label_id: mirrored.label_id,
-                slot_index: mirrored.slot_index.raw(),
-            });
+        if mirrored != canonical_occurrence {
+            assert!(
+                update_occurrence(mirrored).unwrap_or_else(trap_post_fence_commit),
+                "edge counterpart resolved live at fence plan must remain updatable within the same message"
+            );
         }
 
-        for (property_id, previous) in previous_index_values {
+        for (membership, property_id, previous) in previous_index_values {
             let next = new_index_values
                 .iter()
-                .find(|(next_id, _)| *next_id == property_id)
-                .map(|(_, value)| value);
-            dispatch_property_index_ops(PropertyValueChange::edge(
-                canonical.owner_vertex_id,
-                canonical.label_id.raw(),
-                canonical.slot_index.raw(),
-                property_id,
-                Some(&previous),
-                next,
-            ));
+                .find(|(next_membership, next_id, _)| {
+                    *next_membership == membership && *next_id == property_id
+                })
+                .map(|(_, _, value)| value);
+            dispatch_property_index_ops_for_physical(
+                PropertyValueChange::edge(
+                    canonical.owner_vertex_id,
+                    canonical.label_id.raw(),
+                    canonical.slot_index.raw(),
+                    property_id,
+                    Some(&previous),
+                    next,
+                ),
+                membership,
+            );
         }
 
         Ok(())

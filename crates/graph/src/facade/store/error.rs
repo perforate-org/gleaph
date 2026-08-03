@@ -4,6 +4,7 @@ use super::super::{
     PropertyCatalogError, VertexEmbeddingStoreError, VertexLabelStoreError,
     VertexPropertyStoreError,
 };
+use gleaph_graph_kernel::canonical_export::CanonicalExportError;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId, labeled::BucketLabelKey as LaraLabelId,
@@ -57,6 +58,9 @@ pub enum GraphStoreError {
     },
     /// CounterpartScan failed to resolve the canonical edge occurrence.
     CounterpartLookup(ic_stable_lara::bidirectional::counterpart::CounterpartLookupError),
+    /// A Building/Sealing index DML failed its Graph-owned phase, epoch, namespace, or capacity
+    /// admission before canonical storage mutation.
+    IndexBuildAdmission(CanonicalExportError),
 }
 
 impl fmt::Display for GraphStoreError {
@@ -129,6 +133,9 @@ impl fmt::Display for GraphStoreError {
             Self::CounterpartLookup(err) => {
                 write!(f, "edge counterpart lookup failed: {err}")
             }
+            Self::IndexBuildAdmission(detail) => {
+                write!(f, "index build DML admission failed: {detail}")
+            }
         }
     }
 }
@@ -151,6 +158,7 @@ impl std::error::Error for GraphStoreError {
             | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
             | Self::VertexTombstoned => None,
+            Self::IndexBuildAdmission(error) => Some(error),
             Self::DuplicateBulkVertexProperty { .. } => None,
         }
     }

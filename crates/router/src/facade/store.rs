@@ -16,6 +16,7 @@ pub(crate) mod provisioning;
 mod registry;
 mod registry_invariants;
 mod schema_migration;
+pub(crate) use schema_migration::real_index_migration_driver;
 pub(crate) mod uniqueness;
 
 #[cfg(test)]
@@ -136,13 +137,18 @@ pub(super) fn ic_time_ns() -> u64 {
 pub(crate) mod catalog_test_support {
     use super::RouterStore;
     use crate::facade::auth;
+    use crate::facade::stable::index_name_catalog;
+    use crate::facade::stable::indexed_catalog;
     use crate::init::RouterInitArgs;
+    use crate::planner_stats::IndexCatalogEntry;
     use crate::types::{
         AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
     };
     use candid::Principal;
+    use gleaph_gql::types::EdgeDirection;
     use gleaph_graph_kernel::entry::GraphId;
     use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::index::{EdgeIndexDirection, IndexedPropertyKind};
     use std::collections::BTreeSet;
 
     pub const GRAPH: &str = "tenant.main";
@@ -198,5 +204,79 @@ pub(crate) mod catalog_test_support {
         let (store, admin, graph_id) = setup();
         register_shard(&store, admin, shard_id);
         (store, admin, graph_id)
+    }
+
+    /// Registers an immediate-Active vertex index for one already-interned property so seed
+    /// routing and aggregate fast-path tests resolve `active_vertex_physical_index` from the real
+    /// catalog instead of failing closed. `label_id` matches the interned vertex label when the
+    /// failing lookup proves one (`active_vertex_physical_index(_, Some(label), _)`); pass `0` for
+    /// label-filter-free lookups (an omitted label matches any label id).
+    pub fn register_active_vertex_index(
+        store: &RouterStore,
+        graph_id: GraphId,
+        label_id: u16,
+        property_name: &str,
+    ) {
+        let property_id = store
+            .lookup_property_id(graph_id, property_name)
+            .expect("interned property");
+        let index_name_id = index_name_catalog::intern_index_name(
+            graph_id,
+            &format!("__test_active_vertex_index_{property_name}"),
+        )
+        .expect("intern index name");
+        indexed_catalog::create_named_index(
+            graph_id,
+            index_name_id,
+            IndexCatalogEntry {
+                kind: IndexedPropertyKind::Vertex,
+                vertex_label: None,
+                edge_label: None,
+                property: property_name.to_owned(),
+                edge_direction: None,
+            },
+            property_id,
+            label_id,
+            None,
+            false,
+        )
+        .expect("register active vertex index");
+    }
+
+    /// Registers an immediate-Active edge index for one already-interned edge label/property pair.
+    /// `Any` direction covers every query direction (`index_applies_to_query`).
+    pub fn register_active_edge_index(
+        store: &RouterStore,
+        graph_id: GraphId,
+        edge_label_name: &str,
+        property_name: &str,
+    ) {
+        let label_id = store
+            .lookup_edge_label_id(graph_id, edge_label_name)
+            .expect("interned edge label");
+        let property_id = store
+            .lookup_property_id(graph_id, property_name)
+            .expect("interned property");
+        let index_name_id = index_name_catalog::intern_index_name(
+            graph_id,
+            &format!("__test_active_edge_index_{property_name}"),
+        )
+        .expect("intern index name");
+        indexed_catalog::create_named_index(
+            graph_id,
+            index_name_id,
+            IndexCatalogEntry {
+                kind: IndexedPropertyKind::Edge,
+                vertex_label: None,
+                edge_label: Some(edge_label_name.to_owned()),
+                property: property_name.to_owned(),
+                edge_direction: Some(EdgeDirection::AnyDirection),
+            },
+            property_id,
+            label_id.raw(),
+            Some(EdgeIndexDirection::Any),
+            false,
+        )
+        .expect("register active edge index");
     }
 }

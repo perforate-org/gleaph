@@ -71,7 +71,7 @@ impl GraphStore {
             })
             .map_err(GraphStoreError::from)?;
         for (owner_vertex_id, moved) in move_observer.inline_moves {
-            self.rekey_inline_scalar_index_for_move(owner_vertex_id, moved)?;
+            self.rekey_inline_scalar_index_for_move(owner_vertex_id, moved, 0)?;
         }
         Ok(report)
     }

@@ -1,5 +1,6 @@
 //! Sidecar coordination: derived edge state cleared or moved across domains.
 
+use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId,
     labeled::{EdgeSlotMove, LabeledOrientation},
@@ -14,11 +15,16 @@ impl GraphStore {
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moves: impl IntoIterator<Item = EdgeSlotMove>,
+        mutation_id: MutationId,
     ) -> Result<(), super::error::GraphStoreError> {
         for moved in moves {
-            Self::move_edge_sidecars(orientation, owner_vertex_id, moved);
+            Self::commit_move_edge_sidecars(orientation, owner_vertex_id, moved, mutation_id)?;
             if orientation == LabeledOrientation::Forward {
-                GraphStore::new().rekey_inline_scalar_index_for_move(owner_vertex_id, moved)?;
+                GraphStore::new().rekey_inline_scalar_index_for_move(
+                    owner_vertex_id,
+                    moved,
+                    mutation_id,
+                )?;
             }
         }
         Ok(())
@@ -49,35 +55,43 @@ impl GraphStore {
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
-    ) {
+        mutation_id: MutationId,
+    ) -> Result<(), super::error::GraphStoreError> {
         match orientation {
             LabeledOrientation::Forward => {
                 let moved_properties =
                     GraphStore::commit_move_edge_properties(owner_vertex_id, moved);
-                GraphStore::commit_move_edge_local_indexes(
+                GraphStore::new().commit_move_edge_local_indexes(
                     orientation,
                     owner_vertex_id,
                     moved,
                     &moved_properties,
-                );
+                    mutation_id,
+                )?;
             }
             LabeledOrientation::Reverse => {
-                GraphStore::commit_move_edge_local_indexes(
+                GraphStore::new().commit_move_edge_local_indexes(
                     orientation,
                     owner_vertex_id,
                     moved,
                     &[],
-                );
+                    mutation_id,
+                )?;
             }
         }
+        Ok(())
     }
 
     pub(super) fn move_edge_sidecars(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
+        mutation_id: MutationId,
     ) {
-        Self::commit_move_edge_sidecars(orientation, owner_vertex_id, moved);
+        // The canonical LARA slot move has already happened when this runs, so an index-build
+        // fence rejection must trap and let the IC roll the whole message back.
+        Self::commit_move_edge_sidecars(orientation, owner_vertex_id, moved, mutation_id)
+            .expect("edge sidecar move must not fail after the canonical LARA move");
     }
 }
 
@@ -168,6 +182,7 @@ mod tests {
                     new_slot_index: 1,
                 },
             ],
+            0,
         )
         .expect("rekey inline index slots");
 

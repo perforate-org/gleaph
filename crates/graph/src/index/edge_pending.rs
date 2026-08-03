@@ -4,13 +4,16 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
-use gleaph_graph_kernel::index::IndexPostingMutation;
+use gleaph_graph_kernel::index::{IndexMaintenancePhase, IndexPostingMutation, PhysicalIndexId};
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
 #[derive(Clone, Debug)]
 pub(crate) enum PendingEdgePostingOp {
     Insert {
+        physical_index_id: PhysicalIndexId,
+        catalog_epoch: u64,
+        phase: IndexMaintenancePhase,
         property_id: u32,
         payload_bytes: Vec<u8>,
         label_id: u16,
@@ -18,6 +21,9 @@ pub(crate) enum PendingEdgePostingOp {
         slot_index: u32,
     },
     Remove {
+        physical_index_id: PhysicalIndexId,
+        catalog_epoch: u64,
+        phase: IndexMaintenancePhase,
         property_id: u32,
         payload_bytes: Vec<u8>,
         label_id: u16,
@@ -46,8 +52,21 @@ pub(crate) fn take_pending() -> Vec<PendingEdgePostingOp> {
 }
 
 pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
-    let (remove, property_id, payload_bytes, label_id, owner_vertex_id, slot_index) = match op {
+    let (
+        remove,
+        physical_index_id,
+        catalog_epoch,
+        phase,
+        property_id,
+        payload_bytes,
+        label_id,
+        owner_vertex_id,
+        slot_index,
+    ) = match op {
         PendingEdgePostingOp::Insert {
+            physical_index_id,
+            catalog_epoch,
+            phase,
             property_id,
             payload_bytes,
             label_id,
@@ -55,6 +74,9 @@ pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
             slot_index,
         } => (
             false,
+            *physical_index_id,
+            *catalog_epoch,
+            *phase,
             *property_id,
             payload_bytes.clone(),
             *label_id,
@@ -62,6 +84,9 @@ pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
             *slot_index,
         ),
         PendingEdgePostingOp::Remove {
+            physical_index_id,
+            catalog_epoch,
+            phase,
             property_id,
             payload_bytes,
             label_id,
@@ -69,6 +94,9 @@ pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
             slot_index,
         } => (
             true,
+            *physical_index_id,
+            *catalog_epoch,
+            *phase,
             *property_id,
             payload_bytes.clone(),
             *label_id,
@@ -77,6 +105,9 @@ pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
         ),
     };
     RepairPostingOp::EdgeProperty {
+        physical_index_id,
+        catalog_epoch,
+        phase,
         remove,
         property_id,
         payload_bytes,
@@ -86,48 +117,73 @@ pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
     }
 }
 
-pub(crate) fn to_index_mutation(op: &PendingEdgePostingOp) -> IndexPostingMutation {
+pub(crate) fn to_index_mutation(
+    op: &PendingEdgePostingOp,
+) -> Result<IndexPostingMutation, PlanQueryError> {
     match op {
         PendingEdgePostingOp::Insert {
+            physical_index_id,
+            phase,
             property_id,
             payload_bytes,
             label_id,
             owner_vertex_id,
             slot_index,
-        } => IndexPostingMutation::EdgeProperty {
+            ..
+        } if phase.is_active() => Ok(IndexPostingMutation::EdgeProperty {
+            physical_index_id: *physical_index_id,
             remove: false,
             property_id: *property_id,
             value: payload_bytes.clone(),
             label_id: *label_id,
             owner_vertex_id: *owner_vertex_id,
             slot_index: *slot_index,
-        },
+        }),
         PendingEdgePostingOp::Remove {
+            physical_index_id,
+            phase,
             property_id,
             payload_bytes,
             label_id,
             owner_vertex_id,
             slot_index,
-        } => IndexPostingMutation::EdgeProperty {
+            ..
+        } if phase.is_active() => Ok(IndexPostingMutation::EdgeProperty {
+            physical_index_id: *physical_index_id,
             remove: true,
             property_id: *property_id,
             value: payload_bytes.clone(),
             label_id: *label_id,
             owner_vertex_id: *owner_vertex_id,
             slot_index: *slot_index,
-        },
+        }),
+        PendingEdgePostingOp::Insert { .. } | PendingEdgePostingOp::Remove { .. } => {
+            Err(PlanQueryError::UnsupportedOp(
+                "index posting dispatch requires Active maintenance phase",
+            ))
+        }
     }
 }
 
 /// Queue removals for every indexed property on an edge being deleted (federated index sync).
+///
+/// Building/Sealing memberships are intentionally excluded: their removals are admitted through
+/// the index-build fence (Memory46 outbox) before the canonical delete, never through the
+/// ordinary Active-only queue.
 pub(crate) fn enqueue_removals_for_edge(owner_vertex_id: VertexId, label_id: u16, slot_index: u32) {
     let owner_raw = u32::try_from(u64::from(owner_vertex_id)).unwrap_or(0);
     GraphStore::for_each_indexed_edge_property_on_edge(
         owner_vertex_id,
         label_id,
         slot_index,
-        |pid, payload_bytes| {
+        |membership, pid, payload_bytes| {
+            if !membership.phase.is_active() {
+                return;
+            }
             push(PendingEdgePostingOp::Remove {
+                physical_index_id: membership.physical_index_id,
+                catalog_epoch: membership.catalog_epoch,
+                phase: membership.phase,
                 property_id: pid.raw(),
                 payload_bytes,
                 label_id,
@@ -142,6 +198,7 @@ pub(crate) fn push_edge_index_op(
     owner_vertex_id: VertexId,
     label_id: u16,
     slot_index: u32,
+    membership: crate::index::catalog_context::IndexMembershipRef,
     op: PropertyIndexOp,
 ) {
     let owner_raw = u32::try_from(u64::from(owner_vertex_id)).unwrap_or(0);
@@ -150,6 +207,9 @@ pub(crate) fn push_edge_index_op(
             property_id,
             payload_bytes,
         } => PendingEdgePostingOp::Insert {
+            physical_index_id: membership.physical_index_id,
+            catalog_epoch: membership.catalog_epoch,
+            phase: membership.phase,
             property_id: property_id.raw(),
             payload_bytes,
             label_id,
@@ -160,6 +220,9 @@ pub(crate) fn push_edge_index_op(
             property_id,
             payload_bytes,
         } => PendingEdgePostingOp::Remove {
+            physical_index_id: membership.physical_index_id,
+            catalog_epoch: membership.catalog_epoch,
+            phase: membership.phase,
             property_id: property_id.raw(),
             payload_bytes,
             label_id,
@@ -178,14 +241,17 @@ async fn compensate_index_ops(
     for op in applied.iter().rev() {
         match op {
             PendingEdgePostingOp::Insert {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 label_id,
                 owner_vertex_id,
                 slot_index,
+                ..
             } => {
                 ix.edge_posting_remove_at(
                     shard_id,
+                    *physical_index_id,
                     *property_id,
                     payload_bytes.clone(),
                     *label_id,
@@ -195,14 +261,17 @@ async fn compensate_index_ops(
                 .await?;
             }
             PendingEdgePostingOp::Remove {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 label_id,
                 owner_vertex_id,
                 slot_index,
+                ..
             } => {
                 ix.edge_posting_insert_at(
                     shard_id,
+                    *physical_index_id,
                     *property_id,
                     payload_bytes.clone(),
                     *label_id,
@@ -225,19 +294,38 @@ pub(crate) async fn flush_pending(
         clear_pending();
         return Ok(());
     }
-    let Some(ix) = index else {
-        clear_pending();
-        return Err(PlanQueryError::UnsupportedOp(
-            "edge index mutations dropped (no index client)",
-        ));
-    };
     let ops: Vec<PendingEdgePostingOp> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
     if ops.is_empty() {
         return Ok(());
     }
+    let Some(ix) = index else {
+        GraphStore::new().repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
+        crate::facade::maintenance_timer::arm_if_needed();
+        return Err(PlanQueryError::IndexFlushDeferred {
+            op: "edge_no_index_client",
+            detail: "index client unavailable; posting batch journaled for repair".into(),
+        });
+    };
+    if ops.iter().any(|op| {
+        matches!(
+            op,
+            PendingEdgePostingOp::Insert { phase, .. }
+                | PendingEdgePostingOp::Remove { phase, .. }
+                if !phase.is_active()
+        )
+    }) {
+        GraphStore::new().repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
+        crate::facade::maintenance_timer::arm_if_needed();
+        return Err(PlanQueryError::UnsupportedOp(
+            "index posting dispatch requires Active maintenance phase",
+        ));
+    }
     let shard_id = ix.local_shard_id();
     if ix.supports_posting_batch() {
-        let mutations: Vec<IndexPostingMutation> = ops.iter().map(to_index_mutation).collect();
+        let mutations: Vec<IndexPostingMutation> = ops
+            .iter()
+            .map(to_index_mutation)
+            .collect::<Result<_, _>>()?;
         let mut offset = 0usize;
         while offset < ops.len() {
             let chunk_end = offset
@@ -256,7 +344,7 @@ pub(crate) async fn flush_pending(
                 }
             };
             let advanced = usize::try_from(progress.applied).unwrap_or(0);
-            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+            if advanced == 0 || advanced > chunk_end.saturating_sub(offset) {
                 GraphStore::new()
                     .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
                 crate::facade::maintenance_timer::arm_if_needed();
@@ -289,14 +377,17 @@ pub(crate) async fn flush_pending(
     for op in &ops {
         let result = match op {
             PendingEdgePostingOp::Insert {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 label_id,
                 owner_vertex_id,
                 slot_index,
+                ..
             } => {
                 ix.edge_posting_insert_at(
                     shard_id,
+                    *physical_index_id,
                     *property_id,
                     payload_bytes.clone(),
                     *label_id,
@@ -306,14 +397,17 @@ pub(crate) async fn flush_pending(
                 .await
             }
             PendingEdgePostingOp::Remove {
+                physical_index_id,
                 property_id,
                 payload_bytes,
                 label_id,
                 owner_vertex_id,
                 slot_index,
+                ..
             } => {
                 ix.edge_posting_remove_at(
                     shard_id,
+                    *physical_index_id,
                     *property_id,
                     payload_bytes.clone(),
                     *label_id,

@@ -21,6 +21,7 @@
 //! reinsert that raced ahead of it. A vector entry with no configured vector client
 //! is skipped (left durable) so it never wedges the property repairs queued after it.
 
+use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
 use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::vector_lookup::VectorIndexLookup;
@@ -28,6 +29,7 @@ use crate::plan::PlanQueryError;
 use candid::Encode;
 use gleaph_graph_kernel::entry::EmbeddingNameId;
 use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::IndexBuildDmlRequest;
 use gleaph_graph_kernel::index::IndexPostingMutation;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
 use gleaph_message_sizing::{FitError, SizingPolicy, adaptive_fitting_prefix};
@@ -82,17 +84,29 @@ enum DurableQueue {
     DerivedIndexOutbox,
 }
 
-fn peek_queue(
-    store: &GraphStore,
-    queue: DurableQueue,
-    limit: usize,
-) -> Vec<(u64, RepairPostingOp)> {
+#[derive(Clone, Debug)]
+enum DurableOp {
+    Ordinary(RepairPostingOp),
+    BuildDml(IndexBuildDmlRequest),
+}
+
+fn peek_queue(store: &GraphStore, queue: DurableQueue, limit: usize) -> Vec<(u64, DurableOp)> {
     match queue {
-        DurableQueue::RepairJournal => store.repair_journal_peek(limit),
+        DurableQueue::RepairJournal => store
+            .repair_journal_peek(limit)
+            .into_iter()
+            .map(|(seq, op)| (seq, DurableOp::Ordinary(op)))
+            .collect(),
         DurableQueue::DerivedIndexOutbox => store
             .derived_index_outbox_peek(limit)
             .into_iter()
-            .map(|(seq, entry)| (seq, entry.op))
+            .map(|(seq, entry)| {
+                let op = match entry.op {
+                    DerivedIndexOutboxOp::Ordinary(op) => DurableOp::Ordinary(op),
+                    DerivedIndexOutboxOp::IndexBuildDml { request } => DurableOp::BuildDml(request),
+                };
+                (seq, op)
+            })
             .collect(),
     }
 }
@@ -116,7 +130,8 @@ fn property_batch_prefix(
             let candidate: Vec<_> = entries[..count]
                 .iter()
                 .map(|(_, op)| to_index_mutation(op))
-                .collect();
+                .collect::<Result<_, _>>()
+                .map_err(|error: PlanQueryError| error.to_string())?;
             Encode!(&(shard_id, &candidate))
                 .map(|encoded| encoded.len())
                 .map_err(|error| error.to_string())
@@ -132,10 +147,10 @@ fn property_batch_prefix(
     })?
     .ok_or(PlanQueryError::UnsupportedOp("empty index posting batch"))?;
     let best = fitted.entry_count;
-    Ok(entries[..best]
+    entries[..best]
         .iter()
         .map(|(_, op)| to_index_mutation(op))
-        .collect())
+        .collect()
 }
 
 fn vector_batch_prefix(entries: &[VectorEmbeddingSyncOp]) -> Result<usize, PlanQueryError> {
@@ -178,20 +193,55 @@ async fn drain_queue(
     let entries = peek_queue(&store, queue, usize::MAX);
     let mut offset = 0usize;
     while offset < entries.len() {
-        if matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. }) {
+        if let DurableOp::BuildDml(request) = &entries[offset].1 {
+            // Build envelopes carry their own epoch, shard sequence, and exact subject/value
+            // sets. They are never folded into the ordinary posting batch. Remove the outbox
+            // entry only after graph-index accepts the request, then advance Graph's local drain
+            // watermark under the same exact identity.
+            ix.apply_index_build_dml(request.clone()).await?;
+            crate::index::canonical_export::ack_build_dml(
+                request.physical_index_id,
+                request.catalog_epoch,
+                request.shard_sequence,
+            )
+            .map_err(|error| PlanQueryError::IndexFlushDeferred {
+                op: "index_build_drain_ack",
+                detail: error.to_string(),
+            })?;
+            remove_from_queue(&store, queue, entries[offset].0);
+            offset += 1;
+            continue;
+        }
+
+        let is_vector = matches!(
+            entries[offset].1,
+            DurableOp::Ordinary(RepairPostingOp::VectorEmbedding { .. })
+        );
+        if is_vector {
             let start = offset;
             while offset < entries.len()
-                && matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. })
+                && matches!(
+                    entries[offset].1,
+                    DurableOp::Ordinary(RepairPostingOp::VectorEmbedding { .. })
+                )
             {
                 offset += 1;
             }
-            let group = &entries[start..offset];
+            let group: Vec<_> = entries[start..offset]
+                .iter()
+                .filter_map(|(seq, op)| match op {
+                    DurableOp::Ordinary(op @ RepairPostingOp::VectorEmbedding { .. }) => {
+                        Some((*seq, op.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
             let Some(vx) = vector else {
                 continue;
             };
             if vx.supports_sync_batch() {
                 let mut reconciled = Vec::with_capacity(group.len());
-                for (_, op) in group {
+                for (_, op) in &group {
                     match op {
                         RepairPostingOp::VectorEmbedding { op } => {
                             reconciled.push(reconcile_vector_op(op).await?);
@@ -210,7 +260,7 @@ async fn drain_queue(
                     let applied = usize::try_from(progress.applied).map_err(|_| {
                         PlanQueryError::UnsupportedOp("invalid vector repair progress")
                     })?;
-                    if applied == 0 || applied > group.len() - group_offset {
+                    if applied == 0 || applied > reconciled_prefix {
                         return Err(PlanQueryError::UnsupportedOp(
                             "invalid vector repair progress",
                         ));
@@ -225,20 +275,34 @@ async fn drain_queue(
                 }
             } else {
                 for (seq, op) in group {
-                    apply(ix, Some(vx), shard_id, op).await?;
-                    remove_from_queue(&store, queue, *seq);
+                    apply(ix, Some(vx), shard_id, &op).await?;
+                    remove_from_queue(&store, queue, seq);
                 }
             }
             continue;
         }
 
         let start = offset;
-        while offset < entries.len()
-            && !matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. })
-        {
+        while offset < entries.len() {
+            if matches!(
+                entries[offset].1,
+                DurableOp::Ordinary(RepairPostingOp::VectorEmbedding { .. })
+                    | DurableOp::BuildDml(_)
+            ) {
+                break;
+            }
             offset += 1;
         }
-        let group = &entries[start..offset];
+        let group: Vec<_> = entries[start..offset]
+            .iter()
+            .filter_map(|(seq, op)| match op {
+                DurableOp::Ordinary(op) => Some((*seq, op.clone())),
+                DurableOp::BuildDml(_) => None,
+            })
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
         if ix.supports_posting_batch() {
             let mut group_offset = 0usize;
             while group_offset < group.len() {
@@ -262,52 +326,65 @@ async fn drain_queue(
             }
         } else {
             for (seq, op) in group {
-                apply(ix, vector, shard_id, op).await?;
-                remove_from_queue(&store, queue, *seq);
+                apply(ix, vector, shard_id, &op).await?;
+                remove_from_queue(&store, queue, seq);
             }
         }
     }
     Ok(())
 }
 
-fn to_index_mutation(op: &RepairPostingOp) -> IndexPostingMutation {
+fn to_index_mutation(op: &RepairPostingOp) -> Result<IndexPostingMutation, PlanQueryError> {
     match op {
         RepairPostingOp::VertexProperty {
+            physical_index_id,
+            phase,
             remove,
             property_id,
             payload_bytes,
             vertex_id,
-        } => IndexPostingMutation::VertexProperty {
+            ..
+        } if phase.is_active() => Ok(IndexPostingMutation::VertexProperty {
+            physical_index_id: *physical_index_id,
             remove: *remove,
             property_id: *property_id,
             value: payload_bytes.clone(),
             vertex_id: *vertex_id,
-        },
+        }),
         RepairPostingOp::EdgeProperty {
+            physical_index_id,
+            phase,
             remove,
             property_id,
             payload_bytes,
             label_id,
             owner_vertex_id,
             slot_index,
-        } => IndexPostingMutation::EdgeProperty {
+            ..
+        } if phase.is_active() => Ok(IndexPostingMutation::EdgeProperty {
+            physical_index_id: *physical_index_id,
             remove: *remove,
             property_id: *property_id,
             value: payload_bytes.clone(),
             label_id: *label_id,
             owner_vertex_id: *owner_vertex_id,
             slot_index: *slot_index,
-        },
+        }),
         RepairPostingOp::Label {
             remove,
             label_id,
             vertex_id,
-        } => IndexPostingMutation::Label {
+        } => Ok(IndexPostingMutation::Label {
             remove: *remove,
             label_id: *label_id,
             vertex_id: *vertex_id,
-        },
+        }),
         RepairPostingOp::VectorEmbedding { .. } => unreachable!("vector entries are not batched"),
+        RepairPostingOp::VertexProperty { .. } | RepairPostingOp::EdgeProperty { .. } => {
+            Err(PlanQueryError::UnsupportedOp(
+                "index repair dispatch requires Active maintenance phase",
+            ))
+        }
     }
 }
 
@@ -319,31 +396,58 @@ async fn apply(
 ) -> Result<ApplyOutcome, PlanQueryError> {
     match op {
         RepairPostingOp::VertexProperty {
+            physical_index_id,
+            phase,
             remove,
             property_id,
             payload_bytes,
             vertex_id,
+            ..
         } => {
+            if !phase.is_active() {
+                return Err(PlanQueryError::UnsupportedOp(
+                    "index repair dispatch requires Active maintenance phase",
+                ));
+            }
             if *remove {
-                ix.posting_remove(*property_id, payload_bytes.clone(), *vertex_id)
-                    .await?;
+                ix.posting_remove(
+                    *physical_index_id,
+                    *property_id,
+                    payload_bytes.clone(),
+                    *vertex_id,
+                )
+                .await?;
             } else {
-                ix.posting_insert(*property_id, payload_bytes.clone(), *vertex_id)
-                    .await?;
+                ix.posting_insert(
+                    *physical_index_id,
+                    *property_id,
+                    payload_bytes.clone(),
+                    *vertex_id,
+                )
+                .await?;
             }
             Ok(ApplyOutcome::Applied)
         }
         RepairPostingOp::EdgeProperty {
+            physical_index_id,
+            phase,
             remove,
             property_id,
             payload_bytes,
             label_id,
             owner_vertex_id,
             slot_index,
+            ..
         } => {
+            if !phase.is_active() {
+                return Err(PlanQueryError::UnsupportedOp(
+                    "index repair dispatch requires Active maintenance phase",
+                ));
+            }
             if *remove {
                 ix.edge_posting_remove_at(
                     shard_id,
+                    *physical_index_id,
                     *property_id,
                     payload_bytes.clone(),
                     *label_id,
@@ -354,6 +458,7 @@ async fn apply(
             } else {
                 ix.edge_posting_insert_at(
                     shard_id,
+                    *physical_index_id,
                     *property_id,
                     payload_bytes.clone(),
                     *label_id,
@@ -469,7 +574,10 @@ mod tests {
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
-    use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
+    use gleaph_graph_kernel::index::{
+        IndexIntersectionRequest, IndexMaintenancePhase, PhysicalIndexId, PostingHit,
+        PostingRangeRequest,
+    };
     use gleaph_graph_kernel::vector_index::VectorMetric;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -539,6 +647,7 @@ mod tests {
 
         async fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -547,6 +656,7 @@ mod tests {
 
         async fn lookup_range(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _req: &PostingRangeRequest,
         ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -567,6 +677,7 @@ mod tests {
         async fn posting_insert_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -581,6 +692,7 @@ mod tests {
         async fn posting_remove_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -609,6 +721,9 @@ mod tests {
 
     fn vertex_insert(vertex_id: u32) -> RepairPostingOp {
         RepairPostingOp::VertexProperty {
+            physical_index_id: PhysicalIndexId::new(900_103).expect("test physical id"),
+            catalog_epoch: 1,
+            phase: IndexMaintenancePhase::Active,
             remove: false,
             property_id: 1,
             payload_bytes: vec![vertex_id as u8],

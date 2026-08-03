@@ -58,7 +58,7 @@ fn get_indexed_property_catalog(
 ) -> Result<gleaph_graph_kernel::index::IndexedPropertyCatalog, RouterError> {
     let graph_id =
         RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
-    Ok(crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog())
+    Ok(crate::facade::stable::indexed_catalog::load_indexed_property_catalog(graph_id))
 }
 
 #[query]

@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
 
+use crate::build_key::IndexBuildTouchedKey;
 use crate::edge_key::EdgePostingKey;
+use crate::facade::stable::build_state::IndexBuildState;
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
+use gleaph_graph_kernel::index::PhysicalIndexId;
 
 pub(crate) type Memory = VariableVirtualMemory<DefaultMemoryImpl>;
 
@@ -28,6 +31,8 @@ const INDEX_OWNERSHIP_CONFIG: MemoryId = MemoryId::new(3);
 const INDEX_VERTEX_POSTINGS: MemoryId = MemoryId::new(4);
 const INDEX_VERTEX_LABEL_POSTINGS: MemoryId = MemoryId::new(5);
 const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(6);
+const INDEX_BUILD_STATES: MemoryId = MemoryId::new(7);
+const INDEX_BUILD_TOUCHED_SUBJECTS: MemoryId = MemoryId::new(8);
 
 const INDEX_METADATA_BUCKET_PAGES: u16 = 4;
 const INDEX_LABEL_POSTINGS_BUCKET_PAGES: u16 = 32;
@@ -40,6 +45,8 @@ pub(crate) type StableIndexShardByCanisterMap = BTreeMap<Principal, ShardId, Mem
 pub(crate) type StableIndexVertexPostingSet = BTreeSet<PostingKey, Memory>;
 pub(crate) type StableIndexVertexLabelPostingSet = BTreeSet<LabelPostingKey, Memory>;
 pub(crate) type StableIndexEdgePostingSet = BTreeSet<EdgePostingKey, Memory>;
+pub(crate) type StableIndexBuildStateMap = BTreeMap<PhysicalIndexId, IndexBuildState, Memory>;
+pub(crate) type StableIndexBuildTouchedSet = BTreeSet<IndexBuildTouchedKey, Memory>;
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IndexOwnershipConfig {
@@ -174,6 +181,11 @@ thread_local! {
                     INDEX_LABEL_POSTINGS_BUCKET_PAGES,
                 ),
                 (INDEX_EDGE_POSTINGS, INDEX_PROPERTY_POSTINGS_BUCKET_PAGES),
+                (INDEX_BUILD_STATES, INDEX_METADATA_BUCKET_PAGES),
+                (
+                    INDEX_BUILD_TOUCHED_SUBJECTS,
+                    INDEX_PROPERTY_POSTINGS_BUCKET_PAGES,
+                ),
             ],
         ));
 }
@@ -206,4 +218,12 @@ pub(crate) fn init_index_vertex_label_postings() -> StableIndexVertexLabelPostin
 
 pub(crate) fn init_index_edge_postings() -> StableIndexEdgePostingSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_EDGE_POSTINGS)))
+}
+
+pub(crate) fn init_index_build_states() -> StableIndexBuildStateMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_BUILD_STATES)))
+}
+
+pub(crate) fn init_index_build_touched_subjects() -> StableIndexBuildTouchedSet {
+    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_BUILD_TOUCHED_SUBJECTS)))
 }

@@ -2,6 +2,7 @@
 mod bench;
 
 pub mod bidirectional_catalog;
+pub mod canonical_export;
 pub mod edge_inline_property_profile_store;
 pub mod entry;
 pub mod federation;

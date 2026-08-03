@@ -146,7 +146,7 @@ fn execute_migration(command: MigrationCommand) -> Result<(), MigrationError> {
                 args.fetch_root_key,
             )?;
             for outcome in migration::apply(&args.dir.dir, &mut transport)? {
-                println!("{outcome:?}");
+                println!("{outcome}");
             }
             Ok(())
         }

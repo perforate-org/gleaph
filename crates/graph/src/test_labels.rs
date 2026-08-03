@@ -153,7 +153,7 @@ impl GraphStore {
             .map(|label| vertex_label_id_for_name(label.as_ref()))
             .collect::<Vec<_>>();
         let properties = self.resolve_named_test_properties(properties)?;
-        self.insert_vertex_with(labels, properties)
+        self.insert_vertex_with(labels, properties, 0)
     }
 
     pub(crate) fn insert_directed_edge_named(
@@ -165,7 +165,7 @@ impl GraphStore {
     ) -> Result<EdgeHandle, GraphStoreError> {
         let label = label.map(|label| edge_label_id_for_name(label.as_ref()));
         let properties = self.resolve_named_test_properties(properties)?;
-        self.insert_directed_edge_with(source_vertex_id, target_vertex_id, label, properties)
+        self.insert_directed_edge_with(source_vertex_id, target_vertex_id, label, properties, 0)
     }
 
     #[cfg_attr(not(test), expect(dead_code, reason = "test fixture helper"))]
@@ -178,7 +178,7 @@ impl GraphStore {
     ) -> Result<EdgeHandle, GraphStoreError> {
         let label = label.map(|label| edge_label_id_for_name(label.as_ref()));
         let properties = self.resolve_named_test_properties(properties)?;
-        self.insert_undirected_edge_with(endpoint_a, endpoint_b, label, properties)
+        self.insert_undirected_edge_with(endpoint_a, endpoint_b, label, properties, 0)
     }
 
     fn resolve_named_test_properties(

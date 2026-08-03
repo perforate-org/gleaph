@@ -1543,6 +1543,104 @@ pub fn admin_set_vector_index_canister(
         .map_err(|e| e.to_string())
 }
 
+/// Router → graph: freeze one immutable canonical export scope for a physical index namespace.
+pub fn admin_register_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
+    crate::index::canonical_export::register_scope(physical_index_id, scope)
+}
+
+/// Router → graph: remove an export scope only under its complete current owner contract.
+pub fn admin_remove_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+) -> Result<(), gleaph_graph_kernel::canonical_export::CanonicalExportError> {
+    crate::index::canonical_export::remove_scope(physical_index_id, &scope)
+}
+
+/// Router → graph: seal one export scope at a fresh catalog epoch (captures the old-epoch
+/// admission watermark and rejects new affected admissions retryably).
+pub fn admin_seal_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    expected_scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+    new_epoch: u64,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    crate::index::canonical_export::seal_scope(physical_index_id, expected_scope, new_epoch)
+}
+
+/// Router → graph: publish one export scope `Active` after the graph-index convergence proof
+/// matches this Graph's captured seal watermark.
+pub fn admin_activate_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    proof: gleaph_graph_kernel::index::IndexBuildSealStatus,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    crate::index::canonical_export::activate_scope(physical_index_id, proof)
+}
+
+/// Router → graph: mark one export scope `Aborting` under its original registration identity.
+pub fn admin_abort_index_export_scope(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    expected_scope: gleaph_graph_kernel::canonical_export::CanonicalExportScope,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    crate::index::canonical_export::abort_scope(physical_index_id, expected_scope)
+}
+
+/// Router → graph: exact durable status for one export scope.
+pub fn admin_index_export_scope_status(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportStatus,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    crate::index::canonical_export::scope_status(physical_index_id)
+}
+
+/// Router → graph: bounded drain of one namespace's build-DML outbox entries to graph-index.
+///
+/// A transport or ambiguous failure stops the drain and keeps the envelope for an exact replay;
+/// the returned progress reports how far the step got.
+pub async fn admin_drain_index_build_outbox(
+    request: gleaph_graph_kernel::canonical_export::IndexBuildOutboxDrainRequest,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::IndexBuildOutboxDrainProgress,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    #[cfg(target_family = "wasm")]
+    {
+        let index = wasm_index_client_holder()
+            .ok_or(gleaph_graph_kernel::canonical_export::CanonicalExportError::Storage)?;
+        let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+        crate::index::canonical_export::drain_index_build_outbox(ix, request).await
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        // Canister-only endpoint: the native unit tests drive the drain logic directly through
+        // `crate::index::canonical_export::drain_index_build_outbox` with a mock index client.
+        let _ = request;
+        Err(gleaph_graph_kernel::canonical_export::CanonicalExportError::Storage)
+    }
+}
+
+/// Graph-index → graph: emit one bounded page from canonical Graph storage.
+pub fn index_export_page(
+    request: gleaph_graph_kernel::canonical_export::CanonicalExportRequest,
+) -> Result<
+    gleaph_graph_kernel::canonical_export::CanonicalExportPage,
+    gleaph_graph_kernel::canonical_export::CanonicalExportError,
+> {
+    crate::index::canonical_export::export_page(request)
+}
+
 /// Router → graph (plan 0048): commit one canonical vertex embedding and attempt the derived
 /// vector-index projection. The caller (Router) has already resolved the opaque vertex id to a
 /// shard-local id and the embedding definition. The graph shard validates vertex existence,
@@ -1785,7 +1883,14 @@ pub async fn e2e_insert_vertex_with_property(
     // property under test so DML emits its posting (ADR 0023 D1/D3).
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            vertex_property_ids: vec![args.property_id],
+            vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
+                    .expect("e2e physical id"),
+                catalog_epoch: 1,
+                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                property_id: args.property_id,
+                label_id: 0,
+            }],
             ..Default::default()
         });
     store
@@ -1822,7 +1927,24 @@ pub async fn e2e_insert_vertex_with_two_properties(
         .map_err(|e| e.to_string())?;
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            vertex_property_ids: vec![args.property_a, args.property_b],
+            vertex_indexes: vec![
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
+                        .expect("e2e physical id"),
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                    property_id: args.property_a,
+                    label_id: 0,
+                },
+                gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
+                        .expect("e2e physical id"),
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                    property_id: args.property_b,
+                    label_id: 0,
+                },
+            ],
             ..Default::default()
         });
     store
@@ -1914,7 +2036,14 @@ pub async fn e2e_insert_vertex_with_label_and_property(
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_property_ids: vec![args.property_id],
+        vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
+                .expect("e2e physical id"),
+            catalog_epoch: 1,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+            property_id: args.property_id,
+            label_id: 0,
+        }],
         ..Default::default()
     });
     store
@@ -1958,7 +2087,24 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
         .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_property_ids: vec![args.property_a, args.property_b],
+        vertex_indexes: vec![
+            gleaph_graph_kernel::index::IndexedVertexMembership {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
+                    .expect("e2e physical id"),
+                catalog_epoch: 1,
+                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                property_id: args.property_a,
+                label_id: 0,
+            },
+            gleaph_graph_kernel::index::IndexedVertexMembership {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
+                    .expect("e2e physical id"),
+                catalog_epoch: 1,
+                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                property_id: args.property_b,
+                label_id: 0,
+            },
+        ],
         ..Default::default()
     });
     store
@@ -2007,7 +2153,14 @@ pub async fn e2e_set_vertex_property(
         .vertex(vertex_id)
         .ok_or_else(|| "vertex must exist".to_string())?;
     let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_property_ids: vec![args.property_id],
+        vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
+                .expect("e2e physical id"),
+            catalog_epoch: 1,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+            property_id: args.property_id,
+            label_id: 0,
+        }],
         ..Default::default()
     });
     store
@@ -2122,7 +2275,16 @@ pub async fn e2e_insert_directed_edge_with_property(
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            edge_property_ids: vec![args.property_id],
+            edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
+                    .expect("e2e physical id"),
+                catalog_epoch: 1,
+                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                label_id: args.edge_label_id,
+                property_id: args.property_id,
+                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+                field_path: String::new(),
+            }],
             ..Default::default()
         });
     store
@@ -2162,7 +2324,16 @@ pub async fn e2e_insert_undirected_edge_with_property(
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            edge_property_ids: vec![args.property_id],
+            edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
+                    .expect("e2e physical id"),
+                catalog_epoch: 1,
+                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                label_id: args.edge_label_id,
+                property_id: args.property_id,
+                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+                field_path: String::new(),
+            }],
             ..Default::default()
         });
     store
@@ -2238,9 +2409,21 @@ pub async fn e2e_delete_directed_edge_with_property(
         LaraLabelId::from_raw(edge.label_id),
         edge.edge_slot_index.raw(),
     );
+    let catalog_label =
+        crate::facade::catalog_edge_label_from_wire(LaraLabelId::from_raw(edge.label_id))
+            .expect("e2e delete edge has a catalog label");
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            edge_property_ids: vec![args.property_id],
+            edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
+                    .expect("e2e physical id"),
+                catalog_epoch: 1,
+                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                label_id: catalog_label.raw(),
+                property_id: args.property_id,
+                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+                field_path: String::new(),
+            }],
             ..Default::default()
         });
     store

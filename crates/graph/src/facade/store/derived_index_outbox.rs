@@ -4,6 +4,7 @@ use super::super::stable::DERIVED_INDEX_OUTBOX;
 use super::super::stable::derived_index_outbox::DerivedIndexOutboxEntry;
 use super::super::stable::repair_journal::RepairPostingOp;
 use super::GraphStore;
+use gleaph_graph_kernel::index::IndexBuildDmlRequest;
 
 impl GraphStore {
     pub(crate) fn derived_index_outbox_append(
@@ -12,6 +13,15 @@ impl GraphStore {
         ops: impl IntoIterator<Item = RepairPostingOp>,
     ) {
         DERIVED_INDEX_OUTBOX.with_borrow_mut(|outbox| outbox.append_all(mutation_id, ops));
+    }
+
+    pub(crate) fn derived_index_build_outbox_append(
+        &self,
+        mutation_id: u64,
+        requests: impl IntoIterator<Item = IndexBuildDmlRequest>,
+    ) {
+        DERIVED_INDEX_OUTBOX
+            .with_borrow_mut(|outbox| outbox.append_build_dml(mutation_id, requests));
     }
 
     pub(crate) fn derived_index_outbox_is_empty(&self) -> bool {

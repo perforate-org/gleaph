@@ -40,7 +40,7 @@ pub(crate) fn posting_batch_chunk_end(
 mod tests {
     use super::*;
     use gleaph_graph_kernel::federation::ShardId;
-    use gleaph_graph_kernel::index::IndexPostingMutation;
+    use gleaph_graph_kernel::index::{IndexPostingMutation, PhysicalIndexId};
 
     #[test]
     fn chunk_end_fits_single_small_operation() {
@@ -60,6 +60,7 @@ mod tests {
         let payload = vec![0u8; 2 * 1024];
         let ops: Vec<IndexPostingMutation> = (0..2000u32)
             .map(|i| IndexPostingMutation::VertexProperty {
+                physical_index_id: PhysicalIndexId::new(900_001).expect("test physical id"),
                 remove: false,
                 property_id: 1,
                 value: payload.clone(),

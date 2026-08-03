@@ -151,14 +151,16 @@ async fn execute_dml_plan_async(
     let mutation = match seed_rows {
         None => {
             // Bare INSERT: run the mutation tail once with no seed rows.
-            execute_mutation_tail_async(store, mutation_ops, &[], parameters, execution).await?
+            execute_mutation_tail_async(store, mutation_ops, &[], parameters, execution, None)
+                .await?
         }
         Some(rows) if rows.is_empty() => {
             // Read prefix produced zero matches; nothing to mutate.
             PlanMutationBindings::default()
         }
         Some(rows) => {
-            execute_mutation_tail_async(store, mutation_ops, &rows, parameters, execution).await?
+            execute_mutation_tail_async(store, mutation_ops, &rows, parameters, execution, None)
+                .await?
         }
     };
     Ok(mutation)
@@ -1248,13 +1250,19 @@ async fn apply_canonical_mutation_segment(
     }
     let _phase_t0 = current_instruction_counter();
     bench_scope!("canonical_mutation_tail", _scope_mutation_tail);
-    let mutation =
-        match execute_mutation_tail_async(store, mutation_ops, seed_rows, parameters, execution)
-            .await
-        {
-            Ok(mutation) => mutation,
-            Err(error) => trap_wire_mutation_failure(error),
-        };
+    let mutation = match execute_mutation_tail_async(
+        store,
+        mutation_ops,
+        seed_rows,
+        parameters,
+        execution,
+        mutation_id,
+    )
+    .await
+    {
+        Ok(mutation) => mutation,
+        Err(error) => trap_wire_mutation_failure(error),
+    };
     bench_scope_end!(_scope_mutation_tail);
     let _phase_t1 = current_instruction_counter();
     log_wire_phase(

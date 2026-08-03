@@ -13,9 +13,11 @@ use gleaph_gql::token::Token;
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ListSchemaMigrationsArgs, ListSchemaMigrationsArgsV1, ListSchemaMigrationsResult,
-    MAX_SCHEMA_MIGRATION_ID_BYTES, MAX_SCHEMA_MIGRATION_STATEMENT_BYTES, MAX_SCHEMA_MIGRATIONS,
-    SchemaMigrationApplyStatus, SchemaMigrationChecksum, SchemaMigrationRecord,
-    SchemaMigrationStatementProfile, parse_schema_migration_id, schema_migration_checksum,
+    MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES, MAX_SCHEMA_MIGRATION_ID_BYTES,
+    MAX_SCHEMA_MIGRATION_STATEMENT_BYTES, MAX_SCHEMA_MIGRATIONS, SchemaMigrationApplyStatus,
+    SchemaMigrationChecksum, SchemaMigrationGraphSelector, SchemaMigrationRecord,
+    SchemaMigrationRecordState, SchemaMigrationStatementProfile, parse_schema_migration_id,
+    schema_migration_checksum,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,6 +35,12 @@ const DEFAULT_LOCAL_URL: &str = "http://localhost:8000";
 
 const MANIFEST_FILE: &str = "migration.toml";
 const GQL_FILE: &str = "up.gql";
+/// Per-invocation safety bound. A pending index migration remains durable and can be resumed by
+/// rerunning the same command with the same immutable artifact.
+const MAX_INDEX_APPLY_ROUNDS_PER_MIGRATION: usize = 4_096;
+/// Public progress is target-granular, so several owner-local pages may legitimately leave it
+/// unchanged. This cap prevents an unhealthy owner from making the CLI spin forever.
+const MAX_UNCHANGED_INDEX_PROGRESS_ROUNDS: usize = 8;
 const TEMP_PREFIX: &str = ".gleaph-tmp-";
 const ID_PREFIX_WIDTH: usize = 6;
 
@@ -117,6 +125,9 @@ pub struct MigrationManifest {
     /// Parent id.  The unique chain root omits this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// Optional graph selector, valid only for a `CREATE INDEX` migration. Omission is `Default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
     /// Human-readable rationale; not part of the execution identity.
     pub description: String,
 }
@@ -130,6 +141,8 @@ pub struct MigrationArtifact {
     pub gql: String,
     /// Validated typed execution profile.
     pub profile: SchemaMigrationStatementProfile,
+    /// Canonical graph selector committed to the Router wire envelope.
+    pub graph_selector: SchemaMigrationGraphSelector,
     /// Directory containing the two artifact files.
     pub path: PathBuf,
     checksum: SchemaMigrationChecksum,
@@ -161,6 +174,7 @@ impl MigrationArtifact {
         ApplySchemaMigrationArgs::V1(ApplySchemaMigrationArgsV1 {
             id: self.manifest.id.clone(),
             parent: self.manifest.parent.clone(),
+            graph_selector: self.graph_selector.clone(),
             checksum: self.checksum.clone(),
             statement: self.gql.clone(),
         })
@@ -546,11 +560,13 @@ fn load_artifact_named(
         Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES),
     )?;
     let profile = validate_gql(&gql)?;
-    let checksum = calculate_checksum(&manifest, gql.as_bytes());
+    let graph_selector = graph_selector_for_manifest(&manifest, &profile)?;
+    let checksum = calculate_checksum(&manifest, &graph_selector, gql.as_bytes());
     Ok(MigrationArtifact {
         manifest,
         gql,
         profile,
+        graph_selector,
         path: path.to_path_buf(),
         checksum,
     })
@@ -575,6 +591,8 @@ fn status_for_plan<T: MigrationTransport>(
     transport: &mut T,
 ) -> Result<MigrationStatus, MigrationError> {
     let mut remote_count = 0usize;
+    let mut applied_count = 0usize;
+    let mut pending_id = None::<String>;
     let mut start_after = None;
     let mut visited_cursors = BTreeSet::new();
     loop {
@@ -616,6 +634,11 @@ fn status_for_plan<T: MigrationTransport>(
             }
         }
         for record in result.migrations {
+            if let Some(pending_id) = pending_id.as_deref() {
+                return Err(MigrationError::Chain(format!(
+                    "Router migration {pending_id:?} is pending but is followed by another remote migration"
+                )));
+            }
             if remote_count >= local.migrations.len() {
                 return Err(MigrationError::Chain(
                     "Router has migrations absent from the local chain".into(),
@@ -636,11 +659,35 @@ fn status_for_plan<T: MigrationTransport>(
                     record.id
                 )));
             }
+            if record.graph_selector != expected.graph_selector {
+                return Err(MigrationError::Chain(format!(
+                    "graph selector mismatch for applied migration {:?}",
+                    record.id
+                )));
+            }
             if record.checksum != *expected.checksum() {
                 return Err(MigrationError::Chain(format!(
                     "checksum mismatch for applied migration {:?}",
                     record.id
                 )));
+            }
+            match &record.state {
+                SchemaMigrationRecordState::Applied { .. } => applied_count += 1,
+                SchemaMigrationRecordState::PendingIndex { .. } => {
+                    if record.profile != SchemaMigrationStatementProfile::CreateIndex {
+                        return Err(MigrationError::Remote(format!(
+                            "Router returned a pending non-index migration {:?}",
+                            record.id
+                        )));
+                    }
+                    pending_id = Some(record.id.clone());
+                }
+                SchemaMigrationRecordState::Failed { code, .. } => {
+                    return Err(MigrationError::Remote(format!(
+                        "Router migration {:?} failed: {code:?}",
+                        record.id
+                    )));
+                }
             }
             remote_count += 1;
         }
@@ -652,7 +699,7 @@ fn status_for_plan<T: MigrationTransport>(
         }
     }
     Ok(MigrationStatus {
-        applied_count: remote_count,
+        applied_count,
         total_count: local.migrations.len(),
     })
 }
@@ -665,56 +712,100 @@ pub fn apply<T: MigrationTransport>(
     let local = discover(root)?;
     let current = status_for_plan(&local, transport)?;
     let mut outcomes = Vec::new();
-    for (index, artifact) in local
-        .migrations
-        .iter()
-        .enumerate()
-        .skip(current.applied_count)
-    {
-        let result = match transport.apply_schema_migration(artifact.apply_args()) {
-            Ok(result) => result,
-            Err(original) => {
-                // An ingress timeout is ambiguous: the Router may have committed before the
-                // transport failed. Re-read the canonical ledger and advance only on an exact
-                // id/checksum match; never infer success from the update error alone.
-                match status_for_plan(&local, transport) {
-                    Ok(recovered) if recovered.applied_count > index => {
-                        outcomes.push(SchemaMigrationApplyStatus::Replay);
-                        continue;
-                    }
-                    Ok(_) => {
-                        return Err(MigrationError::Remote(format!(
-                            "{original}; Router ledger does not contain the migration after recovery"
-                        )));
-                    }
-                    Err(recovery) => {
-                        return Err(MigrationError::Remote(format!(
-                            "{original}; recovery status failed: {recovery}"
-                        )));
-                    }
+    for artifact in local.migrations.iter().skip(current.applied_count) {
+        let exact_args = artifact.apply_args();
+        let mut rounds = 0usize;
+        let mut prior_progress = None;
+        let mut unchanged_progress_rounds = 0usize;
+        loop {
+            if rounds >= MAX_INDEX_APPLY_ROUNDS_PER_MIGRATION {
+                return Err(MigrationError::Remote(format!(
+                    "migration {:?} remains pending after {MAX_INDEX_APPLY_ROUNDS_PER_MIGRATION} bounded apply rounds; it is durable and resumable by rerunning migration apply",
+                    artifact.id()
+                )));
+            }
+            rounds += 1;
+            let result = match transport.apply_schema_migration(exact_args.clone()) {
+                Ok(result) => result,
+                Err(original) => transport
+                    .apply_schema_migration(exact_args.clone())
+                    .map_err(|replay| {
+                        MigrationError::Remote(format!(
+                            "{original}; exact replay of the same migration envelope failed: {replay}"
+                        ))
+                    })?,
+            };
+            let ApplySchemaMigrationResult::V1(result) = result;
+            if record_id(&result.record) != artifact.id() {
+                return Err(MigrationError::Remote(format!(
+                    "Router returned record for {:?} while applying {:?}",
+                    record_id(&result.record),
+                    artifact.id()
+                )));
+            }
+            let SchemaMigrationRecord::V1(record) = &result.record;
+            let resolved_graph_matches_profile = match artifact.profile {
+                SchemaMigrationStatementProfile::CreateIndex => record.resolved_graph.is_some(),
+                SchemaMigrationStatementProfile::CreateGraphType
+                | SchemaMigrationStatementProfile::CreateTypedGraph => {
+                    record.resolved_graph.is_none()
+                }
+            };
+            let state_matches_status = matches!(
+                (&result.status, &record.state),
+                (
+                    SchemaMigrationApplyStatus::Progress(_),
+                    SchemaMigrationRecordState::PendingIndex { .. }
+                ) | (
+                    SchemaMigrationApplyStatus::Applied | SchemaMigrationApplyStatus::Replay,
+                    SchemaMigrationRecordState::Applied { .. }
+                ) | (
+                    SchemaMigrationApplyStatus::Failed(_),
+                    SchemaMigrationRecordState::Failed { .. }
+                )
+            );
+            if record.parent.as_deref() != artifact.parent()
+                || record.graph_selector != artifact.graph_selector
+                || record.checksum != *artifact.checksum()
+                || record.statement != artifact.gql
+                || record.profile != artifact.profile
+                || !resolved_graph_matches_profile
+                || !state_matches_status
+            {
+                return Err(MigrationError::Remote(format!(
+                    "Router returned a mismatched record for {:?}",
+                    artifact.id()
+                )));
+            }
+            let terminal = matches!(
+                &result.status,
+                SchemaMigrationApplyStatus::Applied | SchemaMigrationApplyStatus::Replay
+            );
+            if let SchemaMigrationApplyStatus::Failed(code) = &result.status {
+                return Err(MigrationError::Remote(format!(
+                    "Router migration {:?} failed: {code:?}",
+                    artifact.id()
+                )));
+            }
+            if let SchemaMigrationApplyStatus::Progress(progress) = &result.status {
+                if prior_progress == Some(*progress) {
+                    unchanged_progress_rounds += 1;
+                } else {
+                    prior_progress = Some(*progress);
+                    unchanged_progress_rounds = 0;
+                }
+                if unchanged_progress_rounds >= MAX_UNCHANGED_INDEX_PROGRESS_ROUNDS {
+                    return Err(MigrationError::Remote(format!(
+                        "migration {:?} reported unchanged progress for {MAX_UNCHANGED_INDEX_PROGRESS_ROUNDS} bounded rounds; it remains durable and resumable by rerunning migration apply",
+                        artifact.id()
+                    )));
                 }
             }
-        };
-        let ApplySchemaMigrationResult::V1(result) = result;
-        if record_id(&result.record) != artifact.id() {
-            return Err(MigrationError::Remote(format!(
-                "Router returned record for {:?} while applying {:?}",
-                record_id(&result.record),
-                artifact.id()
-            )));
+            outcomes.push(result.status);
+            if terminal {
+                break;
+            }
         }
-        let SchemaMigrationRecord::V1(record) = &result.record;
-        if record.parent.as_deref() != artifact.parent()
-            || record.checksum != *artifact.checksum()
-            || record.statement != artifact.gql
-            || record.profile != artifact.profile
-        {
-            return Err(MigrationError::Remote(format!(
-                "Router returned a mismatched record for {:?}",
-                artifact.id()
-            )));
-        }
-        outcomes.push(result.status);
     }
     Ok(outcomes)
 }
@@ -771,6 +862,7 @@ pub fn create_new(
         format_version: 1,
         id: id.clone(),
         parent,
+        graph: None,
         description: description.to_owned(),
     };
     let gql_bytes = if let Some(source) = gql {
@@ -1036,6 +1128,24 @@ fn read_text_file_with_identity(
 }
 
 fn validate_gql(gql: &str) -> Result<SchemaMigrationStatementProfile, MigrationError> {
+    if let Some(index_ddl) = gleaph_index_ddl::try_parse(gql) {
+        let index_ddl = index_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
+        return match index_ddl {
+            gleaph_index_ddl::IndexDdlStatement::Create {
+                if_not_exists: true,
+                ..
+            } => Err(MigrationError::Gql(
+                "CREATE INDEX migrations forbid IF NOT EXISTS".into(),
+            )),
+            gleaph_index_ddl::IndexDdlStatement::Create {
+                if_not_exists: false,
+                ..
+            } => Ok(SchemaMigrationStatementProfile::CreateIndex),
+            gleaph_index_ddl::IndexDdlStatement::Drop { .. } => Err(MigrationError::Gql(
+                "DROP INDEX is not an additive migration".into(),
+            )),
+        };
+    }
     let lexical = gleaph_gql::lexer::tokenize_with_comments(gql)
         .map_err(|error| MigrationError::Gql(error.to_string()))?;
     if lexical
@@ -1122,8 +1232,46 @@ fn validate_gql(gql: &str) -> Result<SchemaMigrationStatementProfile, MigrationE
     Ok(operation)
 }
 
-fn calculate_checksum(manifest: &MigrationManifest, statement: &[u8]) -> SchemaMigrationChecksum {
-    schema_migration_checksum(&manifest.id, manifest.parent.as_deref(), statement)
+fn graph_selector_for_manifest(
+    manifest: &MigrationManifest,
+    profile: &SchemaMigrationStatementProfile,
+) -> Result<SchemaMigrationGraphSelector, MigrationError> {
+    match profile {
+        SchemaMigrationStatementProfile::CreateIndex => match manifest.graph.as_deref() {
+            None => Ok(SchemaMigrationGraphSelector::Default),
+            Some("") => Err(MigrationError::Manifest(
+                "graph selector must not be empty".into(),
+            )),
+            Some(name) if name.len() > MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES => {
+                Err(MigrationError::Manifest(format!(
+                    "graph selector exceeds {MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES} UTF-8 bytes"
+                )))
+            }
+            Some(name) => Ok(SchemaMigrationGraphSelector::Named(name.to_owned())),
+        },
+        SchemaMigrationStatementProfile::CreateGraphType
+        | SchemaMigrationStatementProfile::CreateTypedGraph => {
+            if manifest.graph.is_some() {
+                return Err(MigrationError::Manifest(
+                    "graph selector is only allowed for CREATE INDEX migrations".into(),
+                ));
+            }
+            Ok(SchemaMigrationGraphSelector::Default)
+        }
+    }
+}
+
+fn calculate_checksum(
+    manifest: &MigrationManifest,
+    graph_selector: &SchemaMigrationGraphSelector,
+    statement: &[u8],
+) -> SchemaMigrationChecksum {
+    schema_migration_checksum(
+        &manifest.id,
+        manifest.parent.as_deref(),
+        graph_selector,
+        statement,
+    )
 }
 
 fn record_id(record: &SchemaMigrationRecord) -> &str {
@@ -1272,12 +1420,15 @@ mod tests {
                     format_version: 1,
                     id: id.clone(),
                     parent: parent.clone(),
+                    graph: None,
                     description: String::new(),
                 };
                 let gql = format!("CREATE GRAPH TYPE type{index} {{}}\n");
+                let graph_selector = SchemaMigrationGraphSelector::Default;
                 let artifact = MigrationArtifact {
                     profile: SchemaMigrationStatementProfile::CreateGraphType,
-                    checksum: calculate_checksum(&manifest, gql.as_bytes()),
+                    checksum: calculate_checksum(&manifest, &graph_selector, gql.as_bytes()),
+                    graph_selector,
                     manifest,
                     gql,
                     path: PathBuf::new(),
@@ -1292,11 +1443,14 @@ mod tests {
         SchemaMigrationRecord::V1(gleaph_migration_api::SchemaMigrationRecordV1 {
             id: artifact.id().to_owned(),
             parent: artifact.manifest.parent.clone(),
+            graph_selector: artifact.graph_selector.clone(),
+            resolved_graph: None,
             checksum: artifact.checksum.clone(),
             actor: Principal::anonymous(),
-            applied_at: 0,
+            recorded_at: 0,
             statement: artifact.gql.clone(),
             profile: artifact.profile.clone(),
+            state: SchemaMigrationRecordState::Applied { applied_at: 0 },
         })
     }
 
@@ -1321,6 +1475,28 @@ mod tests {
                 status,
                 record: test_record(artifact),
             },
+        ))
+    }
+
+    fn test_index_record(
+        artifact: &MigrationArtifact,
+        state: SchemaMigrationRecordState,
+    ) -> SchemaMigrationRecord {
+        let SchemaMigrationRecord::V1(mut record) = test_record(artifact);
+        record.resolved_graph = Some(gleaph_migration_api::ResolvedSchemaMigrationGraph {
+            graph_id: gleaph_migration_api::GraphId::from_raw(7),
+            graph_name: "default".into(),
+        });
+        record.state = state;
+        SchemaMigrationRecord::V1(record)
+    }
+
+    fn test_apply_result_with_record(
+        record: SchemaMigrationRecord,
+        status: SchemaMigrationApplyStatus,
+    ) -> Result<ApplySchemaMigrationResult, String> {
+        Ok(ApplySchemaMigrationResult::V1(
+            gleaph_migration_api::ApplySchemaMigrationResultV1 { status, record },
         ))
     }
 
@@ -1364,6 +1540,10 @@ mod tests {
                 "CREATE GRAPH social TYPED Social\n",
                 SchemaMigrationStatementProfile::CreateTypedGraph,
             ),
+            (
+                "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+                SchemaMigrationStatementProfile::CreateIndex,
+            ),
         ];
         for (statement, expected) in accepted {
             assert_eq!(
@@ -1379,6 +1559,8 @@ mod tests {
             "CREATE GRAPH TYPE IF NOT EXISTS Social {}\n",
             "SESSION SET VALUE $x :: STRING = 'x'\n",
             "START TRANSACTION\nCREATE GRAPH TYPE Social {}\n",
+            "CREATE INDEX person_age IF NOT EXISTS FOR (n:Person) ON (n.age)\n",
+            "DROP INDEX person_age\n",
         ];
         for statement in rejected {
             assert!(
@@ -1386,6 +1568,55 @@ mod tests {
                 "statement should be rejected: {statement:?}"
             );
         }
+    }
+
+    #[test]
+    fn binds_optional_graph_selector_only_to_create_index_and_bounds_name() {
+        let index_manifest = MigrationManifest {
+            format_version: 1,
+            id: "000001_age_index".into(),
+            parent: None,
+            graph: Some("social".into()),
+            description: String::new(),
+        };
+        assert_eq!(
+            graph_selector_for_manifest(
+                &index_manifest,
+                &SchemaMigrationStatementProfile::CreateIndex
+            ),
+            Ok(SchemaMigrationGraphSelector::Named("social".into()))
+        );
+
+        let default_manifest = MigrationManifest {
+            graph: None,
+            ..index_manifest.clone()
+        };
+        assert_eq!(
+            graph_selector_for_manifest(
+                &default_manifest,
+                &SchemaMigrationStatementProfile::CreateIndex
+            ),
+            Ok(SchemaMigrationGraphSelector::Default)
+        );
+        assert!(matches!(
+            graph_selector_for_manifest(
+                &index_manifest,
+                &SchemaMigrationStatementProfile::CreateTypedGraph
+            ),
+            Err(MigrationError::Manifest(message)) if message.contains("only allowed for CREATE INDEX")
+        ));
+
+        let oversized_manifest = MigrationManifest {
+            graph: Some("g".repeat(MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES + 1)),
+            ..index_manifest
+        };
+        assert!(matches!(
+            graph_selector_for_manifest(
+                &oversized_manifest,
+                &SchemaMigrationStatementProfile::CreateIndex
+            ),
+            Err(MigrationError::Manifest(message)) if message.contains("exceeds")
+        ));
     }
 
     #[test]
@@ -1623,7 +1854,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_recovers_an_ambiguous_update_only_from_an_exact_ledger_record() {
+    fn apply_replays_the_exact_envelope_after_an_ambiguous_update() {
         let root = temp_root();
         write_package(
             &root,
@@ -1633,22 +1864,23 @@ mod tests {
             "first",
         );
         let plan = discover(&root).expect("test chain");
-        let mut transport = FakeMigrationTransport::new(vec![
-            test_page(vec![], None),
-            test_page(vec![test_record(&plan.migrations[0])], None),
-        ])
-        .with_apply_results(vec![Err("transport timeout".into())]);
+        let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])
+            .with_apply_results(vec![
+                Err("transport timeout".into()),
+                test_apply_result(&plan.migrations[0], SchemaMigrationApplyStatus::Replay),
+            ]);
 
         let outcomes = apply(&root, &mut transport).expect("exact replay recovery");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Replay]);
-        assert_eq!(transport.apply_calls.len(), 1);
-        assert_eq!(transport.calls.len(), 2);
+        assert_eq!(transport.apply_calls.len(), 2);
+        assert_eq!(transport.apply_calls[0], transport.apply_calls[1]);
+        assert_eq!(transport.calls.len(), 1);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
-    fn apply_reports_an_ambiguous_failure_without_ledger_evidence() {
+    fn apply_reports_an_ambiguous_failure_when_exact_replay_also_fails() {
         let root = temp_root();
         write_package(
             &root,
@@ -1657,16 +1889,164 @@ mod tests {
             "CREATE GRAPH TYPE Social {}\n",
             "first",
         );
-        let mut transport =
-            FakeMigrationTransport::new(vec![test_page(vec![], None), test_page(vec![], None)])
-                .with_apply_results(vec![Err("transport timeout".into())]);
+        let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])
+            .with_apply_results(vec![
+                Err("transport timeout".into()),
+                Err("retry timeout".into()),
+            ]);
 
         let error = apply(&root, &mut transport).expect_err("missing ledger evidence");
 
         assert!(
-            matches!(error, MigrationError::Remote(message) if message.contains("transport timeout") && message.contains("does not contain"))
+            matches!(error, MigrationError::Remote(message) if message.contains("transport timeout") && message.contains("exact replay") && message.contains("retry timeout"))
         );
-        assert_eq!(transport.calls.len(), 2);
+        assert_eq!(transport.apply_calls.len(), 2);
+        assert_eq!(transport.apply_calls[0], transport.apply_calls[1]);
+        assert_eq!(transport.calls.len(), 1);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_resumes_a_pending_index_and_polls_until_terminal() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_age_index",
+            None,
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+            "index",
+        );
+        let plan = discover(&root).expect("test chain");
+        let artifact = &plan.migrations[0];
+        let pending = SchemaMigrationRecordState::PendingIndex {
+            index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
+            physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11).expect("physical id"),
+        };
+        let progress_record = test_index_record(artifact, pending.clone());
+        let applied_record = test_index_record(
+            artifact,
+            SchemaMigrationRecordState::Applied { applied_at: 9 },
+        );
+        let building =
+            SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
+                phase: gleaph_migration_api::SchemaMigrationProgressPhase::Building,
+                completed_targets: 0,
+                total_targets: 2,
+            });
+        let sealing =
+            SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
+                phase: gleaph_migration_api::SchemaMigrationProgressPhase::Sealing,
+                completed_targets: 2,
+                total_targets: 2,
+            });
+        let mut transport = FakeMigrationTransport::new(vec![test_page(
+            vec![test_index_record(artifact, pending)],
+            None,
+        )])
+        .with_apply_results(vec![
+            test_apply_result_with_record(progress_record.clone(), building.clone()),
+            test_apply_result_with_record(progress_record, sealing.clone()),
+            test_apply_result_with_record(applied_record, SchemaMigrationApplyStatus::Applied),
+        ]);
+
+        let outcomes = apply(&root, &mut transport).expect("pending index resumes");
+
+        assert_eq!(
+            outcomes,
+            vec![building, sealing, SchemaMigrationApplyStatus::Applied]
+        );
+        assert_eq!(transport.apply_calls.len(), 3);
+        assert!(
+            transport
+                .apply_calls
+                .windows(2)
+                .all(|calls| calls[0] == calls[1])
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_stops_after_bounded_unchanged_progress_and_remains_resumable() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_stalled_index",
+            None,
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+            "index",
+        );
+        let plan = discover(&root).expect("test chain");
+        let artifact = &plan.migrations[0];
+        let record = test_index_record(
+            artifact,
+            SchemaMigrationRecordState::PendingIndex {
+                index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
+                physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11)
+                    .expect("physical id"),
+            },
+        );
+        let progress =
+            SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
+                phase: gleaph_migration_api::SchemaMigrationProgressPhase::Building,
+                completed_targets: 0,
+                total_targets: 1,
+            });
+        let repeated = test_apply_result_with_record(record, progress);
+        let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])
+            .with_apply_results(vec![repeated; MAX_UNCHANGED_INDEX_PROGRESS_ROUNDS + 1]);
+
+        let error = apply(&root, &mut transport).expect_err("unchanged progress must be bounded");
+
+        assert!(
+            matches!(error, MigrationError::Remote(message) if message.contains("unchanged progress") && message.contains("resumable"))
+        );
+        assert_eq!(
+            transport.apply_calls.len(),
+            MAX_UNCHANGED_INDEX_PROGRESS_ROUNDS + 1
+        );
+        assert!(
+            transport
+                .apply_calls
+                .windows(2)
+                .all(|calls| calls[0] == calls[1])
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_reports_a_terminal_failed_code_from_the_router() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_age_index",
+            None,
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+            "index",
+        );
+        let plan = discover(&root).expect("test chain");
+        let artifact = &plan.migrations[0];
+        let failed_record = test_index_record(
+            artifact,
+            SchemaMigrationRecordState::Failed {
+                failed_at: 9,
+                code: gleaph_migration_api::MigrationFailureCode::TargetRejected,
+            },
+        );
+        let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])
+            .with_apply_results(vec![test_apply_result_with_record(
+                failed_record,
+                SchemaMigrationApplyStatus::Failed(
+                    gleaph_migration_api::MigrationFailureCode::TargetRejected,
+                ),
+            )]);
+
+        let error = apply(&root, &mut transport).expect_err("terminal failure surfaces");
+        assert!(matches!(
+            error,
+            MigrationError::Remote(message)
+                if message.contains("failed") && message.contains("TargetRejected")
+        ));
+        assert_eq!(transport.apply_calls.len(), 1);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

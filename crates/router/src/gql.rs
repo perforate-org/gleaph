@@ -14,8 +14,8 @@ use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PostingHit,
-    ValuePostingCount,
+    IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PhysicalIndexId,
+    PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
@@ -594,20 +594,26 @@ fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit>
 
 async fn lookup_edge_equal_wires<I: IndexLookup + ?Sized>(
     index: &I,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     payload_bytes: Vec<u8>,
     wire_label_ids: &[u16],
 ) -> Result<Vec<gleaph_graph_kernel::index::EdgePostingHit>, String> {
     if wire_label_ids.is_empty() {
         return index
-            .lookup_edge_equal(property_id, payload_bytes, None)
+            .lookup_edge_equal(physical_index_id, property_id, payload_bytes, None)
             .await;
     }
     let mut merged = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for &wire in wire_label_ids {
         for hit in index
-            .lookup_edge_equal(property_id, payload_bytes.clone(), Some(wire))
+            .lookup_edge_equal(
+                physical_index_id,
+                property_id,
+                payload_bytes.clone(),
+                Some(wire),
+            )
             .await?
         {
             let key = (
@@ -636,22 +642,30 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
 
     let result: Result<SeedHits, String> = match anchor {
         IndexAnchor::Equal(SeedProbe {
+            physical_index_id,
             property_id,
             payload_bytes,
             ..
         }) => Ok(SeedHits::Vertices(
             index
-                .lookup_equal(*property_id, payload_bytes.clone())
+                .lookup_equal(*physical_index_id, *property_id, payload_bytes.clone())
                 .await?,
         )),
         IndexAnchor::EdgeEqual(crate::seed::EdgeSeedProbe {
+            physical_index_id,
             property_id,
             payload_bytes,
             wire_label_ids,
             ..
         }) => Ok(SeedHits::Edges(
-            lookup_edge_equal_wires(index, *property_id, payload_bytes.clone(), wire_label_ids)
-                .await?,
+            lookup_edge_equal_wires(
+                index,
+                *physical_index_id,
+                *property_id,
+                payload_bytes.clone(),
+                wire_label_ids,
+            )
+            .await?,
         )),
         IndexAnchor::Intersection { specs, .. } => {
             let result = index
@@ -891,7 +905,12 @@ async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
     let counts = match (label_id, property_anchors.as_slice()) {
         (None, []) => {
             index
-                .count_postings_by_value(fast_path.property_id, fast_path.min_count, None)
+                .count_postings_by_value(
+                    fast_path.physical_index_id,
+                    fast_path.property_id,
+                    fast_path.min_count,
+                    None,
+                )
                 .await?
         }
         (None, property_anchors) => {
@@ -907,7 +926,12 @@ async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
                         Some(packed)
                     };
                     index
-                        .count_postings_by_value(fast_path.property_id, fast_path.min_count, filter)
+                        .count_postings_by_value(
+                            fast_path.physical_index_id,
+                            fast_path.property_id,
+                            fast_path.min_count,
+                            filter,
+                        )
                         .await?
                 }
             }
@@ -915,6 +939,7 @@ async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
         (Some(vertex_label_id), []) => {
             index
                 .count_postings_by_value_for_label(
+                    fast_path.physical_index_id,
                     fast_path.property_id,
                     vertex_label_id,
                     fast_path.min_count,
@@ -942,6 +967,7 @@ async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
                     }
                     index
                         .count_postings_by_value(
+                            fast_path.physical_index_id,
                             fast_path.property_id,
                             fast_path.min_count,
                             Some(packed),
@@ -3198,7 +3224,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
         // catalog per operation so the shard never persists derived index state.
         let indexed_properties =
-            crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
+            crate::facade::stable::indexed_catalog::load_indexed_property_catalog(graph_id);
         // ADR 0031: the Router (vector-index definitions SSOT) supplies the indexed-embedding
         // catalog per operation, mirroring `indexed_properties`. The builder is fail-closed on
         // the dynamic per-graph gate: it exports specs only when dispatch is ready (global
@@ -4747,8 +4773,8 @@ mod tests {
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
     use gleaph_graph_kernel::index::{
-        EdgePostingHit, IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit,
-        ValuePostingCount,
+        EdgePostingHit, IndexLabelIntersectionRequest, LabelLookupPageResult, PhysicalIndexId,
+        PostingHit, ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
@@ -5031,6 +5057,7 @@ mod tests {
     impl IndexLookup for FakeIndex {
         fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
@@ -5063,6 +5090,7 @@ mod tests {
 
         fn lookup_edge_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _label_id: Option<u16>,
@@ -5072,6 +5100,7 @@ mod tests {
 
         fn count_postings_by_value(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _min_count: u64,
             _vertex_filter_packed: Option<Vec<u64>>,
@@ -5111,6 +5140,7 @@ mod tests {
 
         fn count_postings_by_value_for_label(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _vertex_label_id: u32,
             _min_count: u64,
@@ -5149,6 +5179,7 @@ mod tests {
     impl IndexLookup for LabelIntersectionFakeIndex {
         fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
@@ -5175,6 +5206,7 @@ mod tests {
 
         fn lookup_edge_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _label_id: Option<u16>,
@@ -5184,6 +5216,7 @@ mod tests {
 
         fn count_postings_by_value(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _min_count: u64,
             _vertex_filter_packed: Option<Vec<u64>>,
@@ -5236,6 +5269,7 @@ mod tests {
 
         fn count_postings_by_value_for_label(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _vertex_label_id: u32,
             _min_count: u64,
@@ -5356,6 +5390,7 @@ mod tests {
     impl IndexLookup for CompoundSeedFakeIndex {
         fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
@@ -5384,6 +5419,7 @@ mod tests {
 
         fn lookup_edge_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _label_id: Option<u16>,
@@ -5393,6 +5429,7 @@ mod tests {
 
         fn count_postings_by_value(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _min_count: u64,
             _vertex_filter_packed: Option<Vec<u64>>,
@@ -5438,6 +5475,7 @@ mod tests {
 
         fn count_postings_by_value_for_label(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _vertex_label_id: u32,
             _min_count: u64,
@@ -5455,6 +5493,12 @@ mod tests {
         store
             .admin_intern_property(admin, "tenant.main", "region")
             .expect("intern region");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            tenant_main_graph_id(),
+            0,
+            "region",
+        );
         store
     }
 
@@ -5539,6 +5583,12 @@ mod tests {
         store
             .admin_intern_property(admin, "tenant.main", "uid")
             .expect("intern uid");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store,
+            tenant_main_graph_id(),
+            0,
+            "uid",
+        );
         store
     }
 
@@ -5753,6 +5803,7 @@ mod tests {
             variable: "u".into(),
             property: "uid".into(),
             property_id: 1,
+            physical_index_id: PhysicalIndexId::new(1).expect("physical id"),
             payload_bytes: vec![1, 2, 3],
         };
         let hits = vec![
@@ -5831,6 +5882,7 @@ mod tests {
             variable: "u".into(),
             property: "uid".into(),
             property_id: 1,
+            physical_index_id: PhysicalIndexId::new(1).expect("physical id"),
             payload_bytes: vec![],
         };
         let hits = vec![PostingHit {
@@ -6799,6 +6851,9 @@ mod tests {
             "multi-variable no-index plan must not produce a single seed anchor"
         );
 
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "demo_id",
+        );
         let stats_indexed = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
         let plan_indexed =
             build_router_block_plan(block, &NoSchema, &stats_indexed).expect("plan indexed");

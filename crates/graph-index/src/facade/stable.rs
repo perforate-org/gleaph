@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod build_state;
 pub(crate) mod layout;
 pub(crate) mod memory;
 
@@ -23,4 +24,10 @@ thread_local! {
 
     pub(crate) static INDEX_EDGE_POSTINGS: RefCell<memory::StableIndexEdgePostingSet> =
         RefCell::new(memory::init_index_edge_postings());
+
+    pub(crate) static INDEX_BUILD_STATES: RefCell<memory::StableIndexBuildStateMap> =
+        RefCell::new(memory::init_index_build_states());
+
+    pub(crate) static INDEX_BUILD_TOUCHED_SUBJECTS: RefCell<memory::StableIndexBuildTouchedSet> =
+        RefCell::new(memory::init_index_build_touched_subjects());
 }

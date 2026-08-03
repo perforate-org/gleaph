@@ -36,26 +36,37 @@ pub async fn backfill_vertex_property_postings(
         }
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for (property_id, value) in store.vertex_properties(vertex_id) {
-            if !crate::index::catalog_context::is_vertex_property_indexed(property_id) {
+            let physical_index_ids =
+                crate::index::catalog_context::active_vertex_physical_index_ids(property_id);
+            if physical_index_ids.is_empty() {
                 continue;
             }
             let Some(payload_bytes) = sortable_index_key(&value) else {
                 continue;
             };
-            if index.supports_posting_batch() {
-                batch.push(IndexPostingMutation::VertexProperty {
-                    remove: false,
-                    property_id: property_id.raw(),
-                    value: payload_bytes,
-                    vertex_id: local_raw,
-                });
-            } else {
-                index
-                    .posting_insert_at(shard_id, property_id.raw(), payload_bytes, local_raw)
-                    .await
-                    .map_err(|e| e.to_string())?;
+            for physical_index_id in physical_index_ids {
+                if index.supports_posting_batch() {
+                    batch.push(IndexPostingMutation::VertexProperty {
+                        physical_index_id,
+                        remove: false,
+                        property_id: property_id.raw(),
+                        value: payload_bytes.clone(),
+                        vertex_id: local_raw,
+                    });
+                } else {
+                    index
+                        .posting_insert_at(
+                            shard_id,
+                            physical_index_id,
+                            property_id.raw(),
+                            payload_bytes.clone(),
+                            local_raw,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                postings_synced = postings_synced.saturating_add(1);
             }
-            postings_synced = postings_synced.saturating_add(1);
         }
     }
 
@@ -83,8 +94,9 @@ mod tests {
     use gleaph_graph_kernel::entry::PropertyId;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{
-        IndexIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation, PostingHit,
-        PostingRangeRequest,
+        IndexIntersectionRequest, IndexMaintenancePhase, IndexPostingBatchProgress,
+        IndexPostingMutation, IndexedPropertyCatalog, IndexedVertexMembership, PhysicalIndexId,
+        PostingHit, PostingRangeRequest,
     };
     use std::sync::Mutex;
 
@@ -170,6 +182,7 @@ mod tests {
 
         async fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
@@ -178,6 +191,7 @@ mod tests {
 
         async fn lookup_range(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _req: &PostingRangeRequest,
         ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
@@ -199,6 +213,7 @@ mod tests {
         async fn posting_insert_at(
             &self,
             shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             property_id: u32,
             value: Vec<u8>,
             vertex_id: u32,
@@ -213,6 +228,7 @@ mod tests {
         async fn posting_remove_at(
             &self,
             _shard_id: ShardId,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -312,6 +328,81 @@ mod tests {
 
         assert_eq!(result.postings_synced, 0);
         assert!(index.inserts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn backfill_does_not_dispatch_building_namespace_to_ordinary_postings() {
+        let store = federated_store();
+        let index = RecordingIndex::new();
+        let vid = store.insert_vertex().expect("vertex");
+        let property = PropertyId::from_raw(6);
+        let physical = PhysicalIndexId::new(903).expect("test physical id");
+        // The index-build fence admits Building memberships into the Memory46 outbox, so the
+        // namespace must carry a registered Building scope (exact catalog epoch) for the write.
+        crate::index::canonical_export::register_scope(
+            physical,
+            gleaph_graph_kernel::canonical_export::CanonicalExportScope {
+                graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(7),
+                index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(9),
+                catalog_epoch: 22,
+                target: gleaph_graph_kernel::canonical_export::CanonicalExportTarget::Vertex {
+                    label_id: 1,
+                    property_id: property,
+                },
+                inline: None,
+            },
+        )
+        .expect("register building scope");
+        let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![IndexedVertexMembership {
+                physical_index_id: physical,
+                catalog_epoch: 22,
+                phase: IndexMaintenancePhase::Building,
+                property_id: property.raw(),
+                label_id: 0,
+            }],
+            ..Default::default()
+        });
+        store
+            .set_vertex_property(vid, property, Value::Int64(7))
+            .expect("property");
+        crate::index::pending::clear_pending();
+        let outbox_len = store.derived_index_outbox_len();
+        assert_eq!(
+            outbox_len, 1,
+            "the Building envelope must be admitted to the Memory46 outbox"
+        );
+        // Acknowledge the admitted envelope so the scope reaches drained == admitted and can be
+        // removed cleanly (the outbox entry itself is process-local test state).
+        crate::index::canonical_export::ack_build_dml(physical, 22, 1)
+            .expect("ack admitted envelope");
+        crate::index::canonical_export::remove_scope(
+            physical,
+            &gleaph_graph_kernel::canonical_export::CanonicalExportScope {
+                graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(7),
+                index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(9),
+                catalog_epoch: 22,
+                target: gleaph_graph_kernel::canonical_export::CanonicalExportTarget::Vertex {
+                    label_id: 1,
+                    property_id: property,
+                },
+                inline: None,
+            },
+        )
+        .expect("cleanup building scope");
+
+        let result = pollster::block_on(backfill_vertex_property_postings(
+            &store,
+            &index,
+            PostingBackfillArgs {
+                start_vertex_id: 0,
+                max_vertices: 10,
+            },
+        ))
+        .expect("backfill");
+        assert_eq!(result.postings_synced, 0);
+        assert!(index.inserts.lock().unwrap().is_empty());
+        assert!(index.batches.lock().unwrap().is_empty());
     }
 
     #[test]

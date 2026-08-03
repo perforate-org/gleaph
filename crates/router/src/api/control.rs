@@ -27,10 +27,16 @@ fn my_role() -> Result<String, RouterError> {
 /// validation, catalog mutation, and durable ledger insertion are owned by the Router store so
 /// the public Candid surface cannot bypass those invariants.
 #[update]
-fn apply_schema_migration(
+async fn apply_schema_migration(
     args: gleaph_migration_api::ApplySchemaMigrationArgs,
 ) -> Result<gleaph_migration_api::ApplySchemaMigrationResult, RouterError> {
-    RouterStore::new().admin_apply_schema_migration(msg_caller(), args)
+    RouterStore::new()
+        .admin_apply_schema_migration_control(
+            msg_caller(),
+            args,
+            &crate::facade::store::real_index_migration_driver(),
+        )
+        .await
 }
 
 /// List the bounded global schema-migration chain in canonical parent order.
@@ -432,81 +438,82 @@ async fn advance_backfill(
     let caller = msg_caller();
     let mut shard_results = Vec::with_capacity(shards.len());
     for shard in shards {
-        let done = match kind {
-            BackfillKind::Label => {
-                crate::label_backfill::admin_label_backfill_step(
-                    &store,
-                    caller,
-                    types::AdminLabelBackfillStepArgs {
-                        logical_graph_name: graph_name.clone(),
-                        shard_id: shard.shard_id,
-                        max_vertices: max_work,
-                    },
-                    crate::graph_client::backfill_label_postings,
-                )
-                .await?
-                .done
-            }
-            BackfillKind::VertexProperty => {
-                let catalog =
-                    crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
-                crate::vertex_property_backfill::admin_vertex_property_backfill_step(
-                    &store,
-                    caller,
-                    types::AdminVertexPropertyBackfillStepArgs {
-                        logical_graph_name: graph_name.clone(),
-                        shard_id: shard.shard_id,
-                        max_vertices: max_work,
-                    },
-                    move |graph, bargs| {
-                        crate::graph_client::backfill_vertex_property_postings(
-                            graph,
-                            bargs,
-                            catalog.clone(),
-                        )
-                    },
-                )
-                .await?
-                .done
-            }
-            BackfillKind::Edge => {
-                let catalog =
-                    crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
-                crate::edge_backfill::admin_edge_backfill_step(
-                    &store,
-                    caller,
-                    types::AdminEdgeBackfillStepArgs {
-                        logical_graph_name: graph_name.clone(),
-                        shard_id: shard.shard_id,
-                        max_entries: max_work,
-                    },
-                    move |graph, bargs| {
-                        crate::graph_client::backfill_edge_property_postings(
-                            graph,
-                            bargs,
-                            catalog.clone(),
-                        )
-                    },
-                )
-                .await?
-                .done
-            }
-            BackfillKind::LabelStats => {
-                crate::label_stats_projection::admin_label_stats_projection_step(
-                    &store,
-                    caller,
-                    types::AdminLabelStatsProjectionStepArgs {
-                        logical_graph_name: graph_name.clone(),
-                        shard_id: shard.shard_id,
-                        max_deltas: max_work,
-                    },
-                    crate::graph_client::list_pending_label_stats_deltas,
-                    crate::graph_client::ack_label_stats_deltas_through,
-                )
-                .await?
-                .done
-            }
-        };
+        let done =
+            match kind {
+                BackfillKind::Label => {
+                    crate::label_backfill::admin_label_backfill_step(
+                        &store,
+                        caller,
+                        types::AdminLabelBackfillStepArgs {
+                            logical_graph_name: graph_name.clone(),
+                            shard_id: shard.shard_id,
+                            max_vertices: max_work,
+                        },
+                        crate::graph_client::backfill_label_postings,
+                    )
+                    .await?
+                    .done
+                }
+                BackfillKind::VertexProperty => {
+                    let catalog = crate::facade::stable::indexed_catalog::
+                    load_active_indexed_property_catalog(graph_id);
+                    crate::vertex_property_backfill::admin_vertex_property_backfill_step(
+                        &store,
+                        caller,
+                        types::AdminVertexPropertyBackfillStepArgs {
+                            logical_graph_name: graph_name.clone(),
+                            shard_id: shard.shard_id,
+                            max_vertices: max_work,
+                        },
+                        move |graph, bargs| {
+                            crate::graph_client::backfill_vertex_property_postings(
+                                graph,
+                                bargs,
+                                catalog.clone(),
+                            )
+                        },
+                    )
+                    .await?
+                    .done
+                }
+                BackfillKind::Edge => {
+                    let catalog = crate::facade::stable::indexed_catalog::
+                    load_active_indexed_property_catalog(graph_id);
+                    crate::edge_backfill::admin_edge_backfill_step(
+                        &store,
+                        caller,
+                        types::AdminEdgeBackfillStepArgs {
+                            logical_graph_name: graph_name.clone(),
+                            shard_id: shard.shard_id,
+                            max_entries: max_work,
+                        },
+                        move |graph, bargs| {
+                            crate::graph_client::backfill_edge_property_postings(
+                                graph,
+                                bargs,
+                                catalog.clone(),
+                            )
+                        },
+                    )
+                    .await?
+                    .done
+                }
+                BackfillKind::LabelStats => {
+                    crate::label_stats_projection::admin_label_stats_projection_step(
+                        &store,
+                        caller,
+                        types::AdminLabelStatsProjectionStepArgs {
+                            logical_graph_name: graph_name.clone(),
+                            shard_id: shard.shard_id,
+                            max_deltas: max_work,
+                        },
+                        crate::graph_client::list_pending_label_stats_deltas,
+                        crate::graph_client::ack_label_stats_deltas_through,
+                    )
+                    .await?
+                    .done
+                }
+            };
         shard_results.push(BackfillShardAdvance {
             shard_id: shard.shard_id,
             done,

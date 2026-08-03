@@ -1249,6 +1249,32 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Visits a bounded forward logical-slot window with inline bytes attached to each edge.
+    ///
+    /// The returned tuple is `(next_slot, exhausted)`. `next_slot` is the next logical slot
+    /// after the selected window; `exhausted` is derived from the stable bucket extent,
+    /// including its edge-overflow suffix. The visitor always consumes the complete selected
+    /// window, so persisting `next_slot` cannot skip unvisited positions.
+    pub fn visit_forward_edges_from_slot_with_inline_property(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        start_slot: u32,
+        limit: u32,
+        visit: impl FnMut(BucketEntryPosition, E),
+    ) -> Result<(u32, bool), DeferredBidirectionalLabeledError> {
+        self.forward
+            .visit_edges_from_slot_with_inline_property(
+                src,
+                label_id,
+                OutEdgeOrder::Ascending,
+                start_slot,
+                limit,
+                visit,
+            )
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Read-only placement metadata for an existing reverse label bucket.
     pub fn read_reverse_bucket_placement_info(
         &self,

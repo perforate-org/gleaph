@@ -18,11 +18,13 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexIntersectionResult, PostingHit, PostingRangeRequest,
+    IndexIntersectionRequest, IndexIntersectionResult, PhysicalIndexId, PostingHit,
+    PostingRangeRequest,
 };
 use ic_stable_lara::VertexId;
 
 use crate::facade::{FederationRouting, GraphStore};
+use crate::index::catalog_context::IndexMembershipRef;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::repair_journal::drain_once;
 use crate::index::{edge_pending, label_pending, pending};
@@ -82,6 +84,7 @@ impl RecordingIndex {
 impl PropertyIndexLookup for RecordingIndex {
     async fn lookup_equal(
         &self,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -90,6 +93,7 @@ impl PropertyIndexLookup for RecordingIndex {
 
     async fn lookup_range(
         &self,
+        _physical_index_id: PhysicalIndexId,
         _property_id: u32,
         _req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
@@ -110,6 +114,7 @@ impl PropertyIndexLookup for RecordingIndex {
     async fn posting_insert_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -125,6 +130,7 @@ impl PropertyIndexLookup for RecordingIndex {
     async fn posting_remove_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -162,6 +168,7 @@ impl PropertyIndexLookup for RecordingIndex {
     async fn edge_posting_insert_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -182,6 +189,7 @@ impl PropertyIndexLookup for RecordingIndex {
     async fn edge_posting_remove_at(
         &self,
         _shard_id: ShardId,
+        _physical_index_id: PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         label_id: u16,
@@ -258,6 +266,14 @@ fn drain_journal(graph: &GraphStore) {
     }
 }
 
+fn active_membership(raw: u64) -> IndexMembershipRef {
+    IndexMembershipRef {
+        physical_index_id: PhysicalIndexId::new(raw).expect("test physical id"),
+        catalog_epoch: 1,
+        phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+    }
+}
+
 /// INV holds after a mutation sequence (incl. an edge compaction re-key) even
 /// when a mid-batch index failure forces compensation + durable-journal recovery.
 #[test]
@@ -266,12 +282,25 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
         // The index fails the 2nd mutating call once: it lands inside the first
         // (vertex) batch, forcing batch-atomic compensation + journaling.
         let index = RecordingIndex::fail_once_on(2);
+        let membership = active_membership(101);
 
         // Batch 1 — vertex property postings (age). The 2nd insert fails, so the
         // whole batch is compensated to empty and persisted to the repair journal.
-        pending::push_vertex_index_op(VertexId::from(1u32), vertex_insert(AGE_PID, &[10]));
-        pending::push_vertex_index_op(VertexId::from(2u32), vertex_insert(AGE_PID, &[11]));
-        pending::push_vertex_index_op(VertexId::from(3u32), vertex_insert(AGE_PID, &[10]));
+        pending::push_vertex_index_op(
+            VertexId::from(1u32),
+            membership,
+            vertex_insert(AGE_PID, &[10]),
+        );
+        pending::push_vertex_index_op(
+            VertexId::from(2u32),
+            membership,
+            vertex_insert(AGE_PID, &[11]),
+        );
+        pending::push_vertex_index_op(
+            VertexId::from(3u32),
+            membership,
+            vertex_insert(AGE_PID, &[10]),
+        );
         let err = pollster::block_on(pending::flush_pending(Some(&index), None))
             .expect_err("injected failure on the 2nd vertex insert");
         assert!(err.to_string().contains("inv_oracle_injected_failure"));
@@ -289,12 +318,14 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
             VertexId::from(OWNER),
             KNOWS_LABEL,
             0,
+            membership,
             edge_insert(&[100]),
         );
         edge_pending::push_edge_index_op(
             VertexId::from(OWNER),
             KNOWS_LABEL,
             1,
+            membership,
             edge_insert(&[200]),
         );
         pollster::block_on(edge_pending::flush_pending(Some(&index), None))
@@ -307,18 +338,21 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
             VertexId::from(OWNER),
             KNOWS_LABEL,
             0,
+            membership,
             edge_remove(&[100]),
         );
         edge_pending::push_edge_index_op(
             VertexId::from(OWNER),
             KNOWS_LABEL,
             1,
+            membership,
             edge_remove(&[200]),
         );
         edge_pending::push_edge_index_op(
             VertexId::from(OWNER),
             KNOWS_LABEL,
             0,
+            membership,
             edge_insert(&[200]),
         );
         pollster::block_on(edge_pending::flush_pending(Some(&index), None))

@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-index-ddl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gleaph-specific CREATE INDEX and DROP INDEX parser"
+
+[dependencies]
+gleaph-gql.workspace = true
+gleaph-graph-kernel.workspace = true
+thiserror.workspace = true

@@ -21,6 +21,7 @@ gleaph-gql-ic.workspace = true
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-graph-catalog.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-index-ddl.workspace = true
 gleaph-message-sizing.workspace = true
 gleaph-migration-api.workspace = true
 gleaph-gql-integration.workspace = true

@@ -1,21 +1,40 @@
 //! Property storage domain: primary stores plus derived index-maintenance events.
 
-use super::super::VertexPropertyStoreError;
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
+use crate::facade::store::index_build_admission::PlannedBuildEnvelope;
 use crate::property::{
-    PropertyValueChange, dispatch_property_index_ops, dispatch_vertex_property_index_ops_bulk,
+    PropertyValueChange, commit_property_index_ops, dispatch_property_index_ops,
+    dispatch_vertex_property_index_ops_bulk, index_build_subject_for_change,
+    preflight_property_index_ops,
 };
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::index::IndexBuildSubject;
+use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{VertexId, labeled::CanonicalEdgeOccurrence};
 
 use super::GraphStore;
+use super::error::GraphStoreError;
 
 impl GraphStore {
     pub(crate) fn commit_vertex_property_writes_bulk(
         &self,
         assignments: &[(VertexId, PropertyId, Value)],
-    ) -> Result<(), VertexPropertyStoreError> {
+        mutation_id: MutationId,
+    ) -> Result<(), GraphStoreError> {
+        // Pure validation first: the stable-map `set` boundary only checks the property id and
+        // persistability, so validating both here makes every post-fence stable write infallible.
+        for (_, property_id, value) in assignments {
+            crate::property::ensure_property_id(*property_id)
+                .map_err(|id| GraphStoreError::PropertyValue(super::super::stable::vertex_properties::VertexPropertyStoreError::ReservedPropertyId(id)))?;
+            crate::property::ensure_persistable(value).map_err(|error| {
+                GraphStoreError::PropertyValue(
+                    super::super::stable::vertex_properties::VertexPropertyStoreError::InvalidValue(
+                        error,
+                    ),
+                )
+            })?;
+        }
         let previous = VERTEX_PROPERTIES.with_borrow(|store| {
             assignments
                 .iter()
@@ -28,16 +47,43 @@ impl GraphStore {
                 })
                 .collect::<Vec<_>>()
         });
-        VERTEX_PROPERTIES.with_borrow_mut(|store| {
-            assignments
-                .iter()
-                .map(|(vertex_id, property_id, value)| {
-                    store
-                        .set(*vertex_id, *property_id, value.clone())
-                        .map(|_| ())
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+        let changes = assignments
+            .iter()
+            .zip(previous.iter())
+            .map(|((vertex_id, property_id, value), (_, _, previous))| {
+                PropertyValueChange::vertex(
+                    *vertex_id,
+                    *property_id,
+                    previous.as_ref(),
+                    Some(value),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Plan (pure) every assignment before any stable write so one stale membership cannot
+        // leave another namespace's durable counter advanced.
+        let mut pending_commit: Vec<(IndexBuildSubject, Vec<PlannedBuildEnvelope>)> = Vec::new();
+        for change in &changes {
+            let planned = preflight_property_index_ops(*change)?;
+            if !planned.is_empty() {
+                pending_commit.push((index_build_subject_for_change(*change)?, planned));
+            }
+        }
+        // Commit (infallible): reserve sequences and append envelopes before the canonical writes.
+        for (subject, planned) in pending_commit {
+            commit_property_index_ops(mutation_id, subject, planned);
+        }
+        VERTEX_PROPERTIES
+            .with_borrow_mut(|store| {
+                assignments
+                    .iter()
+                    .map(|(vertex_id, property_id, value)| {
+                        store
+                            .set(*vertex_id, *property_id, value.clone())
+                            .map(|_| ())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .expect("bulk vertex property assignments were pre-validated and must be writable");
         let changes = assignments
             .iter()
             .zip(previous.iter())
@@ -56,18 +102,42 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
         record_index_pending: bool,
-    ) -> Result<Option<Value>, VertexPropertyStoreError> {
+        mutation_id: MutationId,
+    ) -> Result<Option<Value>, GraphStoreError> {
+        // Pure validation first so the fence commit that follows is infallible.
+        crate::property::ensure_property_id(property_id).map_err(|id| {
+            GraphStoreError::PropertyValue(
+                super::super::stable::vertex_properties::VertexPropertyStoreError::ReservedPropertyId(
+                    id,
+                ),
+            )
+        })?;
+        crate::property::ensure_persistable(&value).map_err(|error| {
+            GraphStoreError::PropertyValue(
+                super::super::stable::vertex_properties::VertexPropertyStoreError::InvalidValue(
+                    error,
+                ),
+            )
+        })?;
         let prev =
             VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
-        let out = VERTEX_PROPERTIES
-            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))?;
+        let change =
+            PropertyValueChange::vertex(vertex_id, property_id, prev.as_ref(), Some(&value));
         if record_index_pending {
-            dispatch_property_index_ops(PropertyValueChange::vertex(
-                vertex_id,
-                property_id,
-                prev.as_ref(),
-                Some(&value),
-            ));
+            let planned = preflight_property_index_ops(change)?;
+            if !planned.is_empty() {
+                commit_property_index_ops(
+                    mutation_id,
+                    index_build_subject_for_change(change)?,
+                    planned,
+                );
+            }
+        }
+        let out = VERTEX_PROPERTIES
+            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))
+            .expect("vertex property was pre-validated and must be writable");
+        if record_index_pending {
+            dispatch_property_index_ops(change);
         }
         Ok(out)
     }
@@ -77,18 +147,26 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         property_id: PropertyId,
-    ) -> Option<Value> {
-        let removed = VERTEX_PROPERTIES
-            .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
-        if let Some(ref old) = removed {
-            dispatch_property_index_ops(PropertyValueChange::vertex(
-                vertex_id,
-                property_id,
-                Some(old),
-                None,
-            ));
+        mutation_id: MutationId,
+    ) -> Result<Option<Value>, GraphStoreError> {
+        let prev =
+            VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
+        if let Some(ref old) = prev {
+            let change = PropertyValueChange::vertex(vertex_id, property_id, Some(old), None);
+            let planned = preflight_property_index_ops(change)?;
+            if !planned.is_empty() {
+                commit_property_index_ops(
+                    mutation_id,
+                    index_build_subject_for_change(change)?,
+                    planned,
+                );
+            }
+            let removed = VERTEX_PROPERTIES
+                .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
+            dispatch_property_index_ops(change);
+            return Ok(removed);
         }
-        removed
+        Ok(None)
     }
 
     /// Write an edge property on a canonical handle and update local equality postings.
@@ -101,9 +179,10 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
         value: Value,
-    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        mutation_id: MutationId,
+    ) -> Result<Option<Value>, GraphStoreError> {
         let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
-        self.commit_edge_property_write_at_canonical(handle, property_id, value)
+        self.commit_edge_property_write_at_canonical(handle, property_id, value, mutation_id)
     }
 
     /// Write a property when the caller already owns an exact canonical sidecar handle.
@@ -116,7 +195,23 @@ impl GraphStore {
         handle: super::handle::EdgeHandle,
         property_id: PropertyId,
         value: Value,
-    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        mutation_id: MutationId,
+    ) -> Result<Option<Value>, GraphStoreError> {
+        // Pure validation first so the fence commit that follows is infallible.
+        crate::property::ensure_property_id(property_id).map_err(|id| {
+            GraphStoreError::PropertyValue(
+                super::super::stable::vertex_properties::VertexPropertyStoreError::ReservedPropertyId(
+                    id,
+                ),
+            )
+        })?;
+        crate::property::ensure_persistable(&value).map_err(|error| {
+            GraphStoreError::PropertyValue(
+                super::super::stable::vertex_properties::VertexPropertyStoreError::InvalidValue(
+                    error,
+                ),
+            )
+        })?;
         let prev = EDGE_PROPERTIES.with_borrow(|properties| {
             properties.get(
                 handle.owner_vertex_id,
@@ -125,6 +220,22 @@ impl GraphStore {
                 property_id,
             )
         });
+        let change = PropertyValueChange::edge(
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            handle.slot_index.raw(),
+            property_id,
+            prev.as_ref(),
+            Some(&value),
+        );
+        let planned = preflight_property_index_ops(change)?;
+        if !planned.is_empty() {
+            commit_property_index_ops(
+                mutation_id,
+                index_build_subject_for_change(change)?,
+                planned,
+            );
+        }
         let old = EDGE_PROPERTIES
             .with_borrow_mut(|properties| {
                 properties.set(
@@ -135,58 +246,9 @@ impl GraphStore {
                     value.clone(),
                 )
             })
-            .map_err(super::error::GraphStoreError::from)?;
-        dispatch_property_index_ops(PropertyValueChange::edge(
-            handle.owner_vertex_id,
-            handle.label_id.raw(),
-            handle.slot_index.raw(),
-            property_id,
-            prev.as_ref(),
-            Some(&value),
-        ));
+            .expect("edge property was pre-validated and must be writable");
+        dispatch_property_index_ops(change);
         Ok(old)
-    }
-
-    /// Write scalar-insert sidecars under one stable-map borrow while retaining
-    /// the existing fallible error boundary. The caller owns an exact canonical
-    /// handle returned by the edge insert, so no counterpart scan is needed.
-    pub(crate) fn commit_edge_property_writes_at_canonical_fallible(
-        &self,
-        handle: super::handle::EdgeHandle,
-        properties: impl IntoIterator<Item = (PropertyId, Value)>,
-    ) -> Result<(), super::error::GraphStoreError> {
-        let mut properties = properties.into_iter();
-        let Some(first) = properties.next() else {
-            return Ok(());
-        };
-        let written = EDGE_PROPERTIES.with_borrow_mut(|store| {
-            std::iter::once(first)
-                .chain(properties)
-                .map(|(property_id, value)| {
-                    store
-                        .set(
-                            handle.owner_vertex_id,
-                            handle.label_id.raw(),
-                            handle.slot_index.raw(),
-                            property_id,
-                            value.clone(),
-                        )
-                        .map(|previous| (property_id, value, previous))
-                        .map_err(super::error::GraphStoreError::from)
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
-        for (property_id, value, previous) in written {
-            dispatch_property_index_ops(PropertyValueChange::edge(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index.raw(),
-                property_id,
-                previous.as_ref(),
-                Some(&value),
-            ));
-        }
-        Ok(())
     }
 
     /// Co-write a preflighted set of initial properties at one canonical edge.
@@ -233,7 +295,8 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
-    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        mutation_id: MutationId,
+    ) -> Result<Option<Value>, GraphStoreError> {
         let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
         let prev = EDGE_PROPERTIES.with_borrow(|properties| {
             properties.get(
@@ -243,25 +306,35 @@ impl GraphStore {
                 property_id,
             )
         });
-        let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.remove(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index.raw(),
-                property_id,
-            )
-        });
         if let Some(ref old) = prev {
-            dispatch_property_index_ops(PropertyValueChange::edge(
+            let change = PropertyValueChange::edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
                 handle.slot_index.raw(),
                 property_id,
                 Some(old),
                 None,
-            ));
+            );
+            let planned = preflight_property_index_ops(change)?;
+            if !planned.is_empty() {
+                commit_property_index_ops(
+                    mutation_id,
+                    index_build_subject_for_change(change)?,
+                    planned,
+                );
+            }
+            let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
+                properties.remove(
+                    handle.owner_vertex_id,
+                    handle.label_id.raw(),
+                    handle.slot_index.raw(),
+                    property_id,
+                )
+            });
+            dispatch_property_index_ops(change);
+            return Ok(removed);
         }
-        Ok(removed)
+        Ok(None)
     }
 
     /// Remove every edge property on a canonical handle.
@@ -271,7 +344,7 @@ impl GraphStore {
     pub(super) fn commit_remove_all_edge_properties(
         &self,
         occurrence: CanonicalEdgeOccurrence,
-    ) -> Result<(), super::error::GraphStoreError> {
+    ) -> Result<(), GraphStoreError> {
         let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
         self.commit_remove_all_edge_properties_at_canonical(handle);
         Ok(())
@@ -307,7 +380,10 @@ impl GraphStore {
         })
     }
 
-    /// Remove every vertex property and enqueue federated index maintenance when enabled.
+    /// Remove every vertex property and dispatch Active removals only.
+    ///
+    /// The vertex-delete entrypoint admits Building removals through the index-build fence
+    /// before calling this; this method never lets Building/Sealing work into the ordinary queue.
     pub(super) fn commit_clear_vertex_properties(&self, vertex_id: VertexId) {
         let props: Vec<PropertyId> = VERTEX_PROPERTIES.with_borrow(|store| {
             store
@@ -317,7 +393,12 @@ impl GraphStore {
                 .collect()
         });
         for property_id in props {
-            let _ = self.commit_vertex_property_remove(vertex_id, property_id);
+            let prev = VERTEX_PROPERTIES.with_borrow(|p| p.get(vertex_id, property_id));
+            if let Some(ref old) = prev {
+                let change = PropertyValueChange::vertex(vertex_id, property_id, Some(old), None);
+                let _ = VERTEX_PROPERTIES.with_borrow_mut(|p| p.remove(vertex_id, property_id));
+                dispatch_property_index_ops(change);
+            }
         }
     }
 }

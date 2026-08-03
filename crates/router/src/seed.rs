@@ -15,14 +15,15 @@ use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
-use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::entry::{GraphId, PropertyId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexEqualSpec, PostingHit, validate_index_value_key_bytes,
+    EdgePostingHit, IndexEqualSpec, PhysicalIndexId, PostingHit, validate_index_value_key_bytes,
 };
 use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
 
 use crate::edge_index_direction::wire_labels_for_query;
+use crate::facade::stable::indexed_catalog;
 use crate::facade::store::RouterStore;
 use crate::planner_stats::RouterGraphStats;
 use crate::state::RouterError;
@@ -176,6 +177,8 @@ pub struct SeedProbe {
     pub property: String,
     /// Interned property id for index canister calls.
     pub property_id: u32,
+    /// Router-owned physical posting namespace selected from one Active catalog row.
+    pub physical_index_id: PhysicalIndexId,
     /// Index key bytes for `lookup_equal` (`value_to_index_key_bytes` encoding).
     pub payload_bytes: Vec<u8>,
 }
@@ -186,6 +189,8 @@ pub struct EdgeSeedProbe {
     pub variable: String,
     pub property: String,
     pub property_id: u32,
+    /// Router-owned physical posting namespace selected from one Active catalog row.
+    pub physical_index_id: PhysicalIndexId,
     pub payload_bytes: Vec<u8>,
     /// Wire label ids to scan in graph-index (ADR 0012); empty means unfiltered.
     pub wire_label_ids: Vec<u16>,
@@ -276,6 +281,20 @@ fn edge_equal_anchor(
         .lookup_property_id(graph_id, property.as_ref())
         .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
         .raw();
+    let edge_label_id = edge_label
+        .map(|label| {
+            store
+                .lookup_edge_label_id(graph_id, label)
+                .map(|id| id.raw())
+                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))
+        })
+        .transpose()?;
+    let physical_index_id = indexed_catalog::active_edge_physical_index(
+        graph_id,
+        edge_label_id,
+        PropertyId::from_raw(property_id),
+        query_direction,
+    )?;
     let wire_label_ids = match (edge_label, query_direction) {
         (Some(label), Some(direction)) => {
             let catalog = store
@@ -289,6 +308,7 @@ fn edge_equal_anchor(
         variable: variable.as_ref().to_string(),
         property: property.as_ref().to_string(),
         property_id,
+        physical_index_id,
         payload_bytes,
         wire_label_ids,
     }))
@@ -523,7 +543,16 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                             RouterError::NotFound(format!("property {}", scan.property.as_ref()))
                         })?
                         .raw();
-                    specs.push(IndexEqualSpec::vertex(property_id, payload_bytes));
+                    let physical_index_id = indexed_catalog::active_vertex_physical_index(
+                        graph_id,
+                        None,
+                        PropertyId::from_raw(property_id),
+                    )?;
+                    specs.push(IndexEqualSpec::vertex(
+                        physical_index_id,
+                        property_id,
+                        payload_bytes,
+                    ));
                 }
                 push_unique_anchor(
                     &mut anchors,
@@ -674,10 +703,16 @@ fn equal_anchor(
         .lookup_property_id(graph_id, property)
         .map_err(|_| RouterError::NotFound(format!("property {property}")))?
         .raw();
+    let physical_index_id = indexed_catalog::active_vertex_physical_index(
+        graph_id,
+        None,
+        PropertyId::from_raw(property_id),
+    )?;
     Ok(IndexAnchor::Equal(SeedProbe {
         variable: variable.as_ref().to_string(),
         property: property.to_string(),
         property_id,
+        physical_index_id,
         payload_bytes,
     }))
 }
@@ -731,10 +766,16 @@ fn anchor_from_property_predicate(
                 .lookup_property_id(stats.graph_id(), &property)
                 .map_err(|_| RouterError::NotFound(format!("property {property}")))?
                 .raw();
+            let physical_index_id = indexed_catalog::active_vertex_physical_index(
+                stats.graph_id(),
+                None,
+                PropertyId::from_raw(property_id),
+            )?;
             Ok(Some(IndexAnchor::Equal(SeedProbe {
                 variable,
                 property,
                 property_id,
+                physical_index_id,
                 payload_bytes,
             })))
         }
@@ -845,7 +886,16 @@ fn extract_from_op(
                         RouterError::NotFound(format!("property {}", scan.property.as_ref()))
                     })?
                     .raw();
-                specs.push(IndexEqualSpec::vertex(property_id, payload_bytes));
+                let physical_index_id = indexed_catalog::active_vertex_physical_index(
+                    graph_id,
+                    None,
+                    PropertyId::from_raw(property_id),
+                )?;
+                specs.push(IndexEqualSpec::vertex(
+                    physical_index_id,
+                    property_id,
+                    payload_bytes,
+                ));
             }
             Ok(Some(IndexAnchor::Intersection {
                 variable: variable.to_string(),
@@ -873,10 +923,16 @@ fn extract_from_op(
                 .lookup_property_id(graph_id, property.as_ref())
                 .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
                 .raw();
+            let physical_index_id = indexed_catalog::active_vertex_physical_index(
+                graph_id,
+                None,
+                PropertyId::from_raw(property_id),
+            )?;
             Ok(Some(IndexAnchor::Equal(SeedProbe {
                 variable: variable.to_string(),
                 property: property.to_string(),
                 property_id,
+                physical_index_id,
                 payload_bytes,
             })))
         }
@@ -1041,6 +1097,9 @@ mod tests {
                 property,
             )
             .expect("intern property");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, property,
+        );
         (store, graph_id)
     }
 
@@ -1064,6 +1123,9 @@ mod tests {
                 "email",
             )
             .expect("intern email");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "email",
+        );
         let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexIntersection {
             variable: Rc::from("n"),
             scans: vec![
@@ -1202,6 +1264,9 @@ mod tests {
                 "region",
             )
             .expect("intern region");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "region",
+        );
         let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["region"]);
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
@@ -1271,6 +1336,9 @@ mod tests {
                 "demo_id",
             )
             .expect("intern demo_id");
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "demo_id",
+        );
         let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::CartesianProduct {
@@ -1388,6 +1456,9 @@ mod tests {
                 "KNOWS",
             )
             .expect("intern edge label");
+        crate::facade::store::catalog_test_support::register_active_edge_index(
+            &store, graph_id, "KNOWS", "weight",
+        );
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::EdgeIndexScan {
                 variable: Rc::from("e"),

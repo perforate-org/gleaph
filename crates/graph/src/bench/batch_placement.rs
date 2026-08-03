@@ -511,6 +511,7 @@ fn bench_scalar_directed_128_sidecar_4_bulk() -> canbench_rs::BenchResult {
                 edge.target_vertex_id,
                 Some(label),
                 properties.iter().cloned(),
+                0,
             )
             .expect("scalar sidecar insert");
         }

@@ -39,6 +39,7 @@ use super::store::helpers::{
     lara_label,
 };
 use crate::edge_inline_property_schema::resolved_edge_label_with;
+use crate::facade::{FencedTransition, GraphStoreError, PlannedBuildEnvelope, trap_build_fence};
 
 /// Result of attempting a clean-slab batch edge insert through GraphStore.
 ///
@@ -68,6 +69,8 @@ pub(crate) enum BatchEdgeInsertResult {
 pub(crate) enum OrderedEdgeBatchExecutionError {
     Validation(BatchPlacementError),
     RecoverableGeometry(OneOrientationBatchError),
+    /// A Building/Sealing index DML failed its Graph-owned admission before any batch write.
+    IndexBuildAdmission(GraphStoreError),
 }
 
 impl OrderedEdgeBatchExecutionError {
@@ -84,6 +87,12 @@ impl std::fmt::Display for OrderedEdgeBatchExecutionError {
                 write!(
                     f,
                     "ordered Graph clean-slab geometry is unsupported: {error}"
+                )
+            }
+            Self::IndexBuildAdmission(error) => {
+                write!(
+                    f,
+                    "ordered Graph batch index-build admission failed: {error}"
                 )
             }
         }
@@ -203,6 +212,11 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
     ) -> Result<GraphOrderedEdgeBatchResult, OrderedEdgeBatchExecutionError> {
+        // Fence plan BEFORE the batch commit: every initial sidecar transition (prev=None). A
+        // Sealing membership rejects with nothing written.
+        let planned = self
+            .plan_ordered_batch_sidecar_admission(edges)
+            .map_err(OrderedEdgeBatchExecutionError::IndexBuildAdmission)?;
         let result = self
             .try_insert_ordered_edge_batch_clean_slab(edges)
             .map_err(OrderedEdgeBatchExecutionError::Validation)?;
@@ -210,7 +224,7 @@ impl GraphStore {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
-        self.commit_ordered_edge_batch_initial_sidecars(edges, &result);
+        self.commit_ordered_edge_batch_initial_sidecars(edges, &result, mutation_id, planned);
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
     }
 
@@ -221,6 +235,9 @@ impl GraphStore {
         edges: &[BatchEdgeInput],
         intents: &[BatchEdgeIntent],
     ) -> Result<GraphOrderedEdgeBatchResult, OrderedEdgeBatchExecutionError> {
+        let planned = self
+            .plan_ordered_batch_sidecar_admission(edges)
+            .map_err(OrderedEdgeBatchExecutionError::IndexBuildAdmission)?;
         let result = self
             .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
             .map_err(OrderedEdgeBatchExecutionError::Validation)?;
@@ -228,7 +245,7 @@ impl GraphStore {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
-        self.commit_ordered_edge_batch_initial_sidecars(edges, &result);
+        self.commit_ordered_edge_batch_initial_sidecars(edges, &result, mutation_id, planned);
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
     }
 
@@ -243,7 +260,7 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
     ) -> GraphOrderedEdgeBatchResult {
-        self.execute_ordered_scalar_edges(edges);
+        self.execute_ordered_scalar_edges(edges, mutation_id);
         self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges)
     }
 
@@ -251,7 +268,11 @@ impl GraphStore {
     ///
     /// The caller must have completed whole-request planning before invoking this helper. Any
     /// unexpected write error traps so a prior batch commit in the same Graph message rolls back.
-    pub(crate) fn execute_ordered_scalar_edges(&self, edges: &[BatchEdgeInput]) {
+    pub(crate) fn execute_ordered_scalar_edges(
+        &self,
+        edges: &[BatchEdgeInput],
+        mutation_id: MutationId,
+    ) {
         for edge in edges {
             let properties = edge.initial_edge_properties.iter().cloned();
             if edge.directed {
@@ -262,6 +283,7 @@ impl GraphStore {
                     edge.catalog_label,
                     &edge.inline_property_bytes,
                     properties,
+                    mutation_id,
                 )
                 .unwrap_or_else(|error| {
                     panic!("ordered Graph scalar fallback failed after preflight: {error}")
@@ -274,6 +296,7 @@ impl GraphStore {
                     edge.catalog_label,
                     &edge.inline_property_bytes,
                     properties,
+                    mutation_id,
                 )
                 .unwrap_or_else(|error| {
                     panic!("ordered Graph scalar fallback failed after preflight: {error}")
@@ -341,6 +364,11 @@ impl GraphStore {
                 .collect::<Vec<_>>()
         });
 
+        // Fence plan BEFORE any batch insert: every initial sidecar transition (prev=None). A
+        // Sealing membership rejects with nothing written.
+        let batch_planned = self
+            .plan_ordered_batch_sidecar_admission(&batch_edges)
+            .map_err(OrderedEdgeBatchExecutionError::IndexBuildAdmission)?;
         let batch_result = match local_batch_intents.as_deref() {
             Some(intents) => {
                 self.try_insert_ordered_edge_batch_clean_slab_with_intents(&batch_edges, intents)
@@ -349,8 +377,13 @@ impl GraphStore {
         };
         match batch_result {
             Ok(result @ BatchEdgeInsertResult::Committed { .. }) => {
-                self.commit_ordered_edge_batch_initial_sidecars(&batch_edges, &result);
-                self.execute_ordered_scalar_edges(&scalar_edges);
+                self.commit_ordered_edge_batch_initial_sidecars(
+                    &batch_edges,
+                    &result,
+                    mutation_id,
+                    batch_planned,
+                );
+                self.execute_ordered_scalar_edges(&scalar_edges, mutation_id);
                 Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
             }
             Ok(BatchEdgeInsertResult::RecoverableGeometry { .. }) => Ok(self
@@ -379,10 +412,10 @@ impl GraphStore {
         let result = if !edges.is_empty()
             && classification.logical_ordinals_with_multi_runs.len() == edges.len()
         {
-            match self.execute_mixed_clean_slab(edges, &classification.intents) {
+            match self.execute_mixed_clean_slab(edges, &classification.intents, mutation_id) {
                 Ok(()) => Ok(()),
                 Err(error) if error.is_recoverable_geometry() => {
-                    self.execute_ordered_scalar_edges(edges);
+                    self.execute_ordered_scalar_edges(edges, mutation_id);
                     Ok(())
                 }
                 Err(error) => Err(error),
@@ -393,16 +426,17 @@ impl GraphStore {
                 .and_then(|summary| {
                     let batch_ordinals = summary.logical_ordinals_requiring_batch();
                     if batch_ordinals.is_empty() {
-                        self.execute_ordered_scalar_edges(edges);
+                        self.execute_ordered_scalar_edges(edges, mutation_id);
                         return Ok(());
                     }
                     if batch_ordinals.len() < edges.len() {
-                        return self.execute_mixed_partitioned(edges, batch_ordinals);
+                        return self.execute_mixed_partitioned(edges, batch_ordinals, mutation_id);
                     }
-                    match self.execute_mixed_clean_slab(edges, &classification.intents) {
+                    match self.execute_mixed_clean_slab(edges, &classification.intents, mutation_id)
+                    {
                         Ok(()) => Ok(()),
                         Err(error) if error.is_recoverable_geometry() => {
-                            self.execute_ordered_scalar_edges(edges);
+                            self.execute_ordered_scalar_edges(edges, mutation_id);
                             Ok(())
                         }
                         Err(error) => Err(error),
@@ -452,14 +486,19 @@ impl GraphStore {
         &self,
         edges: &[BatchEdgeInput],
         intents: &[BatchEdgeIntent],
+        mutation_id: MutationId,
     ) -> Result<(), OrderedEdgeBatchExecutionError> {
+        // Fence plan BEFORE the batch insert: every initial sidecar transition (prev=None).
+        let planned = self
+            .plan_ordered_batch_sidecar_admission(edges)
+            .map_err(OrderedEdgeBatchExecutionError::IndexBuildAdmission)?;
         let result = self
             .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
             .map_err(OrderedEdgeBatchExecutionError::Validation)?;
         if let BatchEdgeInsertResult::RecoverableGeometry { error } = result {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
-        self.commit_ordered_edge_batch_initial_sidecars(edges, &result);
+        self.commit_ordered_edge_batch_initial_sidecars(edges, &result, mutation_id, planned);
         Ok(())
     }
 
@@ -467,6 +506,7 @@ impl GraphStore {
         &self,
         edges: &[BatchEdgeInput],
         batch_ordinals: &BTreeSet<u32>,
+        mutation_id: MutationId,
     ) -> Result<(), OrderedEdgeBatchExecutionError> {
         let (batch_edges, scalar_edges): (Vec<_>, Vec<_>) = edges
             .iter()
@@ -480,24 +520,72 @@ impl GraphStore {
             .into_iter()
             .map(|(_, edge)| edge.clone())
             .collect();
+        // Fence plan BEFORE the batch insert: every initial sidecar transition (prev=None).
+        let planned = self
+            .plan_ordered_batch_sidecar_admission(&batch_edges)
+            .map_err(OrderedEdgeBatchExecutionError::IndexBuildAdmission)?;
         match self.try_insert_ordered_edge_batch_clean_slab(&batch_edges) {
             Ok(result @ BatchEdgeInsertResult::Committed { .. }) => {
-                self.commit_ordered_edge_batch_initial_sidecars(&batch_edges, &result);
-                self.execute_ordered_scalar_edges(&scalar_edges);
+                self.commit_ordered_edge_batch_initial_sidecars(
+                    &batch_edges,
+                    &result,
+                    mutation_id,
+                    planned,
+                );
+                self.execute_ordered_scalar_edges(&scalar_edges, mutation_id);
                 Ok(())
             }
             Ok(BatchEdgeInsertResult::RecoverableGeometry { .. }) => {
-                self.execute_ordered_scalar_edges(edges);
+                self.execute_ordered_scalar_edges(edges, mutation_id);
                 Ok(())
             }
             Err(error) => Err(OrderedEdgeBatchExecutionError::Validation(error)),
         }
     }
 
+    /// Pure admission planning for an ordered batch's initial sidecar transitions.
+    ///
+    /// Runs before any batch insert so a Sealing membership rejects with nothing written. The
+    /// canonical slots are not known until placement, so this returns subject-less envelopes per
+    /// logical edge; [`Self::commit_ordered_edge_batch_initial_sidecars`] binds each subject.
+    fn plan_ordered_batch_sidecar_admission(
+        &self,
+        edges: &[BatchEdgeInput],
+    ) -> Result<Vec<Vec<PlannedBuildEnvelope>>, GraphStoreError> {
+        // Fast path: with no Building/Sealing membership every transition is Active, so the fence
+        // has no envelope to commit and nothing to reject. Skip the per-edge membership
+        // resolution entirely (the common case with no in-flight index build).
+        if !crate::index::catalog_context::has_non_active_membership() {
+            return Ok((0..edges.len()).map(|_| Vec::new()).collect());
+        }
+        let mut planned_by_edge = Vec::with_capacity(edges.len());
+        for edge in edges {
+            let wire_label = lara_label(edge_storage_label(edge.catalog_label, !edge.directed));
+            let mut transitions = Vec::new();
+            for (property_id, value) in &edge.initial_edge_properties {
+                for membership in crate::index::catalog_context::edge_index_memberships(
+                    wire_label.raw(),
+                    *property_id,
+                ) {
+                    transitions.push(FencedTransition {
+                        property_id: *property_id,
+                        prev: None,
+                        new: Some(value),
+                        membership,
+                    });
+                }
+            }
+            planned_by_edge.push(self.plan_index_build_admission(transitions)?);
+        }
+        Ok(planned_by_edge)
+    }
+
     fn commit_ordered_edge_batch_initial_sidecars(
         &self,
         edges: &[BatchEdgeInput],
         result: &BatchEdgeInsertResult,
+        mutation_id: MutationId,
+        planned_by_edge: Vec<Vec<PlannedBuildEnvelope>>,
     ) {
         if !edges
             .iter()
@@ -517,16 +605,29 @@ impl GraphStore {
             edges.len(),
             "ordered batch sidecar locations must align with logical items"
         );
-        for (edge, location) in edges.iter().zip(locations) {
+        assert_eq!(
+            planned_by_edge.len(),
+            edges.len(),
+            "ordered batch sidecar plans must align with logical items"
+        );
+        for ((edge, location), planned) in edges.iter().zip(locations).zip(planned_by_edge) {
             let occurrence = location.canonical_occurrence(edge);
-            self.commit_edge_property_writes_at_canonical(
-                EdgeHandle::at_slot(
-                    occurrence.owner_vertex_id,
-                    occurrence.label_id,
-                    occurrence.slot_index,
-                ),
-                &edge.initial_edge_properties,
+            let handle = EdgeHandle::at_slot(
+                occurrence.owner_vertex_id,
+                occurrence.label_id,
+                occurrence.slot_index,
             );
+            // Commit (infallible): bind the exact canonical slot and append the envelopes before
+            // the sidecar writes. The plan already rejected Sealing before the batch insert.
+            if !planned.is_empty() {
+                self.commit_index_build_admission(
+                    mutation_id,
+                    self.edge_subject_for_handle(handle)
+                        .unwrap_or_else(trap_build_fence),
+                    planned,
+                );
+            }
+            self.commit_edge_property_writes_at_canonical(handle, &edge.initial_edge_properties);
         }
     }
 
@@ -675,34 +776,32 @@ impl GraphStore {
         self.try_insert_batch_edges_clean_slab_with_mode(edges, BatchLocationMode::Capture)
     }
 
-    /// Insert a clean-slab batch and commit its initial canonical sidecars.
+    /// Insert a clean-slab batch and commit its initial canonical sidecars under the index-build
+    /// admission fence.
     ///
-    /// Location capture is mandatory for this path. Property validation happens
-    /// before reservation, and sidecars are addressed directly by the captured
-    /// canonical owner/label/logical-slot tuple after LARA commit.
+    /// Location capture is mandatory for this path. Property validation happens before
+    /// reservation, and sidecars are addressed directly by the captured canonical
+    /// owner/label/logical-slot tuple after LARA commit. The fence runs the same pure plan and
+    /// infallible commit as the ordered batch path, so a Building membership receives one exact
+    /// build-DML envelope per affected transition and a Sealing membership rejects before any
+    /// canonical write.
     pub(crate) fn try_insert_batch_edges_clean_slab_with_initial_properties(
         &self,
         edges: &[super::batch_placement::BatchEdgeInput],
+        mutation_id: MutationId,
     ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        let planned_by_edge = self
+            .plan_ordered_batch_sidecar_admission(edges)
+            .map_err(BatchPlacementError::IndexBuildAdmission)?;
         let result =
             self.try_insert_batch_edges_clean_slab_with_mode(edges, BatchLocationMode::Capture)?;
-        if let BatchEdgeInsertResult::Committed {
-            locations: Some(locations),
-            ..
-        } = &result
-        {
-            for (input, location) in edges.iter().zip(locations) {
-                let occurrence = location.canonical_occurrence(input);
-                let handle = EdgeHandle::at_slot(
-                    occurrence.owner_vertex_id,
-                    occurrence.label_id,
-                    occurrence.slot_index,
-                );
-                self.commit_edge_property_writes_at_canonical(
-                    handle,
-                    &input.initial_edge_properties,
-                );
-            }
+        if let BatchEdgeInsertResult::Committed { .. } = &result {
+            self.commit_ordered_edge_batch_initial_sidecars(
+                edges,
+                &result,
+                mutation_id,
+                planned_by_edge,
+            );
         }
         Ok(result)
     }
@@ -1587,7 +1686,7 @@ mod tests {
         ];
 
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()], 1)
             .expect("batch sidecar write");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -1610,6 +1709,188 @@ mod tests {
             store.edge_property_at_canonical_handle(handle, PropertyId::from_raw(79)),
             Some(Value::Text("batch".into()))
         );
+    }
+
+    /// The clean-slab initial-properties path runs the same index-build admission fence as the
+    /// ordered batch path: a Building membership receives one exact build-DML envelope bound to
+    /// the captured canonical edge slot, and the sidecar is written.
+    #[test]
+    fn clean_slab_initial_properties_emits_build_dml_envelope_for_building_membership() {
+        let store = fresh_store();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("set routing");
+        let label = EdgeLabelId::from_raw(4007);
+        let property_id = PropertyId::from_raw(88);
+        let vertices = make_vertices(&store, 2);
+        store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 0);
+        let physical = gleaph_graph_kernel::index::PhysicalIndexId::new(900_031).unwrap();
+        let scope = gleaph_graph_kernel::canonical_export::CanonicalExportScope {
+            graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(1),
+            index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(9),
+            catalog_epoch: 1,
+            target: gleaph_graph_kernel::canonical_export::CanonicalExportTarget::Edge {
+                label_id: label,
+                property_id,
+                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+            },
+            inline: None,
+        };
+        crate::index::canonical_export::register_scope(physical, scope.clone()).expect("register");
+        let _catalog = crate::index::catalog_context::enter(
+            gleaph_graph_kernel::index::IndexedPropertyCatalog {
+                edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
+                    physical_index_id: physical,
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Building,
+                    label_id: label.raw(),
+                    property_id: property_id.raw(),
+                    direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+                    field_path: String::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        let mut edge = input(vertices[0], vertices[1], Some(label), true, vec![]);
+        edge.initial_edge_properties = vec![(property_id, Value::Int64(42))];
+
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()], 1)
+            .expect("fenced batch sidecar write");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let occurrence = locations[0].canonical_occurrence(&edge);
+        let handle = EdgeHandle::at_slot(
+            occurrence.owner_vertex_id,
+            occurrence.label_id,
+            occurrence.slot_index,
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(handle, property_id),
+            Some(Value::Int64(42))
+        );
+
+        let envelopes = store.derived_index_outbox_peek(usize::MAX);
+        let envelope = envelopes
+            .iter()
+            .filter_map(|(_, entry)| {
+                match &entry.op {
+                crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp::IndexBuildDml {
+                    request,
+                } if request.physical_index_id == physical => Some(request),
+                _ => None,
+            }
+            })
+            .next()
+            .expect("one build-DML envelope");
+        assert!(envelope.removals.is_empty());
+        assert_eq!(envelope.insertions.len(), 1);
+        match envelope.subject {
+            gleaph_graph_kernel::index::IndexBuildSubject::Edge {
+                owner_vertex_id,
+                label_id,
+                slot_index,
+                ..
+            } => {
+                assert_eq!(owner_vertex_id, u32::from(handle.owner_vertex_id));
+                assert_eq!(label_id, handle.label_id.raw());
+                assert_eq!(slot_index, handle.slot_index.raw());
+            }
+            other => panic!("unexpected subject {other:?}"),
+        }
+
+        // Drain the admitted watermark so the scope can be aborted and removed.
+        crate::index::canonical_export::ack_build_dml(physical, 1, envelope.shard_sequence)
+            .expect("ack");
+        drop(_catalog);
+        crate::index::canonical_export::abort_scope(physical, scope.clone()).expect("abort");
+        crate::index::canonical_export::remove_scope(physical, &scope).expect("cleanup");
+    }
+
+    /// A Sealing membership rejects the clean-slab initial-properties write before any canonical
+    /// mutation: no edge is inserted, no sidecar is written, and neither the outbox nor the
+    /// scope watermarks change.
+    #[test]
+    fn clean_slab_initial_properties_sealing_rejects_before_any_mutation() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4008);
+        let property_id = PropertyId::from_raw(89);
+        let vertices = make_vertices(&store, 2);
+        store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 0);
+        let physical = gleaph_graph_kernel::index::PhysicalIndexId::new(900_032).unwrap();
+        let scope = gleaph_graph_kernel::canonical_export::CanonicalExportScope {
+            graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(1),
+            index_name_id: gleaph_graph_kernel::entry::IndexNameId::from_raw(9),
+            catalog_epoch: 1,
+            target: gleaph_graph_kernel::canonical_export::CanonicalExportTarget::Edge {
+                label_id: label,
+                property_id,
+                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+            },
+            inline: None,
+        };
+        crate::index::canonical_export::register_scope(physical, scope.clone()).expect("register");
+        crate::index::canonical_export::seal_scope(physical, scope.clone(), 2).expect("seal");
+        let _catalog = crate::index::catalog_context::enter(
+            gleaph_graph_kernel::index::IndexedPropertyCatalog {
+                edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
+                    physical_index_id: physical,
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Sealing,
+                    label_id: label.raw(),
+                    property_id: property_id.raw(),
+                    direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
+                    field_path: String::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        let mut edge = input(vertices[0], vertices[1], Some(label), true, vec![]);
+        edge.initial_edge_properties = vec![(property_id, Value::Int64(42))];
+
+        let error = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()], 1)
+            .expect_err("sealing rejects the affected batch write");
+        assert!(matches!(
+            error,
+            BatchPlacementError::IndexBuildAdmission(
+                crate::facade::GraphStoreError::IndexBuildAdmission(
+                    gleaph_graph_kernel::canonical_export::CanonicalExportError::RetryableSealing
+                )
+            )
+        ));
+        assert!(
+            store
+                .directed_out_edges(vertices[0])
+                .expect("out edges")
+                .is_empty(),
+            "the rejected batch must not insert any edge"
+        );
+        assert!(
+            store.derived_index_outbox_peek(usize::MAX).is_empty(),
+            "the rejected write must append no envelope"
+        );
+        let status = crate::index::canonical_export::scope_status(physical).expect("status");
+        assert_eq!(
+            status.phase,
+            gleaph_graph_kernel::canonical_export::CanonicalExportPhase::Sealing
+        );
+        assert_eq!(status.epoch, 2);
+        assert_eq!(status.admitted_through, 0);
+        assert_eq!(status.drained_through, 0);
+        drop(_catalog);
+        crate::index::canonical_export::abort_scope(physical, scope.clone()).expect("abort");
+        crate::index::canonical_export::remove_scope(physical, &scope).expect("cleanup");
     }
 
     #[test]
@@ -1746,7 +2027,7 @@ mod tests {
         let edges = vec![undirected.clone(), self_loop.clone()];
 
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges, 1)
             .expect("undirected sidecar batch");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -1822,7 +2103,7 @@ mod tests {
         let edges = vec![directed, undirected, self_loop];
 
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges, 1)
             .expect("mixed property batch");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -1881,7 +2162,7 @@ mod tests {
         let mut second = input(source, target, Some(label), true, vec![]);
         second.initial_edge_properties = vec![(property_id, Value::Int64(903))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()], 1)
             .expect("parallel batch edge");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -1939,7 +2220,7 @@ mod tests {
         second.initial_edge_properties = vec![(property_id, Value::Int64(912))];
         let edges = vec![first.clone(), second.clone()];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges, 1)
             .expect("parallel batch edges");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -1995,7 +2276,7 @@ mod tests {
         second.initial_edge_properties = vec![(property_id, Value::Int64(914))];
         let edges = vec![first.clone(), second.clone()];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges, 1)
             .expect("parallel undirected batch edges");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -2055,7 +2336,7 @@ mod tests {
         let mut second = input(low, high, Some(label), false, vec![]);
         second.initial_edge_properties = vec![(property_id, Value::Int64(904))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()], 1)
             .expect("parallel undirected batch edge");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -2137,7 +2418,7 @@ mod tests {
         let mut next = input(source, target, Some(label), true, vec![]);
         next.initial_edge_properties = vec![(property_id, Value::Int64(905))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[next.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[next.clone()], 1)
             .expect("batch edge after delete");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -2186,7 +2467,7 @@ mod tests {
         let mut second = input(source, target, Some(label), true, vec![]);
         second.initial_edge_properties = vec![(property_id, Value::Int64(906))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()], 1)
             .expect("batch edge");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -2264,7 +2545,7 @@ mod tests {
         let mut second = input(second_source, target, Some(label), true, vec![]);
         second.initial_edge_properties = vec![(property_id, Value::Int64(907))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()], 1)
             .expect("batch edge");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -2337,7 +2618,7 @@ mod tests {
         let mut second = input(low, high, Some(label), false, vec![]);
         second.initial_edge_properties = vec![(property_id, Value::Int64(908))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()], 1)
             .expect("batch edge");
         let locations = match result {
             BatchEdgeInsertResult::Committed {
@@ -2408,7 +2689,7 @@ mod tests {
         ];
 
         let error = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge], 1)
             .expect_err("reserved/duplicate sidecar must fail closed");
         assert!(matches!(
             error,
@@ -2444,7 +2725,7 @@ mod tests {
         edge.initial_edge_properties = vec![(inline_property_id, Value::Int64(1))];
 
         let error = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge], 1)
             .expect_err("inline property must not also be stored as a sidecar");
         assert!(matches!(
             error,
@@ -3316,7 +3597,7 @@ mod tests {
         let mut edge = input(source, target, Some(label), true, vec![]);
         edge.initial_edge_properties = vec![(property_id, Value::Int64(909))];
         let result = store
-            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()])
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()], 1)
             .expect("overflow-log sidecar batch");
         let locations = match result {
             BatchEdgeInsertResult::Committed {

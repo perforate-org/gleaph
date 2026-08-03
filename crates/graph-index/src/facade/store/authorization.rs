@@ -17,8 +17,8 @@ use std::ops::Bound;
 
 use crate::facade::stable::memory::ShardCanisterCatalogInsertError;
 use crate::facade::stable::{
-    INDEX_EDGE_POSTINGS, INDEX_OWNERSHIP_CONFIG, INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG,
-    INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS,
+    INDEX_BUILD_STATES, INDEX_BUILD_TOUCHED_SUBJECTS, INDEX_EDGE_POSTINGS, INDEX_OWNERSHIP_CONFIG,
+    INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG, INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS,
 };
 
 /// Upper bound on posting keys examined per [`IndexStore::admin_detach_shard_canister`]
@@ -119,6 +119,8 @@ impl IndexStore {
         INDEX_VERTEX_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_VERTEX_LABEL_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| postings.clear());
+        INDEX_BUILD_STATES.with_borrow_mut(|states| states.clear_new());
+        INDEX_BUILD_TOUCHED_SUBJECTS.with_borrow_mut(|subjects| subjects.clear());
         INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
         });

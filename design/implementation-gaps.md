@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-01
-Anchor timestamp: 2026-08-01 14:41:58 UTC +0000
+Last updated: 2026-08-03
+Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
 
 ## Status
 
@@ -256,6 +256,33 @@ defect from being rediscovered without its prior reasoning.
   closure and byte-stable generation inputs; the durable loader uses the full artifact SHA-256 plus
   exact Router chunk replay rather than parsing generated mutation text.
 
+### GAP-2026-08-03-001 — Router seal activation crash window can strand an already-Active Graph export scope
+
+- **Status:** Resolved by ADR 0059 seal-step tolerance (commit in the same patch)
+- **Severity:** P2 crash-window recovery gap (narrow, non-blocking for first rollout)
+- **Owner:** `crates/router/src/facade/store/schema_migration/driver.rs` seal composition plus Graph
+  `canonical_export` Active-scope semantics
+- **Observed behavior:** In one seal drive the driver publishes every Graph export scope
+  (`admin_activate_index_export_scope`) as its final remote step. If the Router message traps or
+  rolls back after those activations but before persisting the `Converged` target, a re-drive's
+  step-1 `admin_seal_index_export_scope` returned `InvalidPhase` because the scope is already
+  `Active`; the driver classified that as terminal, the router entered `Aborting`, and Graph
+  rejected `admin_abort_index_export_scope`/`admin_remove_index_export_scope` for an `Active`
+  scope, so cleanup could not progress.
+- **Resolution:** `seal_scope` now treats an already-`Active` scope under the exact same frozen
+  identity and lifecycle epoch as an exact replay and returns the durable status instead of
+  `InvalidPhase`; `activate_scope` already replays an `Active` scope whose proof matches. The
+  re-drive therefore re-seals (replay), re-reads the graph-index seal proof (idempotent),
+  drains (already converged), and re-activates (idempotent) without error, so the Router
+  persists `Converged` and completes normally. A different epoch or identity still fails closed,
+  and `Active` remains deliberately non-abortable and non-removable.
+- **Evidence:** `crates/router/src/facade/store/schema_migration/driver.rs` `drive_seal`;
+  `crates/graph/src/index/canonical_export.rs` `seal_scope`/`activate_scope`/`abort_scope`/`remove_scope`;
+  ADR 0059 seal ordering.
+- **Regression tests:** `seal_scope_replays_already_active_scope_after_activation_crash_window`
+  (graph lib) and `driver_seal_resumes_after_activation_crash_window` (router driver) prove the
+  re-drive converges and that a wrong `InvalidPhase` return for the same identity/epoch would fail.
+
 ## Resolved gaps
 
 ### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
@@ -339,17 +366,20 @@ defect from being rediscovered without its prior reasoning.
 The following status was verified against the implementation at the anchor timestamp above.
 The canonical property-index contract remains [design/index/property-index.md](index/property-index.md);
 this section records only the remaining gaps and the boundary at which each one is owned.
+[ADR 0059](adr/0059-create-index-migration-backfill.md) is the accepted, partially implemented
+source of truth for the migration-driven `CREATE INDEX` backfill lifecycle; this ledger does not
+duplicate its state machine or ownership rules.
 
 ### Priority order
 
-| Priority | Work item                                                                                 | Current status                                        |
-| -------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| P0       | Backfill existing sidecar and INLINE values before advertising an index as active         | Open — GAP-2026-07-29-001                             |
-| P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring | Planned/Open — GAP-2026-07-29-002, GAP-2026-07-29-004 |
-| P1       | Add edge range postings, Router seed planning, and execution support                      | Open — GAP-2026-07-29-003                             |
-| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract              | Planned — GAP-2026-07-29-005                          |
-| P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed        | Planned                                               |
-| P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes        | Planned                                               |
+| Priority | Work item                                                                                  | Current status                                                                               |
+| -------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| P0       | Backfill existing vertex, sidecar, and INLINE values before advertising an index as active | Partial — GAP-2026-07-29-006; ADR 0059 production driver implemented, E2E validation pending |
+| P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring  | Planned/Open — GAP-2026-07-29-002, GAP-2026-07-29-004                                        |
+| P1       | Add edge range postings, Router seed planning, and execution support                       | Open — GAP-2026-07-29-003                                                                    |
+| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract               | Planned — GAP-2026-07-29-005                                                                 |
+| P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed         | Planned                                                                                      |
+| P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes         | Planned                                                                                      |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
 the ordered scan primitive already exists through `StableBTreeMap::range()`; the remaining work is
@@ -381,8 +411,10 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   inline bytes as canonical for the declared inline property.
 - **Impact:** A newly created index can miss pre-existing inline values and return incomplete
   equality/range candidates until those values are rewritten.
-- **Next decision:** Define one resumable backfill contract covering sidecar and inline entries,
-  including duplicate suppression, removal/rebuild behavior, and the active-index transition.
+- **Next decision:** The [ADR 0059](adr/0059-create-index-migration-backfill.md) lifecycle (one
+  Graph-owned opaque export, graph-index pull, touched-first exact outbox mutation, base-seed guard,
+  and Active-only transition) is implemented; focused PocketIC E2E/upgrade validation remains
+  pending. The existing operator cursor endpoints remain separate from that lifecycle.
 
 ### GAP-2026-07-29-002 — Normal `MATCH` planning does not select vertex range indexes
 
@@ -463,15 +495,17 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
 - **Next decision:** Decide whether vertex nested fields share the edge dotted-path encoding or use a
   separate record-index key domain; record/list values remain out of scope until that choice is made.
 
-### GAP-2026-07-29-006 — Index activation is not yet documented as a convergence gate
+### GAP-2026-07-29-006 — Index activation convergence gate lacks production driver/E2E completion
 
-- **Status:** Planned
+- **Status:** Partially implemented
 - **Severity:** P0 index correctness
 - **Owner:** Router index catalog and backfill lifecycle
-- **Observed behavior:** DML posting maintenance is driven by the Router-projected active catalog,
-  while backfill is a separate resumable operation. The contract does not yet state one atomic or
-  explicitly staged transition from index creation to active query use after all relevant canonical
-  domains have converged.
+- **Observed behavior:** Router now persists hidden Preparing/Building/Sealing/Aborting lifecycle
+  rows and derives planner membership only from Active rows. Graph owns exact canonical export
+  scopes, graph-index owns resumable build state, the production Router cross-canister driver
+  composes register/advance/seal/cleanup with unit coverage, and the CLI exact-replays one immutable
+  artifact. Focused PocketIC E2E and upgrade validation are not yet complete, so the public
+  migration path remains retryably fail-closed until that proof passes.
 - **Expected or needed behavior:** A newly declared index must remain pending until sidecar and
   INLINE backfill has completed for every attached shard, or the query planner must explicitly treat
   it as incomplete and fail closed. Rebuild/drop must use the same lifecycle rule.
@@ -479,8 +513,10 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
   and `design/index/property-index.md`'s router-owned active catalog description.
 - **Impact:** A query can observe an index that is structurally present but incomplete, producing
   false negatives rather than merely falling back to a slower plan.
-- **Next decision:** Add a Router-owned lifecycle state and per-shard completion condition, or
-  formally constrain index creation to an operator-managed backfill window with planner suppression.
+- **Next decision:** Validate the catalog-epoch seal and per-shard watermark convergence in PocketIC
+  (including upgrade reopen) and keep the migration endpoint fail-closed until that proof passes.
+  The real Router driver over the landed Graph and graph-index controls is implemented. [ADR 0059](adr/0059-create-index-migration-backfill.md)
+  remains the source of truth.
 
 ### GAP-2026-07-29-007 — Edge uniqueness and index-canister sharding remain design work
 

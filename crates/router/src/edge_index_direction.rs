@@ -1,139 +1,69 @@
-//! Edge index direction tags and storage-class lattice (ADR 0012).
+//! Edge-index direction mapping owned by Router's logical query/catalog boundary.
+//!
+//! The shared kernel carries the durable seven-variant direction enum. Router maps GQL's
+//! direction vocabulary to that enum and retains the storage-class subset rule used when deciding
+//! whether an active index can answer a query. No Router-private numeric direction tags are
+//! persisted or projected.
 
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
+use gleaph_graph_kernel::index::EdgeIndexDirection;
 
-/// Stable tag stored in router `IndexDefRecord` and graph shard registrations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum EdgeIndexDirectionTag {
-    PointingRight = 1,
-    PointingLeft = 2,
-    LeftOrRight = 3,
-    Undirected = 4,
-    UndirectedOrRight = 5,
-    LeftOrUndirected = 6,
-    AnyDirection = 7,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StorageClass {
-    Directed,
-    Undirected,
-}
-
-const DIRECTED_ONLY: &[StorageClass] = &[StorageClass::Directed];
-const UNDIRECTED_ONLY: &[StorageClass] = &[StorageClass::Undirected];
-const BOTH: &[StorageClass] = &[StorageClass::Directed, StorageClass::Undirected];
-
-pub fn direction_tag(direction: EdgeDirection) -> EdgeIndexDirectionTag {
+/// Map one logical GQL edge direction to the shared catalog direction enum.
+pub const fn to_index_direction(direction: EdgeDirection) -> EdgeIndexDirection {
     match direction {
-        EdgeDirection::PointingRight => EdgeIndexDirectionTag::PointingRight,
-        EdgeDirection::PointingLeft => EdgeIndexDirectionTag::PointingLeft,
-        EdgeDirection::LeftOrRight => EdgeIndexDirectionTag::LeftOrRight,
-        EdgeDirection::Undirected => EdgeIndexDirectionTag::Undirected,
-        EdgeDirection::UndirectedOrRight => EdgeIndexDirectionTag::UndirectedOrRight,
-        EdgeDirection::LeftOrUndirected => EdgeIndexDirectionTag::LeftOrUndirected,
-        EdgeDirection::AnyDirection => EdgeIndexDirectionTag::AnyDirection,
+        EdgeDirection::PointingRight => EdgeIndexDirection::Outgoing,
+        EdgeDirection::PointingLeft => EdgeIndexDirection::Incoming,
+        EdgeDirection::LeftOrRight => EdgeIndexDirection::OutgoingOrIncoming,
+        EdgeDirection::Undirected => EdgeIndexDirection::Undirected,
+        EdgeDirection::UndirectedOrRight => EdgeIndexDirection::OutgoingOrUndirected,
+        EdgeDirection::LeftOrUndirected => EdgeIndexDirection::IncomingOrUndirected,
+        EdgeDirection::AnyDirection => EdgeIndexDirection::Any,
     }
 }
 
-pub fn tag_to_direction(tag: EdgeIndexDirectionTag) -> EdgeDirection {
-    match tag {
-        EdgeIndexDirectionTag::PointingRight => EdgeDirection::PointingRight,
-        EdgeIndexDirectionTag::PointingLeft => EdgeDirection::PointingLeft,
-        EdgeIndexDirectionTag::LeftOrRight => EdgeDirection::LeftOrRight,
-        EdgeIndexDirectionTag::Undirected => EdgeDirection::Undirected,
-        EdgeIndexDirectionTag::UndirectedOrRight => EdgeDirection::UndirectedOrRight,
-        EdgeIndexDirectionTag::LeftOrUndirected => EdgeDirection::LeftOrUndirected,
-        EdgeIndexDirectionTag::AnyDirection => EdgeDirection::AnyDirection,
-    }
-}
-
-pub fn tag_from_byte(byte: u8) -> Option<EdgeIndexDirectionTag> {
-    match byte {
-        1 => Some(EdgeIndexDirectionTag::PointingRight),
-        2 => Some(EdgeIndexDirectionTag::PointingLeft),
-        3 => Some(EdgeIndexDirectionTag::LeftOrRight),
-        4 => Some(EdgeIndexDirectionTag::Undirected),
-        5 => Some(EdgeIndexDirectionTag::UndirectedOrRight),
-        6 => Some(EdgeIndexDirectionTag::LeftOrUndirected),
-        7 => Some(EdgeIndexDirectionTag::AnyDirection),
-        _ => None,
-    }
-}
-
-fn storage_classes(direction: EdgeDirection) -> &'static [StorageClass] {
-    match direction {
-        EdgeDirection::PointingRight | EdgeDirection::PointingLeft | EdgeDirection::LeftOrRight => {
-            DIRECTED_ONLY
-        }
-        EdgeDirection::Undirected => UNDIRECTED_ONLY,
-        EdgeDirection::AnyDirection
-        | EdgeDirection::LeftOrUndirected
-        | EdgeDirection::UndirectedOrRight => BOTH,
-    }
-}
-
-fn storage_class_is_subset(query: &[StorageClass], index: &[StorageClass]) -> bool {
-    query.iter().all(|q| index.contains(q))
-}
-
-/// Query direction `Q` may use an index registered with direction `I`.
-pub fn index_applies_to_query(
-    index_direction: EdgeDirection,
+/// Return whether an active index direction covers every storage class required by a query.
+pub const fn index_applies_to_query(
+    index_direction: EdgeIndexDirection,
     query_direction: EdgeDirection,
 ) -> bool {
-    storage_class_is_subset(
-        storage_classes(query_direction),
-        storage_classes(index_direction),
-    )
+    let (query_directed, query_undirected) = storage_classes(query_direction);
+    (!query_directed || index_direction.includes_directed())
+        && (!query_undirected || index_direction.includes_undirected())
 }
 
-fn wire_label_for_storage(catalog: EdgeLabelId, class: StorageClass) -> u16 {
-    let directedness = match class {
-        StorageClass::Directed => EdgeDirectedness::Directed,
-        StorageClass::Undirected => EdgeDirectedness::Undirected,
+const fn storage_classes(direction: EdgeDirection) -> (bool, bool) {
+    match direction {
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft | EdgeDirection::LeftOrRight => {
+            (true, false)
+        }
+        EdgeDirection::Undirected => (false, true),
+        EdgeDirection::AnyDirection
+        | EdgeDirection::UndirectedOrRight
+        | EdgeDirection::LeftOrUndirected => (true, true),
+    }
+}
+
+fn wire_label_for_storage(catalog: EdgeLabelId, directed: bool) -> u16 {
+    let directedness = if directed {
+        EdgeDirectedness::Directed
+    } else {
+        EdgeDirectedness::Undirected
     };
     catalog.pack(directedness).raw()
 }
 
-fn storage_class_from_wire(wire_label_id: u16) -> Option<StorageClass> {
-    const BUCKET_LABEL_DIRECTED_BIT: u16 = 0x8000;
-    if wire_label_id & BUCKET_LABEL_DIRECTED_BIT != 0 {
-        Some(StorageClass::Directed)
-    } else if wire_label_id == 0 {
-        None
-    } else {
-        Some(StorageClass::Undirected)
-    }
-}
-
+/// Expand a query direction into the wire label buckets that must be read from graph-index.
 pub fn wire_labels_for_query(catalog: EdgeLabelId, query_direction: EdgeDirection) -> Vec<u16> {
-    storage_classes(query_direction)
-        .iter()
-        .map(|class| wire_label_for_storage(catalog, *class))
-        .collect()
-}
-
-/// Whether a federated edge posting should be maintained for a registered index entry.
-#[allow(
-    dead_code,
-    reason = "graph shard registry duplicates this rule; tested here as SSOT reference"
-)]
-pub fn edge_posting_matches_registration(
-    catalog: EdgeLabelId,
-    wire_label_id: u16,
-    index_label_id: u16,
-    index_direction: EdgeDirection,
-) -> bool {
-    if catalog.raw() != index_label_id {
-        return false;
+    let (directed, undirected) = storage_classes(query_direction);
+    let mut labels = Vec::with_capacity(2);
+    if directed {
+        labels.push(wire_label_for_storage(catalog, true));
     }
-    let Some(edge_class) = storage_class_from_wire(wire_label_id) else {
-        return false;
-    };
-    storage_classes(index_direction).contains(&edge_class)
+    if undirected {
+        labels.push(wire_label_for_storage(catalog, false));
+    }
+    labels
 }
 
 #[cfg(test)]
@@ -143,7 +73,7 @@ mod tests {
     #[test]
     fn any_index_covers_pointing_right_query() {
         assert!(index_applies_to_query(
-            EdgeDirection::AnyDirection,
+            EdgeIndexDirection::Any,
             EdgeDirection::PointingRight,
         ));
     }
@@ -151,7 +81,7 @@ mod tests {
     #[test]
     fn pointing_right_index_does_not_cover_any_query() {
         assert!(!index_applies_to_query(
-            EdgeDirection::PointingRight,
+            EdgeIndexDirection::Outgoing,
             EdgeDirection::AnyDirection,
         ));
     }
@@ -166,25 +96,7 @@ mod tests {
     #[test]
     fn wire_labels_for_any_use_both_buckets() {
         let catalog = EdgeLabelId::from_raw(1);
-        let mut wires = wire_labels_for_query(catalog, EdgeDirection::AnyDirection);
-        wires.sort_unstable();
-        assert_eq!(wires, vec![0x0001, 0x8001]);
-    }
-
-    #[test]
-    fn edge_posting_matches_registration_respects_storage_class() {
-        let catalog = EdgeLabelId::from_raw(1);
-        assert!(edge_posting_matches_registration(
-            catalog,
-            0x8001,
-            1,
-            EdgeDirection::PointingRight,
-        ));
-        assert!(!edge_posting_matches_registration(
-            catalog,
-            0x0001,
-            1,
-            EdgeDirection::PointingRight,
-        ));
+        let wires = wire_labels_for_query(catalog, EdgeDirection::AnyDirection);
+        assert_eq!(wires, vec![0x8001, 0x0001]);
     }
 }

@@ -1355,7 +1355,7 @@ async fn dispatch_search_read_plan(
     let resolved_properties =
         store.resolve_plan_properties(graph_id, std::slice::from_ref(stripped_plan))?;
     let indexed_properties =
-        crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
+        crate::facade::stable::indexed_catalog::load_indexed_property_catalog(graph_id);
     let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
     let indexed_embeddings =
         vector_index_catalog::to_indexed_embedding_catalog(graph_id, dispatch_ready);
@@ -1483,20 +1483,20 @@ async fn resolve_filtered_mixed_candidates(
 ) -> Result<Vec<VectorSubject>, RouterError> {
     let equal_specs = resolve_equality_arms(graph_id, store, label_id, binding, arms, params)?;
 
-    let (range_property_id, low, high) = match resolve_filtered_range_interval(
-        graph_id, store, label_id, binding, ranges, params,
-    )? {
-        Some(interval) => interval,
-        None => {
-            return Ok(Vec::new());
-        }
-    };
+    let (range_property_id, range_physical_index_id, low, high) =
+        match resolve_filtered_range_interval(graph_id, store, label_id, binding, ranges, params)? {
+            Some(interval) => interval,
+            None => {
+                return Ok(Vec::new());
+            }
+        };
 
     collect_bounded_candidates_range_intersection(
         graph_id,
         store,
         label_id,
         range_property_id,
+        range_physical_index_id,
         low,
         high,
         equal_specs,
@@ -1509,6 +1509,7 @@ async fn collect_bounded_candidates_range_intersection(
     store: &RouterStore,
     label_id: VertexLabelId,
     range_property_id: PropertyId,
+    range_physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     low: Vec<u8>,
     high: Vec<u8>,
     equal_specs: Vec<IndexEqualSpec>,
@@ -1516,6 +1517,7 @@ async fn collect_bounded_candidates_range_intersection(
     collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
         let equal_specs = equal_specs.clone();
         let req = LookupRangeIntersectionPageForLabelRequest {
+            range_physical_index_id,
             range_property_id: range_property_id.raw(),
             low: low.clone(),
             high: high.clone(),
@@ -1547,6 +1549,7 @@ async fn resolve_filtered_equality_candidates(
                 store,
                 label_id,
                 PropertyId::from_raw(spec.property_id),
+                spec.physical_index_id,
                 spec.value,
             )
             .await
@@ -1610,25 +1613,35 @@ fn resolve_search_filter_disjunction_sources(
     arms: &[SearchFilterDisjunctionArm],
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<CandidateUnionSource>, RouterError> {
-    let mut equality_sources: Vec<(PropertyId, Vec<u8>)> = Vec::new();
-    let mut range_by_property: BTreeMap<u32, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
+    let mut equality_sources: Vec<(
+        PropertyId,
+        gleaph_graph_kernel::index::PhysicalIndexId,
+        Vec<u8>,
+    )> = Vec::new();
+    let mut range_by_property: BTreeMap<
+        u32,
+        (
+            PropertyId,
+            gleaph_graph_kernel::index::PhysicalIndexId,
+            Vec<(Vec<u8>, Vec<u8>)>,
+        ),
+    > = BTreeMap::new();
 
     for arm in arms {
         match arm {
             SearchFilterDisjunctionArm::Equality(arm) => {
                 let property_id =
                     resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
-                if !indexed_catalog::has_active_vertex_property_index(
+                let physical_index_id = indexed_catalog::active_vertex_physical_index(
                     graph_id,
-                    label_id,
+                    Some(label_id),
                     property_id,
-                ) {
-                    return Err(RouterError::InvalidArgument(format!(
+                )
+                .map_err(|_| RouterError::InvalidArgument(format!(
                         "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
                         label_id.raw(),
                         arm.property_name
-                    )));
-                }
+                    )))?;
                 let value = resolve_filter_value(&arm.value_expr, params)?;
                 let encoded = encode_filter_value(&value)?;
                 if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
@@ -1638,25 +1651,24 @@ fn resolve_search_filter_disjunction_sources(
                 }
                 if !equality_sources
                     .iter()
-                    .any(|(p, v)| p.raw() == property_id.raw() && v == &encoded)
+                    .any(|(p, _, v)| p.raw() == property_id.raw() && v == &encoded)
                 {
-                    equality_sources.push((property_id, encoded));
+                    equality_sources.push((property_id, physical_index_id, encoded));
                 }
             }
             SearchFilterDisjunctionArm::Range(range) => {
                 let property_id =
                     resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
-                if !indexed_catalog::has_active_vertex_property_index(
+                let physical_index_id = indexed_catalog::active_vertex_physical_index(
                     graph_id,
-                    label_id,
+                    Some(label_id),
                     property_id,
-                ) {
-                    return Err(RouterError::InvalidArgument(format!(
+                )
+                .map_err(|_| RouterError::InvalidArgument(format!(
                         "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
                         label_id.raw(),
                         range.property_name
-                    )));
-                }
+                    )))?;
                 let value = resolve_filter_value(&range.value_expr, params)?;
                 let (low, high) =
                     gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
@@ -1669,24 +1681,26 @@ fn resolve_search_filter_disjunction_sources(
                         "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
                     )));
                 }
-                range_by_property
+                let entry = range_by_property
                     .entry(property_id.raw())
-                    .or_default()
-                    .push((low, high));
+                    .or_insert_with(|| (property_id, physical_index_id, Vec::new()));
+                entry.2.push((low, high));
             }
         }
     }
 
     let mut sources: Vec<CandidateUnionSource> = Vec::new();
-    for (property_id, value) in equality_sources {
+    for (property_id, physical_index_id, value) in equality_sources {
         sources.push(CandidateUnionSource::Equal {
+            physical_index_id,
             property_id: property_id.raw(),
             value,
         });
     }
-    for (property_id_raw, intervals) in range_by_property {
+    for (property_id_raw, (_, physical_index_id, intervals)) in range_by_property {
         for (low, high) in merge_encoded_intervals(intervals) {
             sources.push(CandidateUnionSource::Range {
+                physical_index_id,
                 property_id: property_id_raw,
                 low,
                 high,
@@ -1724,7 +1738,7 @@ fn merge_encoded_intervals(mut intervals: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u
 /// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from the union
 /// of one or more finite half-open encoded numeric intervals for `(property_id)`. Sources are
 /// normalized before this call, then forwarded to the shared union collector.
-#[allow(dead_code)]
+#[cfg(test)]
 async fn collect_bounded_candidates_range_disjunction<L: DisjunctionLookup>(
     clients: impl IntoIterator<Item = L>,
     label_id: VertexLabelId,
@@ -1735,6 +1749,10 @@ async fn collect_bounded_candidates_range_disjunction<L: DisjunctionLookup>(
     let union_sources: Vec<CandidateUnionSource> = merged
         .into_iter()
         .map(|(low, high)| CandidateUnionSource::Range {
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(u64::from(
+                property_id.raw(),
+            ))
+            .expect("test physical id"),
             property_id: property_id.raw(),
             low,
             high,
@@ -1747,7 +1765,7 @@ async fn collect_bounded_candidates_range_disjunction<L: DisjunctionLookup>(
 /// of one or more finite half-open encoded numeric intervals across **one or more property ids**.
 /// Intervals are grouped by property id, merged within each property, and each merged interval
 /// becomes a range source on the shared union collector.
-#[allow(dead_code)]
+#[cfg(test)]
 async fn collect_bounded_candidates_range_disjunction_multi_property<L: DisjunctionLookup>(
     clients: impl IntoIterator<Item = L>,
     label_id: VertexLabelId,
@@ -1767,6 +1785,10 @@ async fn collect_bounded_candidates_range_disjunction_multi_property<L: Disjunct
             merged
                 .into_iter()
                 .map(move |(low, high)| CandidateUnionSource::Range {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(u64::from(
+                        property_id_raw,
+                    ))
+                    .expect("test physical id"),
                     property_id: property_id_raw,
                     low,
                     high,
@@ -1794,8 +1816,13 @@ async fn collect_bounded_candidates_union_inner<L: DisjunctionLookup>(
             let mut after: Option<PropertyPostingCursor> = None;
             loop {
                 let (page, already_filtered) = match source {
-                    CandidateUnionSource::Equal { property_id, value } => client
+                    CandidateUnionSource::Equal {
+                        physical_index_id,
+                        property_id,
+                        value,
+                    } => client
                         .lookup_equal_page_for_label(
+                            *physical_index_id,
                             *property_id,
                             value.clone(),
                             label_id.raw() as u32,
@@ -1805,6 +1832,7 @@ async fn collect_bounded_candidates_union_inner<L: DisjunctionLookup>(
                         .await
                         .map(|page| (page, true)),
                     CandidateUnionSource::Range {
+                        physical_index_id,
                         property_id,
                         low,
                         high,
@@ -1815,6 +1843,7 @@ async fn collect_bounded_candidates_union_inner<L: DisjunctionLookup>(
                         };
                         client
                             .lookup_range_page_for_label(
+                                *physical_index_id,
                                 *property_id,
                                 range,
                                 label_id.raw() as u32,
@@ -1884,13 +1913,18 @@ fn resolve_equality_arms(
     let mut equal_specs = Vec::with_capacity(arms.len());
     for arm in arms {
         let property_id = resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
-        if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+        let physical_index_id = indexed_catalog::active_vertex_physical_index(
+            graph_id,
+            Some(label_id),
+            property_id,
+        )
+        .map_err(|_| {
+            RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE requires one active vertex property index for label {} property {}",
                 label_id.raw(),
                 arm.property_name
-            )));
-        }
+            ))
+        })?;
         let value = resolve_filter_value(&arm.value_expr, params)?;
         let encoded = encode_filter_value(&value)?;
         if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
@@ -1898,7 +1932,11 @@ fn resolve_equality_arms(
                 "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
             )));
         }
-        equal_specs.push(IndexEqualSpec::vertex(property_id.raw(), encoded));
+        equal_specs.push(IndexEqualSpec::vertex(
+            physical_index_id,
+            property_id.raw(),
+            encoded,
+        ));
     }
     Ok(equal_specs)
 }
@@ -1914,7 +1952,15 @@ fn resolve_filtered_range_interval(
     binding: &str,
     ranges: &[SearchFilterRange],
     params: &BTreeMap<String, Value>,
-) -> Result<Option<(PropertyId, Vec<u8>, Vec<u8>)>, RouterError> {
+) -> Result<
+    Option<(
+        PropertyId,
+        gleaph_graph_kernel::index::PhysicalIndexId,
+        Vec<u8>,
+        Vec<u8>,
+    )>,
+    RouterError,
+> {
     if ranges.is_empty() {
         return Err(RouterError::InvalidArgument(
             "SEARCH ... WHERE range filter is empty".into(),
@@ -1923,13 +1969,18 @@ fn resolve_filtered_range_interval(
     // All range arms share the same property in accepted shapes (two-sided) or a single arm.
     let property_id =
         resolve_search_property_id(graph_id, store, binding, &ranges[0].property_name)?;
-    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+    let physical_index_id = indexed_catalog::active_vertex_physical_index(
+        graph_id,
+        Some(label_id),
+        property_id,
+    )
+    .map_err(|_| {
+        RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires one active vertex property index for label {} property {}",
             label_id.raw(),
             ranges[0].property_name
-        )));
-    }
+        ))
+    })?;
 
     let mut final_low: Option<Vec<u8>> = None;
     let mut final_high: Option<Vec<u8>> = None;
@@ -1960,7 +2011,7 @@ fn resolve_filtered_range_interval(
     if low >= high {
         Ok(None)
     } else {
-        Ok(Some((property_id, low, high)))
+        Ok(Some((property_id, physical_index_id, low, high)))
     }
 }
 
@@ -1973,9 +2024,17 @@ async fn resolve_filtered_range_candidates(
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
     match resolve_filtered_range_interval(graph_id, store, label_id, binding, ranges, params)? {
-        Some((property_id, low, high)) => {
-            collect_bounded_candidates_range(graph_id, store, label_id, property_id, low, high)
-                .await
+        Some((property_id, physical_index_id, low, high)) => {
+            collect_bounded_candidates_range(
+                graph_id,
+                store,
+                label_id,
+                property_id,
+                physical_index_id,
+                low,
+                high,
+            )
+            .await
         }
         None => {
             // Contradictory or empty numeric interval: the candidate set is empty without touching
@@ -2049,6 +2108,7 @@ async fn collect_bounded_candidates_equal(
     store: &RouterStore,
     label_id: VertexLabelId,
     property_id: PropertyId,
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     encoded_value: Vec<u8>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
     collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
@@ -2057,6 +2117,7 @@ async fn collect_bounded_candidates_equal(
             client
                 .lookup_equal_page_for_label(
                     gleaph_graph_kernel::index::LookupEqualPageForLabelRequest {
+                        physical_index_id,
                         property_id: property_id.raw(),
                         value,
                         vertex_label_id: label_id.raw() as u32,
@@ -2103,6 +2164,7 @@ async fn collect_bounded_candidates_range(
     store: &RouterStore,
     label_id: VertexLabelId,
     property_id: PropertyId,
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     low: Vec<u8>,
     high: Vec<u8>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
@@ -2115,6 +2177,7 @@ async fn collect_bounded_candidates_range(
             client
                 .lookup_range_page_for_label(
                     gleaph_graph_kernel::index::LookupRangePageForLabelRequest {
+                        physical_index_id,
                         property_id: property_id.raw(),
                         range,
                         vertex_label_id: label_id.raw() as u32,
@@ -2134,6 +2197,7 @@ async fn collect_bounded_candidates_range(
 trait DisjunctionLookup: Clone {
     async fn lookup_equal_page(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         after: Option<PropertyPostingCursor>,
@@ -2142,6 +2206,7 @@ trait DisjunctionLookup: Clone {
 
     async fn lookup_equal_page_for_label(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_label_id: u32,
@@ -2149,7 +2214,7 @@ trait DisjunctionLookup: Clone {
         limit: u32,
     ) -> Result<PostingHitPage, String> {
         let mut page = self
-            .lookup_equal_page(property_id, value, after, limit)
+            .lookup_equal_page(physical_index_id, property_id, value, after, limit)
             .await?;
         page.hits = self
             .filter_hits_by_label(vertex_label_id, page.hits)
@@ -2159,6 +2224,7 @@ trait DisjunctionLookup: Clone {
 
     async fn lookup_range_page(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         range: gleaph_graph_kernel::index::PostingRangeRequest,
         after: Option<PropertyPostingCursor>,
@@ -2167,6 +2233,7 @@ trait DisjunctionLookup: Clone {
 
     async fn lookup_range_page_for_label(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         range: gleaph_graph_kernel::index::PostingRangeRequest,
         vertex_label_id: u32,
@@ -2174,7 +2241,7 @@ trait DisjunctionLookup: Clone {
         limit: u32,
     ) -> Result<PostingHitPage, String> {
         let mut page = self
-            .lookup_range_page(property_id, range, after, limit)
+            .lookup_range_page(physical_index_id, property_id, range, after, limit)
             .await?;
         page.hits = self
             .filter_hits_by_label(vertex_label_id, page.hits)
@@ -2192,12 +2259,14 @@ trait DisjunctionLookup: Clone {
 impl DisjunctionLookup for RouterIndexClient {
     async fn lookup_equal_page(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         after: Option<PropertyPostingCursor>,
         limit: u32,
     ) -> Result<PostingHitPage, String> {
         self.lookup_equal_page(LookupEqualPageRequest {
+            physical_index_id,
             property_id,
             value,
             after,
@@ -2208,6 +2277,7 @@ impl DisjunctionLookup for RouterIndexClient {
 
     async fn lookup_equal_page_for_label(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
         vertex_label_id: u32,
@@ -2216,6 +2286,7 @@ impl DisjunctionLookup for RouterIndexClient {
     ) -> Result<PostingHitPage, String> {
         self.lookup_equal_page_for_label(
             gleaph_graph_kernel::index::LookupEqualPageForLabelRequest {
+                physical_index_id,
                 property_id,
                 value,
                 vertex_label_id,
@@ -2228,17 +2299,25 @@ impl DisjunctionLookup for RouterIndexClient {
 
     async fn lookup_range_page(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         range: gleaph_graph_kernel::index::PostingRangeRequest,
         after: Option<PropertyPostingCursor>,
         limit: u32,
     ) -> Result<PostingHitPage, String> {
-        self.lookup_range_page(property_id, range, after, limit)
-            .await
+        self.lookup_range_page(gleaph_graph_kernel::index::LookupRangePageRequest {
+            physical_index_id,
+            property_id,
+            range,
+            after,
+            limit,
+        })
+        .await
     }
 
     async fn lookup_range_page_for_label(
         &self,
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         range: gleaph_graph_kernel::index::PostingRangeRequest,
         vertex_label_id: u32,
@@ -2247,6 +2326,7 @@ impl DisjunctionLookup for RouterIndexClient {
     ) -> Result<PostingHitPage, String> {
         self.lookup_range_page_for_label(
             gleaph_graph_kernel::index::LookupRangePageForLabelRequest {
+                physical_index_id,
                 property_id,
                 range,
                 vertex_label_id,
@@ -2273,10 +2353,12 @@ impl DisjunctionLookup for RouterIndexClient {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CandidateUnionSource {
     Equal {
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         value: Vec<u8>,
     },
     Range {
+        physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
         property_id: u32,
         low: Vec<u8>,
         high: Vec<u8>,
@@ -2289,7 +2371,7 @@ enum CandidateUnionSource {
 /// label-filter, and merge step preserves the existing per-page work bound and stops as soon as the
 /// 4097th distinct label-qualified subject is observed. Sources are normalized before lookup so
 /// identical equality values and merged range intervals are walked once.
-#[allow(dead_code)]
+#[cfg(test)]
 async fn collect_bounded_candidates_equal_disjunction<L: DisjunctionLookup>(
     clients: impl IntoIterator<Item = L>,
     label_id: VertexLabelId,
@@ -2298,6 +2380,12 @@ async fn collect_bounded_candidates_equal_disjunction<L: DisjunctionLookup>(
     let union_sources: Vec<CandidateUnionSource> = sources
         .into_iter()
         .map(|(property_id, value)| CandidateUnionSource::Equal {
+            // Test-only compatibility helper: production resolution always obtains this exact
+            // namespace from the Router catalog before constructing a union source.
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(u64::from(
+                property_id.raw(),
+            ))
+            .expect("test physical id"),
             property_id: property_id.raw(),
             value,
         })
@@ -4207,7 +4295,7 @@ mod tests {
         let err = result.expect_err("missing property must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -4575,7 +4663,7 @@ mod tests {
         let err = result.expect_err("missing exact index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -4761,7 +4849,7 @@ mod tests {
         let err = result.expect_err("missing second exact index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -5074,7 +5162,8 @@ mod tests {
         let interval =
             resolve_filtered_range_interval(graph_id, &store, label_id, "d", &ranges, &params)
                 .expect("resolve interval");
-        let (_property_id, low, high) = interval.expect("interval must be non-empty");
+        let (_property_id, _physical_index_id, low, high) =
+            interval.expect("interval must be non-empty");
         assert!(
             low < high,
             "mixed-width intersection must produce a valid half-open interval"
@@ -5181,7 +5270,7 @@ mod tests {
         let err = result.expect_err("missing range index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -5237,7 +5326,7 @@ mod tests {
         let err = result.expect_err("missing equality index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -5499,7 +5588,7 @@ mod tests {
         let interval =
             resolve_filtered_range_interval(graph_id, &store, label_id, "d", ranges, &params)
                 .expect("resolve interval");
-        let (_property_id, low, high) =
+        let (_property_id, _physical_index_id, low, high) =
             interval.expect("equal inclusive endpoints must produce an interval");
         assert!(
             low < high,
@@ -5566,7 +5655,8 @@ mod tests {
         let interval =
             resolve_filtered_range_interval(graph_id, &store, label_id, "d", ranges, &params)
                 .expect("resolve interval");
-        let (_property_id, low, high) = interval.expect("mixed widths must intersect");
+        let (_property_id, _physical_index_id, low, high) =
+            interval.expect("mixed widths must intersect");
         assert!(
             low < high,
             "mixed-width intersection for Slice 12 must be valid"
@@ -5699,7 +5789,7 @@ mod tests {
         let err = result.expect_err("missing equality index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -5757,7 +5847,7 @@ mod tests {
         let err = result.expect_err("missing range index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex property index"),
+                .contains("requires one active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -6143,6 +6233,7 @@ mod tests {
     impl DisjunctionLookup for MockDisjunctionClient {
         async fn lookup_equal_page(
             &self,
+            _physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
             _property_id: u32,
             value: Vec<u8>,
             after: Option<PropertyPostingCursor>,
@@ -6172,6 +6263,7 @@ mod tests {
 
         async fn lookup_range_page(
             &self,
+            _physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
             property_id: u32,
             range: gleaph_graph_kernel::index::PostingRangeRequest,
             after: Option<PropertyPostingCursor>,
@@ -7234,10 +7326,14 @@ mod tests {
 
         let sources = vec![
             CandidateUnionSource::Equal {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(1)
+                    .expect("physical id"),
                 property_id: 5,
                 value: eq_value,
             },
             CandidateUnionSource::Range {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(2)
+                    .expect("physical id"),
                 property_id: 7,
                 low: vec![10u8],
                 high: vec![20u8],
@@ -7292,10 +7388,14 @@ mod tests {
 
         let sources = vec![
             CandidateUnionSource::Equal {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(1)
+                    .expect("physical id"),
                 property_id: 5,
                 value: eq_value,
             },
             CandidateUnionSource::Range {
+                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(2)
+                    .expect("physical id"),
                 property_id: 7,
                 low: vec![10u8],
                 high: vec![20u8],

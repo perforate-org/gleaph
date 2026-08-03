@@ -75,9 +75,15 @@ thread_local! {
     pub(crate) static ROUTER_NAMED_INDEXES: RefCell<memory::StableNamedIndexMap> =
         RefCell::new(memory::init_named_indexes());
 
-    /// `(graph, kind, property_id)` membership for planner + shard registry fan-out.
-    pub(crate) static ROUTER_INDEXED_PROPERTY_SET: RefCell<memory::StableIndexedPropertySet> =
-        RefCell::new(memory::init_indexed_property_set());
+    /// Next never-issued physical posting namespace (ADR 0059). Zero is invalid; allocations are
+    /// monotonic and are not reclaimed by DROP or abort cleanup.
+    pub(crate) static ROUTER_NEXT_PHYSICAL_INDEX_ID:
+        RefCell<memory::StablePhysicalIndexIdAllocator> =
+        RefCell::new(memory::init_next_physical_index_id());
+
+    /// Monotonic stale-request fence for physical-index catalog changes (ADR 0059).
+    pub(crate) static ROUTER_INDEX_CATALOG_EPOCH: RefCell<memory::StableIndexCatalogEpoch> =
+        RefCell::new(memory::init_index_catalog_epoch());
 
     pub(crate) static ROUTER_EDGE_INLINE_PROPERTY_PROFILES: RefCell<memory::StableEdgeInlinePropertyProfileStore> =
         RefCell::new(memory::init_edge_inline_property_profiles());

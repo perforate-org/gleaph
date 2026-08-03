@@ -2,6 +2,7 @@ use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use super::{VertexLabelStoreError, VertexPropertyStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::VertexId;
 use std::collections::BTreeSet;
 
@@ -83,6 +84,7 @@ pub trait GraphMutationExecutor {
         &self,
         labels: impl IntoIterator<Item = VertexLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<VertexId, GraphStoreError>;
 
     fn insert_directed_edge_with(
@@ -91,6 +93,7 @@ pub trait GraphMutationExecutor {
         target_vertex_id: VertexId,
         label: Option<EdgeLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
     /// Insert a directed edge with validated inline property bytes plus optional sidecar properties.
@@ -104,6 +107,7 @@ pub trait GraphMutationExecutor {
         label: Option<EdgeLabelId>,
         inline_property_bytes: &[u8],
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
     fn insert_undirected_edge_with(
@@ -112,6 +116,7 @@ pub trait GraphMutationExecutor {
         endpoint_b: VertexId,
         label: Option<EdgeLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
     /// Insert an undirected edge with validated inline property bytes plus optional sidecar properties.
@@ -122,6 +127,7 @@ pub trait GraphMutationExecutor {
         label: Option<EdgeLabelId>,
         inline_property_bytes: &[u8],
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError>;
 }
 
@@ -129,6 +135,7 @@ pub async fn insert_vertex_with_async(
     store: &GraphStore,
     labels: impl IntoIterator<Item = VertexLabelId>,
     properties: impl IntoIterator<Item = (PropertyId, Value)>,
+    mutation_id: MutationId,
 ) -> Result<VertexId, GraphStoreError> {
     let vertex_id = store.insert_vertex_row(Vertex::default()).await?;
     let vertex = store
@@ -139,7 +146,7 @@ pub async fn insert_vertex_with_async(
 
     for (property_id, value) in properties {
         store.assert_local_vertex_writable(vertex_id)?;
-        store.set_vertex_property(vertex_id, property_id, value)?;
+        store.set_vertex_property_with_mutation_id(vertex_id, property_id, value, mutation_id)?;
     }
 
     Ok(vertex_id)
@@ -262,7 +269,7 @@ pub fn insert_vertices_with(
         })
         .collect();
     trap_after_bulk_vertex_write_began(
-        store.commit_vertex_property_writes_bulk(&properties),
+        store.commit_vertex_property_writes_bulk(&properties, 0),
         "property persistence",
     );
 
@@ -280,8 +287,14 @@ impl GraphMutationExecutor for GraphStore {
         &self,
         labels: impl IntoIterator<Item = VertexLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<VertexId, GraphStoreError> {
-        pollster::block_on(insert_vertex_with_async(self, labels, properties))
+        pollster::block_on(insert_vertex_with_async(
+            self,
+            labels,
+            properties,
+            mutation_id,
+        ))
     }
 
     fn insert_directed_edge_with(
@@ -290,14 +303,19 @@ impl GraphMutationExecutor for GraphStore {
         target_vertex_id: VertexId,
         label: Option<EdgeLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.assert_local_vertex_writable(source_vertex_id)?;
         self.assert_local_vertex_writable(target_vertex_id)?;
-        let handle = self.insert_directed_edge(source_vertex_id, target_vertex_id, label)?;
-        // The insert path already returns the exact canonical handle; reusing it
-        // avoids a redundant CounterpartScan for every scalar sidecar property.
-        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
-        Ok(handle)
+        GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
+            self,
+            source_vertex_id,
+            target_vertex_id,
+            label,
+            &[],
+            properties,
+            mutation_id,
+        )
     }
 
     fn insert_directed_edge_with_inline_property_bytes(
@@ -307,18 +325,19 @@ impl GraphMutationExecutor for GraphStore {
         label: Option<EdgeLabelId>,
         inline_property_bytes: &[u8],
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.assert_local_vertex_writable(source_vertex_id)?;
         self.assert_local_vertex_writable(target_vertex_id)?;
-        let handle = GraphStore::insert_directed_edge_with_inline_property_bytes(
+        GraphStore::insert_directed_edge_with_inline_property_bytes_and_properties(
             self,
             source_vertex_id,
             target_vertex_id,
             label,
             inline_property_bytes,
-        )?;
-        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
-        Ok(handle)
+            properties,
+            mutation_id,
+        )
     }
 
     fn insert_undirected_edge_with(
@@ -327,12 +346,19 @@ impl GraphMutationExecutor for GraphStore {
         endpoint_b: VertexId,
         label: Option<EdgeLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.assert_local_vertex_writable(endpoint_a)?;
         self.assert_local_vertex_writable(endpoint_b)?;
-        let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, label)?;
-        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
-        Ok(handle)
+        GraphMutationExecutor::insert_undirected_edge_with_inline_property_bytes(
+            self,
+            endpoint_a,
+            endpoint_b,
+            label,
+            &[],
+            properties,
+            mutation_id,
+        )
     }
 
     fn insert_undirected_edge_with_inline_property_bytes(
@@ -342,18 +368,19 @@ impl GraphMutationExecutor for GraphStore {
         label: Option<EdgeLabelId>,
         inline_property_bytes: &[u8],
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
+        mutation_id: MutationId,
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.assert_local_vertex_writable(endpoint_a)?;
         self.assert_local_vertex_writable(endpoint_b)?;
-        let handle = GraphStore::insert_undirected_edge_with_inline_property_bytes(
+        GraphStore::insert_undirected_edge_with_inline_property_bytes_and_properties(
             self,
             endpoint_a,
             endpoint_b,
             label,
             inline_property_bytes,
-        )?;
-        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
-        Ok(handle)
+            properties,
+            mutation_id,
+        )
     }
 }
 
@@ -382,6 +409,7 @@ mod tests {
                     (property, Value::Text("knows".into())),
                     (second_property, Value::Int64(1)),
                 ],
+                0,
             )
             .expect("insert directed edge");
 
@@ -425,6 +453,7 @@ mod tests {
                     (property, Value::Text("related".into())),
                     (second_property, Value::Int64(2)),
                 ],
+                0,
             )
             .expect("insert undirected edge");
 

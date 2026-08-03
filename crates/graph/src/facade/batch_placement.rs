@@ -132,6 +132,8 @@ pub enum BatchPlacementError {
     },
     /// The one-orientation writer rejected a non-recoverable batch condition.
     BatchWrite(OneOrientationBatchError),
+    /// A Building/Sealing index DML failed its Graph-owned admission before any batch write.
+    IndexBuildAdmission(GraphStoreError),
 }
 
 impl std::fmt::Display for BatchPlacementError {
@@ -195,6 +197,9 @@ impl std::fmt::Display for BatchPlacementError {
             ),
             Self::ProjectedCapacityOverflow => write!(f, "projected capacity overflow"),
             Self::ProjectedCountOverflow => write!(f, "projected count overflow"),
+            Self::IndexBuildAdmission(error) => {
+                write!(f, "index-build admission rejected the batch: {error}")
+            }
         }
     }
 }

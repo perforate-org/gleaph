@@ -491,7 +491,7 @@ pub(crate) fn vector_index_info(
 }
 
 /// Build the ephemeral indexed-embedding catalog the Router stamps onto `ExecutePlanArgs` for a
-/// graph (ADR 0031), mirroring `to_indexed_property_catalog`.
+/// graph (ADR 0031), mirroring the Router's indexed-property catalog projection.
 ///
 /// **This is the single fail-closed activation gate.** When `dispatch_ready` is `false` the catalog
 /// is empty, so `vector_dispatch::spec_for` returns `None` and derived vector sync stays inert.

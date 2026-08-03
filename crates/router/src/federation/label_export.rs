@@ -88,7 +88,7 @@ mod tests {
 
     use gleaph_graph_kernel::index::{
         IndexIntersectionRequest, IndexLabelIntersectionRequest, LabelLookupPageRequest,
-        LabelLookupPageResult, LabelPostingCursor, ValuePostingCount,
+        LabelLookupPageResult, LabelPostingCursor, PhysicalIndexId, ValuePostingCount,
     };
 
     use super::*;
@@ -103,6 +103,7 @@ mod tests {
     impl IndexLookup for PageIndex {
         fn lookup_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
@@ -129,6 +130,7 @@ mod tests {
 
         fn lookup_edge_equal(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _value: Vec<u8>,
             _label_id: Option<u16>,
@@ -143,6 +145,7 @@ mod tests {
 
         fn count_postings_by_value(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _min_count: u64,
             _vertex_filter_packed: Option<Vec<u64>>,
@@ -178,6 +181,7 @@ mod tests {
 
         fn count_postings_by_value_for_label(
             &self,
+            _physical_index_id: PhysicalIndexId,
             _property_id: u32,
             _vertex_label_id: u32,
             _min_count: u64,

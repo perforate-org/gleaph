@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-07-29
-Anchor timestamp: 2026-07-29 13:16:17 UTC +0000
+Last updated: 2026-08-03
+Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
 
 ## Status
 
@@ -43,7 +43,6 @@ call.
 
 **ADR 0034 Slice 18 — Implemented (Router-side):** cross-property numeric range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded numeric intervals across one or more `(property_id, label_id, graph_id)` active vertex property indexes. Each arm resolves its own property id and is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; intervals are grouped by property id and merged **within each group** into disjoint encoded bounds. The candidate set is collected through paginated `lookup_range_page_for_label` calls with `PostingRangeRequest::Between` for every merged interval across all involved properties; the index canister applies label membership inside each call, followed by global `(shard_id, vertex_id)` deduplication and the 4096 candidate bound. Intervals are never merged across property ids because encoded numeric keys are property-specific.
 
-
 **Phase A ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)) — superseded by [ADR 0023](../adr/0023-federated-index-consistency-upgrade-compaction.md):** Phase A gated DML/backfill posting maintenance with a **persistent shard-local registry** (`register_indexed_property`) fanned out from the router. ADR 0023 (phases 1–2 implemented) **removes that registry** because it could not survive the upgrade boundary. The graph shard now holds **no persisted indexed catalog**: the router (definitions SSOT) supplies an `IndexedPropertyCatalog` in `ExecutePlanArgs.indexed_properties` (and in the backfill request), which the shard installs in an **ephemeral per-operation context** (`index/catalog_context.rs`) consulted by `dispatch_property_index_ops` and backfill. `CREATE INDEX` / `DROP INDEX` no longer fan registrations out to shards.
 
 **Phase B (ADR 0009) — Implemented:** `INDEX_EDGE_POSTINGS` on graph-index (`EdgePostingKey`); `edge_posting_insert` / `remove`, `lookup_edge_equal`; federated graph `edge_pending` flush; `backfill_edge_property_postings`.
@@ -53,6 +52,13 @@ call.
 **Phase D (ADR 0009) — Implemented:** router `EdgeIndexScan` / all-edge intersection → `lookup_edge_equal` / `lookup_intersection`; per-shard `LocalEdgePosting` seeds; graph applies edge seeds and skips leading `EdgeIndexScan`; shard-local `EDGE_EQUALITY_POSTINGS` retired (MemoryId repack to 40 regions); expand reads graph-index or canonical `EDGE_PROPERTIES` scan when no index client.
 
 **Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed in `router/index_ddl.rs`, executed on `gql_execute*`); named index catalog per logical graph; Admin or Manager+ auth. Legacy `admin_set_indexed_*` APIs delegate to `CREATE INDEX IF NOT EXISTS` with synthetic index names (require entity label + property).
+
+**ADR 0059 — Partially implemented:** migration-driven `CREATE INDEX`
+selector/checksum, Graph export, graph-index pull, `PhysicalIndexId` namespace, touched-first
+outbox, seal, Active-only planner lifecycle, and the production Router cross-canister driver are
+implemented there. Focused PocketIC E2E and upgrade validation remain pending; ordinary catalog
+registration and operator backfill therefore remain separate. ADR 0059 is the normative source for
+that protocol.
 
 **ADR 0012 — Implemented:** edge `FOR` patterns carry Gleaph GQL `EdgeDirection` (bracket form only; slash rejected); graph-index edge keys use LARA `wire_label_id`; planner applies storage-class subset rule via `is_edge_property_indexed_for`. Leading `EdgeIndexScan` supports `PointingRight`, `PointingLeft`, and `Undirected`. PocketIC e2e covers `AnyDirection`, `PointingRight`, and `Undirected` indexes (including federated undirected anchor and subset negative: undirected-only index does not seed directed wire postings). See [0012-edge-index-direction-in-ddl.md](../adr/0012-edge-index-direction-in-ddl.md).
 
@@ -69,25 +75,26 @@ Explain the **graph-index canister** and how the router uses it for query routin
 ## Non-goals
 
 - Index build algorithms on graph writes (implementation in `graph/src/index/`).
+- Migration-driven online `CREATE INDEX` backfill and activation are specified by [ADR 0059](../adr/0059-create-index-migration-backfill.md) and remain **partially implemented**; the production Router driver is implemented, while PocketIC E2E and upgrade validation remain pending.
 - Full Candid API listing.
 - Index canister sharding (multiple index canisters) — **Partially Implemented** per-graph `index_cluster` and shard-group formula ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)); subject/range split axes remain planned ([ADR 0010](../adr/0010-index-sharding-extensibility.md), [capacity-planning.md](capacity-planning.md)).
 
 ## Components
 
-| Piece | Crate | Role |
-|-------|-------|------|
-| Posting key/value | `graph-index` | Property equality postings |
-| `PostingHit` | `graph-kernel` | `{ shard_id, vertex_id }` |
-| Router client | `router/index_client.rs` | `lookup_equal`, `lookup_intersection` |
-| Seed resolution | `router/seed.rs` | Map hits → per-shard seed blobs |
+| Piece             | Crate                    | Role                                  |
+| ----------------- | ------------------------ | ------------------------------------- |
+| Posting key/value | `graph-index`            | Property equality postings            |
+| `PostingHit`      | `graph-kernel`           | `{ shard_id, vertex_id }`             |
+| Router client     | `router/index_client.rs` | `lookup_equal`, `lookup_intersection` |
+| Seed resolution   | `router/seed.rs`         | Map hits → per-shard seed blobs       |
 
 ## Catalog ownership
 
-| Layer | Owns |
-|-------|------|
-| **Router** | Property names ↔ `PropertyId` **per `GraphId`** (`ROUTER_PROPERTY_CATALOG`); planner / DML resolve names in graph context before dispatch |
-| **Graph shard** | `(property_id, Value)` on vertices and edges only — no property name stable |
-| **Graph-index** | Postings keyed by router-issued `property_id` (interpreted under the owning graph's dispatch / index-cluster boundary) |
+| Layer           | Owns                                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Router**      | Property names ↔ `PropertyId` **per `GraphId`** (`ROUTER_PROPERTY_CATALOG`); planner / DML resolve names in graph context before dispatch |
+| **Graph shard** | `(property_id, Value)` on vertices and edges only — no property name stable                                                               |
+| **Graph-index** | Postings keyed by router-issued `property_id` (interpreted under the owning graph's dispatch / index-cluster boundary)                    |
 
 Standalone and test graphs without router resolution use hash-based test property ids (`crates/graph/src/test_labels.rs`) or explicit `ResolvedPropertyTable` on the plan wire.
 
@@ -105,19 +112,19 @@ An index canister holds postings for shards attached to **one graph's index clus
 
 ## Read APIs
 
-| API | Status | Role |
-|-----|--------|------|
-| `lookup_equal` | Implemented | Equality postings for one `(property_id, value)` — full bucket (small buckets / tests) |
-| `lookup_range` | Implemented | Range over encoded values for one property — full range (small ranges / tests) |
-| `lookup_equal_page` | Implemented | Paginated equality export (`after` + `limit`); the seed-routing read path |
-| `lookup_range_page` | Implemented | Paginated range export over encoded values (`after` + `limit`) |
-| `lookup_edge_equal_page` | Implemented | Paginated edge equality export (`after` + `limit`) |
-| `lookup_equal_batch` | Implemented | Batched equality export for many vertex buckets in one call: bucket-granular response admission under the shared inter-canister payload budget, `next` resume cursor (slice `specs[next..]`), per-bucket `done`/cursor continuation through `lookup_equal_page`; the seed-routing fast path for multi-anchor items |
-| `lookup_edge_equal_batch` | Implemented | Batched edge equality export with the same bucket-granular budget admission and `next` resume contract as `lookup_equal_batch` |
-| `lookup_intersection` | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md)) |
-| `lookup_intersection_page` | Implemented | Paginated all-vertex equality intersection (`after` + `limit`): server-side walk-arm page + in-heap merge-join sieve; the streamed vertex-intersection read path |
-| `lookup_range_intersection_page` | Implemented | Paginated range-walk plus one to eight equality sieves (`after` + `limit`): server-side finite range page filtered by up to eight vertex equality arms on distinct properties; the mixed equality-plus-range read path for ADR 0034 Slice 14 |
-| `count_postings_by_value` | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md)) |
+| API                              | Status      | Role                                                                                                                                                                                                                                                                                                               |
+| -------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `lookup_equal`                   | Implemented | Equality postings for one `(property_id, value)` — full bucket (small buckets / tests)                                                                                                                                                                                                                             |
+| `lookup_range`                   | Implemented | Range over encoded values for one property — full range (small ranges / tests)                                                                                                                                                                                                                                     |
+| `lookup_equal_page`              | Implemented | Paginated equality export (`after` + `limit`); the seed-routing read path                                                                                                                                                                                                                                          |
+| `lookup_range_page`              | Implemented | Paginated range export over encoded values (`after` + `limit`)                                                                                                                                                                                                                                                     |
+| `lookup_edge_equal_page`         | Implemented | Paginated edge equality export (`after` + `limit`)                                                                                                                                                                                                                                                                 |
+| `lookup_equal_batch`             | Implemented | Batched equality export for many vertex buckets in one call: bucket-granular response admission under the shared inter-canister payload budget, `next` resume cursor (slice `specs[next..]`), per-bucket `done`/cursor continuation through `lookup_equal_page`; the seed-routing fast path for multi-anchor items |
+| `lookup_edge_equal_batch`        | Implemented | Batched edge equality export with the same bucket-granular budget admission and `next` resume contract as `lookup_equal_batch`                                                                                                                                                                                     |
+| `lookup_intersection`            | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md))                                                                                                                                                           |
+| `lookup_intersection_page`       | Implemented | Paginated all-vertex equality intersection (`after` + `limit`): server-side walk-arm page + in-heap merge-join sieve; the streamed vertex-intersection read path                                                                                                                                                   |
+| `lookup_range_intersection_page` | Implemented | Paginated range-walk plus one to eight equality sieves (`after` + `limit`): server-side finite range page filtered by up to eight vertex equality arms on distinct properties; the mixed equality-plus-range read path for ADR 0034 Slice 14                                                                       |
+| `count_postings_by_value`        | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md))                                                                                                                                                                                            |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
 
@@ -177,11 +184,11 @@ Index postings use a separate **sortable index key** from [`gleaph_gql::value_to
 
 Graph centralizes both paths in `crates/graph/src/property/`:
 
-| Function | Role |
-|----------|------|
-| `ensure_persistable` | Primary-store write validation |
-| `property_indexability` / `sortable_index_key` | Whether a value gets equality/range postings |
-| `dispatch_property_index_ops` | Routes derived ops to federated vertex index or local edge equality |
+| Function                                       | Role                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------- |
+| `ensure_persistable`                           | Primary-store write validation                                      |
+| `property_indexability` / `sortable_index_key` | Whether a value gets equality/range postings                        |
+| `dispatch_property_index_ops`                  | Routes derived ops to federated vertex index or local edge equality |
 
 **Index-only miss:** A value can be stored but omitted from indexes when `property_indexability`
 is `NotIndexable` (non-finite floats, unsupported composite shapes, extensions without a sortable
@@ -190,7 +197,6 @@ key, or encoded index key length above `MAX_INDEX_VALUE_KEY_BYTES` — see
 find those vertices or edges until a full scan path is used. Router and graph reject oversized query
 keys before graph-index calls; graph-index read APIs reject them as `IndexValueKeyTooLarge` (no
 silent empty range).
-
 
 ## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19)
 
@@ -216,14 +222,14 @@ predicates. The Router consumes postings through bounded pagination:
   For one equality arm it pages through `lookup_equal_page` for `(property_id, encoded_value)`. For
   two to eight equality arms it constructs vertex-only `IndexEqualSpec`s and pages through the
   server-side `lookup_intersection_page`, which canonicalises the walk arm by `(property_id,
-  encoded_value)` order and sieves the remaining arms in heap without materializing full buckets.
+encoded_value)` order and sieves the remaining arms in heap without materializing full buckets.
   Nine or more equality arms are rejected with `InvalidArgument`.
 - For one numeric range arm it derives a finite half-open encoded comparison-domain range with the
   canonical `gleaph_gql::numeric_range_bounds` helper, validates each bound size against
   `MAX_INDEX_VALUE_KEY_BYTES`, and pages through `lookup_range_page` with
   `PostingRangeRequest::Between { low, high }`. For two same-property range arms the Router derives
   both half-open intervals through the same canonical helper, intersects them once (`low =
-  max(first.low, second.low)`, `high = min(first.high, second.high)`), validates the final bounds, and
+max(first.low, second.low)`, `high = min(first.high, second.high)`), validates the final bounds, and
   issues one paginated `lookup_range_page` stream with the same `PostingRangeRequest::Between`.
 - For one equality arm plus one one-sided range arm on distinct properties the Router proves active
   vertex property indexes for both properties, encodes the equality value with
@@ -288,6 +294,11 @@ cursor batching model as `backfill_label_postings`). Unindexable values are skip
 `crates/graph/src/property/`). Router orchestrates per-shard cursors via
 `admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (Admin-only).
 
+These existing operator-driven backfill endpoints are not an activation gate and do not cover the
+single vertex/sidecar/`INLINE` export contract. The migration lifecycle, generation fence, short
+seal, and Active-only planner publication are implemented in [ADR 0059](../adr/0059-create-index-migration-backfill.md)
+for migration-driven index creation; PocketIC E2E and upgrade validation remain pending.
+
 **Durable repair journal (ADR 0023 D5):** the happy-path flush stays volatile and persists nothing.
 When a flush fails, the batch is compensated and persisted to the stable `INDEX_REPAIR_JOURNAL`
 (`graph/src/index/repair_journal.rs`, `MemoryId 41`) instead of the volatile queue, so the
@@ -334,6 +345,7 @@ pending flush, backfill, or index unavailability leaves postings behind canonica
 ## Related documents
 
 - [../adr/0006-pre-federation-foundation.md](../adr/0006-pre-federation-foundation.md) — router property catalog SSOT
+- [../adr/0059-create-index-migration-backfill.md](../adr/0059-create-index-migration-backfill.md) — partially implemented migration-driven online index backfill and activation (production driver implemented; E2E validation pending)
 - [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [label-index.md](label-index.md) — vertex label membership; tiered reads with property index ([ADR 0004](../adr/0004-label-index.md))
 - [lookup-intersection.md](lookup-intersection.md)

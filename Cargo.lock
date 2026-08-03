@@ -1676,6 +1676,7 @@ dependencies = [
  "clap",
  "gleaph-codegen",
  "gleaph-gql",
+ "gleaph-index-ddl",
  "gleaph-migration-api",
  "ic-agent",
  "serde",
@@ -1841,6 +1842,7 @@ version = "0.1.0"
 dependencies = [
  "canbench-rs",
  "candid",
+ "futures",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-graph-kernel",
@@ -1888,6 +1890,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-index-ddl"
+version = "0.1.0"
+dependencies = [
+ "gleaph-gql",
+ "gleaph-graph-kernel",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gleaph-message-sizing"
 version = "0.1.0"
 
@@ -1896,6 +1907,7 @@ name = "gleaph-migration-api"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "gleaph-graph-kernel",
  "serde",
  "sha2 0.11.0",
 ]
@@ -1969,6 +1981,7 @@ dependencies = [
  "gleaph-gql-planner",
  "gleaph-graph-catalog",
  "gleaph-graph-kernel",
+ "gleaph-index-ddl",
  "gleaph-message-sizing",
  "gleaph-migration-api",
  "gleaph-prepared-api",

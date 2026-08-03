@@ -199,6 +199,23 @@ impl<M: Memory> VertexPropertyStore<M> {
         }
     }
 
+    /// Returns up to `max_entries` properties after `after` in stable key order.
+    pub(crate) fn scan_properties_batch(
+        &self,
+        after: Option<VertexPropertyKey>,
+        max_entries: u32,
+    ) -> Vec<(VertexPropertyKey, Value)> {
+        let max = usize::try_from(max_entries).unwrap_or(usize::MAX);
+        let range = after
+            .map(|key| (RangeBound::Excluded(key), RangeBound::Unbounded))
+            .unwrap_or((RangeBound::Unbounded, RangeBound::Unbounded));
+        self.properties
+            .range(range)
+            .take(max)
+            .map(|entry| (*entry.key(), entry.value().0.clone()))
+            .collect()
+    }
+
     pub fn into_memory(self) -> M {
         self.properties.into_memory()
     }

@@ -1883,11 +1883,14 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     );
     crate::test_labels::install_test_edge_inline_property(label, property);
     let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
-        edge_property_ids: vec![property.raw()],
         edge_indexes: vec![IndexedEdgeMembership {
+            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(106)
+                .expect("test physical id"),
+            catalog_epoch: 1,
+            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
             label_id: label.raw(),
             property_id: property.raw(),
-            direction_tag: 1,
+            direction: gleaph_graph_kernel::index::EdgeIndexDirection::Outgoing,
             field_path: String::new(),
         }],
         ..Default::default()

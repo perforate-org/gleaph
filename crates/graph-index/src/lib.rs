@@ -1,7 +1,7 @@
 //! Federated property index canister (`gleaph-graph-index`).
 //!
-//! Owns global postings `(property_id, value, shard_id, vertex_id)`. Shard/canister attachments are
-//! configured by the router via `admin_attach_shard_canister`.
+//! Owns global postings `(physical_index_id, property_id, value, shard_id, vertex_id)`.
+//! Shard/canister attachments are configured by the router via `admin_attach_shard_canister`.
 //!
 //! ## API visibility
 //!
@@ -14,6 +14,7 @@
 #[cfg(feature = "canbench")]
 mod bench;
 
+mod build_key;
 mod edge_key;
 mod facade;
 mod key;
@@ -21,6 +22,7 @@ mod label_key;
 mod label_range;
 mod posting_range;
 pub mod state;
+mod worker;
 
 pub mod init;
 
@@ -30,17 +32,22 @@ mod guards;
 pub use edge_key::EdgePostingKey;
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
-    EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
-    IndexLabelIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation, IndexSubject,
-    LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
+    EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexBuildCleanupStatus,
+    IndexBuildControlRequest, IndexBuildDmlRequest, IndexBuildError, IndexBuildPhase,
+    IndexBuildProgress, IndexBuildSealRequest, IndexBuildSealStatus, IndexBuildSealTarget,
+    IndexBuildSeedDisposition, IndexBuildSeedPageRequest, IndexBuildSeedPageResult,
+    IndexBuildShardWatermark, IndexBuildStatus, IndexBuildSubject, IndexBuildTarget,
+    IndexEqualSpec, IndexLabelIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation,
+    IndexSubject, LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
     LabelPostingCursor, LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult,
     LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
     LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
     LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
-    PropertyPostingCursor, ValuePostingCountCursor, ValuePostingCountPage,
+    PhysicalIndexId, PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
+    PropertyPostingCursor, RegisterIndexBuildRequest, ValuePostingCountCursor,
+    ValuePostingCountPage,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -96,29 +103,84 @@ fn admin_detach_shard_canister(
 
 #[update(guard = "guard_router_canister")]
 fn admin_purge_property_postings(
+    physical_index_id: PhysicalIndexId,
     kind: IndexPurgeKind,
     property_id: u32,
     label_id: u16,
     resume: Option<IndexPostingPurgeCursor>,
 ) -> Result<IndexPostingPurgeStepResult, String> {
-    canister::admin_purge_property_postings(kind, property_id, label_id, resume)
+    canister::admin_purge_property_postings(physical_index_id, kind, property_id, label_id, resume)
+}
+
+#[update(guard = "guard_router_canister")]
+fn register_index_build(
+    request: RegisterIndexBuildRequest,
+) -> Result<IndexBuildStatus, IndexBuildError> {
+    canister::register_index_build(request)
+}
+
+#[query(guard = "guard_router_canister")]
+fn index_build_status(
+    physical_index_id: PhysicalIndexId,
+) -> Result<IndexBuildStatus, IndexBuildError> {
+    canister::index_build_status(physical_index_id)
+}
+
+#[update(guard = "guard_router_canister")]
+async fn advance_index_build(
+    request: IndexBuildControlRequest,
+) -> Result<IndexBuildStatus, IndexBuildError> {
+    canister::advance_index_build(request).await
+}
+
+#[update(guard = "guard_router_canister")]
+fn seal_index_build(
+    request: IndexBuildSealRequest,
+) -> Result<IndexBuildSealStatus, IndexBuildError> {
+    canister::seal_index_build(request)
+}
+
+#[update(guard = "guard_router_canister")]
+fn abort_index_build(
+    request: IndexBuildControlRequest,
+) -> Result<IndexBuildCleanupStatus, IndexBuildError> {
+    canister::abort_index_build(request)
 }
 
 #[update]
-fn posting_insert(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
-    guard_shard_canister_or_trap(shard_id);
-    canister::posting_insert(shard_id, property_id, value, vertex_id);
+fn apply_index_build_dml(request: IndexBuildDmlRequest) -> Result<(), IndexBuildError> {
+    guard_shard_canister_or_trap(request.subject.shard_id());
+    canister::apply_index_build_dml(request)
 }
 
 #[update]
-fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+fn posting_insert(
+    shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: Vec<u8>,
+    vertex_id: u32,
+) {
     guard_shard_canister_or_trap(shard_id);
-    canister::posting_remove(shard_id, property_id, value, vertex_id);
+    canister::posting_insert(shard_id, physical_index_id, property_id, value, vertex_id);
+}
+
+#[update]
+fn posting_remove(
+    shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: Vec<u8>,
+    vertex_id: u32,
+) {
+    guard_shard_canister_or_trap(shard_id);
+    canister::posting_remove(shard_id, physical_index_id, property_id, value, vertex_id);
 }
 
 #[update]
 fn edge_posting_insert(
     shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: u16,
@@ -128,6 +190,7 @@ fn edge_posting_insert(
     guard_shard_canister_or_trap(shard_id);
     canister::edge_posting_insert(
         shard_id,
+        physical_index_id,
         property_id,
         value,
         label_id,
@@ -139,6 +202,7 @@ fn edge_posting_insert(
 #[update]
 fn edge_posting_remove(
     shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: u16,
@@ -148,6 +212,7 @@ fn edge_posting_remove(
     guard_shard_canister_or_trap(shard_id);
     canister::edge_posting_remove(
         shard_id,
+        physical_index_id,
         property_id,
         value,
         label_id,
@@ -190,17 +255,22 @@ fn posting_batch(
 }
 
 #[query(guard = "guard_router_or_attached_shard_canister")]
-fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
-    canister::lookup_equal(property_id, value)
+fn lookup_equal(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: Vec<u8>,
+) -> Vec<PostingHit> {
+    canister::lookup_equal(physical_index_id, property_id, value)
 }
 
 #[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_edge_equal(
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: Option<u16>,
 ) -> Vec<EdgePostingHit> {
-    canister::lookup_edge_equal(property_id, value, label_id)
+    canister::lookup_edge_equal(physical_index_id, property_id, value, label_id)
 }
 
 #[query(guard = "guard_router_or_attached_shard_canister")]
@@ -264,8 +334,12 @@ fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingH
 }
 
 #[query(guard = "guard_router_or_attached_shard_canister")]
-fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
-    canister::lookup_range(property_id, req)
+fn lookup_range(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    req: PostingRangeRequest,
+) -> Vec<PostingHit> {
+    canister::lookup_range(physical_index_id, property_id, req)
 }
 
 #[query(guard = "guard_router_or_attached_shard_canister")]

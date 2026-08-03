@@ -10,15 +10,17 @@ use gleaph_graph_kernel::federation::{
     ShardDetachStepResult, ShardId,
 };
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, EdgePostingHitPage, IndexPostingBatchProgress, IndexPostingMutation,
+    EdgePostingHit, EdgePostingHitPage, IndexBuildCleanupStatus, IndexBuildControlRequest,
+    IndexBuildDmlRequest, IndexBuildError, IndexBuildSealRequest, IndexBuildSealStatus,
+    IndexBuildStatus, IndexPostingBatchProgress, IndexPostingMutation,
     LabelIntersectionPageRequest, LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult,
     LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
     LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
     LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
-    ValuePostingCountPage,
+    PhysicalIndexId, PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
+    RegisterIndexBuildRequest, ValuePostingCountPage,
 };
 use ic_cdk::api::msg_caller;
 
@@ -76,36 +78,112 @@ pub(crate) fn admin_detach_shard_canister(
 }
 
 pub(crate) fn admin_purge_property_postings(
+    physical_index_id: PhysicalIndexId,
     kind: IndexPurgeKind,
     property_id: u32,
     label_id: u16,
     resume: Option<IndexPostingPurgeCursor>,
 ) -> Result<IndexPostingPurgeStepResult, String> {
     IndexStore::new()
-        .admin_purge_property_postings(msg_caller(), kind, property_id, label_id, resume)
+        .admin_purge_property_postings(
+            msg_caller(),
+            physical_index_id,
+            kind,
+            property_id,
+            label_id,
+            resume,
+        )
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn posting_insert(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+pub(crate) fn register_index_build(
+    request: RegisterIndexBuildRequest,
+) -> Result<IndexBuildStatus, IndexBuildError> {
+    IndexStore::new()
+        .register_index_build(msg_caller(), &request)
+        .map_err(IndexBuildError::from)
+}
+
+pub(crate) fn index_build_status(
+    physical_index_id: PhysicalIndexId,
+) -> Result<IndexBuildStatus, IndexBuildError> {
+    IndexStore::new()
+        .index_build_status(msg_caller(), physical_index_id)
+        .map_err(IndexBuildError::from)
+}
+
+pub(crate) async fn advance_index_build(
+    request: IndexBuildControlRequest,
+) -> Result<IndexBuildStatus, IndexBuildError> {
     let caller = msg_caller();
-    if let Err(e) =
-        IndexStore::new().posting_insert(caller, shard_id, property_id, value, vertex_id)
-    {
+    crate::worker::advance_index_build(caller, request).await
+}
+
+pub(crate) fn seal_index_build(
+    request: IndexBuildSealRequest,
+) -> Result<IndexBuildSealStatus, IndexBuildError> {
+    IndexStore::new()
+        .seal_index_build(msg_caller(), &request)
+        .map_err(IndexBuildError::from)
+}
+
+pub(crate) fn abort_index_build(
+    request: IndexBuildControlRequest,
+) -> Result<IndexBuildCleanupStatus, IndexBuildError> {
+    IndexStore::new()
+        .abort_index_build(msg_caller(), &request)
+        .map_err(IndexBuildError::from)
+}
+
+pub(crate) fn apply_index_build_dml(request: IndexBuildDmlRequest) -> Result<(), IndexBuildError> {
+    IndexStore::new()
+        .apply_index_build_dml(msg_caller(), &request)
+        .map_err(IndexBuildError::from)
+}
+
+pub(crate) fn posting_insert(
+    shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: Vec<u8>,
+    vertex_id: u32,
+) {
+    let caller = msg_caller();
+    if let Err(e) = IndexStore::new().posting_insert(
+        caller,
+        shard_id,
+        physical_index_id,
+        property_id,
+        value,
+        vertex_id,
+    ) {
         trap_err(e);
     }
 }
 
-pub(crate) fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+pub(crate) fn posting_remove(
+    shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: Vec<u8>,
+    vertex_id: u32,
+) {
     let caller = msg_caller();
-    if let Err(e) =
-        IndexStore::new().posting_remove(caller, shard_id, property_id, value, vertex_id)
-    {
+    if let Err(e) = IndexStore::new().posting_remove(
+        caller,
+        shard_id,
+        physical_index_id,
+        property_id,
+        value,
+        vertex_id,
+    ) {
         trap_err(e);
     }
 }
 
 pub(crate) fn edge_posting_insert(
     shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: u16,
@@ -116,6 +194,7 @@ pub(crate) fn edge_posting_insert(
     if let Err(e) = IndexStore::new().edge_posting_insert(
         caller,
         shard_id,
+        physical_index_id,
         property_id,
         value,
         label_id,
@@ -128,6 +207,7 @@ pub(crate) fn edge_posting_insert(
 
 pub(crate) fn edge_posting_remove(
     shard_id: ShardId,
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: u16,
@@ -138,6 +218,7 @@ pub(crate) fn edge_posting_remove(
     if let Err(e) = IndexStore::new().edge_posting_remove(
         caller,
         shard_id,
+        physical_index_id,
         property_id,
         value,
         label_id,
@@ -188,18 +269,34 @@ pub(crate) fn posting_batch(
         }
         let result = match operation {
             IndexPostingMutation::VertexProperty {
+                physical_index_id,
                 remove,
                 property_id,
                 value,
                 vertex_id,
             } => {
                 if remove {
-                    store.posting_remove(caller, shard_id, property_id, value, vertex_id)
+                    store.posting_remove(
+                        caller,
+                        shard_id,
+                        physical_index_id,
+                        property_id,
+                        value,
+                        vertex_id,
+                    )
                 } else {
-                    store.posting_insert(caller, shard_id, property_id, value, vertex_id)
+                    store.posting_insert(
+                        caller,
+                        shard_id,
+                        physical_index_id,
+                        property_id,
+                        value,
+                        vertex_id,
+                    )
                 }
             }
             IndexPostingMutation::EdgeProperty {
+                physical_index_id,
                 remove,
                 property_id,
                 value,
@@ -211,6 +308,7 @@ pub(crate) fn posting_batch(
                     store.edge_posting_remove(
                         caller,
                         shard_id,
+                        physical_index_id,
                         property_id,
                         value,
                         label_id,
@@ -221,6 +319,7 @@ pub(crate) fn posting_batch(
                     store.edge_posting_insert(
                         caller,
                         shard_id,
+                        physical_index_id,
                         property_id,
                         value,
                         label_id,
@@ -274,9 +373,13 @@ pub(crate) fn lookup_label_intersection_page(
     IndexStore::new().lookup_label_intersection_page(&req)
 }
 
-pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
+pub(crate) fn lookup_equal(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    value: Vec<u8>,
+) -> Vec<PostingHit> {
     IndexStore::new()
-        .lookup_equal(property_id, &value)
+        .lookup_equal(physical_index_id, property_id, &value)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()
@@ -284,12 +387,13 @@ pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> 
 }
 
 pub(crate) fn lookup_edge_equal(
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     value: Vec<u8>,
     label_id: Option<u16>,
 ) -> Vec<EdgePostingHit> {
     IndexStore::new()
-        .lookup_edge_equal(property_id, &value, label_id)
+        .lookup_edge_equal(physical_index_id, property_id, &value, label_id)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()
@@ -367,9 +471,13 @@ pub(crate) fn lookup_label_intersection(
     IndexStore::new().lookup_label_intersection(&req.vertex_label_ids)
 }
 
-pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
+pub(crate) fn lookup_range(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+    req: PostingRangeRequest,
+) -> Vec<PostingHit> {
     IndexStore::new()
-        .lookup_range(property_id, &req)
+        .lookup_range(physical_index_id, property_id, &req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

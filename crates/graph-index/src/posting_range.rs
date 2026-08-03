@@ -1,7 +1,12 @@
 //! Half-open `[low, high)` bounds over [`PostingKey`] for ordering comparisons on encoded values.
+//!
+//! The upper bound is a [`Bound`] so the terminal `(u64::MAX, u32::MAX)` property bucket — whose
+//! lexicographic successor does not exist — scans to `Bound::Unbounded` instead of being treated
+//! as empty. The purge module (`facade/store/posting_purge.rs`) uses the same pattern.
 
 use crate::key::PostingKey;
-use gleaph_graph_kernel::index::PostingRangeRequest;
+use gleaph_graph_kernel::index::{PhysicalIndexId, PostingRangeRequest};
+use std::ops::Bound;
 
 /// Lexicographic successor of `b` as an unbounded-length byte sequence (`memcmp` order).
 pub(crate) fn lex_succ_bytes(b: &[u8]) -> Vec<u8> {
@@ -18,55 +23,73 @@ pub(crate) fn lex_succ_bytes(b: &[u8]) -> Vec<u8> {
     v
 }
 
-fn property_min(property_id: u32) -> PostingKey {
-    PostingKey::prefix_lower(property_id, &[])
+fn property_min(physical_index_id: PhysicalIndexId, property_id: u32) -> PostingKey {
+    PostingKey::prefix_lower(physical_index_id, property_id, &[])
 }
 
-/// First [`PostingKey`] not belonging to `property_id` (half-open property bucket upper bound).
-fn property_end_exclusive(property_id: u32) -> Option<PostingKey> {
-    Some(PostingKey::prefix_lower(property_id.checked_add(1)?, &[]))
+/// Exclusive upper bound for one `(physical_index_id, property_id)` bucket.
+///
+/// The terminal bucket `(u64::MAX, u32::MAX)` has no in-order successor, so its upper bound is
+/// unbounded; every other bucket ends at the next property (or next physical namespace) prefix.
+pub(crate) fn property_end_exclusive(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+) -> Bound<PostingKey> {
+    match property_id.checked_add(1) {
+        Some(next) => Bound::Excluded(PostingKey::prefix_lower(physical_index_id, next, &[])),
+        None => physical_index_id
+            .checked_next()
+            .map_or(Bound::Unbounded, |next| {
+                Bound::Excluded(PostingKey::prefix_lower(next, 0, &[]))
+            }),
+    }
 }
 
 /// Half-open `[low, high)` range covering all postings for one `property_id`.
-pub fn property_posting_bucket(property_id: u32) -> Option<(PostingKey, PostingKey)> {
-    let low = property_min(property_id);
-    let high = property_end_exclusive(property_id)?;
-    if low >= high {
-        return None;
-    }
-    Some((low, high))
+///
+/// The bucket is never empty: `low` is the property prefix and `high` either names the next
+/// property/namespace prefix (strictly greater) or is unbounded at the terminal bucket.
+pub fn property_posting_bucket(
+    physical_index_id: PhysicalIndexId,
+    property_id: u32,
+) -> (PostingKey, Bound<PostingKey>) {
+    (
+        property_min(physical_index_id, property_id),
+        property_end_exclusive(physical_index_id, property_id),
+    )
 }
 
 /// Half-open posting key range `[low, high)` covering encoded-value predicates for one `property_id`.
 pub(crate) fn posting_key_half_open_range(
+    physical_index_id: PhysicalIndexId,
     property_id: u32,
     req: &PostingRangeRequest,
-) -> Option<(PostingKey, PostingKey)> {
-    let high_bucket = property_end_exclusive(property_id)?;
+) -> (PostingKey, Bound<PostingKey>) {
+    let high_bucket = property_end_exclusive(physical_index_id, property_id);
 
     match req {
         PostingRangeRequest::Ge(b) => {
-            let low = PostingKey::prefix_lower(property_id, b);
-            Some((low, high_bucket))
+            let low = PostingKey::prefix_lower(physical_index_id, property_id, b);
+            (low, high_bucket)
         }
         PostingRangeRequest::Gt(b) => {
-            let low = PostingKey::prefix_lower(property_id, &lex_succ_bytes(b));
-            Some((low, high_bucket))
+            let low = PostingKey::prefix_lower(physical_index_id, property_id, &lex_succ_bytes(b));
+            (low, high_bucket)
         }
         PostingRangeRequest::Le(b) => {
-            let low = property_min(property_id);
-            let high = PostingKey::prefix_lower(property_id, &lex_succ_bytes(b));
-            Some((low, high))
+            let low = property_min(physical_index_id, property_id);
+            let high = PostingKey::prefix_lower(physical_index_id, property_id, &lex_succ_bytes(b));
+            (low, Bound::Excluded(high))
         }
         PostingRangeRequest::Lt(b) => {
-            let low = property_min(property_id);
-            let high = PostingKey::prefix_lower(property_id, b);
-            Some((low, high))
+            let low = property_min(physical_index_id, property_id);
+            let high = PostingKey::prefix_lower(physical_index_id, property_id, b);
+            (low, Bound::Excluded(high))
         }
         PostingRangeRequest::Between { low, high } => {
-            let low_key = PostingKey::prefix_lower(property_id, low);
-            let high_key = PostingKey::prefix_lower(property_id, high);
-            Some((low_key, high_key))
+            let low_key = PostingKey::prefix_lower(physical_index_id, property_id, low);
+            let high_key = PostingKey::prefix_lower(physical_index_id, property_id, high);
+            (low_key, Bound::Excluded(high_key))
         }
     }
 }
@@ -86,15 +109,52 @@ mod tests {
     #[test]
     fn ge_range_low_includes_exact_bound() {
         let b = vec![1u8, 2u8];
-        let (low, _) = posting_key_half_open_range(7, &PostingRangeRequest::Ge(b.clone())).unwrap();
-        assert_eq!(low, PostingKey::prefix_lower(7, &b));
+        let physical_index_id = PhysicalIndexId::new(1).unwrap();
+        let (low, _) =
+            posting_key_half_open_range(physical_index_id, 7, &PostingRangeRequest::Ge(b.clone()));
+        assert_eq!(low, PostingKey::prefix_lower(physical_index_id, 7, &b));
     }
 
     #[test]
     fn lt_range_excludes_bound_value() {
         let b = vec![10u8];
+        let physical_index_id = PhysicalIndexId::new(1).unwrap();
         let (_, high) =
-            posting_key_half_open_range(3, &PostingRangeRequest::Lt(b.clone())).unwrap();
-        assert_eq!(high, PostingKey::prefix_lower(3, &b));
+            posting_key_half_open_range(physical_index_id, 3, &PostingRangeRequest::Lt(b.clone()));
+        assert_eq!(
+            high,
+            Bound::Excluded(PostingKey::prefix_lower(physical_index_id, 3, &b))
+        );
+    }
+
+    #[test]
+    fn terminal_bucket_upper_bound_is_unbounded() {
+        let max_physical = PhysicalIndexId::new(u64::MAX).unwrap();
+        let (low, high) = property_posting_bucket(max_physical, u32::MAX);
+        assert_eq!(low, PostingKey::prefix_lower(max_physical, u32::MAX, &[]));
+        assert_eq!(high, Bound::Unbounded);
+    }
+
+    #[test]
+    fn max_property_before_last_namespace_bounds_at_next_namespace() {
+        let physical = PhysicalIndexId::new(u64::MAX - 1).unwrap();
+        let max_physical = PhysicalIndexId::new(u64::MAX).unwrap();
+        let (_, high) = property_posting_bucket(physical, u32::MAX);
+        assert_eq!(
+            high,
+            Bound::Excluded(PostingKey::prefix_lower(max_physical, 0, &[]))
+        );
+    }
+
+    #[test]
+    fn ge_range_at_terminal_bucket_is_unbounded() {
+        let max_physical = PhysicalIndexId::new(u64::MAX).unwrap();
+        let (low, high) = posting_key_half_open_range(
+            max_physical,
+            u32::MAX,
+            &PostingRangeRequest::Ge(b"v".to_vec()),
+        );
+        assert_eq!(low, PostingKey::prefix_lower(max_physical, u32::MAX, b"v"));
+        assert_eq!(high, Bound::Unbounded);
     }
 }

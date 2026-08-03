@@ -5,7 +5,7 @@ use gleaph_graph_kernel::index::IndexedPropertyKind;
 
 use gleaph_graph_kernel::federation::IndexPurgeKind;
 
-use crate::edge_index_direction::direction_tag;
+use crate::edge_index_direction::to_index_direction;
 use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
@@ -17,7 +17,7 @@ use crate::index_ddl::{IndexDdlStatement, IndexTarget};
 use crate::planner_stats::{IndexCatalogEntry, RouterGraphStats};
 use crate::state::RouterError;
 
-/// Per-graph indexed property catalog for query planning and DDL.
+/// Per-graph planner projection derived exclusively from `Active` physical-index lifecycle rows.
 pub fn graph_stats_for(graph_id: GraphId) -> RouterGraphStats {
     load_graph_stats(graph_id)
 }
@@ -39,29 +39,19 @@ pub(crate) async fn execute_index_ddl_for_graph(
     }
 }
 
-fn admin_compat_index_name(kind: IndexedPropertyKind, label: &str, property: &str) -> String {
-    let kind_tag = match kind {
-        IndexedPropertyKind::Vertex => "vertex",
-        IndexedPropertyKind::Edge => "edge",
-    };
-    format!("__gleaph_admin_{kind_tag}_{label}_{property}")
+pub(crate) struct ResolvedIndexDefinition {
+    pub entry: IndexCatalogEntry,
+    pub property_id: gleaph_graph_kernel::entry::PropertyId,
+    pub label_id: u16,
+    pub edge_direction: Option<gleaph_graph_kernel::index::EdgeIndexDirection>,
 }
 
-/// Legacy admin register → same catalog path as `CREATE INDEX IF NOT EXISTS` (ADR 0009 / 0011).
-pub(crate) async fn create_admin_compat_property_index(
+/// Resolve one logical CREATE INDEX target without allocating a name, physical namespace, or
+/// catalog row. Immediate DDL and migration preflight share this validation owner.
+pub(crate) fn resolve_index_definition(
     graph_id: GraphId,
-    target: IndexTarget,
-) -> Result<(), RouterError> {
-    let index_name = admin_compat_index_name(target.kind, &target.label, &target.property);
-    create_index(graph_id, &index_name, true, &target).await
-}
-
-async fn create_index(
-    graph_id: GraphId,
-    index_name: &str,
-    if_not_exists: bool,
     target: &IndexTarget,
-) -> Result<(), RouterError> {
+) -> Result<ResolvedIndexDefinition, RouterError> {
     let store = RouterStore::new();
     validate_target_labels(&store, graph_id, target)?;
     let property_id = store.lookup_property_id(graph_id, &target.property)?;
@@ -69,13 +59,13 @@ async fn create_index(
         IndexedPropertyKind::Vertex => store.lookup_vertex_label_id(graph_id, &target.label)?.raw(),
         IndexedPropertyKind::Edge => store.lookup_edge_label_id(graph_id, &target.label)?.raw(),
     };
-    let edge_direction_tag = match target.kind {
-        IndexedPropertyKind::Vertex => 0,
-        IndexedPropertyKind::Edge => direction_tag(
+    let edge_direction = match target.kind {
+        IndexedPropertyKind::Vertex => None,
+        IndexedPropertyKind::Edge => Some(to_index_direction(
             target
                 .edge_direction
                 .expect("edge CREATE INDEX requires direction"),
-        ) as u8,
+        )),
     };
 
     if target.kind == IndexedPropertyKind::Edge
@@ -104,10 +94,9 @@ async fn create_index(
                 .is_some_and(|record| {
                     record.is_inline_struct()
                         && record.inline_property_id() == Some(top_id)
-                        && record
-                            .inline_struct_field_paths()
-                            .iter()
-                            .any(|p| p == &target.property)
+                        && record.inline_struct_field_paths().iter().any(|path| {
+                            path == &target.property || format!("{top}.{path}") == target.property
+                        })
                 })
         });
         if !is_field {
@@ -118,25 +107,59 @@ async fn create_index(
         }
     }
 
-    let entry = IndexCatalogEntry {
-        kind: target.kind,
-        vertex_label: (target.kind == IndexedPropertyKind::Vertex).then(|| target.label.clone()),
-        edge_label: (target.kind == IndexedPropertyKind::Edge).then(|| target.label.clone()),
-        property: target.property.clone(),
-        edge_direction: target.edge_direction,
+    Ok(ResolvedIndexDefinition {
+        entry: IndexCatalogEntry {
+            kind: target.kind,
+            vertex_label: (target.kind == IndexedPropertyKind::Vertex)
+                .then(|| target.label.clone()),
+            edge_label: (target.kind == IndexedPropertyKind::Edge).then(|| target.label.clone()),
+            property: target.property.clone(),
+            edge_direction: target.edge_direction,
+        },
+        property_id,
+        label_id,
+        edge_direction,
+    })
+}
+
+fn admin_compat_index_name(kind: IndexedPropertyKind, label: &str, property: &str) -> String {
+    let kind_tag = match kind {
+        IndexedPropertyKind::Vertex => "vertex",
+        IndexedPropertyKind::Edge => "edge",
     };
+    format!("__gleaph_admin_{kind_tag}_{label}_{property}")
+}
+
+/// Legacy admin register → same catalog path as `CREATE INDEX IF NOT EXISTS` (ADR 0009 / 0011).
+pub(crate) async fn create_admin_compat_property_index(
+    graph_id: GraphId,
+    target: IndexTarget,
+) -> Result<(), RouterError> {
+    let index_name = admin_compat_index_name(target.kind, &target.label, &target.property);
+    create_index(graph_id, &index_name, true, &target).await
+}
+
+async fn create_index(
+    graph_id: GraphId,
+    index_name: &str,
+    if_not_exists: bool,
+    target: &IndexTarget,
+) -> Result<(), RouterError> {
+    let resolved = resolve_index_definition(graph_id, target)?;
 
     let index_name_id = intern_index_name(graph_id, index_name)?;
     // ADR 0023 D1: the router is the sole SSOT for index definitions. Shards learn
     // indexed-ness per operation from the router-supplied catalog, so CREATE INDEX
     // no longer fans out registrations to shards.
-    let (_index_inserted, _property_newly_registered) = create_named_index(
+    // ADR 0059 foundation bridge: ordinary CREATE INDEX preserves ADR 0009's immediate publication
+    // contract. Migration CREATE INDEX will enter through prepare/build/seal instead.
+    let _outcome = create_named_index(
         graph_id,
         index_name_id,
-        entry,
-        property_id,
-        label_id,
-        edge_direction_tag,
+        resolved.entry,
+        resolved.property_id,
+        resolved.label_id,
+        resolved.edge_direction,
         if_not_exists,
     )?;
     Ok(())
@@ -180,7 +203,8 @@ async fn drop_index(
         };
 
     if let Some((kind, property_id, label_id)) = purge {
-        purge_property_postings(graph_id, kind, property_id, label_id).await?;
+        purge_property_postings(graph_id, def.physical_index_id, kind, property_id, label_id)
+            .await?;
     }
     Ok(())
 }
@@ -189,6 +213,7 @@ async fn drop_index(
 /// live shards (ADR 0023 D6). A no-op on native builds (`index_sync` stubs out).
 async fn purge_property_postings(
     graph_id: GraphId,
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     kind: IndexPurgeKind,
     property_id: u32,
     label_id: u16,
@@ -197,6 +222,7 @@ async fn purge_property_postings(
     for index_canister in targets {
         crate::index_sync::admin_purge_property_postings(
             index_canister,
+            physical_index_id,
             kind,
             property_id,
             label_id,

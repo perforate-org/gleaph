@@ -44,8 +44,9 @@ impl IndexStore {
     ) -> Result<PropertyIntersectionPage, IndexError> {
         let mut specs = req.specs.clone();
         specs.sort_by(|a, b| {
-            a.property_id
-                .cmp(&b.property_id)
+            a.physical_index_id
+                .cmp(&b.physical_index_id)
+                .then_with(|| a.property_id.cmp(&b.property_id))
                 .then_with(|| a.value.cmp(&b.value))
         });
         let walk = &specs[0];
@@ -58,6 +59,7 @@ impl IndexStore {
         };
         let page =
             self.lookup_edge_equal_page(&gleaph_graph_kernel::index::LookupEdgeEqualPageRequest {
+                physical_index_id: walk.physical_index_id,
                 property_id: walk.property_id,
                 value: walk.value.clone(),
                 label_id: match walk.subject {
@@ -94,8 +96,9 @@ impl IndexStore {
     ) -> Result<PropertyIntersectionPage, IndexError> {
         let mut specs = req.specs.clone();
         specs.sort_by(|a, b| {
-            a.property_id
-                .cmp(&b.property_id)
+            a.physical_index_id
+                .cmp(&b.physical_index_id)
+                .then_with(|| a.property_id.cmp(&b.property_id))
                 .then_with(|| a.value.cmp(&b.value))
         });
         let walk_index = specs
@@ -111,6 +114,7 @@ impl IndexStore {
             }
         };
         let page = self.lookup_equal_page(&gleaph_graph_kernel::index::LookupEqualPageRequest {
+            physical_index_id: walk.physical_index_id,
             property_id: walk.property_id,
             value: walk.value.clone(),
             after,
@@ -179,8 +183,8 @@ fn edge_intersection(specs: &[IndexEqualSpec]) -> Vec<EdgePostingHit> {
 
 fn collect_vertex_arm(spec: &IndexEqualSpec) -> IntSet<u64> {
     debug_assert!(matches!(spec.subject, IndexSubject::VertexProperty));
-    let lo = PostingKey::prefix_lower(spec.property_id, &spec.value);
-    let hi = PostingKey::prefix_upper(spec.property_id, &spec.value);
+    let lo = PostingKey::prefix_lower(spec.physical_index_id, spec.property_id, &spec.value);
+    let hi = PostingKey::prefix_upper(spec.physical_index_id, spec.property_id, &spec.value);
     let mut set = IntSet::default();
     INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
@@ -198,7 +202,12 @@ fn collect_vertex_projection_arm(spec: &IndexEqualSpec) -> IntSet<u64> {
 }
 
 fn collect_edge_owner_projection(spec: &IndexEqualSpec, label_id: Option<u16>) -> IntSet<u64> {
-    let (lo, hi) = edge_prefix_bounds(spec.property_id, &spec.value, label_id);
+    let (lo, hi) = edge_prefix_bounds(
+        spec.physical_index_id,
+        spec.property_id,
+        &spec.value,
+        label_id,
+    );
     let mut set = IntSet::default();
     INDEX_EDGE_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
@@ -212,7 +221,12 @@ fn collect_edge_arm(spec: &IndexEqualSpec) -> RapidHashSet<u128> {
     let IndexSubject::EdgeProperty { label_id } = spec.subject else {
         return RapidHashSet::default();
     };
-    let (lo, hi) = edge_prefix_bounds(spec.property_id, &spec.value, label_id);
+    let (lo, hi) = edge_prefix_bounds(
+        spec.physical_index_id,
+        spec.property_id,
+        &spec.value,
+        label_id,
+    );
     let mut set = RapidHashSet::default();
     INDEX_EDGE_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
@@ -228,18 +242,19 @@ fn collect_edge_arm(spec: &IndexEqualSpec) -> RapidHashSet<u128> {
 }
 
 fn edge_prefix_bounds(
+    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     property_id: u32,
     value: &[u8],
     label_id: Option<u16>,
 ) -> (EdgePostingKey, EdgePostingKey) {
     match label_id {
         Some(label) => (
-            EdgePostingKey::prefix_lower_labeled(property_id, value, label),
-            EdgePostingKey::prefix_upper_labeled(property_id, value, label),
+            EdgePostingKey::prefix_lower_labeled(physical_index_id, property_id, value, label),
+            EdgePostingKey::prefix_upper_labeled(physical_index_id, property_id, value, label),
         ),
         None => (
-            EdgePostingKey::prefix_lower(property_id, value),
-            EdgePostingKey::prefix_upper(property_id, value),
+            EdgePostingKey::prefix_lower(physical_index_id, property_id, value),
+            EdgePostingKey::prefix_upper(physical_index_id, property_id, value),
         ),
     }
 }
