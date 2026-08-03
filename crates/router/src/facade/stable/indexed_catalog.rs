@@ -430,6 +430,78 @@ pub(crate) fn load_active_indexed_property_catalog(graph_id: GraphId) -> Indexed
     load_graph_stats(graph_id).to_active_indexed_property_catalog()
 }
 
+/// Subset the active indexed-property catalog to one ordered vertex batch's written properties
+/// (ADR 0060 chunk-scoped postings). The graph consumes vertex memberships by `property_id`
+/// only, so every membership for a written property is retained; memberships for properties the
+/// batch does not write are dropped so the per-chunk wire stays proportional to the batch.
+pub(crate) fn vertex_batch_indexed_property_catalog(
+    graph_id: GraphId,
+    property_ids: &std::collections::BTreeSet<u32>,
+) -> IndexedPropertyCatalog {
+    let mut catalog = load_active_indexed_property_catalog(graph_id);
+    catalog
+        .vertex_indexes
+        .retain(|membership| property_ids.contains(&membership.property_id));
+    catalog.edge_indexes.clear();
+    catalog
+}
+
+/// Subset the active indexed-property catalog to one ordered vertex batch request's written
+/// properties.
+pub(crate) fn ordered_vertex_batch_catalog(
+    request: &gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequestV1,
+) -> IndexedPropertyCatalog {
+    let property_ids = request
+        .items
+        .iter()
+        .flat_map(|item| {
+            item.resolved_initial_properties
+                .iter()
+                .map(|property| property.property_id.raw())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    vertex_batch_indexed_property_catalog(request.graph_id, &property_ids)
+}
+
+/// Subset the active indexed-property catalog to one ordered edge batch's written
+/// `(label_id, property_id)` scopes (ADR 0060 chunk-scoped postings). The graph consumes edge
+/// memberships by `(label_id, property_id)`, so memberships outside the batch's scopes are
+/// dropped. Edges without a label can never carry an indexed edge property.
+pub(crate) fn edge_batch_indexed_property_catalog(
+    graph_id: GraphId,
+    scopes: &std::collections::BTreeSet<(u16, u32)>,
+) -> IndexedPropertyCatalog {
+    let mut catalog = load_active_indexed_property_catalog(graph_id);
+    catalog.vertex_indexes.clear();
+    catalog
+        .edge_indexes
+        .retain(|membership| scopes.contains(&(membership.label_id, membership.property_id)));
+    catalog
+}
+
+/// Subset the active indexed-property catalog to one ordered edge batch request's written
+/// `(label_id, property_id)` scopes.
+pub(crate) fn ordered_edge_batch_catalog(
+    request: &gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequestV1,
+) -> IndexedPropertyCatalog {
+    let scopes = request
+        .items
+        .iter()
+        .filter_map(|item| {
+            let label = item
+                .catalog_edge_label_id
+                .map(gleaph_graph_kernel::entry::EdgeLabelId::raw)?;
+            Some(
+                item.resolved_initial_edge_properties
+                    .iter()
+                    .map(move |property| (label, property.property_id.raw())),
+            )
+        })
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>();
+    edge_batch_indexed_property_catalog(request.graph_id, &scopes)
+}
+
 fn maintenance_phase(record: &IndexDefRecord) -> Option<(u64, IndexMaintenancePhase)> {
     match record.lifecycle {
         IndexLifecycleState::Preparing { .. } | IndexLifecycleState::Aborting { .. } => None,

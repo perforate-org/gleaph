@@ -333,6 +333,7 @@ export const idlFactory = ({ IDL }) => {
     'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
     'execution_mode' : OrderedBatchExecutionModeV1,
     'request' : OrderedEdgeBatchGraphRequest,
+    'indexed_property_catalog' : IndexedPropertyCatalog,
   });
   const OrderedEdgeBatchGraphArgs = IDL.Variant({
     'V1' : OrderedEdgeBatchGraphArgsV1,
@@ -436,6 +437,7 @@ export const idlFactory = ({ IDL }) => {
     'graph_request_fingerprint' : IDL.Vec(IDL.Nat8),
     'execution_mode' : OrderedBatchExecutionModeV1,
     'request' : OrderedVertexBatchGraphRequest,
+    'indexed_property_catalog' : IndexedPropertyCatalog,
   });
   const OrderedVertexBatchGraphArgs = IDL.Variant({
     'V1' : OrderedVertexBatchGraphArgsV1,

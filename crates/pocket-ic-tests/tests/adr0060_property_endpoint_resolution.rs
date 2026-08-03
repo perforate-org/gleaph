@@ -9,14 +9,13 @@ use gleaph_gql::value::Value;
 use gleaph_gql::value_to_index_key_bytes;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, advance_backfill_as_admin, bulk_load_as_admin,
-    bulk_load_status_as_admin, ensure_property, ensure_vertex_label, gql_query_as_admin,
-    index_vertex_property, install_single_shard_federation,
+    FederationEnv, GRAPH_NAME, bulk_load_as_admin, bulk_load_status_as_admin, ensure_edge_label,
+    ensure_property, ensure_vertex_label, gql_query_as_admin, index_vertex_property,
+    install_single_shard_federation,
 };
 use gleaph_router::types::{
-    AtomicInsertPropertyV1, AtomicInsertVertexV1, BackfillKind, BulkLoadChunkV1, BulkLoadCommand,
-    BulkLoadEdgeV1, BulkLoadEndpointV1, BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1,
-    BulkLoadStatusPage,
+    AtomicInsertPropertyV1, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1,
+    BulkLoadEndpointV1, BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadStatusPage,
 };
 
 fn graph(name: &str) -> Option<String> {
@@ -90,19 +89,9 @@ fn drive_to_completed(env: &FederationEnv, kind: &str, chunks: Vec<BulkLoadChunk
 
 fn setup_indexed_graph(env: &FederationEnv) {
     ensure_vertex_label(env, "Person");
+    ensure_edge_label(env, "KNOWS");
     ensure_property(env, "email");
     index_vertex_property(env, "Person", "email");
-}
-
-/// Run bounded vertex-property backfill until every shard reports `done`. The admin-compat
-/// index is published Active immediately, but postings are populated by the backfill pass.
-fn converge_property_postings(env: &FederationEnv) {
-    loop {
-        let result = advance_backfill_as_admin(env, BackfillKind::VertexProperty, 64);
-        if result.all_done {
-            break;
-        }
-    }
 }
 
 #[test]
@@ -110,8 +99,8 @@ fn bulk_load_resolves_property_endpoints_through_the_property_index() {
     let env = install_single_shard_federation();
     setup_indexed_graph(&env);
 
-    // Load two indexed vertices first; the property index is converged before the load so the
-    // ordered vertex batches push postings, then the backfill pass syncs the postings.
+    // Load two indexed vertices first; the ordered vertex batch pushes the property postings to
+    // the index canister during Append, so the resolution pre-pass of the edge chunk sees them.
     drive_to_completed(
         &env,
         "happy-vertices",
@@ -120,7 +109,6 @@ fn bulk_load_resolves_property_endpoints_through_the_property_index() {
             vertex("c@d.e"),
         ])],
     );
-    converge_property_postings(&env);
 
     // Edge chunk referencing both endpoints by property.
     drive_to_completed(
@@ -151,7 +139,9 @@ fn bulk_load_property_resolution_rejects_missing_and_non_unique_without_commit()
     let env = install_single_shard_federation();
     setup_indexed_graph(&env);
 
-    // Two vertices with a shared email make that value non-unique; one value is never loaded.
+    // Two vertices with a shared email make that value non-unique; the missing value is never
+    // loaded. Each rejection is exercised in its own job so the first failing endpoint determines
+    // the error, mirroring the fail-closed whole-chunk contract.
     drive_to_completed(
         &env,
         "reject-vertices",
@@ -160,7 +150,6 @@ fn bulk_load_property_resolution_rejects_missing_and_non_unique_without_commit()
             vertex("dup@example.com"),
         ])],
     );
-    converge_property_postings(&env);
 
     bulk_load_as_admin(&env, start("reject-missing")).expect("start reject-missing");
     let missing = bulk_load_as_admin(
@@ -170,7 +159,7 @@ fn bulk_load_property_resolution_rejects_missing_and_non_unique_without_commit()
             0,
             BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
                 source: by_property("missing@example.com"),
-                target: by_property("dup@example.com"),
+                target: by_property("missing@example.com"),
                 directed: true,
                 edge_label_name: Some("KNOWS".to_owned()),
                 inline_property: None,

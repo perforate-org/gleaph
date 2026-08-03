@@ -513,6 +513,10 @@ pub struct OrderedVertexBatchGraphArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
     pub execution_mode: OrderedBatchExecutionModeV1,
+    /// Router-sourced indexed-property catalog scoped to the properties this batch writes (ADR
+    /// 0023 D1/D3). Transport metadata like [`Self::execution_mode`]: carried outside the
+    /// fingerprinted request, so catalog changes do not perturb replay identity.
+    pub indexed_property_catalog: crate::index::IndexedPropertyCatalog,
     pub request: OrderedVertexBatchGraphRequest,
 }
 
@@ -539,6 +543,10 @@ pub struct OrderedEdgeBatchGraphArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
     pub execution_mode: OrderedBatchExecutionModeV1,
+    /// Router-sourced indexed-property catalog scoped to the edge label/property pairs this batch
+    /// writes (ADR 0023 D1/D3). Transport metadata like [`Self::execution_mode`]: carried outside
+    /// the fingerprinted request, so catalog changes do not perturb replay identity.
+    pub indexed_property_catalog: crate::index::IndexedPropertyCatalog,
     pub request: OrderedEdgeBatchGraphRequest,
 }
 

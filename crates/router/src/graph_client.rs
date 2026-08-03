@@ -466,6 +466,7 @@ mod tests {
             mutation_id: 1,
             graph_request_fingerprint: [0; 32],
             execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: Default::default(),
             request: OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
                 graph_id: GraphId::from_raw(0),
                 target_shard_id: ShardId::new(0),

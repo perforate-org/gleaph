@@ -332,13 +332,13 @@ pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanRes
 /// `Atomic` mode commits the whole request as one journal entry (atomic-insert contract).
 /// `Resumable` mode (ADR 0060) executes the largest budget-fitting prefix through the scalar
 /// owner boundary and commits that prefix as one journal entry; the receipt count is the prefix.
-pub fn execute_ordered_edge_batch(
+pub async fn execute_ordered_edge_batch(
     args: OrderedEdgeBatchGraphArgs,
 ) -> Result<GraphOrderedEdgeBatchResult, String> {
-    execute_ordered_edge_batch_impl(args, message_instruction_counter)
+    execute_ordered_edge_batch_impl(args, message_instruction_counter).await
 }
 
-fn execute_ordered_edge_batch_impl(
+async fn execute_ordered_edge_batch_impl(
     args: OrderedEdgeBatchGraphArgs,
     instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedEdgeBatchResult, String> {
@@ -356,7 +356,7 @@ fn execute_ordered_edge_batch_impl(
         return Err("ordered Graph request target canister does not match receiver".into());
     }
     if args.execution_mode == OrderedBatchExecutionModeV1::Resumable {
-        return execute_ordered_edge_batch_resumable(args, instruction_source);
+        return execute_ordered_edge_batch_resumable(args, instruction_source).await;
     }
 
     let logical_item_count = u32::try_from(request.items.len())
@@ -409,6 +409,7 @@ fn execute_ordered_edge_batch_impl(
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(
         request.resolved_labels.clone(),
     ));
+    let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
     let classification = store
         .classify_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph batch classification failed: {error}"))?;
@@ -469,12 +470,39 @@ fn execute_ordered_edge_batch_impl(
             })
     };
     crate::edge_inline_property_schema::clear_execution_resolved_labels();
+    flush_ordered_batch_postings(args.mutation_id)
+        .await
+        .map_err(|error| error.to_string())?;
     result
+}
+
+/// Flush the ordered batch's volatile property-index postings to the index canister (ADR 0060
+/// chunk-scoped postings). The shared flush batches vertex, edge, and label postings into one
+/// `posting_batch` call, message-size paging and following the index's instruction budget; a
+/// failure journals the remainder for durable repair (ADR 0023 D5), so a committed chunk never
+/// loses postings. Native (non-wasm) execution has no index client and skips the flush.
+async fn flush_ordered_batch_postings(mutation_id: u64) -> Result<(), crate::plan::PlanQueryError> {
+    #[cfg(target_family = "wasm")]
+    {
+        let Some(index) = wasm_index_client_holder() else {
+            return Ok(());
+        };
+        crate::index::pending::flush_all_pending(
+            Some(&index as &dyn PropertyIndexLookup),
+            Some(mutation_id),
+        )
+        .await
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = mutation_id;
+        Ok(())
+    }
 }
 
 /// `Resumable` ordered edge execution (ADR 0060): commit the largest budget-fitting prefix of the
 /// candidate request through the scalar owner boundary as one atomic journal entry.
-fn execute_ordered_edge_batch_resumable(
+async fn execute_ordered_edge_batch_resumable(
     args: &OrderedEdgeBatchGraphArgsV1,
     instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedEdgeBatchResult, String> {
@@ -516,6 +544,7 @@ fn execute_ordered_edge_batch_resumable(
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(
         request.resolved_labels.clone(),
     ));
+    let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
     let committed = resumable_prefix_len(request.items.len(), instruction_source, |index| {
         store.execute_ordered_scalar_edges(&edges[index..index + 1], args.mutation_id);
     });
@@ -527,7 +556,12 @@ fn execute_ordered_edge_batch_resumable(
         graph_request_fingerprint: args.graph_request_fingerprint,
         logical_item_count,
     };
-    Ok(store.commit_ordered_edge_batch_receipt(args.mutation_id, identity, &edges[..committed]))
+    let result =
+        store.commit_ordered_edge_batch_receipt(args.mutation_id, identity, &edges[..committed]);
+    flush_ordered_batch_postings(args.mutation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(result)
 }
 
 /// Router → Graph: journal-first ordered vertex bulk placement (ADR 0049).
@@ -535,13 +569,13 @@ fn execute_ordered_edge_batch_resumable(
 /// `Atomic` mode commits the whole request as one journal entry (atomic-insert contract).
 /// `Resumable` mode (ADR 0060) executes the largest budget-fitting prefix and commits that prefix
 /// as one journal entry; the receipt counts are the committed prefix, which is the chunk.
-pub fn execute_ordered_vertex_batch(
+pub async fn execute_ordered_vertex_batch(
     args: OrderedVertexBatchGraphArgs,
 ) -> Result<GraphOrderedVertexBatchResult, String> {
-    execute_ordered_vertex_batch_impl(args, message_instruction_counter)
+    execute_ordered_vertex_batch_impl(args, message_instruction_counter).await
 }
 
-fn execute_ordered_vertex_batch_impl(
+async fn execute_ordered_vertex_batch_impl(
     args: OrderedVertexBatchGraphArgs,
     instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedVertexBatchResult, String> {
@@ -559,7 +593,7 @@ fn execute_ordered_vertex_batch_impl(
         return Err("ordered vertex Graph request target canister does not match receiver".into());
     }
     if args.execution_mode == OrderedBatchExecutionModeV1::Resumable {
-        return execute_ordered_vertex_batch_resumable(args, instruction_source);
+        return execute_ordered_vertex_batch_resumable(args, instruction_source).await;
     }
 
     let logical_item_count = u32::try_from(request.items.len())
@@ -582,6 +616,7 @@ fn execute_ordered_vertex_batch_impl(
         Some(request.items.len()),
     )?;
 
+    let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
     let vertices = request
         .items
         .iter()
@@ -621,6 +656,9 @@ fn execute_ordered_vertex_batch_impl(
         hot_forward_vertices.clone(),
         allocated_vertex_ids.clone(),
     );
+    flush_ordered_batch_postings(args.mutation_id)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(GraphOrderedVertexBatchResult::V1(
         GraphOrderedVertexBatchResultV1::Completed(
             gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
@@ -668,7 +706,7 @@ fn resumable_prefix_len(
 
 /// `Resumable` ordered vertex execution (ADR 0060): commit the largest budget-fitting prefix of
 /// the candidate request as one atomic journal entry and return its receipt.
-fn execute_ordered_vertex_batch_resumable(
+async fn execute_ordered_vertex_batch_resumable(
     args: &OrderedVertexBatchGraphArgsV1,
     instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedVertexBatchResult, String> {
@@ -710,6 +748,7 @@ fn execute_ordered_vertex_batch_resumable(
     }
     validate_vertex_insert_items(&decoded)
         .map_err(|error| format!("ordered vertex Graph request validation: {error}"))?;
+    let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
     let mut ids: Vec<u32> = Vec::with_capacity(decoded.len());
     let committed = resumable_prefix_len(request.items.len(), instruction_source, |index| {
         let allocated =
@@ -736,6 +775,9 @@ fn execute_ordered_vertex_batch_resumable(
         hot_forward_vertices.clone(),
         ids.clone(),
     );
+    flush_ordered_batch_postings(args.mutation_id)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(GraphOrderedVertexBatchResult::V1(
         GraphOrderedVertexBatchResultV1::Completed(
             gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
@@ -3043,9 +3085,11 @@ mod tests {
             mutation_id: 72_001,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
-        let result = execute_ordered_vertex_batch(args.clone()).expect("vertex batch execution");
+        let result = pollster::block_on(execute_ordered_vertex_batch(args.clone()))
+            .expect("vertex batch execution");
         let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
             &result
         else {
@@ -3054,8 +3098,70 @@ mod tests {
         assert_eq!(receipt.logical_vertex_count, 1);
         assert_eq!(receipt.hot_forward_vertices.len(), 1);
         assert_eq!(receipt.allocated_vertex_ids.len(), 1);
-        let replay = execute_ordered_vertex_batch(args).expect("vertex batch replay");
+        let replay =
+            pollster::block_on(execute_ordered_vertex_batch(args)).expect("vertex batch replay");
         assert_eq!(result, replay);
+    }
+
+    #[test]
+    fn ordered_vertex_batch_queues_postings_for_cataloged_properties() {
+        attach_test_federation(TEST_SHARD_ID);
+        let property_id = PropertyId::from_raw(79);
+        let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(79),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: vec![79],
+                resolved_initial_properties: vec![
+                    gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                        property_id,
+                        value: Value::Text("indexed".into())
+                            .to_binary_bytes()
+                            .expect("encode property"),
+                    },
+                ],
+            }],
+        });
+        let fingerprint =
+            ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
+            mutation_id: 79_001,
+            graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog {
+                vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_079)
+                        .expect("test physical id"),
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                    property_id: property_id.raw(),
+                    label_id: 79,
+                }],
+                edge_indexes: Vec::new(),
+            },
+            request,
+        });
+        pollster::block_on(execute_ordered_vertex_batch(args.clone())).expect("vertex batch");
+        let pending = crate::index::pending::take_pending();
+        assert!(
+            pending.iter().any(|op| matches!(
+                op,
+                crate::index::pending::PendingPostingOp::Insert {
+                    property_id: 79,
+                    ..
+                }
+            )),
+            "cataloged vertex property must queue a posting op: {pending:?}"
+        );
+        // Replay returns the stored journal result without re-executing, so it must not re-queue.
+        pollster::block_on(execute_ordered_vertex_batch(args)).expect("vertex batch replay");
+        assert!(
+            crate::index::pending::take_pending().is_empty(),
+            "replay must not re-queue postings"
+        );
     }
 
     #[test]
@@ -3098,12 +3204,14 @@ mod tests {
             mutation_id: 74_001,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
 
         let allocation_order_guard =
             crate::facade::mutation_executor::test_bulk_vertex_allocation_order(vec![1, 0]);
-        let result = execute_ordered_vertex_batch(args.clone()).expect("vertex batch execution");
+        let result = pollster::block_on(execute_ordered_vertex_batch(args.clone()))
+            .expect("vertex batch execution");
         let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
             &result
         else {
@@ -3134,7 +3242,8 @@ mod tests {
         );
         drop(allocation_order_guard);
 
-        let replay = execute_ordered_vertex_batch(args).expect("vertex batch replay");
+        let replay =
+            pollster::block_on(execute_ordered_vertex_batch(args)).expect("vertex batch replay");
         assert_eq!(result, replay);
     }
 
@@ -3614,10 +3723,11 @@ mod tests {
             mutation_id: 71_001,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request: request.clone(),
         });
-        let fresh_error =
-            execute_ordered_edge_batch(args.clone()).expect_err("fresh path is deferred");
+        let fresh_error = pollster::block_on(execute_ordered_edge_batch(args.clone()))
+            .expect_err("fresh path is deferred");
         assert!(
             fresh_error.contains("batch classification failed") && fresh_error.contains("not live"),
             "unexpected fresh-path error: {fresh_error}"
@@ -3636,7 +3746,7 @@ mod tests {
             None,
             vec![],
         );
-        let replay = execute_ordered_edge_batch(args).expect("journal replay");
+        let replay = pollster::block_on(execute_ordered_edge_batch(args)).expect("journal replay");
         assert!(matches!(
             replay,
             gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResult::V1(
@@ -3651,9 +3761,10 @@ mod tests {
             mutation_id: 71_001,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request: conflicting,
         });
-        let mismatch = execute_ordered_edge_batch(conflicting_args)
+        let mismatch = pollster::block_on(execute_ordered_edge_batch(conflicting_args))
             .expect_err("fingerprint mismatch must fail before journal lookup");
         assert!(mismatch.contains("fingerprint mismatch"));
     }
@@ -3687,10 +3798,12 @@ mod tests {
             mutation_id,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
 
-        let result = execute_ordered_edge_batch(args).expect("ordered clean-slab execution");
+        let result = pollster::block_on(execute_ordered_edge_batch(args))
+            .expect("ordered clean-slab execution");
         let GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) =
             result
         else {
@@ -3742,10 +3855,12 @@ mod tests {
             mutation_id,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
 
-        let result = execute_ordered_edge_batch(args.clone()).expect("ordered batch execution");
+        let result = pollster::block_on(execute_ordered_edge_batch(args.clone()))
+            .expect("ordered batch execution");
         let receipt = match result {
             GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => {
                 receipt
@@ -3770,7 +3885,8 @@ mod tests {
         assert_eq!(outgoing[0].neighbor_vid(), first_target);
         assert_eq!(outgoing[1].neighbor_vid(), second_target);
 
-        let replay = execute_ordered_edge_batch(args).expect("ordered scalar fallback replay");
+        let replay = pollster::block_on(execute_ordered_edge_batch(args))
+            .expect("ordered scalar fallback replay");
         assert!(matches!(
             replay,
             GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(_))
@@ -3822,23 +3938,25 @@ mod tests {
             mutation_id: 76_001,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Resumable,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
         // Scripted per-message counter: two items fit, then the projected cost crosses the 40B
         // ceiling so the third item is never started.
         let scripted = Cell::new(0usize);
-        let first = execute_ordered_vertex_batch_impl(args.clone(), move || {
-            let call = scripted.get();
-            scripted.set(call + 1);
-            match call {
-                0 => 0,
-                1 => 10_000,
-                2 => 20_000,
-                3 => 30_000,
-                _ => 38_000_000_000,
-            }
-        })
-        .expect("resumable vertex execution");
+        let first =
+            pollster::block_on(execute_ordered_vertex_batch_impl(args.clone(), move || {
+                let call = scripted.get();
+                scripted.set(call + 1);
+                match call {
+                    0 => 0,
+                    1 => 10_000,
+                    2 => 20_000,
+                    3 => 30_000,
+                    _ => 38_000_000_000,
+                }
+            }))
+            .expect("resumable vertex execution");
         let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
             &first
         else {
@@ -3854,7 +3972,8 @@ mod tests {
             .mutation_journal_entry(76_001)
             .expect("resumable execution must persist the prefix journal");
         assert_eq!(journal.row_count(), 2);
-        let replay = execute_ordered_vertex_batch(args).expect("resumable vertex replay");
+        let replay = pollster::block_on(execute_ordered_vertex_batch(args))
+            .expect("resumable vertex replay");
         assert_eq!(
             first, replay,
             "replay must return the stored prefix receipt without re-execution"
@@ -3894,10 +4013,11 @@ mod tests {
             mutation_id,
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Resumable,
+            indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
         let scripted = Cell::new(0usize);
-        let first = execute_ordered_edge_batch_impl(args.clone(), move || {
+        let first = pollster::block_on(execute_ordered_edge_batch_impl(args.clone(), move || {
             let call = scripted.get();
             scripted.set(call + 1);
             match call {
@@ -3907,7 +4027,7 @@ mod tests {
                 3 => 30_000,
                 _ => 38_000_000_000,
             }
-        })
+        }))
         .expect("resumable edge execution");
         let GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) =
             &first
@@ -3922,7 +4042,8 @@ mod tests {
             .mutation_journal_entry(mutation_id)
             .expect("resumable edge execution must persist the prefix journal");
         assert_eq!(journal.row_count(), 2);
-        let replay = execute_ordered_edge_batch(args).expect("resumable edge replay");
+        let replay =
+            pollster::block_on(execute_ordered_edge_batch(args)).expect("resumable edge replay");
         assert_eq!(
             first, replay,
             "replay must return the stored prefix receipt without re-execution"

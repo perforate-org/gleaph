@@ -503,12 +503,15 @@ async fn dispatch_graph_child(
 ) -> Result<BulkLoadGraphReceiptV1, RouterError> {
     match graph_request {
         BulkLoadGraphRequestV1::Edge(request) => {
+            let indexed_property_catalog =
+                crate::facade::stable::indexed_catalog::ordered_edge_batch_catalog(request);
             let result = execute_ordered_edge_batch_on_graph(
                 request.target_graph_canister,
                 OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
                     mutation_id: child_mutation_id,
                     graph_request_fingerprint,
                     execution_mode: OrderedBatchExecutionModeV1::Resumable,
+                    indexed_property_catalog,
                     request: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(
                         request.clone(),
                     ),
@@ -528,12 +531,15 @@ async fn dispatch_graph_child(
             }
         }
         BulkLoadGraphRequestV1::Vertex(request) => {
+            let indexed_property_catalog =
+                crate::facade::stable::indexed_catalog::ordered_vertex_batch_catalog(request);
             let result = execute_ordered_vertex_batch_on_graph(
                 request.target_graph_canister,
                 OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
                     mutation_id: child_mutation_id,
                     graph_request_fingerprint,
                     execution_mode: OrderedBatchExecutionModeV1::Resumable,
+                    indexed_property_catalog,
                     request: gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest::V1(
                         request.clone(),
                     ),

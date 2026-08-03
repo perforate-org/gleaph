@@ -206,6 +206,12 @@ export interface OrderedVertexBatchGraphArgsV1 {
     graph_request_fingerprint: Uint8Array;
     execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedVertexBatchGraphRequest;
+    /**
+     * Router-sourced indexed-property catalog scoped to the properties this batch writes (ADR
+     * 0023 D1/D3). Transport metadata like [`Self::execution_mode`]: carried outside the
+     * fingerprinted request, so catalog changes do not perturb replay identity.
+     */
+    indexed_property_catalog: IndexedPropertyCatalog;
 }
 export interface ResolvedOrderedEdgePropertyV1 {
     value: Uint8Array;
@@ -670,6 +676,12 @@ export interface OrderedEdgeBatchGraphArgsV1 {
     graph_request_fingerprint: Uint8Array;
     execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedEdgeBatchGraphRequest;
+    /**
+     * Router-sourced indexed-property catalog scoped to the edge label/property pairs this batch
+     * writes (ADR 0023 D1/D3). Transport metadata like [`Self::execution_mode`]: carried outside
+     * the fingerprinted request, so catalog changes do not perturb replay identity.
+     */
+    indexed_property_catalog: IndexedPropertyCatalog;
 }
 export interface ResolvedPropertyTable {
     properties: Array<ResolvedProperty>;
@@ -3272,17 +3284,20 @@ function to_candid_record_n153(value: {
     graph_request_fingerprint: Uint8Array;
     execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedVertexBatchGraphRequest;
+    indexed_property_catalog: IndexedPropertyCatalog;
 }): {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
     execution_mode: _OrderedBatchExecutionModeV1;
     request: _OrderedVertexBatchGraphRequest;
+    indexed_property_catalog: _IndexedPropertyCatalog;
 } {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
         execution_mode: to_candid_OrderedBatchExecutionModeV1_n96(value.execution_mode),
-        request: to_candid_OrderedVertexBatchGraphRequest_n154(value.request)
+        request: to_candid_OrderedVertexBatchGraphRequest_n154(value.request),
+        indexed_property_catalog: to_candid_IndexedPropertyCatalog_n66(value.indexed_property_catalog)
     };
 }
 function to_candid_record_n157(value: {
@@ -3617,17 +3632,20 @@ function to_candid_record_n95(value: {
     graph_request_fingerprint: Uint8Array;
     execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedEdgeBatchGraphRequest;
+    indexed_property_catalog: IndexedPropertyCatalog;
 }): {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
     execution_mode: _OrderedBatchExecutionModeV1;
     request: _OrderedEdgeBatchGraphRequest;
+    indexed_property_catalog: _IndexedPropertyCatalog;
 } {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
         execution_mode: to_candid_OrderedBatchExecutionModeV1_n96(value.execution_mode),
-        request: to_candid_OrderedEdgeBatchGraphRequest_n98(value.request)
+        request: to_candid_OrderedEdgeBatchGraphRequest_n98(value.request),
+        indexed_property_catalog: to_candid_IndexedPropertyCatalog_n66(value.indexed_property_catalog)
     };
 }
 function to_candid_variant_n108(value: EdgeOrderingPolicy): {

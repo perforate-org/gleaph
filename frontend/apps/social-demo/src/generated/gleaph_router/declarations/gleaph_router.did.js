@@ -345,12 +345,21 @@ export const idlFactory = ({ IDL }) => {
     'vector_index_canister' : IDL.Principal,
     'logical_graph_name' : IDL.Text,
   });
+  const BulkLoadPropertyEndpointV1 = IDL.Record({
+    'value' : IDL.Vec(IDL.Nat8),
+    'property_name' : IDL.Text,
+    'vertex_label' : IDL.Text,
+  });
+  const BulkLoadEndpointV1 = IDL.Variant({
+    'Existing' : IDL.Vec(IDL.Nat8),
+    'ByProperty' : BulkLoadPropertyEndpointV1,
+  });
   const BulkLoadEdgeV1 = IDL.Record({
     'edge_label_name' : IDL.Opt(IDL.Text),
-    'source' : IDL.Vec(IDL.Nat8),
+    'source' : BulkLoadEndpointV1,
     'inline_property' : IDL.Opt(IDL.Vec(IDL.Nat8)),
     'directed' : IDL.Bool,
-    'target' : IDL.Vec(IDL.Nat8),
+    'target' : BulkLoadEndpointV1,
     'initial_edge_properties' : IDL.Vec(AtomicInsertPropertyV1),
   });
   const BulkLoadChunkV1 = IDL.Variant({

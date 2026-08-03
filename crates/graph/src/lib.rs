@@ -88,18 +88,18 @@ async fn execute_plan_update(
 
 /// Router → graph: journal-first ordered edge batch execution (ADR 0049).
 #[update(guard = "guard_router_canister")]
-fn execute_ordered_edge_batch(
+async fn execute_ordered_edge_batch(
     args: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs,
 ) -> Result<gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResult, String> {
-    canister::handlers::execute_ordered_edge_batch(args)
+    canister::handlers::execute_ordered_edge_batch(args).await
 }
 
 /// Router → graph: journal-first ordered vertex bulk placement (ADR 0049).
 #[update(guard = "guard_router_canister")]
-fn execute_ordered_vertex_batch(
+async fn execute_ordered_vertex_batch(
     args: gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgs,
 ) -> Result<gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchResult, String> {
-    canister::handlers::execute_ordered_vertex_batch(args)
+    canister::handlers::execute_ordered_vertex_batch(args).await
 }
 
 /// Router → graph: journal-first mixed vertex/edge batch execution (ADR 0049).

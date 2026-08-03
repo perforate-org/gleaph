@@ -839,6 +839,12 @@ export interface OrderedEdgeBatchGraphArgsV1 {
   'graph_request_fingerprint' : Uint8Array,
   'execution_mode' : OrderedBatchExecutionModeV1,
   'request' : OrderedEdgeBatchGraphRequest,
+  /**
+   * Router-sourced indexed-property catalog scoped to the edge label/property pairs this batch
+   * writes (ADR 0023 D1/D3). Transport metadata like [`Self::execution_mode`]: carried outside
+   * the fingerprinted request, so catalog changes do not perturb replay identity.
+   */
+  'indexed_property_catalog' : IndexedPropertyCatalog,
 }
 /**
  * One logical edge in the immutable Router → Graph ordered request.
@@ -964,6 +970,12 @@ export interface OrderedVertexBatchGraphArgsV1 {
   'graph_request_fingerprint' : Uint8Array,
   'execution_mode' : OrderedBatchExecutionModeV1,
   'request' : OrderedVertexBatchGraphRequest,
+  /**
+   * Router-sourced indexed-property catalog scoped to the properties this batch writes (ADR
+   * 0023 D1/D3). Transport metadata like [`Self::execution_mode`]: carried outside the
+   * fingerprinted request, so catalog changes do not perturb replay identity.
+   */
+  'indexed_property_catalog' : IndexedPropertyCatalog,
 }
 /**
  * One logical vertex in the versioned Router → Graph vertex request.

@@ -222,25 +222,44 @@ command is implemented:
 The CLI never hardcodes an operation cap; it references the shared wire constant only if it ever
 exposes an `atomic_insert`-style bound.
 
-**Planned extension — property-based edge endpoints (decision, not yet implemented).** For
+**Planned extension — property-based edge endpoints (decision, implemented as of 2026-08-03).** For
 incremental edge loads (`--edges`), endpoints reference existing vertices by property
-(`{ label, property, value }`) instead of an in-artifact `source_id`. Resolution will be
-**Router-side** (Option A): `BulkLoadEdgeV1` endpoints become an `Existing | ByProperty` enum and
-the Router resolves `ByProperty` through the graph property index during Append. Two design
-requirements are fixed: (1) a **pre-resolution pass** rejects the whole candidate chunk before any
-operation executes when any endpoint is missing or non-unique, so failures never surface as a
-partial commit mid-chunk; (2) resolution requires an existing, converged property index on the
-`(label, property)` pair (the CLI reports the missing index as an operator action), and endpoint
-property values are restricted to sortable (indexable) value types. Replay safety is preserved
+(`{ label, property, value }`) instead of an in-artifact `source_id`. Resolution is
+**Router-side** (Option A): `BulkLoadEdgeV1` endpoints are an `Existing | ByProperty` enum
+(`BulkLoadEndpointV1`) and the Router resolves `ByProperty` through the graph property index
+during Append. Two design requirements are fixed: (1) a **pre-resolution pass** rejects the whole
+candidate chunk before any operation executes when any endpoint is missing or non-unique, so
+failures never surface as a partial commit mid-chunk; (2) resolution requires an existing,
+converged property index on the `(label, property)` pair (the CLI reports the missing index as an
+operator action), and endpoint property values are restricted to sortable (indexable) value types
+(index-key bytes from `gleaph_gql::value_to_index_key_bytes`). Replay safety is preserved
 because the durable child row stores the resolved request and `drive_bulk_child` replays it
 without re-resolution. Resolution batches: endpoints are grouped by `(label, property)` and
 resolved with a batched equality index request (one call per group when the value set fits the
 inter-canister payload bound, split into the minimum number of calls otherwise, with duplicate
 values deduplicated), so a typical one-property edge chunk resolves in a single index call. The
-existing index API already sends multiple `IndexEqualSpec`s in one call, but only with
-intersection (AND) semantics and no per-value result association; resolution needs a
-union/batch-equality request (values of one property → per-value postings), which is a small
-extension of that existing spec-vector machinery.
+batch equality machinery reuses the existing `LookupEqualBatchRequest` (bucket-granularity
+pages + resume cursor), which already provides union/batch-equality semantics with per-value
+result association.
+
+**Ordered-batch postings (implemented as of 2026-08-03).** Ordered vertex and edge batches now
+push property-index postings during chunk processing instead of depending on a post-load
+backfill pass. The Router loads the active indexed-property catalog, **subsets it to the
+properties (and, for edges, the `(label, property)` pairs) the batch actually writes**, and
+carries the subset on the args envelope (`OrderedVertexBatchGraphArgsV1` /
+`OrderedEdgeBatchGraphArgsV1`) outside the fingerprinted request, mirroring
+`OrderedBatchExecutionModeV1` as transport metadata; the fingerprint therefore ignores catalog
+changes. The Graph batch handlers enter the subset catalog, and after the journal commit flush
+the volatile pending queues through the existing `flush_all_pending` — one `posting_batch` call
+that batches vertex, edge, and label postings, message-size paging via
+`gleaph-message-sizing` and following the index canister's instruction budget, with the
+remainder journaled for durable repair (ADR 0023 D5) on failure. Per chunk the flow costs two
+inter-canister calls (Router → Graph, Graph → index) and zero extra calls for chunks without
+indexed properties. Postings are therefore pushed at load time (proportional to data written)
+rather than by an all-vertices backfill scan; backfill remains for indexes created after data
+was loaded and for repair convergence. This applies uniformly to the ordered vertex, edge, and
+mixed batch paths regardless of each edge label's `EdgeOrderingPolicy` (ADR 0052), because
+placement policy is orthogonal to property-index maintenance.
 
 ## Alternatives
 

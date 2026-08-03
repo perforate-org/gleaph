@@ -303,15 +303,47 @@ export type BulkLoadCommand = {
   } |
   { 'Finalize' : { 'client_bulk_key' : string, 'graph_name' : [] | [string] } };
 /**
- * One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
+ * One edge in a durable bulk-load chunk.
+ *
+ * Endpoints reference existing vertices either by their graph-scoped encoded ID
+ * ([`BulkLoadEndpointV1::Existing`]) or by vertex label + property equality
+ * ([`BulkLoadEndpointV1::ByProperty`]); the Router resolves `ByProperty` endpoints through the
+ * graph property index before the chunk is admitted (ADR 0060 planned extension).
  */
 export interface BulkLoadEdgeV1 {
   'edge_label_name' : [] | [string],
-  'source' : Uint8Array,
+  'source' : BulkLoadEndpointV1,
   'inline_property' : [] | [Uint8Array],
   'directed' : boolean,
-  'target' : Uint8Array,
+  'target' : BulkLoadEndpointV1,
   'initial_edge_properties' : Array<AtomicInsertPropertyV1>,
+}
+/**
+ * One edge endpoint in a durable bulk-load chunk.
+ */
+export type BulkLoadEndpointV1 = {
+    /**
+     * Graph-scoped encoded existing vertex ID (`encode_global_vertex_id` output).
+     */
+    'Existing' : Uint8Array
+  } |
+  {
+    /**
+     * Vertex referenced by label + property equality, resolved by the Router through the
+     * converged property index on `(vertex_label, property_name)`.
+     */
+    'ByProperty' : BulkLoadPropertyEndpointV1
+  };
+/**
+ * Property-based vertex reference for a bulk-load edge endpoint.
+ */
+export interface BulkLoadPropertyEndpointV1 {
+  /**
+   * Sortable index key bytes for the GQL value (`gleaph_gql::value_to_index_key_bytes`).
+   */
+  'value' : Uint8Array,
+  'property_name' : string,
+  'vertex_label' : string,
 }
 /**
  * Public projection of the durable bulk-load lifecycle. Internal placement and cursors are never
