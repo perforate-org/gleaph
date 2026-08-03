@@ -20,7 +20,7 @@ cargo build -p gleaph-cli --release
 
 | Command            | Purpose                                                                            | Details                                  |
 | ------------------ | ---------------------------------------------------------------------------------- | ---------------------------------------- |
-| `gleaph codegen`   | Generate typed prepared-query clients and canister adapters from a Router manifest | [`gleaph-codegen`](../codegen/README.md) |
+| `gleaph codegen`   | Generate typed prepared-query clients and canister adapters from a Router manifest | [`docs/codegen.md`](docs/codegen.md)     |
 | `gleaph migration` | Create, validate, plan, and apply immutable schema migrations                      | [`docs/migration.md`](docs/migration.md) |
 | `gleaph load`      | Load initial vertices and edges into an existing logical graph                     | [`docs/load.md`](docs/load.md)           |
 
@@ -71,3 +71,6 @@ Remote subcommands (`migration status`, `migration apply`, `load`, and
   lifecycle, resume/skip semantics, streaming reads, and exit codes.
 - [`docs/migration.md`](docs/migration.md) — `gleaph migration` package
   format, GQL dialect, chain rules, and remote apply semantics.
+- [`docs/codegen.md`](docs/codegen.md) — `gleaph codegen` manifest sources,
+  targets, and flags; the generator itself is documented in
+  [`gleaph-codegen`](../codegen/README.md).
