@@ -10,10 +10,9 @@ use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
-    AdminAttachVectorIndexShardArgs, AtomicInsertPropertyV1, AtomicInsertRequest,
-    AtomicInsertResponse, AtomicInsertVertexV1, BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1,
-    BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs,
-    RegisterGraphShard, RegisterVectorIndexArgs,
+    AdminAttachVectorIndexShardArgs, AtomicInsertRequest, AtomicInsertResponse, BulkLoadCommand,
+    BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs, RegisterGraphShard,
+    RegisterVectorIndexArgs,
 };
 // use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
