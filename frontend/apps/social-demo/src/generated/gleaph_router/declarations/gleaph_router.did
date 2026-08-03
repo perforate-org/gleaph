@@ -152,7 +152,8 @@ type AtomicInsertRequestV1 = record {
   // Stable idempotency key supplied by the caller; retries must reuse it with identical data.
   client_mutation_key : text;
   operations : vec AtomicInsertOperationV1;
-  logical_graph_name : text;
+  // Optional logical graph name; `None` resolves the caller's default (HOME) graph.
+  graph_name : opt text;
 };
 // Public result for one Router atomic insert.
 type AtomicInsertResponse = record {
@@ -187,15 +188,15 @@ type BulkLoadChunkV1 = variant {
 };
 // Public durable bulk-load command family (ADR 0057).
 type BulkLoadCommand = variant {
-  Start : record { client_bulk_key : text; logical_graph_name : text };
-  Abort : record { client_bulk_key : text; logical_graph_name : text };
+  Start : record { client_bulk_key : text; graph_name : opt text };
+  Abort : record { client_bulk_key : text; graph_name : opt text };
   Append : record {
     client_bulk_key : text;
     chunk_index : nat32;
     chunk : BulkLoadChunkV1;
-    logical_graph_name : text;
+    graph_name : opt text;
   };
-  Finalize : record { client_bulk_key : text; logical_graph_name : text };
+  Finalize : record { client_bulk_key : text; graph_name : opt text };
 };
 // One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
 type BulkLoadEdgeV1 = record {
@@ -1634,14 +1635,14 @@ service : (RouterInitArgs) -> {
   // ADR 0049: classify and execute one order-preserving public atomic insert.
   atomic_insert : (AtomicInsertRequest) -> (Result_7);
   // Return the exact durable receipt for an ordered atomic insert.
-  atomic_insert_status : (text, text) -> (Result_7) query;
+  atomic_insert_status : (opt text, text) -> (Result_7) query;
   // Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
   // attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
   attach_vector_shard : (AdminAttachVectorIndexShardArgs) -> (Result);
   // Start, append, finalize, or abort one durable graph-scoped bulk-load job (ADR 0057).
   bulk_load : (BulkLoadCommand) -> (Result_8);
   // Return a bounded page of committed durable bulk-load chunk receipts (ADR 0057).
-  bulk_load_status : (text, text, opt nat32, nat32) -> (Result_9) query;
+  bulk_load_status : (opt text, text, opt nat32, nat32) -> (Result_9) query;
   // Verify router registry denormalization invariants (regions 1–5, 15–16). `Ok(())`
   // means consistent; `Err(Internal(detail))` reports the first divergence. Read-only
   // oracle so registry consistency can be checked on demand, including across upgrades.
@@ -1722,7 +1723,7 @@ service : (RouterInitArgs) -> {
   // cross-canister calls, so UI/CLI polling stays cheap.
   list_graphs : () -> (Result_31) query;
   // The full prepared-operation manifest for one graph.
-  list_prepared : (text) -> (Result_32) query;
+  list_prepared : (opt text) -> (Result_32) query;
   // List the bounded global schema-migration chain in canonical parent order.
   list_schema_migrations : (ListSchemaMigrationsArgs) -> (Result_33) query;
   list_shards : (text) -> (Result_34) query;
@@ -1734,7 +1735,7 @@ service : (RouterInitArgs) -> {
   lookup_property_id : (text, text) -> (Result_15) query;
   lookup_vertex_label_id : (text, text) -> (Result_11) query;
   // ADR 0029 Phase 4: pull-based status of a GQL/prepared mutation for the calling principal.
-  mutation_status : (text, text) -> (Result_37) query;
+  mutation_status : (opt text, text) -> (Result_37) query;
   my_role : () -> (Result_38) query;
   // Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
   prepare : (text, text, opt PreparedOperation) -> (Result);
@@ -1798,7 +1799,7 @@ service : (RouterInitArgs) -> {
   // and forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
   // Slice 4 activation gate is satisfied. `query` is the encoded F32 vector (dims are inferred from
   // the registered index definition).
-  vector_search : (text, text, blob, nat32) -> (Result_44) composite_query;
+  vector_search : (opt text, text, blob, nat32) -> (Result_44) composite_query;
   // Warm the heap centroid cache on the activated vector target.
   warm_vector_centroid_cache : (text, nat32) -> (Result_10);
   whoami : () -> (principal) query;

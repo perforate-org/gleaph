@@ -20,7 +20,7 @@ use gleaph_router::types::{
 fn ordered_vertex_request(key: &str) -> AtomicInsertRequest {
     AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: key.into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![
             AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: vec!["Person".into()],
@@ -42,7 +42,7 @@ fn ordered_request(env: &FederationEnv) -> AtomicInsertRequest {
     let target = encode_global_vertex_id(&key, target);
     AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: "adr0049-public-replay".into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
             source: AtomicInsertEndpointV1::Existing(source.0.to_vec()),
             target: AtomicInsertEndpointV1::Existing(target.0.to_vec()),
@@ -59,7 +59,7 @@ fn ordered_mixed_request(env: &FederationEnv, key: &str) -> AtomicInsertRequest 
     let encoding_key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
     AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: key.into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![
             AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: vec!["Person".into()],
@@ -82,7 +82,7 @@ fn ordered_mixed_request(env: &FederationEnv, key: &str) -> AtomicInsertRequest 
 fn ordered_edge_request(key: &str, source: Vec<u8>, target: Vec<u8>) -> AtomicInsertRequest {
     AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: key.into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
             source: AtomicInsertEndpointV1::Existing(source),
             target: AtomicInsertEndpointV1::Existing(target),
@@ -208,7 +208,7 @@ fn atomic_insert_mixed_allocated_id_is_immediately_usable_by_edge_insert() {
     let target_encoded = encode_global_vertex_id(&encoding_key, target).0.to_vec();
     let mixed = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: "adr0049-public-mixed-immediate-edge".into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![
             AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: vec!["Person".into()],
@@ -267,7 +267,7 @@ fn atomic_insert_rejects_missing_catalog_name_before_reservation() {
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
     let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: "adr0049-missing-label".into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
             source: AtomicInsertEndpointV1::Existing(
                 encode_global_vertex_id(&key, source).0.to_vec(),
@@ -300,7 +300,7 @@ fn atomic_insert_persists_property_and_inline_values() {
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
     let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: "adr0049-property-inline".into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
             source: AtomicInsertEndpointV1::Existing(
                 encode_global_vertex_id(&key, source).0.to_vec(),
@@ -362,7 +362,7 @@ fn atomic_insert_preserves_mixed_shapes_and_parallel_properties() {
     };
     let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: "adr0049-mixed-shapes".into(),
-        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        graph_name: Some(gleaph_pocket_ic_tests::GRAPH_NAME.into()),
         operations: vec![
             AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
                 source: AtomicInsertEndpointV1::Existing(encoded(source)),

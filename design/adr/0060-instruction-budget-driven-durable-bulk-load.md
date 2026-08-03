@@ -180,13 +180,23 @@ while offset < len:
 
 - `MAX_ATOMIC_INSERT_OPERATIONS` is retained for `atomic_insert` only; `bulk_load` has no fixed
   operation cap.
+- The public graph identity becomes `graph_name: Option<String>` (renamed from
+  `logical_graph_name`): `None` resolves the caller's default (HOME) graph through
+  `graph_context::resolve_graph_id_or_default`, `Some(name)` resolves the named graph with the
+  caller's tenancy authorization. The same optional-name treatment applies to the other L1
+  data-plane entry points that take a graph name (`bulk_load_status`, `mutation_status`,
+  `atomic_insert_status`, `atomic_insert` including its Router-internal ordered-batch chain,
+  `list_prepared`, and `vector_search`, which keeps its non-authorized named resolution); the
+  admin control surface (`register_graph`, `unregister_graph`, `ensure_*`, `index_*`,
+  `admin_register_vector_index`, `list_vector_indexes`) stays explicit because provisioning
+  targets a named graph and no CLI/SDK consumer needs the default there yet.
 - Durable resume is unchanged: `bulk_load_status` receipts let the client reconstruct committed
   boundaries (the receipt-count partitioning pattern already proven by the social-demo loader), and
   an ambiguous response resolves via status plus exact replay of the unchanged candidate batch.
 - `BulkLoadResponse::Appended` gains `next_offset` (breaking Candid/SDK/CDK change; the project is
   pre-release).
 
-### 4. `gleaph build` CLI as a cursor loop
+### 4. `gleaph load` CLI as a cursor loop
 
 The CLI is the first consumer of the batch-plus-cursor protocol. Its driver contains no chunk-sizing
 logic: each request is fitted to the 2 MiB ingress payload bound via `gleaph-message-sizing`, chunk
@@ -194,10 +204,13 @@ boundaries are Router-owned, and the driver loops on `next_offset`. The CLI surf
 here and the full user-facing specification (artifact schema, flags, exit codes) is written when the
 command is implemented:
 
-- artifact: versioned JSON (`format_version: 1`) with `vertices` (unique `source_id`, labels,
-  canonical GQL value properties) and `edges` (endpoints by `source_id`, label, directed);
+- artifact: versioned YAML/JSON single-file (`format_version: 1`) with `vertices` (unique
+  `source_id`, labels, canonical GQL value properties) and `edges` (endpoints by source/target,
+  label, directed), plus NDJSON as the large-data form (`vertices.jsonl` + `edges.jsonl`, one row
+  per vertex/edge with the same row schema);
 - remote connection: `--canister`, `-n/--network`, `--identity`, `--fetch-root-key` (same convention
-  as `gleaph migration`); `--graph`, `-k/--key` (default `initial-load-v1`);
+  as `gleaph migration`); `--graph` (omitted → the caller's default graph), `-k/--key` (default
+  `initial-load-v1`); `--format` is optional and inferred from the file extension when omitted;
 - lifecycle: skip on `Completed`, resume from `bulk_load_status` receipt boundaries, `--fresh` as the
   proof for the marker-absent path, digest verification via an optional `--state-file`;
 - exit codes: 0 complete/skip, 1 operator action required, 2 input validation, 3 remote/auth.
@@ -305,7 +318,13 @@ candidate batch committed as this chunk); the Router dispatches bulk-load chunks
 mode and derives `next_offset` from the receipt's committed operation count; `BulkLoadChunkV1`
 validation no longer caps chunks at `MAX_ATOMIC_INSERT_OPERATIONS` (the runtime budget and the
 payload / durable-row bounds govern the candidate size); the Router and Graph Candid bindings are
-regenerated. Decision 4 (`gleaph build` CLI) is not implemented. The remaining change is the CLI
+regenerated. Also as of 2026-08-03, the L1 data-plane wire changed `logical_graph_name: String` to
+`graph_name: Option<String>`: `bulk_load` (all four variants), `bulk_load_status`, `mutation_status`,
+`atomic_insert_status`, `atomic_insert` (including the Router-internal ordered-batch chain),
+`list_prepared`, and `vector_search` resolve `None` to the caller's default (HOME) graph via
+`graph_context::resolve_graph_id_or_default`, while `Some(name)` keeps the prior resolution; the
+admin control surface keeps explicit graph names. Decision 4 (`gleaph load` CLI) is not implemented.
+The remaining change is the CLI
 itself; no further wire change is planned, and there is no development stable-layout change: no
 Router or Graph stable region is added, and the existing receipt map, coordinator lifecycle, and
 client-key identity remain the durable substrate. The static-admission inconsistency is confirmed

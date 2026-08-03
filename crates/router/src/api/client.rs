@@ -40,29 +40,29 @@ async fn gql_mutate(
 /// ADR 0029 Phase 4: pull-based status of a GQL/prepared mutation for the calling principal.
 #[query]
 fn mutation_status(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_mutation_key: String,
 ) -> Result<types::MutationStatus, RouterError> {
     let caller = ic_cdk::api::msg_caller();
     let store = crate::facade::store::RouterStore::new();
-    mutation_status_for(&store, caller, &logical_graph_name, &client_mutation_key)
+    mutation_status_for(&store, caller, graph_name.as_deref(), &client_mutation_key)
 }
 
 /// Return the exact durable receipt for an ordered atomic insert.
 #[query]
 fn atomic_insert_status(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_mutation_key: String,
 ) -> Result<types::AtomicInsertResponse, RouterError> {
     let caller = ic_cdk::api::msg_caller();
     let store = crate::facade::store::RouterStore::new();
-    atomic_insert_status_for(&store, caller, &logical_graph_name, &client_mutation_key)
+    atomic_insert_status_for(&store, caller, graph_name.as_deref(), &client_mutation_key)
 }
 
 fn mutation_status_record(
     store: &crate::facade::store::RouterStore,
     caller: candid::Principal,
-    logical_graph_name: &str,
+    graph_name: Option<&str>,
     client_mutation_key: &str,
 ) -> Result<
     (
@@ -71,7 +71,7 @@ fn mutation_status_record(
     ),
     RouterError,
 > {
-    let graph_id = store.resolve_graph_id_authorized(logical_graph_name, caller)?;
+    let graph_id = crate::graph_context::resolve_graph_id_or_default(store, caller, graph_name)?;
     let record = store
         .router_mutation_record(caller, graph_id, client_mutation_key)
         .ok_or_else(|| RouterError::NotFound(client_mutation_key.to_owned()))?;
@@ -81,11 +81,10 @@ fn mutation_status_record(
 fn mutation_status_for(
     store: &crate::facade::store::RouterStore,
     caller: candid::Principal,
-    logical_graph_name: &str,
+    graph_name: Option<&str>,
     client_mutation_key: &str,
 ) -> Result<types::MutationStatus, RouterError> {
-    let (_, record) =
-        mutation_status_record(store, caller, logical_graph_name, client_mutation_key)?;
+    let (_, record) = mutation_status_record(store, caller, graph_name, client_mutation_key)?;
     record.ensure_gql_mutation_family()?;
     Ok(types::MutationStatus::from_record(&record))
 }
@@ -93,11 +92,11 @@ fn mutation_status_for(
 fn atomic_insert_status_for(
     store: &crate::facade::store::RouterStore,
     caller: candid::Principal,
-    logical_graph_name: &str,
+    graph_name: Option<&str>,
     client_mutation_key: &str,
 ) -> Result<types::AtomicInsertResponse, RouterError> {
     let (graph_id, record) =
-        mutation_status_record(store, caller, logical_graph_name, client_mutation_key)?;
+        mutation_status_record(store, caller, graph_name, client_mutation_key)?;
     record.ensure_atomic_insert_family()?;
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     Ok(types::AtomicInsertResponse::from_record_with_encoding_key(
@@ -125,13 +124,13 @@ async fn bulk_load(
 /// Return a bounded page of committed durable bulk-load chunk receipts (ADR 0057).
 #[query]
 fn bulk_load_status(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_bulk_key: String,
     receipt_cursor: Option<u32>,
     max_receipts: u32,
 ) -> Result<types::BulkLoadStatusPage, RouterError> {
     crate::bulk_load::bulk_load_status_public(
-        logical_graph_name,
+        graph_name,
         client_bulk_key,
         receipt_cursor,
         max_receipts,
@@ -156,7 +155,9 @@ fn drop_prepared(name: String) -> Result<(), RouterError> {
 
 /// The full prepared-operation manifest for one graph.
 #[query]
-fn list_prepared(graph_name: String) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
+fn list_prepared(
+    graph_name: Option<String>,
+) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
     prepared::list_prepared(graph_name)
 }
 
@@ -189,7 +190,7 @@ async fn prepared_mutate(
 /// the registered index definition).
 #[query(composite = true)]
 async fn vector_search(
-    graph_name: String,
+    graph_name: Option<String>,
     index_name: String,
     query: Vec<u8>,
     top_k: u32,
@@ -198,7 +199,10 @@ async fn vector_search(
     use gleaph_graph_kernel::vector_index::{MAX_VECTOR_SEARCH_TOP_K, VectorSearchRequest};
 
     let store = crate::facade::store::RouterStore::new();
-    let graph_id = store.resolve_graph_id(&graph_name)?;
+    let graph_id = match graph_name.as_deref() {
+        Some(name) => store.resolve_graph_id(name)?,
+        None => crate::graph_context::resolve_default_graph_id(&store, ic_cdk::api::msg_caller())?,
+    };
     let embedding_name_id = embedding_name_catalog::lookup_embedding_name_id(graph_id, &index_name)
         .ok_or_else(|| {
             RouterError::NotFound(format!("vector index/embedding name {index_name}"))
@@ -269,9 +273,9 @@ mod tests {
     // `vector_search` orchestration tests (ADR 0056: relocated from `facade/store/tests.rs` so the
     // api layer owns activation gating, missing index/target, and prevalidation coverage).
 
-    fn router_search_args(index_name: &str, top_k: u32) -> (String, String, Vec<u8>, u32) {
+    fn router_search_args(index_name: &str, top_k: u32) -> (Option<String>, String, Vec<u8>, u32) {
         (
-            "tenant.main".into(),
+            Some("tenant.main".into()),
             index_name.into(),
             vec![0u8; 16 * 4],
             top_k,
@@ -301,11 +305,11 @@ mod tests {
     fn status_endpoints_return_exact_not_found_for_missing_key() {
         let (store, caller) = setup_status_graph();
         assert_eq!(
-            super::mutation_status_for(&store, caller, "tenant.main", "missing"),
+            super::mutation_status_for(&store, caller, Some("tenant.main"), "missing"),
             Err(RouterError::NotFound("missing".into()))
         );
         assert_eq!(
-            super::atomic_insert_status_for(&store, caller, "tenant.main", "missing"),
+            super::atomic_insert_status_for(&store, caller, Some("tenant.main"), "missing"),
             Err(RouterError::NotFound("missing".into()))
         );
     }
@@ -317,13 +321,13 @@ mod tests {
         let gql_record = RouterMutationRecord::new(1, 0, b"gql".to_vec());
         insert_status_record(caller, "gql", gql_record);
         assert_eq!(
-            super::mutation_status_for(&store, caller, "tenant.main", "gql")
+            super::mutation_status_for(&store, caller, Some("tenant.main"), "gql")
                 .expect("GQL status")
                 .mutation_id,
             1
         );
         assert_eq!(
-            super::atomic_insert_status_for(&store, caller, "tenant.main", "gql"),
+            super::atomic_insert_status_for(&store, caller, Some("tenant.main"), "gql"),
             Err(RouterError::Conflict(
                 "client_mutation_key belongs to a different mutation family".into()
             ))
@@ -352,8 +356,9 @@ mod tests {
         };
         insert_status_record(caller, "atomic", atomic_record);
 
-        let recovered = super::atomic_insert_status_for(&store, caller, "tenant.main", "atomic")
-            .expect("recover atomic receipt after response loss");
+        let recovered =
+            super::atomic_insert_status_for(&store, caller, Some("tenant.main"), "atomic")
+                .expect("recover atomic receipt after response loss");
         assert_eq!(recovered.status.phase, MutationLifecyclePhase::Completed);
         assert_eq!(
             recovered.receipt,
@@ -365,7 +370,7 @@ mod tests {
             })
         );
         assert_eq!(
-            super::mutation_status_for(&store, caller, "tenant.main", "atomic"),
+            super::mutation_status_for(&store, caller, Some("tenant.main"), "atomic"),
             Err(RouterError::Conflict(
                 "client_mutation_key belongs to a different mutation family".into()
             ))
@@ -385,11 +390,11 @@ mod tests {
             "mutation record request identity and payload families disagree".into(),
         ));
         assert_eq!(
-            super::mutation_status_for(&store, caller, "tenant.main", "corrupt"),
+            super::mutation_status_for(&store, caller, Some("tenant.main"), "corrupt"),
             expected
         );
         assert_eq!(
-            super::atomic_insert_status_for(&store, caller, "tenant.main", "corrupt"),
+            super::atomic_insert_status_for(&store, caller, Some("tenant.main"), "corrupt"),
             Err(RouterError::Conflict(
                 "mutation record request identity and payload families disagree".into()
             ))
@@ -409,7 +414,7 @@ mod tests {
         // from it. A global (graph-agnostic) name lookup would wrongly succeed here.
         register_test_graph(&store, admin, "tenant.b");
         let err = futures::executor::block_on(super::vector_search(
-            "tenant.b".into(),
+            Some("tenant.b".into()),
             "vec1".into(),
             vec![0u8; 16 * 4],
             10,
@@ -506,7 +511,7 @@ mod tests {
 
         // Wrong byte length (dims are inferred from the def) -> InvalidArgument.
         let err = futures::executor::block_on(super::vector_search(
-            "tenant.main".into(),
+            Some("tenant.main".into()),
             "vec1".into(),
             vec![0u8; 16 * 4 - 4],
             10,

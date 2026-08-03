@@ -147,6 +147,22 @@ pub fn resolve_default_graph_id(
     resolve_default_graph(store, caller)
 }
 
+/// Resolve an optional public graph name to a graph id.
+///
+/// `None` resolves the caller's default (HOME) graph, matching the ingress default for
+/// programs without `SESSION SET GRAPH`. `Some(name)` resolves the named graph with the
+/// caller's tenancy authorization (non-tenants get `NotFound`, never `Forbidden`).
+pub fn resolve_graph_id_or_default(
+    store: &RouterStore,
+    caller: candid::Principal,
+    graph_name: Option<&str>,
+) -> Result<GraphId, RouterError> {
+    match graph_name {
+        Some(name) => store.resolve_graph_id_authorized(name, caller),
+        None => resolve_default_graph_id(store, caller),
+    }
+}
+
 fn resolve_home_graph(
     store: &RouterStore,
     caller: candid::Principal,
@@ -284,5 +300,19 @@ mod tests {
             err.to_string().contains("home graph already registered"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn optional_graph_name_resolves_named_or_default() {
+        let store = RouterStore::new();
+        register_graph(&store, "tenant_a", true);
+        register_graph(&store, "tenant_b", false);
+        let caller = Principal::from_slice(&[1; 29]);
+        let named = resolve_graph_id_or_default(&store, caller, Some("tenant_b"))
+            .expect("named resolution");
+        assert_eq!(graph_catalog::lookup_graph_id("tenant_b"), Some(named));
+        let defaulted =
+            resolve_graph_id_or_default(&store, caller, None).expect("default resolution");
+        assert_eq!(graph_catalog::lookup_graph_id("tenant_a"), Some(defaulted));
     }
 }

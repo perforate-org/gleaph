@@ -308,7 +308,7 @@ export const idlFactory = ({ IDL }) => {
   const AtomicInsertRequestV1 = IDL.Record({
     'client_mutation_key' : IDL.Text,
     'operations' : IDL.Vec(AtomicInsertOperationV1),
-    'logical_graph_name' : IDL.Text,
+    'graph_name' : IDL.Opt(IDL.Text),
   });
   const AtomicInsertRequest = IDL.Variant({ 'V1' : AtomicInsertRequestV1 });
   const MutationLifecyclePhase = IDL.Variant({
@@ -360,21 +360,21 @@ export const idlFactory = ({ IDL }) => {
   const BulkLoadCommand = IDL.Variant({
     'Start' : IDL.Record({
       'client_bulk_key' : IDL.Text,
-      'logical_graph_name' : IDL.Text,
+      'graph_name' : IDL.Opt(IDL.Text),
     }),
     'Abort' : IDL.Record({
       'client_bulk_key' : IDL.Text,
-      'logical_graph_name' : IDL.Text,
+      'graph_name' : IDL.Opt(IDL.Text),
     }),
     'Append' : IDL.Record({
       'client_bulk_key' : IDL.Text,
       'chunk_index' : IDL.Nat32,
       'chunk' : BulkLoadChunkV1,
-      'logical_graph_name' : IDL.Text,
+      'graph_name' : IDL.Opt(IDL.Text),
     }),
     'Finalize' : IDL.Record({
       'client_bulk_key' : IDL.Text,
-      'logical_graph_name' : IDL.Text,
+      'graph_name' : IDL.Opt(IDL.Text),
     }),
   });
   const BulkLoadPublicStateV1 = IDL.Variant({
@@ -1061,7 +1061,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'atomic_insert' : IDL.Func([AtomicInsertRequest], [Result_7], []),
     'atomic_insert_status' : IDL.Func(
-        [IDL.Text, IDL.Text],
+        [IDL.Opt(IDL.Text), IDL.Text],
         [Result_7],
         ['query'],
       ),
@@ -1072,7 +1072,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'bulk_load' : IDL.Func([BulkLoadCommand], [Result_8], []),
     'bulk_load_status' : IDL.Func(
-        [IDL.Text, IDL.Text, IDL.Opt(IDL.Nat32), IDL.Nat32],
+        [IDL.Opt(IDL.Text), IDL.Text, IDL.Opt(IDL.Nat32), IDL.Nat32],
         [Result_9],
         ['query'],
       ),
@@ -1181,7 +1181,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'list_backfill_status' : IDL.Func([IDL.Text], [Result_30], ['query']),
     'list_graphs' : IDL.Func([], [Result_31], ['query']),
-    'list_prepared' : IDL.Func([IDL.Text], [Result_32], ['query']),
+    'list_prepared' : IDL.Func([IDL.Opt(IDL.Text)], [Result_32], ['query']),
     'list_schema_migrations' : IDL.Func(
         [ListSchemaMigrationsArgs],
         [Result_33],
@@ -1209,7 +1209,11 @@ export const idlFactory = ({ IDL }) => {
         [Result_11],
         ['query'],
       ),
-    'mutation_status' : IDL.Func([IDL.Text, IDL.Text], [Result_37], ['query']),
+    'mutation_status' : IDL.Func(
+        [IDL.Opt(IDL.Text), IDL.Text],
+        [Result_37],
+        ['query'],
+      ),
     'my_role' : IDL.Func([], [Result_38], ['query']),
     'prepare' : IDL.Func(
         [IDL.Text, IDL.Text, IDL.Opt(PreparedOperation)],
@@ -1296,7 +1300,7 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'vector_search' : IDL.Func(
-        [IDL.Text, IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat32],
+        [IDL.Opt(IDL.Text), IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat32],
         [Result_44],
         ['composite_query'],
       ),

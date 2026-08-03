@@ -321,11 +321,13 @@ pub(crate) fn rebuild_prepared_caches_after_upgrade() {
 }
 
 /// Return the metadata snapshot for one authorized logical graph.
-pub fn list_prepared(graph_name: String) -> Result<PreparedManifest, RouterError> {
+pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
+    let canonical_name = graph_catalog::graph_name(graph_id);
     let mut operations = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
         plans
             .iter()
@@ -336,13 +338,13 @@ pub fn list_prepared(graph_name: String) -> Result<PreparedManifest, RouterError
     operations.sort_by(|left, right| left.name.cmp(&right.name));
     if operations.is_empty() {
         return Err(RouterError::NotFound(format!(
-            "prepared metadata for graph {graph_name:?}"
+            "prepared metadata for graph {canonical_name:?}"
         )));
     }
     Ok(PreparedManifest {
         manifest_version: MANIFEST_VERSION,
         graph: GraphIdentity {
-            id: graph_name,
+            id: canonical_name.unwrap_or_default(),
             name: None,
         },
         operations,

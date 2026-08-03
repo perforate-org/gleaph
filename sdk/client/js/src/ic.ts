@@ -45,7 +45,7 @@ interface GraphActorMethods {
     query: string,
     options: [] | [ApiPrepareRequest["options"]],
   ): Promise<Result<ApiPrepareResponse>>;
-  list_prepared(graphName: string): Promise<Result<PreparedManifest>>;
+  list_prepared(graphName: string | null): Promise<Result<PreparedManifest>>;
   prepared_query(
     name: string,
     params: Uint8Array,
@@ -59,7 +59,7 @@ interface GraphActorMethods {
   ): Promise<Result<GqlQueryWireResult>>;
   bulk_load(command: BulkLoadCommand): Promise<Result<BulkLoadResponse>>;
   bulk_load_status(
-    logicalGraphName: string,
+    graphName: string | null,
     clientBulkKey: string,
     receiptCursor: [] | [number],
     maxReceipts: number,

@@ -123,7 +123,7 @@ fn start_target_for_key(
 }
 
 fn atomic_request_from_chunk(
-    logical_graph_name: &str,
+    graph_name: Option<String>,
     client_bulk_key: &str,
     chunk: &BulkLoadChunkV1,
 ) -> AtomicInsertRequest {
@@ -150,7 +150,7 @@ fn atomic_request_from_chunk(
     };
     AtomicInsertRequest::V1(AtomicInsertRequestV1 {
         client_mutation_key: client_bulk_key.to_owned(),
-        logical_graph_name: logical_graph_name.to_owned(),
+        graph_name,
         operations,
     })
 }
@@ -158,13 +158,13 @@ fn atomic_request_from_chunk(
 fn build_graph_request(
     store: &RouterStore,
     graph_id: GraphId,
-    logical_graph_name: &str,
+    graph_name: Option<String>,
     client_bulk_key: &str,
     target: &BulkLoadTargetV1,
     chunk: &BulkLoadChunkV1,
     encoding_key: &ElementIdEncodingKey,
 ) -> Result<(BulkLoadGraphRequestV1, [u8; 32]), RouterError> {
-    let request = atomic_request_from_chunk(logical_graph_name, client_bulk_key, chunk);
+    let request = atomic_request_from_chunk(graph_name, client_bulk_key, chunk);
     let (classified, _) = request.into_classified().map_err(invalid)?;
     match classified {
         crate::types::ClassifiedAtomicInsertRequest::Vertex(request) => {
@@ -549,12 +549,13 @@ async fn drive_bulk_child(
 }
 
 fn start_bulk_load(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_bulk_key: String,
 ) -> Result<BulkLoadResponse, RouterError> {
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let target = start_target_for_key(&store, caller, graph_id, &client_bulk_key)?;
     match store.start_bulk_load_job(caller, graph_id, &client_bulk_key, target, time())? {
         BulkLoadStartAdmission::Created { .. } => Ok(BulkLoadResponse::Started {
@@ -570,7 +571,7 @@ fn start_bulk_load(
 }
 
 async fn append_bulk_load(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_bulk_key: String,
     chunk_index: u32,
     chunk: BulkLoadChunkV1,
@@ -579,7 +580,8 @@ async fn append_bulk_load(
     let chunk_fingerprint = chunk_envelope.fingerprint().map_err(invalid)?;
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let record = bulk_record(&store, caller, graph_id, &client_bulk_key)?;
     let parent_mutation_id = record.as_v1().mutation_id;
     let coordinator = bulk_parent(&record)?.clone();
@@ -625,7 +627,7 @@ async fn append_bulk_load(
     let (graph_request, graph_request_fingerprint) = build_graph_request(
         &store,
         graph_id,
-        &logical_graph_name,
+        graph_name,
         &client_bulk_key,
         &coordinator.target,
         &chunk,
@@ -679,12 +681,13 @@ fn committed_offset(receipt: &crate::types::AtomicInsertReceiptV1) -> Result<u32
 }
 
 fn finalize_bulk_load(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_bulk_key: String,
 ) -> Result<BulkLoadResponse, RouterError> {
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let coordinator = store.begin_bulk_load_finalize(caller, graph_id, &client_bulk_key)?;
     let coordinator = if matches!(coordinator.lifecycle, BulkLoadLifecycleV1::Completed) {
         coordinator
@@ -697,12 +700,13 @@ fn finalize_bulk_load(
 }
 
 async fn abort_bulk_load(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_bulk_key: String,
 ) -> Result<BulkLoadResponse, RouterError> {
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let coordinator = store.begin_bulk_load_abort(caller, graph_id, &client_bulk_key, time())?;
     if let BulkLoadLifecycleV1::AbortPending { active_chunk } = coordinator.lifecycle {
         let record = bulk_record(&store, caller, graph_id, &client_bulk_key)?;
@@ -738,43 +742,44 @@ pub(crate) async fn bulk_load_public(
     command.validate().map_err(invalid)?;
     match command {
         BulkLoadCommand::Start {
-            logical_graph_name,
+            graph_name,
             client_bulk_key,
-        } => start_bulk_load(logical_graph_name, client_bulk_key),
+        } => start_bulk_load(graph_name, client_bulk_key),
         BulkLoadCommand::Append {
-            logical_graph_name,
+            graph_name,
             client_bulk_key,
             chunk_index,
             chunk,
-        } => append_bulk_load(logical_graph_name, client_bulk_key, chunk_index, chunk).await,
+        } => append_bulk_load(graph_name, client_bulk_key, chunk_index, chunk).await,
         BulkLoadCommand::Finalize {
-            logical_graph_name,
+            graph_name,
             client_bulk_key,
-        } => finalize_bulk_load(logical_graph_name, client_bulk_key),
+        } => finalize_bulk_load(graph_name, client_bulk_key),
         BulkLoadCommand::Abort {
-            logical_graph_name,
+            graph_name,
             client_bulk_key,
-        } => abort_bulk_load(logical_graph_name, client_bulk_key).await,
+        } => abort_bulk_load(graph_name, client_bulk_key).await,
     }
 }
 
 /// Public status query used by `api::client::bulk_load_status`.
 pub(crate) fn bulk_load_status_public(
-    logical_graph_name: String,
+    graph_name: Option<String>,
     client_bulk_key: String,
     receipt_cursor: Option<u32>,
     max_receipts: u32,
 ) -> Result<BulkLoadStatusPage, RouterError> {
     BulkLoadStatusPage::validate_max_receipts(max_receipts).map_err(invalid)?;
     BulkLoadCommand::Start {
-        logical_graph_name: logical_graph_name.clone(),
+        graph_name: graph_name.clone(),
         client_bulk_key: client_bulk_key.clone(),
     }
     .validate()
     .map_err(invalid)?;
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let record = bulk_record(&store, caller, graph_id, &client_bulk_key)?;
     let coordinator = bulk_parent(&record)?;
     let cursor = receipt_cursor.unwrap_or(0);

@@ -29,14 +29,14 @@ fn vertices(labels: &[&str], count: usize) -> BulkLoadChunkV1 {
 
 fn start(graph: &str, key: &str) -> BulkLoadCommand {
     BulkLoadCommand::Start {
-        logical_graph_name: graph.to_owned(),
+        graph_name: Some(graph.to_owned()),
         client_bulk_key: key.to_owned(),
     }
 }
 
 fn append(graph: &str, key: &str, chunk_index: u32, chunk: BulkLoadChunkV1) -> BulkLoadCommand {
     BulkLoadCommand::Append {
-        logical_graph_name: graph.to_owned(),
+        graph_name: Some(graph.to_owned()),
         client_bulk_key: key.to_owned(),
         chunk_index,
         chunk,
@@ -45,14 +45,14 @@ fn append(graph: &str, key: &str, chunk_index: u32, chunk: BulkLoadChunkV1) -> B
 
 fn finalize(graph: &str, key: &str) -> BulkLoadCommand {
     BulkLoadCommand::Finalize {
-        logical_graph_name: graph.to_owned(),
+        graph_name: Some(graph.to_owned()),
         client_bulk_key: key.to_owned(),
     }
 }
 
 fn abort(graph: &str, key: &str) -> BulkLoadCommand {
     BulkLoadCommand::Abort {
-        logical_graph_name: graph.to_owned(),
+        graph_name: Some(graph.to_owned()),
         client_bulk_key: key.to_owned(),
     }
 }

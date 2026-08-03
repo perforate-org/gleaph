@@ -19,17 +19,17 @@ export type BulkLoadEdge = {
 export type BulkLoadChunk = { Vertices: AtomicInsertVertex[] } | { Edges: BulkLoadEdge[] };
 
 export type BulkLoadCommand =
-  | { Start: { logical_graph_name: string; client_bulk_key: string } }
+  | { Start: { graph_name: string | null; client_bulk_key: string } }
   | {
       Append: {
-        logical_graph_name: string;
+        graph_name: string | null;
         client_bulk_key: string;
         chunk_index: number;
         chunk: BulkLoadChunk;
       };
     }
-  | { Finalize: { logical_graph_name: string; client_bulk_key: string } }
-  | { Abort: { logical_graph_name: string; client_bulk_key: string } };
+  | { Finalize: { graph_name: string | null; client_bulk_key: string } }
+  | { Abort: { graph_name: string | null; client_bulk_key: string } };
 
 export type AtomicInsertReceipt = {
   logical_operation_count: bigint;
@@ -40,7 +40,13 @@ export type AtomicInsertReceipt = {
 
 export type BulkLoadResponse =
   | { Started: { next_chunk_index: number } }
-  | { Appended: { chunk_index: number; receipt: AtomicInsertReceipt } }
+  | {
+      Appended: {
+        chunk_index: number;
+        next_offset: number;
+        receipt: AtomicInsertReceipt;
+      };
+    }
   | { FinalizeAccepted: { state: BulkLoadPublicState } }
   | { AbortAccepted: { state: BulkLoadPublicState } };
 
@@ -140,7 +146,12 @@ export function makeBulkLoadStartCommand(input: {
   client_bulk_key: string;
 }): BulkLoadCommand {
   validateIdentity(input.logical_graph_name, input.client_bulk_key);
-  return { Start: { ...input } };
+  return {
+    Start: {
+      graph_name: input.logical_graph_name,
+      client_bulk_key: input.client_bulk_key,
+    },
+  };
 }
 
 export function makeBulkLoadAppendCommand(input: {
@@ -154,7 +165,14 @@ export function makeBulkLoadAppendCommand(input: {
     throw new Error("chunk_index must be a non-negative integer");
   }
   validateChunk(input.chunk);
-  return { Append: { ...input } };
+  return {
+    Append: {
+      graph_name: input.logical_graph_name,
+      client_bulk_key: input.client_bulk_key,
+      chunk_index: input.chunk_index,
+      chunk: input.chunk,
+    },
+  };
 }
 
 export function makeBulkLoadFinalizeCommand(input: {
@@ -162,7 +180,12 @@ export function makeBulkLoadFinalizeCommand(input: {
   client_bulk_key: string;
 }): BulkLoadCommand {
   validateIdentity(input.logical_graph_name, input.client_bulk_key);
-  return { Finalize: { ...input } };
+  return {
+    Finalize: {
+      graph_name: input.logical_graph_name,
+      client_bulk_key: input.client_bulk_key,
+    },
+  };
 }
 
 export function makeBulkLoadAbortCommand(input: {
@@ -170,7 +193,12 @@ export function makeBulkLoadAbortCommand(input: {
   client_bulk_key: string;
 }): BulkLoadCommand {
   validateIdentity(input.logical_graph_name, input.client_bulk_key);
-  return { Abort: { ...input } };
+  return {
+    Abort: {
+      graph_name: input.logical_graph_name,
+      client_bulk_key: input.client_bulk_key,
+    },
+  };
 }
 
 export type BulkLoadCommandInput =

@@ -1890,17 +1890,14 @@ pub fn mutation_status_as_admin(
     use gleaph_graph_kernel::federation::RouterError;
     use gleaph_router::types::MutationStatus;
 
+    let graph_name = Some(logical_graph_name.to_owned());
     let bytes = env
         .pic
         .query_call(
             env.router,
             env.admin,
             "mutation_status",
-            Encode!(
-                &logical_graph_name.to_string(),
-                &client_mutation_key.to_string()
-            )
-            .expect("encode mutation_status"),
+            Encode!(&graph_name, &client_mutation_key.to_string()).expect("encode mutation_status"),
         )
         .unwrap_or_else(|e| panic!("mutation_status on router: {e:?}"));
     Decode!(&bytes, Result<MutationStatus, RouterError>).expect("decode mutation_status")
@@ -1915,17 +1912,15 @@ pub fn atomic_insert_status_as_admin(
 ) -> Result<AtomicInsertResponse, gleaph_graph_kernel::federation::RouterError> {
     use gleaph_graph_kernel::federation::RouterError;
 
+    let graph_name = Some(logical_graph_name.to_owned());
     let bytes = env
         .pic
         .query_call(
             env.router,
             env.admin,
             "atomic_insert_status",
-            Encode!(
-                &logical_graph_name.to_string(),
-                &client_mutation_key.to_string()
-            )
-            .expect("encode atomic_insert_status"),
+            Encode!(&graph_name, &client_mutation_key.to_string())
+                .expect("encode atomic_insert_status"),
         )
         .unwrap_or_else(|e| panic!("atomic_insert_status on router: {e:?}"));
     Decode!(&bytes, Result<AtomicInsertResponse, RouterError>).expect("decode atomic_insert_status")
@@ -2099,6 +2094,7 @@ pub fn bulk_load_status_as_admin(
 ) -> Result<BulkLoadStatusPage, gleaph_graph_kernel::federation::RouterError> {
     use gleaph_graph_kernel::federation::RouterError;
 
+    let graph_name = Some(logical_graph_name.to_owned());
     let bytes = env
         .pic
         .query_call(
@@ -2106,7 +2102,7 @@ pub fn bulk_load_status_as_admin(
             env.admin,
             "bulk_load_status",
             Encode!(
-                &logical_graph_name.to_string(),
+                &graph_name,
                 &client_bulk_key.to_string(),
                 &receipt_cursor,
                 &max_receipts

@@ -232,7 +232,10 @@ export interface AtomicInsertRequestV1 {
    */
   'client_mutation_key' : string,
   'operations' : Array<AtomicInsertOperationV1>,
-  'logical_graph_name' : string,
+  /**
+   * Optional logical graph name; `None` resolves the caller's default (HOME) graph.
+   */
+  'graph_name' : [] | [string],
 }
 /**
  * Public result for one Router atomic insert.
@@ -284,20 +287,18 @@ export type BulkLoadChunkV1 = { 'Vertices' : Array<AtomicInsertVertexV1> } |
  * Public durable bulk-load command family (ADR 0057).
  */
 export type BulkLoadCommand = {
-    'Start' : { 'client_bulk_key' : string, 'logical_graph_name' : string }
+    'Start' : { 'client_bulk_key' : string, 'graph_name' : [] | [string] }
   } |
-  { 'Abort' : { 'client_bulk_key' : string, 'logical_graph_name' : string } } |
+  { 'Abort' : { 'client_bulk_key' : string, 'graph_name' : [] | [string] } } |
   {
     'Append' : {
       'client_bulk_key' : string,
       'chunk_index' : number,
       'chunk' : BulkLoadChunkV1,
-      'logical_graph_name' : string,
+      'graph_name' : [] | [string],
     }
   } |
-  {
-    'Finalize' : { 'client_bulk_key' : string, 'logical_graph_name' : string }
-  };
+  { 'Finalize' : { 'client_bulk_key' : string, 'graph_name' : [] | [string] } };
 /**
  * One edge in a durable bulk-load chunk. Endpoints are graph-scoped encoded existing IDs.
  */
@@ -2736,7 +2737,7 @@ export interface _SERVICE {
   /**
    * Return the exact durable receipt for an ordered atomic insert.
    */
-  'atomic_insert_status' : ActorMethod<[string, string], Result_7>,
+  'atomic_insert_status' : ActorMethod<[[] | [string], string], Result_7>,
   /**
    * Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
    * attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
@@ -2753,7 +2754,7 @@ export interface _SERVICE {
    * Return a bounded page of committed durable bulk-load chunk receipts (ADR 0057).
    */
   'bulk_load_status' : ActorMethod<
-    [string, string, [] | [number], number],
+    [[] | [string], string, [] | [number], number],
     Result_9
   >,
   /**
@@ -2885,7 +2886,7 @@ export interface _SERVICE {
   /**
    * The full prepared-operation manifest for one graph.
    */
-  'list_prepared' : ActorMethod<[string], Result_32>,
+  'list_prepared' : ActorMethod<[[] | [string]], Result_32>,
   /**
    * List the bounded global schema-migration chain in canonical parent order.
    */
@@ -2905,7 +2906,7 @@ export interface _SERVICE {
   /**
    * ADR 0029 Phase 4: pull-based status of a GQL/prepared mutation for the calling principal.
    */
-  'mutation_status' : ActorMethod<[string, string], Result_37>,
+  'mutation_status' : ActorMethod<[[] | [string], string], Result_37>,
   'my_role' : ActorMethod<[], Result_38>,
   /**
    * Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
@@ -3016,7 +3017,7 @@ export interface _SERVICE {
    * the registered index definition).
    */
   'vector_search' : ActorMethod<
-    [string, string, Uint8Array, number],
+    [[] | [string], string, Uint8Array, number],
     Result_44
   >,
   /**

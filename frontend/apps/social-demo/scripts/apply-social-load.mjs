@@ -26,11 +26,31 @@ const MARKER_QUERY =
   "m.artifact_sha256 AS artifact_sha256, m.bulk_job_key AS bulk_job_key, m.state AS state";
 
 const SENTINELS = [
-  ["User", "social-bootstrap-user", `INSERT (n:User {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap', user_id: '${SENTINEL_USER_ID}'})`],
-  ["Post", "social-bootstrap-post", `INSERT (n:Post {demo_id: ${SENTINEL_ID}, demo_graph: 'social', body: '__bootstrap'})`],
-  ["Feed", "social-bootstrap-feed", `INSERT (n:Feed {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap'})`],
-  ["Topic", "social-bootstrap-topic", `INSERT (n:Topic {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap'})`],
-  ["Community", "social-bootstrap-community", `INSERT (n:Community {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap'})`],
+  [
+    "User",
+    "social-bootstrap-user",
+    `INSERT (n:User {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap', user_id: '${SENTINEL_USER_ID}'})`,
+  ],
+  [
+    "Post",
+    "social-bootstrap-post",
+    `INSERT (n:Post {demo_id: ${SENTINEL_ID}, demo_graph: 'social', body: '__bootstrap'})`,
+  ],
+  [
+    "Feed",
+    "social-bootstrap-feed",
+    `INSERT (n:Feed {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap'})`,
+  ],
+  [
+    "Topic",
+    "social-bootstrap-topic",
+    `INSERT (n:Topic {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap'})`,
+  ],
+  [
+    "Community",
+    "social-bootstrap-community",
+    `INSERT (n:Community {demo_id: ${SENTINEL_ID}, demo_graph: 'social', name: '__bootstrap'})`,
+  ],
 ];
 
 const INDEXES = [
@@ -41,21 +61,29 @@ const INDEXES = [
   ["User", "demo_id"],
 ];
 
-const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const sleep = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function unwrap(result, operation) {
   if (result && "Ok" in result) return result.Ok;
-  throw new Error(`${operation} failed: ${JSON.stringify(result?.Err ?? result)}`);
+  throw new Error(
+    `${operation} failed: ${JSON.stringify(result?.Err ?? result)}`,
+  );
 }
 
 function isNotFound(result) {
-  return Boolean(result && "Err" in result && result.Err && "NotFound" in result.Err);
+  return Boolean(
+    result && "Err" in result && result.Err && "NotFound" in result.Err,
+  );
 }
 
 function encodeParams(params = {}) {
   return encodeCanonicalGqlValue({
     Record: Object.fromEntries(
-      Object.entries(params).map(([name, value]) => [name.startsWith("$") ? name : `$${name}`, value]),
+      Object.entries(params).map(([name, value]) => [
+        name.startsWith("$") ? name : `$${name}`,
+        value,
+      ]),
     ),
   });
 }
@@ -71,7 +99,8 @@ function propertyList(properties) {
 
 function chunks(items, size) {
   const result = [];
-  for (let start = 0; start < items.length; start += size) result.push(items.slice(start, start + size));
+  for (let start = 0; start < items.length; start += size)
+    result.push(items.slice(start, start + size));
   return result;
 }
 
@@ -93,8 +122,13 @@ function makeEdgeChunk(edges, sourceIdMap) {
       Edges: edges.map((edge) => {
         const source = sourceIdMap.get(edge.source_id);
         const target = sourceIdMap.get(edge.target_id);
-        if (!(source instanceof Uint8Array) || !(target instanceof Uint8Array)) {
-          throw new Error(`edge ${edge.source_id}->${edge.target_id} lacks a replay-proven endpoint`);
+        if (
+          !(source instanceof Uint8Array) ||
+          !(target instanceof Uint8Array)
+        ) {
+          throw new Error(
+            `edge ${edge.source_id}->${edge.target_id} lacks a replay-proven endpoint`,
+          );
         }
         return {
           source,
@@ -113,16 +147,30 @@ function makeEdgeChunk(edges, sourceIdMap) {
 }
 
 function assertArtifact(artifact) {
-  if (!artifact || !Array.isArray(artifact.vertices) || !Array.isArray(artifact.edges)) {
-    throw new Error("social-load artifact must contain vertices and edges arrays");
+  if (
+    !artifact ||
+    !Array.isArray(artifact.vertices) ||
+    !Array.isArray(artifact.edges)
+  ) {
+    throw new Error(
+      "social-load artifact must contain vertices and edges arrays",
+    );
   }
   if (!artifact.embeddings || typeof artifact.embeddings !== "object") {
-    throw new Error("social-load artifact must contain embeddings keyed by source_id");
+    throw new Error(
+      "social-load artifact must contain embeddings keyed by source_id",
+    );
   }
   const ids = new Set();
   for (const vertex of artifact.vertices) {
-    if (typeof vertex.source_id !== "string" || vertex.source_id.length === 0 || ids.has(vertex.source_id)) {
-      throw new Error("social-load vertices require unique non-empty source_id values");
+    if (
+      typeof vertex.source_id !== "string" ||
+      vertex.source_id.length === 0 ||
+      ids.has(vertex.source_id)
+    ) {
+      throw new Error(
+        "social-load vertices require unique non-empty source_id values",
+      );
     }
     ids.add(vertex.source_id);
     if (!Array.isArray(vertex.labels) || vertex.labels.length === 0) {
@@ -132,7 +180,9 @@ function assertArtifact(artifact) {
   }
   for (const edge of artifact.edges) {
     if (!ids.has(edge.source_id) || !ids.has(edge.target_id)) {
-      throw new Error("social-load edge endpoint does not resolve to a vertex source_id");
+      throw new Error(
+        "social-load edge endpoint does not resolve to a vertex source_id",
+      );
     }
     if (typeof edge.label !== "string" || edge.label.length === 0) {
       throw new Error("social-load edge label must not be empty");
@@ -143,7 +193,8 @@ function assertArtifact(artifact) {
     }
   }
   for (const sourceId of Object.keys(artifact.embeddings)) {
-    if (!ids.has(sourceId)) throw new Error(`embedding source_id ${sourceId} is not a vertex`);
+    if (!ids.has(sourceId))
+      throw new Error(`embedding source_id ${sourceId} is not a vertex`);
   }
 }
 
@@ -152,25 +203,45 @@ export function makeVertexChunks(artifact, chunkSize = DEFAULT_CHUNK_SIZE) {
   return chunks(artifact.vertices, chunkSize).map(makeVertexChunk);
 }
 
-export function makeEdgeChunks(artifact, sourceIdMap, chunkSize = DEFAULT_CHUNK_SIZE) {
-  return chunks(artifact.edges, chunkSize).map((edges) => makeEdgeChunk(edges, sourceIdMap));
+export function makeEdgeChunks(
+  artifact,
+  sourceIdMap,
+  chunkSize = DEFAULT_CHUNK_SIZE,
+) {
+  return chunks(artifact.edges, chunkSize).map((edges) =>
+    makeEdgeChunk(edges, sourceIdMap),
+  );
 }
 
 async function gqlMutate(actor, graphName, query, params, key) {
   return unwrap(
-    await actor.gql_mutate(`USE ${graphName} ${query}`, encodeParams(params), key),
+    await actor.gql_mutate(
+      `USE ${graphName} ${query}`,
+      encodeParams(params),
+      key,
+    ),
     `gql_mutate(${key})`,
   );
 }
 
-export async function waitMutationCompleted(actor, graphName, key, options = {}) {
+export async function waitMutationCompleted(
+  actor,
+  graphName,
+  key,
+  options = {},
+) {
   const attempts = options.statusAttempts ?? 240;
   const intervalMs = options.statusIntervalMs ?? 250;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const status = unwrap(await actor.mutation_status(graphName, key), `mutation_status(${key})`);
+    const status = unwrap(
+      await actor.mutation_status([graphName], key),
+      `mutation_status(${key})`,
+    );
     if ("Completed" in status.phase) return status;
     if ("Failed" in status.phase) {
-      throw new Error(`mutation ${key} failed: ${status.last_error?.[0] ?? "unknown failure"}`);
+      throw new Error(
+        `mutation ${key} failed: ${status.last_error?.[0] ?? "unknown failure"}`,
+      );
     }
     if (attempt + 1 < attempts && intervalMs > 0) await sleep(intervalMs);
   }
@@ -195,20 +266,25 @@ export async function readMarker(actor, graphName) {
   let response;
   try {
     response = await actor.gql_query(
-        `USE ${graphName} ${MARKER_QUERY}`,
-        encodeParams({ logical_seed_key: { Text: SOCIAL_LOAD_KEY } }),
-        { Eventual: null },
-      );
+      `USE ${graphName} ${MARKER_QUERY}`,
+      encodeParams({ logical_seed_key: { Text: SOCIAL_LOAD_KEY } }),
+      { Eventual: null },
+    );
   } catch (error) {
-    throw new Error(`SeedLoad marker query is ambiguous; reset the graph: ${error.message}`);
+    throw new Error(
+      `SeedLoad marker query is ambiguous; reset the graph: ${error.message}`,
+    );
   }
   if (!response || !("Ok" in response)) {
-    throw new Error(`SeedLoad marker query failed; reset the graph: ${JSON.stringify(response?.Err)}`);
+    throw new Error(
+      `SeedLoad marker query failed; reset the graph: ${JSON.stringify(response?.Err)}`,
+    );
   }
   const result = response.Ok;
   const rows = decodeRows(result);
   if (rows.length === 0) return null;
-  if (rows.length !== 1) throw new Error("SeedLoad marker is duplicated; reset the graph");
+  if (rows.length !== 1)
+    throw new Error("SeedLoad marker is duplicated; reset the graph");
   const row = rows[0];
   return {
     protocol_version: Number(scalar(row, "protocol_version", "Int64")),
@@ -231,7 +307,9 @@ export function validateMarker(marker, digest) {
     throw new Error("SeedLoad marker is malformed; reset the graph");
   }
   if (marker.artifact_sha256 !== digest) {
-    throw new Error("SeedLoad marker artifact differs from social-load.json; reset the graph");
+    throw new Error(
+      "SeedLoad marker artifact differs from social-load.json; reset the graph",
+    );
   }
   return marker;
 }
@@ -242,7 +320,10 @@ async function prepareFreshGraph(actor, graphName, digest, options) {
     await waitMutationCompleted(actor, graphName, key, options);
   }
   for (const [label, property] of INDEXES) {
-    unwrap(await actor.index_vertex_property(graphName, label, property), `index ${label}.${property}`);
+    unwrap(
+      await actor.index_vertex_property(graphName, label, property),
+      `index ${label}.${property}`,
+    );
   }
 
   const markerKey = "social-seed-load-marker-prepared-v1";
@@ -261,12 +342,18 @@ async function prepareFreshGraph(actor, graphName, digest, options) {
   );
   await waitMutationCompleted(actor, graphName, markerKey, options);
   unwrap(
-    await actor.index_vertex_property(graphName, "SeedLoad", "logical_seed_key"),
+    await actor.index_vertex_property(
+      graphName,
+      "SeedLoad",
+      "logical_seed_key",
+    ),
     "index SeedLoad.logical_seed_key",
   );
   const marker = validateMarker(await readMarker(actor, graphName), digest);
   if (!marker || marker.state !== "Prepared") {
-    throw new Error("SeedLoad marker creation was not durably verified as Prepared; reset the graph");
+    throw new Error(
+      "SeedLoad marker creation was not durably verified as Prepared; reset the graph",
+    );
   }
 
   const cleanupKey = "social-bootstrap-delete";
@@ -282,7 +369,12 @@ async function prepareFreshGraph(actor, graphName, digest, options) {
 }
 
 async function loadStatusPage(actor, graphName, cursor = []) {
-  const result = await actor.bulk_load_status(graphName, SOCIAL_LOAD_KEY, cursor, STATUS_PAGE_SIZE);
+  const result = await actor.bulk_load_status(
+    [graphName],
+    SOCIAL_LOAD_KEY,
+    cursor,
+    STATUS_PAGE_SIZE,
+  );
   if (isNotFound(result)) return null;
   return unwrap(result, "bulk_load_status is ambiguous; reset the graph");
 }
@@ -292,17 +384,26 @@ async function loadStatus(actor, graphName) {
 }
 
 async function startFreshJob(actor, graphName) {
-  const command = { Start: { logical_graph_name: graphName, client_bulk_key: SOCIAL_LOAD_KEY } };
+  const command = {
+    Start: { graph_name: [graphName], client_bulk_key: SOCIAL_LOAD_KEY },
+  };
   try {
     const response = unwrap(await actor.bulk_load(command), "bulk_load Start");
-    if (!("Started" in response)) throw new Error("bulk_load Start returned an unexpected response");
+    if (!("Started" in response))
+      throw new Error("bulk_load Start returned an unexpected response");
   } catch (error) {
     const status = await loadStatus(actor, graphName);
-    if (!status) throw new Error(`bulk_load Start outcome is ambiguous; reset the graph: ${error.message}`);
+    if (!status)
+      throw new Error(
+        `bulk_load Start outcome is ambiguous; reset the graph: ${error.message}`,
+      );
     return status;
   }
   const status = await loadStatus(actor, graphName);
-  if (!status) throw new Error("bulk_load Start completed without durable status; reset the graph");
+  if (!status)
+    throw new Error(
+      "bulk_load Start completed without durable status; reset the graph",
+    );
   return status;
 }
 
@@ -312,7 +413,13 @@ function statusStateName(status) {
   }
   const names = Object.keys(status.state);
   const known = new Set([
-    "Open", "AppendPending", "FinalizePending", "AbortPending", "Completed", "Aborted", "Failed",
+    "Open",
+    "AppendPending",
+    "FinalizePending",
+    "AbortPending",
+    "Completed",
+    "Aborted",
+    "Failed",
   ]);
   if (names.length !== 1 || !known.has(names[0])) {
     throw new Error("bulk status state is malformed; reset the graph");
@@ -322,7 +429,11 @@ function statusStateName(status) {
 
 function validateStatus(status) {
   const state = statusStateName(status);
-  for (const name of ["next_chunk_index", "committed_chunk_count", "completed_chunk_count"]) {
+  for (const name of [
+    "next_chunk_index",
+    "committed_chunk_count",
+    "completed_chunk_count",
+  ]) {
     if (!Number.isSafeInteger(status[name]) || status[name] < 0) {
       throw new Error(`bulk status ${name} is malformed; reset the graph`);
     }
@@ -348,8 +459,14 @@ function optionalValue(value, name) {
 
 function receiptOperationCount(row) {
   const count = row?.receipt?.logical_operation_count;
-  if (typeof count !== "bigint" || count <= 0n || count > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error("bulk receipt operation_count is malformed; reset the graph");
+  if (
+    typeof count !== "bigint" ||
+    count <= 0n ||
+    count > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    throw new Error(
+      "bulk receipt operation_count is malformed; reset the graph",
+    );
   }
   return Number(count);
 }
@@ -360,11 +477,13 @@ function receiptsEqual(left, right) {
     left.logical_vertex_count !== right.logical_vertex_count ||
     left.logical_edge_count !== right.logical_edge_count ||
     left.allocated_vertex_ids.length !== right.allocated_vertex_ids.length
-  ) return false;
-  return left.allocated_vertex_ids.every((value, index) =>
-    value instanceof Uint8Array &&
-    right.allocated_vertex_ids[index] instanceof Uint8Array &&
-    Buffer.from(value).equals(Buffer.from(right.allocated_vertex_ids[index]))
+  )
+    return false;
+  return left.allocated_vertex_ids.every(
+    (value, index) =>
+      value instanceof Uint8Array &&
+      right.allocated_vertex_ids[index] instanceof Uint8Array &&
+      Buffer.from(value).equals(Buffer.from(right.allocated_vertex_ids[index])),
   );
 }
 
@@ -378,21 +497,33 @@ async function loadReceiptSnapshot(actor, graphName) {
     if (!page) return null;
     const state = validateStatus(page);
     const signature = JSON.stringify([
-      state, page.next_chunk_index, page.committed_chunk_count, page.completed_chunk_count,
+      state,
+      page.next_chunk_index,
+      page.committed_chunk_count,
+      page.completed_chunk_count,
     ]);
     if (baseline === undefined) baseline = signature;
     if (signature !== baseline) {
-      throw new Error("bulk status changed while reading receipt pages; reset the graph");
+      throw new Error(
+        "bulk status changed while reading receipt pages; reset the graph",
+      );
     }
     if (!Array.isArray(page.receipts)) {
       throw new Error("bulk status receipts are malformed; reset the graph");
     }
     if (page.receipts.length > STATUS_PAGE_SIZE) {
-      throw new Error("bulk status receipt page exceeds the requested bound; reset the graph");
+      throw new Error(
+        "bulk status receipt page exceeds the requested bound; reset the graph",
+      );
     }
     for (const row of page.receipts) {
-      if (!Number.isSafeInteger(row?.chunk_index) || row.chunk_index !== receipts.length) {
-        throw new Error("bulk receipt pages are not an ordered prefix; reset the graph");
+      if (
+        !Number.isSafeInteger(row?.chunk_index) ||
+        row.chunk_index !== receipts.length
+      ) {
+        throw new Error(
+          "bulk receipt pages are not an ordered prefix; reset the graph",
+        );
       }
       receiptOperationCount(row);
       receipts.push(row);
@@ -400,10 +531,17 @@ async function loadReceiptSnapshot(actor, graphName) {
     const next = optionalValue(page.next_receipt_cursor, "next_receipt_cursor");
     if (next === undefined) {
       if (receipts.length !== page.committed_chunk_count) {
-        throw new Error("bulk receipt pages do not cover the committed prefix; reset the graph");
+        throw new Error(
+          "bulk receipt pages do not cover the committed prefix; reset the graph",
+        );
       }
-      if (state === "AppendPending" && page.committed_chunk_count === page.next_chunk_index) {
-        throw new Error("active bulk chunk has no recoverable receipt boundary; reset the graph");
+      if (
+        state === "AppendPending" &&
+        page.committed_chunk_count === page.next_chunk_index
+      ) {
+        throw new Error(
+          "active bulk chunk has no recoverable receipt boundary; reset the graph",
+        );
       }
       return { status: page, receipts };
     }
@@ -470,7 +608,7 @@ export function isExplicitPreAdmissionPayloadRejection(error) {
 async function sendAppend(actor, graphName, chunkIndex, chunk, operation) {
   const command = {
     Append: {
-      logical_graph_name: graphName,
+      graph_name: [graphName],
       client_bulk_key: SOCIAL_LOAD_KEY,
       chunk_index: chunkIndex,
       chunk,
@@ -478,13 +616,20 @@ async function sendAppend(actor, graphName, chunkIndex, chunk, operation) {
   };
   const result = await actor.bulk_load(command);
   if (!result || !("Ok" in result)) {
-    const error = new Error(`${operation} failed: ${JSON.stringify(result?.Err ?? result)}`);
+    const error = new Error(
+      `${operation} failed: ${JSON.stringify(result?.Err ?? result)}`,
+    );
     Object.defineProperty(error, "routerError", { value: result?.Err });
     throw error;
   }
   const response = result.Ok;
-  if (!("Appended" in response) || response.Appended.chunk_index !== chunkIndex) {
-    throw new Error(`bulk_load Append(${chunkIndex}) returned an unexpected response`);
+  if (
+    !("Appended" in response) ||
+    response.Appended.chunk_index !== chunkIndex
+  ) {
+    throw new Error(
+      `bulk_load Append(${chunkIndex}) returned an unexpected response`,
+    );
   }
   return response.Appended.receipt;
 }
@@ -502,7 +647,9 @@ async function appendAdaptive(actor, graphName, chunkIndex, candidate) {
   } catch (error) {
     const status = await loadStatus(actor, graphName);
     if (!status) {
-      throw new Error(`bulk_load Append(${chunkIndex}) outcome is ambiguous; reset the graph: ${error.message}`);
+      throw new Error(
+        `bulk_load Append(${chunkIndex}) outcome is ambiguous; reset the graph: ${error.message}`,
+      );
     }
     const state = validateStatus(status);
     const active = state === "AppendPending" || state === "AbortPending";
@@ -510,18 +657,29 @@ async function appendAdaptive(actor, graphName, chunkIndex, candidate) {
       state === "Open" &&
       status.next_chunk_index === chunkIndex &&
       status.committed_chunk_count === chunkIndex;
-    if (!active && !atOriginalBoundary && status.next_chunk_index <= chunkIndex) {
-      throw new Error(`bulk_load Append(${chunkIndex}) status cannot prove a replay boundary; reset the graph`);
-    }
     if (
-      isExplicitPreAdmissionPayloadRejection(error) &&
-      atOriginalBoundary
+      !active &&
+      !atOriginalBoundary &&
+      status.next_chunk_index <= chunkIndex
     ) {
+      throw new Error(
+        `bulk_load Append(${chunkIndex}) status cannot prove a replay boundary; reset the graph`,
+      );
+    }
+    if (isExplicitPreAdmissionPayloadRejection(error) && atOriginalBoundary) {
       if (chunkOperationCount(candidate.chunk) === 1) throw error;
       const [left, right] = splitCandidate(candidate);
       const first = await appendAdaptive(actor, graphName, chunkIndex, left);
-      const second = await appendAdaptive(actor, graphName, first.nextIndex, right);
-      return { entries: [...first.entries, ...second.entries], nextIndex: second.nextIndex };
+      const second = await appendAdaptive(
+        actor,
+        graphName,
+        first.nextIndex,
+        right,
+      );
+      return {
+        entries: [...first.entries, ...second.entries],
+        nextIndex: second.nextIndex,
+      };
     }
     const receipt = await sendAppend(
       actor,
@@ -554,14 +712,18 @@ function partitionReceiptBoundaries(artifact, receiptRows) {
     const count = receiptOperationCount(row);
     if (vertexOffset < artifact.vertices.length) {
       if (count > artifact.vertices.length - vertexOffset) {
-        throw new Error(`bulk receipt ${row.chunk_index} crosses the vertex/edge boundary; reset the graph`);
+        throw new Error(
+          `bulk receipt ${row.chunk_index} crosses the vertex/edge boundary; reset the graph`,
+        );
       }
       vertexRows.push({ row, start: vertexOffset, count });
       vertexOffset += count;
       continue;
     }
     if (count > artifact.edges.length - edgeOffset) {
-      throw new Error(`bulk receipt ${row.chunk_index} extends beyond the social-load artifact; reset the graph`);
+      throw new Error(
+        `bulk receipt ${row.chunk_index} extends beyond the social-load artifact; reset the graph`,
+      );
     }
     edgeRows.push({ row, start: edgeOffset, count });
     edgeOffset += count;
@@ -597,25 +759,39 @@ function validateEdgeReceipt(entry, chunkIndex) {
 }
 
 async function finalizeBulk(actor, graphName, options) {
-  const command = { Finalize: { logical_graph_name: graphName, client_bulk_key: SOCIAL_LOAD_KEY } };
+  const command = {
+    Finalize: { graph_name: [graphName], client_bulk_key: SOCIAL_LOAD_KEY },
+  };
   try {
-    const response = unwrap(await actor.bulk_load(command), "bulk_load Finalize");
+    const response = unwrap(
+      await actor.bulk_load(command),
+      "bulk_load Finalize",
+    );
     if (!("FinalizeAccepted" in response)) {
       throw new Error("bulk_load Finalize returned an unexpected response");
     }
   } catch (error) {
     const status = await loadStatus(actor, graphName);
     if (!status) {
-      throw new Error(`bulk_load Finalize outcome is ambiguous; reset the graph: ${error.message}`);
+      throw new Error(
+        `bulk_load Finalize outcome is ambiguous; reset the graph: ${error.message}`,
+      );
     }
     const state = validateStatus(status);
     if (state === "Open") {
-      const replay = unwrap(await actor.bulk_load(command), "bulk_load exact replay Finalize");
+      const replay = unwrap(
+        await actor.bulk_load(command),
+        "bulk_load exact replay Finalize",
+      );
       if (!("FinalizeAccepted" in replay)) {
-        throw new Error("bulk_load exact replay Finalize returned an unexpected response");
+        throw new Error(
+          "bulk_load exact replay Finalize returned an unexpected response",
+        );
       }
     } else if (state !== "FinalizePending" && state !== "Completed") {
-      throw new Error(`bulk_load Finalize failed in durable state ${state}; reset the graph`);
+      throw new Error(
+        `bulk_load Finalize failed in durable state ${state}; reset the graph`,
+      );
     }
   }
   return waitBulkCompleted(actor, graphName, options);
@@ -626,11 +802,16 @@ async function waitBulkCompleted(actor, graphName, options) {
   const intervalMs = options.statusIntervalMs ?? 250;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const status = await loadStatus(actor, graphName);
-    if (!status) throw new Error("Prepared SeedLoad lost its bulk status; reset the graph");
+    if (!status)
+      throw new Error(
+        "Prepared SeedLoad lost its bulk status; reset the graph",
+      );
     const state = validateStatus(status);
     if (state === "Completed") return status;
     if (state === "Failed" || state === "Aborted") {
-      throw new Error("SeedLoad bulk job is terminal but incomplete; reset the graph");
+      throw new Error(
+        "SeedLoad bulk job is terminal but incomplete; reset the graph",
+      );
     }
     if (attempt + 1 < attempts && intervalMs > 0) await sleep(intervalMs);
   }
@@ -640,7 +821,9 @@ async function waitBulkCompleted(actor, graphName, options) {
 async function completeMarker(actor, graphName, digest, options) {
   const before = validateMarker(await readMarker(actor, graphName), digest);
   if (!before || before.state !== "Prepared") {
-    throw new Error("SeedLoad marker changed before completion; reset the graph");
+    throw new Error(
+      "SeedLoad marker changed before completion; reset the graph",
+    );
   }
   const key = "social-seed-load-marker-complete-v1";
   const result = await gqlMutate(
@@ -655,10 +838,12 @@ async function completeMarker(actor, graphName, digest, options) {
     },
     key,
   );
-  if (result.row_count !== 1n) throw new Error("SeedLoad completion did not match exactly one marker");
+  if (result.row_count !== 1n)
+    throw new Error("SeedLoad completion did not match exactly one marker");
   await waitMutationCompleted(actor, graphName, key, options);
   const marker = validateMarker(await readMarker(actor, graphName), digest);
-  if (!marker || marker.state !== "Complete") throw new Error("SeedLoad completion marker verification failed");
+  if (!marker || marker.state !== "Complete")
+    throw new Error("SeedLoad completion marker verification failed");
 }
 
 export async function applySocialLoad({
@@ -676,10 +861,14 @@ export async function applySocialLoad({
   try {
     artifactFromBytes = JSON.parse(Buffer.from(artifactBytes).toString("utf8"));
   } catch (error) {
-    throw new Error(`social-load artifact bytes are not valid JSON: ${error.message}`);
+    throw new Error(
+      `social-load artifact bytes are not valid JSON: ${error.message}`,
+    );
   }
   if (JSON.stringify(artifactFromBytes) !== JSON.stringify(artifact)) {
-    throw new Error("social-load artifact object does not match the digested file bytes");
+    throw new Error(
+      "social-load artifact object does not match the digested file bytes",
+    );
   }
   const digest = createHash("sha256").update(artifactBytes).digest("hex");
   // Classify the durable marker before any fresh-bootstrap mutation. The
@@ -688,23 +877,44 @@ export async function applySocialLoad({
   let marker = validateMarker(await readMarker(actor, graphName), digest);
   if (marker?.state === "Complete") return { skipped: true, digest };
   if (!marker) {
-    if (!freshBootstrap) throw new Error("SeedLoad marker is missing on a non-fresh deployment; reset the graph");
+    if (!freshBootstrap)
+      throw new Error(
+        "SeedLoad marker is missing on a non-fresh deployment; reset the graph",
+      );
     marker = await prepareFreshGraph(actor, graphName, digest, options);
     if (!marker || marker.state !== "Prepared") {
-      throw new Error("SeedLoad marker creation was not durably verified as Prepared; reset the graph");
+      throw new Error(
+        "SeedLoad marker creation was not durably verified as Prepared; reset the graph",
+      );
     }
     await startFreshJob(actor, graphName);
   }
 
-  if (!marker || marker.state !== "Prepared") throw new Error("SeedLoad marker is not Prepared");
-  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > DEFAULT_CHUNK_SIZE) {
-    throw new Error(`chunkSize must be an integer in 1..=${DEFAULT_CHUNK_SIZE}`);
+  if (!marker || marker.state !== "Prepared")
+    throw new Error("SeedLoad marker is not Prepared");
+  if (
+    !Number.isSafeInteger(chunkSize) ||
+    chunkSize < 1 ||
+    chunkSize > DEFAULT_CHUNK_SIZE
+  ) {
+    throw new Error(
+      `chunkSize must be an integer in 1..=${DEFAULT_CHUNK_SIZE}`,
+    );
   }
   const snapshot = await loadReceiptSnapshot(actor, graphName);
-  if (!snapshot) throw new Error("Prepared SeedLoad has no retained bulk status; reset the graph");
+  if (!snapshot)
+    throw new Error(
+      "Prepared SeedLoad has no retained bulk status; reset the graph",
+    );
   const initialState = statusStateName(snapshot.status);
-  if (initialState === "Failed" || initialState === "Aborted" || initialState === "AbortPending") {
-    throw new Error("SeedLoad bulk job is terminal but incomplete; reset the graph");
+  if (
+    initialState === "Failed" ||
+    initialState === "Aborted" ||
+    initialState === "AbortPending"
+  ) {
+    throw new Error(
+      "SeedLoad bulk job is terminal but incomplete; reset the graph",
+    );
   }
   const boundaries = partitionReceiptBoundaries(artifact, snapshot.receipts);
 
@@ -713,15 +923,31 @@ export async function applySocialLoad({
     const candidate = makeVertexChunk(
       artifact.vertices.slice(boundary.start, boundary.start + boundary.count),
     );
-    const entry = await replayReceiptBoundary(actor, graphName, boundary.row, candidate);
-    vertexEntries.push({ ...entry, statusReceipt: boundary.row.receipt, chunkIndex: boundary.row.chunk_index });
+    const entry = await replayReceiptBoundary(
+      actor,
+      graphName,
+      boundary.row,
+      candidate,
+    );
+    vertexEntries.push({
+      ...entry,
+      statusReceipt: boundary.row.receipt,
+      chunkIndex: boundary.row.chunk_index,
+    });
   }
   let nextIndex = boundaries.vertexRows.length;
   let vertexOffset = boundaries.vertexOffset;
   while (vertexOffset < artifact.vertices.length) {
     const end = Math.min(vertexOffset + chunkSize, artifact.vertices.length);
-    const candidate = makeVertexChunk(artifact.vertices.slice(vertexOffset, end));
-    const appended = await appendAdaptive(actor, graphName, nextIndex, candidate);
+    const candidate = makeVertexChunk(
+      artifact.vertices.slice(vertexOffset, end),
+    );
+    const appended = await appendAdaptive(
+      actor,
+      graphName,
+      nextIndex,
+      candidate,
+    );
     for (const entry of appended.entries) {
       vertexEntries.push({ ...entry, chunkIndex: nextIndex });
       nextIndex += 1;
@@ -732,11 +958,23 @@ export async function applySocialLoad({
   const sourceIdMap = new Map();
   for (const entry of vertexEntries) {
     validateVertexReceipt(entry, entry.chunkIndex);
-    if (entry.statusReceipt && !receiptsEqual(entry.receipt, entry.statusReceipt)) {
-      throw new Error(`bulk receipt ${entry.chunkIndex} changed after exact replay; reset the graph`);
+    if (
+      entry.statusReceipt &&
+      !receiptsEqual(entry.receipt, entry.statusReceipt)
+    ) {
+      throw new Error(
+        `bulk receipt ${entry.chunkIndex} changed after exact replay; reset the graph`,
+      );
     }
-    for (let ordinal = 0; ordinal < entry.receipt.allocated_vertex_ids.length; ordinal += 1) {
-      sourceIdMap.set(entry.sourceIds[ordinal], entry.receipt.allocated_vertex_ids[ordinal]);
+    for (
+      let ordinal = 0;
+      ordinal < entry.receipt.allocated_vertex_ids.length;
+      ordinal += 1
+    ) {
+      sourceIdMap.set(
+        entry.sourceIds[ordinal],
+        entry.receipt.allocated_vertex_ids[ordinal],
+      );
     }
   }
 
@@ -746,15 +984,32 @@ export async function applySocialLoad({
       artifact.edges.slice(boundary.start, boundary.start + boundary.count),
       sourceIdMap,
     );
-    const entry = await replayReceiptBoundary(actor, graphName, boundary.row, candidate);
-    edgeEntries.push({ ...entry, statusReceipt: boundary.row.receipt, chunkIndex: boundary.row.chunk_index });
+    const entry = await replayReceiptBoundary(
+      actor,
+      graphName,
+      boundary.row,
+      candidate,
+    );
+    edgeEntries.push({
+      ...entry,
+      statusReceipt: boundary.row.receipt,
+      chunkIndex: boundary.row.chunk_index,
+    });
     nextIndex += 1;
   }
   let edgeOffset = boundaries.edgeOffset;
   while (edgeOffset < artifact.edges.length) {
     const end = Math.min(edgeOffset + chunkSize, artifact.edges.length);
-    const candidate = makeEdgeChunk(artifact.edges.slice(edgeOffset, end), sourceIdMap);
-    const appended = await appendAdaptive(actor, graphName, nextIndex, candidate);
+    const candidate = makeEdgeChunk(
+      artifact.edges.slice(edgeOffset, end),
+      sourceIdMap,
+    );
+    const appended = await appendAdaptive(
+      actor,
+      graphName,
+      nextIndex,
+      candidate,
+    );
     for (const entry of appended.entries) {
       edgeEntries.push({ ...entry, chunkIndex: nextIndex });
       nextIndex += 1;
@@ -763,8 +1018,13 @@ export async function applySocialLoad({
   }
   for (const entry of edgeEntries) {
     validateEdgeReceipt(entry, entry.chunkIndex);
-    if (entry.statusReceipt && !receiptsEqual(entry.receipt, entry.statusReceipt)) {
-      throw new Error(`bulk receipt ${entry.chunkIndex} changed after exact replay; reset the graph`);
+    if (
+      entry.statusReceipt &&
+      !receiptsEqual(entry.receipt, entry.statusReceipt)
+    ) {
+      throw new Error(
+        `bulk receipt ${entry.chunkIndex} changed after exact replay; reset the graph`,
+      );
     }
   }
 
@@ -772,14 +1032,19 @@ export async function applySocialLoad({
   let status = await loadStatus(actor, graphName);
   if (status) validateStatus(status);
   if (!status || status.next_chunk_index !== chunkCount) {
-    throw new Error("bulk status chunk count differs from regenerated social-load artifact");
+    throw new Error(
+      "bulk status chunk count differs from regenerated social-load artifact",
+    );
   }
   if (!("Completed" in status.state)) {
-    if (!("Open" in status.state)) throw new Error("bulk job is not ready to finalize");
+    if (!("Open" in status.state))
+      throw new Error("bulk job is not ready to finalize");
     status = await finalizeBulk(actor, graphName, options);
   }
   if (status.next_chunk_index !== chunkCount) {
-    throw new Error("completed bulk status chunk count differs from regenerated artifact");
+    throw new Error(
+      "completed bulk status chunk count differs from regenerated artifact",
+    );
   }
 
   await ingestEmbeddings(sourceIdMap, artifact.embeddings);
@@ -788,16 +1053,31 @@ export async function applySocialLoad({
 }
 
 export async function main() {
-  const artifactPath = process.argv[2] || new URL("../seeds/social-load.json", import.meta.url);
+  const artifactPath =
+    process.argv[2] || new URL("../seeds/social-load.json", import.meta.url);
   const artifactBytes = readFileSync(artifactPath);
   const artifact = JSON.parse(artifactBytes.toString("utf8"));
-  const actor = await createRouterActor(process.env.GLEAPH_DEMO_ROUTER_CANISTER || "gleaph-router");
+  const actor = await createRouterActor(
+    process.env.GLEAPH_DEMO_ROUTER_CANISTER || "gleaph-router",
+  );
   const freshBootstrap = process.env.GLEAPH_DEMO_FRESH_BOOTSTRAP === "1";
-  const result = await applySocialLoad({ actor, artifact, artifactBytes, freshBootstrap });
-  console.log(result.skipped ? "[social-demo] typed load already Complete; skipped" : "[social-demo] typed load complete");
+  const result = await applySocialLoad({
+    actor,
+    artifact,
+    artifactBytes,
+    freshBootstrap,
+  });
+  console.log(
+    result.skipped
+      ? "[social-demo] typed load already Complete; skipped"
+      : "[social-demo] typed load complete",
+  );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

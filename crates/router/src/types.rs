@@ -324,21 +324,21 @@ pub use crate::facade::stable::bulk_load::MAX_BULK_LOAD_RECEIPTS_PER_PAGE;
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum BulkLoadCommand {
     Start {
-        logical_graph_name: String,
+        graph_name: Option<String>,
         client_bulk_key: String,
     },
     Append {
-        logical_graph_name: String,
+        graph_name: Option<String>,
         client_bulk_key: String,
         chunk_index: u32,
         chunk: BulkLoadChunkV1,
     },
     Finalize {
-        logical_graph_name: String,
+        graph_name: Option<String>,
         client_bulk_key: String,
     },
     Abort {
-        logical_graph_name: String,
+        graph_name: Option<String>,
         client_bulk_key: String,
     },
 }
@@ -420,25 +420,27 @@ impl BulkLoadCommand {
     pub fn validate(&self) -> Result<(), String> {
         let (graph_name, key) = match self {
             Self::Start {
-                logical_graph_name,
+                graph_name,
                 client_bulk_key,
             }
             | Self::Finalize {
-                logical_graph_name,
+                graph_name,
                 client_bulk_key,
             }
             | Self::Abort {
-                logical_graph_name,
+                graph_name,
                 client_bulk_key,
             }
             | Self::Append {
-                logical_graph_name,
+                graph_name,
                 client_bulk_key,
                 ..
-            } => (logical_graph_name, client_bulk_key),
+            } => (graph_name, client_bulk_key),
         };
-        if graph_name.is_empty() || graph_name.len() > 256 {
-            return Err("logical_graph_name must be 1..=256 UTF-8 bytes".into());
+        if let Some(name) = graph_name
+            && (name.is_empty() || name.len() > 256)
+        {
+            return Err("graph_name must be 1..=256 UTF-8 bytes when present".into());
         }
         if key.is_empty() || key.len() > 256 {
             return Err("client_bulk_key must be 1..=256 UTF-8 bytes".into());
@@ -601,7 +603,8 @@ pub enum AtomicInsertRequest {
 pub struct AtomicInsertRequestV1 {
     /// Stable idempotency key supplied by the caller; retries must reuse it with identical data.
     pub client_mutation_key: String,
-    pub logical_graph_name: String,
+    /// Optional logical graph name; `None` resolves the caller's default (HOME) graph.
+    pub graph_name: Option<String>,
     pub operations: Vec<AtomicInsertOperationV1>,
 }
 
@@ -691,8 +694,10 @@ impl AtomicInsertRequest {
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
             return Err("atomic insert client mutation key must be 1..=256 bytes".into());
         }
-        if request.logical_graph_name.is_empty() {
-            return Err("atomic insert logical graph name must not be empty".into());
+        if let Some(name) = &request.graph_name
+            && name.is_empty()
+        {
+            return Err("atomic insert graph name must not be empty when present".into());
         }
         if request.operations.is_empty() || request.operations.len() > MAX_ATOMIC_INSERT_OPERATIONS
         {
@@ -740,7 +745,7 @@ impl AtomicInsertRequest {
                 }
             }
         }
-        let encoded = Encode!(&(request.logical_graph_name.clone(), operations))
+        let encoded = Encode!(&(request.graph_name.clone(), operations))
             .map_err(|error| format!("batch fingerprint encode: {error}"))?;
         let mut hasher = Sha256::new();
         hasher.update(b"gleaph:atomic-insert-public:v1\0");
@@ -755,7 +760,7 @@ impl AtomicInsertRequest {
         let Self::V1(request) = self;
         let AtomicInsertRequestV1 {
             client_mutation_key,
-            logical_graph_name,
+            graph_name,
             operations,
         } = request;
         let has_vertex = operations
@@ -778,7 +783,7 @@ impl AtomicInsertRequest {
                 ClassifiedAtomicInsertRequest::Vertex(OrderedVertexBatchRequest::V1(
                     OrderedVertexBatchRequestV1 {
                         client_mutation_key,
-                        logical_graph_name,
+                        graph_name,
                         items,
                     },
                 ))
@@ -813,7 +818,7 @@ impl AtomicInsertRequest {
                 ClassifiedAtomicInsertRequest::Edge(OrderedEdgeBatchRequest::V1(
                     OrderedEdgeBatchRequestV1 {
                         client_mutation_key,
-                        logical_graph_name,
+                        graph_name,
                         items,
                     },
                 ))
@@ -821,7 +826,7 @@ impl AtomicInsertRequest {
             (true, true) => ClassifiedAtomicInsertRequest::Mixed(OrderedMixedBatchRequest::V1(
                 OrderedMixedBatchRequestV1 {
                     client_mutation_key,
-                    logical_graph_name,
+                    graph_name,
                     operations,
                 },
             )),
@@ -970,7 +975,7 @@ pub(crate) enum OrderedEdgeBatchRequest {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OrderedEdgeBatchRequestV1 {
     pub client_mutation_key: String,
-    pub logical_graph_name: String,
+    pub graph_name: Option<String>,
     pub items: Vec<OrderedEdgeInsertRequestItemV1>,
 }
 
@@ -995,8 +1000,10 @@ impl OrderedEdgeBatchRequest {
         if request.client_mutation_key.len() > 256 {
             return Err("ordered edge batch client mutation key exceeds 256 bytes".into());
         }
-        if request.logical_graph_name.is_empty() {
-            return Err("ordered edge batch logical graph name must not be empty".into());
+        if let Some(name) = &request.graph_name
+            && name.is_empty()
+        {
+            return Err("ordered edge batch graph name must not be empty when present".into());
         }
         if request.items.is_empty() {
             return Err("ordered edge batch requires at least one item".into());
@@ -1192,7 +1199,7 @@ pub(crate) enum OrderedVertexBatchRequest {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OrderedVertexBatchRequestV1 {
     pub client_mutation_key: String,
-    pub logical_graph_name: String,
+    pub graph_name: Option<String>,
     pub items: Vec<AtomicInsertVertexV1>,
 }
 
@@ -1202,8 +1209,10 @@ impl OrderedVertexBatchRequest {
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
             return Err("ordered vertex batch client mutation key must be 1..=256 bytes".into());
         }
-        if request.logical_graph_name.is_empty() {
-            return Err("ordered vertex batch logical graph name must not be empty".into());
+        if let Some(name) = &request.graph_name
+            && name.is_empty()
+        {
+            return Err("ordered vertex batch graph name must not be empty when present".into());
         }
         if request.items.is_empty() {
             return Err("ordered vertex batch requires at least one item".into());
@@ -1329,7 +1338,7 @@ pub(crate) enum OrderedMixedBatchRequest {
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OrderedMixedBatchRequestV1 {
     pub client_mutation_key: String,
-    pub logical_graph_name: String,
+    pub graph_name: Option<String>,
     pub operations: Vec<AtomicInsertOperationV1>,
 }
 
@@ -1339,8 +1348,10 @@ impl OrderedMixedBatchRequest {
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
             return Err("ordered mixed batch client mutation key must be 1..=256 bytes".into());
         }
-        if request.logical_graph_name.is_empty() {
-            return Err("ordered mixed batch logical graph name must not be empty".into());
+        if let Some(name) = &request.graph_name
+            && name.is_empty()
+        {
+            return Err("ordered mixed batch graph name must not be empty when present".into());
         }
         if request.operations.is_empty() {
             return Err("ordered mixed batch requires at least one operation".into());
@@ -2709,7 +2720,7 @@ mod tests {
     fn atomic_insert_request_round_trips_fingerprints_without_client_key_and_classifies_edge() {
         let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "ordered-1".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
                 source: AtomicInsertEndpointV1::Existing(vec![1; 8]),
                 target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
@@ -2743,7 +2754,7 @@ mod tests {
     fn atomic_insert_request_classifies_vertex_only_operations() {
         let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "vertex-1".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: vec!["Person".into(), "User".into()],
                 initial_properties: vec![AtomicInsertPropertyV1 {
@@ -2763,7 +2774,7 @@ mod tests {
     fn atomic_insert_request_classifies_mixed_operations_and_validates_vertex_ordinals() {
         let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "mixed-1".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![
                 AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: vec!["Person".into()],
@@ -2795,7 +2806,7 @@ mod tests {
         );
         let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-placement".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![
                 AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: Vec::new(),
@@ -2830,7 +2841,7 @@ mod tests {
         );
         let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-placement-conflict".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![
                 AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: Vec::new(),
@@ -2853,7 +2864,7 @@ mod tests {
     fn ordered_mixed_request_converts_to_graph_operation_phases() {
         let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-convert".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![
                 AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                     vertex_labels: Vec::new(),
@@ -2902,7 +2913,7 @@ mod tests {
     fn atomic_insert_request_rejects_unknown_vertex_ordinal() {
         let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "mixed-2".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
                 source: AtomicInsertEndpointV1::NewVertexOrdinal(0),
                 target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
@@ -2919,7 +2930,7 @@ mod tests {
     fn atomic_insert_fingerprint_canonicalizes_property_order_only() {
         let mut request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "ordered-property-order".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
                 source: AtomicInsertEndpointV1::Existing(vec![1; 8]),
                 target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
@@ -2962,7 +2973,7 @@ mod tests {
     fn atomic_insert_request_rejects_empty_property_name() {
         let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "ordered-2".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
                 source: AtomicInsertEndpointV1::Existing(vec![1; 8]),
                 target: AtomicInsertEndpointV1::Existing(vec![2; 8]),
@@ -2986,21 +2997,21 @@ mod tests {
         });
         let empty = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "empty".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: Vec::new(),
         });
         assert!(empty.validate().is_err());
 
         let oversized = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "oversized".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![operation; MAX_ATOMIC_INSERT_OPERATIONS + 1],
         });
         assert!(oversized.validate().is_err());
 
         let duplicate = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
             client_mutation_key: "duplicate-property".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             operations: vec![AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
                 vertex_labels: Vec::new(),
                 initial_properties: vec![
@@ -3029,7 +3040,7 @@ mod tests {
         let target = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 12));
         let request = OrderedEdgeBatchRequest::V1(OrderedEdgeBatchRequestV1 {
             client_mutation_key: "ordered-3".into(),
-            logical_graph_name: "tenant.main".into(),
+            graph_name: Some("tenant.main".into()),
             items: vec![OrderedEdgeInsertRequestItemV1 {
                 source: source.0.to_vec(),
                 target: target.0.to_vec(),

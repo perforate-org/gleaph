@@ -1048,10 +1048,14 @@ async fn execute_ordered_edge_batch_classified(
         crate::types::OrderedEdgeBatchRequest::V1(request) => request.client_mutation_key.clone(),
     };
     let logical_graph_name = match &request {
-        crate::types::OrderedEdgeBatchRequest::V1(request) => request.logical_graph_name.clone(),
+        crate::types::OrderedEdgeBatchRequest::V1(request) => request.graph_name.clone(),
     };
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id = crate::graph_context::resolve_graph_id_or_default(
+        &store,
+        caller,
+        logical_graph_name.as_deref(),
+    )?;
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let endpoints = request
         .decode_same_shard_endpoints(&encoding_key)
@@ -1289,10 +1293,10 @@ async fn execute_ordered_vertex_batch_classified(
     public_fingerprint: [u8; 32],
 ) -> Result<crate::types::AtomicInsertResponse, RouterError> {
     let caller = msg_caller();
-    let (client_key, logical_graph_name, label_names, property_names) = match &request {
+    let (client_key, graph_name, label_names, property_names) = match &request {
         crate::types::OrderedVertexBatchRequest::V1(request) => (
             request.client_mutation_key.clone(),
-            request.logical_graph_name.clone(),
+            request.graph_name.clone(),
             request
                 .items
                 .iter()
@@ -1313,7 +1317,8 @@ async fn execute_ordered_vertex_batch_classified(
         crate::types::OrderedVertexBatchRequest::V1(request) => request.items.len() as u32,
     };
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let target =
         crate::federation::latest_shard_routing(&store.list_live_shards_for_graph_id(graph_id)?)?
@@ -1528,7 +1533,7 @@ async fn execute_ordered_mixed_batch_classified(
     let caller = msg_caller();
     let (
         client_key,
-        logical_graph_name,
+        graph_name,
         public_operation_count,
         public_vertex_count,
         public_edge_count,
@@ -1547,7 +1552,7 @@ async fn execute_ordered_mixed_batch_classified(
             let public_operation_count = request.operations.len() as u32;
             (
                 request.client_mutation_key.clone(),
-                request.logical_graph_name.clone(),
+                request.graph_name.clone(),
                 public_operation_count,
                 public_vertex_count,
                 public_operation_count - public_vertex_count,
@@ -1591,7 +1596,8 @@ async fn execute_ordered_mixed_batch_classified(
         }
     };
     let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let graph_id =
+        crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let target_shard_id = match request
         .existing_endpoint_shard(&encoding_key)
