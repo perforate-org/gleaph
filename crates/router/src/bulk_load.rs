@@ -182,8 +182,8 @@ struct ByPropertyRef {
     value: Vec<u8>,
 }
 
-/// Resolve every `ByProperty` edge endpoint in the chunk through the graph property index
-/// (ADR 0060 planned extension). The whole candidate chunk is rejected before any operation
+/// Resolve every `ByProperty` edge endpoint in the chunk through the graph property index.
+/// The whole candidate chunk is rejected before any operation
 /// executes when any endpoint is missing or non-unique, or when the required converged property
 /// index on `(vertex_label, property_name)` does not exist. Endpoints are grouped by
 /// `(label, property)` and resolved with one batched equality request per group (values

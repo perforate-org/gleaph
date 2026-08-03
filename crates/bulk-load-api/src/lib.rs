@@ -139,7 +139,7 @@ pub enum BulkLoadChunkV1 {
 /// Endpoints reference existing vertices either by their graph-scoped encoded ID
 /// ([`BulkLoadEndpointV1::Existing`]) or by vertex label + property equality
 /// ([`BulkLoadEndpointV1::ByProperty`]); the Router resolves `ByProperty` endpoints through the
-/// graph property index before the chunk is admitted (ADR 0060 planned extension).
+/// graph property index before the chunk is admitted.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BulkLoadEdgeV1 {
     pub source: BulkLoadEndpointV1,
