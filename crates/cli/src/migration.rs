@@ -5,11 +5,11 @@
 //! [`MigrationTransport`] so local discovery and planning remain testable without importing Router
 //! internals.
 
-use candid::{Decode, Encode, IDLArgs, IDLValue, Principal};
 use clap::Args;
 use gleaph_gql::ast::{GraphTypeSpec, Statement};
 use gleaph_gql::parser::parse;
 use gleaph_gql::token::Token;
+use gleaph_graph_kernel::federation::RouterError;
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ListSchemaMigrationsArgs, ListSchemaMigrationsArgsV1, ListSchemaMigrationsResult,
@@ -27,11 +27,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+use crate::remote::RemoteTransport;
+
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
-
-const DEFAULT_IC_URL: &str = "https://icp-api.io";
-const DEFAULT_LOCAL_URL: &str = "http://localhost:8000";
 
 const MANIFEST_FILE: &str = "migration.toml";
 const GQL_FILE: &str = "up.gql";
@@ -222,9 +221,7 @@ pub trait MigrationTransport {
 /// This adapter owns endpoint and identity setup only.  Migration validation, ordering, checksum
 /// comparison, and preflight remain in the pure functions above.
 pub struct RouterMigrationTransport {
-    agent: ic_agent::Agent,
-    canister: Principal,
-    runtime: tokio::runtime::Runtime,
+    remote: RemoteTransport,
 }
 
 impl RouterMigrationTransport {
@@ -235,46 +232,9 @@ impl RouterMigrationTransport {
         identity: Option<&Path>,
         fetch_root_key: bool,
     ) -> Result<Self, MigrationError> {
-        let (url, should_fetch_root_key) = resolve_network(network, fetch_root_key)?;
-        let canister = Principal::from_text(canister).map_err(|error| {
-            MigrationError::Remote(format!("invalid canister principal: {error}"))
-        })?;
-        let agent = if let Some(identity) = identity {
-            let identity = ic_agent::identity::Secp256k1Identity::from_pem_file(identity).map_err(
-                |error| {
-                    MigrationError::Remote(format!("read identity {}: {error}", identity.display()))
-                },
-            )?;
-            ic_agent::Agent::builder()
-                .with_url(url)
-                .with_identity(identity)
-                .build()
-                .map_err(|error| MigrationError::Remote(format!("create IC agent: {error}")))?
-        } else {
-            ic_agent::Agent::builder()
-                .with_url(url)
-                .build()
-                .map_err(|error| MigrationError::Remote(format!("create IC agent: {error}")))?
-        };
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|error| MigrationError::Remote(format!("create async runtime: {error}")))?;
-        if should_fetch_root_key {
-            runtime
-                .block_on(agent.fetch_root_key())
-                .map_err(|error| MigrationError::Remote(format!("fetch IC root key: {error}")))?;
-        }
-        Ok(Self {
-            agent,
-            canister,
-            runtime,
-        })
-    }
-
-    fn block_on<T>(
-        &self,
-        future: impl std::future::Future<Output = T>,
-    ) -> Result<T, MigrationError> {
-        Ok(self.runtime.block_on(future))
+        let remote = RemoteTransport::connect(canister, network, identity, fetch_root_key)
+            .map_err(MigrationError::Remote)?;
+        Ok(Self { remote })
     }
 }
 
@@ -283,74 +243,27 @@ impl MigrationTransport for RouterMigrationTransport {
         &mut self,
         args: ListSchemaMigrationsArgs,
     ) -> Result<ListSchemaMigrationsResult, String> {
-        let encoded = Encode!(&args)
-            .map_err(|error| format!("encode list_schema_migrations args: {error}"))?;
-        let response = self
-            .block_on(
-                self.agent
-                    .query(&self.canister, "list_schema_migrations")
-                    .with_arg(encoded)
-                    .call(),
-            )
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("query list_schema_migrations: {error}"))?;
-        decode_router_result(&response, "list_schema_migrations")
+        match self
+            .remote
+            .query::<ListSchemaMigrationsResult, RouterError>("list_schema_migrations", &args)?
+        {
+            Ok(result) => Ok(result),
+            Err(error) => Err(format!("Router rejected list_schema_migrations: {error:?}")),
+        }
     }
 
     fn apply_schema_migration(
         &mut self,
         args: ApplySchemaMigrationArgs,
     ) -> Result<ApplySchemaMigrationResult, String> {
-        let encoded = Encode!(&args)
-            .map_err(|error| format!("encode apply_schema_migration args: {error}"))?;
-        let response = self
-            .block_on(
-                self.agent
-                    .update(&self.canister, "apply_schema_migration")
-                    .with_arg(encoded)
-                    .call_and_wait(),
-            )
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("update apply_schema_migration: {error}"))?;
-        decode_router_result(&response, "apply_schema_migration")
-    }
-}
-
-fn resolve_network(network: &str, fetch_root_key: bool) -> Result<(&str, bool), MigrationError> {
-    match network {
-        "ic" => Ok((DEFAULT_IC_URL, false)),
-        "local" => Ok((DEFAULT_LOCAL_URL, true)),
-        url if url.starts_with("http://") || url.starts_with("https://") => {
-            if !fetch_root_key {
-                return Err(MigrationError::Remote(
-                    "a custom network URL requires --fetch-root-key".into(),
-                ));
-            }
-            Ok((url, true))
+        match self
+            .remote
+            .update::<ApplySchemaMigrationResult, RouterError>("apply_schema_migration", &args)?
+        {
+            Ok(result) => Ok(result),
+            Err(error) => Err(format!("Router rejected apply_schema_migration: {error:?}")),
         }
-        other => Err(MigrationError::Remote(format!(
-            "unknown network {other:?}; expected \"ic\", \"local\", or an http(s) URL"
-        ))),
     }
-}
-
-fn decode_router_result<T: candid::CandidType + for<'de> serde::Deserialize<'de>>(
-    response: &[u8],
-    method: &str,
-) -> Result<T, String> {
-    let args = IDLArgs::from_bytes(response)
-        .map_err(|error| format!("decode {method} response: {error}"))?;
-    let Some(IDLValue::Variant(result)) = args.args.first() else {
-        return Err(format!("decode {method} response: expected Result variant"));
-    };
-    let value = &result.0.val;
-    if result.0.id.get_id() != candid::idl_hash("Ok") {
-        return Err(format!("Router rejected {method}: {value:?}"));
-    }
-    let payload = IDLArgs::new(std::slice::from_ref(value))
-        .to_bytes()
-        .map_err(|error| format!("decode {method} payload: {error}"))?;
-    Decode!(&payload, T).map_err(|error| format!("decode {method} payload: {error}"))
 }
 
 /// Errors raised while loading, validating, planning, or publishing artifacts.
@@ -1333,6 +1246,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), MigrationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candid::Principal;
     use gleaph_migration_api::MAX_SCHEMA_MIGRATION_LIST_LIMIT;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU64, Ordering};

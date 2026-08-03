@@ -4,8 +4,11 @@ use clap::{CommandFactory, Parser, Subcommand};
 use std::process::ExitCode;
 use thiserror::Error;
 
+pub mod load;
 pub mod migration;
+pub mod remote;
 
+use load::{LoadArgs, LoadError};
 use migration::{MigrationDirArgs, MigrationError};
 
 #[derive(Debug, Error)]
@@ -14,6 +17,20 @@ enum CliError {
     Codegen(#[from] gleaph_codegen::CodegenError),
     #[error(transparent)]
     Migration(#[from] MigrationError),
+    #[error(transparent)]
+    Load(#[from] LoadError),
+    /// Argument parsing or dispatch failures.
+    #[error("{0}")]
+    Message(String),
+}
+
+impl CliError {
+    fn exit_code(&self) -> u8 {
+        match self {
+            CliError::Load(error) => error.exit_code(),
+            _ => 1,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -30,6 +47,8 @@ enum TopLevelCommand {
     /// Validate, plan, and apply immutable schema migrations.
     #[command(subcommand)]
     Migration(MigrationCommand),
+    /// Load initial vertices and edges into an existing logical graph.
+    Load(LoadArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -81,11 +100,18 @@ struct NewMigrationArgs {
 ///
 /// Keeping this small adapter allows unit tests to exercise dispatch without spawning a process.
 pub fn run(args: Vec<String>) -> Result<(), String> {
+    parse_and_dispatch(args).map_err(|error| error.to_string())
+}
+
+fn parse_and_dispatch(args: Vec<String>) -> Result<(), CliError> {
     let Some(first) = args.first() else {
-        return Err("a command is required".into());
+        return Err(CliError::Message("a command is required".into()));
     };
-    if !matches!(first.as_str(), "codegen" | "migration" | "-h" | "--help") {
-        return Err(format!("unknown command {first:?}"));
+    if !matches!(
+        first.as_str(),
+        "codegen" | "migration" | "load" | "-h" | "--help"
+    ) {
+        return Err(CliError::Message(format!("unknown command {first:?}")));
     }
     if matches!(first.as_str(), "-h" | "--help") {
         let mut command = Cli::command();
@@ -93,14 +119,26 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         return Ok(());
     }
     let argv = std::iter::once("gleaph".to_owned()).chain(args);
-    let cli = Cli::try_parse_from(argv).map_err(|error| error.to_string())?;
-    execute(cli.command).map_err(|error| error.to_string())
+    let cli = Cli::try_parse_from(argv).map_err(|error| CliError::Message(error.to_string()))?;
+    dispatch(cli.command)
 }
 
-fn execute(command: TopLevelCommand) -> Result<(), CliError> {
+fn dispatch(command: TopLevelCommand) -> Result<(), CliError> {
     match command {
         TopLevelCommand::Codegen(args) => Ok(gleaph_codegen::run(args)?),
         TopLevelCommand::Migration(command) => Ok(execute_migration(command)?),
+        TopLevelCommand::Load(args) => {
+            let outcome = load::execute(&args)?;
+            match outcome {
+                load::LoadOutcome::Loaded { key } => {
+                    println!("bulk load completed (job key: {key})")
+                }
+                load::LoadOutcome::Skipped { key } => {
+                    println!("bulk load already completed; skipped (job key: {key})")
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -154,11 +192,11 @@ fn execute_migration(command: MigrationCommand) -> Result<(), MigrationError> {
 }
 
 fn main() -> ExitCode {
-    match run(std::env::args().skip(1).collect()) {
+    match parse_and_dispatch(std::env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("gleaph: {message}");
-            ExitCode::FAILURE
+            ExitCode::from(message.exit_code())
         }
     }
 }

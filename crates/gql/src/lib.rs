@@ -19,6 +19,10 @@
 //!   select both features to format Gleaph-specific syntax.
 //! - `f128` -- Enables `Value::Float128` using `std::f128` (requires nightly).
 //! - `f256` -- Enables `Value::Float256` using the `f256` crate.
+//! - `serde` -- Enables canonical text (JSON / NDJSON) (de)serialization of
+//!   [`Value`](value::Value) via the `serde` traits (external-tag single-key objects,
+//!   decimal strings for wide numerics, base64 `Bytes`, order-preserving `Record`,
+//!   `Extension` rejected).
 //! - `ast-rkyv-no-span` -- Derives `rkyv::Archive` / `Serialize` / `Deserialize` for AST types and related
 //!   values; source [`Span`](token::Span) fields are omitted from the archived form (`rkyv::with::Skip`).
 //!   Use [`rkyv_from_aligned_bytes`] when the buffer is already root-aligned (e.g. fresh

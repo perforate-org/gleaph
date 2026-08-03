@@ -15,6 +15,7 @@ include = [
 ]
 
 [dependencies]
+base64 = { workspace = true, optional = true }
 gleaph-gql-keywords = { path = "../gql-keywords" }
 gleaph-gql-macros = { path = "../gql-macros" }
 ethnum = "1"
@@ -27,6 +28,7 @@ rapidhash = "4"
 rust_decimal = "1"
 thiserror = "2"
 rkyv = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [features]
 default = ["f128", "f256"]
@@ -41,3 +43,10 @@ gleaph = []
 # AST-based query formatter. Does not imply `gleaph`; format-only consumers
 # may enable it alone. Gleaph syntax formatting requires both `format` and `gleaph`.
 format = []
+# Canonical text (JSON / NDJSON) (de)serialization of `Value`: external-tag single-key
+# objects, decimal strings for wide numerics, base64 `Bytes`, order-preserving `Record`
+# with duplicate-key rejection, and `Extension` rejected (fail-closed).
+serde = ["dep:serde", "dep:base64"]
+
+[dev-dependencies]
+serde_json.workspace = true

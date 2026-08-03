@@ -13,11 +13,17 @@ path = "src/main.rs"
 candid.workspace = true
 clap.workspace = true
 gleaph-codegen.workspace = true
-gleaph-gql = { workspace = true, features = ["gleaph"] }
+gleaph-gql = { workspace = true, features = ["gleaph", "serde"] }
+gleaph-graph-kernel.workspace = true
 gleaph-index-ddl.workspace = true
+gleaph-message-sizing.workspace = true
 gleaph-migration-api.workspace = true
+gleaph-router.workspace = true
 ic-agent.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+serde_yml.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tokio.workspace = true

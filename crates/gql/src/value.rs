@@ -23,6 +23,8 @@ use std::str;
 
 mod enum_;
 mod impls;
+#[cfg(feature = "serde")]
+pub mod serde_support;
 
 pub use enum_::Value;
 #[cfg(feature = "f128")]

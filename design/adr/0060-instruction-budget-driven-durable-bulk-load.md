@@ -323,9 +323,19 @@ regenerated. Also as of 2026-08-03, the L1 data-plane wire changed `logical_grap
 `atomic_insert_status`, `atomic_insert` (including the Router-internal ordered-batch chain),
 `list_prepared`, and `vector_search` resolve `None` to the caller's default (HOME) graph via
 `graph_context::resolve_graph_id_or_default`, while `Some(name)` keeps the prior resolution; the
-admin control surface keeps explicit graph names. Decision 4 (`gleaph load` CLI) is not implemented.
-The remaining change is the CLI
-itself; no further wire change is planned, and there is no development stable-layout change: no
+admin control surface keeps explicit graph names. Decision 4 is implemented as of 2026-08-03:
+the CLI gains a `load` subcommand (`gleaph load`) that drives the batch-plus-cursor protocol to
+`Completed`. The artifact is a versioned YAML/JSON single file (`format_version: 1`, `vertices` +
+`edges`) or two NDJSON files (`vertices.jsonl` + `edges.jsonl`) with the same row schema; `--format`
+is optional and inferred from the file extension when omitted; `--graph` is optional (omitted → the
+caller's default graph via the `Option<String>` wire); the driver fits each request to the
+inter-canister payload bound with `gleaph-message-sizing` and loops on `next_offset`; `--fresh`
+derives a fresh job key (durable bulk-load keys are single-use); an optional `--state-file` records
+the effective key and artifact digest for skip-on-Completed verification; exit codes are 0
+complete/skip, 1 operator action, 2 input validation, 3 remote/auth. The CLI depends on
+`gleaph-router` for the wire types; a shared bulk-load wire crate remains the longer-term
+consolidation alongside the Router/SDK duplication. No further wire change is planned, and there is
+no development stable-layout change: no
 Router or Graph stable region is added, and the existing receipt map, coordinator lifecycle, and
 client-key identity remain the durable substrate. The static-admission inconsistency is confirmed
 by the 2026-08-03 PocketIC probe (70 admitted, 71 and 256 rejected) and is eliminated by the
