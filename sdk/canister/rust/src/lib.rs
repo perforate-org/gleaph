@@ -684,6 +684,9 @@ pub enum BulkLoadResponse {
     },
     Appended {
         chunk_index: u32,
+        /// Operations of this candidate batch committed as this chunk; the client resumes the
+        /// remainder at `chunk_index + 1` (ADR 0060 `Resumable` execution).
+        next_offset: u32,
         receipt: AtomicInsertReceiptV1,
     },
     FinalizeAccepted {

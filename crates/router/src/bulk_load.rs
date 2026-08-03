@@ -331,7 +331,7 @@ async fn dispatch_graph_child(
                 OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
                     mutation_id: child_mutation_id,
                     graph_request_fingerprint,
-                    execution_mode: OrderedBatchExecutionModeV1::Atomic,
+                    execution_mode: OrderedBatchExecutionModeV1::Resumable,
                     request: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(
                         request.clone(),
                     ),
@@ -356,7 +356,7 @@ async fn dispatch_graph_child(
                 OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
                     mutation_id: child_mutation_id,
                     graph_request_fingerprint,
-                    execution_mode: OrderedBatchExecutionModeV1::Atomic,
+                    execution_mode: OrderedBatchExecutionModeV1::Resumable,
                     request: gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest::V1(
                         request.clone(),
                     ),
@@ -610,6 +610,7 @@ async fn append_bulk_load(
         .await?;
         return Ok(BulkLoadResponse::Appended {
             chunk_index,
+            next_offset: committed_offset(&receipt)?,
             receipt,
         });
     }
@@ -664,8 +665,17 @@ async fn append_bulk_load(
     .await?;
     Ok(BulkLoadResponse::Appended {
         chunk_index,
+        next_offset: committed_offset(&receipt)?,
         receipt,
     })
+}
+
+/// Operations of the candidate batch committed as this chunk. The public receipt counts are the
+/// committed prefix (one of vertex/edge is zero), so the operation count is the offset the client
+/// resumes from at `chunk_index + 1` (ADR 0060).
+fn committed_offset(receipt: &crate::types::AtomicInsertReceiptV1) -> Result<u32, RouterError> {
+    u32::try_from(receipt.logical_operation_count)
+        .map_err(|_| RouterError::Internal("bulk-load chunk committed count exceeds u32".into()))
 }
 
 fn finalize_bulk_load(

@@ -57,35 +57,11 @@ export interface UniqueAcquireEvidence {
 }
 export type Result_2 = {
     __kind__: "Ok";
-    Ok: null;
+    Ok: VertexEmbeddingIngestionResult;
 } | {
     __kind__: "Err";
     Err: string;
 };
-export interface GetMutationJournalEntriesResult {
-    /**
-     * Smallest mutation id not included because the Graph canister neared its instruction budget.
-     * When present, the Router must issue a follow-up batch read for this and larger ids.
-     */
-    next?: bigint;
-    entries: Array<GraphMutationJournalEntryWire | null>;
-}
-export interface OrderedVertexBatchGraphRequestV1 {
-    graph_id: number;
-    resolved_labels: ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties: ResolvedPropertyTable;
-    items: Array<OrderedVertexBatchGraphItemV1>;
-    target_graph_canister: Principal;
-}
-export interface OrderedEdgeBatchGraphArgsV1 {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-    request: OrderedEdgeBatchGraphRequest;
-}
-export interface ResolvedPropertyTable {
-    properties: Array<ResolvedProperty>;
-}
 export type OrderedMixedGraphOperationV1 = {
     __kind__: "Edge";
     Edge: OrderedMixedGraphEdgeItemV1;
@@ -93,33 +69,19 @@ export type OrderedMixedGraphOperationV1 = {
     __kind__: "Vertex";
     Vertex: OrderedVertexBatchGraphItemV1;
 };
-export type Result_5 = {
-    __kind__: "Ok";
-    Ok: EmbeddingBackfillResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface IndexSyncStatus {
-    /**
-     * Failed-flush ops persisted in the repair journal awaiting re-application.
-     */
-    repair_journal_len: bigint;
-    /**
-     * `derived_index_outbox_len == 0 && repair_journal_len == 0`.
-     */
-    converged: boolean;
-    /**
-     * Derived-index ops still in the durable first-delivery outbox (never yet delivered).
-     */
-    derived_index_outbox_len: bigint;
-}
 export type OrderedMixedGraphEndpointV1 = {
     __kind__: "NewVertexOrdinal";
     NewVertexOrdinal: number;
 } | {
     __kind__: "Existing";
     Existing: number;
+};
+export type Result_4 = {
+    __kind__: "Ok";
+    Ok: null;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
 };
 export type ResolvedInlineSchema = {
     __kind__: "struct";
@@ -141,51 +103,90 @@ export type OrderedVertexBatchGraphRequest = {
     __kind__: "V1";
     V1: OrderedVertexBatchGraphRequestV1;
 };
-export type Result_4 = {
-    __kind__: "Ok";
-    Ok: PostingBackfillResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface EdgePropertyBackfillRequest {
-    args: EdgePostingBackfillArgs;
-    catalog: IndexedPropertyCatalog;
-}
-export type OrderedMixedBatchGraphRequest = {
-    __kind__: "V1";
-    V1: OrderedMixedBatchGraphRequestV1;
-};
 export type GraphOrderedEdgeBatchResult = {
     __kind__: "V1";
     V1: GraphOrderedEdgeBatchResultV1;
 };
-export interface GraphInitArgs {
-    shard_id?: number;
-    /**
-     * Index canister for install-time federation wiring.
-     *
-     * Canister init cannot perform inter-canister calls, so deployments pass this after the
-     * Router registry has been configured.
-     */
-    index_canister?: Principal;
-    /**
-     * Router canister for federation (required together with `shard_id`).
-     */
-    router_canister?: Principal;
-    logical_graph_name?: string;
+export interface VertexEmbeddingIngestionResult {
+    embedding_version: bigint;
+    projection_outcome: VertexEmbeddingProjectionOutcome;
 }
 export interface ExecutePlanBatchArgs {
     mode: ExecutePlanBatchMode;
     operations: Array<ExecutePlanArgs>;
 }
-export interface ResolvedProperty {
-    id: number;
-    name: string;
-}
-export type OrderedVertexBatchGraphArgs = {
-    __kind__: "V1";
-    V1: OrderedVertexBatchGraphArgsV1;
+export type CanonicalExportError = {
+    __kind__: "Storage";
+    Storage: null;
+} | {
+    __kind__: "InvalidPhase";
+    /**
+     * The requested lifecycle operation is not valid for the current phase.
+     */
+    InvalidPhase: null;
+} | {
+    __kind__: "ScopeConflict";
+    ScopeConflict: null;
+} | {
+    __kind__: "UnsupportedInlineProfile";
+    UnsupportedInlineProfile: null;
+} | {
+    __kind__: "SequenceOutOfRange";
+    /**
+     * The sequence is outside the admitted/captured range.
+     */
+    SequenceOutOfRange: null;
+} | {
+    __kind__: "ScopeMismatch";
+    ScopeMismatch: null;
+} | {
+    __kind__: "UnsafeRemoval";
+    /**
+     * Removal would discard admitted work that has not reached the contiguous drain watermark.
+     */
+    UnsafeRemoval: null;
+} | {
+    __kind__: "NotConverged";
+    /**
+     * The graph-index convergence proof does not match this Graph's captured seal watermark.
+     */
+    NotConverged: null;
+} | {
+    __kind__: "SequenceGap";
+    /**
+     * The sequence acknowledgement was not the next contiguous sequence.
+     */
+    SequenceGap: null;
+} | {
+    __kind__: "InvalidRequest";
+    InvalidRequest: null;
+} | {
+    __kind__: "ScopeNotFound";
+    ScopeNotFound: null;
+} | {
+    __kind__: "CursorMalformed";
+    CursorMalformed: null;
+} | {
+    __kind__: "SequenceReplay";
+    /**
+     * The sequence was already acknowledged; callers must replay the original envelope only
+     * through the graph-index exact-replay path, not by advancing this watermark again.
+     */
+    SequenceReplay: null;
+} | {
+    __kind__: "InvalidScope";
+    InvalidScope: null;
+} | {
+    __kind__: "RetryableSealing";
+    /**
+     * The namespace is sealed and new build DML must be retried after the lifecycle advances.
+     */
+    RetryableSealing: null;
+} | {
+    __kind__: "FactTooLarge";
+    FactTooLarge: {
+        encoded_value_bytes: bigint;
+    };
 };
 export interface ClaimId {
     mutation_id: bigint;
@@ -196,30 +197,14 @@ export interface ClaimId {
      */
     claim_ordinal: number;
 }
-export interface GraphOrderedVertexBatchReceiptV1 {
-    /**
-     * Vertex IDs in request-local vertex-operation ordinal order.
-     */
-    allocated_vertex_ids: Uint32Array;
-    emitted_delta_last_seq?: bigint;
-    emitted_delta_first_seq?: bigint;
-    logical_vertex_count: bigint;
-    hot_forward_vertices: Uint32Array;
-}
 export type OrderedMixedMutationRetirementAck = {
     __kind__: "V1";
     V1: OrderedMixedMutationRetirementAckV1;
 };
-export type Result_7 = {
-    __kind__: "Ok";
-    Ok: GraphOrderedMixedBatchResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
 export interface OrderedVertexBatchGraphArgsV1 {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
+    execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedVertexBatchGraphRequest;
 }
 export interface ResolvedOrderedEdgePropertyV1 {
@@ -231,17 +216,9 @@ export interface VertexEmbeddingIngestionArgs {
     spec: IndexedEmbeddingSpec;
     values: Array<number>;
 }
-export interface OrderedEdgeBatchGraphItemV1 {
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id?: number;
-    target_local_vertex_id: number;
-    source_local_vertex_id: number;
-}
 export type Result_6 = {
     __kind__: "Ok";
-    Ok: GraphOrderedEdgeBatchResult;
+    Ok: EdgePostingBackfillResult;
 } | {
     __kind__: "Err";
     Err: string;
@@ -303,30 +280,12 @@ export type EdgeInlinePropertyEncoding = {
      */
     RawBytes: null;
 };
-export interface VertexEmbeddingIngestionResult {
-    embedding_version: bigint;
-    projection_outcome: VertexEmbeddingProjectionOutcome;
-}
 export interface OrderedMixedMutationRetirementAckV1 {
     mutation_id: bigint;
     receipt: GraphOrderedMixedBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
 }
-export type GraphBulkMutationProgress = {
-    __kind__: "V1";
-    V1: GraphBulkMutationProgressV1;
-};
 export type Result_12 = {
-    __kind__: "Ok";
-    Ok: OrderedMixedMutationRetirementAck;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface IndexedEmbeddingCatalog {
-    embeddings: Array<IndexedEmbeddingSpec>;
-}
-export type Result_9 = {
     __kind__: "Ok";
     Ok: ExecutePlanResult;
 } | {
@@ -415,44 +374,24 @@ export interface ExecutePlanArgs {
 }
 export type Result = {
     __kind__: "Ok";
-    Ok: VertexEmbeddingIngestionResult;
+    Ok: CanonicalExportStatus;
 } | {
     __kind__: "Err";
-    Err: string;
+    Err: CanonicalExportError;
 };
 export type Result_10 = {
     __kind__: "Ok";
-    Ok: ExecutePlanBatchResult;
+    Ok: GraphOrderedMixedBatchResult;
 } | {
     __kind__: "Err";
     Err: string;
 };
-export interface UniqueClaimDispatch {
-    encoded_value: Uint8Array;
-    constraint_id: number;
-    claim_ordinal: number;
-}
-export type OrderedEdgeBatchGraphRequest = {
-    __kind__: "V1";
-    V1: OrderedEdgeBatchGraphRequestV1;
-};
-export type OrderedMutationRetirementAck = {
-    __kind__: "V1";
-    V1: OrderedMutationRetirementAckV1;
-};
-export type GraphOrderedEdgeBatchResultV1 = {
-    __kind__: "MutationRetired";
-    MutationRetired: {
-        mutation_id: bigint;
-        graph_request_fingerprint: Uint8Array;
-    };
+export type Result_8 = {
+    __kind__: "Ok";
+    Ok: EmbeddingBackfillResult;
 } | {
-    __kind__: "Completed";
-    Completed: GraphOrderedEdgeBatchReceiptV1;
-};
-export type OrderedVertexMutationRetirementAck = {
-    __kind__: "V1";
-    V1: OrderedVertexMutationRetirementAckV1;
+    __kind__: "Err";
+    Err: string;
 };
 export interface EmbeddingBackfillResult {
     vertices_processed: number;
@@ -460,27 +399,9 @@ export interface EmbeddingBackfillResult {
     embeddings_synced: number;
     next_vertex_id: number;
 }
-export interface ExecutePlanResult {
-    /**
-     * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
-     */
-    rows_blob?: Uint8Array;
-    row_count: bigint;
-    /**
-     * Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
-     */
-    hot_forward_vertices: Uint32Array;
-}
 export type OrderedMutationRetirementArgs = {
     __kind__: "V1";
     V1: OrderedMutationRetirementArgsV1;
-};
-export type Result_8 = {
-    __kind__: "Ok";
-    Ok: GraphOrderedVertexBatchResult;
-} | {
-    __kind__: "Err";
-    Err: string;
 };
 export interface OrderedMixedBatchGraphRequestV1 {
     graph_id: number;
@@ -490,84 +411,41 @@ export interface OrderedMixedBatchGraphRequestV1 {
     resolved_properties: ResolvedPropertyTable;
     target_graph_canister: Principal;
 }
-export interface PostingBackfillArgs {
-    max_vertices: number;
-    start_vertex_id: number;
-}
 export interface EffectId {
     mutation_id: bigint;
     effect_ordinal: number;
-}
-export interface OrderedMixedGraphEdgeItemV1 {
-    source: OrderedMixedGraphEndpointV1;
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    target: OrderedMixedGraphEndpointV1;
-    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id?: number;
-}
-export interface ResolvedInlineStructField {
-    byte_offset: number;
-    name: string;
-    profile: EdgeInlinePropertyProfile;
 }
 export type GraphOrderedMixedBatchResult = {
     __kind__: "V1";
     V1: GraphOrderedMixedBatchResultV1;
 };
+export interface CanonicalInlineProjection {
+    byte_offset: number;
+    source_property_id: number;
+    value_profile: EdgeInlinePropertyProfile;
+    source_profile: EdgeInlinePropertyProfile;
+}
 export interface EdgeInlinePropertyProfile {
     encoding: EdgeInlinePropertyEncoding;
     byte_width: number;
 }
-export interface EdgePostingBackfillArgs {
-    max_entries: number;
-    after_key?: Uint8Array;
-}
 export type Result_13 = {
     __kind__: "Ok";
-    Ok: OrderedMutationRetirementAck;
+    Ok: ExecutePlanBatchResult;
 } | {
     __kind__: "Err";
     Err: string;
 };
-export interface PostingBackfillResult {
-    postings_synced: number;
-    vertices_processed: number;
-    done: boolean;
-    next_vertex_id: number;
-}
-export interface GraphOrderedMixedBatchReceiptV1 {
-    logical_edge_count: bigint;
-    /**
-     * Vertex IDs in request-local vertex-operation ordinal order.
-     */
-    allocated_vertex_ids: Uint32Array;
-    emitted_delta_last_seq?: bigint;
-    emitted_delta_first_seq?: bigint;
-    logical_vertex_count: bigint;
-    logical_operation_count: bigint;
-    hot_forward_vertices: Uint32Array;
-}
 export interface GraphOrderedEdgeBatchReceiptV1 {
     logical_edge_count: bigint;
     emitted_delta_last_seq?: bigint;
     emitted_delta_first_seq?: bigint;
     hot_forward_vertices: Uint32Array;
 }
-export type Result_1 = {
-    __kind__: "Ok";
-    Ok: Array<Result>;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
-export interface StableMemoryStats {
-    regions: Array<StableMemoryRegionStats>;
-    bucket_pages: number;
-    estimated_allocated_pages: bigint;
-    estimated_allocated_bytes: bigint;
-    logical_total_pages: bigint;
-    logical_total_bytes: bigint;
+export interface IndexBuildShardWatermark {
+    admitted_through: bigint;
+    shard_id: number;
+    drained_through: bigint;
 }
 export interface GraphMutationJournalEntryWireV1 {
     mutation_id: bigint;
@@ -604,23 +482,464 @@ export interface ExecutePlanBatchResult {
      * Index of the first operation not attempted when Dynamic mode hit the Graph budget.
      */
     next_index?: number;
-    results: Array<Result_9>;
+    results: Array<Result_12>;
 }
 export type Result_11 = {
     __kind__: "Ok";
-    Ok: BulkIngestFinalizeResult;
+    Ok: GraphOrderedVertexBatchResult;
 } | {
     __kind__: "Err";
     Err: string;
 };
-export interface GetMutationJournalEntriesArgs {
-    mutation_ids: BigUint64Array;
-}
 export interface EdgePostingBackfillResult {
     entries_processed: number;
     postings_synced: number;
     done: boolean;
     next_after_key?: Uint8Array;
+}
+export interface OrderedVertexMutationRetirementAckV1 {
+    mutation_id: bigint;
+    receipt: GraphOrderedVertexBatchReceiptV1;
+    graph_request_fingerprint: Uint8Array;
+}
+export type GraphOrderedVertexBatchResult = {
+    __kind__: "V1";
+    V1: GraphOrderedVertexBatchResultV1;
+};
+export interface StableMemoryRegionStats {
+    slack_pages: bigint;
+    logical_pages: bigint;
+    logical_bytes: bigint;
+    name: string;
+    allocated_pages: bigint;
+    memory_id: number;
+    bucket_pages: number;
+}
+export interface LabelStatsDeltaEventWire {
+    mutation_id: bigint;
+    shard_event_seq: bigint;
+    label_stats_delta: LabelStatsDelta;
+}
+export interface OrderedVertexBatchGraphItemV1 {
+    resolved_initial_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    resolved_vertex_labels: Uint16Array;
+}
+export interface OrderedEdgeBatchGraphRequestV1 {
+    graph_id: number;
+    resolved_labels: ResolvedLabelTable;
+    target_shard_id: number;
+    resolved_properties: ResolvedPropertyTable;
+    items: Array<OrderedEdgeBatchGraphItemV1>;
+    target_graph_canister: Principal;
+}
+export interface GraphBulkMutationProgressV1 {
+    operation_row_counts: BigUint64Array;
+    completed_count: number;
+    operation_count: number;
+}
+export interface OrderedMutationRetirementAckV1 {
+    mutation_id: bigint;
+    receipt: GraphOrderedEdgeBatchReceiptV1;
+    graph_request_fingerprint: Uint8Array;
+}
+export interface IndexedVertexMembership {
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    label_id: number;
+    property_id: number;
+    phase: IndexMaintenancePhase;
+}
+export interface BulkIngestFinalizeArgs {
+    forward_vertices: Uint32Array;
+    target_shard_id: number;
+    reverse_vertices: Uint32Array;
+    /**
+     * `true`: enqueue span compaction then drain; `false`: drain-only retry.
+     */
+    enqueue: boolean;
+}
+export interface OrderedMutationRetirementArgsV1 {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+}
+export interface UniqueEffectReceipt {
+    op: UniqueEffectOp;
+    /**
+     * Canonical element that owns the value: the exact encoded element-id bytes (a vertex id is 8
+     * bytes, an edge id 12). Stored variable-length rather than a fixed buffer so different element
+     * kinds never collide under an opaque padding convention; the Router treats it as an opaque tag
+     * (`Acquire` Confirm stamps it; `Release` matches on it).
+     */
+    owner_element_id: Uint8Array;
+    /**
+     * `Some` for `Acquire` (the reserving claim); audit-only / `None` for `Release`.
+     */
+    claim_id?: ClaimId;
+    effect_id: EffectId;
+    encoded_value: Uint8Array;
+    constraint_id: number;
+}
+export type Result_18 = {
+    __kind__: "Ok";
+    Ok: OrderedVertexMutationRetirementAck;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export type Result_3 = {
+    __kind__: "Ok";
+    Ok: Array<Result_2>;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export type Result_15 = {
+    __kind__: "Ok";
+    Ok: CanonicalExportPage;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
+};
+export interface CanonicalExportRequest {
+    graph_id: number;
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    cursor?: Uint8Array;
+    limit: number;
+    target: CanonicalExportTarget;
+    index_name_id: number;
+}
+export interface VertexPropertyBackfillRequest {
+    args: PostingBackfillArgs;
+    catalog: IndexedPropertyCatalog;
+}
+export interface BulkIngestFinalizeResult {
+    queued_forward: number;
+    processed_work_items: number;
+    queued_reverse: number;
+    remaining_queue_len: bigint;
+    instruction_budget_exhausted: boolean;
+    instructions_used: bigint;
+}
+export type OrderedMixedBatchGraphArgs = {
+    __kind__: "V1";
+    V1: OrderedMixedBatchGraphArgsV1;
+};
+export interface ResolvedEdgeLabel {
+    id: number;
+    name: string;
+    /**
+     * Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
+     */
+    inline_property_profile: EdgeInlinePropertyProfile;
+    /**
+     * Per-label ordering policy resolved by the Router from the Graph Type declaration
+     * (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
+     * bucket-local live order is the semantic insertion order.
+     */
+    ordering: EdgeOrderingPolicy;
+    /**
+     * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
+     * `None` for labels with no named inline slot; otherwise a scalar or struct projection.
+     * Graph receives this as a plan-scoped projection and must not persist or infer it.
+     */
+    inline_schema?: ResolvedInlineSchema;
+}
+export interface IndexBuildOutboxDrainRequest {
+    physical_index_id: bigint;
+    max_entries: number;
+}
+export interface GetMutationJournalEntriesResult {
+    /**
+     * Smallest mutation id not included because the Graph canister neared its instruction budget.
+     * When present, the Router must issue a follow-up batch read for this and larger ids.
+     */
+    next?: bigint;
+    entries: Array<GraphMutationJournalEntryWire | null>;
+}
+export interface OrderedVertexBatchGraphRequestV1 {
+    graph_id: number;
+    resolved_labels: ResolvedLabelTable;
+    target_shard_id: number;
+    resolved_properties: ResolvedPropertyTable;
+    items: Array<OrderedVertexBatchGraphItemV1>;
+    target_graph_canister: Principal;
+}
+export interface OrderedEdgeBatchGraphArgsV1 {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+    execution_mode: OrderedBatchExecutionModeV1;
+    request: OrderedEdgeBatchGraphRequest;
+}
+export interface ResolvedPropertyTable {
+    properties: Array<ResolvedProperty>;
+}
+export type Result_5 = {
+    __kind__: "Ok";
+    Ok: null;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export type CanonicalIndexableFact = {
+    __kind__: "Edge";
+    Edge: {
+        encoded_value: Uint8Array;
+        label_id: number;
+        property_id: number;
+        slot_index: number;
+        owner_vertex_id: number;
+    };
+} | {
+    __kind__: "Vertex";
+    Vertex: {
+        vertex_id: number;
+        encoded_value: Uint8Array;
+        property_id: number;
+    };
+};
+export interface IndexSyncStatus {
+    /**
+     * Failed-flush ops persisted in the repair journal awaiting re-application.
+     */
+    repair_journal_len: bigint;
+    /**
+     * `derived_index_outbox_len == 0 && repair_journal_len == 0`.
+     */
+    converged: boolean;
+    /**
+     * Derived-index ops still in the durable first-delivery outbox (never yet delivered).
+     */
+    derived_index_outbox_len: bigint;
+}
+export interface CanonicalExportPage {
+    done: boolean;
+    /**
+     * Opaque continuation.  `None` means this page reached the end of the selected source.
+     */
+    next?: Uint8Array;
+    facts: Array<CanonicalIndexableFact>;
+}
+export interface EdgePropertyBackfillRequest {
+    args: EdgePostingBackfillArgs;
+    catalog: IndexedPropertyCatalog;
+}
+export type OrderedMixedBatchGraphRequest = {
+    __kind__: "V1";
+    V1: OrderedMixedBatchGraphRequestV1;
+};
+export interface ResolvedProperty {
+    id: number;
+    name: string;
+}
+export interface GraphInitArgs {
+    shard_id?: number;
+    /**
+     * Index canister for install-time federation wiring.
+     *
+     * Canister init cannot perform inter-canister calls, so deployments pass this after the
+     * Router registry has been configured.
+     */
+    index_canister?: Principal;
+    /**
+     * Router canister for federation (required together with `shard_id`).
+     */
+    router_canister?: Principal;
+    logical_graph_name?: string;
+}
+export type Result_7 = {
+    __kind__: "Ok";
+    Ok: PostingBackfillResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export type OrderedVertexBatchGraphArgs = {
+    __kind__: "V1";
+    V1: OrderedVertexBatchGraphArgsV1;
+};
+export interface GraphOrderedVertexBatchReceiptV1 {
+    /**
+     * Vertex IDs in request-local vertex-operation ordinal order.
+     */
+    allocated_vertex_ids: Uint32Array;
+    emitted_delta_last_seq?: bigint;
+    emitted_delta_first_seq?: bigint;
+    logical_vertex_count: bigint;
+    hot_forward_vertices: Uint32Array;
+}
+export interface IndexBuildOutboxDrainProgress {
+    remaining: bigint;
+    converged: boolean;
+    drained: number;
+}
+export interface CanonicalExportStatus {
+    physical_index_id: bigint;
+    admitted_through: bigint;
+    epoch: bigint;
+    scope: CanonicalExportScope;
+    drained_through: bigint;
+    phase: CanonicalExportPhase;
+}
+export interface OrderedEdgeBatchGraphItemV1 {
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id?: number;
+    target_local_vertex_id: number;
+    source_local_vertex_id: number;
+}
+export type CanonicalExportTarget = {
+    __kind__: "Edge";
+    /**
+     * An edge property identified by label, property, and the stable direction used by the
+     * Router/index catalog (see ADR 0012).
+     */
+    Edge: {
+        direction: EdgeIndexDirection;
+        label_id: number;
+        property_id: number;
+    };
+} | {
+    __kind__: "Vertex";
+    /**
+     * A vertex property identified by its Router-issued property id.
+     */
+    Vertex: {
+        label_id: number;
+        property_id: number;
+    };
+};
+export type GraphBulkMutationProgress = {
+    __kind__: "V1";
+    V1: GraphBulkMutationProgressV1;
+};
+export type Result_9 = {
+    __kind__: "Ok";
+    Ok: GraphOrderedEdgeBatchResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export interface IndexedEmbeddingCatalog {
+    embeddings: Array<IndexedEmbeddingSpec>;
+}
+export interface UniqueClaimDispatch {
+    encoded_value: Uint8Array;
+    constraint_id: number;
+    claim_ordinal: number;
+}
+export type OrderedMutationRetirementAck = {
+    __kind__: "V1";
+    V1: OrderedMutationRetirementAckV1;
+};
+export type OrderedEdgeBatchGraphRequest = {
+    __kind__: "V1";
+    V1: OrderedEdgeBatchGraphRequestV1;
+};
+export type OrderedVertexMutationRetirementAck = {
+    __kind__: "V1";
+    V1: OrderedVertexMutationRetirementAckV1;
+};
+export type GraphOrderedEdgeBatchResultV1 = {
+    __kind__: "MutationRetired";
+    MutationRetired: {
+        mutation_id: bigint;
+        graph_request_fingerprint: Uint8Array;
+    };
+} | {
+    __kind__: "Completed";
+    Completed: GraphOrderedEdgeBatchReceiptV1;
+};
+export interface VertexEmbeddingBackfillRequest {
+    args: PostingBackfillArgs;
+    catalog: IndexedEmbeddingCatalog;
+}
+export interface ExecutePlanResult {
+    /**
+     * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
+     */
+    rows_blob?: Uint8Array;
+    row_count: bigint;
+    /**
+     * Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
+     */
+    hot_forward_vertices: Uint32Array;
+}
+export interface PostingBackfillArgs {
+    max_vertices: number;
+    start_vertex_id: number;
+}
+export interface ResolvedInlineStructField {
+    byte_offset: number;
+    name: string;
+    profile: EdgeInlinePropertyProfile;
+}
+export interface OrderedMixedGraphEdgeItemV1 {
+    source: OrderedMixedGraphEndpointV1;
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    target: OrderedMixedGraphEndpointV1;
+    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id?: number;
+}
+export interface StableMemoryStats {
+    regions: Array<StableMemoryRegionStats>;
+    bucket_pages: number;
+    estimated_allocated_pages: bigint;
+    estimated_allocated_bytes: bigint;
+    logical_total_pages: bigint;
+    logical_total_bytes: bigint;
+}
+export type Result_17 = {
+    __kind__: "Ok";
+    Ok: OrderedMutationRetirementAck;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export interface EdgePostingBackfillArgs {
+    max_entries: number;
+    after_key?: Uint8Array;
+}
+export interface PostingBackfillResult {
+    postings_synced: number;
+    vertices_processed: number;
+    done: boolean;
+    next_vertex_id: number;
+}
+export interface GraphOrderedMixedBatchReceiptV1 {
+    logical_edge_count: bigint;
+    /**
+     * Vertex IDs in request-local vertex-operation ordinal order.
+     */
+    allocated_vertex_ids: Uint32Array;
+    emitted_delta_last_seq?: bigint;
+    emitted_delta_first_seq?: bigint;
+    logical_vertex_count: bigint;
+    logical_operation_count: bigint;
+    hot_forward_vertices: Uint32Array;
+}
+export type Result_16 = {
+    __kind__: "Ok";
+    Ok: OrderedMixedMutationRetirementAck;
+} | {
+    __kind__: "Err";
+    Err: string;
+};
+export type Result_1 = {
+    __kind__: "Ok";
+    Ok: IndexBuildOutboxDrainProgress;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
+};
+export interface GetMutationJournalEntriesArgs {
+    mutation_ids: BigUint64Array;
+}
+export interface UniqueAcquireProof {
+    claim_id: ClaimId;
+    acquire?: UniqueAcquireEvidence;
 }
 export type GraphMutationRequestIdentityV1 = {
     __kind__: "OrderedVertexBatch";
@@ -661,84 +980,23 @@ export type GraphMutationRequestIdentityV1 = {
      */
     PlanExecution: null;
 };
-export type GraphOrderedVertexBatchResult = {
-    __kind__: "V1";
-    V1: GraphOrderedVertexBatchResultV1;
-};
-export interface OrderedVertexMutationRetirementAckV1 {
-    mutation_id: bigint;
-    receipt: GraphOrderedVertexBatchReceiptV1;
-    graph_request_fingerprint: Uint8Array;
-}
-export interface LabelStatsDeltaEventWire {
-    mutation_id: bigint;
-    shard_event_seq: bigint;
-    label_stats_delta: LabelStatsDelta;
-}
-export interface OrderedMixedBatchGraphArgsV1 {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-    request: OrderedMixedBatchGraphRequest;
-}
-export interface OrderedEdgeBatchGraphRequestV1 {
-    graph_id: number;
-    resolved_labels: ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties: ResolvedPropertyTable;
-    items: Array<OrderedEdgeBatchGraphItemV1>;
-    target_graph_canister: Principal;
-}
-export interface OrderedVertexBatchGraphItemV1 {
-    resolved_initial_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    resolved_vertex_labels: Uint16Array;
-}
 export interface ResolvedLabelTable {
     edge: Array<ResolvedEdgeLabel>;
     vertex: Array<ResolvedVertexLabel>;
 }
+export interface OrderedMixedBatchGraphArgsV1 {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+    execution_mode: OrderedBatchExecutionModeV1;
+    request: OrderedMixedBatchGraphRequest;
+}
 export type Result_14 = {
     __kind__: "Ok";
-    Ok: OrderedVertexMutationRetirementAck;
+    Ok: BulkIngestFinalizeResult;
 } | {
     __kind__: "Err";
     Err: string;
 };
-export interface StableMemoryRegionStats {
-    slack_pages: bigint;
-    logical_pages: bigint;
-    logical_bytes: bigint;
-    name: string;
-    allocated_pages: bigint;
-    memory_id: number;
-    bucket_pages: number;
-}
-export interface UniqueAcquireProof {
-    claim_id: ClaimId;
-    acquire?: UniqueAcquireEvidence;
-}
-export interface GraphBulkMutationProgressV1 {
-    operation_row_counts: BigUint64Array;
-    completed_count: number;
-    operation_count: number;
-}
-export interface VertexEmbeddingBackfillRequest {
-    args: PostingBackfillArgs;
-    catalog: IndexedEmbeddingCatalog;
-}
-export interface OrderedMutationRetirementAckV1 {
-    mutation_id: bigint;
-    receipt: GraphOrderedEdgeBatchReceiptV1;
-    graph_request_fingerprint: Uint8Array;
-}
-export interface BulkIngestFinalizeArgs {
-    forward_vertices: Uint32Array;
-    target_shard_id: number;
-    reverse_vertices: Uint32Array;
-    /**
-     * `true`: enqueue span compaction then drain; `false`: drain-only retry.
-     */
-    enqueue: boolean;
-}
 export type GraphOrderedMixedBatchResultV1 = {
     __kind__: "MutationRetired";
     MutationRetired: {
@@ -749,45 +1007,19 @@ export type GraphOrderedMixedBatchResultV1 = {
     __kind__: "Completed";
     Completed: GraphOrderedMixedBatchReceiptV1;
 };
-export interface OrderedMutationRetirementArgsV1 {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-}
-export interface UniqueEffectReceipt {
-    op: UniqueEffectOp;
-    /**
-     * Canonical element that owns the value: the exact encoded element-id bytes (a vertex id is 8
-     * bytes, an edge id 12). Stored variable-length rather than a fixed buffer so different element
-     * kinds never collide under an opaque padding convention; the Router treats it as an opaque tag
-     * (`Acquire` Confirm stamps it; `Release` matches on it).
-     */
-    owner_element_id: Uint8Array;
-    /**
-     * `Some` for `Acquire` (the reserving claim); audit-only / `None` for `Release`.
-     */
-    claim_id?: ClaimId;
-    effect_id: EffectId;
-    encoded_value: Uint8Array;
-    constraint_id: number;
-}
 export interface ConstrainedPropertyDispatch {
     vertex_label_id: number;
     property_id: number;
     constraint_id: number;
 }
 export interface IndexedPropertyCatalog {
-    vertex_property_ids: Uint32Array;
-    edge_property_ids: Uint32Array;
+    vertex_indexes: Array<IndexedVertexMembership>;
     edge_indexes: Array<IndexedEdgeMembership>;
 }
-export type Result_3 = {
-    __kind__: "Ok";
-    Ok: EdgePostingBackfillResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-};
 export interface IndexedEdgeMembership {
+    direction: EdgeIndexDirection;
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
     /**
      * Empty for a scalar/top-level edge property; the canonical dotted path for an inline
      * struct leaf otherwise (for example, `stats.score`).
@@ -795,15 +1027,11 @@ export interface IndexedEdgeMembership {
     field_path: string;
     label_id: number;
     property_id: number;
-    direction_tag: number;
+    phase: IndexMaintenancePhase;
 }
 export interface LabelStatsDelta {
     edge: Array<[number, bigint]>;
     vertex: Array<[number, bigint]>;
-}
-export interface VertexPropertyBackfillRequest {
-    args: PostingBackfillArgs;
-    catalog: IndexedPropertyCatalog;
 }
 export type GraphOrderedVertexBatchResultV1 = {
     __kind__: "MutationRetired";
@@ -815,18 +1043,11 @@ export type GraphOrderedVertexBatchResultV1 = {
     __kind__: "Completed";
     Completed: GraphOrderedVertexBatchReceiptV1;
 };
-export interface BulkIngestFinalizeResult {
-    queued_forward: number;
-    processed_work_items: number;
-    queued_reverse: number;
-    remaining_queue_len: bigint;
-    instruction_budget_exhausted: boolean;
-    instructions_used: bigint;
+export interface IndexBuildSealStatus {
+    base_complete: boolean;
+    watermarks: Array<IndexBuildShardWatermark>;
+    seal_catalog_epoch: bigint;
 }
-export type OrderedMixedBatchGraphArgs = {
-    __kind__: "V1";
-    V1: OrderedMixedBatchGraphArgsV1;
-};
 export interface IndexedEmbeddingSpec {
     metric: VectorMetric;
     encoding: VectorEncoding;
@@ -835,25 +1056,31 @@ export interface IndexedEmbeddingSpec {
     embedding_name_id: number;
     index_id: number;
 }
-export interface ResolvedEdgeLabel {
-    id: number;
-    name: string;
+export interface CanonicalExportScope {
+    graph_id: number;
+    catalog_epoch: bigint;
+    target: CanonicalExportTarget;
     /**
-     * Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
+     * `Some` selects canonical edge INLINE bytes; `None` selects canonical edge sidecars.  This
+     * field is ignored for vertex targets and must be absent there.
      */
-    inline_property_profile: EdgeInlinePropertyProfile;
-    /**
-     * Per-label ordering policy resolved by the Router from the Graph Type declaration
-     * (ADR 0052 §1/§4). `Unordered` is the default; `Insertion` declares that the
-     * bucket-local live order is the semantic insertion order.
-     */
-    ordering: EdgeOrderingPolicy;
-    /**
-     * Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
-     * `None` for labels with no named inline slot; otherwise a scalar or struct projection.
-     * Graph receives this as a plan-scoped projection and must not persist or infer it.
-     */
-    inline_schema?: ResolvedInlineSchema;
+    inline?: CanonicalInlineProjection;
+    index_name_id: number;
+}
+export enum CanonicalExportPhase {
+    Building = "Building",
+    Active = "Active",
+    Aborting = "Aborting",
+    Sealing = "Sealing"
+}
+export enum EdgeIndexDirection {
+    Any = "Any",
+    OutgoingOrIncoming = "OutgoingOrIncoming",
+    IncomingOrUndirected = "IncomingOrUndirected",
+    Outgoing = "Outgoing",
+    OutgoingOrUndirected = "OutgoingOrUndirected",
+    Undirected = "Undirected",
+    Incoming = "Incoming"
 }
 export enum EdgeOrderingPolicy {
     Unordered = "Unordered",
@@ -878,9 +1105,25 @@ export enum GraphMutationRetirementWireV1 {
     Active = "Active",
     Retired = "Retired"
 }
+export enum IndexMaintenancePhase {
+    Building = "Building",
+    Active = "Active",
+    Sealing = "Sealing"
+}
 export enum MutationJournalState {
     Completed = "Completed",
     Incomplete = "Incomplete"
+}
+export enum OrderedBatchExecutionModeV1 {
+    /**
+     * Commit the entire request atomically or fail (atomic-insert contract).
+     */
+    Atomic = "Atomic",
+    /**
+     * Commit the largest budget-fitting prefix as one atomic journal entry and return the
+     * committed count (bulk-load chunk execution; the committed prefix is the chunk).
+     */
+    Resumable = "Resumable"
 }
 export enum UniqueEffectOp {
     Release = "Release",
@@ -923,23 +1166,31 @@ export enum VertexEmbeddingProjectionOutcome {
 export interface gleaph_graphInterface {
     ack_label_stats_deltas_through(arg0: bigint): Promise<void>;
     ack_unique_effects(arg0: Array<EffectId>): Promise<void>;
-    admin_ingest_vertex_embedding(arg0: VertexEmbeddingIngestionArgs): Promise<Result>;
-    admin_ingest_vertex_embedding_batch(arg0: Array<VertexEmbeddingIngestionArgs>): Promise<Result_1>;
-    admin_set_vector_index_canister(arg0: Principal): Promise<Result_2>;
+    admin_abort_index_export_scope(arg0: bigint, arg1: CanonicalExportScope): Promise<Result>;
+    admin_activate_index_export_scope(arg0: bigint, arg1: IndexBuildSealStatus): Promise<Result>;
+    admin_drain_index_build_outbox(arg0: IndexBuildOutboxDrainRequest): Promise<Result_1>;
+    admin_index_export_scope_status(arg0: bigint): Promise<Result>;
+    admin_ingest_vertex_embedding(arg0: VertexEmbeddingIngestionArgs): Promise<Result_2>;
+    admin_ingest_vertex_embedding_batch(arg0: Array<VertexEmbeddingIngestionArgs>): Promise<Result_3>;
+    admin_register_index_export_scope(arg0: bigint, arg1: CanonicalExportScope): Promise<Result_4>;
+    admin_remove_index_export_scope(arg0: bigint, arg1: CanonicalExportScope): Promise<Result_4>;
+    admin_seal_index_export_scope(arg0: bigint, arg1: CanonicalExportScope, arg2: bigint): Promise<Result>;
+    admin_set_vector_index_canister(arg0: Principal): Promise<Result_5>;
     admin_stable_memory_stats(): Promise<StableMemoryStats>;
-    backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_3>;
-    backfill_label_postings(arg0: PostingBackfillArgs): Promise<Result_4>;
-    backfill_vertex_embeddings(arg0: VertexEmbeddingBackfillRequest): Promise<Result_5>;
-    backfill_vertex_property_postings(arg0: VertexPropertyBackfillRequest): Promise<Result_4>;
-    execute_ordered_edge_batch(arg0: OrderedEdgeBatchGraphArgs): Promise<Result_6>;
-    execute_ordered_mixed_batch(arg0: OrderedMixedBatchGraphArgs): Promise<Result_7>;
-    execute_ordered_vertex_batch(arg0: OrderedVertexBatchGraphArgs): Promise<Result_8>;
-    execute_plan_query(arg0: ExecutePlanArgs): Promise<Result_9>;
-    execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_9>;
-    execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_10>;
-    finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_11>;
+    backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_6>;
+    backfill_label_postings(arg0: PostingBackfillArgs): Promise<Result_7>;
+    backfill_vertex_embeddings(arg0: VertexEmbeddingBackfillRequest): Promise<Result_8>;
+    backfill_vertex_property_postings(arg0: VertexPropertyBackfillRequest): Promise<Result_7>;
+    execute_ordered_edge_batch(arg0: OrderedEdgeBatchGraphArgs): Promise<Result_9>;
+    execute_ordered_mixed_batch(arg0: OrderedMixedBatchGraphArgs): Promise<Result_10>;
+    execute_ordered_vertex_batch(arg0: OrderedVertexBatchGraphArgs): Promise<Result_11>;
+    execute_plan_query(arg0: ExecutePlanArgs): Promise<Result_12>;
+    execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_12>;
+    execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_13>;
+    finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_14>;
     get_mutation_journal_entries(arg0: GetMutationJournalEntriesArgs): Promise<GetMutationJournalEntriesResult>;
     get_mutation_journal_entry(arg0: bigint): Promise<GraphMutationJournalEntryWire | null>;
+    index_export_page(arg0: CanonicalExportRequest): Promise<Result_15>;
     index_pending_min_mutation_id(): Promise<bigint | null>;
     index_sync_status(): Promise<IndexSyncStatus>;
     list_pending_label_stats_deltas(arg0: bigint, arg1: number): Promise<Array<LabelStatsDeltaEventWire>>;
@@ -947,11 +1198,11 @@ export interface gleaph_graphInterface {
     read_unique_effect_proof(arg0: Array<ClaimId>): Promise<Array<UniqueAcquireProof>>;
     read_unique_mutation_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>>;
     read_unique_release_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>>;
-    retire_ordered_mixed_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_12>;
-    retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_13>;
-    retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_14>;
+    retire_ordered_mixed_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_16>;
+    retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_17>;
+    retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_18>;
 }
-import type { BulkIngestFinalizeResult as _BulkIngestFinalizeResult, ClaimId as _ClaimId, ConstrainedPropertyDispatch as _ConstrainedPropertyDispatch, EdgeInlinePropertyEncoding as _EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile as _EdgeInlinePropertyProfile, EdgeOrderingPolicy as _EdgeOrderingPolicy, EdgePostingBackfillArgs as _EdgePostingBackfillArgs, EdgePostingBackfillResult as _EdgePostingBackfillResult, EdgePropertyBackfillRequest as _EdgePropertyBackfillRequest, EffectId as _EffectId, EmbeddingBackfillResult as _EmbeddingBackfillResult, ExecutePlanArgs as _ExecutePlanArgs, ExecutePlanBatchArgs as _ExecutePlanBatchArgs, ExecutePlanBatchMode as _ExecutePlanBatchMode, ExecutePlanBatchResult as _ExecutePlanBatchResult, ExecutePlanResult as _ExecutePlanResult, GetMutationJournalEntriesResult as _GetMutationJournalEntriesResult, GqlExecutionMode as _GqlExecutionMode, GraphBulkMutationProgress as _GraphBulkMutationProgress, GraphBulkMutationProgressV1 as _GraphBulkMutationProgressV1, GraphMutationJournalEntryWire as _GraphMutationJournalEntryWire, GraphMutationJournalEntryWireV1 as _GraphMutationJournalEntryWireV1, GraphMutationRequestIdentityV1 as _GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1 as _GraphMutationRetirementWireV1, GraphOrderedEdgeBatchReceiptV1 as _GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult as _GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1 as _GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1 as _GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult as _GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1 as _GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1 as _GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult as _GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1 as _GraphOrderedVertexBatchResultV1, IndexedEmbeddingCatalog as _IndexedEmbeddingCatalog, IndexedEmbeddingSpec as _IndexedEmbeddingSpec, IndexedPropertyCatalog as _IndexedPropertyCatalog, MutationJournalState as _MutationJournalState, OrderedEdgeBatchGraphArgs as _OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1 as _OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1 as _OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest as _OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1 as _OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs as _OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1 as _OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest as _OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1 as _OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1 as _OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1 as _OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1 as _OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck as _OrderedMixedMutationRetirementAck, OrderedMixedMutationRetirementAckV1 as _OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck as _OrderedMutationRetirementAck, OrderedMutationRetirementAckV1 as _OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs as _OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1 as _OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs as _OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1 as _OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1 as _OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest as _OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1 as _OrderedVertexBatchGraphRequestV1, OrderedVertexMutationRetirementAck as _OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1 as _OrderedVertexMutationRetirementAckV1, PostingBackfillArgs as _PostingBackfillArgs, PostingBackfillResult as _PostingBackfillResult, ResolvedEdgeLabel as _ResolvedEdgeLabel, ResolvedInlineSchema as _ResolvedInlineSchema, ResolvedInlineStructField as _ResolvedInlineStructField, ResolvedLabelTable as _ResolvedLabelTable, ResolvedOrderedEdgePropertyV1 as _ResolvedOrderedEdgePropertyV1, ResolvedPropertyTable as _ResolvedPropertyTable, ResolvedVertexLabel as _ResolvedVertexLabel, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_2 as _Result_2, Result_3 as _Result_3, Result_4 as _Result_4, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, UniqueAcquireEvidence as _UniqueAcquireEvidence, UniqueAcquireProof as _UniqueAcquireProof, UniqueClaimDispatch as _UniqueClaimDispatch, UniqueEffectOp as _UniqueEffectOp, UniqueEffectReceipt as _UniqueEffectReceipt, VectorEncoding as _VectorEncoding, VectorIndexKind as _VectorIndexKind, VectorMetric as _VectorMetric, VertexEmbeddingBackfillRequest as _VertexEmbeddingBackfillRequest, VertexEmbeddingIngestionArgs as _VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_graph.did";
+import type { BulkIngestFinalizeResult as _BulkIngestFinalizeResult, CanonicalExportError as _CanonicalExportError, CanonicalExportPage as _CanonicalExportPage, CanonicalExportPhase as _CanonicalExportPhase, CanonicalExportRequest as _CanonicalExportRequest, CanonicalExportScope as _CanonicalExportScope, CanonicalExportStatus as _CanonicalExportStatus, CanonicalExportTarget as _CanonicalExportTarget, CanonicalIndexableFact as _CanonicalIndexableFact, CanonicalInlineProjection as _CanonicalInlineProjection, ClaimId as _ClaimId, ConstrainedPropertyDispatch as _ConstrainedPropertyDispatch, EdgeIndexDirection as _EdgeIndexDirection, EdgeInlinePropertyEncoding as _EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile as _EdgeInlinePropertyProfile, EdgeOrderingPolicy as _EdgeOrderingPolicy, EdgePostingBackfillArgs as _EdgePostingBackfillArgs, EdgePostingBackfillResult as _EdgePostingBackfillResult, EdgePropertyBackfillRequest as _EdgePropertyBackfillRequest, EffectId as _EffectId, EmbeddingBackfillResult as _EmbeddingBackfillResult, ExecutePlanArgs as _ExecutePlanArgs, ExecutePlanBatchArgs as _ExecutePlanBatchArgs, ExecutePlanBatchMode as _ExecutePlanBatchMode, ExecutePlanBatchResult as _ExecutePlanBatchResult, ExecutePlanResult as _ExecutePlanResult, GetMutationJournalEntriesResult as _GetMutationJournalEntriesResult, GqlExecutionMode as _GqlExecutionMode, GraphBulkMutationProgress as _GraphBulkMutationProgress, GraphBulkMutationProgressV1 as _GraphBulkMutationProgressV1, GraphMutationJournalEntryWire as _GraphMutationJournalEntryWire, GraphMutationJournalEntryWireV1 as _GraphMutationJournalEntryWireV1, GraphMutationRequestIdentityV1 as _GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1 as _GraphMutationRetirementWireV1, GraphOrderedEdgeBatchReceiptV1 as _GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult as _GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1 as _GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1 as _GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult as _GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1 as _GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1 as _GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult as _GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1 as _GraphOrderedVertexBatchResultV1, IndexBuildOutboxDrainProgress as _IndexBuildOutboxDrainProgress, IndexMaintenancePhase as _IndexMaintenancePhase, IndexedEdgeMembership as _IndexedEdgeMembership, IndexedEmbeddingCatalog as _IndexedEmbeddingCatalog, IndexedEmbeddingSpec as _IndexedEmbeddingSpec, IndexedPropertyCatalog as _IndexedPropertyCatalog, IndexedVertexMembership as _IndexedVertexMembership, MutationJournalState as _MutationJournalState, OrderedBatchExecutionModeV1 as _OrderedBatchExecutionModeV1, OrderedEdgeBatchGraphArgs as _OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1 as _OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1 as _OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest as _OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1 as _OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs as _OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1 as _OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest as _OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1 as _OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1 as _OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1 as _OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1 as _OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck as _OrderedMixedMutationRetirementAck, OrderedMixedMutationRetirementAckV1 as _OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck as _OrderedMutationRetirementAck, OrderedMutationRetirementAckV1 as _OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs as _OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1 as _OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs as _OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1 as _OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1 as _OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest as _OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1 as _OrderedVertexBatchGraphRequestV1, OrderedVertexMutationRetirementAck as _OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1 as _OrderedVertexMutationRetirementAckV1, PostingBackfillArgs as _PostingBackfillArgs, PostingBackfillResult as _PostingBackfillResult, ResolvedEdgeLabel as _ResolvedEdgeLabel, ResolvedInlineSchema as _ResolvedInlineSchema, ResolvedInlineStructField as _ResolvedInlineStructField, ResolvedLabelTable as _ResolvedLabelTable, ResolvedOrderedEdgePropertyV1 as _ResolvedOrderedEdgePropertyV1, ResolvedPropertyTable as _ResolvedPropertyTable, ResolvedVertexLabel as _ResolvedVertexLabel, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_15 as _Result_15, Result_16 as _Result_16, Result_17 as _Result_17, Result_18 as _Result_18, Result_2 as _Result_2, Result_3 as _Result_3, Result_4 as _Result_4, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, UniqueAcquireEvidence as _UniqueAcquireEvidence, UniqueAcquireProof as _UniqueAcquireProof, UniqueClaimDispatch as _UniqueClaimDispatch, UniqueEffectOp as _UniqueEffectOp, UniqueEffectReceipt as _UniqueEffectReceipt, VectorEncoding as _VectorEncoding, VectorIndexKind as _VectorIndexKind, VectorMetric as _VectorMetric, VertexEmbeddingBackfillRequest as _VertexEmbeddingBackfillRequest, VertexEmbeddingIngestionArgs as _VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome, VertexPropertyBackfillRequest as _VertexPropertyBackfillRequest } from "./gleaph_graph.did";
 export class Gleaph_graph implements gleaph_graphInterface {
     constructor(private actor: ActorSubclass<_SERVICE>){}
     async ack_label_stats_deltas_through(arg0: bigint): Promise<void> {
@@ -962,77 +1213,109 @@ export class Gleaph_graph implements gleaph_graphInterface {
         const result = await this.actor.ack_unique_effects(arg0);
         return result;
     }
-    async admin_ingest_vertex_embedding(arg0: VertexEmbeddingIngestionArgs): Promise<Result> {
-        const result = await this.actor.admin_ingest_vertex_embedding(to_candid_VertexEmbeddingIngestionArgs_n1(arg0));
-        return from_candid_Result_n11(result);
+    async admin_abort_index_export_scope(arg0: bigint, arg1: CanonicalExportScope): Promise<Result> {
+        const result = await this.actor.admin_abort_index_export_scope(arg0, to_candid_CanonicalExportScope_n1(arg1));
+        return from_candid_Result_n14(result);
     }
-    async admin_ingest_vertex_embedding_batch(arg0: Array<VertexEmbeddingIngestionArgs>): Promise<Result_1> {
-        const result = await this.actor.admin_ingest_vertex_embedding_batch(to_candid_vec_n17(arg0));
-        return from_candid_Result_1_n18(result);
+    async admin_activate_index_export_scope(arg0: bigint, arg1: IndexBuildSealStatus): Promise<Result> {
+        const result = await this.actor.admin_activate_index_export_scope(arg0, arg1);
+        return from_candid_Result_n14(result);
     }
-    async admin_set_vector_index_canister(arg0: Principal): Promise<Result_2> {
+    async admin_drain_index_build_outbox(arg0: IndexBuildOutboxDrainRequest): Promise<Result_1> {
+        const result = await this.actor.admin_drain_index_build_outbox(arg0);
+        return from_candid_Result_1_n36(result);
+    }
+    async admin_index_export_scope_status(arg0: bigint): Promise<Result> {
+        const result = await this.actor.admin_index_export_scope_status(arg0);
+        return from_candid_Result_n14(result);
+    }
+    async admin_ingest_vertex_embedding(arg0: VertexEmbeddingIngestionArgs): Promise<Result_2> {
+        const result = await this.actor.admin_ingest_vertex_embedding(to_candid_VertexEmbeddingIngestionArgs_n38(arg0));
+        return from_candid_Result_2_n48(result);
+    }
+    async admin_ingest_vertex_embedding_batch(arg0: Array<VertexEmbeddingIngestionArgs>): Promise<Result_3> {
+        const result = await this.actor.admin_ingest_vertex_embedding_batch(to_candid_vec_n54(arg0));
+        return from_candid_Result_3_n55(result);
+    }
+    async admin_register_index_export_scope(arg0: bigint, arg1: CanonicalExportScope): Promise<Result_4> {
+        const result = await this.actor.admin_register_index_export_scope(arg0, to_candid_CanonicalExportScope_n1(arg1));
+        return from_candid_Result_4_n58(result);
+    }
+    async admin_remove_index_export_scope(arg0: bigint, arg1: CanonicalExportScope): Promise<Result_4> {
+        const result = await this.actor.admin_remove_index_export_scope(arg0, to_candid_CanonicalExportScope_n1(arg1));
+        return from_candid_Result_4_n58(result);
+    }
+    async admin_seal_index_export_scope(arg0: bigint, arg1: CanonicalExportScope, arg2: bigint): Promise<Result> {
+        const result = await this.actor.admin_seal_index_export_scope(arg0, to_candid_CanonicalExportScope_n1(arg1), arg2);
+        return from_candid_Result_n14(result);
+    }
+    async admin_set_vector_index_canister(arg0: Principal): Promise<Result_5> {
         const result = await this.actor.admin_set_vector_index_canister(arg0);
-        return from_candid_Result_2_n21(result);
+        return from_candid_Result_5_n60(result);
     }
     async admin_stable_memory_stats(): Promise<StableMemoryStats> {
         const result = await this.actor.admin_stable_memory_stats();
         return result;
     }
-    async backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_3> {
-        const result = await this.actor.backfill_edge_property_postings(to_candid_EdgePropertyBackfillRequest_n23(arg0));
-        return from_candid_Result_3_n27(result);
+    async backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_6> {
+        const result = await this.actor.backfill_edge_property_postings(to_candid_EdgePropertyBackfillRequest_n62(arg0));
+        return from_candid_Result_6_n76(result);
     }
-    async backfill_label_postings(arg0: PostingBackfillArgs): Promise<Result_4> {
+    async backfill_label_postings(arg0: PostingBackfillArgs): Promise<Result_7> {
         const result = await this.actor.backfill_label_postings(arg0);
-        return from_candid_Result_4_n32(result);
+        return from_candid_Result_7_n81(result);
     }
-    async backfill_vertex_embeddings(arg0: VertexEmbeddingBackfillRequest): Promise<Result_5> {
-        const result = await this.actor.backfill_vertex_embeddings(to_candid_VertexEmbeddingBackfillRequest_n34(arg0));
-        return from_candid_Result_5_n39(result);
+    async backfill_vertex_embeddings(arg0: VertexEmbeddingBackfillRequest): Promise<Result_8> {
+        const result = await this.actor.backfill_vertex_embeddings(to_candid_VertexEmbeddingBackfillRequest_n83(arg0));
+        return from_candid_Result_8_n88(result);
     }
-    async backfill_vertex_property_postings(arg0: VertexPropertyBackfillRequest): Promise<Result_4> {
-        const result = await this.actor.backfill_vertex_property_postings(arg0);
-        return from_candid_Result_4_n32(result);
+    async backfill_vertex_property_postings(arg0: VertexPropertyBackfillRequest): Promise<Result_7> {
+        const result = await this.actor.backfill_vertex_property_postings(to_candid_VertexPropertyBackfillRequest_n90(arg0));
+        return from_candid_Result_7_n81(result);
     }
-    async execute_ordered_edge_batch(arg0: OrderedEdgeBatchGraphArgs): Promise<Result_6> {
-        const result = await this.actor.execute_ordered_edge_batch(to_candid_OrderedEdgeBatchGraphArgs_n41(arg0));
-        return from_candid_Result_6_n69(result);
+    async execute_ordered_edge_batch(arg0: OrderedEdgeBatchGraphArgs): Promise<Result_9> {
+        const result = await this.actor.execute_ordered_edge_batch(to_candid_OrderedEdgeBatchGraphArgs_n92(arg0));
+        return from_candid_Result_9_n118(result);
     }
-    async execute_ordered_mixed_batch(arg0: OrderedMixedBatchGraphArgs): Promise<Result_7> {
-        const result = await this.actor.execute_ordered_mixed_batch(to_candid_OrderedMixedBatchGraphArgs_n78(arg0));
-        return from_candid_Result_7_n93(result);
+    async execute_ordered_mixed_batch(arg0: OrderedMixedBatchGraphArgs): Promise<Result_10> {
+        const result = await this.actor.execute_ordered_mixed_batch(to_candid_OrderedMixedBatchGraphArgs_n127(arg0));
+        return from_candid_Result_10_n142(result);
     }
-    async execute_ordered_vertex_batch(arg0: OrderedVertexBatchGraphArgs): Promise<Result_8> {
-        const result = await this.actor.execute_ordered_vertex_batch(to_candid_OrderedVertexBatchGraphArgs_n101(arg0));
-        return from_candid_Result_8_n109(result);
+    async execute_ordered_vertex_batch(arg0: OrderedVertexBatchGraphArgs): Promise<Result_11> {
+        const result = await this.actor.execute_ordered_vertex_batch(to_candid_OrderedVertexBatchGraphArgs_n150(arg0));
+        return from_candid_Result_11_n158(result);
     }
-    async execute_plan_query(arg0: ExecutePlanArgs): Promise<Result_9> {
-        const result = await this.actor.execute_plan_query(to_candid_ExecutePlanArgs_n117(arg0));
-        return from_candid_Result_9_n121(result);
+    async execute_plan_query(arg0: ExecutePlanArgs): Promise<Result_12> {
+        const result = await this.actor.execute_plan_query(to_candid_ExecutePlanArgs_n166(arg0));
+        return from_candid_Result_12_n170(result);
     }
-    async execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_9> {
-        const result = await this.actor.execute_plan_update(to_candid_ExecutePlanArgs_n117(arg0));
-        return from_candid_Result_9_n121(result);
+    async execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_12> {
+        const result = await this.actor.execute_plan_update(to_candid_ExecutePlanArgs_n166(arg0));
+        return from_candid_Result_12_n170(result);
     }
-    async execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_10> {
-        const result = await this.actor.execute_plan_update_batch(to_candid_ExecutePlanBatchArgs_n125(arg0));
-        return from_candid_Result_10_n130(result);
+    async execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_13> {
+        const result = await this.actor.execute_plan_update_batch(to_candid_ExecutePlanBatchArgs_n174(arg0));
+        return from_candid_Result_13_n179(result);
     }
-    async finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_11> {
+    async finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_14> {
         const result = await this.actor.finalize_bulk_ingest(arg0);
-        return from_candid_Result_11_n136(result);
+        return from_candid_Result_14_n185(result);
     }
     async get_mutation_journal_entries(arg0: GetMutationJournalEntriesArgs): Promise<GetMutationJournalEntriesResult> {
         const result = await this.actor.get_mutation_journal_entries(arg0);
-        return from_candid_GetMutationJournalEntriesResult_n138(result);
+        return from_candid_GetMutationJournalEntriesResult_n187(result);
     }
     async get_mutation_journal_entry(arg0: bigint): Promise<GraphMutationJournalEntryWire | null> {
         const result = await this.actor.get_mutation_journal_entry(arg0);
-        return from_candid_opt_n141(result);
+        return from_candid_opt_n190(result);
+    }
+    async index_export_page(arg0: CanonicalExportRequest): Promise<Result_15> {
+        const result = await this.actor.index_export_page(to_candid_CanonicalExportRequest_n205(arg0));
+        return from_candid_Result_15_n207(result);
     }
     async index_pending_min_mutation_id(): Promise<bigint | null> {
         const result = await this.actor.index_pending_min_mutation_id();
-        return from_candid_opt_n77(result);
+        return from_candid_opt_n126(result);
     }
     async index_sync_status(): Promise<IndexSyncStatus> {
         const result = await this.actor.index_sync_status();
@@ -1048,189 +1331,255 @@ export class Gleaph_graph implements gleaph_graphInterface {
     }
     async read_unique_effect_proof(arg0: Array<ClaimId>): Promise<Array<UniqueAcquireProof>> {
         const result = await this.actor.read_unique_effect_proof(arg0);
-        return from_candid_vec_n156(result);
+        return from_candid_vec_n214(result);
     }
     async read_unique_mutation_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>> {
-        const result = await this.actor.read_unique_mutation_effects(arg0, to_candid_opt_n160(arg1), arg2);
-        return from_candid_vec_n161(result);
+        const result = await this.actor.read_unique_mutation_effects(arg0, to_candid_opt_n218(arg1), arg2);
+        return from_candid_vec_n219(result);
     }
     async read_unique_release_effects(arg0: bigint, arg1: number | null, arg2: number): Promise<Array<UniqueEffectReceipt>> {
-        const result = await this.actor.read_unique_release_effects(arg0, to_candid_opt_n160(arg1), arg2);
-        return from_candid_vec_n161(result);
+        const result = await this.actor.read_unique_release_effects(arg0, to_candid_opt_n218(arg1), arg2);
+        return from_candid_vec_n219(result);
     }
-    async retire_ordered_mixed_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_12> {
-        const result = await this.actor.retire_ordered_mixed_mutation(to_candid_OrderedMutationRetirementArgs_n167(arg0));
-        return from_candid_Result_12_n169(result);
+    async retire_ordered_mixed_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_16> {
+        const result = await this.actor.retire_ordered_mixed_mutation(to_candid_OrderedMutationRetirementArgs_n225(arg0));
+        return from_candid_Result_16_n227(result);
     }
-    async retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_13> {
-        const result = await this.actor.retire_ordered_mutation(to_candid_OrderedMutationRetirementArgs_n167(arg0));
-        return from_candid_Result_13_n175(result);
+    async retire_ordered_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_17> {
+        const result = await this.actor.retire_ordered_mutation(to_candid_OrderedMutationRetirementArgs_n225(arg0));
+        return from_candid_Result_17_n233(result);
     }
-    async retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_14> {
-        const result = await this.actor.retire_ordered_vertex_mutation(to_candid_OrderedMutationRetirementArgs_n167(arg0));
-        return from_candid_Result_14_n181(result);
+    async retire_ordered_vertex_mutation(arg0: OrderedMutationRetirementArgs): Promise<Result_18> {
+        const result = await this.actor.retire_ordered_vertex_mutation(to_candid_OrderedMutationRetirementArgs_n225(arg0));
+        return from_candid_Result_18_n239(result);
     }
 }
-function from_candid_EdgePostingBackfillResult_n29(value: _EdgePostingBackfillResult): EdgePostingBackfillResult {
-    return from_candid_record_n30(value);
+function from_candid_CanonicalExportError_n34(value: _CanonicalExportError): CanonicalExportError {
+    return from_candid_variant_n35(value);
 }
-function from_candid_ExecutePlanBatchResult_n132(value: _ExecutePlanBatchResult): ExecutePlanBatchResult {
-    return from_candid_record_n133(value);
+function from_candid_CanonicalExportPage_n209(value: _CanonicalExportPage): CanonicalExportPage {
+    return from_candid_record_n210(value);
 }
-function from_candid_ExecutePlanResult_n123(value: _ExecutePlanResult): ExecutePlanResult {
-    return from_candid_record_n124(value);
-}
-function from_candid_GetMutationJournalEntriesResult_n138(value: _GetMutationJournalEntriesResult): GetMutationJournalEntriesResult {
-    return from_candid_record_n139(value);
-}
-function from_candid_GraphBulkMutationProgress_n150(value: _GraphBulkMutationProgress): GraphBulkMutationProgress {
-    return from_candid_variant_n151(value);
-}
-function from_candid_GraphMutationJournalEntryWireV1_n144(value: _GraphMutationJournalEntryWireV1): GraphMutationJournalEntryWireV1 {
-    return from_candid_record_n145(value);
-}
-function from_candid_GraphMutationJournalEntryWire_n142(value: _GraphMutationJournalEntryWire): GraphMutationJournalEntryWire {
-    return from_candid_variant_n143(value);
-}
-function from_candid_GraphMutationRequestIdentityV1_n147(value: _GraphMutationRequestIdentityV1): GraphMutationRequestIdentityV1 {
-    return from_candid_variant_n148(value);
-}
-function from_candid_GraphMutationRetirementWireV1_n154(value: _GraphMutationRetirementWireV1): GraphMutationRetirementWireV1 {
-    return from_candid_variant_n155(value);
-}
-function from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value: _GraphOrderedEdgeBatchReceiptV1): GraphOrderedEdgeBatchReceiptV1 {
-    return from_candid_record_n76(value);
-}
-function from_candid_GraphOrderedEdgeBatchResultV1_n73(value: _GraphOrderedEdgeBatchResultV1): GraphOrderedEdgeBatchResultV1 {
-    return from_candid_variant_n74(value);
-}
-function from_candid_GraphOrderedEdgeBatchResult_n71(value: _GraphOrderedEdgeBatchResult): GraphOrderedEdgeBatchResult {
-    return from_candid_variant_n72(value);
-}
-function from_candid_GraphOrderedMixedBatchReceiptV1_n99(value: _GraphOrderedMixedBatchReceiptV1): GraphOrderedMixedBatchReceiptV1 {
-    return from_candid_record_n100(value);
-}
-function from_candid_GraphOrderedMixedBatchResultV1_n97(value: _GraphOrderedMixedBatchResultV1): GraphOrderedMixedBatchResultV1 {
-    return from_candid_variant_n98(value);
-}
-function from_candid_GraphOrderedMixedBatchResult_n95(value: _GraphOrderedMixedBatchResult): GraphOrderedMixedBatchResult {
-    return from_candid_variant_n96(value);
-}
-function from_candid_GraphOrderedVertexBatchReceiptV1_n115(value: _GraphOrderedVertexBatchReceiptV1): GraphOrderedVertexBatchReceiptV1 {
-    return from_candid_record_n116(value);
-}
-function from_candid_GraphOrderedVertexBatchResultV1_n113(value: _GraphOrderedVertexBatchResultV1): GraphOrderedVertexBatchResultV1 {
-    return from_candid_variant_n114(value);
-}
-function from_candid_GraphOrderedVertexBatchResult_n111(value: _GraphOrderedVertexBatchResult): GraphOrderedVertexBatchResult {
-    return from_candid_variant_n112(value);
-}
-function from_candid_MutationJournalState_n152(value: _MutationJournalState): MutationJournalState {
-    return from_candid_variant_n153(value);
-}
-function from_candid_OrderedMixedMutationRetirementAckV1_n173(value: _OrderedMixedMutationRetirementAckV1): OrderedMixedMutationRetirementAckV1 {
-    return from_candid_record_n174(value);
-}
-function from_candid_OrderedMixedMutationRetirementAck_n171(value: _OrderedMixedMutationRetirementAck): OrderedMixedMutationRetirementAck {
-    return from_candid_variant_n172(value);
-}
-function from_candid_OrderedMutationRetirementAckV1_n179(value: _OrderedMutationRetirementAckV1): OrderedMutationRetirementAckV1 {
-    return from_candid_record_n180(value);
-}
-function from_candid_OrderedMutationRetirementAck_n177(value: _OrderedMutationRetirementAck): OrderedMutationRetirementAck {
-    return from_candid_variant_n178(value);
-}
-function from_candid_OrderedVertexMutationRetirementAckV1_n185(value: _OrderedVertexMutationRetirementAckV1): OrderedVertexMutationRetirementAckV1 {
-    return from_candid_record_n186(value);
-}
-function from_candid_OrderedVertexMutationRetirementAck_n183(value: _OrderedVertexMutationRetirementAck): OrderedVertexMutationRetirementAck {
-    return from_candid_variant_n184(value);
-}
-function from_candid_Result_10_n130(value: _Result_10): Result_10 {
-    return from_candid_variant_n131(value);
-}
-function from_candid_Result_11_n136(value: _Result_11): Result_11 {
-    return from_candid_variant_n137(value);
-}
-function from_candid_Result_12_n169(value: _Result_12): Result_12 {
-    return from_candid_variant_n170(value);
-}
-function from_candid_Result_13_n175(value: _Result_13): Result_13 {
-    return from_candid_variant_n176(value);
-}
-function from_candid_Result_14_n181(value: _Result_14): Result_14 {
-    return from_candid_variant_n182(value);
-}
-function from_candid_Result_1_n18(value: _Result_1): Result_1 {
-    return from_candid_variant_n19(value);
-}
-function from_candid_Result_2_n21(value: _Result_2): Result_2 {
-    return from_candid_variant_n22(value);
-}
-function from_candid_Result_3_n27(value: _Result_3): Result_3 {
-    return from_candid_variant_n28(value);
-}
-function from_candid_Result_4_n32(value: _Result_4): Result_4 {
+function from_candid_CanonicalExportPhase_n32(value: _CanonicalExportPhase): CanonicalExportPhase {
     return from_candid_variant_n33(value);
 }
-function from_candid_Result_5_n39(value: _Result_5): Result_5 {
-    return from_candid_variant_n40(value);
+function from_candid_CanonicalExportScope_n18(value: _CanonicalExportScope): CanonicalExportScope {
+    return from_candid_record_n19(value);
 }
-function from_candid_Result_6_n69(value: _Result_6): Result_6 {
-    return from_candid_variant_n70(value);
+function from_candid_CanonicalExportStatus_n16(value: _CanonicalExportStatus): CanonicalExportStatus {
+    return from_candid_record_n17(value);
 }
-function from_candid_Result_7_n93(value: _Result_7): Result_7 {
-    return from_candid_variant_n94(value);
+function from_candid_CanonicalExportTarget_n20(value: _CanonicalExportTarget): CanonicalExportTarget {
+    return from_candid_variant_n21(value);
 }
-function from_candid_Result_8_n109(value: _Result_8): Result_8 {
-    return from_candid_variant_n110(value);
+function from_candid_CanonicalIndexableFact_n212(value: _CanonicalIndexableFact): CanonicalIndexableFact {
+    return from_candid_variant_n213(value);
 }
-function from_candid_Result_9_n121(value: _Result_9): Result_9 {
-    return from_candid_variant_n122(value);
+function from_candid_CanonicalInlineProjection_n26(value: _CanonicalInlineProjection): CanonicalInlineProjection {
+    return from_candid_record_n27(value);
 }
-function from_candid_Result_n11(value: _Result): Result {
-    return from_candid_variant_n12(value);
+function from_candid_EdgeIndexDirection_n23(value: _EdgeIndexDirection): EdgeIndexDirection {
+    return from_candid_variant_n24(value);
 }
-function from_candid_UniqueAcquireProof_n157(value: _UniqueAcquireProof): UniqueAcquireProof {
-    return from_candid_record_n158(value);
+function from_candid_EdgeInlinePropertyEncoding_n30(value: _EdgeInlinePropertyEncoding): EdgeInlinePropertyEncoding {
+    return from_candid_variant_n31(value);
 }
-function from_candid_UniqueEffectOp_n164(value: _UniqueEffectOp): UniqueEffectOp {
-    return from_candid_variant_n165(value);
+function from_candid_EdgeInlinePropertyProfile_n28(value: _EdgeInlinePropertyProfile): EdgeInlinePropertyProfile {
+    return from_candid_record_n29(value);
 }
-function from_candid_UniqueEffectReceipt_n162(value: _UniqueEffectReceipt): UniqueEffectReceipt {
-    return from_candid_record_n163(value);
+function from_candid_EdgePostingBackfillResult_n78(value: _EdgePostingBackfillResult): EdgePostingBackfillResult {
+    return from_candid_record_n79(value);
 }
-function from_candid_VertexEmbeddingIngestionResult_n13(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
-    return from_candid_record_n14(value);
+function from_candid_ExecutePlanBatchResult_n181(value: _ExecutePlanBatchResult): ExecutePlanBatchResult {
+    return from_candid_record_n182(value);
 }
-function from_candid_VertexEmbeddingProjectionOutcome_n15(value: _VertexEmbeddingProjectionOutcome): VertexEmbeddingProjectionOutcome {
-    return from_candid_variant_n16(value);
+function from_candid_ExecutePlanResult_n172(value: _ExecutePlanResult): ExecutePlanResult {
+    return from_candid_record_n173(value);
 }
-function from_candid_opt_n134(value: [] | [number]): number | null {
+function from_candid_GetMutationJournalEntriesResult_n187(value: _GetMutationJournalEntriesResult): GetMutationJournalEntriesResult {
+    return from_candid_record_n188(value);
+}
+function from_candid_GraphBulkMutationProgress_n199(value: _GraphBulkMutationProgress): GraphBulkMutationProgress {
+    return from_candid_variant_n200(value);
+}
+function from_candid_GraphMutationJournalEntryWireV1_n193(value: _GraphMutationJournalEntryWireV1): GraphMutationJournalEntryWireV1 {
+    return from_candid_record_n194(value);
+}
+function from_candid_GraphMutationJournalEntryWire_n191(value: _GraphMutationJournalEntryWire): GraphMutationJournalEntryWire {
+    return from_candid_variant_n192(value);
+}
+function from_candid_GraphMutationRequestIdentityV1_n196(value: _GraphMutationRequestIdentityV1): GraphMutationRequestIdentityV1 {
+    return from_candid_variant_n197(value);
+}
+function from_candid_GraphMutationRetirementWireV1_n203(value: _GraphMutationRetirementWireV1): GraphMutationRetirementWireV1 {
+    return from_candid_variant_n204(value);
+}
+function from_candid_GraphOrderedEdgeBatchReceiptV1_n124(value: _GraphOrderedEdgeBatchReceiptV1): GraphOrderedEdgeBatchReceiptV1 {
+    return from_candid_record_n125(value);
+}
+function from_candid_GraphOrderedEdgeBatchResultV1_n122(value: _GraphOrderedEdgeBatchResultV1): GraphOrderedEdgeBatchResultV1 {
+    return from_candid_variant_n123(value);
+}
+function from_candid_GraphOrderedEdgeBatchResult_n120(value: _GraphOrderedEdgeBatchResult): GraphOrderedEdgeBatchResult {
+    return from_candid_variant_n121(value);
+}
+function from_candid_GraphOrderedMixedBatchReceiptV1_n148(value: _GraphOrderedMixedBatchReceiptV1): GraphOrderedMixedBatchReceiptV1 {
+    return from_candid_record_n149(value);
+}
+function from_candid_GraphOrderedMixedBatchResultV1_n146(value: _GraphOrderedMixedBatchResultV1): GraphOrderedMixedBatchResultV1 {
+    return from_candid_variant_n147(value);
+}
+function from_candid_GraphOrderedMixedBatchResult_n144(value: _GraphOrderedMixedBatchResult): GraphOrderedMixedBatchResult {
+    return from_candid_variant_n145(value);
+}
+function from_candid_GraphOrderedVertexBatchReceiptV1_n164(value: _GraphOrderedVertexBatchReceiptV1): GraphOrderedVertexBatchReceiptV1 {
+    return from_candid_record_n165(value);
+}
+function from_candid_GraphOrderedVertexBatchResultV1_n162(value: _GraphOrderedVertexBatchResultV1): GraphOrderedVertexBatchResultV1 {
+    return from_candid_variant_n163(value);
+}
+function from_candid_GraphOrderedVertexBatchResult_n160(value: _GraphOrderedVertexBatchResult): GraphOrderedVertexBatchResult {
+    return from_candid_variant_n161(value);
+}
+function from_candid_MutationJournalState_n201(value: _MutationJournalState): MutationJournalState {
+    return from_candid_variant_n202(value);
+}
+function from_candid_OrderedMixedMutationRetirementAckV1_n231(value: _OrderedMixedMutationRetirementAckV1): OrderedMixedMutationRetirementAckV1 {
+    return from_candid_record_n232(value);
+}
+function from_candid_OrderedMixedMutationRetirementAck_n229(value: _OrderedMixedMutationRetirementAck): OrderedMixedMutationRetirementAck {
+    return from_candid_variant_n230(value);
+}
+function from_candid_OrderedMutationRetirementAckV1_n237(value: _OrderedMutationRetirementAckV1): OrderedMutationRetirementAckV1 {
+    return from_candid_record_n238(value);
+}
+function from_candid_OrderedMutationRetirementAck_n235(value: _OrderedMutationRetirementAck): OrderedMutationRetirementAck {
+    return from_candid_variant_n236(value);
+}
+function from_candid_OrderedVertexMutationRetirementAckV1_n243(value: _OrderedVertexMutationRetirementAckV1): OrderedVertexMutationRetirementAckV1 {
+    return from_candid_record_n244(value);
+}
+function from_candid_OrderedVertexMutationRetirementAck_n241(value: _OrderedVertexMutationRetirementAck): OrderedVertexMutationRetirementAck {
+    return from_candid_variant_n242(value);
+}
+function from_candid_Result_10_n142(value: _Result_10): Result_10 {
+    return from_candid_variant_n143(value);
+}
+function from_candid_Result_11_n158(value: _Result_11): Result_11 {
+    return from_candid_variant_n159(value);
+}
+function from_candid_Result_12_n170(value: _Result_12): Result_12 {
+    return from_candid_variant_n171(value);
+}
+function from_candid_Result_13_n179(value: _Result_13): Result_13 {
+    return from_candid_variant_n180(value);
+}
+function from_candid_Result_14_n185(value: _Result_14): Result_14 {
+    return from_candid_variant_n186(value);
+}
+function from_candid_Result_15_n207(value: _Result_15): Result_15 {
+    return from_candid_variant_n208(value);
+}
+function from_candid_Result_16_n227(value: _Result_16): Result_16 {
+    return from_candid_variant_n228(value);
+}
+function from_candid_Result_17_n233(value: _Result_17): Result_17 {
+    return from_candid_variant_n234(value);
+}
+function from_candid_Result_18_n239(value: _Result_18): Result_18 {
+    return from_candid_variant_n240(value);
+}
+function from_candid_Result_1_n36(value: _Result_1): Result_1 {
+    return from_candid_variant_n37(value);
+}
+function from_candid_Result_2_n48(value: _Result_2): Result_2 {
+    return from_candid_variant_n49(value);
+}
+function from_candid_Result_3_n55(value: _Result_3): Result_3 {
+    return from_candid_variant_n56(value);
+}
+function from_candid_Result_4_n58(value: _Result_4): Result_4 {
+    return from_candid_variant_n59(value);
+}
+function from_candid_Result_5_n60(value: _Result_5): Result_5 {
+    return from_candid_variant_n61(value);
+}
+function from_candid_Result_6_n76(value: _Result_6): Result_6 {
+    return from_candid_variant_n77(value);
+}
+function from_candid_Result_7_n81(value: _Result_7): Result_7 {
+    return from_candid_variant_n82(value);
+}
+function from_candid_Result_8_n88(value: _Result_8): Result_8 {
+    return from_candid_variant_n89(value);
+}
+function from_candid_Result_9_n118(value: _Result_9): Result_9 {
+    return from_candid_variant_n119(value);
+}
+function from_candid_Result_n14(value: _Result): Result {
+    return from_candid_variant_n15(value);
+}
+function from_candid_UniqueAcquireProof_n215(value: _UniqueAcquireProof): UniqueAcquireProof {
+    return from_candid_record_n216(value);
+}
+function from_candid_UniqueEffectOp_n222(value: _UniqueEffectOp): UniqueEffectOp {
+    return from_candid_variant_n223(value);
+}
+function from_candid_UniqueEffectReceipt_n220(value: _UniqueEffectReceipt): UniqueEffectReceipt {
+    return from_candid_record_n221(value);
+}
+function from_candid_VertexEmbeddingIngestionResult_n50(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
+    return from_candid_record_n51(value);
+}
+function from_candid_VertexEmbeddingProjectionOutcome_n52(value: _VertexEmbeddingProjectionOutcome): VertexEmbeddingProjectionOutcome {
+    return from_candid_variant_n53(value);
+}
+function from_candid_opt_n126(value: [] | [bigint]): bigint | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n141(value: [] | [_GraphMutationJournalEntryWire]): GraphMutationJournalEntryWire | null {
-    return value.length === 0 ? null : from_candid_GraphMutationJournalEntryWire_n142(value[0]);
-}
-function from_candid_opt_n146(value: [] | [Uint32Array]): Uint32Array | null {
+function from_candid_opt_n183(value: [] | [number]): number | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n149(value: [] | [_GraphBulkMutationProgress]): GraphBulkMutationProgress | null {
-    return value.length === 0 ? null : from_candid_GraphBulkMutationProgress_n150(value[0]);
+function from_candid_opt_n190(value: [] | [_GraphMutationJournalEntryWire]): GraphMutationJournalEntryWire | null {
+    return value.length === 0 ? null : from_candid_GraphMutationJournalEntryWire_n191(value[0]);
 }
-function from_candid_opt_n159(value: [] | [_UniqueAcquireEvidence]): UniqueAcquireEvidence | null {
+function from_candid_opt_n195(value: [] | [Uint32Array]): Uint32Array | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n166(value: [] | [_ClaimId]): ClaimId | null {
+function from_candid_opt_n198(value: [] | [_GraphBulkMutationProgress]): GraphBulkMutationProgress | null {
+    return value.length === 0 ? null : from_candid_GraphBulkMutationProgress_n199(value[0]);
+}
+function from_candid_opt_n217(value: [] | [_UniqueAcquireEvidence]): UniqueAcquireEvidence | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n31(value: [] | [Uint8Array]): Uint8Array | null {
+function from_candid_opt_n224(value: [] | [_ClaimId]): ClaimId | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n77(value: [] | [bigint]): bigint | null {
+function from_candid_opt_n25(value: [] | [_CanonicalInlineProjection]): CanonicalInlineProjection | null {
+    return value.length === 0 ? null : from_candid_CanonicalInlineProjection_n26(value[0]);
+}
+function from_candid_opt_n80(value: [] | [Uint8Array]): Uint8Array | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_record_n100(value: {
+function from_candid_record_n125(value: {
+    logical_edge_count: bigint;
+    emitted_delta_last_seq: [] | [bigint];
+    emitted_delta_first_seq: [] | [bigint];
+    hot_forward_vertices: Uint32Array;
+}): {
+    logical_edge_count: bigint;
+    emitted_delta_last_seq?: bigint;
+    emitted_delta_first_seq?: bigint;
+    hot_forward_vertices: Uint32Array;
+} {
+    return {
+        logical_edge_count: value.logical_edge_count,
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_last_seq)),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_first_seq)),
+        hot_forward_vertices: value.hot_forward_vertices
+    };
+}
+function from_candid_record_n149(value: {
     logical_edge_count: bigint;
     allocated_vertex_ids: Uint32Array;
     emitted_delta_last_seq: [] | [bigint];
@@ -1250,14 +1599,14 @@ function from_candid_record_n100(value: {
     return {
         logical_edge_count: value.logical_edge_count,
         allocated_vertex_ids: value.allocated_vertex_ids,
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_last_seq)),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_first_seq)),
         logical_vertex_count: value.logical_vertex_count,
         logical_operation_count: value.logical_operation_count,
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n116(value: {
+function from_candid_record_n165(value: {
     allocated_vertex_ids: Uint32Array;
     emitted_delta_last_seq: [] | [bigint];
     emitted_delta_first_seq: [] | [bigint];
@@ -1272,13 +1621,37 @@ function from_candid_record_n116(value: {
 } {
     return {
         allocated_vertex_ids: value.allocated_vertex_ids,
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_last_seq)),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_first_seq)),
         logical_vertex_count: value.logical_vertex_count,
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n124(value: {
+function from_candid_record_n17(value: {
+    physical_index_id: bigint;
+    admitted_through: bigint;
+    epoch: bigint;
+    scope: _CanonicalExportScope;
+    drained_through: bigint;
+    phase: _CanonicalExportPhase;
+}): {
+    physical_index_id: bigint;
+    admitted_through: bigint;
+    epoch: bigint;
+    scope: CanonicalExportScope;
+    drained_through: bigint;
+    phase: CanonicalExportPhase;
+} {
+    return {
+        physical_index_id: value.physical_index_id,
+        admitted_through: value.admitted_through,
+        epoch: value.epoch,
+        scope: from_candid_CanonicalExportScope_n18(value.scope),
+        drained_through: value.drained_through,
+        phase: from_candid_CanonicalExportPhase_n32(value.phase)
+    };
+}
+function from_candid_record_n173(value: {
     rows_blob: [] | [Uint8Array];
     row_count: bigint;
     hot_forward_vertices: Uint32Array;
@@ -1288,24 +1661,24 @@ function from_candid_record_n124(value: {
     hot_forward_vertices: Uint32Array;
 } {
     return {
-        rows_blob: record_opt_to_undefined(from_candid_opt_n31(value.rows_blob)),
+        rows_blob: record_opt_to_undefined(from_candid_opt_n80(value.rows_blob)),
         row_count: value.row_count,
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n133(value: {
+function from_candid_record_n182(value: {
     next_index: [] | [number];
-    results: Array<_Result_9>;
+    results: Array<_Result_12>;
 }): {
     next_index?: number;
-    results: Array<Result_9>;
+    results: Array<Result_12>;
 } {
     return {
-        next_index: record_opt_to_undefined(from_candid_opt_n134(value.next_index)),
-        results: from_candid_vec_n135(value.results)
+        next_index: record_opt_to_undefined(from_candid_opt_n183(value.next_index)),
+        results: from_candid_vec_n184(value.results)
     };
 }
-function from_candid_record_n139(value: {
+function from_candid_record_n188(value: {
     next: [] | [bigint];
     entries: Array<[] | [_GraphMutationJournalEntryWire]>;
 }): {
@@ -1313,23 +1686,32 @@ function from_candid_record_n139(value: {
     entries: Array<GraphMutationJournalEntryWire | null>;
 } {
     return {
-        next: record_opt_to_undefined(from_candid_opt_n77(value.next)),
-        entries: from_candid_vec_n140(value.entries)
+        next: record_opt_to_undefined(from_candid_opt_n126(value.next)),
+        entries: from_candid_vec_n189(value.entries)
     };
 }
-function from_candid_record_n14(value: {
-    embedding_version: bigint;
-    projection_outcome: _VertexEmbeddingProjectionOutcome;
+function from_candid_record_n19(value: {
+    graph_id: number;
+    catalog_epoch: bigint;
+    target: _CanonicalExportTarget;
+    inline: [] | [_CanonicalInlineProjection];
+    index_name_id: number;
 }): {
-    embedding_version: bigint;
-    projection_outcome: VertexEmbeddingProjectionOutcome;
+    graph_id: number;
+    catalog_epoch: bigint;
+    target: CanonicalExportTarget;
+    inline?: CanonicalInlineProjection;
+    index_name_id: number;
 } {
     return {
-        embedding_version: value.embedding_version,
-        projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n15(value.projection_outcome)
+        graph_id: value.graph_id,
+        catalog_epoch: value.catalog_epoch,
+        target: from_candid_CanonicalExportTarget_n20(value.target),
+        inline: record_opt_to_undefined(from_candid_opt_n25(value.inline)),
+        index_name_id: value.index_name_id
     };
 }
-function from_candid_record_n145(value: {
+function from_candid_record_n194(value: {
     mutation_id: bigint;
     allocated_vertex_ids: [] | [Uint32Array];
     emitted_delta_last_seq: [] | [bigint];
@@ -1356,19 +1738,34 @@ function from_candid_record_n145(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        allocated_vertex_ids: record_opt_to_undefined(from_candid_opt_n146(value.allocated_vertex_ids)),
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
-        next_index: record_opt_to_undefined(from_candid_opt_n134(value.next_index)),
-        request_identity: from_candid_GraphMutationRequestIdentityV1_n147(value.request_identity),
-        bulk_progress: record_opt_to_undefined(from_candid_opt_n149(value.bulk_progress)),
+        allocated_vertex_ids: record_opt_to_undefined(from_candid_opt_n195(value.allocated_vertex_ids)),
+        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_last_seq)),
+        next_index: record_opt_to_undefined(from_candid_opt_n183(value.next_index)),
+        request_identity: from_candid_GraphMutationRequestIdentityV1_n196(value.request_identity),
+        bulk_progress: record_opt_to_undefined(from_candid_opt_n198(value.bulk_progress)),
         row_count: value.row_count,
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
-        state: from_candid_MutationJournalState_n152(value.state),
-        retirement: from_candid_GraphMutationRetirementWireV1_n154(value.retirement),
+        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n126(value.emitted_delta_first_seq)),
+        state: from_candid_MutationJournalState_n201(value.state),
+        retirement: from_candid_GraphMutationRetirementWireV1_n203(value.retirement),
         hot_forward_vertices: value.hot_forward_vertices
     };
 }
-function from_candid_record_n158(value: {
+function from_candid_record_n210(value: {
+    done: boolean;
+    next: [] | [Uint8Array];
+    facts: Array<_CanonicalIndexableFact>;
+}): {
+    done: boolean;
+    next?: Uint8Array;
+    facts: Array<CanonicalIndexableFact>;
+} {
+    return {
+        done: value.done,
+        next: record_opt_to_undefined(from_candid_opt_n80(value.next)),
+        facts: from_candid_vec_n211(value.facts)
+    };
+}
+function from_candid_record_n216(value: {
     claim_id: _ClaimId;
     acquire: [] | [_UniqueAcquireEvidence];
 }): {
@@ -1377,10 +1774,25 @@ function from_candid_record_n158(value: {
 } {
     return {
         claim_id: value.claim_id,
-        acquire: record_opt_to_undefined(from_candid_opt_n159(value.acquire))
+        acquire: record_opt_to_undefined(from_candid_opt_n217(value.acquire))
     };
 }
-function from_candid_record_n163(value: {
+function from_candid_record_n22(value: {
+    direction: _EdgeIndexDirection;
+    label_id: number;
+    property_id: number;
+}): {
+    direction: EdgeIndexDirection;
+    label_id: number;
+    property_id: number;
+} {
+    return {
+        direction: from_candid_EdgeIndexDirection_n23(value.direction),
+        label_id: value.label_id,
+        property_id: value.property_id
+    };
+}
+function from_candid_record_n221(value: {
     op: _UniqueEffectOp;
     owner_element_id: Uint8Array;
     claim_id: [] | [_ClaimId];
@@ -1396,15 +1808,15 @@ function from_candid_record_n163(value: {
     constraint_id: number;
 } {
     return {
-        op: from_candid_UniqueEffectOp_n164(value.op),
+        op: from_candid_UniqueEffectOp_n222(value.op),
         owner_element_id: value.owner_element_id,
-        claim_id: record_opt_to_undefined(from_candid_opt_n166(value.claim_id)),
+        claim_id: record_opt_to_undefined(from_candid_opt_n224(value.claim_id)),
         effect_id: value.effect_id,
         encoded_value: value.encoded_value,
         constraint_id: value.constraint_id
     };
 }
-function from_candid_record_n174(value: {
+function from_candid_record_n232(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedMixedBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1415,11 +1827,11 @@ function from_candid_record_n174(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        receipt: from_candid_GraphOrderedMixedBatchReceiptV1_n99(value.receipt),
+        receipt: from_candid_GraphOrderedMixedBatchReceiptV1_n148(value.receipt),
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n180(value: {
+function from_candid_record_n238(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedEdgeBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1430,11 +1842,11 @@ function from_candid_record_n180(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        receipt: from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value.receipt),
+        receipt: from_candid_GraphOrderedEdgeBatchReceiptV1_n124(value.receipt),
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n186(value: {
+function from_candid_record_n244(value: {
     mutation_id: bigint;
     receipt: _GraphOrderedVertexBatchReceiptV1;
     graph_request_fingerprint: Uint8Array;
@@ -1445,11 +1857,53 @@ function from_candid_record_n186(value: {
 } {
     return {
         mutation_id: value.mutation_id,
-        receipt: from_candid_GraphOrderedVertexBatchReceiptV1_n115(value.receipt),
+        receipt: from_candid_GraphOrderedVertexBatchReceiptV1_n164(value.receipt),
         graph_request_fingerprint: value.graph_request_fingerprint
     };
 }
-function from_candid_record_n30(value: {
+function from_candid_record_n27(value: {
+    byte_offset: number;
+    source_property_id: number;
+    value_profile: _EdgeInlinePropertyProfile;
+    source_profile: _EdgeInlinePropertyProfile;
+}): {
+    byte_offset: number;
+    source_property_id: number;
+    value_profile: EdgeInlinePropertyProfile;
+    source_profile: EdgeInlinePropertyProfile;
+} {
+    return {
+        byte_offset: value.byte_offset,
+        source_property_id: value.source_property_id,
+        value_profile: from_candid_EdgeInlinePropertyProfile_n28(value.value_profile),
+        source_profile: from_candid_EdgeInlinePropertyProfile_n28(value.source_profile)
+    };
+}
+function from_candid_record_n29(value: {
+    encoding: _EdgeInlinePropertyEncoding;
+    byte_width: number;
+}): {
+    encoding: EdgeInlinePropertyEncoding;
+    byte_width: number;
+} {
+    return {
+        encoding: from_candid_EdgeInlinePropertyEncoding_n30(value.encoding),
+        byte_width: value.byte_width
+    };
+}
+function from_candid_record_n51(value: {
+    embedding_version: bigint;
+    projection_outcome: _VertexEmbeddingProjectionOutcome;
+}): {
+    embedding_version: bigint;
+    projection_outcome: VertexEmbeddingProjectionOutcome;
+} {
+    return {
+        embedding_version: value.embedding_version,
+        projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n52(value.projection_outcome)
+    };
+}
+function from_candid_record_n79(value: {
     entries_processed: number;
     postings_synced: number;
     done: boolean;
@@ -1464,28 +1918,139 @@ function from_candid_record_n30(value: {
         entries_processed: value.entries_processed,
         postings_synced: value.postings_synced,
         done: value.done,
-        next_after_key: record_opt_to_undefined(from_candid_opt_n31(value.next_after_key))
+        next_after_key: record_opt_to_undefined(from_candid_opt_n80(value.next_after_key))
     };
 }
-function from_candid_record_n76(value: {
-    logical_edge_count: bigint;
-    emitted_delta_last_seq: [] | [bigint];
-    emitted_delta_first_seq: [] | [bigint];
-    hot_forward_vertices: Uint32Array;
+function from_candid_variant_n119(value: {
+    Ok: _GraphOrderedEdgeBatchResult;
+} | {
+    Err: string;
 }): {
-    logical_edge_count: bigint;
-    emitted_delta_last_seq?: bigint;
-    emitted_delta_first_seq?: bigint;
-    hot_forward_vertices: Uint32Array;
+    __kind__: "Ok";
+    Ok: GraphOrderedEdgeBatchResult;
+} | {
+    __kind__: "Err";
+    Err: string;
 } {
-    return {
-        logical_edge_count: value.logical_edge_count,
-        emitted_delta_last_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_last_seq)),
-        emitted_delta_first_seq: record_opt_to_undefined(from_candid_opt_n77(value.emitted_delta_first_seq)),
-        hot_forward_vertices: value.hot_forward_vertices
-    };
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_GraphOrderedEdgeBatchResult_n120(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: value.Err
+    } : value;
 }
-function from_candid_variant_n110(value: {
+function from_candid_variant_n121(value: {
+    V1: _GraphOrderedEdgeBatchResultV1;
+}): {
+    __kind__: "V1";
+    V1: GraphOrderedEdgeBatchResultV1;
+} {
+    return "V1" in value ? {
+        __kind__: "V1",
+        V1: from_candid_GraphOrderedEdgeBatchResultV1_n122(value.V1)
+    } : value;
+}
+function from_candid_variant_n123(value: {
+    MutationRetired: {
+        mutation_id: bigint;
+        graph_request_fingerprint: Uint8Array;
+    };
+} | {
+    Completed: _GraphOrderedEdgeBatchReceiptV1;
+}): {
+    __kind__: "MutationRetired";
+    MutationRetired: {
+        mutation_id: bigint;
+        graph_request_fingerprint: Uint8Array;
+    };
+} | {
+    __kind__: "Completed";
+    Completed: GraphOrderedEdgeBatchReceiptV1;
+} {
+    return "MutationRetired" in value ? {
+        __kind__: "MutationRetired",
+        MutationRetired: value.MutationRetired
+    } : "Completed" in value ? {
+        __kind__: "Completed",
+        Completed: from_candid_GraphOrderedEdgeBatchReceiptV1_n124(value.Completed)
+    } : value;
+}
+function from_candid_variant_n143(value: {
+    Ok: _GraphOrderedMixedBatchResult;
+} | {
+    Err: string;
+}): {
+    __kind__: "Ok";
+    Ok: GraphOrderedMixedBatchResult;
+} | {
+    __kind__: "Err";
+    Err: string;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_GraphOrderedMixedBatchResult_n144(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: value.Err
+    } : value;
+}
+function from_candid_variant_n145(value: {
+    V1: _GraphOrderedMixedBatchResultV1;
+}): {
+    __kind__: "V1";
+    V1: GraphOrderedMixedBatchResultV1;
+} {
+    return "V1" in value ? {
+        __kind__: "V1",
+        V1: from_candid_GraphOrderedMixedBatchResultV1_n146(value.V1)
+    } : value;
+}
+function from_candid_variant_n147(value: {
+    MutationRetired: {
+        mutation_id: bigint;
+        graph_request_fingerprint: Uint8Array;
+    };
+} | {
+    Completed: _GraphOrderedMixedBatchReceiptV1;
+}): {
+    __kind__: "MutationRetired";
+    MutationRetired: {
+        mutation_id: bigint;
+        graph_request_fingerprint: Uint8Array;
+    };
+} | {
+    __kind__: "Completed";
+    Completed: GraphOrderedMixedBatchReceiptV1;
+} {
+    return "MutationRetired" in value ? {
+        __kind__: "MutationRetired",
+        MutationRetired: value.MutationRetired
+    } : "Completed" in value ? {
+        __kind__: "Completed",
+        Completed: from_candid_GraphOrderedMixedBatchReceiptV1_n148(value.Completed)
+    } : value;
+}
+function from_candid_variant_n15(value: {
+    Ok: _CanonicalExportStatus;
+} | {
+    Err: _CanonicalExportError;
+}): {
+    __kind__: "Ok";
+    Ok: CanonicalExportStatus;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_CanonicalExportStatus_n16(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_CanonicalExportError_n34(value.Err)
+    } : value;
+}
+function from_candid_variant_n159(value: {
     Ok: _GraphOrderedVertexBatchResult;
 } | {
     Err: string;
@@ -1498,13 +2063,13 @@ function from_candid_variant_n110(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_GraphOrderedVertexBatchResult_n111(value.Ok)
+        Ok: from_candid_GraphOrderedVertexBatchResult_n160(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n112(value: {
+function from_candid_variant_n161(value: {
     V1: _GraphOrderedVertexBatchResultV1;
 }): {
     __kind__: "V1";
@@ -1512,10 +2077,10 @@ function from_candid_variant_n112(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphOrderedVertexBatchResultV1_n113(value.V1)
+        V1: from_candid_GraphOrderedVertexBatchResultV1_n162(value.V1)
     } : value;
 }
-function from_candid_variant_n114(value: {
+function from_candid_variant_n163(value: {
     MutationRetired: {
         mutation_id: bigint;
         graph_request_fingerprint: Uint8Array;
@@ -1537,29 +2102,10 @@ function from_candid_variant_n114(value: {
         MutationRetired: value.MutationRetired
     } : "Completed" in value ? {
         __kind__: "Completed",
-        Completed: from_candid_GraphOrderedVertexBatchReceiptV1_n115(value.Completed)
+        Completed: from_candid_GraphOrderedVertexBatchReceiptV1_n164(value.Completed)
     } : value;
 }
-function from_candid_variant_n12(value: {
-    Ok: _VertexEmbeddingIngestionResult;
-} | {
-    Err: string;
-}): {
-    __kind__: "Ok";
-    Ok: VertexEmbeddingIngestionResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_VertexEmbeddingIngestionResult_n13(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: value.Err
-    } : value;
-}
-function from_candid_variant_n122(value: {
+function from_candid_variant_n171(value: {
     Ok: _ExecutePlanResult;
 } | {
     Err: string;
@@ -1572,13 +2118,13 @@ function from_candid_variant_n122(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_ExecutePlanResult_n123(value.Ok)
+        Ok: from_candid_ExecutePlanResult_n172(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n131(value: {
+function from_candid_variant_n180(value: {
     Ok: _ExecutePlanBatchResult;
 } | {
     Err: string;
@@ -1591,13 +2137,13 @@ function from_candid_variant_n131(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_ExecutePlanBatchResult_n132(value.Ok)
+        Ok: from_candid_ExecutePlanBatchResult_n181(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n137(value: {
+function from_candid_variant_n186(value: {
     Ok: _BulkIngestFinalizeResult;
 } | {
     Err: string;
@@ -1616,7 +2162,7 @@ function from_candid_variant_n137(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n143(value: {
+function from_candid_variant_n192(value: {
     V1: _GraphMutationJournalEntryWireV1;
 }): {
     __kind__: "V1";
@@ -1624,10 +2170,10 @@ function from_candid_variant_n143(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_GraphMutationJournalEntryWireV1_n144(value.V1)
+        V1: from_candid_GraphMutationJournalEntryWireV1_n193(value.V1)
     } : value;
 }
-function from_candid_variant_n148(value: {
+function from_candid_variant_n197(value: {
     OrderedVertexBatch: {
         logical_item_count: number;
         canonical_encoding_version: number;
@@ -1690,7 +2236,7 @@ function from_candid_variant_n148(value: {
         PlanExecution: value.PlanExecution
     } : value;
 }
-function from_candid_variant_n151(value: {
+function from_candid_variant_n200(value: {
     V1: _GraphBulkMutationProgressV1;
 }): {
     __kind__: "V1";
@@ -1701,14 +2247,14 @@ function from_candid_variant_n151(value: {
         V1: value.V1
     } : value;
 }
-function from_candid_variant_n153(value: {
+function from_candid_variant_n202(value: {
     Completed: null;
 } | {
     Incomplete: null;
 }): MutationJournalState {
     return "Completed" in value ? MutationJournalState.Completed : "Incomplete" in value ? MutationJournalState.Incomplete : value;
 }
-function from_candid_variant_n155(value: {
+function from_candid_variant_n204(value: {
     NotApplicable: null;
 } | {
     Active: null;
@@ -1717,21 +2263,105 @@ function from_candid_variant_n155(value: {
 }): GraphMutationRetirementWireV1 {
     return "NotApplicable" in value ? GraphMutationRetirementWireV1.NotApplicable : "Active" in value ? GraphMutationRetirementWireV1.Active : "Retired" in value ? GraphMutationRetirementWireV1.Retired : value;
 }
-function from_candid_variant_n16(value: {
-    DeferredForRepair: null;
+function from_candid_variant_n208(value: {
+    Ok: _CanonicalExportPage;
 } | {
-    Applied: null;
-}): VertexEmbeddingProjectionOutcome {
-    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
+    Err: _CanonicalExportError;
+}): {
+    __kind__: "Ok";
+    Ok: CanonicalExportPage;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_CanonicalExportPage_n209(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_CanonicalExportError_n34(value.Err)
+    } : value;
 }
-function from_candid_variant_n165(value: {
+function from_candid_variant_n21(value: {
+    Edge: {
+        direction: _EdgeIndexDirection;
+        label_id: number;
+        property_id: number;
+    };
+} | {
+    Vertex: {
+        label_id: number;
+        property_id: number;
+    };
+}): {
+    __kind__: "Edge";
+    Edge: {
+        direction: EdgeIndexDirection;
+        label_id: number;
+        property_id: number;
+    };
+} | {
+    __kind__: "Vertex";
+    Vertex: {
+        label_id: number;
+        property_id: number;
+    };
+} {
+    return "Edge" in value ? {
+        __kind__: "Edge",
+        Edge: from_candid_record_n22(value.Edge)
+    } : "Vertex" in value ? {
+        __kind__: "Vertex",
+        Vertex: value.Vertex
+    } : value;
+}
+function from_candid_variant_n213(value: {
+    Edge: {
+        encoded_value: Uint8Array;
+        label_id: number;
+        property_id: number;
+        slot_index: number;
+        owner_vertex_id: number;
+    };
+} | {
+    Vertex: {
+        vertex_id: number;
+        encoded_value: Uint8Array;
+        property_id: number;
+    };
+}): {
+    __kind__: "Edge";
+    Edge: {
+        encoded_value: Uint8Array;
+        label_id: number;
+        property_id: number;
+        slot_index: number;
+        owner_vertex_id: number;
+    };
+} | {
+    __kind__: "Vertex";
+    Vertex: {
+        vertex_id: number;
+        encoded_value: Uint8Array;
+        property_id: number;
+    };
+} {
+    return "Edge" in value ? {
+        __kind__: "Edge",
+        Edge: value.Edge
+    } : "Vertex" in value ? {
+        __kind__: "Vertex",
+        Vertex: value.Vertex
+    } : value;
+}
+function from_candid_variant_n223(value: {
     Release: null;
 } | {
     Acquire: null;
 }): UniqueEffectOp {
     return "Release" in value ? UniqueEffectOp.Release : "Acquire" in value ? UniqueEffectOp.Acquire : value;
 }
-function from_candid_variant_n170(value: {
+function from_candid_variant_n228(value: {
     Ok: _OrderedMixedMutationRetirementAck;
 } | {
     Err: string;
@@ -1744,13 +2374,13 @@ function from_candid_variant_n170(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedMixedMutationRetirementAck_n171(value.Ok)
+        Ok: from_candid_OrderedMixedMutationRetirementAck_n229(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n172(value: {
+function from_candid_variant_n230(value: {
     V1: _OrderedMixedMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1758,10 +2388,10 @@ function from_candid_variant_n172(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedMixedMutationRetirementAckV1_n173(value.V1)
+        V1: from_candid_OrderedMixedMutationRetirementAckV1_n231(value.V1)
     } : value;
 }
-function from_candid_variant_n176(value: {
+function from_candid_variant_n234(value: {
     Ok: _OrderedMutationRetirementAck;
 } | {
     Err: string;
@@ -1774,13 +2404,13 @@ function from_candid_variant_n176(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedMutationRetirementAck_n177(value.Ok)
+        Ok: from_candid_OrderedMutationRetirementAck_n235(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n178(value: {
+function from_candid_variant_n236(value: {
     V1: _OrderedMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1788,10 +2418,27 @@ function from_candid_variant_n178(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedMutationRetirementAckV1_n179(value.V1)
+        V1: from_candid_OrderedMutationRetirementAckV1_n237(value.V1)
     } : value;
 }
-function from_candid_variant_n182(value: {
+function from_candid_variant_n24(value: {
+    Any: null;
+} | {
+    OutgoingOrIncoming: null;
+} | {
+    IncomingOrUndirected: null;
+} | {
+    Outgoing: null;
+} | {
+    OutgoingOrUndirected: null;
+} | {
+    Undirected: null;
+} | {
+    Incoming: null;
+}): EdgeIndexDirection {
+    return "Any" in value ? EdgeIndexDirection.Any : "OutgoingOrIncoming" in value ? EdgeIndexDirection.OutgoingOrIncoming : "IncomingOrUndirected" in value ? EdgeIndexDirection.IncomingOrUndirected : "Outgoing" in value ? EdgeIndexDirection.Outgoing : "OutgoingOrUndirected" in value ? EdgeIndexDirection.OutgoingOrUndirected : "Undirected" in value ? EdgeIndexDirection.Undirected : "Incoming" in value ? EdgeIndexDirection.Incoming : value;
+}
+function from_candid_variant_n240(value: {
     Ok: _OrderedVertexMutationRetirementAck;
 } | {
     Err: string;
@@ -1804,13 +2451,13 @@ function from_candid_variant_n182(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_OrderedVertexMutationRetirementAck_n183(value.Ok)
+        Ok: from_candid_OrderedVertexMutationRetirementAck_n241(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n184(value: {
+function from_candid_variant_n242(value: {
     V1: _OrderedVertexMutationRetirementAckV1;
 }): {
     __kind__: "V1";
@@ -1818,29 +2465,382 @@ function from_candid_variant_n184(value: {
 } {
     return "V1" in value ? {
         __kind__: "V1",
-        V1: from_candid_OrderedVertexMutationRetirementAckV1_n185(value.V1)
+        V1: from_candid_OrderedVertexMutationRetirementAckV1_n243(value.V1)
     } : value;
 }
-function from_candid_variant_n19(value: {
-    Ok: Array<_Result>;
+function from_candid_variant_n31(value: {
+    F16: null;
+} | {
+    F32: null;
+} | {
+    F64: null;
+} | {
+    VectorF32: {
+        dims: number;
+    };
+} | {
+    RawI8: null;
+} | {
+    RawU8: null;
+} | {
+    RawI128: null;
+} | {
+    RawFixed32: null;
+} | {
+    RawFixed64: null;
+} | {
+    RawU128: null;
+} | {
+    RawI16: null;
+} | {
+    RawI32: null;
+} | {
+    RawI64: null;
+} | {
+    RawU16: null;
+} | {
+    RawU32: null;
+} | {
+    RawU64: null;
+} | {
+    RawBytes: null;
+}): {
+    __kind__: "F16";
+    F16: null;
+} | {
+    __kind__: "F32";
+    F32: null;
+} | {
+    __kind__: "F64";
+    F64: null;
+} | {
+    __kind__: "VectorF32";
+    VectorF32: {
+        dims: number;
+    };
+} | {
+    __kind__: "RawI8";
+    RawI8: null;
+} | {
+    __kind__: "RawU8";
+    RawU8: null;
+} | {
+    __kind__: "RawI128";
+    RawI128: null;
+} | {
+    __kind__: "RawFixed32";
+    RawFixed32: null;
+} | {
+    __kind__: "RawFixed64";
+    RawFixed64: null;
+} | {
+    __kind__: "RawU128";
+    RawU128: null;
+} | {
+    __kind__: "RawI16";
+    RawI16: null;
+} | {
+    __kind__: "RawI32";
+    RawI32: null;
+} | {
+    __kind__: "RawI64";
+    RawI64: null;
+} | {
+    __kind__: "RawU16";
+    RawU16: null;
+} | {
+    __kind__: "RawU32";
+    RawU32: null;
+} | {
+    __kind__: "RawU64";
+    RawU64: null;
+} | {
+    __kind__: "RawBytes";
+    RawBytes: null;
+} {
+    return "F16" in value ? {
+        __kind__: "F16",
+        F16: value.F16
+    } : "F32" in value ? {
+        __kind__: "F32",
+        F32: value.F32
+    } : "F64" in value ? {
+        __kind__: "F64",
+        F64: value.F64
+    } : "VectorF32" in value ? {
+        __kind__: "VectorF32",
+        VectorF32: value.VectorF32
+    } : "RawI8" in value ? {
+        __kind__: "RawI8",
+        RawI8: value.RawI8
+    } : "RawU8" in value ? {
+        __kind__: "RawU8",
+        RawU8: value.RawU8
+    } : "RawI128" in value ? {
+        __kind__: "RawI128",
+        RawI128: value.RawI128
+    } : "RawFixed32" in value ? {
+        __kind__: "RawFixed32",
+        RawFixed32: value.RawFixed32
+    } : "RawFixed64" in value ? {
+        __kind__: "RawFixed64",
+        RawFixed64: value.RawFixed64
+    } : "RawU128" in value ? {
+        __kind__: "RawU128",
+        RawU128: value.RawU128
+    } : "RawI16" in value ? {
+        __kind__: "RawI16",
+        RawI16: value.RawI16
+    } : "RawI32" in value ? {
+        __kind__: "RawI32",
+        RawI32: value.RawI32
+    } : "RawI64" in value ? {
+        __kind__: "RawI64",
+        RawI64: value.RawI64
+    } : "RawU16" in value ? {
+        __kind__: "RawU16",
+        RawU16: value.RawU16
+    } : "RawU32" in value ? {
+        __kind__: "RawU32",
+        RawU32: value.RawU32
+    } : "RawU64" in value ? {
+        __kind__: "RawU64",
+        RawU64: value.RawU64
+    } : "RawBytes" in value ? {
+        __kind__: "RawBytes",
+        RawBytes: value.RawBytes
+    } : value;
+}
+function from_candid_variant_n33(value: {
+    Building: null;
+} | {
+    Active: null;
+} | {
+    Aborting: null;
+} | {
+    Sealing: null;
+}): CanonicalExportPhase {
+    return "Building" in value ? CanonicalExportPhase.Building : "Active" in value ? CanonicalExportPhase.Active : "Aborting" in value ? CanonicalExportPhase.Aborting : "Sealing" in value ? CanonicalExportPhase.Sealing : value;
+}
+function from_candid_variant_n35(value: {
+    Storage: null;
+} | {
+    InvalidPhase: null;
+} | {
+    ScopeConflict: null;
+} | {
+    UnsupportedInlineProfile: null;
+} | {
+    SequenceOutOfRange: null;
+} | {
+    ScopeMismatch: null;
+} | {
+    UnsafeRemoval: null;
+} | {
+    NotConverged: null;
+} | {
+    SequenceGap: null;
+} | {
+    InvalidRequest: null;
+} | {
+    ScopeNotFound: null;
+} | {
+    CursorMalformed: null;
+} | {
+    SequenceReplay: null;
+} | {
+    InvalidScope: null;
+} | {
+    RetryableSealing: null;
+} | {
+    FactTooLarge: {
+        encoded_value_bytes: bigint;
+    };
+}): {
+    __kind__: "Storage";
+    Storage: null;
+} | {
+    __kind__: "InvalidPhase";
+    InvalidPhase: null;
+} | {
+    __kind__: "ScopeConflict";
+    ScopeConflict: null;
+} | {
+    __kind__: "UnsupportedInlineProfile";
+    UnsupportedInlineProfile: null;
+} | {
+    __kind__: "SequenceOutOfRange";
+    SequenceOutOfRange: null;
+} | {
+    __kind__: "ScopeMismatch";
+    ScopeMismatch: null;
+} | {
+    __kind__: "UnsafeRemoval";
+    UnsafeRemoval: null;
+} | {
+    __kind__: "NotConverged";
+    NotConverged: null;
+} | {
+    __kind__: "SequenceGap";
+    SequenceGap: null;
+} | {
+    __kind__: "InvalidRequest";
+    InvalidRequest: null;
+} | {
+    __kind__: "ScopeNotFound";
+    ScopeNotFound: null;
+} | {
+    __kind__: "CursorMalformed";
+    CursorMalformed: null;
+} | {
+    __kind__: "SequenceReplay";
+    SequenceReplay: null;
+} | {
+    __kind__: "InvalidScope";
+    InvalidScope: null;
+} | {
+    __kind__: "RetryableSealing";
+    RetryableSealing: null;
+} | {
+    __kind__: "FactTooLarge";
+    FactTooLarge: {
+        encoded_value_bytes: bigint;
+    };
+} {
+    return "Storage" in value ? {
+        __kind__: "Storage",
+        Storage: value.Storage
+    } : "InvalidPhase" in value ? {
+        __kind__: "InvalidPhase",
+        InvalidPhase: value.InvalidPhase
+    } : "ScopeConflict" in value ? {
+        __kind__: "ScopeConflict",
+        ScopeConflict: value.ScopeConflict
+    } : "UnsupportedInlineProfile" in value ? {
+        __kind__: "UnsupportedInlineProfile",
+        UnsupportedInlineProfile: value.UnsupportedInlineProfile
+    } : "SequenceOutOfRange" in value ? {
+        __kind__: "SequenceOutOfRange",
+        SequenceOutOfRange: value.SequenceOutOfRange
+    } : "ScopeMismatch" in value ? {
+        __kind__: "ScopeMismatch",
+        ScopeMismatch: value.ScopeMismatch
+    } : "UnsafeRemoval" in value ? {
+        __kind__: "UnsafeRemoval",
+        UnsafeRemoval: value.UnsafeRemoval
+    } : "NotConverged" in value ? {
+        __kind__: "NotConverged",
+        NotConverged: value.NotConverged
+    } : "SequenceGap" in value ? {
+        __kind__: "SequenceGap",
+        SequenceGap: value.SequenceGap
+    } : "InvalidRequest" in value ? {
+        __kind__: "InvalidRequest",
+        InvalidRequest: value.InvalidRequest
+    } : "ScopeNotFound" in value ? {
+        __kind__: "ScopeNotFound",
+        ScopeNotFound: value.ScopeNotFound
+    } : "CursorMalformed" in value ? {
+        __kind__: "CursorMalformed",
+        CursorMalformed: value.CursorMalformed
+    } : "SequenceReplay" in value ? {
+        __kind__: "SequenceReplay",
+        SequenceReplay: value.SequenceReplay
+    } : "InvalidScope" in value ? {
+        __kind__: "InvalidScope",
+        InvalidScope: value.InvalidScope
+    } : "RetryableSealing" in value ? {
+        __kind__: "RetryableSealing",
+        RetryableSealing: value.RetryableSealing
+    } : "FactTooLarge" in value ? {
+        __kind__: "FactTooLarge",
+        FactTooLarge: value.FactTooLarge
+    } : value;
+}
+function from_candid_variant_n37(value: {
+    Ok: _IndexBuildOutboxDrainProgress;
+} | {
+    Err: _CanonicalExportError;
+}): {
+    __kind__: "Ok";
+    Ok: IndexBuildOutboxDrainProgress;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_CanonicalExportError_n34(value.Err)
+    } : value;
+}
+function from_candid_variant_n49(value: {
+    Ok: _VertexEmbeddingIngestionResult;
 } | {
     Err: string;
 }): {
     __kind__: "Ok";
-    Ok: Array<Result>;
+    Ok: VertexEmbeddingIngestionResult;
 } | {
     __kind__: "Err";
     Err: string;
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_vec_n20(value.Ok)
+        Ok: from_candid_VertexEmbeddingIngestionResult_n50(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n22(value: {
+function from_candid_variant_n53(value: {
+    DeferredForRepair: null;
+} | {
+    Applied: null;
+}): VertexEmbeddingProjectionOutcome {
+    return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
+}
+function from_candid_variant_n56(value: {
+    Ok: Array<_Result_2>;
+} | {
+    Err: string;
+}): {
+    __kind__: "Ok";
+    Ok: Array<Result_2>;
+} | {
+    __kind__: "Err";
+    Err: string;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_vec_n57(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: value.Err
+    } : value;
+}
+function from_candid_variant_n59(value: {
+    Ok: null;
+} | {
+    Err: _CanonicalExportError;
+}): {
+    __kind__: "Ok";
+    Ok: null;
+} | {
+    __kind__: "Err";
+    Err: CanonicalExportError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: value.Ok
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_CanonicalExportError_n34(value.Err)
+    } : value;
+}
+function from_candid_variant_n61(value: {
     Ok: null;
 } | {
     Err: string;
@@ -1859,7 +2859,7 @@ function from_candid_variant_n22(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n28(value: {
+function from_candid_variant_n77(value: {
     Ok: _EdgePostingBackfillResult;
 } | {
     Err: string;
@@ -1872,13 +2872,13 @@ function from_candid_variant_n28(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_EdgePostingBackfillResult_n29(value.Ok)
+        Ok: from_candid_EdgePostingBackfillResult_n78(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n33(value: {
+function from_candid_variant_n82(value: {
     Ok: _PostingBackfillResult;
 } | {
     Err: string;
@@ -1897,7 +2897,7 @@ function from_candid_variant_n33(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n40(value: {
+function from_candid_variant_n89(value: {
     Ok: _EmbeddingBackfillResult;
 } | {
     Err: string;
@@ -1916,261 +2916,376 @@ function from_candid_variant_n40(value: {
         Err: value.Err
     } : value;
 }
-function from_candid_variant_n70(value: {
-    Ok: _GraphOrderedEdgeBatchResult;
-} | {
-    Err: string;
-}): {
-    __kind__: "Ok";
-    Ok: GraphOrderedEdgeBatchResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_GraphOrderedEdgeBatchResult_n71(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: value.Err
-    } : value;
+function from_candid_vec_n184(value: Array<_Result_12>): Array<Result_12> {
+    return value.map((x)=>from_candid_Result_12_n170(x));
 }
-function from_candid_variant_n72(value: {
-    V1: _GraphOrderedEdgeBatchResultV1;
-}): {
-    __kind__: "V1";
-    V1: GraphOrderedEdgeBatchResultV1;
-} {
-    return "V1" in value ? {
-        __kind__: "V1",
-        V1: from_candid_GraphOrderedEdgeBatchResultV1_n73(value.V1)
-    } : value;
+function from_candid_vec_n189(value: Array<[] | [_GraphMutationJournalEntryWire]>): Array<GraphMutationJournalEntryWire | null> {
+    return value.map((x)=>from_candid_opt_n190(x));
 }
-function from_candid_variant_n74(value: {
-    MutationRetired: {
-        mutation_id: bigint;
-        graph_request_fingerprint: Uint8Array;
-    };
-} | {
-    Completed: _GraphOrderedEdgeBatchReceiptV1;
-}): {
-    __kind__: "MutationRetired";
-    MutationRetired: {
-        mutation_id: bigint;
-        graph_request_fingerprint: Uint8Array;
-    };
-} | {
-    __kind__: "Completed";
-    Completed: GraphOrderedEdgeBatchReceiptV1;
-} {
-    return "MutationRetired" in value ? {
-        __kind__: "MutationRetired",
-        MutationRetired: value.MutationRetired
-    } : "Completed" in value ? {
-        __kind__: "Completed",
-        Completed: from_candid_GraphOrderedEdgeBatchReceiptV1_n75(value.Completed)
-    } : value;
+function from_candid_vec_n211(value: Array<_CanonicalIndexableFact>): Array<CanonicalIndexableFact> {
+    return value.map((x)=>from_candid_CanonicalIndexableFact_n212(x));
 }
-function from_candid_variant_n94(value: {
-    Ok: _GraphOrderedMixedBatchResult;
-} | {
-    Err: string;
-}): {
-    __kind__: "Ok";
-    Ok: GraphOrderedMixedBatchResult;
-} | {
-    __kind__: "Err";
-    Err: string;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_GraphOrderedMixedBatchResult_n95(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: value.Err
-    } : value;
+function from_candid_vec_n214(value: Array<_UniqueAcquireProof>): Array<UniqueAcquireProof> {
+    return value.map((x)=>from_candid_UniqueAcquireProof_n215(x));
 }
-function from_candid_variant_n96(value: {
-    V1: _GraphOrderedMixedBatchResultV1;
-}): {
-    __kind__: "V1";
-    V1: GraphOrderedMixedBatchResultV1;
-} {
-    return "V1" in value ? {
-        __kind__: "V1",
-        V1: from_candid_GraphOrderedMixedBatchResultV1_n97(value.V1)
-    } : value;
+function from_candid_vec_n219(value: Array<_UniqueEffectReceipt>): Array<UniqueEffectReceipt> {
+    return value.map((x)=>from_candid_UniqueEffectReceipt_n220(x));
 }
-function from_candid_variant_n98(value: {
-    MutationRetired: {
-        mutation_id: bigint;
-        graph_request_fingerprint: Uint8Array;
-    };
-} | {
-    Completed: _GraphOrderedMixedBatchReceiptV1;
-}): {
-    __kind__: "MutationRetired";
-    MutationRetired: {
-        mutation_id: bigint;
-        graph_request_fingerprint: Uint8Array;
-    };
-} | {
-    __kind__: "Completed";
-    Completed: GraphOrderedMixedBatchReceiptV1;
-} {
-    return "MutationRetired" in value ? {
-        __kind__: "MutationRetired",
-        MutationRetired: value.MutationRetired
-    } : "Completed" in value ? {
-        __kind__: "Completed",
-        Completed: from_candid_GraphOrderedMixedBatchReceiptV1_n99(value.Completed)
-    } : value;
+function from_candid_vec_n57(value: Array<_Result_2>): Array<Result_2> {
+    return value.map((x)=>from_candid_Result_2_n48(x));
 }
-function from_candid_vec_n135(value: Array<_Result_9>): Array<Result_9> {
-    return value.map((x)=>from_candid_Result_9_n121(x));
+function to_candid_CanonicalExportRequest_n205(value: CanonicalExportRequest): _CanonicalExportRequest {
+    return to_candid_record_n206(value);
 }
-function from_candid_vec_n140(value: Array<[] | [_GraphMutationJournalEntryWire]>): Array<GraphMutationJournalEntryWire | null> {
-    return value.map((x)=>from_candid_opt_n141(x));
-}
-function from_candid_vec_n156(value: Array<_UniqueAcquireProof>): Array<UniqueAcquireProof> {
-    return value.map((x)=>from_candid_UniqueAcquireProof_n157(x));
-}
-function from_candid_vec_n161(value: Array<_UniqueEffectReceipt>): Array<UniqueEffectReceipt> {
-    return value.map((x)=>from_candid_UniqueEffectReceipt_n162(x));
-}
-function from_candid_vec_n20(value: Array<_Result>): Array<Result> {
-    return value.map((x)=>from_candid_Result_n11(x));
-}
-function to_candid_EdgeInlinePropertyEncoding_n56(value: EdgeInlinePropertyEncoding): _EdgeInlinePropertyEncoding {
-    return to_candid_variant_n57(value);
-}
-function to_candid_EdgeInlinePropertyProfile_n54(value: EdgeInlinePropertyProfile): _EdgeInlinePropertyProfile {
-    return to_candid_record_n55(value);
-}
-function to_candid_EdgeOrderingPolicy_n58(value: EdgeOrderingPolicy): _EdgeOrderingPolicy {
-    return to_candid_variant_n59(value);
-}
-function to_candid_EdgePostingBackfillArgs_n25(value: EdgePostingBackfillArgs): _EdgePostingBackfillArgs {
-    return to_candid_record_n26(value);
-}
-function to_candid_EdgePropertyBackfillRequest_n23(value: EdgePropertyBackfillRequest): _EdgePropertyBackfillRequest {
-    return to_candid_record_n24(value);
-}
-function to_candid_ExecutePlanArgs_n117(value: ExecutePlanArgs): _ExecutePlanArgs {
-    return to_candid_record_n118(value);
-}
-function to_candid_ExecutePlanBatchArgs_n125(value: ExecutePlanBatchArgs): _ExecutePlanBatchArgs {
-    return to_candid_record_n126(value);
-}
-function to_candid_ExecutePlanBatchMode_n127(value: ExecutePlanBatchMode): _ExecutePlanBatchMode {
-    return to_candid_variant_n128(value);
-}
-function to_candid_GqlExecutionMode_n119(value: GqlExecutionMode): _GqlExecutionMode {
-    return to_candid_variant_n120(value);
-}
-function to_candid_IndexedEmbeddingCatalog_n36(value: IndexedEmbeddingCatalog): _IndexedEmbeddingCatalog {
-    return to_candid_record_n37(value);
-}
-function to_candid_IndexedEmbeddingSpec_n3(value: IndexedEmbeddingSpec): _IndexedEmbeddingSpec {
-    return to_candid_record_n4(value);
-}
-function to_candid_OrderedEdgeBatchGraphArgsV1_n43(value: OrderedEdgeBatchGraphArgsV1): _OrderedEdgeBatchGraphArgsV1 {
-    return to_candid_record_n44(value);
-}
-function to_candid_OrderedEdgeBatchGraphArgs_n41(value: OrderedEdgeBatchGraphArgs): _OrderedEdgeBatchGraphArgs {
-    return to_candid_variant_n42(value);
-}
-function to_candid_OrderedEdgeBatchGraphItemV1_n67(value: OrderedEdgeBatchGraphItemV1): _OrderedEdgeBatchGraphItemV1 {
-    return to_candid_record_n68(value);
-}
-function to_candid_OrderedEdgeBatchGraphRequestV1_n47(value: OrderedEdgeBatchGraphRequestV1): _OrderedEdgeBatchGraphRequestV1 {
-    return to_candid_record_n48(value);
-}
-function to_candid_OrderedEdgeBatchGraphRequest_n45(value: OrderedEdgeBatchGraphRequest): _OrderedEdgeBatchGraphRequest {
-    return to_candid_variant_n46(value);
-}
-function to_candid_OrderedMixedBatchGraphArgsV1_n80(value: OrderedMixedBatchGraphArgsV1): _OrderedMixedBatchGraphArgsV1 {
-    return to_candid_record_n81(value);
-}
-function to_candid_OrderedMixedBatchGraphArgs_n78(value: OrderedMixedBatchGraphArgs): _OrderedMixedBatchGraphArgs {
-    return to_candid_variant_n79(value);
-}
-function to_candid_OrderedMixedBatchGraphRequestV1_n84(value: OrderedMixedBatchGraphRequestV1): _OrderedMixedBatchGraphRequestV1 {
-    return to_candid_record_n85(value);
-}
-function to_candid_OrderedMixedBatchGraphRequest_n82(value: OrderedMixedBatchGraphRequest): _OrderedMixedBatchGraphRequest {
-    return to_candid_variant_n83(value);
-}
-function to_candid_OrderedMixedGraphEdgeItemV1_n89(value: OrderedMixedGraphEdgeItemV1): _OrderedMixedGraphEdgeItemV1 {
-    return to_candid_record_n90(value);
-}
-function to_candid_OrderedMixedGraphEndpointV1_n91(value: OrderedMixedGraphEndpointV1): _OrderedMixedGraphEndpointV1 {
-    return to_candid_variant_n92(value);
-}
-function to_candid_OrderedMixedGraphOperationV1_n87(value: OrderedMixedGraphOperationV1): _OrderedMixedGraphOperationV1 {
-    return to_candid_variant_n88(value);
-}
-function to_candid_OrderedMutationRetirementArgs_n167(value: OrderedMutationRetirementArgs): _OrderedMutationRetirementArgs {
-    return to_candid_variant_n168(value);
-}
-function to_candid_OrderedVertexBatchGraphArgsV1_n103(value: OrderedVertexBatchGraphArgsV1): _OrderedVertexBatchGraphArgsV1 {
-    return to_candid_record_n104(value);
-}
-function to_candid_OrderedVertexBatchGraphArgs_n101(value: OrderedVertexBatchGraphArgs): _OrderedVertexBatchGraphArgs {
-    return to_candid_variant_n102(value);
-}
-function to_candid_OrderedVertexBatchGraphRequestV1_n107(value: OrderedVertexBatchGraphRequestV1): _OrderedVertexBatchGraphRequestV1 {
-    return to_candid_record_n108(value);
-}
-function to_candid_OrderedVertexBatchGraphRequest_n105(value: OrderedVertexBatchGraphRequest): _OrderedVertexBatchGraphRequest {
-    return to_candid_variant_n106(value);
-}
-function to_candid_ResolvedEdgeLabel_n52(value: ResolvedEdgeLabel): _ResolvedEdgeLabel {
-    return to_candid_record_n53(value);
-}
-function to_candid_ResolvedInlineSchema_n60(value: ResolvedInlineSchema): _ResolvedInlineSchema {
-    return to_candid_variant_n61(value);
-}
-function to_candid_ResolvedInlineStructField_n64(value: ResolvedInlineStructField): _ResolvedInlineStructField {
-    return to_candid_record_n65(value);
-}
-function to_candid_ResolvedLabelTable_n49(value: ResolvedLabelTable): _ResolvedLabelTable {
-    return to_candid_record_n50(value);
-}
-function to_candid_VectorEncoding_n7(value: VectorEncoding): _VectorEncoding {
-    return to_candid_variant_n8(value);
-}
-function to_candid_VectorIndexKind_n9(value: VectorIndexKind): _VectorIndexKind {
-    return to_candid_variant_n10(value);
-}
-function to_candid_VectorMetric_n5(value: VectorMetric): _VectorMetric {
-    return to_candid_variant_n6(value);
-}
-function to_candid_VertexEmbeddingBackfillRequest_n34(value: VertexEmbeddingBackfillRequest): _VertexEmbeddingBackfillRequest {
-    return to_candid_record_n35(value);
-}
-function to_candid_VertexEmbeddingIngestionArgs_n1(value: VertexEmbeddingIngestionArgs): _VertexEmbeddingIngestionArgs {
+function to_candid_CanonicalExportScope_n1(value: CanonicalExportScope): _CanonicalExportScope {
     return to_candid_record_n2(value);
 }
-function to_candid_opt_n160(value: number | null): [] | [number] {
+function to_candid_CanonicalExportTarget_n3(value: CanonicalExportTarget): _CanonicalExportTarget {
+    return to_candid_variant_n4(value);
+}
+function to_candid_CanonicalInlineProjection_n8(value: CanonicalInlineProjection): _CanonicalInlineProjection {
+    return to_candid_record_n9(value);
+}
+function to_candid_EdgeIndexDirection_n6(value: EdgeIndexDirection): _EdgeIndexDirection {
+    return to_candid_variant_n7(value);
+}
+function to_candid_EdgeInlinePropertyEncoding_n12(value: EdgeInlinePropertyEncoding): _EdgeInlinePropertyEncoding {
+    return to_candid_variant_n13(value);
+}
+function to_candid_EdgeInlinePropertyProfile_n10(value: EdgeInlinePropertyProfile): _EdgeInlinePropertyProfile {
+    return to_candid_record_n11(value);
+}
+function to_candid_EdgeOrderingPolicy_n107(value: EdgeOrderingPolicy): _EdgeOrderingPolicy {
+    return to_candid_variant_n108(value);
+}
+function to_candid_EdgePostingBackfillArgs_n64(value: EdgePostingBackfillArgs): _EdgePostingBackfillArgs {
+    return to_candid_record_n65(value);
+}
+function to_candid_EdgePropertyBackfillRequest_n62(value: EdgePropertyBackfillRequest): _EdgePropertyBackfillRequest {
+    return to_candid_record_n63(value);
+}
+function to_candid_ExecutePlanArgs_n166(value: ExecutePlanArgs): _ExecutePlanArgs {
+    return to_candid_record_n167(value);
+}
+function to_candid_ExecutePlanBatchArgs_n174(value: ExecutePlanBatchArgs): _ExecutePlanBatchArgs {
+    return to_candid_record_n175(value);
+}
+function to_candid_ExecutePlanBatchMode_n176(value: ExecutePlanBatchMode): _ExecutePlanBatchMode {
+    return to_candid_variant_n177(value);
+}
+function to_candid_GqlExecutionMode_n168(value: GqlExecutionMode): _GqlExecutionMode {
+    return to_candid_variant_n169(value);
+}
+function to_candid_IndexMaintenancePhase_n71(value: IndexMaintenancePhase): _IndexMaintenancePhase {
+    return to_candid_variant_n72(value);
+}
+function to_candid_IndexedEdgeMembership_n74(value: IndexedEdgeMembership): _IndexedEdgeMembership {
+    return to_candid_record_n75(value);
+}
+function to_candid_IndexedEmbeddingCatalog_n85(value: IndexedEmbeddingCatalog): _IndexedEmbeddingCatalog {
+    return to_candid_record_n86(value);
+}
+function to_candid_IndexedEmbeddingSpec_n40(value: IndexedEmbeddingSpec): _IndexedEmbeddingSpec {
+    return to_candid_record_n41(value);
+}
+function to_candid_IndexedPropertyCatalog_n66(value: IndexedPropertyCatalog): _IndexedPropertyCatalog {
+    return to_candid_record_n67(value);
+}
+function to_candid_IndexedVertexMembership_n69(value: IndexedVertexMembership): _IndexedVertexMembership {
+    return to_candid_record_n70(value);
+}
+function to_candid_OrderedBatchExecutionModeV1_n96(value: OrderedBatchExecutionModeV1): _OrderedBatchExecutionModeV1 {
+    return to_candid_variant_n97(value);
+}
+function to_candid_OrderedEdgeBatchGraphArgsV1_n94(value: OrderedEdgeBatchGraphArgsV1): _OrderedEdgeBatchGraphArgsV1 {
+    return to_candid_record_n95(value);
+}
+function to_candid_OrderedEdgeBatchGraphArgs_n92(value: OrderedEdgeBatchGraphArgs): _OrderedEdgeBatchGraphArgs {
+    return to_candid_variant_n93(value);
+}
+function to_candid_OrderedEdgeBatchGraphItemV1_n116(value: OrderedEdgeBatchGraphItemV1): _OrderedEdgeBatchGraphItemV1 {
+    return to_candid_record_n117(value);
+}
+function to_candid_OrderedEdgeBatchGraphRequestV1_n100(value: OrderedEdgeBatchGraphRequestV1): _OrderedEdgeBatchGraphRequestV1 {
+    return to_candid_record_n101(value);
+}
+function to_candid_OrderedEdgeBatchGraphRequest_n98(value: OrderedEdgeBatchGraphRequest): _OrderedEdgeBatchGraphRequest {
+    return to_candid_variant_n99(value);
+}
+function to_candid_OrderedMixedBatchGraphArgsV1_n129(value: OrderedMixedBatchGraphArgsV1): _OrderedMixedBatchGraphArgsV1 {
+    return to_candid_record_n130(value);
+}
+function to_candid_OrderedMixedBatchGraphArgs_n127(value: OrderedMixedBatchGraphArgs): _OrderedMixedBatchGraphArgs {
+    return to_candid_variant_n128(value);
+}
+function to_candid_OrderedMixedBatchGraphRequestV1_n133(value: OrderedMixedBatchGraphRequestV1): _OrderedMixedBatchGraphRequestV1 {
+    return to_candid_record_n134(value);
+}
+function to_candid_OrderedMixedBatchGraphRequest_n131(value: OrderedMixedBatchGraphRequest): _OrderedMixedBatchGraphRequest {
+    return to_candid_variant_n132(value);
+}
+function to_candid_OrderedMixedGraphEdgeItemV1_n138(value: OrderedMixedGraphEdgeItemV1): _OrderedMixedGraphEdgeItemV1 {
+    return to_candid_record_n139(value);
+}
+function to_candid_OrderedMixedGraphEndpointV1_n140(value: OrderedMixedGraphEndpointV1): _OrderedMixedGraphEndpointV1 {
+    return to_candid_variant_n141(value);
+}
+function to_candid_OrderedMixedGraphOperationV1_n136(value: OrderedMixedGraphOperationV1): _OrderedMixedGraphOperationV1 {
+    return to_candid_variant_n137(value);
+}
+function to_candid_OrderedMutationRetirementArgs_n225(value: OrderedMutationRetirementArgs): _OrderedMutationRetirementArgs {
+    return to_candid_variant_n226(value);
+}
+function to_candid_OrderedVertexBatchGraphArgsV1_n152(value: OrderedVertexBatchGraphArgsV1): _OrderedVertexBatchGraphArgsV1 {
+    return to_candid_record_n153(value);
+}
+function to_candid_OrderedVertexBatchGraphArgs_n150(value: OrderedVertexBatchGraphArgs): _OrderedVertexBatchGraphArgs {
+    return to_candid_variant_n151(value);
+}
+function to_candid_OrderedVertexBatchGraphRequestV1_n156(value: OrderedVertexBatchGraphRequestV1): _OrderedVertexBatchGraphRequestV1 {
+    return to_candid_record_n157(value);
+}
+function to_candid_OrderedVertexBatchGraphRequest_n154(value: OrderedVertexBatchGraphRequest): _OrderedVertexBatchGraphRequest {
+    return to_candid_variant_n155(value);
+}
+function to_candid_ResolvedEdgeLabel_n105(value: ResolvedEdgeLabel): _ResolvedEdgeLabel {
+    return to_candid_record_n106(value);
+}
+function to_candid_ResolvedInlineSchema_n109(value: ResolvedInlineSchema): _ResolvedInlineSchema {
+    return to_candid_variant_n110(value);
+}
+function to_candid_ResolvedInlineStructField_n113(value: ResolvedInlineStructField): _ResolvedInlineStructField {
+    return to_candid_record_n114(value);
+}
+function to_candid_ResolvedLabelTable_n102(value: ResolvedLabelTable): _ResolvedLabelTable {
+    return to_candid_record_n103(value);
+}
+function to_candid_VectorEncoding_n44(value: VectorEncoding): _VectorEncoding {
+    return to_candid_variant_n45(value);
+}
+function to_candid_VectorIndexKind_n46(value: VectorIndexKind): _VectorIndexKind {
+    return to_candid_variant_n47(value);
+}
+function to_candid_VectorMetric_n42(value: VectorMetric): _VectorMetric {
+    return to_candid_variant_n43(value);
+}
+function to_candid_VertexEmbeddingBackfillRequest_n83(value: VertexEmbeddingBackfillRequest): _VertexEmbeddingBackfillRequest {
+    return to_candid_record_n84(value);
+}
+function to_candid_VertexEmbeddingIngestionArgs_n38(value: VertexEmbeddingIngestionArgs): _VertexEmbeddingIngestionArgs {
+    return to_candid_record_n39(value);
+}
+function to_candid_VertexPropertyBackfillRequest_n90(value: VertexPropertyBackfillRequest): _VertexPropertyBackfillRequest {
+    return to_candid_record_n91(value);
+}
+function to_candid_opt_n218(value: number | null): [] | [number] {
     return value === null ? candid_none() : candid_some(value);
 }
-function to_candid_record_n104(value: {
+function to_candid_record_n101(value: {
+    graph_id: number;
+    resolved_labels: ResolvedLabelTable;
+    target_shard_id: number;
+    resolved_properties: ResolvedPropertyTable;
+    items: Array<OrderedEdgeBatchGraphItemV1>;
+    target_graph_canister: Principal;
+}): {
+    graph_id: number;
+    resolved_labels: _ResolvedLabelTable;
+    target_shard_id: number;
+    resolved_properties: _ResolvedPropertyTable;
+    items: Array<_OrderedEdgeBatchGraphItemV1>;
+    target_graph_canister: Principal;
+} {
+    return {
+        graph_id: value.graph_id,
+        resolved_labels: to_candid_ResolvedLabelTable_n102(value.resolved_labels),
+        target_shard_id: value.target_shard_id,
+        resolved_properties: value.resolved_properties,
+        items: to_candid_vec_n115(value.items),
+        target_graph_canister: value.target_graph_canister
+    };
+}
+function to_candid_record_n103(value: {
+    edge: Array<ResolvedEdgeLabel>;
+    vertex: Array<ResolvedVertexLabel>;
+}): {
+    edge: Array<_ResolvedEdgeLabel>;
+    vertex: Array<_ResolvedVertexLabel>;
+} {
+    return {
+        edge: to_candid_vec_n104(value.edge),
+        vertex: value.vertex
+    };
+}
+function to_candid_record_n106(value: {
+    id: number;
+    name: string;
+    inline_property_profile: EdgeInlinePropertyProfile;
+    ordering: EdgeOrderingPolicy;
+    inline_schema?: ResolvedInlineSchema;
+}): {
+    id: number;
+    name: string;
+    inline_property_profile: _EdgeInlinePropertyProfile;
+    ordering: _EdgeOrderingPolicy;
+    inline_schema: [] | [_ResolvedInlineSchema];
+} {
+    return {
+        id: value.id,
+        name: value.name,
+        inline_property_profile: to_candid_EdgeInlinePropertyProfile_n10(value.inline_property_profile),
+        ordering: to_candid_EdgeOrderingPolicy_n107(value.ordering),
+        inline_schema: value.inline_schema ? candid_some(to_candid_ResolvedInlineSchema_n109(value.inline_schema)) : candid_none()
+    };
+}
+function to_candid_record_n11(value: {
+    encoding: EdgeInlinePropertyEncoding;
+    byte_width: number;
+}): {
+    encoding: _EdgeInlinePropertyEncoding;
+    byte_width: number;
+} {
+    return {
+        encoding: to_candid_EdgeInlinePropertyEncoding_n12(value.encoding),
+        byte_width: value.byte_width
+    };
+}
+function to_candid_record_n111(value: {
+    fields: Array<ResolvedInlineStructField>;
+    property_id: number;
+}): {
+    fields: Array<_ResolvedInlineStructField>;
+    property_id: number;
+} {
+    return {
+        fields: to_candid_vec_n112(value.fields),
+        property_id: value.property_id
+    };
+}
+function to_candid_record_n114(value: {
+    byte_offset: number;
+    name: string;
+    profile: EdgeInlinePropertyProfile;
+}): {
+    byte_offset: number;
+    name: string;
+    profile: _EdgeInlinePropertyProfile;
+} {
+    return {
+        byte_offset: value.byte_offset,
+        name: value.name,
+        profile: to_candid_EdgeInlinePropertyProfile_n10(value.profile)
+    };
+}
+function to_candid_record_n117(value: {
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id?: number;
+    target_local_vertex_id: number;
+    source_local_vertex_id: number;
+}): {
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    resolved_initial_edge_properties: Array<_ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id: [] | [number];
+    target_local_vertex_id: number;
+    source_local_vertex_id: number;
+} {
+    return {
+        directed: value.directed,
+        inline_property_bytes: value.inline_property_bytes,
+        resolved_initial_edge_properties: value.resolved_initial_edge_properties,
+        catalog_edge_label_id: value.catalog_edge_label_id ? candid_some(value.catalog_edge_label_id) : candid_none(),
+        target_local_vertex_id: value.target_local_vertex_id,
+        source_local_vertex_id: value.source_local_vertex_id
+    };
+}
+function to_candid_record_n130(value: {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
+    execution_mode: OrderedBatchExecutionModeV1;
+    request: OrderedMixedBatchGraphRequest;
+}): {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+    execution_mode: _OrderedBatchExecutionModeV1;
+    request: _OrderedMixedBatchGraphRequest;
+} {
+    return {
+        mutation_id: value.mutation_id,
+        graph_request_fingerprint: value.graph_request_fingerprint,
+        execution_mode: to_candid_OrderedBatchExecutionModeV1_n96(value.execution_mode),
+        request: to_candid_OrderedMixedBatchGraphRequest_n131(value.request)
+    };
+}
+function to_candid_record_n134(value: {
+    graph_id: number;
+    resolved_labels: ResolvedLabelTable;
+    target_shard_id: number;
+    operations: Array<OrderedMixedGraphOperationV1>;
+    resolved_properties: ResolvedPropertyTable;
+    target_graph_canister: Principal;
+}): {
+    graph_id: number;
+    resolved_labels: _ResolvedLabelTable;
+    target_shard_id: number;
+    operations: Array<_OrderedMixedGraphOperationV1>;
+    resolved_properties: _ResolvedPropertyTable;
+    target_graph_canister: Principal;
+} {
+    return {
+        graph_id: value.graph_id,
+        resolved_labels: to_candid_ResolvedLabelTable_n102(value.resolved_labels),
+        target_shard_id: value.target_shard_id,
+        operations: to_candid_vec_n135(value.operations),
+        resolved_properties: value.resolved_properties,
+        target_graph_canister: value.target_graph_canister
+    };
+}
+function to_candid_record_n139(value: {
+    source: OrderedMixedGraphEndpointV1;
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    target: OrderedMixedGraphEndpointV1;
+    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id?: number;
+}): {
+    source: _OrderedMixedGraphEndpointV1;
+    directed: boolean;
+    inline_property_bytes: Uint8Array;
+    target: _OrderedMixedGraphEndpointV1;
+    resolved_initial_edge_properties: Array<_ResolvedOrderedEdgePropertyV1>;
+    catalog_edge_label_id: [] | [number];
+} {
+    return {
+        source: to_candid_OrderedMixedGraphEndpointV1_n140(value.source),
+        directed: value.directed,
+        inline_property_bytes: value.inline_property_bytes,
+        target: to_candid_OrderedMixedGraphEndpointV1_n140(value.target),
+        resolved_initial_edge_properties: value.resolved_initial_edge_properties,
+        catalog_edge_label_id: value.catalog_edge_label_id ? candid_some(value.catalog_edge_label_id) : candid_none()
+    };
+}
+function to_candid_record_n153(value: {
+    mutation_id: bigint;
+    graph_request_fingerprint: Uint8Array;
+    execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedVertexBatchGraphRequest;
 }): {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
+    execution_mode: _OrderedBatchExecutionModeV1;
     request: _OrderedVertexBatchGraphRequest;
 } {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
-        request: to_candid_OrderedVertexBatchGraphRequest_n105(value.request)
+        execution_mode: to_candid_OrderedBatchExecutionModeV1_n96(value.execution_mode),
+        request: to_candid_OrderedVertexBatchGraphRequest_n154(value.request)
     };
 }
-function to_candid_record_n108(value: {
+function to_candid_record_n157(value: {
     graph_id: number;
     resolved_labels: ResolvedLabelTable;
     target_shard_id: number;
@@ -2187,14 +3302,14 @@ function to_candid_record_n108(value: {
 } {
     return {
         graph_id: value.graph_id,
-        resolved_labels: to_candid_ResolvedLabelTable_n49(value.resolved_labels),
+        resolved_labels: to_candid_ResolvedLabelTable_n102(value.resolved_labels),
         target_shard_id: value.target_shard_id,
         resolved_properties: value.resolved_properties,
         items: value.items,
         target_graph_canister: value.target_graph_canister
     };
 }
-function to_candid_record_n118(value: {
+function to_candid_record_n167(value: {
     mutation_id?: bigint;
     indexed_properties?: IndexedPropertyCatalog;
     plan_blob: Uint8Array;
@@ -2231,14 +3346,14 @@ function to_candid_record_n118(value: {
 } {
     return {
         mutation_id: value.mutation_id ? candid_some(value.mutation_id) : candid_none(),
-        indexed_properties: value.indexed_properties ? candid_some(value.indexed_properties) : candid_none(),
+        indexed_properties: value.indexed_properties ? candid_some(to_candid_IndexedPropertyCatalog_n66(value.indexed_properties)) : candid_none(),
         plan_blob: value.plan_blob,
-        resolved_labels: value.resolved_labels ? candid_some(to_candid_ResolvedLabelTable_n49(value.resolved_labels)) : candid_none(),
-        mode: to_candid_GqlExecutionMode_n119(value.mode),
+        resolved_labels: value.resolved_labels ? candid_some(to_candid_ResolvedLabelTable_n102(value.resolved_labels)) : candid_none(),
+        mode: to_candid_GqlExecutionMode_n168(value.mode),
         unique_claims: value.unique_claims ? candid_some(value.unique_claims) : candid_none(),
         target_shard_id: value.target_shard_id,
         params_blob: value.params_blob,
-        indexed_embeddings: value.indexed_embeddings ? candid_some(to_candid_IndexedEmbeddingCatalog_n36(value.indexed_embeddings)) : candid_none(),
+        indexed_embeddings: value.indexed_embeddings ? candid_some(to_candid_IndexedEmbeddingCatalog_n85(value.indexed_embeddings)) : candid_none(),
         constrained_properties: value.constrained_properties ? candid_some(value.constrained_properties) : candid_none(),
         local_constrained_properties: value.local_constrained_properties ? candid_some(value.local_constrained_properties) : candid_none(),
         resolved_search_blob: value.resolved_search_blob ? candid_some(value.resolved_search_blob) : candid_none(),
@@ -2248,7 +3363,7 @@ function to_candid_record_n118(value: {
         seed_bindings_blob: value.seed_bindings_blob ? candid_some(value.seed_bindings_blob) : candid_none()
     };
 }
-function to_candid_record_n126(value: {
+function to_candid_record_n175(value: {
     mode: ExecutePlanBatchMode;
     operations: Array<ExecutePlanArgs>;
 }): {
@@ -2256,11 +3371,59 @@ function to_candid_record_n126(value: {
     operations: Array<_ExecutePlanArgs>;
 } {
     return {
-        mode: to_candid_ExecutePlanBatchMode_n127(value.mode),
-        operations: to_candid_vec_n129(value.operations)
+        mode: to_candid_ExecutePlanBatchMode_n176(value.mode),
+        operations: to_candid_vec_n178(value.operations)
     };
 }
 function to_candid_record_n2(value: {
+    graph_id: number;
+    catalog_epoch: bigint;
+    target: CanonicalExportTarget;
+    inline?: CanonicalInlineProjection;
+    index_name_id: number;
+}): {
+    graph_id: number;
+    catalog_epoch: bigint;
+    target: _CanonicalExportTarget;
+    inline: [] | [_CanonicalInlineProjection];
+    index_name_id: number;
+} {
+    return {
+        graph_id: value.graph_id,
+        catalog_epoch: value.catalog_epoch,
+        target: to_candid_CanonicalExportTarget_n3(value.target),
+        inline: value.inline ? candid_some(to_candid_CanonicalInlineProjection_n8(value.inline)) : candid_none(),
+        index_name_id: value.index_name_id
+    };
+}
+function to_candid_record_n206(value: {
+    graph_id: number;
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    cursor?: Uint8Array;
+    limit: number;
+    target: CanonicalExportTarget;
+    index_name_id: number;
+}): {
+    graph_id: number;
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    cursor: [] | [Uint8Array];
+    limit: number;
+    target: _CanonicalExportTarget;
+    index_name_id: number;
+} {
+    return {
+        graph_id: value.graph_id,
+        catalog_epoch: value.catalog_epoch,
+        physical_index_id: value.physical_index_id,
+        cursor: value.cursor ? candid_some(value.cursor) : candid_none(),
+        limit: value.limit,
+        target: to_candid_CanonicalExportTarget_n3(value.target),
+        index_name_id: value.index_name_id
+    };
+}
+function to_candid_record_n39(value: {
     local_vertex_id: number;
     spec: IndexedEmbeddingSpec;
     values: Array<number>;
@@ -2271,56 +3434,11 @@ function to_candid_record_n2(value: {
 } {
     return {
         local_vertex_id: value.local_vertex_id,
-        spec: to_candid_IndexedEmbeddingSpec_n3(value.spec),
+        spec: to_candid_IndexedEmbeddingSpec_n40(value.spec),
         values: value.values
     };
 }
-function to_candid_record_n24(value: {
-    args: EdgePostingBackfillArgs;
-    catalog: IndexedPropertyCatalog;
-}): {
-    args: _EdgePostingBackfillArgs;
-    catalog: _IndexedPropertyCatalog;
-} {
-    return {
-        args: to_candid_EdgePostingBackfillArgs_n25(value.args),
-        catalog: value.catalog
-    };
-}
-function to_candid_record_n26(value: {
-    max_entries: number;
-    after_key?: Uint8Array;
-}): {
-    max_entries: number;
-    after_key: [] | [Uint8Array];
-} {
-    return {
-        max_entries: value.max_entries,
-        after_key: value.after_key ? candid_some(value.after_key) : candid_none()
-    };
-}
-function to_candid_record_n35(value: {
-    args: PostingBackfillArgs;
-    catalog: IndexedEmbeddingCatalog;
-}): {
-    args: _PostingBackfillArgs;
-    catalog: _IndexedEmbeddingCatalog;
-} {
-    return {
-        args: value.args,
-        catalog: to_candid_IndexedEmbeddingCatalog_n36(value.catalog)
-    };
-}
-function to_candid_record_n37(value: {
-    embeddings: Array<IndexedEmbeddingSpec>;
-}): {
-    embeddings: Array<_IndexedEmbeddingSpec>;
-} {
-    return {
-        embeddings: to_candid_vec_n38(value.embeddings)
-    };
-}
-function to_candid_record_n4(value: {
+function to_candid_record_n41(value: {
     metric: VectorMetric;
     encoding: VectorEncoding;
     dims: number;
@@ -2336,292 +3454,231 @@ function to_candid_record_n4(value: {
     index_id: number;
 } {
     return {
-        metric: to_candid_VectorMetric_n5(value.metric),
-        encoding: to_candid_VectorEncoding_n7(value.encoding),
+        metric: to_candid_VectorMetric_n42(value.metric),
+        encoding: to_candid_VectorEncoding_n44(value.encoding),
         dims: value.dims,
-        kind: to_candid_VectorIndexKind_n9(value.kind),
+        kind: to_candid_VectorIndexKind_n46(value.kind),
         embedding_name_id: value.embedding_name_id,
         index_id: value.index_id
     };
 }
-function to_candid_record_n44(value: {
+function to_candid_record_n5(value: {
+    direction: EdgeIndexDirection;
+    label_id: number;
+    property_id: number;
+}): {
+    direction: _EdgeIndexDirection;
+    label_id: number;
+    property_id: number;
+} {
+    return {
+        direction: to_candid_EdgeIndexDirection_n6(value.direction),
+        label_id: value.label_id,
+        property_id: value.property_id
+    };
+}
+function to_candid_record_n63(value: {
+    args: EdgePostingBackfillArgs;
+    catalog: IndexedPropertyCatalog;
+}): {
+    args: _EdgePostingBackfillArgs;
+    catalog: _IndexedPropertyCatalog;
+} {
+    return {
+        args: to_candid_EdgePostingBackfillArgs_n64(value.args),
+        catalog: to_candid_IndexedPropertyCatalog_n66(value.catalog)
+    };
+}
+function to_candid_record_n65(value: {
+    max_entries: number;
+    after_key?: Uint8Array;
+}): {
+    max_entries: number;
+    after_key: [] | [Uint8Array];
+} {
+    return {
+        max_entries: value.max_entries,
+        after_key: value.after_key ? candid_some(value.after_key) : candid_none()
+    };
+}
+function to_candid_record_n67(value: {
+    vertex_indexes: Array<IndexedVertexMembership>;
+    edge_indexes: Array<IndexedEdgeMembership>;
+}): {
+    vertex_indexes: Array<_IndexedVertexMembership>;
+    edge_indexes: Array<_IndexedEdgeMembership>;
+} {
+    return {
+        vertex_indexes: to_candid_vec_n68(value.vertex_indexes),
+        edge_indexes: to_candid_vec_n73(value.edge_indexes)
+    };
+}
+function to_candid_record_n70(value: {
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    label_id: number;
+    property_id: number;
+    phase: IndexMaintenancePhase;
+}): {
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    label_id: number;
+    property_id: number;
+    phase: _IndexMaintenancePhase;
+} {
+    return {
+        catalog_epoch: value.catalog_epoch,
+        physical_index_id: value.physical_index_id,
+        label_id: value.label_id,
+        property_id: value.property_id,
+        phase: to_candid_IndexMaintenancePhase_n71(value.phase)
+    };
+}
+function to_candid_record_n75(value: {
+    direction: EdgeIndexDirection;
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    field_path: string;
+    label_id: number;
+    property_id: number;
+    phase: IndexMaintenancePhase;
+}): {
+    direction: _EdgeIndexDirection;
+    catalog_epoch: bigint;
+    physical_index_id: bigint;
+    field_path: string;
+    label_id: number;
+    property_id: number;
+    phase: _IndexMaintenancePhase;
+} {
+    return {
+        direction: to_candid_EdgeIndexDirection_n6(value.direction),
+        catalog_epoch: value.catalog_epoch,
+        physical_index_id: value.physical_index_id,
+        field_path: value.field_path,
+        label_id: value.label_id,
+        property_id: value.property_id,
+        phase: to_candid_IndexMaintenancePhase_n71(value.phase)
+    };
+}
+function to_candid_record_n84(value: {
+    args: PostingBackfillArgs;
+    catalog: IndexedEmbeddingCatalog;
+}): {
+    args: _PostingBackfillArgs;
+    catalog: _IndexedEmbeddingCatalog;
+} {
+    return {
+        args: value.args,
+        catalog: to_candid_IndexedEmbeddingCatalog_n85(value.catalog)
+    };
+}
+function to_candid_record_n86(value: {
+    embeddings: Array<IndexedEmbeddingSpec>;
+}): {
+    embeddings: Array<_IndexedEmbeddingSpec>;
+} {
+    return {
+        embeddings: to_candid_vec_n87(value.embeddings)
+    };
+}
+function to_candid_record_n9(value: {
+    byte_offset: number;
+    source_property_id: number;
+    value_profile: EdgeInlinePropertyProfile;
+    source_profile: EdgeInlinePropertyProfile;
+}): {
+    byte_offset: number;
+    source_property_id: number;
+    value_profile: _EdgeInlinePropertyProfile;
+    source_profile: _EdgeInlinePropertyProfile;
+} {
+    return {
+        byte_offset: value.byte_offset,
+        source_property_id: value.source_property_id,
+        value_profile: to_candid_EdgeInlinePropertyProfile_n10(value.value_profile),
+        source_profile: to_candid_EdgeInlinePropertyProfile_n10(value.source_profile)
+    };
+}
+function to_candid_record_n91(value: {
+    args: PostingBackfillArgs;
+    catalog: IndexedPropertyCatalog;
+}): {
+    args: _PostingBackfillArgs;
+    catalog: _IndexedPropertyCatalog;
+} {
+    return {
+        args: value.args,
+        catalog: to_candid_IndexedPropertyCatalog_n66(value.catalog)
+    };
+}
+function to_candid_record_n95(value: {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
+    execution_mode: OrderedBatchExecutionModeV1;
     request: OrderedEdgeBatchGraphRequest;
 }): {
     mutation_id: bigint;
     graph_request_fingerprint: Uint8Array;
+    execution_mode: _OrderedBatchExecutionModeV1;
     request: _OrderedEdgeBatchGraphRequest;
 } {
     return {
         mutation_id: value.mutation_id,
         graph_request_fingerprint: value.graph_request_fingerprint,
-        request: to_candid_OrderedEdgeBatchGraphRequest_n45(value.request)
+        execution_mode: to_candid_OrderedBatchExecutionModeV1_n96(value.execution_mode),
+        request: to_candid_OrderedEdgeBatchGraphRequest_n98(value.request)
     };
 }
-function to_candid_record_n48(value: {
-    graph_id: number;
-    resolved_labels: ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties: ResolvedPropertyTable;
-    items: Array<OrderedEdgeBatchGraphItemV1>;
-    target_graph_canister: Principal;
-}): {
-    graph_id: number;
-    resolved_labels: _ResolvedLabelTable;
-    target_shard_id: number;
-    resolved_properties: _ResolvedPropertyTable;
-    items: Array<_OrderedEdgeBatchGraphItemV1>;
-    target_graph_canister: Principal;
-} {
-    return {
-        graph_id: value.graph_id,
-        resolved_labels: to_candid_ResolvedLabelTable_n49(value.resolved_labels),
-        target_shard_id: value.target_shard_id,
-        resolved_properties: value.resolved_properties,
-        items: to_candid_vec_n66(value.items),
-        target_graph_canister: value.target_graph_canister
-    };
-}
-function to_candid_record_n50(value: {
-    edge: Array<ResolvedEdgeLabel>;
-    vertex: Array<ResolvedVertexLabel>;
-}): {
-    edge: Array<_ResolvedEdgeLabel>;
-    vertex: Array<_ResolvedVertexLabel>;
-} {
-    return {
-        edge: to_candid_vec_n51(value.edge),
-        vertex: value.vertex
-    };
-}
-function to_candid_record_n53(value: {
-    id: number;
-    name: string;
-    inline_property_profile: EdgeInlinePropertyProfile;
-    ordering: EdgeOrderingPolicy;
-    inline_schema?: ResolvedInlineSchema;
-}): {
-    id: number;
-    name: string;
-    inline_property_profile: _EdgeInlinePropertyProfile;
-    ordering: _EdgeOrderingPolicy;
-    inline_schema: [] | [_ResolvedInlineSchema];
-} {
-    return {
-        id: value.id,
-        name: value.name,
-        inline_property_profile: to_candid_EdgeInlinePropertyProfile_n54(value.inline_property_profile),
-        ordering: to_candid_EdgeOrderingPolicy_n58(value.ordering),
-        inline_schema: value.inline_schema ? candid_some(to_candid_ResolvedInlineSchema_n60(value.inline_schema)) : candid_none()
-    };
-}
-function to_candid_record_n55(value: {
-    encoding: EdgeInlinePropertyEncoding;
-    byte_width: number;
-}): {
-    encoding: _EdgeInlinePropertyEncoding;
-    byte_width: number;
-} {
-    return {
-        encoding: to_candid_EdgeInlinePropertyEncoding_n56(value.encoding),
-        byte_width: value.byte_width
-    };
-}
-function to_candid_record_n62(value: {
-    fields: Array<ResolvedInlineStructField>;
-    property_id: number;
-}): {
-    fields: Array<_ResolvedInlineStructField>;
-    property_id: number;
-} {
-    return {
-        fields: to_candid_vec_n63(value.fields),
-        property_id: value.property_id
-    };
-}
-function to_candid_record_n65(value: {
-    byte_offset: number;
-    name: string;
-    profile: EdgeInlinePropertyProfile;
-}): {
-    byte_offset: number;
-    name: string;
-    profile: _EdgeInlinePropertyProfile;
-} {
-    return {
-        byte_offset: value.byte_offset,
-        name: value.name,
-        profile: to_candid_EdgeInlinePropertyProfile_n54(value.profile)
-    };
-}
-function to_candid_record_n68(value: {
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id?: number;
-    target_local_vertex_id: number;
-    source_local_vertex_id: number;
-}): {
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    resolved_initial_edge_properties: Array<_ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id: [] | [number];
-    target_local_vertex_id: number;
-    source_local_vertex_id: number;
-} {
-    return {
-        directed: value.directed,
-        inline_property_bytes: value.inline_property_bytes,
-        resolved_initial_edge_properties: value.resolved_initial_edge_properties,
-        catalog_edge_label_id: value.catalog_edge_label_id ? candid_some(value.catalog_edge_label_id) : candid_none(),
-        target_local_vertex_id: value.target_local_vertex_id,
-        source_local_vertex_id: value.source_local_vertex_id
-    };
-}
-function to_candid_record_n81(value: {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-    request: OrderedMixedBatchGraphRequest;
-}): {
-    mutation_id: bigint;
-    graph_request_fingerprint: Uint8Array;
-    request: _OrderedMixedBatchGraphRequest;
-} {
-    return {
-        mutation_id: value.mutation_id,
-        graph_request_fingerprint: value.graph_request_fingerprint,
-        request: to_candid_OrderedMixedBatchGraphRequest_n82(value.request)
-    };
-}
-function to_candid_record_n85(value: {
-    graph_id: number;
-    resolved_labels: ResolvedLabelTable;
-    target_shard_id: number;
-    operations: Array<OrderedMixedGraphOperationV1>;
-    resolved_properties: ResolvedPropertyTable;
-    target_graph_canister: Principal;
-}): {
-    graph_id: number;
-    resolved_labels: _ResolvedLabelTable;
-    target_shard_id: number;
-    operations: Array<_OrderedMixedGraphOperationV1>;
-    resolved_properties: _ResolvedPropertyTable;
-    target_graph_canister: Principal;
-} {
-    return {
-        graph_id: value.graph_id,
-        resolved_labels: to_candid_ResolvedLabelTable_n49(value.resolved_labels),
-        target_shard_id: value.target_shard_id,
-        operations: to_candid_vec_n86(value.operations),
-        resolved_properties: value.resolved_properties,
-        target_graph_canister: value.target_graph_canister
-    };
-}
-function to_candid_record_n90(value: {
-    source: OrderedMixedGraphEndpointV1;
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    target: OrderedMixedGraphEndpointV1;
-    resolved_initial_edge_properties: Array<ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id?: number;
-}): {
-    source: _OrderedMixedGraphEndpointV1;
-    directed: boolean;
-    inline_property_bytes: Uint8Array;
-    target: _OrderedMixedGraphEndpointV1;
-    resolved_initial_edge_properties: Array<_ResolvedOrderedEdgePropertyV1>;
-    catalog_edge_label_id: [] | [number];
-} {
-    return {
-        source: to_candid_OrderedMixedGraphEndpointV1_n91(value.source),
-        directed: value.directed,
-        inline_property_bytes: value.inline_property_bytes,
-        target: to_candid_OrderedMixedGraphEndpointV1_n91(value.target),
-        resolved_initial_edge_properties: value.resolved_initial_edge_properties,
-        catalog_edge_label_id: value.catalog_edge_label_id ? candid_some(value.catalog_edge_label_id) : candid_none()
-    };
-}
-function to_candid_variant_n10(value: VectorIndexKind): {
-    IvfFlat: null;
-} {
-    return value == VectorIndexKind.IvfFlat ? {
-        IvfFlat: null
-    } : value;
-}
-function to_candid_variant_n102(value: {
-    __kind__: "V1";
-    V1: OrderedVertexBatchGraphArgsV1;
-}): {
-    V1: _OrderedVertexBatchGraphArgsV1;
-} {
-    return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedVertexBatchGraphArgsV1_n103(value.V1)
-    } : value;
-}
-function to_candid_variant_n106(value: {
-    __kind__: "V1";
-    V1: OrderedVertexBatchGraphRequestV1;
-}): {
-    V1: _OrderedVertexBatchGraphRequestV1;
-} {
-    return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedVertexBatchGraphRequestV1_n107(value.V1)
-    } : value;
-}
-function to_candid_variant_n120(value: GqlExecutionMode): {
-    Update: null;
+function to_candid_variant_n108(value: EdgeOrderingPolicy): {
+    Unordered: null;
 } | {
-    Query: null;
+    Insertion: null;
 } {
-    return value == GqlExecutionMode.Update ? {
-        Update: null
-    } : value == GqlExecutionMode.Query ? {
-        Query: null
+    return value == EdgeOrderingPolicy.Unordered ? {
+        Unordered: null
+    } : value == EdgeOrderingPolicy.Insertion ? {
+        Insertion: null
     } : value;
 }
-function to_candid_variant_n128(value: ExecutePlanBatchMode): {
-    Dynamic: null;
+function to_candid_variant_n110(value: {
+    __kind__: "struct";
+    struct: {
+        fields: Array<ResolvedInlineStructField>;
+        property_id: number;
+    };
 } | {
-    Fixed: null;
+    __kind__: "scalar";
+    scalar: {
+        property_id: number;
+    };
+}): {
+    struct: {
+        fields: Array<_ResolvedInlineStructField>;
+        property_id: number;
+    };
+} | {
+    scalar: {
+        property_id: number;
+    };
 } {
-    return value == ExecutePlanBatchMode.Dynamic ? {
-        Dynamic: null
-    } : value == ExecutePlanBatchMode.Fixed ? {
-        Fixed: null
+    return value.__kind__ === "struct" ? {
+        struct: to_candid_record_n111(value.struct)
+    } : value.__kind__ === "scalar" ? {
+        scalar: value.scalar
     } : value;
 }
-function to_candid_variant_n168(value: {
+function to_candid_variant_n128(value: {
     __kind__: "V1";
-    V1: OrderedMutationRetirementArgsV1;
+    V1: OrderedMixedBatchGraphArgsV1;
 }): {
-    V1: _OrderedMutationRetirementArgsV1;
+    V1: _OrderedMixedBatchGraphArgsV1;
 } {
     return value.__kind__ === "V1" ? {
-        V1: value.V1
+        V1: to_candid_OrderedMixedBatchGraphArgsV1_n129(value.V1)
     } : value;
 }
-function to_candid_variant_n42(value: {
-    __kind__: "V1";
-    V1: OrderedEdgeBatchGraphArgsV1;
-}): {
-    V1: _OrderedEdgeBatchGraphArgsV1;
-} {
-    return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedEdgeBatchGraphArgsV1_n43(value.V1)
-    } : value;
-}
-function to_candid_variant_n46(value: {
-    __kind__: "V1";
-    V1: OrderedEdgeBatchGraphRequestV1;
-}): {
-    V1: _OrderedEdgeBatchGraphRequestV1;
-} {
-    return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedEdgeBatchGraphRequestV1_n47(value.V1)
-    } : value;
-}
-function to_candid_variant_n57(value: {
+function to_candid_variant_n13(value: {
     __kind__: "F16";
     F16: null;
 } | {
@@ -2747,83 +3804,17 @@ function to_candid_variant_n57(value: {
         RawBytes: value.RawBytes
     } : value;
 }
-function to_candid_variant_n59(value: EdgeOrderingPolicy): {
-    Unordered: null;
-} | {
-    Insertion: null;
-} {
-    return value == EdgeOrderingPolicy.Unordered ? {
-        Unordered: null
-    } : value == EdgeOrderingPolicy.Insertion ? {
-        Insertion: null
-    } : value;
-}
-function to_candid_variant_n6(value: VectorMetric): {
-    L2Squared: null;
-} | {
-    Cosine: null;
-} {
-    return value == VectorMetric.L2Squared ? {
-        L2Squared: null
-    } : value == VectorMetric.Cosine ? {
-        Cosine: null
-    } : value;
-}
-function to_candid_variant_n61(value: {
-    __kind__: "struct";
-    struct: {
-        fields: Array<ResolvedInlineStructField>;
-        property_id: number;
-    };
-} | {
-    __kind__: "scalar";
-    scalar: {
-        property_id: number;
-    };
-}): {
-    struct: {
-        fields: Array<_ResolvedInlineStructField>;
-        property_id: number;
-    };
-} | {
-    scalar: {
-        property_id: number;
-    };
-} {
-    return value.__kind__ === "struct" ? {
-        struct: to_candid_record_n62(value.struct)
-    } : value.__kind__ === "scalar" ? {
-        scalar: value.scalar
-    } : value;
-}
-function to_candid_variant_n79(value: {
-    __kind__: "V1";
-    V1: OrderedMixedBatchGraphArgsV1;
-}): {
-    V1: _OrderedMixedBatchGraphArgsV1;
-} {
-    return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedMixedBatchGraphArgsV1_n80(value.V1)
-    } : value;
-}
-function to_candid_variant_n8(value: VectorEncoding): {
-    F32: null;
-} {
-    return value == VectorEncoding.F32 ? {
-        F32: null
-    } : value;
-}
-function to_candid_variant_n83(value: {
+function to_candid_variant_n132(value: {
     __kind__: "V1";
     V1: OrderedMixedBatchGraphRequestV1;
 }): {
     V1: _OrderedMixedBatchGraphRequestV1;
 } {
     return value.__kind__ === "V1" ? {
-        V1: to_candid_OrderedMixedBatchGraphRequestV1_n84(value.V1)
+        V1: to_candid_OrderedMixedBatchGraphRequestV1_n133(value.V1)
     } : value;
 }
-function to_candid_variant_n88(value: {
+function to_candid_variant_n137(value: {
     __kind__: "Edge";
     Edge: OrderedMixedGraphEdgeItemV1;
 } | {
@@ -2835,12 +3826,12 @@ function to_candid_variant_n88(value: {
     Vertex: _OrderedVertexBatchGraphItemV1;
 } {
     return value.__kind__ === "Edge" ? {
-        Edge: to_candid_OrderedMixedGraphEdgeItemV1_n89(value.Edge)
+        Edge: to_candid_OrderedMixedGraphEdgeItemV1_n138(value.Edge)
     } : value.__kind__ === "Vertex" ? {
         Vertex: value.Vertex
     } : value;
 }
-function to_candid_variant_n92(value: {
+function to_candid_variant_n141(value: {
     __kind__: "NewVertexOrdinal";
     NewVertexOrdinal: number;
 } | {
@@ -2857,26 +3848,217 @@ function to_candid_variant_n92(value: {
         Existing: value.Existing
     } : value;
 }
-function to_candid_vec_n129(value: Array<ExecutePlanArgs>): Array<_ExecutePlanArgs> {
-    return value.map((x)=>to_candid_ExecutePlanArgs_n117(x));
+function to_candid_variant_n151(value: {
+    __kind__: "V1";
+    V1: OrderedVertexBatchGraphArgsV1;
+}): {
+    V1: _OrderedVertexBatchGraphArgsV1;
+} {
+    return value.__kind__ === "V1" ? {
+        V1: to_candid_OrderedVertexBatchGraphArgsV1_n152(value.V1)
+    } : value;
 }
-function to_candid_vec_n17(value: Array<VertexEmbeddingIngestionArgs>): Array<_VertexEmbeddingIngestionArgs> {
-    return value.map((x)=>to_candid_VertexEmbeddingIngestionArgs_n1(x));
+function to_candid_variant_n155(value: {
+    __kind__: "V1";
+    V1: OrderedVertexBatchGraphRequestV1;
+}): {
+    V1: _OrderedVertexBatchGraphRequestV1;
+} {
+    return value.__kind__ === "V1" ? {
+        V1: to_candid_OrderedVertexBatchGraphRequestV1_n156(value.V1)
+    } : value;
 }
-function to_candid_vec_n38(value: Array<IndexedEmbeddingSpec>): Array<_IndexedEmbeddingSpec> {
-    return value.map((x)=>to_candid_IndexedEmbeddingSpec_n3(x));
+function to_candid_variant_n169(value: GqlExecutionMode): {
+    Update: null;
+} | {
+    Query: null;
+} {
+    return value == GqlExecutionMode.Update ? {
+        Update: null
+    } : value == GqlExecutionMode.Query ? {
+        Query: null
+    } : value;
 }
-function to_candid_vec_n51(value: Array<ResolvedEdgeLabel>): Array<_ResolvedEdgeLabel> {
-    return value.map((x)=>to_candid_ResolvedEdgeLabel_n52(x));
+function to_candid_variant_n177(value: ExecutePlanBatchMode): {
+    Dynamic: null;
+} | {
+    Fixed: null;
+} {
+    return value == ExecutePlanBatchMode.Dynamic ? {
+        Dynamic: null
+    } : value == ExecutePlanBatchMode.Fixed ? {
+        Fixed: null
+    } : value;
 }
-function to_candid_vec_n63(value: Array<ResolvedInlineStructField>): Array<_ResolvedInlineStructField> {
-    return value.map((x)=>to_candid_ResolvedInlineStructField_n64(x));
+function to_candid_variant_n226(value: {
+    __kind__: "V1";
+    V1: OrderedMutationRetirementArgsV1;
+}): {
+    V1: _OrderedMutationRetirementArgsV1;
+} {
+    return value.__kind__ === "V1" ? {
+        V1: value.V1
+    } : value;
 }
-function to_candid_vec_n66(value: Array<OrderedEdgeBatchGraphItemV1>): Array<_OrderedEdgeBatchGraphItemV1> {
-    return value.map((x)=>to_candid_OrderedEdgeBatchGraphItemV1_n67(x));
+function to_candid_variant_n4(value: {
+    __kind__: "Edge";
+    Edge: {
+        direction: EdgeIndexDirection;
+        label_id: number;
+        property_id: number;
+    };
+} | {
+    __kind__: "Vertex";
+    Vertex: {
+        label_id: number;
+        property_id: number;
+    };
+}): {
+    Edge: {
+        direction: _EdgeIndexDirection;
+        label_id: number;
+        property_id: number;
+    };
+} | {
+    Vertex: {
+        label_id: number;
+        property_id: number;
+    };
+} {
+    return value.__kind__ === "Edge" ? {
+        Edge: to_candid_record_n5(value.Edge)
+    } : value.__kind__ === "Vertex" ? {
+        Vertex: value.Vertex
+    } : value;
 }
-function to_candid_vec_n86(value: Array<OrderedMixedGraphOperationV1>): Array<_OrderedMixedGraphOperationV1> {
-    return value.map((x)=>to_candid_OrderedMixedGraphOperationV1_n87(x));
+function to_candid_variant_n43(value: VectorMetric): {
+    L2Squared: null;
+} | {
+    Cosine: null;
+} {
+    return value == VectorMetric.L2Squared ? {
+        L2Squared: null
+    } : value == VectorMetric.Cosine ? {
+        Cosine: null
+    } : value;
+}
+function to_candid_variant_n45(value: VectorEncoding): {
+    F32: null;
+} {
+    return value == VectorEncoding.F32 ? {
+        F32: null
+    } : value;
+}
+function to_candid_variant_n47(value: VectorIndexKind): {
+    IvfFlat: null;
+} {
+    return value == VectorIndexKind.IvfFlat ? {
+        IvfFlat: null
+    } : value;
+}
+function to_candid_variant_n7(value: EdgeIndexDirection): {
+    Any: null;
+} | {
+    OutgoingOrIncoming: null;
+} | {
+    IncomingOrUndirected: null;
+} | {
+    Outgoing: null;
+} | {
+    OutgoingOrUndirected: null;
+} | {
+    Undirected: null;
+} | {
+    Incoming: null;
+} {
+    return value == EdgeIndexDirection.Any ? {
+        Any: null
+    } : value == EdgeIndexDirection.OutgoingOrIncoming ? {
+        OutgoingOrIncoming: null
+    } : value == EdgeIndexDirection.IncomingOrUndirected ? {
+        IncomingOrUndirected: null
+    } : value == EdgeIndexDirection.Outgoing ? {
+        Outgoing: null
+    } : value == EdgeIndexDirection.OutgoingOrUndirected ? {
+        OutgoingOrUndirected: null
+    } : value == EdgeIndexDirection.Undirected ? {
+        Undirected: null
+    } : value == EdgeIndexDirection.Incoming ? {
+        Incoming: null
+    } : value;
+}
+function to_candid_variant_n72(value: IndexMaintenancePhase): {
+    Building: null;
+} | {
+    Active: null;
+} | {
+    Sealing: null;
+} {
+    return value == IndexMaintenancePhase.Building ? {
+        Building: null
+    } : value == IndexMaintenancePhase.Active ? {
+        Active: null
+    } : value == IndexMaintenancePhase.Sealing ? {
+        Sealing: null
+    } : value;
+}
+function to_candid_variant_n93(value: {
+    __kind__: "V1";
+    V1: OrderedEdgeBatchGraphArgsV1;
+}): {
+    V1: _OrderedEdgeBatchGraphArgsV1;
+} {
+    return value.__kind__ === "V1" ? {
+        V1: to_candid_OrderedEdgeBatchGraphArgsV1_n94(value.V1)
+    } : value;
+}
+function to_candid_variant_n97(value: OrderedBatchExecutionModeV1): {
+    Atomic: null;
+} | {
+    Resumable: null;
+} {
+    return value == OrderedBatchExecutionModeV1.Atomic ? {
+        Atomic: null
+    } : value == OrderedBatchExecutionModeV1.Resumable ? {
+        Resumable: null
+    } : value;
+}
+function to_candid_variant_n99(value: {
+    __kind__: "V1";
+    V1: OrderedEdgeBatchGraphRequestV1;
+}): {
+    V1: _OrderedEdgeBatchGraphRequestV1;
+} {
+    return value.__kind__ === "V1" ? {
+        V1: to_candid_OrderedEdgeBatchGraphRequestV1_n100(value.V1)
+    } : value;
+}
+function to_candid_vec_n104(value: Array<ResolvedEdgeLabel>): Array<_ResolvedEdgeLabel> {
+    return value.map((x)=>to_candid_ResolvedEdgeLabel_n105(x));
+}
+function to_candid_vec_n112(value: Array<ResolvedInlineStructField>): Array<_ResolvedInlineStructField> {
+    return value.map((x)=>to_candid_ResolvedInlineStructField_n113(x));
+}
+function to_candid_vec_n115(value: Array<OrderedEdgeBatchGraphItemV1>): Array<_OrderedEdgeBatchGraphItemV1> {
+    return value.map((x)=>to_candid_OrderedEdgeBatchGraphItemV1_n116(x));
+}
+function to_candid_vec_n135(value: Array<OrderedMixedGraphOperationV1>): Array<_OrderedMixedGraphOperationV1> {
+    return value.map((x)=>to_candid_OrderedMixedGraphOperationV1_n136(x));
+}
+function to_candid_vec_n178(value: Array<ExecutePlanArgs>): Array<_ExecutePlanArgs> {
+    return value.map((x)=>to_candid_ExecutePlanArgs_n166(x));
+}
+function to_candid_vec_n54(value: Array<VertexEmbeddingIngestionArgs>): Array<_VertexEmbeddingIngestionArgs> {
+    return value.map((x)=>to_candid_VertexEmbeddingIngestionArgs_n38(x));
+}
+function to_candid_vec_n68(value: Array<IndexedVertexMembership>): Array<_IndexedVertexMembership> {
+    return value.map((x)=>to_candid_IndexedVertexMembership_n69(x));
+}
+function to_candid_vec_n73(value: Array<IndexedEdgeMembership>): Array<_IndexedEdgeMembership> {
+    return value.map((x)=>to_candid_IndexedEdgeMembership_n74(x));
+}
+function to_candid_vec_n87(value: Array<IndexedEmbeddingSpec>): Array<_IndexedEmbeddingSpec> {
+    return value.map((x)=>to_candid_IndexedEmbeddingSpec_n40(x));
 }
 export interface CreateActorOptions {
     agent?: Agent;

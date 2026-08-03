@@ -369,6 +369,9 @@ pub enum BulkLoadResponse {
     },
     Appended {
         chunk_index: u32,
+        /// Operations of this candidate batch committed as this chunk. The client resumes the
+        /// remainder at `chunk_index + 1` (ADR 0060 `Resumable` execution).
+        next_offset: u32,
         receipt: AtomicInsertReceiptV1,
     },
     FinalizeAccepted {
@@ -460,14 +463,21 @@ impl BulkLoadChunkV1 {
         }
     }
 
-    /// Validate one self-contained chunk and its exact atomic-insert envelope bound.
+    /// Validate one self-contained chunk and its exact envelope bound.
+    ///
+    /// `Resumable` bulk-load chunks (ADR 0060) are not capped by
+    /// [`MAX_ATOMIC_INSERT_OPERATIONS`]: the runtime instruction budget decides the committed
+    /// prefix, and the message payload bound and the durable receipt-row bound bound the
+    /// candidate size.
     pub fn validate(&self) -> Result<(), String> {
-        if self.operation_count() == 0 || self.operation_count() > MAX_ATOMIC_INSERT_OPERATIONS {
-            return Err(format!(
-                "bulk-load chunk must contain 1..={MAX_ATOMIC_INSERT_OPERATIONS} operations"
-            ));
+        if self.operation_count() == 0 {
+            return Err("bulk-load chunk must contain at least one operation".into());
         }
-        let operations = match self {
+        let vertex_count = match self {
+            Self::Vertices(items) => items.len() as u32,
+            Self::Edges(_) => 0,
+        };
+        let operations: Vec<AtomicInsertOperationV1> = match self {
             Self::Vertices(items) => items
                 .iter()
                 .cloned()
@@ -488,12 +498,11 @@ impl BulkLoadChunkV1 {
                 })
                 .collect(),
         };
-        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
-            client_mutation_key: "bulk-load-validation".into(),
-            logical_graph_name: "bulk-load-validation".into(),
-            operations,
-        });
-        request.validate()?;
+        validate_atomic_insert_operations(&operations, vertex_count)?;
+        let encoded = Encode!(self).map_err(|error| format!("bulk-load chunk encode: {error}"))?;
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("bulk-load chunk exceeds the safe payload bound".into());
+        }
         Ok(())
     }
 
@@ -637,6 +646,45 @@ pub(crate) enum ClassifiedAtomicInsertRequest {
     Mixed(OrderedMixedBatchRequest),
 }
 
+/// Validate per-operation labels, properties, and endpoints shared by atomic insert and
+/// bulk-load chunks. `vertex_count` bounds `NewVertexOrdinal` endpoints; bulk-load edge chunks
+/// pass zero because their endpoints are always `Existing`.
+fn validate_atomic_insert_operations(
+    operations: &[AtomicInsertOperationV1],
+    vertex_count: u32,
+) -> Result<(), String> {
+    for (ordinal, operation) in operations.iter().enumerate() {
+        match operation {
+            AtomicInsertOperationV1::Vertex(item) => {
+                if item.vertex_labels.iter().any(String::is_empty) {
+                    return Err(format!(
+                        "atomic insert operation {ordinal} contains an empty vertex label"
+                    ));
+                }
+                validate_batch_properties(ordinal, &item.initial_properties)?;
+            }
+            AtomicInsertOperationV1::Edge(item) => {
+                validate_batch_endpoint(ordinal, "source", &item.source, vertex_count)?;
+                validate_batch_endpoint(ordinal, "target", &item.target, vertex_count)?;
+                if item.edge_label_name.as_deref() == Some("") {
+                    return Err(format!(
+                        "atomic insert operation {ordinal} contains an empty edge label"
+                    ));
+                }
+                if let Some(inline) = &item.inline_property
+                    && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
+                {
+                    return Err(format!(
+                        "atomic insert operation {ordinal} inline property exceeds the byte bound"
+                    ));
+                }
+                validate_batch_properties(ordinal, &item.initial_edge_properties)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl AtomicInsertRequest {
     pub fn validate(&self) -> Result<(), String> {
         let Self::V1(request) = self;
@@ -658,35 +706,7 @@ impl AtomicInsertRequest {
             .filter(|operation| matches!(operation, AtomicInsertOperationV1::Vertex(_)))
             .count() as u32;
         preflight_atomic_insert_response_size(request.operations.len(), vertex_count as usize)?;
-        for (ordinal, operation) in request.operations.iter().enumerate() {
-            match operation {
-                AtomicInsertOperationV1::Vertex(item) => {
-                    if item.vertex_labels.iter().any(String::is_empty) {
-                        return Err(format!(
-                            "atomic insert operation {ordinal} contains an empty vertex label"
-                        ));
-                    }
-                    validate_batch_properties(ordinal, &item.initial_properties)?;
-                }
-                AtomicInsertOperationV1::Edge(item) => {
-                    validate_batch_endpoint(ordinal, "source", &item.source, vertex_count)?;
-                    validate_batch_endpoint(ordinal, "target", &item.target, vertex_count)?;
-                    if item.edge_label_name.as_deref() == Some("") {
-                        return Err(format!(
-                            "atomic insert operation {ordinal} contains an empty edge label"
-                        ));
-                    }
-                    if let Some(inline) = &item.inline_property
-                        && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
-                    {
-                        return Err(format!(
-                            "atomic insert operation {ordinal} inline property exceeds the byte bound"
-                        ));
-                    }
-                    validate_batch_properties(ordinal, &item.initial_edge_properties)?;
-                }
-            }
-        }
+        validate_atomic_insert_operations(&request.operations, vertex_count)?;
         let encoded =
             Encode!(self).map_err(|error| format!("atomic insert request encode: {error}"))?;
         if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
@@ -2526,6 +2546,24 @@ mod tests {
             },
         ]);
         assert_ne!(first.fingerprint().unwrap(), changed.fingerprint().unwrap());
+    }
+
+    #[test]
+    fn bulk_load_chunk_exceeding_atomic_insert_cap_is_admitted() {
+        // Resumable bulk-load chunks are not capped at MAX_ATOMIC_INSERT_OPERATIONS (ADR 0060):
+        // the runtime instruction budget decides the committed prefix, and the payload bound
+        // bounds the candidate size.
+        let chunk = BulkLoadChunkV1::Vertices(
+            (0..MAX_ATOMIC_INSERT_OPERATIONS + 1)
+                .map(|_| AtomicInsertVertexV1 {
+                    vertex_labels: vec!["Person".to_owned()],
+                    initial_properties: Vec::new(),
+                })
+                .collect(),
+        );
+        chunk
+            .validate()
+            .expect("chunk above the atomic-insert cap must pass bulk-load validation");
     }
 
     #[test]

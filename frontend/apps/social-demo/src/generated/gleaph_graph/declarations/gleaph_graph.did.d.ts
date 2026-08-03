@@ -34,6 +34,185 @@ export interface BulkIngestFinalizeResult {
   'instructions_used' : bigint,
 }
 /**
+ * Compact typed failure returned by Graph's canonical export control and data-plane methods.
+ *
+ * The public wire intentionally carries stable classifications instead of implementation detail
+ * strings. Graph Index uses these variants to distinguish exact-replay/lifecycle failures from
+ * malformed requests without parsing text; Graph keeps storage diagnostics in local logs.
+ */
+export type CanonicalExportError = { 'Storage' : null } |
+  {
+    /**
+     * The requested lifecycle operation is not valid for the current phase.
+     */
+    'InvalidPhase' : null
+  } |
+  { 'ScopeConflict' : null } |
+  { 'UnsupportedInlineProfile' : null } |
+  {
+    /**
+     * The sequence is outside the admitted/captured range.
+     */
+    'SequenceOutOfRange' : null
+  } |
+  { 'ScopeMismatch' : null } |
+  {
+    /**
+     * Removal would discard admitted work that has not reached the contiguous drain watermark.
+     */
+    'UnsafeRemoval' : null
+  } |
+  {
+    /**
+     * The graph-index convergence proof does not match this Graph's captured seal watermark.
+     */
+    'NotConverged' : null
+  } |
+  {
+    /**
+     * The sequence acknowledgement was not the next contiguous sequence.
+     */
+    'SequenceGap' : null
+  } |
+  { 'InvalidRequest' : null } |
+  { 'ScopeNotFound' : null } |
+  { 'CursorMalformed' : null } |
+  {
+    /**
+     * The sequence was already acknowledged; callers must replay the original envelope only
+     * through the graph-index exact-replay path, not by advancing this watermark again.
+     */
+    'SequenceReplay' : null
+  } |
+  { 'InvalidScope' : null } |
+  {
+    /**
+     * The namespace is sealed and new build DML must be retried after the lifecycle advances.
+     */
+    'RetryableSealing' : null
+  } |
+  { 'FactTooLarge' : { 'encoded_value_bytes' : bigint } };
+/**
+ * Result of one bounded canonical export page.
+ */
+export interface CanonicalExportPage {
+  'done' : boolean,
+  /**
+   * Opaque continuation.  `None` means this page reached the end of the selected source.
+   */
+  'next' : [] | [Uint8Array],
+  'facts' : Array<CanonicalIndexableFact>,
+}
+/**
+ * Durable lifecycle phase for one Graph-owned physical export namespace.
+ *
+ * `Building` admits and sequences exact DML envelopes. `Sealing` captures the last admitted
+ * sequence under the old epoch and rejects new admissions retryably. `Active` is published only
+ * after the graph-index convergence proof matches the captured watermark. `Aborting` is never
+ * planner-visible and may be removed only after all admitted work is drained.
+ */
+export type CanonicalExportPhase = { 'Building' : null } |
+  { 'Active' : null } |
+  { 'Aborting' : null } |
+  { 'Sealing' : null };
+/**
+ * Request for one bounded canonical export page.
+ *
+ * The cursor is an opaque Graph-owned token. It embeds this entire compact scope, and Graph
+ * validates those bindings so a token cannot be resumed under another graph, logical index,
+ * generation, epoch, or target.
+ */
+export interface CanonicalExportRequest {
+  'graph_id' : number,
+  'catalog_epoch' : bigint,
+  'physical_index_id' : bigint,
+  'cursor' : [] | [Uint8Array],
+  'limit' : number,
+  'target' : CanonicalExportTarget,
+  'index_name_id' : number,
+}
+/**
+ * Durable scope frozen for one physical posting namespace.
+ *
+ * The stable Graph map is keyed by [`PhysicalIndexId`]; this value intentionally excludes that
+ * key and stores no cursor position.  A scope is immutable after first registration except for
+ * idempotent exact replay.
+ */
+export interface CanonicalExportScope {
+  'graph_id' : number,
+  'catalog_epoch' : bigint,
+  'target' : CanonicalExportTarget,
+  /**
+   * `Some` selects canonical edge INLINE bytes; `None` selects canonical edge sidecars.  This
+   * field is ignored for vertex targets and must be absent there.
+   */
+  'inline' : [] | [CanonicalInlineProjection],
+  'index_name_id' : number,
+}
+/**
+ * Graph-local status projection for Router and maintenance callers.
+ */
+export interface CanonicalExportStatus {
+  'physical_index_id' : bigint,
+  'admitted_through' : bigint,
+  'epoch' : bigint,
+  'scope' : CanonicalExportScope,
+  'drained_through' : bigint,
+  'phase' : CanonicalExportPhase,
+}
+/**
+ * One explicit logical property-index target.
+ */
+export type CanonicalExportTarget = {
+    /**
+     * An edge property identified by label, property, and the stable direction used by the
+     * Router/index catalog (see ADR 0012).
+     */
+    'Edge' : {
+      'direction' : EdgeIndexDirection,
+      'label_id' : number,
+      'property_id' : number,
+    }
+  } |
+  {
+    /**
+     * A vertex property identified by its Router-issued property id.
+     */
+    'Vertex' : { 'label_id' : number, 'property_id' : number }
+  };
+/**
+ * One canonical indexable fact projected by Graph.
+ */
+export type CanonicalIndexableFact = {
+    'Edge' : {
+      'encoded_value' : Uint8Array,
+      'label_id' : number,
+      'property_id' : number,
+      'slot_index' : number,
+      'owner_vertex_id' : number,
+    }
+  } |
+  {
+    'Vertex' : {
+      'vertex_id' : number,
+      'encoded_value' : Uint8Array,
+      'property_id' : number,
+    }
+  };
+/**
+ * Minimal Graph-owned projection needed to decode one fixed-width inline property value.
+ *
+ * `source_property_id` identifies the top-level inline slot in the edge schema.  For a scalar
+ * inline property it equals the target property id and `byte_offset` is zero.  For a struct leaf,
+ * it names the enclosing slot while `value_profile` describes the selected leaf byte range.
+ */
+export interface CanonicalInlineProjection {
+  'byte_offset' : number,
+  'source_property_id' : number,
+  'value_profile' : EdgeInlinePropertyProfile,
+  'source_profile' : EdgeInlinePropertyProfile,
+}
+/**
  * Immutable identity of one uniqueness claim produced by a mutation.
  *
  * `ClaimId` carries **no element id**: the identity computed at Try (before the canonical element
@@ -64,6 +243,19 @@ export interface ConstrainedPropertyDispatch {
   'property_id' : number,
   'constraint_id' : number,
 }
+/**
+ * Logical edge-index direction represented by an indexed catalog membership.
+ *
+ * The variants mirror the GQL direction lattice. Graph uses the semantic inclusion helpers
+ * rather than interpreting raw bytes, so the Router remains the source of direction semantics.
+ */
+export type EdgeIndexDirection = { 'Any' : null } |
+  { 'OutgoingOrIncoming' : null } |
+  { 'IncomingOrUndirected' : null } |
+  { 'Outgoing' : null } |
+  { 'OutgoingOrUndirected' : null } |
+  { 'Undirected' : null } |
+  { 'Incoming' : null };
 /**
  * Semantic interpretation of stored edge-inline-property-bytes bytes.
  */
@@ -241,7 +433,7 @@ export interface ExecutePlanBatchResult {
    * Index of the first operation not attempted when Dynamic mode hit the Graph budget.
    */
   'next_index' : [] | [number],
-  'results' : Array<Result_9>,
+  'results' : Array<Result_12>,
 }
 export interface ExecutePlanResult {
   /**
@@ -463,6 +655,50 @@ export type GraphOrderedVertexBatchResultV1 = {
   } |
   { 'Completed' : GraphOrderedVertexBatchReceiptV1 };
 /**
+ * Progress of one bounded build-DML drain step.
+ *
+ * `converged` is true only when no build-DML entries remain for the namespace AND the scope
+ * record's `drained_through` has reached its `admitted_through` watermark.
+ */
+export interface IndexBuildOutboxDrainProgress {
+  'remaining' : bigint,
+  'converged' : boolean,
+  'drained' : number,
+}
+/**
+ * Bounded Graph-side drain of one physical namespace's build-DML outbox entries.
+ */
+export interface IndexBuildOutboxDrainRequest {
+  'physical_index_id' : bigint,
+  'max_entries' : number,
+}
+/**
+ * Seal registration/drain status returned to Router.
+ */
+export interface IndexBuildSealStatus {
+  'base_complete' : boolean,
+  'watermarks' : Array<IndexBuildShardWatermark>,
+  'seal_catalog_epoch' : bigint,
+}
+/**
+ * Durable old-epoch drain proof for one target shard.
+ */
+export interface IndexBuildShardWatermark {
+  'admitted_through' : bigint,
+  'shard_id' : number,
+  'drained_through' : bigint,
+}
+/**
+ * Lifecycle phase carried with a Router-owned indexed-catalog membership.
+ *
+ * Graph persists this phase with pending and repair work so a future lifecycle-aware
+ * dispatcher can route Building/Sealing work to the build protocol. The ordinary
+ * posting path is valid only for Active memberships.
+ */
+export type IndexMaintenancePhase = { 'Building' : null } |
+  { 'Active' : null } |
+  { 'Sealing' : null };
+/**
  * Graph-side snapshot of durable derived-index work not yet delivered to graph-index.
  *
  * The social-demo seeding orchestrator needs one observable "the index caught up" signal
@@ -490,6 +726,9 @@ export interface IndexSyncStatus {
  * One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
  */
 export interface IndexedEdgeMembership {
+  'direction' : EdgeIndexDirection,
+  'catalog_epoch' : bigint,
+  'physical_index_id' : bigint,
   /**
    * Empty for a scalar/top-level edge property; the canonical dotted path for an inline
    * struct leaf otherwise (for example, `stats.score`).
@@ -497,7 +736,7 @@ export interface IndexedEdgeMembership {
   'field_path' : string,
   'label_id' : number,
   'property_id' : number,
-  'direction_tag' : number,
+  'phase' : IndexMaintenancePhase,
 }
 /**
  * Router-sourced snapshot of which embedding names are indexed (mirrors `IndexedPropertyCatalog`).
@@ -529,9 +768,21 @@ export interface IndexedEmbeddingSpec {
  * upgrade boundary that made the former shard-local registry stale.
  */
 export interface IndexedPropertyCatalog {
-  'vertex_property_ids' : Uint32Array,
-  'edge_property_ids' : Uint32Array,
+  'vertex_indexes' : Array<IndexedVertexMembership>,
   'edge_indexes' : Array<IndexedEdgeMembership>,
+}
+/**
+ * One vertex index membership in the Router-sourced operation catalog.
+ *
+ * The physical namespace is allocated and owned by Router. Graph may cache this projection for
+ * the operation, but it must never derive or substitute a namespace locally.
+ */
+export interface IndexedVertexMembership {
+  'catalog_epoch' : bigint,
+  'physical_index_id' : bigint,
+  'label_id' : number,
+  'property_id' : number,
+  'phase' : IndexMaintenancePhase,
 }
 /**
  * Per-label live count changes emitted by graph shard DML (ADR 0015).
@@ -560,6 +811,25 @@ export interface LabelStatsDeltaEventWire {
 export type MutationJournalState = { 'Completed' : null } |
   { 'Incomplete' : null };
 /**
+ * Execution mode for an ordered batch Graph request (ADR 0060).
+ *
+ * The mode is a transport property carried on the args envelope, never inside the fingerprinted
+ * request, so the same chunk content has the same fingerprint regardless of mode.
+ */
+export type OrderedBatchExecutionModeV1 = {
+    /**
+     * Commit the entire request atomically or fail (atomic-insert contract).
+     */
+    'Atomic' : null
+  } |
+  {
+    /**
+     * Commit the largest budget-fitting prefix as one atomic journal entry and return the
+     * committed count (bulk-load chunk execution; the committed prefix is the chunk).
+     */
+    'Resumable' : null
+  };
+/**
  * Immutable Graph execution envelope. The transmitted fingerprint is integrity metadata; the
  * Graph recomputes it from `request` before journal lookup.
  */
@@ -567,6 +837,7 @@ export type OrderedEdgeBatchGraphArgs = { 'V1' : OrderedEdgeBatchGraphArgsV1 };
 export interface OrderedEdgeBatchGraphArgsV1 {
   'mutation_id' : bigint,
   'graph_request_fingerprint' : Uint8Array,
+  'execution_mode' : OrderedBatchExecutionModeV1,
   'request' : OrderedEdgeBatchGraphRequest,
 }
 /**
@@ -605,6 +876,7 @@ export type OrderedMixedBatchGraphArgs = {
 export interface OrderedMixedBatchGraphArgsV1 {
   'mutation_id' : bigint,
   'graph_request_fingerprint' : Uint8Array,
+  'execution_mode' : OrderedBatchExecutionModeV1,
   'request' : OrderedMixedBatchGraphRequest,
 }
 /**
@@ -690,6 +962,7 @@ export type OrderedVertexBatchGraphArgs = {
 export interface OrderedVertexBatchGraphArgsV1 {
   'mutation_id' : bigint,
   'graph_request_fingerprint' : Uint8Array,
+  'execution_mode' : OrderedBatchExecutionModeV1,
   'request' : OrderedVertexBatchGraphRequest,
 }
 /**
@@ -805,35 +1078,43 @@ export interface ResolvedPropertyTable {
   'properties' : Array<ResolvedProperty>,
 }
 export interface ResolvedVertexLabel { 'id' : number, 'name' : string }
-export type Result = { 'Ok' : VertexEmbeddingIngestionResult } |
+export type Result = { 'Ok' : CanonicalExportStatus } |
+  { 'Err' : CanonicalExportError };
+export type Result_1 = { 'Ok' : IndexBuildOutboxDrainProgress } |
+  { 'Err' : CanonicalExportError };
+export type Result_10 = { 'Ok' : GraphOrderedMixedBatchResult } |
   { 'Err' : string };
-export type Result_1 = { 'Ok' : Array<Result> } |
+export type Result_11 = { 'Ok' : GraphOrderedVertexBatchResult } |
   { 'Err' : string };
-export type Result_10 = { 'Ok' : ExecutePlanBatchResult } |
+export type Result_12 = { 'Ok' : ExecutePlanResult } |
   { 'Err' : string };
-export type Result_11 = { 'Ok' : BulkIngestFinalizeResult } |
+export type Result_13 = { 'Ok' : ExecutePlanBatchResult } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : OrderedMixedMutationRetirementAck } |
+export type Result_14 = { 'Ok' : BulkIngestFinalizeResult } |
   { 'Err' : string };
-export type Result_13 = { 'Ok' : OrderedMutationRetirementAck } |
+export type Result_15 = { 'Ok' : CanonicalExportPage } |
+  { 'Err' : CanonicalExportError };
+export type Result_16 = { 'Ok' : OrderedMixedMutationRetirementAck } |
   { 'Err' : string };
-export type Result_14 = { 'Ok' : OrderedVertexMutationRetirementAck } |
+export type Result_17 = { 'Ok' : OrderedMutationRetirementAck } |
   { 'Err' : string };
-export type Result_2 = { 'Ok' : null } |
+export type Result_18 = { 'Ok' : OrderedVertexMutationRetirementAck } |
   { 'Err' : string };
-export type Result_3 = { 'Ok' : EdgePostingBackfillResult } |
+export type Result_2 = { 'Ok' : VertexEmbeddingIngestionResult } |
   { 'Err' : string };
-export type Result_4 = { 'Ok' : PostingBackfillResult } |
+export type Result_3 = { 'Ok' : Array<Result_2> } |
   { 'Err' : string };
-export type Result_5 = { 'Ok' : EmbeddingBackfillResult } |
+export type Result_4 = { 'Ok' : null } |
+  { 'Err' : CanonicalExportError };
+export type Result_5 = { 'Ok' : null } |
   { 'Err' : string };
-export type Result_6 = { 'Ok' : GraphOrderedEdgeBatchResult } |
+export type Result_6 = { 'Ok' : EdgePostingBackfillResult } |
   { 'Err' : string };
-export type Result_7 = { 'Ok' : GraphOrderedMixedBatchResult } |
+export type Result_7 = { 'Ok' : PostingBackfillResult } |
   { 'Err' : string };
-export type Result_8 = { 'Ok' : GraphOrderedVertexBatchResult } |
+export type Result_8 = { 'Ok' : EmbeddingBackfillResult } |
   { 'Err' : string };
-export type Result_9 = { 'Ok' : ExecutePlanResult } |
+export type Result_9 = { 'Ok' : GraphOrderedEdgeBatchResult } |
   { 'Err' : string };
 /**
  * Logical size of one named virtual stable-memory region owned by a canister.
@@ -1028,72 +1309,118 @@ export interface _SERVICE {
    */
   'ack_unique_effects' : ActorMethod<[Array<EffectId>], undefined>,
   /**
+   * Router → graph: mark one export scope `Aborting` under its original registration identity.
+   */
+  'admin_abort_index_export_scope' : ActorMethod<
+    [bigint, CanonicalExportScope],
+    Result
+  >,
+  /**
+   * Router → graph: publish one export scope `Active` after graph-index convergence.
+   */
+  'admin_activate_index_export_scope' : ActorMethod<
+    [bigint, IndexBuildSealStatus],
+    Result
+  >,
+  /**
+   * Router → graph: bounded drain of one namespace's build-DML outbox entries to graph-index.
+   */
+  'admin_drain_index_build_outbox' : ActorMethod<
+    [IndexBuildOutboxDrainRequest],
+    Result_1
+  >,
+  /**
+   * Router → graph: exact durable status for one export scope.
+   */
+  'admin_index_export_scope_status' : ActorMethod<[bigint], Result>,
+  /**
    * Router → graph (plan 0048): bounded canonical vertex-embedding ingestion.
    */
   'admin_ingest_vertex_embedding' : ActorMethod<
     [VertexEmbeddingIngestionArgs],
-    Result
+    Result_2
   >,
   /**
    * Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
    */
   'admin_ingest_vertex_embedding_batch' : ActorMethod<
     [Array<VertexEmbeddingIngestionArgs>],
-    Result_1
+    Result_3
+  >,
+  /**
+   * Router → graph: freeze one immutable canonical export scope for a physical index namespace.
+   */
+  'admin_register_index_export_scope' : ActorMethod<
+    [bigint, CanonicalExportScope],
+    Result_4
+  >,
+  /**
+   * Router → graph: remove an export scope under its complete current owner contract.
+   */
+  'admin_remove_index_export_scope' : ActorMethod<
+    [bigint, CanonicalExportScope],
+    Result_4
+  >,
+  /**
+   * Router → graph: seal one export scope at a fresh catalog epoch.
+   */
+  'admin_seal_index_export_scope' : ActorMethod<
+    [bigint, CanonicalExportScope, bigint],
+    Result
   >,
   /**
    * Router → graph (ADR 0031 Slice 4): set this shard's local derived vector-index target as the
    * first step of the Router-driven vector attach handshake.
    */
-  'admin_set_vector_index_canister' : ActorMethod<[Principal], Result_2>,
+  'admin_set_vector_index_canister' : ActorMethod<[Principal], Result_5>,
   /**
    * Router → graph: operator-only physical stable-memory inventory.
    */
   'admin_stable_memory_stats' : ActorMethod<[], StableMemoryStats>,
   'backfill_edge_property_postings' : ActorMethod<
     [EdgePropertyBackfillRequest],
-    Result_3
+    Result_6
   >,
-  'backfill_label_postings' : ActorMethod<[PostingBackfillArgs], Result_4>,
+  'backfill_label_postings' : ActorMethod<[PostingBackfillArgs], Result_7>,
   'backfill_vertex_embeddings' : ActorMethod<
     [VertexEmbeddingBackfillRequest],
-    Result_5
+    Result_8
   >,
   'backfill_vertex_property_postings' : ActorMethod<
     [VertexPropertyBackfillRequest],
-    Result_4
+    Result_7
   >,
   /**
    * Router → graph: journal-first ordered edge batch execution (ADR 0049).
    */
   'execute_ordered_edge_batch' : ActorMethod<
     [OrderedEdgeBatchGraphArgs],
-    Result_6
+    Result_9
   >,
   /**
    * Router → graph: journal-first mixed vertex/edge batch execution (ADR 0049).
    */
   'execute_ordered_mixed_batch' : ActorMethod<
     [OrderedMixedBatchGraphArgs],
-    Result_7
+    Result_10
   >,
   /**
    * Router → graph: journal-first ordered vertex bulk placement (ADR 0049).
    */
   'execute_ordered_vertex_batch' : ActorMethod<
     [OrderedVertexBatchGraphArgs],
-    Result_8
+    Result_11
   >,
   /**
    * Router → graph: read-only plan wire (may call index / federated expand).
    */
-  'execute_plan_query' : ActorMethod<[ExecutePlanArgs], Result_9>,
+  'execute_plan_query' : ActorMethod<[ExecutePlanArgs], Result_12>,
   /**
    * Router → graph: plan wire with DML.
    */
-  'execute_plan_update' : ActorMethod<[ExecutePlanArgs], Result_9>,
-  'execute_plan_update_batch' : ActorMethod<[ExecutePlanBatchArgs], Result_10>,
-  'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_11>,
+  'execute_plan_update' : ActorMethod<[ExecutePlanArgs], Result_12>,
+  'execute_plan_update_batch' : ActorMethod<[ExecutePlanBatchArgs], Result_13>,
+  'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_14>,
   'get_mutation_journal_entries' : ActorMethod<
     [GetMutationJournalEntriesArgs],
     GetMutationJournalEntriesResult
@@ -1102,6 +1429,10 @@ export interface _SERVICE {
     [bigint],
     [] | [GraphMutationJournalEntryWire]
   >,
+  /**
+   * Graph-index → graph: read one bounded page from canonical Graph storage.
+   */
+  'index_export_page' : ActorMethod<[CanonicalExportRequest], Result_15>,
   /**
    * Router → graph: smallest tracked mutation id with unapplied index postings, or
    * `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
@@ -1154,21 +1485,21 @@ export interface _SERVICE {
    */
   'retire_ordered_mixed_mutation' : ActorMethod<
     [OrderedMutationRetirementArgs],
-    Result_12
+    Result_16
   >,
   /**
    * Router → graph: fingerprint-bound ordered mutation retirement (ADR 0049).
    */
   'retire_ordered_mutation' : ActorMethod<
     [OrderedMutationRetirementArgs],
-    Result_13
+    Result_17
   >,
   /**
    * Router → graph: retire an exact ordered vertex mutation after projection convergence.
    */
   'retire_ordered_vertex_mutation' : ActorMethod<
     [OrderedMutationRetirementArgs],
-    Result_14
+    Result_18
   >,
 }
 export declare const idlFactory: IDL.InterfaceFactory;

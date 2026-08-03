@@ -168,12 +168,14 @@ fn bulk_load_lifecycle_replay_preserves_prefix_and_pages_receipts() {
         .expect("first chunk must commit");
     let BulkLoadResponse::Appended {
         chunk_index: first_index,
+        next_offset: first_offset,
         receipt: first_receipt,
     } = first
     else {
         panic!("first append must return a receipt");
     };
     assert_eq!(first_index, 0);
+    assert_eq!(first_offset, 2);
     assert_eq!(first_receipt.logical_vertex_count, 2);
     assert_eq!(first_receipt.allocated_vertex_ids.len(), 2);
 
@@ -183,6 +185,7 @@ fn bulk_load_lifecycle_replay_preserves_prefix_and_pages_receipts() {
         replay,
         BulkLoadResponse::Appended {
             chunk_index: 0,
+            next_offset: first_offset,
             receipt: first_receipt.clone(),
         }
     );
@@ -197,12 +200,14 @@ fn bulk_load_lifecycle_replay_preserves_prefix_and_pages_receipts() {
         .expect("second chunk must commit without rolling back the prefix");
     let BulkLoadResponse::Appended {
         chunk_index: second_index,
+        next_offset: second_offset,
         receipt: second_receipt,
     } = second
     else {
         panic!("second append must return a receipt");
     };
     assert_eq!(second_index, 1);
+    assert_eq!(second_offset, 1);
     assert_eq!(second_receipt.logical_vertex_count, 1);
 
     let first_page =
@@ -242,6 +247,7 @@ fn bulk_load_lifecycle_replay_preserves_prefix_and_pages_receipts() {
         bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, vertices(&["Person"], 2)),),
         Ok(BulkLoadResponse::Appended {
             chunk_index: 0,
+            next_offset: 2,
             receipt: completed.receipts[0].receipt.clone(),
         })
     );
