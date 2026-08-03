@@ -293,13 +293,20 @@ budget constants, `should_cutoff`, `preflight_operation_count` / `max_operation_
 `OpCostTracker`, and the wasm/host instruction counters; `gleaph-graph-kernel` re-exports the
 constants; and the Graph plan-batch cutoff, the ordered-batch static admission, the Router dispatch
 operation-bound derivation, and the four LARA maintenance loops consume the shared helpers.
-Decisions 2–4 (resumable ordered-batch mode, `bulk_load` Append batch + cursor, `gleaph build` CLI)
-are not implemented. The remaining change is pre-release breaking (wire change to
-`BulkLoadResponse::Appended`, ordered-batch entrypoint mode) with no development stable-layout
-change: no Router or Graph stable region is added, and the existing receipt map, coordinator
-lifecycle, and client-key identity remain the durable substrate. The static-admission
-inconsistency is confirmed by the 2026-08-03 PocketIC probe (70 admitted, 71 and 256 rejected) and
-is the baseline the implementation must eliminate.
+Decision 2 is implemented as of 2026-08-03: the ordered-batch args envelopes carry an
+`OrderedBatchExecutionModeV1` (`Atomic` / `Resumable`) transport field outside the fingerprinted
+request; Graph's vertex and edge handlers execute the budget-fitting prefix item-by-item
+(`resumable_prefix_len` with `should_cutoff` + `OpCostTracker`) and commit the prefix as one atomic
+journal entry; resumable replay is addressed by mutation id plus the stable request fingerprint;
+mixed batches reject `Resumable`; the committed prefix is returned through the receipt counts. The
+Graph canister Candid (`gleaph_graph.did`) is updated for the new wire field. Decisions 3–4
+(`bulk_load` Append batch + cursor, `gleaph build` CLI) are not implemented. The remaining change
+is pre-release breaking (wire change to `BulkLoadResponse::Appended`, and the Router flipping
+bulk-load dispatch to `Resumable`) with no development stable-layout change: no Router or Graph
+stable region is added, and the existing receipt map, coordinator lifecycle, and client-key
+identity remain the durable substrate. The static-admission inconsistency is confirmed by the
+2026-08-03 PocketIC probe (70 admitted, 71 and 256 rejected) and is the baseline the
+implementation must eliminate.
 
 ## Required tests
 

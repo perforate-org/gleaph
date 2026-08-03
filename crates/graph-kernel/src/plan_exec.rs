@@ -462,6 +462,19 @@ fn validate_ordered_initial_properties(
     Ok(())
 }
 
+/// Execution mode for an ordered batch Graph request (ADR 0060).
+///
+/// The mode is a transport property carried on the args envelope, never inside the fingerprinted
+/// request, so the same chunk content has the same fingerprint regardless of mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedBatchExecutionModeV1 {
+    /// Commit the entire request atomically or fail (atomic-insert contract).
+    Atomic,
+    /// Commit the largest budget-fitting prefix as one atomic journal entry and return the
+    /// committed count (bulk-load chunk execution; the committed prefix is the chunk).
+    Resumable,
+}
+
 /// Internal execution envelope for the mixed two-phase path. Execution is not
 /// active yet; this type exists so Router and Graph can agree on the immutable
 /// request before the durable phase/journal implementation lands.
@@ -474,6 +487,7 @@ pub enum OrderedMixedBatchGraphArgs {
 pub struct OrderedMixedBatchGraphArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
+    pub execution_mode: OrderedBatchExecutionModeV1,
     pub request: OrderedMixedBatchGraphRequest,
 }
 
@@ -498,6 +512,7 @@ pub enum OrderedVertexBatchGraphArgs {
 pub struct OrderedVertexBatchGraphArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
+    pub execution_mode: OrderedBatchExecutionModeV1,
     pub request: OrderedVertexBatchGraphRequest,
 }
 
@@ -523,6 +538,7 @@ pub enum OrderedEdgeBatchGraphArgs {
 pub struct OrderedEdgeBatchGraphArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
+    pub execution_mode: OrderedBatchExecutionModeV1,
     pub request: OrderedEdgeBatchGraphRequest,
 }
 

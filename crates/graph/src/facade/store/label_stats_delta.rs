@@ -124,14 +124,53 @@ impl GraphStore {
         else {
             return Err("ordered replay requires OrderedEdgeBatch identity");
         };
+        Ok(Some(Self::project_ordered_edge_replay(
+            &entry,
+            mutation_id,
+            graph_request_fingerprint,
+        )?))
+    }
+
+    /// Resumable ordered-edge replay (ADR 0060): addressed by mutation_id and the stable request
+    /// fingerprint. The committed prefix length in the stored identity is a result of execution,
+    /// not an input, so it is deliberately excluded from the comparison; the Router pins one child
+    /// mutation per committed chunk and its durable receipt pins the exact request.
+    pub(crate) fn ordered_edge_batch_resumable_replay_result(
+        &self,
+        mutation_id: MutationId,
+        fingerprint: [u8; 32],
+    ) -> Result<Option<GraphOrderedEdgeBatchResult>, &'static str> {
+        let Some(entry) = self.mutation_journal_entry(mutation_id) else {
+            return Ok(None);
+        };
+        match entry.request_identity() {
+            GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                graph_request_fingerprint,
+                ..
+            } if *graph_request_fingerprint == fingerprint => {}
+            _ => return Err("mutation journal identity conflicts with resumable edge replay"),
+        }
+        entry.wire().validate()?;
+        Ok(Some(Self::project_ordered_edge_replay(
+            &entry,
+            mutation_id,
+            &fingerprint,
+        )?))
+    }
+
+    fn project_ordered_edge_replay(
+        entry: &GraphMutationJournalEntry,
+        mutation_id: MutationId,
+        fingerprint: &[u8; 32],
+    ) -> Result<GraphOrderedEdgeBatchResult, &'static str> {
         let result = match entry.retirement() {
             GraphMutationRetirementV1::Active => {
-                GraphOrderedEdgeBatchResultV1::Completed(Self::ordered_receipt(&entry)?)
+                GraphOrderedEdgeBatchResultV1::Completed(Self::ordered_receipt(entry)?)
             }
             GraphMutationRetirementV1::Retired { .. } => {
                 GraphOrderedEdgeBatchResultV1::MutationRetired {
                     mutation_id,
-                    graph_request_fingerprint: *graph_request_fingerprint,
+                    graph_request_fingerprint: *fingerprint,
                 }
             }
             GraphMutationRetirementV1::NotApplicable => {
@@ -140,7 +179,7 @@ impl GraphStore {
         };
         let result = GraphOrderedEdgeBatchResult::V1(result);
         result.validate()?;
-        Ok(Some(result))
+        Ok(result)
     }
 
     fn ordered_vertex_receipt(
@@ -176,14 +215,51 @@ impl GraphStore {
         else {
             return Err("ordered vertex replay requires OrderedVertexBatch identity");
         };
+        Ok(Some(Self::project_ordered_vertex_replay(
+            &entry,
+            mutation_id,
+            graph_request_fingerprint,
+        )?))
+    }
+
+    /// Resumable ordered-vertex replay (ADR 0060): addressed by mutation_id and the stable request
+    /// fingerprint; see [`Self::ordered_edge_batch_resumable_replay_result`] for the rationale.
+    pub(crate) fn ordered_vertex_batch_resumable_replay_result(
+        &self,
+        mutation_id: MutationId,
+        fingerprint: [u8; 32],
+    ) -> Result<Option<GraphOrderedVertexBatchResult>, &'static str> {
+        let Some(entry) = self.mutation_journal_entry(mutation_id) else {
+            return Ok(None);
+        };
+        match entry.request_identity() {
+            GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                graph_request_fingerprint,
+                ..
+            } if *graph_request_fingerprint == fingerprint => {}
+            _ => return Err("mutation journal identity conflicts with resumable vertex replay"),
+        }
+        entry.wire().validate()?;
+        Ok(Some(Self::project_ordered_vertex_replay(
+            &entry,
+            mutation_id,
+            &fingerprint,
+        )?))
+    }
+
+    fn project_ordered_vertex_replay(
+        entry: &GraphMutationJournalEntry,
+        mutation_id: MutationId,
+        fingerprint: &[u8; 32],
+    ) -> Result<GraphOrderedVertexBatchResult, &'static str> {
         let result = match entry.retirement() {
             GraphMutationRetirementV1::Active => {
-                GraphOrderedVertexBatchResultV1::Completed(Self::ordered_vertex_receipt(&entry)?)
+                GraphOrderedVertexBatchResultV1::Completed(Self::ordered_vertex_receipt(entry)?)
             }
             GraphMutationRetirementV1::Retired { .. } => {
                 GraphOrderedVertexBatchResultV1::MutationRetired {
                     mutation_id,
-                    graph_request_fingerprint: *graph_request_fingerprint,
+                    graph_request_fingerprint: *fingerprint,
                 }
             }
             GraphMutationRetirementV1::NotApplicable => {
@@ -192,7 +268,7 @@ impl GraphStore {
         };
         let result = GraphOrderedVertexBatchResult::V1(result);
         result.validate()?;
-        Ok(Some(result))
+        Ok(result)
     }
 
     pub(crate) fn ordered_mixed_batch_replay_result(

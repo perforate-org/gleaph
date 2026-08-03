@@ -1176,6 +1176,7 @@ async fn execute_ordered_edge_batch_classified(
             gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgsV1 {
                 mutation_id,
                 graph_request_fingerprint,
+                execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
                 request: graph_request.clone(),
             },
         ),
@@ -1411,6 +1412,7 @@ async fn execute_ordered_vertex_batch_classified(
             gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgsV1 {
                 mutation_id,
                 graph_request_fingerprint,
+                execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
                 request: graph_request,
             },
         ),
@@ -1701,6 +1703,7 @@ async fn execute_ordered_mixed_batch_classified(
             gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgsV1 {
                 mutation_id,
                 graph_request_fingerprint,
+                execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
                 request: graph_request,
             },
         ),

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use std::cell::Cell;
 
-use crate::facade::mutation_executor::insert_vertices_with;
+use crate::facade::mutation_executor::{insert_vertices_with, validate_vertex_insert_items};
 use crate::facade::{BatchEdgeInput, FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{
@@ -32,10 +32,11 @@ use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
     ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
     GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
-    GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
-    OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphRequest,
-    OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck,
-    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
+    GraphOrderedVertexBatchResultV1, MutationId, OrderedBatchExecutionModeV1,
+    OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphRequest,
+    OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphRequest, OrderedMixedGraphOperationV1,
+    OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
+    OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphRequest,
     OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
     SeedBindingsWire, ShardEventSeq,
 };
@@ -328,10 +329,18 @@ pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanRes
 
 /// Router → graph: journal-first ordered edge batch execution boundary (ADR 0049).
 ///
-/// The replay branch is live. A journal miss remains deliberately fail-closed until the ordered
-/// planner/write path is connected; it must not fall through to an unordered plan executor.
+/// `Atomic` mode commits the whole request as one journal entry (atomic-insert contract).
+/// `Resumable` mode (ADR 0060) executes the largest budget-fitting prefix through the scalar
+/// owner boundary and commits that prefix as one journal entry; the receipt count is the prefix.
 pub fn execute_ordered_edge_batch(
     args: OrderedEdgeBatchGraphArgs,
+) -> Result<GraphOrderedEdgeBatchResult, String> {
+    execute_ordered_edge_batch_impl(args, message_instruction_counter)
+}
+
+fn execute_ordered_edge_batch_impl(
+    args: OrderedEdgeBatchGraphArgs,
+    instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedEdgeBatchResult, String> {
     args.recompute_and_validate_fingerprint()?;
     let OrderedEdgeBatchGraphArgs::V1(args) = &args;
@@ -339,10 +348,15 @@ pub fn execute_ordered_edge_batch(
         .validate()
         .map_err(|error| format!("ordered Graph request validation: {error}"))?;
     let OrderedEdgeBatchGraphRequest::V1(request) = &args.request;
-    ensure_ordered_batch_instruction_budget(request.items.len(), "ordered edge batch")?;
+    if args.execution_mode == OrderedBatchExecutionModeV1::Atomic {
+        ensure_ordered_batch_instruction_budget(request.items.len(), "ordered edge batch")?;
+    }
     #[cfg(target_family = "wasm")]
     if request.target_graph_canister != ic_cdk::api::canister_self() {
         return Err("ordered Graph request target canister does not match receiver".into());
+    }
+    if args.execution_mode == OrderedBatchExecutionModeV1::Resumable {
+        return execute_ordered_edge_batch_resumable(args, instruction_source);
     }
 
     let logical_item_count = u32::try_from(request.items.len())
@@ -458,9 +472,78 @@ pub fn execute_ordered_edge_batch(
     result
 }
 
+/// `Resumable` ordered edge execution (ADR 0060): commit the largest budget-fitting prefix of the
+/// candidate request through the scalar owner boundary as one atomic journal entry.
+fn execute_ordered_edge_batch_resumable(
+    args: &OrderedEdgeBatchGraphArgsV1,
+    instruction_source: impl FnMut() -> u64,
+) -> Result<GraphOrderedEdgeBatchResult, String> {
+    let OrderedEdgeBatchGraphRequest::V1(request) = &args.request;
+    let store = GraphStore::new();
+    if let Some(result) = store
+        .ordered_edge_batch_resumable_replay_result(
+            args.mutation_id,
+            args.graph_request_fingerprint,
+        )
+        .map_err(str::to_string)?
+    {
+        return Ok(result);
+    }
+    let mut edges = Vec::with_capacity(request.items.len());
+    for item in &request.items {
+        let initial_edge_properties = item
+            .resolved_initial_edge_properties
+            .iter()
+            .map(|property| {
+                let value = Value::from_binary_bytes(&property.value).map_err(|error| {
+                    format!(
+                        "ordered Graph property {} value decode failed: {error}",
+                        property.property_id.raw()
+                    )
+                })?;
+                Ok((property.property_id, value))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        edges.push(BatchEdgeInput {
+            source_vertex_id: item.source_local_vertex_id.into(),
+            target_vertex_id: item.target_local_vertex_id.into(),
+            catalog_label: item.catalog_edge_label_id,
+            directed: item.directed,
+            inline_property_bytes: item.inline_property_bytes.clone(),
+            initial_edge_properties,
+        });
+    }
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(
+        request.resolved_labels.clone(),
+    ));
+    let committed = resumable_prefix_len(request.items.len(), instruction_source, |index| {
+        store.execute_ordered_scalar_edges(&edges[index..index + 1], args.mutation_id);
+    });
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
+    let logical_item_count = u32::try_from(committed)
+        .map_err(|_| "resumable ordered edge committed count exceeds u32".to_string())?;
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: args.graph_request_fingerprint,
+        logical_item_count,
+    };
+    Ok(store.commit_ordered_edge_batch_receipt(args.mutation_id, identity, &edges[..committed]))
+}
+
 /// Router → Graph: journal-first ordered vertex bulk placement (ADR 0049).
+///
+/// `Atomic` mode commits the whole request as one journal entry (atomic-insert contract).
+/// `Resumable` mode (ADR 0060) executes the largest budget-fitting prefix and commits that prefix
+/// as one journal entry; the receipt counts are the committed prefix, which is the chunk.
 pub fn execute_ordered_vertex_batch(
     args: OrderedVertexBatchGraphArgs,
+) -> Result<GraphOrderedVertexBatchResult, String> {
+    execute_ordered_vertex_batch_impl(args, message_instruction_counter)
+}
+
+fn execute_ordered_vertex_batch_impl(
+    args: OrderedVertexBatchGraphArgs,
+    instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedVertexBatchResult, String> {
     args.recompute_and_validate_fingerprint()?;
     let OrderedVertexBatchGraphArgs::V1(args) = &args;
@@ -468,10 +551,15 @@ pub fn execute_ordered_vertex_batch(
         .validate()
         .map_err(|error| format!("ordered vertex Graph request validation: {error}"))?;
     let OrderedVertexBatchGraphRequest::V1(request) = &args.request;
-    ensure_ordered_batch_instruction_budget(request.items.len(), "ordered vertex batch")?;
+    if args.execution_mode == OrderedBatchExecutionModeV1::Atomic {
+        ensure_ordered_batch_instruction_budget(request.items.len(), "ordered vertex batch")?;
+    }
     #[cfg(target_family = "wasm")]
     if request.target_graph_canister != ic_cdk::api::canister_self() {
         return Err("ordered vertex Graph request target canister does not match receiver".into());
+    }
+    if args.execution_mode == OrderedBatchExecutionModeV1::Resumable {
+        return execute_ordered_vertex_batch_resumable(args, instruction_source);
     }
 
     let logical_item_count = u32::try_from(request.items.len())
@@ -546,6 +634,121 @@ pub fn execute_ordered_vertex_batch(
     ))
 }
 
+/// Execute the largest budget-fitting prefix of a candidate ordered batch and return the
+/// committed prefix length (ADR 0060 `Resumable` mode).
+///
+/// `instruction_source` reads the current per-message instruction count; `perform(item_index)`
+/// executes one pre-validated item and must be infallible — an unexpected failure traps so the IC
+/// rolls back the whole message instead of exposing a partially committed prefix.
+fn resumable_prefix_len(
+    item_count: usize,
+    mut instruction_source: impl FnMut() -> u64,
+    mut perform: impl FnMut(usize),
+) -> usize {
+    let mut tracker = gleaph_instruction_budget::OpCostTracker::new(MIN_OP_INSTRUCTION_ESTIMATE);
+    let mut committed = 0usize;
+    for index in 0..item_count {
+        let before = instruction_source();
+        if gleaph_instruction_budget::should_cutoff(
+            gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS,
+            before,
+            tracker.next_op_estimate(),
+            gleaph_graph_kernel::GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM,
+            0,
+        ) {
+            break;
+        }
+        perform(index);
+        let after = instruction_source();
+        tracker.observe(after.saturating_sub(before));
+        committed += 1;
+    }
+    committed
+}
+
+/// `Resumable` ordered vertex execution (ADR 0060): commit the largest budget-fitting prefix of
+/// the candidate request as one atomic journal entry and return its receipt.
+fn execute_ordered_vertex_batch_resumable(
+    args: &OrderedVertexBatchGraphArgsV1,
+    instruction_source: impl FnMut() -> u64,
+) -> Result<GraphOrderedVertexBatchResult, String> {
+    let OrderedVertexBatchGraphRequest::V1(request) = &args.request;
+    let store = GraphStore::new();
+    if let Some(result) = store
+        .ordered_vertex_batch_resumable_replay_result(
+            args.mutation_id,
+            args.graph_request_fingerprint,
+        )
+        .map_err(str::to_string)?
+    {
+        return Ok(result);
+    }
+    // Decode and validate every item before the first canonical write so a validation failure
+    // can never expose a partially committed prefix as a recoverable error.
+    let mut decoded = Vec::with_capacity(request.items.len());
+    for item in &request.items {
+        let labels = item
+            .resolved_vertex_labels
+            .iter()
+            .copied()
+            .map(gleaph_graph_kernel::entry::VertexLabelId::from_raw)
+            .collect();
+        let properties = item
+            .resolved_initial_properties
+            .iter()
+            .map(|property| {
+                let value = Value::from_binary_bytes(&property.value).map_err(|error| {
+                    format!(
+                        "ordered vertex property {} value decode failed: {error}",
+                        property.property_id.raw()
+                    )
+                })?;
+                Ok((property.property_id, value))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        decoded.push((labels, properties));
+    }
+    validate_vertex_insert_items(&decoded)
+        .map_err(|error| format!("ordered vertex Graph request validation: {error}"))?;
+    let mut ids: Vec<u32> = Vec::with_capacity(decoded.len());
+    let committed = resumable_prefix_len(request.items.len(), instruction_source, |index| {
+        let allocated =
+            insert_vertices_with(&store, vec![decoded[index].clone()]).unwrap_or_else(|error| {
+                panic!("resumable ordered vertex insert failed after preflight: {error}")
+            });
+        ids.push(u32::from(allocated[0]));
+    });
+    let logical_item_count = u32::try_from(committed)
+        .map_err(|_| "resumable ordered vertex committed count exceeds u32".to_string())?;
+    let identity = GraphMutationRequestIdentityV1::OrderedVertexBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: args.graph_request_fingerprint,
+        logical_item_count,
+    };
+    let mut hot_forward_vertices = ids.clone();
+    hot_forward_vertices.sort_unstable();
+    store.commit_record_completed_ordered_vertex_batch_journal(
+        args.mutation_id,
+        identity,
+        committed as u64,
+        None,
+        None,
+        hot_forward_vertices.clone(),
+        ids.clone(),
+    );
+    Ok(GraphOrderedVertexBatchResult::V1(
+        GraphOrderedVertexBatchResultV1::Completed(
+            gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
+                logical_vertex_count: committed as u64,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices,
+                allocated_vertex_ids: ids,
+            },
+        ),
+    ))
+}
+
 /// Router → Graph: journal-first mixed vertex/edge execution (ADR 0049).
 ///
 /// The vertex phase is allocated in request-local ordinal order. The phase planner then
@@ -560,6 +763,9 @@ pub fn execute_ordered_mixed_batch(
     args.request
         .validate()
         .map_err(|error| format!("ordered mixed Graph request validation: {error}"))?;
+    if args.execution_mode == OrderedBatchExecutionModeV1::Resumable {
+        return Err("ordered mixed Graph batch does not support resumable execution".into());
+    }
     let OrderedMixedBatchGraphRequest::V1(request) = &args.request;
     ensure_ordered_batch_instruction_budget(request.operations.len(), "ordered mixed batch")?;
     #[cfg(target_family = "wasm")]
@@ -2836,6 +3042,7 @@ mod tests {
         let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
             mutation_id: 72_001,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request,
         });
         let result = execute_ordered_vertex_batch(args.clone()).expect("vertex batch execution");
@@ -2890,6 +3097,7 @@ mod tests {
         let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
             mutation_id: 74_001,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request,
         });
 
@@ -2977,6 +3185,7 @@ mod tests {
         let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
             mutation_id: 73_001,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request,
         });
         let allocation_start = u32::from(GraphStore::new().vertex_count());
@@ -3063,6 +3272,7 @@ mod tests {
         let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
             mutation_id,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request,
         });
         let store = GraphStore::new();
@@ -3403,6 +3613,7 @@ mod tests {
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
             mutation_id: 71_001,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request: request.clone(),
         });
         let fresh_error =
@@ -3439,6 +3650,7 @@ mod tests {
         let conflicting_args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
             mutation_id: 71_001,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request: conflicting,
         });
         let mismatch = execute_ordered_edge_batch(conflicting_args)
@@ -3474,6 +3686,7 @@ mod tests {
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
             mutation_id,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request,
         });
 
@@ -3528,6 +3741,7 @@ mod tests {
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
             mutation_id,
             graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
             request,
         });
 
@@ -3577,6 +3791,141 @@ mod tests {
                 .len(),
             2,
             "journal replay must not write canonical edges again"
+        );
+    }
+
+    #[test]
+    fn resumable_vertex_handler_commits_the_budget_fitting_prefix_and_replays() {
+        let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(76),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: (0..5)
+                .map(|index| OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: vec![76],
+                    resolved_initial_properties: vec![
+                        gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                            property_id: PropertyId::from_raw(76),
+                            value: Value::Int64(index)
+                                .to_binary_bytes()
+                                .expect("encode vertex property"),
+                        },
+                    ],
+                })
+                .collect(),
+        });
+        let fingerprint =
+            ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
+            mutation_id: 76_001,
+            graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Resumable,
+            request,
+        });
+        // Scripted per-message counter: two items fit, then the projected cost crosses the 40B
+        // ceiling so the third item is never started.
+        let scripted = Cell::new(0usize);
+        let first = execute_ordered_vertex_batch_impl(args.clone(), move || {
+            let call = scripted.get();
+            scripted.set(call + 1);
+            match call {
+                0 => 0,
+                1 => 10_000,
+                2 => 20_000,
+                3 => 30_000,
+                _ => 38_000_000_000,
+            }
+        })
+        .expect("resumable vertex execution");
+        let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
+            &first
+        else {
+            panic!("expected completed vertex receipt");
+        };
+        assert_eq!(
+            receipt.logical_vertex_count, 2,
+            "resumable execution must commit the budget-fitting prefix"
+        );
+        assert_eq!(receipt.allocated_vertex_ids.len(), 2);
+        assert_eq!(receipt.hot_forward_vertices.len(), 2);
+        let journal = GraphStore::new()
+            .mutation_journal_entry(76_001)
+            .expect("resumable execution must persist the prefix journal");
+        assert_eq!(journal.row_count(), 2);
+        let replay = execute_ordered_vertex_batch(args).expect("resumable vertex replay");
+        assert_eq!(
+            first, replay,
+            "replay must return the stored prefix receipt without re-execution"
+        );
+    }
+
+    #[test]
+    fn resumable_edge_handler_commits_the_budget_fitting_prefix() {
+        let store = GraphStore::new();
+        let source = store.insert_vertex().expect("source vertex");
+        let targets: Vec<_> = (0..4)
+            .map(|_| store.insert_vertex().expect("target vertex"))
+            .collect();
+        let label = EdgeLabelId::from_raw(7_605);
+        let mutation_id = 76_005_001;
+        let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(76),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: targets
+                .iter()
+                .map(|&target| OrderedEdgeBatchGraphItemV1 {
+                    source_local_vertex_id: source.into(),
+                    target_local_vertex_id: target.into(),
+                    directed: true,
+                    catalog_edge_label_id: Some(label),
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                })
+                .collect(),
+        });
+        let fingerprint =
+            ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Resumable,
+            request,
+        });
+        let scripted = Cell::new(0usize);
+        let first = execute_ordered_edge_batch_impl(args.clone(), move || {
+            let call = scripted.get();
+            scripted.set(call + 1);
+            match call {
+                0 => 0,
+                1 => 10_000,
+                2 => 20_000,
+                3 => 30_000,
+                _ => 38_000_000_000,
+            }
+        })
+        .expect("resumable edge execution");
+        let GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) =
+            &first
+        else {
+            panic!("expected completed edge receipt");
+        };
+        assert_eq!(
+            receipt.logical_edge_count, 2,
+            "resumable edge execution must commit the budget-fitting prefix"
+        );
+        let journal = store
+            .mutation_journal_entry(mutation_id)
+            .expect("resumable edge execution must persist the prefix journal");
+        assert_eq!(journal.row_count(), 2);
+        let replay = execute_ordered_edge_batch(args).expect("resumable edge replay");
+        assert_eq!(
+            first, replay,
+            "replay must return the stored prefix receipt without re-execution"
         );
     }
 }

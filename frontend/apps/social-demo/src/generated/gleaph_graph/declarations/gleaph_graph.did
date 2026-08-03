@@ -386,12 +386,18 @@ type LabelStatsDeltaEventWire = record {
 // have converged. Cross-canister convergence is tracked separately by Router's
 // [`MutationLifecyclePhase`] (ADR 0029).
 type MutationJournalState = variant { Completed; Incomplete };
+// Execution mode for an ordered batch Graph request (ADR 0060).
+//
+// The mode is a transport property carried on the args envelope, never inside the fingerprinted
+// request, so the same chunk content has the same fingerprint regardless of mode.
+type OrderedBatchExecutionModeV1 = variant { Atomic; Resumable };
 // Immutable Graph execution envelope. The transmitted fingerprint is integrity metadata; the
 // Graph recomputes it from `request` before journal lookup.
 type OrderedEdgeBatchGraphArgs = variant { V1 : OrderedEdgeBatchGraphArgsV1 };
 type OrderedEdgeBatchGraphArgsV1 = record {
   mutation_id : nat64;
   graph_request_fingerprint : blob;
+  execution_mode : OrderedBatchExecutionModeV1;
   request : OrderedEdgeBatchGraphRequest;
 };
 // One logical edge in the immutable Router → Graph ordered request.
@@ -422,6 +428,7 @@ type OrderedMixedBatchGraphArgs = variant { V1 : OrderedMixedBatchGraphArgsV1 };
 type OrderedMixedBatchGraphArgsV1 = record {
   mutation_id : nat64;
   graph_request_fingerprint : blob;
+  execution_mode : OrderedBatchExecutionModeV1;
   request : OrderedMixedBatchGraphRequest;
 };
 // Versioned Graph envelope for a mixed vertex/edge batch.
@@ -493,6 +500,7 @@ type OrderedVertexBatchGraphArgs = variant {
 type OrderedVertexBatchGraphArgsV1 = record {
   mutation_id : nat64;
   graph_request_fingerprint : blob;
+  execution_mode : OrderedBatchExecutionModeV1;
   request : OrderedVertexBatchGraphRequest;
 };
 // One logical vertex in the versioned Router → Graph vertex request.

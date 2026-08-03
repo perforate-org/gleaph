@@ -152,13 +152,11 @@ pub async fn insert_vertex_with_async(
     Ok(vertex_id)
 }
 
-/// Insert request-ordered vertices using one bulk row-allocation phase followed by the existing
-/// canonical label/property setters. This is the Graph-side substrate for future vertex bulk
-/// placement; it does not expose physical allocation locations.
-pub fn insert_vertices_with(
-    store: &GraphStore,
-    vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
-) -> Result<Vec<VertexId>, GraphStoreError> {
+/// Validate a request-ordered vertex batch before any canonical write. Used by the bulk path and
+/// by resumable execution so a validation failure never exposes a partially written prefix.
+pub fn validate_vertex_insert_items(
+    vertices: &[(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)],
+) -> Result<(), GraphStoreError> {
     for (vertex_ordinal, (labels, properties)) in vertices.iter().enumerate() {
         if let Some(label_id) = labels
             .iter()
@@ -185,6 +183,17 @@ pub fn insert_vertices_with(
             })?;
         }
     }
+    Ok(())
+}
+
+/// Insert request-ordered vertices using one bulk row-allocation phase followed by the existing
+/// canonical label/property setters. This is the Graph-side substrate for future vertex bulk
+/// placement; it does not expose physical allocation locations.
+pub fn insert_vertices_with(
+    store: &GraphStore,
+    vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
+) -> Result<Vec<VertexId>, GraphStoreError> {
+    validate_vertex_insert_items(&vertices)?;
 
     #[cfg(test)]
     let (vertices, test_allocation_order) = {

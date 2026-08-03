@@ -9,10 +9,10 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
 use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResult,
-    GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
-    OrderedEdgeBatchGraphArgsV1, OrderedMutationRetirementAck, OrderedMutationRetirementAckV1,
-    OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1, OrderedVertexBatchGraphArgs,
-    OrderedVertexBatchGraphArgsV1, OrderedVertexMutationRetirementAck,
+    GraphOrderedVertexBatchResultV1, MutationId, OrderedBatchExecutionModeV1,
+    OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedMutationRetirementAck,
+    OrderedMutationRetirementAckV1, OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1,
+    OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1, OrderedVertexMutationRetirementAck,
     OrderedVertexMutationRetirementAckV1, OrderedVertexMutationRetirementArgs,
     OrderedVertexMutationRetirementArgsV1, ShardEventSeq,
 };
@@ -331,6 +331,7 @@ async fn dispatch_graph_child(
                 OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
                     mutation_id: child_mutation_id,
                     graph_request_fingerprint,
+                    execution_mode: OrderedBatchExecutionModeV1::Atomic,
                     request: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(
                         request.clone(),
                     ),
@@ -355,6 +356,7 @@ async fn dispatch_graph_child(
                 OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
                     mutation_id: child_mutation_id,
                     graph_request_fingerprint,
+                    execution_mode: OrderedBatchExecutionModeV1::Atomic,
                     request: gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest::V1(
                         request.clone(),
                     ),
