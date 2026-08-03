@@ -186,6 +186,21 @@ defect from being rediscovered without its prior reasoning.
   below the 40B platform limit for the response; and at ≈1.1M per operation the ceiling cuts off
   only after ~29K operations per call, so it does not prematurely bound realistic sync batches.
   Like posting_batch, this loop is fully local and needs no PocketIC boundary test.
+- **Progress (2026-08-03, graph-index batched page-answering lookahead):** the bounded loop is
+  `answer_batch_pages` (`crates/graph-index/src/facade/store.rs`), which checks
+  `instruction_counter_near_budget(true)` — the 5B query budget minus the 500M
+  `QUERY_BUDGET_HEADROOM` lookahead — before materializing and encoding each page, so the
+  maximum work between checks is one page answer plus its Candid encode. Page-encode benches
+  added in `crates/graph-index/src/bench.rs` (`bench_lookup_page_encode` 211.67K,
+  `bench_intersection_page_encode` 315.95K instructions), persisted in
+  `crates/graph-index/canbench_results.yml`. Combined with the existing page benches (the worst
+  page materialization is the 8-arm scattered intersection page at ~206.4M instructions; dense
+  range pages ≈4M, 8-sieve range intersection ≈50M), the derived acceptance is: maximum
+  per-check work ≈206.7M instructions (page + encode) stays below the 500M query lookahead with
+  ~2.4× margin for the adversarial intersection page and far below it for every other page
+  shape. Note: `instruction_counter_near_budget(false)` (the 1B update lookahead,
+  `UPDATE_BUDGET_HEADROOM`) has no current caller — the update-side lookahead is reserved for
+  future update-path bounded loops and needs no acceptance evidence until one exists.
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),

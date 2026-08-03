@@ -14,10 +14,11 @@ use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
 use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardId};
 use gleaph_graph_kernel::index::{
     IndexBuildControlRequest, IndexBuildDmlRequest, IndexBuildSeedPageRequest, IndexBuildSubject,
-    IndexBuildTarget, IndexEqualSpec, IndexIntersectionRequest, IndexPostingBatchProgress,
-    IndexPostingMutation, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageRequest, MAX_INDEX_VALUE_KEY_BYTES,
-    PhysicalIndexId, PostingHit, PostingRangeRequest, RegisterIndexBuildRequest,
+    IndexBuildTarget, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
+    IndexPostingBatchProgress, IndexPostingMutation, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
+    MAX_INDEX_VALUE_KEY_BYTES, PhysicalIndexId, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyIntersectionPage, RegisterIndexBuildRequest,
 };
 use std::cell::Cell;
 use std::hint::black_box;
@@ -202,6 +203,58 @@ fn bench_index_posting_batch_progress_encode() -> canbench_rs::BenchResult {
     };
     canbench_rs::bench_fn(|| {
         let encoded = Encode!(black_box(&progress)).expect("encode posting progress");
+        black_box(encoded)
+    })
+}
+
+// --- batched page-answering lookahead acceptance (GAP-2026-07-17-001) ---
+//
+// `answer_batch_pages` (graph-index/src/facade/store.rs) checks
+// `instruction_counter_near_budget(true)` — the 5B query budget minus the 500M
+// `QUERY_BUDGET_HEADROOM` lookahead — before materializing and encoding each page, so the
+// maximum work between checks is one page answer plus its Candid encode. The existing
+// `bench_lookup_*_page_*` benches bound the page materialization (the worst case is the
+// 8-arm scattered intersection page at ~206M instructions); these benches add the page-encode
+// tail so the per-check work is fully bounded against the 500M lookahead.
+
+/// Encode a full `PostingHitPage` (1024 hits, dense walk-arm shape) — the size-measurement step
+/// of `answer_batch_pages` for equality/range buckets.
+#[bench(raw)]
+fn bench_lookup_page_encode() -> canbench_rs::BenchResult {
+    let page = PostingHitPage {
+        hits: (0..1024u32)
+            .map(|vertex_id| PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id,
+            })
+            .collect(),
+        next: None,
+        done: true,
+    };
+    canbench_rs::bench_fn(|| {
+        let encoded = Encode!(black_box(&page)).expect("encode posting hit page");
+        black_box(encoded)
+    })
+}
+
+/// Encode a dense `PropertyIntersectionPage` (1024 vertex hits) — the heaviest page shape in the
+/// batch intersection path.
+#[bench(raw)]
+fn bench_intersection_page_encode() -> canbench_rs::BenchResult {
+    let page = PropertyIntersectionPage {
+        hits: IndexIntersectionResult::Vertices(
+            (0..1024u32)
+                .map(|vertex_id| PostingHit {
+                    shard_id: ShardId::new(0),
+                    vertex_id,
+                })
+                .collect(),
+        ),
+        next: None,
+        done: true,
+    };
+    canbench_rs::bench_fn(|| {
+        let encoded = Encode!(black_box(&page)).expect("encode intersection page");
         black_box(encoded)
     })
 }
