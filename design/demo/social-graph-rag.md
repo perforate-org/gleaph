@@ -1,11 +1,13 @@
 # Social Graph and GraphRAG Comparison Demo
 
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 Anchor timestamp: 2026-07-13 08:15:23 UTC +0000
 
 ## Status
 
 **Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice and Yui home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the six fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-13 the timeline and home feeds use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all six scenarios, including vector distance values, a comparison of vector-only versus graph-constrained results, and a Japanese-clustered Yui home feed. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
+
+As of 2026-08-03 the Gateway PocketIC e2e target (`crates/pocket-ic-tests/tests/social_graph_demo.rs`) was removed from the suite pending re-establishment as an independent test target; the verification record below remains the historical contract for the Gateway read path.
 
 The deterministic fixture contains 11 users and 25 Posts (24 public), with Alice following six
 active authors. The posts use opaque generator-owned graph keys; authored reply references remain
@@ -29,7 +31,7 @@ As of 2026-07-31 05:00:26 UTC +0000:
 - Committed Gateway Candid: `crates/social-demo-gateway/social_demo_gateway.did`.
 - Candid drift check: `scripts/check-social-demo-gateway-candid.sh` verifies the committed
   interface matches the Rust-exported WASM `candid:service` metadata.
-- Gateway PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs`.
+- Gateway PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs` (removed 2026-08-03 pending re-establishment as an independent target).
 - Public comparison frontend: `frontend/apps/social-demo`.
   - Dedicated Solid application.
   - Browser calls only the Gateway actor; no Router `gql_query`, arbitrary GQL, prepared-query

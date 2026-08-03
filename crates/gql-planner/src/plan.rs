@@ -1100,8 +1100,9 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
             // column/order/aggregate/let/for expressions. Previously these were only
             // collected via property_projection on scan/expand operators, so the Router-
             // resolved property table for SEARCH subplans omitted RETURN-clause properties
-            // such as `body` (captured by the Plan 0067 ignored regression test
-            // `alice_semantic_feed_body_regression` in crates/pocket-ic-tests/tests/social_graph_demo.rs).
+            // such as `body` (the Plan 0067/0068 regression test
+            // `alice_semantic_feed_body_regression` covered this; its social-demo gateway
+            // PocketIC target was removed 2026-08-03 pending an independent target).
             PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
                 for column in columns {
                     collect_read_properties_from_expr(&column.expr, uses);
