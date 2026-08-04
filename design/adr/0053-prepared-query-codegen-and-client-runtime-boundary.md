@@ -6,8 +6,8 @@ ADR 0055.
 
 Date: 2026-07-29
 Status: proposed
-Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 03:17:22 UTC +0000
+Last revised: 2026-08-04
+Anchor timestamp: 2026-08-04 17:25:05 UTC +0000
 
 ## Context
 
@@ -143,9 +143,10 @@ The current `GraphClient`/`createGraphClient` API is existing implementation sta
 renamed by this ADR. Any migration to `GleaphClient`/`createGleaphClient` requires a separate SDK
 API decision and compatibility plan.
 
-For Rust, generated code may expose a manifest-specific prepared trait or typed facade over the
-Rust SDK's prepared executor. It must remain possible to use the SDK's dynamic GQL API without
-generated code.
+For Rust, generated code exposes a manifest-specific `PreparedExt` trait implemented for the
+SDK's `GleaphClient<Prepared>`, where `Prepared` is a generated marker type selected by
+`GleaphClient::with_prepared::<Prepared>`. It must remain possible to use the SDK's dynamic GQL
+API without generated code.
 
 ### 5. Profiles are separate, but share one manifest model
 
@@ -304,7 +305,9 @@ as a release-stable contract.
 - a Rust application-client profile exposed by `generate_rust`, emitting operation-specific
   parameter/result declarations and a `PreparedExecutor` facade; and
 - a Rust canister profile exposed by `generate_rust_canister`, emitting operation-specific
-  parameter/result declarations and a transport-neutral `PreparedCanisterExecutor` facade; and
+  parameter/result declarations, a `Prepared` marker type, and a `PreparedExt` trait implemented
+  for `gleaph_cdk::GleaphClient<Prepared>` that wraps the Router's `prepared_query` (reads) and
+  `prepared_mutate` (idempotent updates with an explicit `client_mutation_key`); and
 - a Motoko canister profile exposed by `generate_motoko`, emitting operation-specific
   parameter/result declarations and a transport-neutral typed executor boundary; and
 - a standalone `gleaph-codegen` entrypoint that accepts either a local `--manifest <path>` or a
@@ -325,11 +328,11 @@ profile similarly delegates transport, response decoding, and error handling to 
 `PreparedExecutor` implementation; its `serde_json` parameter map is a provisional runtime
 boundary and is not the Router wire ABI.
 
-The Rust and Motoko canister profiles are intentionally runtime boundary scaffolds: a future
-`gleaph-cdk` adapter (or Motoko CDK equivalent) must implement Candid encoding, Router calls,
-response decoding, and error conversion. The `prepared_manifest` query is implemented; accepted
-result-wire compatibility policy and authenticated identity selection for CLI retrieval remain
-outside this slice.
+The Rust canister profile binds generated operations directly to the `gleaph-cdk` client; the
+Motoko canister profile remains a runtime boundary scaffold: a future Motoko CDK adapter must
+implement Candid encoding, Router calls, response decoding, and error conversion. The
+`prepared_manifest` query is implemented; accepted result-wire compatibility policy and
+authenticated identity selection for CLI retrieval remain outside this slice.
 
 ## Design documentation impact
 

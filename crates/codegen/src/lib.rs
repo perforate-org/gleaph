@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn generates_rust_canister_facade_with_runtime_boundary() {
+    fn generates_rust_canister_profile_with_prepared_operations() {
         let mut value = manifest();
         value.operations[0].result.columns[0].semantic_type = SemanticType::Record {
             fields: vec![RecordField {
@@ -387,17 +387,34 @@ mod tests {
             }],
         };
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("pub trait PreparedCanisterExecutor"));
-        assert!(output.contains("fn encode_params<T: Serialize>"));
-        assert!(output.contains("pub struct PreparedCanisterQueries"));
+        assert!(output.contains("pub trait PreparedExt"));
+        assert!(output.contains("pub struct Prepared;"));
+        assert!(output.contains("impl PreparedExt for gleaph_cdk::GleaphClient<Prepared>"));
         assert!(output.contains("use gleaph_cdk::GqlParams"));
-        assert!(output.contains("fn execute_gql<'a, Row>"));
         assert!(output.contains("pub fn into_gql_params(self) -> GqlParams"));
-        assert!(output.contains("execute_gql::<FindUsersRow>"));
+        assert!(output.contains("fn find_users("));
+        assert!(output.contains(
+            "impl Future<Output = Result<PreparedResponse<FindUsersRow>, gleaph_cdk::CallError>> + Send;"
+        ));
+        assert!(output.contains(".prepared_query(\"find-users\""));
         assert!(!output.contains("use serde::"));
         assert!(output.contains("gleaph_cdk::serde_json::Value"));
         assert!(!output.contains("use serde_json"));
         assert!(!output.contains("ic-agent"));
+    }
+
+    #[test]
+    fn generates_update_operations_wrap_prepared_mutate() {
+        let mut value = manifest();
+        value.operations[0].kind = OperationKind::Update;
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(output.contains("client_mutation_key: impl Into<String>"));
+        assert!(output.contains(".prepared_mutate(\"find-users\""));
+        assert!(
+            output.contains(
+                "params: FindUsersParams,\n        client_mutation_key: impl Into<String>,"
+            )
+        );
     }
 
     #[test]
@@ -419,15 +436,16 @@ mod tests {
     }
 
     #[test]
-    fn generates_typed_row_adapter_for_scalar_results() {
+    fn generates_serde_row_decoding_in_canister_profile() {
         let output = generate_rust_canister(&manifest()).unwrap();
-        assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
-        assert!(output.contains("take_gql_row_field(&mut row, \"user_name\")"));
-        assert!(output.contains("GqlValue::Text(value) => value"));
+        assert!(output.contains("decode_serde_rows::<FindUsersRow>"));
+        assert!(output.contains(
+            "rows: result\n                .decode_serde_rows::<FindUsersRow>()?\n                .unwrap_or_default(),"
+        ));
     }
 
     #[test]
-    fn generates_typed_row_adapter_for_record_results() {
+    fn generates_record_columns_as_open_json_maps() {
         let mut value = manifest();
         value.operations[0].result.columns[0].semantic_type = SemanticType::Record {
             fields: vec![RecordField {
@@ -438,8 +456,9 @@ mod tests {
         };
 
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
-        assert!(output.contains("gleaph_cdk::gql_record_to_json_map(value)?"));
+        assert!(output.contains(
+            "pub user_name: std::collections::BTreeMap<String, gleaph_cdk::serde_json::Value>"
+        ));
         assert!(output.contains("gleaph_cdk::serde_json::Value"));
     }
 
@@ -512,7 +531,7 @@ mod tests {
         assert!(output.contains("GqlValue::Record(self.term)"));
         assert!(contains_compact(
             &output,
-            "self.executor.execute_gql::<FindUsersRow>",
+            "self.prepared_query(\"find-users\"",
         ));
     }
 
@@ -596,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn generates_typed_row_adapter_for_temporal_and_constructed_values() {
+    fn generates_temporal_and_constructed_row_fields() {
         let mut value = manifest();
         value.operations[0].result.columns = vec![
             Column {
@@ -628,12 +647,11 @@ mod tests {
             },
         ];
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
-        assert!(output.contains("PreparedDateTime { seconds, nanos }"));
-        assert!(output.contains("gleaph_cdk::gql_principal_from_value(value)?"));
-        assert!(contains_compact(&output, "GqlValue::List(value)"));
-        assert!(contains_compact(&output, "value.into_iter()"));
-        assert!(contains_compact(&output, "GqlValue::Null"));
+        assert!(output.contains("pub created_at: PreparedDateTime"));
+        assert!(output.contains("pub owner: gleaph_cdk::GqlPrincipal"));
+        assert!(output.contains("pub route: Vec<PreparedPathElement>"));
+        assert!(output.contains("pub ids: Vec<i32>"));
+        assert!(output.contains("pub deleted_at: ()"));
     }
 
     #[test]

@@ -22,7 +22,6 @@ pub enum RustFormatMode {
 pub const MAX_WIDTH: usize = 100;
 pub const FN_CALL_WIDTH: usize = 60;
 pub const CHAIN_WIDTH: usize = 60;
-pub const STRUCT_LIT_WIDTH: usize = 18;
 pub const ARRAY_WIDTH: usize = 60;
 
 /// Return whether a generated construct exceeds a built-in Rustfmt-style width threshold.

@@ -5,63 +5,21 @@
 use gleaph_cdk::GqlParams;
 use gleaph_cdk::GqlValue;
 use gleaph_cdk::candid::CandidType;
-use gleaph_cdk::serde::de::DeserializeOwned;
 use gleaph_cdk::serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::pin::Pin;
 
 pub const GLEAPH_GRAPH_ID: &str = "default";
 
-/// Result returned by a canister-side prepared-query executor.
+/// Result returned by a prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
 #[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedCanisterResponse<Row> {
-    /// Number of rows observed by the runtime.
+pub struct PreparedResponse<Row> {
+    /// Number of rows returned by the Router.
     pub row_count: u64,
-    /// Typed rows decoded by the runtime.
+    /// Typed rows decoded from the Router response.
     pub rows: Vec<Row>,
 }
-
-/// Runtime boundary used by generated canister methods.
-pub trait PreparedCanisterExecutor {
-    /// Runtime-specific error type.
-    type Error;
-
-    /// Encode a generated parameter value for the Router wire contract.
-    fn encode_params<T: Serialize>(&self, params: &T) -> Result<Vec<u8>, Self::Error>;
-
-    /// Execute a prepared operation from logical GQL parameters.
-    fn execute_gql<'a, Row>(
-        &'a self,
-        name: &'static str,
-        params: GqlParams,
-    ) -> PreparedCanisterFuture<'a, Row, Self::Error>
-    where
-        Row: DeserializeOwned + 'a;
-
-    /// Execute a read-only prepared operation.
-    fn execute_query<'a, Row>(
-        &'a self,
-        name: &'static str,
-        params: Vec<u8>,
-    ) -> PreparedCanisterFuture<'a, Row, Self::Error>
-    where
-        Row: DeserializeOwned + 'a;
-
-    /// Execute a mutating prepared operation.
-    fn execute_update<'a, Row>(
-        &'a self,
-        name: &'static str,
-        params: Vec<u8>,
-    ) -> PreparedCanisterFuture<'a, Row, Self::Error>
-    where
-        Row: DeserializeOwned + 'a;
-}
-
-/// Boxed future returned by a generated canister executor.
-pub type PreparedCanisterFuture<'a, Row, Error> =
-    Pin<Box<dyn Future<Output = Result<PreparedCanisterResponse<Row>, Error>> + 'a>>;
 
 /// Date-time representation used by generated declarations.
 #[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
@@ -141,56 +99,40 @@ pub struct FindUsersRow {
     pub user_id: u64,
 }
 
-impl gleaph_cdk::FromGqlRow for FindUsersRow {
-    fn from_gql_row(mut row: gleaph_cdk::GqlRow) -> Result<Self, gleaph_cdk::GqlWireDecodeError> {
-        let user_name = {
-            let value = gleaph_cdk::take_gql_row_field(&mut row, "user_name")?;
-            match value {
-                GqlValue::Text(value) => value,
-                _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch("Text")),
-            }
-        };
-        let user_id = {
-            let value = gleaph_cdk::take_gql_row_field(&mut row, "user_id")?;
-            match value {
-                GqlValue::Uint64(value) => value,
-                _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch("Uint64")),
-            }
-        };
-        Ok(Self { user_name, user_id })
-    }
-}
+/// Marker enabling generated prepared operations on `gleaph_cdk::GleaphClient<Prepared>`.
+pub struct Prepared;
 
-/// Typed facade over a canister-side prepared-query executor.
-pub struct PreparedCanisterQueries<'a, E: PreparedCanisterExecutor> {
-    executor: &'a E,
-}
-
-impl<'a, E: PreparedCanisterExecutor> PreparedCanisterQueries<'a, E> {
-    /// Bind generated operations to a runtime executor.
-    pub fn new(executor: &'a E) -> Self {
-        Self { executor }
-    }
-
-    /// Execute a prepared operation using the shared logical GQL value model.
-    pub async fn execute_gql<Row>(
-        &self,
-        name: &'static str,
-        params: GqlParams,
-    ) -> Result<PreparedCanisterResponse<Row>, E::Error>
-    where
-        Row: DeserializeOwned,
-    {
-        self.executor.execute_gql::<Row>(name, params).await
-    }
-
+/// Prepared operations generated from the manifest, available on
+/// `gleaph_cdk::GleaphClient<Prepared>`.
+///
+/// Import this trait to call prepared operations on a client created with
+/// `gleaph_cdk::GleaphClient::with_prepared::<Prepared>`.
+pub trait PreparedExt {
     /// Execute the prepared operation find-users.
-    pub async fn find_users(
+    fn find_users(
         &self,
         params: FindUsersParams,
-    ) -> Result<PreparedCanisterResponse<FindUsersRow>, E::Error> {
-        self.executor
-            .execute_gql::<FindUsersRow>("find-users", params.into_gql_params())
-            .await
+    ) -> impl Future<Output = Result<PreparedResponse<FindUsersRow>, gleaph_cdk::CallError>> + Send;
+}
+
+impl PreparedExt for gleaph_cdk::GleaphClient<Prepared> {
+    async fn find_users(
+        &self,
+        params: FindUsersParams,
+    ) -> Result<PreparedResponse<FindUsersRow>, gleaph_cdk::CallError> {
+        let params = gleaph_cdk::encode_gql_params(params.into_gql_params()).map_err(|error| {
+            gleaph_cdk::CallError::Decode {
+                message: format!("failed to encode GQL params: {error:?}"),
+            }
+        })?;
+        let result = self
+            .prepared_query("find-users", params, None, gleaph_cdk::ReadMode::Eventual)
+            .await?;
+        Ok(PreparedResponse {
+            row_count: result.row_count,
+            rows: result
+                .decode_serde_rows::<FindUsersRow>()?
+                .unwrap_or_default(),
+        })
     }
 }
