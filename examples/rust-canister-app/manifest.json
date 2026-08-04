@@ -1,0 +1,29 @@
+{
+  "manifest_version": 1,
+  "graph": { "id": "default", "name": null },
+  "operations": [
+    {
+      "name": "find-users",
+      "description": "Find users whose name starts with the given term.",
+      "kind": "Query",
+      "parameters": [
+        {
+          "name": "term",
+          "description": "Name prefix to search for.",
+          "required": true,
+          "nullable": false,
+          "type": "Text"
+        }
+      ],
+      "result": {
+        "columns": [
+          { "name": "user_name", "type": "Text", "nullable": false },
+          { "name": "user_id", "type": "Uint64", "nullable": false }
+        ]
+      },
+      "supports_consistency": true,
+      "supports_idempotency": false,
+      "allowed_sorts": [{ "key": "user_name", "label": "Name" }]
+    }
+  ]
+}

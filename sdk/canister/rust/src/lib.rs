@@ -234,6 +234,14 @@ impl core::fmt::Display for CallError {
 
 impl std::error::Error for CallError {}
 
+impl From<GqlWireDecodeError> for CallError {
+    fn from(error: GqlWireDecodeError) -> Self {
+        CallError::Decode {
+            message: error.to_string(),
+        }
+    }
+}
+
 /// Make a bounded-wait call to `method` on `canister_id` and Candid-decode the response as `R`.
 async fn call_router<R>(canister_id: Principal, method: &str, args: Vec<u8>) -> Result<R, CallError>
 where
@@ -278,6 +286,13 @@ mod tests {
         let text = format!("{err}");
         assert!(text.contains("no query"), "{text}");
         assert!(text.contains("CanisterReject"), "{text}");
+    }
+
+    #[test]
+    fn call_error_converts_wire_decode_errors() {
+        let error = GqlWireDecodeError::MissingField("name".into());
+        let call_error = CallError::from(error);
+        assert!(matches!(call_error, CallError::Decode { message } if message.contains("name")));
     }
 
     #[test]

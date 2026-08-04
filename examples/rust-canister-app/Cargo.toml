@@ -1,0 +1,16 @@
+[package]
+name = "gleaph-example-rust-canister-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Example application canister using gleaph-codegen output and the gleaph-cdk client"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+candid.workspace = true
+gleaph-cdk.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true

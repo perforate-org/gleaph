@@ -32,6 +32,7 @@ members = [
     "crates/provision",
     "crates/router",
     "crates/social-demo-gateway",
+    "examples/rust-canister-app",
     "sdk/canister/rust",
 ]
 resolver = "2"

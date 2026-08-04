@@ -1727,6 +1727,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-example-rust-canister-app"
+version = "0.0.0"
+dependencies = [
+ "candid",
+ "gleaph-cdk",
+ "ic-cdk",
+ "ic-cdk-macros",
+]
+
+[[package]]
 name = "gleaph-gql"
 version = "0.0.1"
 dependencies = [
