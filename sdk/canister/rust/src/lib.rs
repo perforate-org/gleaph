@@ -28,9 +28,9 @@ pub use types::{
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
     BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
     FromGqlRow, GqlDecimal, GqlFloat16, GqlFloat256, GqlInt256, GqlPathElement, GqlPrincipal,
-    GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError, GqlWireRows,
-    MutationLifecyclePhase, MutationToken, MutationTokenShard, ReadMode, RouterError,
-    VectorActivationBlockReason, gql_principal_from_value, gql_principal_value,
+    GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError, GqlWireRow,
+    GqlWireRows, GqlWireValue, MutationLifecyclePhase, MutationToken, MutationTokenShard, ReadMode,
+    RouterError, VectorActivationBlockReason, gql_principal_from_value, gql_principal_value,
     gql_record_to_json_map, gql_value_to_json, take_gql_row_field,
 };
 
@@ -493,6 +493,31 @@ mod tests {
                 _ => Err(GqlWireDecodeError::TypeMismatch("Text")),
             }
         }
+    }
+
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    struct SerdeRow {
+        #[serde(rename = "name")]
+        name: String,
+    }
+
+    #[test]
+    fn gql_query_result_decodes_serde_rows() {
+        let rows = GqlWireRows {
+            rows: vec![GqlWireRow {
+                columns: vec![("name".into(), GqlWireValue::Text("Ada".into()))],
+            }],
+        };
+        let response = GqlQueryResult {
+            row_count: 1,
+            rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
+            phase: None,
+            token: None,
+        };
+        assert_eq!(
+            response.decode_serde_rows::<SerdeRow>().unwrap(),
+            Some(vec![SerdeRow { name: "Ada".into() }])
+        );
     }
 
     #[test]

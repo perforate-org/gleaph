@@ -8,3 +8,6 @@ publish = false
 
 [dependencies]
 gleaph-cdk = { path = "../../../../sdk/canister/rust" }
+
+[dev-dependencies]
+candid = "0.10"

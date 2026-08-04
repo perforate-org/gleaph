@@ -8,8 +8,12 @@ use gleaph_gql_value::types::{Decimal, Int256, Uint256};
 pub use gleaph_gql_ic_wire::GqlPrincipal;
 /// Decode error for the Router rows blob.
 pub use gleaph_gql_ic_wire::GqlWireDecodeError;
+/// One row in the wire rows blob.
+pub use gleaph_gql_ic_wire::GqlWireRow;
 /// Materialized rows returned in a Router response blob.
 pub use gleaph_gql_ic_wire::GqlWireRows;
+/// One wire value in a materialized row.
+pub use gleaph_gql_ic_wire::GqlWireValue;
 use gleaph_gql_ic_wire::decode_rows_blob;
 use gleaph_gql_params::GqlParams;
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
@@ -84,6 +88,33 @@ impl GqlQueryResult {
                 rows.rows
                     .into_iter()
                     .map(|row| Row::from_gql_row(row.try_into_gql_row()?))
+                    .collect()
+            })
+            .transpose()
+    }
+
+    /// Decode materialized rows into any serde-deserializable row type.
+    ///
+    /// This is the path used by `gleaph-codegen`'s `PreparedCanisterExecutor`, whose `Row`
+    /// bound is `DeserializeOwned`: each wire row is projected to JSON (see
+    /// [`gql_value_to_json`]) and deserialized with the row type's serde derives and renames.
+    pub fn decode_serde_rows<Row>(&self) -> Result<Option<Vec<Row>>, GqlWireDecodeError>
+    where
+        Row: serde::de::DeserializeOwned,
+    {
+        self.decode_rows()?
+            .map(|rows| {
+                rows.rows
+                    .into_iter()
+                    .map(|row| {
+                        let row = row.try_into_gql_row()?;
+                        let mut object = serde_json::Map::new();
+                        for (name, value) in row {
+                            object.insert(name, gql_value_to_json(value)?);
+                        }
+                        serde_json::from_value(serde_json::Value::Object(object))
+                            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))
+                    })
                     .collect()
             })
             .transpose()
