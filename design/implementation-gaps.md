@@ -1,6 +1,6 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
 
 ## Status
@@ -237,6 +237,41 @@ defect from being rediscovered without its prior reasoning.
   (graph lib) and `driver_seal_resumes_after_activation_crash_window` (router driver) prove the
   re-drive converges and that a wrong `InvalidPhase` return for the same identity/epoch would fail.
 
+### GAP-2026-08-04-001 — `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` is defined but never consumed
+
+- **Status:** Open
+- **Severity:** P2 router budget-integrity gap (no current runtime risk; the shared headroom covers the
+  path)
+- **Owner:** `gleaph-instruction-budget` constants and the Router chunk-dispatch loop
+  (`crates/router/src/gql.rs` `execute_prepared_mutation` / `graph_batch_chunk_len_for_dispatches`)
+- **Observed behavior:** `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` (4B) is defined in
+  `gleaph-instruction-budget` and re-exported from `gleaph-graph-kernel`, but no code path consumes
+  it: the Router chunk decision caps at `max_operation_count(500M, 35B)` = 70 operations per chunk
+  using the shared `MAX_DYNAMIC_UPDATE_INSTRUCTIONS`, and the between-chunk loop
+  (`execute_prepared_mutation`) has no Router-local call-context cutoff. The 4B constant appears only
+  in the definition, the re-export, the compile-time assertion, and the GAP acceptance bench comment.
+- **Expected or needed behavior:** every defined headroom must either be consumed by the owning
+  boundary or be removed. If the Router is to guarantee it never crosses the 40B limit on its own
+  account (distinct from the Graph-side 35B budget inside each dispatched batch), the chunk loop
+  needs the ADR 0042 original between-wave check: read the Router call-context instruction counter
+  and stop before starting another chunk when `used + next-chunk estimate + reserve ≥ 40B`.
+- **Evidence:** `crates/instruction-budget/src/lib.rs` (definition + assert),
+  `crates/graph-kernel/src/lib.rs` (re-export), `crates/router/src/gql.rs`
+  (`graph_batch_chunk_len_for_dispatches` uses only the shared budget); measured per-chunk decision
+  cost 6.01M / 37.34M instructions and the ≤2 MiB inter-canister sizing bound
+  (`crates/router/src/bench.rs`, `crates/router/canbench_results.yml`, GAP-2026-07-17-001).
+- **Impact:** no current runtime risk: the Router's actual safety is the shared 5B
+  `UPDATE_CALL_INSTRUCTION_HEADROOM` (35B dynamic budget), and the measured per-chunk work
+  (decision ≤ 37.34M + ≤2 MiB encode + response) is ≪ 1% of it. The gap is integrity and
+  future-proofing: the dead constant invites a false sense of protection, a future Router-side
+  bounded loop cannot reference a consumed budget, and the GAP acceptance table lists a value that
+  is not wired to the path it claims to reserve.
+- **Next decision:** choose one of (a) remove the constant and the ADR 0060 §1 list entry, noting
+  in GAP-2026-07-17-001 that the shared 5B covers the Router chunk path; or (b) add the
+  between-chunk call-context cutoff to `execute_prepared_mutation` and re-derive the constant from
+  measurement (≈1B suffices: decision 37.34M + response at ~7× margin). Option (b) is preferred so
+  the Router itself provably never traps at 40B regardless of Graph behavior.
+
 ## Resolved gaps
 
 ### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
@@ -319,11 +354,11 @@ defect from being rediscovered without its prior reasoning.
 
 - **Status:** Resolved by measured canbench + PocketIC acceptance (2026-08-03/2026-08-04; commits
   `test(graph): measure plan-batch tail costs for headroom acceptance`, `test(graph): verify
-  plan-batch drain boundary end to end`, `test(graph-index): measure posting_batch loop costs for
-  headroom acceptance`, `test(vector-index): measure vector_sync_batch loop costs for headroom
-  acceptance`, `test(graph-index): measure batched page-answer lookahead tail`, `test(router):
-  measure graph batch chunk decision costs for headroom acceptance`, `test(graph): measure timer
-  maintenance tick and per-step costs`)
+plan-batch drain boundary end to end`, `test(graph-index): measure posting_batch loop costs for
+headroom acceptance`, `test(vector-index): measure vector_sync_batch loop costs for headroom
+acceptance`, `test(graph-index): measure batched page-answer lookahead tail`, `test(router):
+measure graph batch chunk decision costs for headroom acceptance`, `test(graph): measure timer
+maintenance tick and per-step costs`)
 - **Severity:** P1 availability and resumability risk
 - **Owner:** Router, Graph, graph-index, and graph-vector-index dynamic batch boundaries
 - **Observed behavior:** Multiple canister paths stop before the 40B update-call limit using
