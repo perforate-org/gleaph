@@ -96,161 +96,6 @@ defect from being rediscovered without its prior reasoning.
   mutation path must preserve the same preflight-then-trap boundary; a new recoverable post-write
   error requires a separate atomicity design review.
 
-### GAP-2026-07-17-001 — Dynamic instruction-budget headrooms lack measured acceptance criteria
-
-- **Status:** Open
-- **Severity:** P1 availability and resumability risk
-- **Owner:** Router, Graph, graph-index, and graph-vector-index dynamic batch boundaries
-- **Observed behavior:** Multiple canister paths stop before the 40B update-call limit using
-  independently chosen values, but no repository benchmark or acceptance table establishes that
-  each headroom covers its owning path's final operation, response encoding, post-operation drain,
-  and cross-canister call overhead. Current examples include Router's 5B headroom, Graph's pending
-  5B headroom for `execute_plan_update_batch`, graph-index and graph-vector-index batch ceilings at
-  32B with 100M per-loop reserves, graph-index's 1B update / 0.5B query lookahead, and Graph timer
-  maintenance at 32B with a 100M reserve. These values have different ownership and semantics and
-  must not be treated as interchangeable.
-- **Expected or needed behavior:** Every dynamic batch or bounded maintenance loop must have a
-  measured, path-specific instruction ceiling and headroom acceptance criterion. A boundary must
-  return continuation progress before the platform limit, including the cost of its final operation,
-  response construction, and owned post-processing. A single operation that cannot fit within the
-  safe ceiling must fail with an explicit bounded-work error or be split at an inner owner boundary;
-  it must not trap by crossing the 40B message limit.
-- **Owner:** The canister that owns each loop and continuation contract: Router for Router mutation
-  batching, Graph for Graph-plan batching and Graph-local drain, graph-index for posting batches,
-  and graph-vector-index for vector sync batches. `design/adr/0042-router-dynamic-instruction-budget-batching.md`
-  describes the API contract but is not evidence that its numeric headroom is sufficient.
-- **Evidence:** `crates/router/src/lib.rs` (`MAX_DYNAMIC_INSTRUCTION_BUDGET`),
-  `crates/graph/src/canister/handlers.rs` (`execute_plan_batch`),
-  `crates/graph-index/src/canister.rs` (`posting_batch`),
-  `crates/graph-vector-index/src/canister.rs` (`vector_sync_batch`),
-  `crates/graph/src/facade/ic_budget.rs` (Graph timer budgets), and the local social-demo failure
-  where `execute_plan_update_batch` reached `IC0522` at 40,000,000,000 instructions before a
-  continuation cursor could be returned.
-- **Impact:** An apparently dynamic batch can still trap instead of returning `next_index`, leaving
-  the caller unable to make progress through the normal cursor path. Conversely, excessive
-  unmeasured headroom reduces throughput and increases the number of ingress calls without a
-  defensible safety benefit.
-- **Next decision:** Add focused canbench and, where required, one bounded PocketIC boundary test
-  per owner path. Measure the maximum single-operation cost and tail cost across representative and
-  adversarial fixtures, define an explicit safety percentile or worst-case bound, then set each
-  headroom independently. Record the resulting values and acceptance evidence in the owning ADR or
-  design document; do not justify a numeric value solely by copying another canister's constant or
-  citing an existing ADR statement.
-- **Progress (2026-08-03, Graph plan-batch path):** canbench targets added in
-  `crates/graph/src/bench/plan_batch.rs` and `crates/graph/src/bench/mod.rs`, persisted in
-  `crates/graph/canbench_results.yml`. Measured (canbench, 2026-08-03): adversarial single
-  operation (INSERT vertex with a 1 MiB text property) costs 32.98M instructions; a fully
-  completed 256-operation plan-batch response encodes in 273.5K instructions, or 580.7K with a
-  large hot-forward hub list per result. Derived acceptance for the plan-batch path: the measured
-  single-operation maximum (32.98M) stays below the `MIN_OP_INSTRUCTION_ESTIMATE` (50M) used by
-  the cutoff and far below the ~37.5B single-operation trap threshold (40B − 2B bookkeeping −
-  500M drain reserves), and the measured response tail (≤ 581K) is negligible against the 2.5B
-  combined reserve. The remaining unmeasured tail component is the derived-index drain
-  (`sync_drain_derived_index_outbox`), which is inter-canister and therefore not canbench-
-  measurable; the bounded PocketIC boundary test for the plan-batch drain is the next step for
-  this path. The drain boundary test is in place as of 2026-08-03
-  (`crates/pocket-ic-tests/tests/adr0060_plan_batch_instruction_boundary.rs`): a 300-operation
-  NEXT-chained mutation program on a converged `Person.age` index dispatches as Dynamic
-  plan-batch chunks and completes without trapping (mutation token issued), the inserted data is
-  queryable, and the index serves the drained posting at physical index id 1 — so the plan-batch
-  path now has complete acceptance evidence (per-op bound, response bound, and end-to-end drain
-  convergence).
-- **Progress (2026-08-03, graph-index `posting_batch` path):** canbench targets added in
-  `crates/graph-index/src/bench.rs`, persisted in `crates/graph-index/canbench_results.yml`. The
-  canister `posting_batch` loop (`INDEX_BATCH_MAX_INSTRUCTIONS` 32B with
-  `INDEX_BATCH_RESERVE_INSTRUCTIONS` 100M) is mirrored in the bench with the authorized
-  attached-shard caller (a canbench query caller is not an attached shard). Measured (canbench,
-  2026-08-03): 256 vertex-property postings with 32-byte values cost 20.28M instructions
-  (≈79K per operation); 256 postings at the maximum index value key size (4096 bytes) cost
-  490.54M instructions (≈1.92M per operation, the adversarial maximum); the
-  `IndexPostingBatchProgress` response encodes in 37.92K instructions. Derived acceptance: the
-  maximum single-operation cost (≈1.92M) plus response construction (≈38K) is two orders of
-  magnitude below the 100M reserve, so the exhausted check always fires with the final
-  operation and response well inside the message; the 32B ceiling leaves an 8B gap below the
-  40B platform limit for the response; and at the measured per-operation costs the ceiling cuts
-  off only after ~16.6K max-value or ~400K small-value postings per call, so it does not
-  prematurely bound realistic batches. The posting_batch path needs no PocketIC boundary test:
-  the loop is fully local and the reserve/ceiling acceptance is covered by the canbench
-  measurements alone.
-- **Progress (2026-08-03, graph-vector-index `vector_sync_batch` path):** canbench targets added
-  in `crates/graph-vector-index/src/bench.rs`, persisted in
-  `crates/graph-vector-index/canbench_results.yml`. The canister `vector_sync_batch` loop
-  (`VECTOR_BATCH_MAX_INSTRUCTIONS` 32B with `VECTOR_BATCH_RESERVE_INSTRUCTIONS` 100M) is mirrored
-  in the bench with the authorized attached-shard caller. Measured (canbench, 2026-08-03): 256
-  upserts of 8-dimensional embeddings cost 280.41M instructions (≈1.10M per operation); 256
-  upserts of 768-dimensional embeddings (3072 bytes each) cost 287.42M instructions (≈1.12M per
-  operation, effectively flat in dims — the cost is dominated by the slab write machinery, not
-  the embedding bytes); the `VectorSyncBatchProgress` response encodes in 37.71K instructions.
-  Derived acceptance: the maximum single-operation cost (≈1.12M) plus response construction
-  (≈38K) is two orders of magnitude below the 100M reserve; the 32B ceiling leaves an 8B gap
-  below the 40B platform limit for the response; and at ≈1.1M per operation the ceiling cuts off
-  only after ~29K operations per call, so it does not prematurely bound realistic sync batches.
-  Like posting_batch, this loop is fully local and needs no PocketIC boundary test.
-- **Progress (2026-08-03, graph-index batched page-answering lookahead):** the bounded loop is
-  `answer_batch_pages` (`crates/graph-index/src/facade/store.rs`), which checks
-  `instruction_counter_near_budget(true)` — the 5B query budget minus the 500M
-  `QUERY_BUDGET_HEADROOM` lookahead — before materializing and encoding each page, so the
-  maximum work between checks is one page answer plus its Candid encode. Page-encode benches
-  added in `crates/graph-index/src/bench.rs` (`bench_lookup_page_encode` 211.67K,
-  `bench_intersection_page_encode` 315.95K instructions), persisted in
-  `crates/graph-index/canbench_results.yml`. Combined with the existing page benches (the worst
-  page materialization is the 8-arm scattered intersection page at ~206.4M instructions; dense
-  range pages ≈4M, 8-sieve range intersection ≈50M), the derived acceptance is: maximum
-  per-check work ≈206.7M instructions (page + encode) stays below the 500M query lookahead with
-  ~2.4× margin for the adversarial intersection page and far below it for every other page
-  shape. Note: `instruction_counter_near_budget(false)` (the 1B update lookahead,
-  `UPDATE_BUDGET_HEADROOM`) has no current caller — the update-side lookahead is reserved for
-  future update-path bounded loops and needs no acceptance evidence until one exists.
-- **Progress (2026-08-04, Router mutation batching chunk decision):** canbench targets added in
-  `crates/router/src/bench.rs` (`bench_graph_batch_chunk_len_for_dispatches_small` and
-  `_adversarial`), persisted in `crates/router/canbench_results.yml`;
-  `graph_batch_chunk_len_for_dispatches` was made `pub(crate)` so the bench can exercise the
-  production decision. The bench mirrors the `build_execute_args` closure of
-  `execute_prepared_mutation`: each operation carries a shared plan blob, params blob, and
-  per-dispatch seed bindings. Measured (canbench, 2026-08-04): a nominal single-chunk decision
-  for 70 dispatches (the instruction cap: 500M per operation × 70 = the 35B dynamic budget,
-  with uniform 1 KiB payloads that fit the sizing target in one probe pass) costs 6.01M
-  instructions; an adversarial decision for 512 heterogeneous-payload dispatches (a small
-  96-entry leading sample, then 64 KiB plan blobs and 2 KiB seed bindings) costs 37.34M
-  instructions, dominated by a ~27 MiB overshoot probe that forces the adaptive loop's
-  proportional-reduction re-measurement. Derived acceptance: the decision logic runs once per
-  chunk, and its worst measured cost (37.34M) is ≈0.9% of the 4B
-  `ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` reserved for one chunk's dispatch, response
-  construction, and cross-canister call — so the decision cannot consume a meaningful fraction
-  of the reserve even when the size estimate overshoots, and the nominal single-chunk decision
-  (6.01M) is ≈0.15% of it. The per-chunk decision cost is further amortized by the instruction
-  cap (at most one decision per 70 dispatched operations). The remaining Router-side per-chunk
-  tail — the final batch Candid encode and the inter-canister call plus response decode — is
-  bounded by the inter-canister sizing policy (≤2 MiB per chunk) and is not canbench-measurable
-  from the Router alone (the cross-canister leg, like the Graph plan-batch drain, needs an
-  end-to-end harness; the Router chunk-dispatch path serves the GQL mutation path whose
-  dispatch count is bounded by live shard count, so no dedicated boundary test is added here).
-- **Progress (2026-08-04, Graph timer maintenance):** canbench targets added in
-  `crates/graph/src/bench/timer_maintenance.rs`, persisted in
-  `crates/graph/canbench_results.yml`. The bounded loop is
-  `DeferredBidirectionalLabeledLaraGraph::maintenance_with_observers`, which checks
-  `should_cutoff(32B, used, 0, 100M, 0)` before each work item, so the maximum work between
-  budget checks is one work item plus the report. The benches exercise the production
-  `run_timer_maintenance_tick` entrypoint (the ADR 0020 timer pass under
-  `timer_lara_maintenance_budget()`) on a dense 2048-edge hub with an 8-byte inline property:
-  the fixture inserts the hub edges (the dense insert path enqueues
-  `CompactDenseLabeledVertexMaintenance`) and the host fixture test asserts the queue is
-  non-empty, drains to zero, and produces measurable compaction work. Measured (canbench,
-  2026-08-04): one work item under the timer budget (`max_work_items: 1` on
-  `timer_lara_maintenance_budget()`) costs 61.60K instructions; the whole tick draining the
-  2048-edge hub costs 1.33M instructions (3 work items: the dense segment compaction, the
-  overflow rewrite, and the finishing step). Derived acceptance: the worst single work item
-  between budget checks is bounded by the whole tick (1.33M), which is ≈1.3% of the 100M
-  `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` reserve — so the cutoff always fires with the final
-  work item and report well inside the 32B `MAX_TIMER_MAINTENANCE_INSTRUCTIONS` cap, and a
-  realistic backlog (2048-edge hub) drains in ≈0.004% of the cap, so the cap does not
-  prematurely bound a tick. The loop is fully local and needs no PocketIC boundary test.
-- **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
-  [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
-  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
-  [design/index/property-index.md](index/property-index.md),
-  [design/index/vector-index.md](index/vector-index.md)
-
 ### GAP-2026-07-11-005 — `FreeSpanStore` reopen validation has no production-scale cost bound
 
 - **Status:** Open
@@ -469,6 +314,64 @@ defect from being rediscovered without its prior reasoning.
   `gql_run::tests::{block_match_next_insert_edge_keeps_endpoints,wire_block_match_next_insert_edge_keeps_endpoints,block_match_next_insert_edge_shares_source}`.
 - **Related contracts:** [gql/plan-format.md](gql/plan-format.md),
   [execution/pipeline.md](execution/pipeline.md)
+
+### GAP-2026-07-17-001 — Dynamic instruction-budget headrooms lack measured acceptance criteria
+
+- **Status:** Resolved by measured canbench + PocketIC acceptance (2026-08-03/2026-08-04; commits
+  `test(graph): measure plan-batch tail costs for headroom acceptance`, `test(graph): verify
+  plan-batch drain boundary end to end`, `test(graph-index): measure posting_batch loop costs for
+  headroom acceptance`, `test(vector-index): measure vector_sync_batch loop costs for headroom
+  acceptance`, `test(graph-index): measure batched page-answer lookahead tail`, `test(router):
+  measure graph batch chunk decision costs for headroom acceptance`, `test(graph): measure timer
+  maintenance tick and per-step costs`)
+- **Severity:** P1 availability and resumability risk
+- **Owner:** Router, Graph, graph-index, and graph-vector-index dynamic batch boundaries
+- **Observed behavior:** Multiple canister paths stop before the 40B update-call limit using
+  independently chosen values, but no repository benchmark or acceptance table establishes that
+  each headroom covers its owning path's final operation, response encoding, post-operation drain,
+  and cross-canister call overhead. Current examples include Router's 5B headroom, Graph's pending
+  5B headroom for `execute_plan_update_batch`, graph-index and graph-vector-index batch ceilings at
+  32B with 100M per-loop reserves, graph-index's 1B update / 0.5B query lookahead, and Graph timer
+  maintenance at 32B with a 100M reserve. These values have different ownership and semantics and
+  must not be treated as interchangeable.
+- **Resolution:** every dynamic batch / bounded maintenance loop in the GAP now has measured,
+  path-specific instruction-ceiling and headroom acceptance evidence (plan-batch, posting_batch,
+  vector_sync_batch, page-answer lookahead, Router chunk decision, timer maintenance):
+  - **Graph plan-batch** (`execute_plan_update_batch`, `GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM`
+    2B + 500M drain estimate): adversarial single operation 32.98M < `MIN_OP_INSTRUCTION_ESTIMATE`
+    (50M) and far below the ~37.5B trap threshold; response tail ≤ 581K vs the 2.5B reserve; the
+    inter-canister drain is covered by the PocketIC boundary test
+    (`adr0060_plan_batch_instruction_boundary.rs`) which completes a 300-operation NEXT-chained
+    mutation on a converged index without trapping and serves the drained posting.
+  - **graph-index `posting_batch`** (32B ceiling, 100M reserve): max single op ≈1.92M (4096-byte
+    value) + response 38K, two orders below the reserve; ceiling cuts off only after ~16.6K
+    max-value postings. Fully local; no boundary test needed.
+  - **graph-vector-index `vector_sync_batch`** (32B ceiling, 100M reserve): max single op ≈1.12M
+    (flat in dims) + response 38K, two orders below the reserve; ceiling cuts off after ~29K
+    upserts. Fully local; no boundary test needed.
+  - **graph-index page-answer lookahead** (500M query lookahead): max per-check work (worst page
+    ≈206.4M + encode ≤ 316K) ≈206.7M, 2.4× below the lookahead. The 1B update lookahead has no
+    caller and needs no evidence until used.
+  - **Router mutation-batching chunk decision** (`ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM` 4B):
+    decision cost 6.01M nominal / 37.34M adversarial (≈0.15% / ≈0.9% of the reserve); the
+    remaining per-chunk tail is bounded by the inter-canister sizing policy (≤2 MiB) and the
+    dispatch count is bounded by live shard count, so no dedicated boundary test was added.
+  - **Graph timer maintenance** (`MAX_TIMER_MAINTENANCE_INSTRUCTIONS` 32B,
+    `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` 100M): single work item 61.60K and whole tick on a
+    dense 2048-edge hub 1.33M, so the worst per-check work (≤ whole tick) is ≈1.3% of the reserve
+    and a realistic backlog drains in ≈0.004% of the cap. Fully local; no boundary test needed.
+- **Evidence:** canbench targets and persisted results: `crates/graph/src/bench/plan_batch.rs`,
+  `crates/graph/src/bench/timer_maintenance.rs`, `crates/graph-index/src/bench.rs`,
+  `crates/graph-vector-index/src/bench.rs`, `crates/router/src/bench.rs`, with the matching
+  `canbench_results.yml` per crate; the plan-batch PocketIC boundary test
+  `crates/pocket-ic-tests/tests/adr0060_plan_batch_instruction_boundary.rs`. No headroom was
+  justified by copying another canister's constant: each path carries its own measured worst-case
+  and tail numbers.
+- **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
+  [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
+  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
+  [design/index/property-index.md](index/property-index.md),
+  [design/index/vector-index.md](index/vector-index.md)
 
 ## Property and index capability gaps
 
