@@ -1,0 +1,13 @@
+[package]
+name = "gleaph-gql-params"
+edition = "2024"
+version = "0.0.1"
+authors = ["Inomoto Yota <yota@perforate.org>"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+description = "Named GQL parameters, the IntoGqlParam conversion trait, and the gql! query builder"
+
+[dependencies]
+candid.workspace = true
+gleaph-gql-ic-wire.workspace = true
+gleaph-gql-value.workspace = true

@@ -1678,8 +1678,10 @@ dependencies = [
  "candid",
  "ethnum",
  "f256",
- "gleaph-gql",
  "gleaph-gql-ic-wire",
+ "gleaph-gql-params",
+ "gleaph-gql-value",
+ "gleaph-prepared-api",
  "half 2.7.1",
  "ic-cdk",
  "rust_decimal",
@@ -1797,6 +1799,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "gleaph-gql-params"
+version = "0.0.1"
+dependencies = [
+ "candid",
+ "gleaph-gql-ic-wire",
+ "gleaph-gql-value",
 ]
 
 [[package]]
