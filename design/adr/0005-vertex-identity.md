@@ -2,7 +2,8 @@
 
 Date: 2026-06-11  
 Status: accepted  
-Last revised: 2026-06-17
+Last revised: 2026-08-04
+Anchor timestamp: 2026-08-04 18:18:33 UTC +0000
 
 > **Placement registry:** Router `ROUTER_PLACEMENTS` and placement APIs were removed in
 > [0017](0017-graph-vertex-existence-ssot.md). Vertex existence is authoritative on the graph
@@ -146,21 +147,27 @@ GLOBAL_EDGE_ID_BYTES    = 12
 - Optional SDK helpers may present ids as hex or base64url **strings** for ergonomics; that is a
   presentation layer only. Decode must recover the exact byte sequence before **`decode()`** into
   canonical types.
+- `gleaph-gql-params` exposes typed client bindings mirroring the wire contract:
+  `PathElement::{Vertex(VertexPathElementId), Edge(EdgePathElementId)}` with
+  `VertexPathElementId([u8; 8])` and `EdgePathElementId([u8; 12])`, deriving Candid
+  (`variant { Vertex: vec nat8, Edge: vec nat8 }`) and serde. Generated Rust canister bindings
+  reference these through `gleaph-cdk::PathElement`, so the fixed byte lengths are enforced by
+  the type system at the client boundary.
 
 ### Removal of the logical-id model
 
 **Remove (or do not reintroduce):**
 
-| Artifact | Action |
-|----------|--------|
-| `LogicalVertexId` | Remove type and all APIs |
-| `VERTEX_LOGICAL_IDS` (graph stable) | Remove |
-| `REMOTE_REF_TO_LOGICAL` / `LOGICAL_TO_REMOTE_REF` | Remove |
-| `REMOTE_FORWARD_IN` | Remove until remote model is reimplemented |
-| `ROUTER_LOGICAL_COUNTER`, `ROUTER_PENDING_LOGICAL` | Remove |
-| `ROUTER_PLACEMENTS` keyed by logical id | Replace with placement keyed by `GlobalVertexId` |
-| `allocate_logical_vertex_id`, `resolve_placement(logical)` | Replace with physical-key APIs |
-| `standalone_logical_vertex_id` | Remove |
+| Artifact                                                   | Action                                           |
+| ---------------------------------------------------------- | ------------------------------------------------ |
+| `LogicalVertexId`                                          | Remove type and all APIs                         |
+| `VERTEX_LOGICAL_IDS` (graph stable)                        | Remove                                           |
+| `REMOTE_REF_TO_LOGICAL` / `LOGICAL_TO_REMOTE_REF`          | Remove                                           |
+| `REMOTE_FORWARD_IN`                                        | Remove until remote model is reimplemented       |
+| `ROUTER_LOGICAL_COUNTER`, `ROUTER_PENDING_LOGICAL`         | Remove                                           |
+| `ROUTER_PLACEMENTS` keyed by logical id                    | Replace with placement keyed by `GlobalVertexId` |
+| `allocate_logical_vertex_id`, `resolve_placement(logical)` | Replace with physical-key APIs                   |
+| `standalone_logical_vertex_id`                             | Remove                                           |
 
 **Defer:**
 
@@ -201,15 +208,15 @@ CLIENT  → sends EncodedVertexId bytes (or SDK-decoded bytes)
 
 ### Implementation status
 
-| Item | Status |
-|------|--------|
-| ADR and type definitions in `graph-kernel` | **Implemented** |
-| Remove `LogicalVertexId` and logical stable regions | **Implemented** |
-| `GlobalVertexId` router placement | **Implemented** |
-| `EncodedVertexId` / `EncodedEdgeId` encode-decode | **Implemented** |
-| `RemoteVertexId` rename + allocate-from-1 policy | **Implemented** (type rename; no allocator/stable yet) |
-| Persistent remote vertex ↔ global index | **Deferred** |
-| Remote edge DML / expand | **Deferred** |
+| Item                                                | Status                                                 |
+| --------------------------------------------------- | ------------------------------------------------------ |
+| ADR and type definitions in `graph-kernel`          | **Implemented**                                        |
+| Remove `LogicalVertexId` and logical stable regions | **Implemented**                                        |
+| `GlobalVertexId` router placement                   | **Implemented**                                        |
+| `EncodedVertexId` / `EncodedEdgeId` encode-decode   | **Implemented**                                        |
+| `RemoteVertexId` rename + allocate-from-1 policy    | **Implemented** (type rename; no allocator/stable yet) |
+| Persistent remote vertex ↔ global index             | **Deferred**                                           |
+| Remote edge DML / expand                            | **Deferred**                                           |
 
 ## Alternatives considered
 

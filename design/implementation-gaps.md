@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-04
-Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
+Anchor timestamp: 2026-08-04 18:18:33 UTC +0000
 
 ## Status
 
@@ -46,6 +46,35 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-04-002 — Rust canister bindings for cdk wrapper types lack Candid impls
+
+- **Status:** Open
+- **Severity:** P2 generated-code compile gap for non-primitive semantic types
+- **Owner:** `gleaph-cdk` typed wrapper surface (`types.rs`) and `gleaph-codegen` rust-canister profile
+- **Observed behavior:** The rust-canister profile always derives `CandidType` on generated
+  `*Params` / `*Row` structs. The cdk's typed wrappers for non-primitive semantic types do not
+  implement `candid::CandidType`: `GqlInt256`, `GqlUint256`, `GqlDecimal`, `GqlPrincipal`,
+  `GqlFloat128`/`GqlFloat256` (and `GqlRecord`, whose `GqlValue` element type is candid-free by
+  design in `gleaph-gql-value`). Compiling generated bindings for a manifest that uses any of
+  these types fails with `E0277: the trait bound ... CandidType is not satisfied`. Reproduced by
+  generating a `find-by-id` manifest with `Int256` or `Principal` parameters into a scratch
+  canister crate and running `cargo check`.
+- **Expected or needed behavior:** Every manifest semantic type should produce generated
+  bindings that compile, so canister entrypoints can accept typed params and return typed rows
+  as Candid arguments/results. Either the cdk wrappers gain `CandidType` (with a chosen wire
+  representation, e.g. text for big ints/decimal, `principal` for `GqlPrincipal`) or generated
+  structs stop deriving `CandidType` and expose a separate candid facade for entrypoints.
+- **Evidence:** `crates/codegen/src/rust/canister.rs` (unconditional `CandidType` derive);
+  `sdk/canister/rust/src/types.rs` (`GqlInt256` etc. derive serde only); scratch repro at
+  `/tmp/gleaph-path-check` with `Int256` / `Principal` manifests (`E0277` on `GqlInt256`,
+  `GqlPrincipal`).
+- **Impact:** Any canister manifest using principal, big-integer, decimal, or record
+  parameters/results emits non-compiling code today; only primitives, `Text`, `Bytes`, `Null`,
+  `List`, and the now-fixed `Path` types are usable.
+- **Next decision:** Choose the candid wire representation for the cdk wrapper types (or decide
+  that generated structs are serde-only and entrypoints use a separate candid DTO layer), then
+  add impls/tests in a dedicated slice and add a compiled fixture with these types.
 
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
 

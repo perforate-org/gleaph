@@ -21,8 +21,12 @@
 //! `From` conversions `gleaph-gql-value` provides, and keep the `Principal` special case
 //! conflict-free.
 
-use candid::Principal;
+use candid::{CandidType, Deserialize, Principal};
 use gleaph_gql_value::types::Decimal;
+use serde::Serialize;
+
+/// Logical GQL path element (opaque element ids, no Candid derives).
+pub use gleaph_gql_value::types::PathElement as GqlPathElement;
 
 /// Principal extension used by named GQL parameters (wire-compatible with the Router's
 /// principal parameter decode).
@@ -199,6 +203,54 @@ pub fn gql_param_value<T: IntoGqlParam>(value: T) -> GqlValue {
     value.into_gql_param()
 }
 
+// ──── Path elements ────
+
+/// Opaque 8-byte vertex id in a GQL path value.
+///
+/// Mirrors `gleaph_graph_kernel::federation::encoded::EncodedVertexId`; the fixed 8-byte
+/// length is part of the Router's path-value wire contract (ADR 0005).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Deserialize, Serialize,
+)]
+pub struct VertexPathElementId(pub [u8; 8]);
+
+/// Opaque 12-byte edge id in a GQL path value.
+///
+/// Mirrors `gleaph_graph_kernel::federation::encoded::EncodedEdgeId`; the fixed 12-byte
+/// length is part of the Router's path-value wire contract (ADR 0005).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Deserialize, Serialize,
+)]
+pub struct EdgePathElementId(pub [u8; 12]);
+
+/// One vertex or edge in a GQL path value, with the fixed-length element id typed per kind.
+///
+/// The Candid shape is `variant { Vertex: vec nat8, Edge: vec nat8 }` — identical to the
+/// Router's path element wire representation (ADR 0005). The distinct id types prevent
+/// mixing a vertex id into an edge slot and vice versa, and enforce the byte lengths.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize, Serialize)]
+pub enum PathElement {
+    /// Vertex with its opaque 8-byte element id.
+    Vertex(VertexPathElementId),
+    /// Edge with its opaque 12-byte element id.
+    Edge(EdgePathElementId),
+}
+
+impl From<PathElement> for GqlPathElement {
+    fn from(value: PathElement) -> Self {
+        match value {
+            PathElement::Vertex(id) => GqlPathElement::Vertex(id.0.into()),
+            PathElement::Edge(id) => GqlPathElement::Edge(id.0.into()),
+        }
+    }
+}
+
+impl IntoGqlParam for Vec<PathElement> {
+    fn into_gql_param(self) -> GqlValue {
+        GqlValue::Path(self.into_iter().map(GqlPathElement::from).collect())
+    }
+}
+
 /// Encode ordered named GQL parameters as a compact-binary top-level `Value::Record` blob.
 pub fn encode_gql_params(params: GqlParams) -> Result<Vec<u8>, ValueBinaryError> {
     GqlValue::Record(params).to_binary_bytes()
@@ -250,4 +302,97 @@ macro_rules! gql {
             ],
         }
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_element_ids_are_candid_blobs() {
+        use candid::types::{Label, TypeInner};
+
+        // The Router wire shape is `variant { Vertex: vec nat8, Edge: vec nat8 }`; the
+        // newtype wrappers must inline to a plain blob, not a record wrapper.
+        assert_eq!(VertexPathElementId::ty(), Vec::<u8>::ty());
+        assert_eq!(EdgePathElementId::ty(), Vec::<u8>::ty());
+        let TypeInner::Variant(fields) = &*PathElement::ty().0 else {
+            panic!("path element must derive a candid variant");
+        };
+        assert_eq!(fields.len(), 2);
+        for field in fields {
+            assert_eq!(field.ty, Vec::<u8>::ty());
+            assert!(matches!(
+                field.id.as_ref(),
+                Label::Named(name) if name == "Vertex" || name == "Edge"
+            ));
+        }
+    }
+
+    #[test]
+    fn path_element_round_trips_candid() {
+        let vertex = PathElement::Vertex(VertexPathElementId([1, 2, 3, 4, 5, 6, 7, 8]));
+        let edge = PathElement::Edge(EdgePathElementId([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+        for element in [vertex, edge] {
+            let encoded = candid::encode_one(&element).expect("candid encode");
+            assert_eq!(
+                candid::decode_one::<PathElement>(&encoded).expect("candid decode"),
+                element
+            );
+        }
+    }
+
+    #[test]
+    fn path_element_serde_round_trip_keeps_kind() {
+        let vertex = PathElement::Vertex(VertexPathElementId([1, 2, 3, 4, 5, 6, 7, 8]));
+        let encoded = serde_json::to_string(&vertex).unwrap();
+        assert_eq!(encoded, r#"{"Vertex":[1,2,3,4,5,6,7,8]}"#);
+        assert_eq!(
+            serde_json::from_str::<PathElement>(&encoded).unwrap(),
+            vertex
+        );
+
+        let edge = PathElement::Edge(EdgePathElementId([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+        let encoded = serde_json::to_string(&edge).unwrap();
+        assert_eq!(encoded, r#"{"Edge":[1,2,3,4,5,6,7,8,9,10,11,12]}"#);
+        assert_eq!(serde_json::from_str::<PathElement>(&encoded).unwrap(), edge);
+    }
+
+    #[test]
+    fn path_element_rejects_wrong_length_ids() {
+        assert!(serde_json::from_str::<PathElement>(r#"{"Vertex":[1,2,3]}"#).is_err());
+        assert!(serde_json::from_str::<PathElement>(r#"{"Edge":[1,2,3]}"#).is_err());
+        assert!(serde_json::from_str::<PathElement>(r#"{"Vertex":[1,2,3,4,5,6,7,8,9]}"#).is_err());
+        assert!(
+            serde_json::from_str::<PathElement>(r#"{"Edge":[1,2,3,4,5,6,7,8,9,10,11,12,13]}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn path_element_converts_to_logical_gql_element() {
+        use gleaph_gql_value::types::PathElementId;
+
+        let vertex = PathElement::Vertex(VertexPathElementId([9, 8, 7, 6, 5, 4, 3, 2]));
+        assert_eq!(
+            GqlPathElement::from(vertex),
+            GqlPathElement::Vertex(PathElementId::from([9, 8, 7, 6, 5, 4, 3, 2]))
+        );
+
+        let edge = PathElement::Edge(EdgePathElementId([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+        assert_eq!(
+            GqlPathElement::from(edge),
+            GqlPathElement::Edge(PathElementId::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]))
+        );
+    }
+
+    #[test]
+    fn path_parameters_bind_into_gql_values() {
+        let path = vec![
+            PathElement::Vertex(VertexPathElementId([1, 2, 3, 4, 5, 6, 7, 8])),
+            PathElement::Edge(EdgePathElementId([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])),
+        ];
+        let query = gql!("MATCH (a)-[e]->(b) WHERE a.id IN $path RETURN a", path);
+        assert!(matches!(query.params[0].1, GqlValue::Path(_)));
+    }
 }

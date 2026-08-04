@@ -11,3 +11,7 @@ description = "Named GQL parameters, the IntoGqlParam conversion trait, and the 
 candid.workspace = true
 gleaph-gql-ic-wire.workspace = true
 gleaph-gql-value.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
