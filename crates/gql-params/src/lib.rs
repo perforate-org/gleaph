@@ -24,6 +24,7 @@
 use candid::{CandidType, Deserialize, Principal};
 use gleaph_gql_value::types::Decimal;
 use serde::Serialize;
+use std::fmt;
 
 /// Logical GQL path element (opaque element ids, no Candid derives).
 pub use gleaph_gql_value::types::PathElement as GqlPathElement;
@@ -236,18 +237,72 @@ pub enum PathElement {
     Edge(EdgePathElementId),
 }
 
-impl From<PathElement> for GqlPathElement {
-    fn from(value: PathElement) -> Self {
-        match value {
+impl PathElement {
+    /// Convert into the logical GQL path element used inside `GqlValue::Path`.
+    ///
+    /// The conversion is infallible: the fixed-length binding ids round-trip losslessly
+    /// into the opaque element ids of the general-purpose GQL value model.
+    pub fn into_gql(self) -> GqlPathElement {
+        match self {
             PathElement::Vertex(id) => GqlPathElement::Vertex(id.0.into()),
             PathElement::Edge(id) => GqlPathElement::Edge(id.0.into()),
         }
     }
 }
 
+/// Error returned when a logical GQL path element cannot be converted to the fixed-length
+/// binding type because its id has the wrong byte length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathElementError {
+    /// A vertex id was not 8 bytes.
+    InvalidVertexLength { actual: usize },
+    /// An edge id was not 12 bytes.
+    InvalidEdgeLength { actual: usize },
+}
+
+impl fmt::Display for PathElementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidVertexLength { actual } => write!(
+                f,
+                "invalid vertex path element id length: expected 8, got {actual}"
+            ),
+            Self::InvalidEdgeLength { actual } => write!(
+                f,
+                "invalid edge path element id length: expected 12, got {actual}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PathElementError {}
+
+impl TryFrom<GqlPathElement> for PathElement {
+    type Error = PathElementError;
+
+    fn try_from(value: GqlPathElement) -> Result<Self, Self::Error> {
+        match value {
+            GqlPathElement::Vertex(id) => {
+                let bytes: [u8; 8] = id
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| PathElementError::InvalidVertexLength { actual: id.len() })?;
+                Ok(PathElement::Vertex(VertexPathElementId(bytes)))
+            }
+            GqlPathElement::Edge(id) => {
+                let bytes: [u8; 12] = id
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| PathElementError::InvalidEdgeLength { actual: id.len() })?;
+                Ok(PathElement::Edge(EdgePathElementId(bytes)))
+            }
+        }
+    }
+}
+
 impl IntoGqlParam for Vec<PathElement> {
     fn into_gql_param(self) -> GqlValue {
-        GqlValue::Path(self.into_iter().map(GqlPathElement::from).collect())
+        GqlValue::Path(self.into_iter().map(PathElement::into_gql).collect())
     }
 }
 
@@ -374,15 +429,29 @@ mod tests {
         use gleaph_gql_value::types::PathElementId;
 
         let vertex = PathElement::Vertex(VertexPathElementId([9, 8, 7, 6, 5, 4, 3, 2]));
+        let vertex_gql = vertex.clone().into_gql();
         assert_eq!(
-            GqlPathElement::from(vertex),
+            vertex_gql,
             GqlPathElement::Vertex(PathElementId::from([9, 8, 7, 6, 5, 4, 3, 2]))
         );
+        assert_eq!(PathElement::try_from(vertex_gql), Ok(vertex));
 
         let edge = PathElement::Edge(EdgePathElementId([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+        let edge_gql = edge.clone().into_gql();
         assert_eq!(
-            GqlPathElement::from(edge),
+            edge_gql,
             GqlPathElement::Edge(PathElementId::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]))
+        );
+        assert_eq!(PathElement::try_from(edge_gql), Ok(edge));
+
+        // The logical-to-fixed direction validates the fixed byte lengths.
+        assert_eq!(
+            PathElement::try_from(GqlPathElement::Vertex(PathElementId::from([1, 2, 3]))),
+            Err(PathElementError::InvalidVertexLength { actual: 3 })
+        );
+        assert_eq!(
+            PathElement::try_from(GqlPathElement::Edge(PathElementId::from([1, 2, 3]))),
+            Err(PathElementError::InvalidEdgeLength { actual: 3 })
         );
     }
 

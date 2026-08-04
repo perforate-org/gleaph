@@ -16,12 +16,14 @@ pub use gleaph_gql_ic_wire::GqlWireRows;
 pub use gleaph_gql_ic_wire::GqlWireValue;
 use gleaph_gql_ic_wire::decode_rows_blob;
 use gleaph_gql_params::GqlParams;
+use gleaph_gql_params::GqlPathElement;
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql_params::GqlValue;
 
-/// Path element in a logical GQL value.
-pub use gleaph_gql_params::GqlPathElement;
 /// Typed path element binding used by generated canister bindings.
+///
+/// Path element ids are fixed-length opaque bytes on the Router wire (vertex 8 bytes,
+/// edge 12 bytes; ADR 0005), enforced by [`VertexPathElementId`] / [`EdgePathElementId`].
 pub use gleaph_gql_params::{EdgePathElementId, PathElement, VertexPathElementId};
 
 /// Ordered GQL record representation.

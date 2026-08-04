@@ -310,7 +310,7 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         }
         crate::SemanticType::Record { .. } => format!("GqlValue::Record({access})"),
         crate::SemanticType::Path => format!(
-            "GqlValue::Path({access}.into_iter().map(gleaph_cdk::GqlPathElement::from).collect())"
+            "GqlValue::Path({access}.into_iter().map(gleaph_cdk::PathElement::into_gql).collect())"
         ),
         crate::SemanticType::List { element } => {
             let element = gql_value_expression("value", element)?;

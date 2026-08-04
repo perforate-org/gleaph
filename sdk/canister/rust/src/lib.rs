@@ -31,12 +31,12 @@ pub use types::{
     AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
     BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
-    EdgePathElementId, FromGqlRow, GqlDecimal, GqlFloat16, GqlFloat256, GqlInt256, GqlPathElement,
-    GqlPrincipal, GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError,
-    GqlWireRow, GqlWireRows, GqlWireValue, MutationLifecyclePhase, MutationToken,
-    MutationTokenShard, PathElement, ReadMode, RouterError, VectorActivationBlockReason,
-    VertexPathElementId, gql_principal_from_value, gql_principal_value, gql_record_to_json_map,
-    gql_value_to_json, take_gql_row_field,
+    EdgePathElementId, FromGqlRow, GqlDecimal, GqlFloat16, GqlFloat256, GqlInt256, GqlPrincipal,
+    GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError, GqlWireRow,
+    GqlWireRows, GqlWireValue, MutationLifecyclePhase, MutationToken, MutationTokenShard,
+    PathElement, ReadMode, RouterError, VectorActivationBlockReason, VertexPathElementId,
+    gql_principal_from_value, gql_principal_value, gql_record_to_json_map, gql_value_to_json,
+    take_gql_row_field,
 };
 
 /// Prepared-operation wire types shared with the Router.
