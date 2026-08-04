@@ -146,15 +146,6 @@ pub struct PreparedDuration {
     pub nanos: i64,
 }
 
-/// Path element representation used by generated Rust declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum PreparedPathElement {
-    /// Vertex identifier.
-    Vertex(Vec<u8>),
-    /// Edge identifier.
-    Edge(Vec<u8>),
-}
-
 "#,
     );
 
@@ -356,7 +347,7 @@ pub(crate) fn rust_type(semantic_type: &SemanticType) -> String {
         SemanticType::Duration => "PreparedDuration".to_string(),
         SemanticType::Principal => "String".to_string(),
         SemanticType::List { element } => format!("Vec<{}>", rust_type(element)),
-        SemanticType::Path => "Vec<PreparedPathElement>".to_string(),
+        SemanticType::Path => "Vec<gleaph_gql_params::PathElement>".to_string(),
         SemanticType::Record { .. } => "BTreeMap<String, serde_json::Value>".to_string(),
     }
 }

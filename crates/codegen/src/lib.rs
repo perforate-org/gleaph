@@ -557,8 +557,10 @@ mod tests {
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub owner: gleaph_cdk::GqlPrincipal"));
         assert!(output.contains("gleaph_cdk::gql_principal_value(self.owner)"));
-        assert!(output.contains("GqlValue::Path(self.route.into_iter()"));
-        assert!(output.contains("gleaph_cdk::GqlPathElement::Vertex"));
+        assert!(output.contains(
+            "GqlValue::Path(self.route.into_iter().map(gleaph_cdk::GqlPathElement::from).collect())"
+        ));
+        assert!(output.contains("pub route: Vec<gleaph_cdk::PathElement>"));
     }
 
     #[test]
@@ -649,7 +651,7 @@ mod tests {
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub created_at: PreparedDateTime"));
         assert!(output.contains("pub owner: gleaph_cdk::GqlPrincipal"));
-        assert!(output.contains("pub route: Vec<PreparedPathElement>"));
+        assert!(output.contains("pub route: Vec<gleaph_cdk::PathElement>"));
         assert!(output.contains("pub ids: Vec<i32>"));
         assert!(output.contains("pub deleted_at: ()"));
     }

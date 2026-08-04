@@ -310,7 +310,7 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         }
         crate::SemanticType::Record { .. } => format!("GqlValue::Record({access})"),
         crate::SemanticType::Path => format!(
-            "GqlValue::Path({access}.into_iter().map(|value| match value {{ PreparedPathElement::Vertex(value) => gleaph_cdk::GqlPathElement::Vertex(value.into()), PreparedPathElement::Edge(value) => gleaph_cdk::GqlPathElement::Edge(value.into()) }}).collect())"
+            "GqlValue::Path({access}.into_iter().map(gleaph_cdk::GqlPathElement::from).collect())"
         ),
         crate::SemanticType::List { element } => {
             let element = gql_value_expression("value", element)?;
@@ -358,15 +358,6 @@ pub struct PreparedDuration {
     pub nanos: i64,
 }
 
-/// Path element representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub enum PreparedPathElement {
-    Vertex(Vec<u8>),
-    Edge(Vec<u8>),
-}
-
 "#
 }
 
@@ -378,6 +369,7 @@ fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
         crate::SemanticType::Float256 => "gleaph_cdk::GqlFloat256".to_string(),
         crate::SemanticType::Decimal => "gleaph_cdk::GqlDecimal".to_string(),
         crate::SemanticType::Principal => "gleaph_cdk::GqlPrincipal".to_string(),
+        crate::SemanticType::Path => "Vec<gleaph_cdk::PathElement>".to_string(),
         crate::SemanticType::Record { .. } => {
             "std::collections::BTreeMap<String, gleaph_cdk::serde_json::Value>".to_string()
         }

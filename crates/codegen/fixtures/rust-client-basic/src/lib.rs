@@ -104,15 +104,6 @@ pub struct PreparedDuration {
     pub nanos: i64,
 }
 
-/// Path element representation used by generated Rust declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum PreparedPathElement {
-    /// Vertex identifier.
-    Vertex(Vec<u8>),
-    /// Edge identifier.
-    Edge(Vec<u8>),
-}
-
 /// Find users by their search term.
 /// Parameters for the `find-users` prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize)]

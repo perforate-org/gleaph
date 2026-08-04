@@ -7,7 +7,7 @@ ADR 0055.
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-08-04
-Anchor timestamp: 2026-08-04 17:25:05 UTC +0000
+Anchor timestamp: 2026-08-04 18:18:33 UTC +0000
 
 ## Context
 
@@ -307,7 +307,9 @@ as a release-stable contract.
 - a Rust canister profile exposed by `generate_rust_canister`, emitting operation-specific
   parameter/result declarations, a `Prepared` marker type, and a `PreparedExt` trait implemented
   for `gleaph_cdk::GleaphClient<Prepared>` that wraps the Router's `prepared_query` (reads) and
-  `prepared_mutate` (idempotent updates with an explicit `client_mutation_key`); and
+  `prepared_mutate` (idempotent updates with an explicit `client_mutation_key`). Path-typed
+  parameters and results reference the shared `gleaph-cdk::PathElement` binding whose
+  fixed-length vertex/edge ids mirror the Router wire contract (ADR 0005); and
 - a Motoko canister profile exposed by `generate_motoko`, emitting operation-specific
   parameter/result declarations and a transport-neutral typed executor boundary; and
 - a standalone `gleaph-codegen` entrypoint that accepts either a local `--manifest <path>` or a

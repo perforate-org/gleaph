@@ -58,15 +58,6 @@ pub struct PreparedDuration {
     pub nanos: i64,
 }
 
-/// Path element representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub enum PreparedPathElement {
-    Vertex(Vec<u8>),
-    Edge(Vec<u8>),
-}
-
 /// Find users by their search term.
 /// Parameters for the prepared operation find-users.
 #[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
