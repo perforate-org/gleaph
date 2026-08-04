@@ -395,6 +395,10 @@ maintenance tick and per-step costs`)
     `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` 100M): single work item 61.60K and whole tick on a
     dense 2048-edge hub 1.33M, so the worst per-check work (≤ whole tick) is ≈1.3% of the reserve
     and a realistic backlog drains in ≈0.004% of the cap. Fully local; no boundary test needed.
+    Follow-up refactor (`relocate_edge_properties_for_move`): the inline-property posting rekey,
+    previously a post-pass loop outside the budget check, now runs inside the per-move observer
+    through the unified property relocation, so the entire edge-move consequence is covered by
+    the per-item cutoff; the measured tick is unchanged (1.33M, re-persisted 2026-08-04).
 - **Evidence:** canbench targets and persisted results: `crates/graph/src/bench/plan_batch.rs`,
   `crates/graph/src/bench/timer_maintenance.rs`, `crates/graph-index/src/bench.rs`,
   `crates/graph-vector-index/src/bench.rs`, `crates/router/src/bench.rs`, with the matching

@@ -18,11 +18,18 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+use crate::facade::store::index_build_admission::trap_post_fence_commit;
 use crate::property::dispatch_inline_index_removals;
 
-pub(super) struct GraphSidecarMoveObserver {
-    pub(super) inline_moves: Vec<(VertexId, EdgeSlotMove)>,
-}
+/// Observes edge slot moves during maintenance and relocates the moved edge's properties.
+///
+/// Runs inside the `GRAPH` borrow held by `maintenance_with_observers`, so it only touches
+/// thread-locals and nested shared `GRAPH` reads — never `GRAPH` mutably. Forward (canonical)
+/// moves carry all of the edge's properties and their derived index postings; reverse rows are
+/// mirrors with no canonical sidecars. The canonical LARA slot move has already happened when
+/// the observer fires, so a relocation failure must trap and let the IC roll the whole message
+/// back.
+pub(super) struct GraphSidecarMoveObserver;
 
 impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
     fn edge_slot_moved(
@@ -34,9 +41,10 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
 
         moved: EdgeSlotMove,
     ) {
-        GraphStore::move_edge_sidecars(orientation, vid, moved, 0);
         if orientation == LabeledOrientation::Forward {
-            self.inline_moves.push((vid, moved));
+            GraphStore::new()
+                .relocate_edge_properties_for_move(vid, moved, 0)
+                .unwrap_or_else(trap_post_fence_commit);
         }
     }
 }

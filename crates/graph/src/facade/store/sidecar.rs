@@ -1,26 +1,152 @@
 //! Sidecar coordination: derived edge state cleared or moved across domains.
 
+use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId,
     labeled::{EdgeSlotMove, LabeledOrientation},
+    traits::CsrEdge,
 };
 
 use super::GraphStore;
+use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use crate::facade::stable::GRAPH;
+use crate::facade::store::index_build_admission::{FencedTransition, trap_build_fence};
+use crate::index::catalog_context::IndexMembershipRef;
+use crate::property::{
+    PropertyValueChange, dispatch_property_index_ops_for_physical, inline_index_values,
+};
 
 impl GraphStore {
+    /// Relocates every property of one edge that moved between slots.
+    ///
+    /// Conceptual layer: an edge slot move carries all of the edge's properties with it,
+    /// whether they physically live inline in the LARA row (ADR 0008 inline profile) or as
+    /// sidecar rows in `EDGE_PROPERTIES`. This function makes that invariant explicit: it
+    /// physically relocates the sidecar rows and then re-points every indexed property value
+    /// (inline and sidecar alike) from the old slot to the new slot through the ordinary
+    /// property-change fence and dispatch. The derived property index is one consumer of those
+    /// property changes; the caller does not need to know which properties are inline and which
+    /// are sidecars.
+    ///
+    /// The canonical LARA slot move has already happened when this runs, so a fence rejection
+    /// must trap and let the IC roll the whole message back.
+    pub(super) fn relocate_edge_properties_for_move(
+        &self,
+        owner_vertex_id: VertexId,
+        moved: EdgeSlotMove,
+        mutation_id: MutationId,
+    ) -> Result<(), GraphStoreError> {
+        let old_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.old_slot_index);
+        let new_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.new_slot_index);
+        let label_id = moved.label_id.raw();
+
+        // Uniform enumeration of the moved edge's indexed property values. Physical storage is
+        // hidden: inline bytes ride the LARA row (read at its new slot), sidecar rows are
+        // relocated below and their values are read as a by-product of the move.
+        let mut indexed_values: Vec<(IndexMembershipRef, PropertyId, Value)> = Vec::new();
+        if let Some((edge, _)) = self.lookup_edge_entry(new_handle)? {
+            indexed_values.extend(
+                inline_index_values(label_id, edge.edge_inline_property_bytes())
+                    .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?,
+            );
+        }
+        for (property_id, value) in Self::commit_move_edge_properties(owner_vertex_id, moved) {
+            for membership in
+                crate::index::catalog_context::edge_index_memberships(label_id, property_id)
+            {
+                indexed_values.push((membership, property_id, value.clone()));
+            }
+        }
+
+        // Fence-plan the old-slot removals and new-slot insertions as distinct subject
+        // transitions; a Sealing membership rejects here and traps (post-canonical-move).
+        let mut old_planned = Vec::new();
+        let mut new_planned = Vec::new();
+        for (membership, property_id, value) in &indexed_values {
+            old_planned.extend(
+                self.plan_index_build_admission([FencedTransition {
+                    property_id: *property_id,
+                    prev: Some(value),
+                    new: None,
+                    membership: *membership,
+                }])
+                .unwrap_or_else(trap_build_fence),
+            );
+            new_planned.extend(
+                self.plan_index_build_admission([FencedTransition {
+                    property_id: *property_id,
+                    prev: None,
+                    new: Some(value),
+                    membership: *membership,
+                }])
+                .unwrap_or_else(trap_build_fence),
+            );
+        }
+
+        // Bind each subject and commit (infallible; the outbox admission is a stable write).
+        if !old_planned.is_empty() {
+            self.commit_index_build_admission(
+                mutation_id,
+                self.edge_subject_for_handle(old_handle)
+                    .unwrap_or_else(trap_build_fence),
+                old_planned,
+            );
+        }
+        if !new_planned.is_empty() {
+            self.commit_index_build_admission(
+                mutation_id,
+                self.edge_subject_for_handle(new_handle)
+                    .unwrap_or_else(trap_build_fence),
+                new_planned,
+            );
+        }
+
+        // Active postings follow the same property-change semantics; the index consumes them at
+        // the batched flush. Re-iterating the identical enumeration after the fence commit must
+        // not fail.
+        for (membership, property_id, value) in indexed_values {
+            dispatch_property_index_ops_for_physical(
+                PropertyValueChange::edge(
+                    owner_vertex_id,
+                    label_id,
+                    moved.old_slot_index,
+                    property_id,
+                    Some(&value),
+                    None,
+                ),
+                membership,
+            );
+            dispatch_property_index_ops_for_physical(
+                PropertyValueChange::edge(
+                    owner_vertex_id,
+                    label_id,
+                    moved.new_slot_index,
+                    property_id,
+                    None,
+                    Some(&value),
+                ),
+                membership,
+            );
+        }
+        Ok(())
+    }
+
+    /// Applies every edge slot move produced by one canonical removal.
+    ///
+    /// Forward (canonical) moves relocate the edge's properties and their derived postings;
+    /// reverse moves are owned by LARA and carry no canonical sidecars or postings.
     pub(super) fn apply_edge_slot_moves(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moves: impl IntoIterator<Item = EdgeSlotMove>,
         mutation_id: MutationId,
-    ) -> Result<(), super::error::GraphStoreError> {
-        for moved in moves {
-            Self::commit_move_edge_sidecars(orientation, owner_vertex_id, moved, mutation_id)?;
-            if orientation == LabeledOrientation::Forward {
-                GraphStore::new().rekey_inline_scalar_index_for_move(
+    ) -> Result<(), GraphStoreError> {
+        if orientation == LabeledOrientation::Forward {
+            for moved in moves {
+                GraphStore::new().relocate_edge_properties_for_move(
                     owner_vertex_id,
                     moved,
                     mutation_id,
@@ -49,49 +175,6 @@ impl GraphStore {
 
     pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {
         self.commit_clear_edge_sidecars(handle);
-    }
-
-    pub(super) fn commit_move_edge_sidecars(
-        orientation: LabeledOrientation,
-        owner_vertex_id: VertexId,
-        moved: EdgeSlotMove,
-        mutation_id: MutationId,
-    ) -> Result<(), super::error::GraphStoreError> {
-        match orientation {
-            LabeledOrientation::Forward => {
-                let moved_properties =
-                    GraphStore::commit_move_edge_properties(owner_vertex_id, moved);
-                GraphStore::new().commit_move_edge_local_indexes(
-                    orientation,
-                    owner_vertex_id,
-                    moved,
-                    &moved_properties,
-                    mutation_id,
-                )?;
-            }
-            LabeledOrientation::Reverse => {
-                GraphStore::new().commit_move_edge_local_indexes(
-                    orientation,
-                    owner_vertex_id,
-                    moved,
-                    &[],
-                    mutation_id,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn move_edge_sidecars(
-        orientation: LabeledOrientation,
-        owner_vertex_id: VertexId,
-        moved: EdgeSlotMove,
-        mutation_id: MutationId,
-    ) {
-        // The canonical LARA slot move has already happened when this runs, so an index-build
-        // fence rejection must trap and let the IC roll the whole message back.
-        Self::commit_move_edge_sidecars(orientation, owner_vertex_id, moved, mutation_id)
-            .expect("edge sidecar move must not fail after the canonical LARA move");
     }
 }
 

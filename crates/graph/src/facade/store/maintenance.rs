@@ -61,18 +61,13 @@ impl GraphStore {
         &self,
         budget: MaintenanceBudget,
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
-        let mut move_observer = GraphSidecarMoveObserver {
-            inline_moves: Vec::new(),
-        };
+        let mut move_observer = GraphSidecarMoveObserver;
         let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
         let report = GRAPH
             .with_borrow(|graph| {
                 graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
             })
             .map_err(GraphStoreError::from)?;
-        for (owner_vertex_id, moved) in move_observer.inline_moves {
-            self.rekey_inline_scalar_index_for_move(owner_vertex_id, moved, 0)?;
-        }
         Ok(report)
     }
 

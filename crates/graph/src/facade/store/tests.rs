@@ -1854,8 +1854,8 @@ fn maintenance_without_resolved_table_compacts_order_preserving() {
 
 #[test]
 fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
-    // The swap move flows through `GraphSidecarMoveObserver.inline_moves` ->
-    // `rekey_inline_scalar_index_for_move`, rekeying the property-index entry keyed on the
+    // The swap move flows through `GraphSidecarMoveObserver` ->
+    // `relocate_edge_properties_for_move`, rekeying the property-index entry keyed on the
     // edge's inline value from the old slot to the new slot (ADR §8).
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     use gleaph_graph_kernel::federation::ShardId;
