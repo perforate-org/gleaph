@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ExprKind;
 use gleaph_gql::hash_value_for_join;
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_ic::{IcWirePlanQueryResult, IcWirePlanQueryRow, IcWireValue};
 use gleaph_gql_planner::plan::{PlanOp, ProjectColumn, Str};
 use std::collections::hash_map::DefaultHasher;

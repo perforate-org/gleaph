@@ -15,24 +15,22 @@ include = [
 ]
 
 [dependencies]
-base64 = { workspace = true, optional = true }
 gleaph-gql-keywords = { path = "../gql-keywords" }
 gleaph-gql-macros = { path = "../gql-macros" }
+gleaph-gql-value.workspace = true
 ethnum = "1"
 f256 = { workspace = true, optional = true }
 half.workspace = true
-jiff.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
 rapidhash = "4"
 rust_decimal = "1"
 thiserror = "2"
 rkyv = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
 
 [features]
 default = ["f128", "f256"]
-ast-rkyv-no-span = ["dep:rkyv"]
+ast-rkyv-no-span = ["dep:rkyv", "gleaph-gql-value/rkyv"]
 cypher = []
 sql-compat = []
 f128 = []
@@ -46,7 +44,7 @@ format = []
 # Canonical text (JSON / NDJSON) (de)serialization of `Value`: external-tag single-key
 # objects, decimal strings for wide numerics, base64 `Bytes`, order-preserving `Record`
 # with duplicate-key rejection, and `Extension` rejected (fail-closed).
-serde = ["dep:serde", "dep:base64"]
+serde = ["gleaph-gql-value/serde"]
 
 [dev-dependencies]
 serde_json.workspace = true

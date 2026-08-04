@@ -6,7 +6,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind};
 use gleaph_gql::index_key_bytes_to_value;
 use gleaph_gql::types::LabelExpr;
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_gql_planner::GraphStats;

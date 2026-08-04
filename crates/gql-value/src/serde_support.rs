@@ -27,8 +27,8 @@ use serde::de::{self, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
+use crate::Value;
 use crate::types::{Decimal, Int256, PathElement, PathElementId, Uint256};
-use crate::value::Value;
 
 // ──── helpers ────
 
@@ -851,14 +851,14 @@ mod tests {
             }
         }
 
-        impl crate::value::ExtensionValue for TestExtension {
+        impl crate::ExtensionValue for TestExtension {
             fn type_name(&self) -> &str {
                 "Test"
             }
-            fn clone_box(&self) -> Box<dyn crate::value::ExtensionValue> {
+            fn clone_box(&self) -> Box<dyn crate::ExtensionValue> {
                 Box::new(TestExtension)
             }
-            fn eq_ext(&self, other: &dyn crate::value::ExtensionValue) -> bool {
+            fn eq_ext(&self, other: &dyn crate::ExtensionValue) -> bool {
                 other.as_any().is::<TestExtension>()
             }
             fn as_any(&self) -> &dyn std::any::Any {

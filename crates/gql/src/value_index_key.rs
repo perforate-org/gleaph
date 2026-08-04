@@ -1,7 +1,7 @@
 //! Sortable property-index key encoding for [`Value`](crate::Value).
 //!
 //! [`Value::Path`] keys use [`INDEX_KEY_PATH`] and order consistently with
-//! [`crate::value_cmp::compare_values`] (same rules as [`PathElement`](crate::types::PathElement) comparison).
+//! [`crate::value::cmp::compare_values`] (same rules as [`PathElement`](crate::types::PathElement) comparison).
 
 use crate::Value;
 use crate::numeric_order::{NumericOrderError, normalized_numeric_parts};
@@ -40,7 +40,7 @@ const INDEX_KEY_TEMPORAL: u8 = 8;
 const INDEX_KEY_LIST: u8 = 9;
 const INDEX_KEY_RECORD: u8 = 10;
 const INDEX_KEY_EXTENSION: u8 = 11;
-/// Path values; element order matches [`crate::value_cmp::compare_path_slices`].
+/// Path values; element order matches [`crate::value::cmp::compare_path_slices`].
 const INDEX_KEY_PATH: u8 = 12;
 /// Path element discriminant: [`PathElement::Vertex`] sorts before [`PathElement::Edge`].
 const PATH_KEY_VERTEX: u8 = 1;
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn index_key_order_matches_mixed_numeric_comparison() {
-        use crate::value_cmp::compare_values;
+        use crate::value::cmp::compare_values;
 
         let ordered = [
             Value::Float64(-1.5),
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn index_key_order_matches_path_comparison() {
         use crate::types::PathElement;
-        use crate::value_cmp::compare_values;
+        use crate::value::cmp::compare_values;
 
         let ordered = [
             Value::Path(vec![]),
@@ -786,7 +786,7 @@ mod tests {
         let left = extension("domain/v1", b"a");
         let right = extension("domain/v1", b"b");
         assert_eq!(
-            crate::value_cmp::compare_values(&left, &right),
+            crate::value::cmp::compare_values(&left, &right),
             Some(Ordering::Less)
         );
         assert!(key(left) < key(right));
@@ -794,7 +794,7 @@ mod tests {
         let cross_left = extension("a/v1", b"z");
         let cross_right = extension("b/v1", b"a");
         assert_eq!(
-            crate::value_cmp::compare_values(&cross_left, &cross_right),
+            crate::value::cmp::compare_values(&cross_left, &cross_right),
             None
         );
         assert!(key(cross_left) < key(cross_right));
@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn numeric_range_bounds_are_half_open_and_ordered() {
         use crate::ast::CmpOp;
-        use crate::value_cmp::compare_values;
+        use crate::value::cmp::compare_values;
 
         // Pick values that straddle the bound.
         let cases = [

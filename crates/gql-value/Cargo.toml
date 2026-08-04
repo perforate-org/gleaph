@@ -1,0 +1,39 @@
+[package]
+name = "gleaph-gql-value"
+edition = "2024"
+version = "0.0.1"
+authors = ["Inomoto Yota <yota@perforate.org>"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[dependencies]
+base64 = { workspace = true, optional = true }
+ethnum = { workspace = true, optional = true }
+f256 = { workspace = true, optional = true }
+half = { workspace = true, optional = true }
+jiff.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
+rust_decimal = { workspace = true, optional = true }
+thiserror.workspace = true
+rkyv = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = ["cmp", "join_hash", "i256", "u256", "f16", "f128", "f256", "decimal"]
+
+cmp = []
+join_hash = []
+
+serde = ["dep:serde", "dep:base64"]
+rkyv = ["dep:rkyv"]
+
+i256 = ["dep:ethnum"]
+u256 = ["dep:ethnum"]
+f16 = ["dep:half"]
+f128 = []
+f256 = ["dep:f256"]
+decimal = ["dep:rust_decimal"]
+
+[dev-dependencies]
+serde_json.workspace = true

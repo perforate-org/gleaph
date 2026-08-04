@@ -21,9 +21,9 @@ use rkyv::{Archive, Deserialize, Place, Serialize};
 
 use thiserror::Error;
 
-use crate::Value;
-use crate::ValueBinaryError;
-use crate::value::{DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue};
+use crate::{
+    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
+};
 
 /// Returned when [`try_install_global_rkyv_extension_binary_decode`] is called after a decoder was already installed (first wins).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -77,51 +77,51 @@ impl Drop for RkyvExtensionDecodeScopeGuard {
     }
 }
 
-#[cfg(feature = "ast-rkyv-no-span")]
+#[cfg(feature = "rkyv")]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = half::f16)]
 pub(crate) struct F16Def(#[rkyv(getter = f16_to_bits)] u16);
 
-#[cfg(feature = "ast-rkyv-no-span")]
+#[cfg(feature = "rkyv")]
 fn f16_to_bits(x: &half::f16) -> u16 {
     x.to_bits()
 }
 
-#[cfg(feature = "ast-rkyv-no-span")]
+#[cfg(feature = "rkyv")]
 impl From<F16Def> for half::f16 {
     fn from(F16Def(bits): F16Def) -> Self {
         half::f16::from_bits(bits)
     }
 }
 
-#[cfg(all(feature = "ast-rkyv-no-span", feature = "f128"))]
+#[cfg(feature = "f128")]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = f128)]
 pub(crate) struct F128Def(#[rkyv(getter = f128_to_bits)] u128);
 
-#[cfg(all(feature = "ast-rkyv-no-span", feature = "f128"))]
+#[cfg(feature = "f128")]
 fn f128_to_bits(x: &f128) -> u128 {
     x.to_bits()
 }
 
-#[cfg(all(feature = "ast-rkyv-no-span", feature = "f128"))]
+#[cfg(feature = "f128")]
 impl From<F128Def> for f128 {
     fn from(F128Def(bits): F128Def) -> Self {
         f128::from_bits(bits)
     }
 }
 
-#[cfg(all(feature = "ast-rkyv-no-span", feature = "f256"))]
+#[cfg(feature = "f256")]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = f256::f256)]
 pub(crate) struct F256Def(#[rkyv(getter = f256_to_bytes)] [u8; 32]);
 
-#[cfg(all(feature = "ast-rkyv-no-span", feature = "f256"))]
+#[cfg(feature = "f256")]
 fn f256_to_bytes(x: &f256::f256) -> [u8; 32] {
     x.to_le_bytes()
 }
 
-#[cfg(all(feature = "ast-rkyv-no-span", feature = "f256"))]
+#[cfg(feature = "f256")]
 impl From<F256Def> for f256::f256 {
     fn from(F256Def(bytes): F256Def) -> Self {
         f256::f256::from_le_bytes(bytes)
@@ -297,37 +297,37 @@ where
 #[cfg(test)]
 mod wire_deserialize_tests {
     use super::*;
-    use crate::ast::Expr;
 
     #[test]
     fn rkyv_from_aligned_bytes_accepts_to_bytes_vec() {
-        let expr = Expr::var("n");
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&expr)
+        let value = Value::Text("n".into());
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&value)
             .expect("encode")
             .into_vec();
-        let decoded = rkyv_from_aligned_bytes::<Expr>(&bytes).expect("decode aligned expr wire");
-        assert_eq!(decoded, expr);
+        let decoded = rkyv_from_aligned_bytes::<Value>(&bytes).expect("decode aligned value wire");
+        assert_eq!(decoded, value);
     }
 
     #[test]
     fn rkyv_from_wire_bytes_accepts_to_bytes_vec() {
-        let expr = Expr::var("n");
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&expr)
+        let value = Value::Text("n".into());
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&value)
             .expect("encode")
             .into_vec();
-        let decoded = rkyv_from_wire_bytes::<Expr>(&bytes).expect("decode aligned expr wire");
-        assert_eq!(decoded, expr);
+        let decoded = rkyv_from_wire_bytes::<Value>(&bytes).expect("decode aligned value wire");
+        assert_eq!(decoded, value);
     }
 
     #[test]
     fn rkyv_from_wire_bytes_accepts_unaligned_subslice() {
-        let expr = Expr::var("n");
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&expr)
+        let value = Value::Text("n".into());
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&value)
             .expect("encode")
             .into_vec();
         let mut buf = vec![0u8];
         buf.extend_from_slice(&bytes);
-        let decoded = rkyv_from_wire_bytes::<Expr>(&buf[1..]).expect("decode unaligned expr wire");
-        assert_eq!(decoded, expr);
+        let decoded =
+            rkyv_from_wire_bytes::<Value>(&buf[1..]).expect("decode unaligned value wire");
+        assert_eq!(decoded, value);
     }
 }

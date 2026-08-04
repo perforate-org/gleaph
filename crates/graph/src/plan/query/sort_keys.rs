@@ -3,7 +3,7 @@
 use super::error::PlanQueryError;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{NullOrder, OrderByClause, SortDirection};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use std::cmp::Ordering;
 
 pub(crate) fn compare_sort_keys(

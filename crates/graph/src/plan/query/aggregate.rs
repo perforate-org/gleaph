@@ -7,7 +7,7 @@ use super::sort_keys::compare_sort_keys;
 use crate::plan::expr_evaluator::{eval_binary_expr, truthy};
 use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, BinaryOp, Expr, ExprKind, OrderByClause};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_planner::plan::AggregateSpec;
 use std::cmp::Ordering;
 

@@ -5,7 +5,7 @@
 //!   with an [`ExtensionValue`](value::ExtensionValue) trait for platform-specific extensions.
 //! - An ISO-8601 temporal parser/formatter ([`temporal`]).
 //! - Core types ([`types`]) including [`LabelExpr`], [`Int256`], [`Uint256`], [`Decimal`].
-//! - Value comparison ([`value_cmp::compare_values`]) supporting cross-width integers.
+//! - Value comparison ([`value::cmp::compare_values`]) supporting cross-width integers.
 //! - [`ExtensionValue::hash_join_key`](value::ExtensionValue::hash_join_key) for join-bucket / DISTINCT-style hashing (not `std::hash::Hash` on [`Value`]).
 //!
 //! # Feature flags
@@ -50,25 +50,27 @@ pub mod lexer;
 /// Identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;
 pub mod numeric_ops;
-pub mod numeric_order;
 pub mod parser;
 /// Static classification of programs for authorization (data vs catalog modification).
 pub mod program_modification;
-#[cfg(feature = "ast-rkyv-no-span")]
-pub(crate) mod rkyv_support;
-pub mod temporal;
 pub mod token;
 pub mod type_check;
-pub mod types;
 pub mod validate;
-pub mod value;
-pub mod value_cmp;
 pub mod value_index_key;
-pub mod value_join_hash;
 pub mod vendor_extension;
 
+#[cfg(test)]
+mod extension_macro_tests;
+
 pub use error::{GqlError, GqlResult};
+pub use gleaph_gql_value as value;
 pub use parser::ParseResult;
+pub use value::join_hash::{hash_path_element_for_join, hash_value_for_join};
+pub use value::numeric_order;
+#[cfg(feature = "ast-rkyv-no-span")]
+pub(crate) use value::rkyv_support;
+pub use value::temporal;
+pub use value::types;
 pub use value::{
     DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionSortableKey, ExtensionValue, Value,
     ValueBinaryError,
@@ -76,7 +78,6 @@ pub use value::{
 pub use value_index_key::{
     ValueIndexKeyError, index_key_bytes_to_value, numeric_range_bounds, value_to_index_key_bytes,
 };
-pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
 
 #[cfg(feature = "format")]
 pub use format::{

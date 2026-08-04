@@ -10,7 +10,7 @@ use gleaph_gql::numeric_ops::{
     NumericOpError, eval_abs_numeric, eval_binary_numeric, eval_unary_numeric,
 };
 use gleaph_gql::types::{narrow_signed, narrow_unsigned};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

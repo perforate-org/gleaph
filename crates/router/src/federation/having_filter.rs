@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 

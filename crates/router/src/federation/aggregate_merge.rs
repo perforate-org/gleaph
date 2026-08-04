@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_gql_planner::plan::{AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn};
 use gleaph_gql_planner::wire::encode_block_plans;

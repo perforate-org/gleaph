@@ -7,7 +7,7 @@ use gleaph_gql::ast::{BinaryOp, Expr, ExprKind};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;

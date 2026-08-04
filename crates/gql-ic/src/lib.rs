@@ -110,7 +110,7 @@ pub fn install_ic_extension_binary_decode_for_rkyv() {
 mod tests {
     use super::*;
     use gleaph_gql::ExtensionBinaryDecode;
-    use gleaph_gql::value_cmp::compare_values;
+    use gleaph_gql::value::cmp::compare_values;
     use gleaph_gql::value_to_index_key_bytes;
 
     #[test]

@@ -1069,8 +1069,8 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::*;
-    use crate::{ExtensionValue, value::Any};
-    use gleaph_gql_macros::define_gql_extension;
+    use crate::cmp::compare_values;
+    use crate::{Any, ExtensionValue};
 
     #[test]
     fn value_clone_and_eq() {
@@ -1941,93 +1941,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct MacroTokenExt(Vec<u8>);
-
-    impl fmt::Display for MacroTokenExt {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "MacroTokenExt")
-        }
-    }
-
-    fn decode_tt_compact(payload: &[u8]) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
-        Ok(Box::new(MacroTokenExt(payload.to_vec())))
-    }
-
-    define_gql_extension! {
-        prefix: "TT",
-        types: [
-            {
-                rust_type: MacroTokenExt,
-                type_name: "test.MacroToken",
-                decoder: MacroTokenGqlDecode,
-                eq: |this, other| this.0 == other.0,
-                binary_payload: |this| Cow::Borrowed(this.0.as_slice()),
-                compact: { 200u8 => decode_tt_compact },
-            },
-        ],
-    }
-
-    #[derive(Debug, Clone)]
-    struct MacroRankExt(u8);
-
-    impl fmt::Display for MacroRankExt {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "MacroRankExt({})", self.0)
-        }
-    }
-
-    #[allow(dead_code)]
-    fn decode_rr_short(payload: &[u8]) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
-        let b = *payload
-            .first()
-            .ok_or(ValueBinaryError::InvalidExtensionPayload)?;
-        Ok(Box::new(MacroRankExt(b)))
-    }
-
-    define_gql_extension! {
-        prefix: "RR",
-        types: [
-            {
-                rust_type: MacroRankExt,
-                type_name: "test.MacroRank",
-                decoder: MacroRankGqlDecode,
-                eq: |this, other| this.0 == other.0,
-                cmp: |this, other| this.0.cmp(&other.0),
-                sortable_index_key: {
-                    domain: "test.MacroRank/v1",
-                    bytes: |this| Cow::Owned(vec![this.0]),
-                },
-                short_blob: |this| Cow::Owned(vec![this.0]),
-                short_blob_decode: decode_rr_short,
-            },
-        ],
-    }
-
-    #[derive(Debug, Clone)]
-    struct MacroCompactExt(Vec<u8>);
-
-    impl fmt::Display for MacroCompactExt {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "MacroCompactExt")
-        }
-    }
-
-    define_gql_extension! {
-        prefix: "MC",
-        types: [
-            {
-                rust_type: MacroCompactExt,
-                type_name: "test.MacroCompact",
-                decoder: MacroCompactGqlDecode,
-                eq: |this, other| this.0 == other.0,
-                compact_kind: |_this| 200,
-                binary_payload: |this| Cow::Borrowed(this.0.as_slice()),
-                compact: { 200u8 => decode_tt_compact },
-            },
-        ],
-    }
-
     #[test]
     fn extension_ordering_and_sortable_key_are_opt_in() {
         let left = NonOrderableExtension("a");
@@ -2035,7 +1948,7 @@ mod tests {
         assert_eq!(left.cmp_ext(&right), None);
         assert_eq!(left.sortable_index_key(), None);
         assert_eq!(
-            crate::value_cmp::compare_values(
+            compare_values(
                 &Value::Extension(Box::new(left)),
                 &Value::Extension(Box::new(right)),
             ),
@@ -2044,81 +1957,23 @@ mod tests {
     }
 
     #[test]
-    fn macro_defined_non_orderable_extension_is_incomparable() {
-        let left = Value::Extension(Box::new(MacroTokenExt(vec![1])));
-        let right = Value::Extension(Box::new(MacroTokenExt(vec![2])));
-        assert_eq!(crate::value_cmp::compare_values(&left, &right), None);
-
-        let Value::Extension(left_ext) = &left else {
-            panic!("expected extension");
-        };
-        let Value::Extension(right_ext) = &right else {
-            panic!("expected extension");
-        };
-        assert!(!left_ext.eq_ext(right_ext.as_ref()));
-        assert_eq!(left_ext.cmp_ext(right_ext.as_ref()), None);
-        assert_eq!(left_ext.sortable_index_key(), None);
-        assert_eq!(left_ext.type_name(), "TT.test.MacroToken");
-    }
-
-    #[test]
-    fn macro_defined_orderable_extension_supports_compare_and_sortable_key() {
-        let left = Value::Extension(Box::new(MacroRankExt(1)));
-        let right = Value::Extension(Box::new(MacroRankExt(2)));
-        assert_eq!(
-            crate::value_cmp::compare_values(&left, &right),
-            Some(Ordering::Less)
-        );
-
-        let Value::Extension(left_ext) = &left else {
-            panic!("expected extension");
-        };
-        let key = left_ext
-            .sortable_index_key()
-            .expect("macro sortable index key");
-        assert_eq!(key.domain.as_ref(), "test.MacroRank/v1");
-        assert_eq!(key.bytes.as_ref(), &[1]);
-    }
-
-    #[test]
-    fn macro_defined_extension_type_mismatch_is_not_equal_or_ordered() {
-        let token = MacroTokenExt(vec![1]);
-        let rank = MacroRankExt(1);
-        assert!(!token.eq_ext(&rank));
-        assert_eq!(rank.cmp_ext(&token), None);
-    }
-
-    #[test]
-    fn macro_defined_extension_binary_round_trips_with_decoder() {
-        let value = Value::Extension(Box::new(MacroCompactExt(vec![1, 2, 3])));
-        let bytes = value.to_binary_bytes().expect("encode");
-        let back =
-            Value::from_binary_bytes_with_extensions(&bytes, &MacroCompactGqlDecode::INSTANCE)
-                .expect("decode");
-        assert_eq!(
-            back,
-            Value::Extension(Box::new(MacroTokenExt(vec![1, 2, 3])))
-        );
-    }
-
-    #[test]
     fn orderable_extension_controls_compare_values() {
         assert_eq!(
-            crate::value_cmp::compare_values(
+            compare_values(
                 &Value::Extension(Box::new(MockExt("a".into()))),
                 &Value::Extension(Box::new(MockExt("b".into()))),
             ),
             Some(Ordering::Less)
         );
         assert_eq!(
-            crate::value_cmp::compare_values(
+            compare_values(
                 &Value::Extension(Box::new(MockExt("b".into()))),
                 &Value::Extension(Box::new(MockExt("b".into()))),
             ),
             Some(Ordering::Equal)
         );
         assert_eq!(
-            crate::value_cmp::compare_values(
+            compare_values(
                 &Value::Extension(Box::new(MockExt("c".into()))),
                 &Value::Extension(Box::new(MockExt("b".into()))),
             ),
@@ -2149,15 +2004,14 @@ mod tests {
 
     #[test]
     fn extension_hash_join_key_aligns_with_eq_for_short_blob_type() {
-        use crate::value_join_hash::hash_value_for_join;
-        use rapidhash::fast::RapidHasher;
-        use std::hash::Hasher;
+        use crate::join_hash::hash_value_for_join;
+        use std::hash::{DefaultHasher, Hasher};
 
         let a = Value::Extension(Box::new(MockShortBlob(vec![1, 2, 3])));
         let b = Value::Extension(Box::new(MockShortBlob(vec![1, 2, 3])));
         assert_eq!(a, b);
-        let mut ha = RapidHasher::default();
-        let mut hb = RapidHasher::default();
+        let mut ha = DefaultHasher::new();
+        let mut hb = DefaultHasher::new();
         hash_value_for_join(&a, &mut ha);
         hash_value_for_join(&b, &mut hb);
         assert_eq!(ha.finish(), hb.finish());
@@ -2165,15 +2019,14 @@ mod tests {
 
     #[test]
     fn extension_hash_join_key_aligns_with_eq_for_mock_ext_binary_payload() {
-        use crate::value_join_hash::hash_value_for_join;
-        use rapidhash::fast::RapidHasher;
-        use std::hash::Hasher;
+        use crate::join_hash::hash_value_for_join;
+        use std::hash::{DefaultHasher, Hasher};
 
         let a = Value::Extension(Box::new(MockExt("same".into())));
         let b = Value::Extension(Box::new(MockExt("same".into())));
         assert_eq!(a, b);
-        let mut ha = RapidHasher::default();
-        let mut hb = RapidHasher::default();
+        let mut ha = DefaultHasher::new();
+        let mut hb = DefaultHasher::new();
         hash_value_for_join(&a, &mut ha);
         hash_value_for_join(&b, &mut hb);
         assert_eq!(ha.finish(), hb.finish());
@@ -2316,11 +2169,11 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "ast-rkyv-no-span")]
+    #[cfg(feature = "rkyv")]
     static MOCK_DECODE_FOR_RKYV: MockDecode = MockDecode;
 
     /// [`crate::rkyv_support::ExtensionBinaryWire`] path round-trips when a thread-local decoder is installed.
-    #[cfg(feature = "ast-rkyv-no-span")]
+    #[cfg(feature = "rkyv")]
     #[test]
     fn extension_rkyv_roundtrips_with_thread_decode_override() {
         let _guard = crate::rkyv_support::RkyvExtensionDecodeScopeGuard::set(&MOCK_DECODE_FOR_RKYV);
@@ -2331,7 +2184,7 @@ mod tests {
         assert_eq!(back, v);
     }
 
-    #[cfg(feature = "ast-rkyv-no-span")]
+    #[cfg(feature = "rkyv")]
     #[test]
     fn extension_rkyv_deserialize_fails_without_decode_hook() {
         let v: Value = Value::Extension(Box::new(MockExt("x".into())));

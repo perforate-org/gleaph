@@ -14,6 +14,9 @@
 //! - tag 31: `Float128` bits (see `f128::to_bits()`) (16 bytes)
 //! - tag 32: `Float256` little-endian bytes (32 bytes)
 
+#![cfg_attr(feature = "f128", feature(f128))]
+#![cfg_attr(feature = "rkyv", feature(trivial_bounds))]
+
 use std::any::Any;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -21,10 +24,19 @@ use std::fmt;
 use std::hash::Hasher;
 use std::str;
 
+#[cfg(feature = "cmp")]
+pub mod cmp;
 mod enum_;
 mod impls;
+#[cfg(feature = "join_hash")]
+pub mod join_hash;
+pub mod numeric_order;
+#[cfg(feature = "rkyv")]
+pub mod rkyv_support;
 #[cfg(feature = "serde")]
 pub mod serde_support;
+pub mod temporal;
+pub mod types;
 
 pub use enum_::Value;
 #[cfg(feature = "f128")]

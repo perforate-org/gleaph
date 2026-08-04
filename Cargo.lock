@@ -1676,11 +1676,13 @@ name = "gleaph-cdk"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "ethnum",
  "f256",
  "gleaph-gql",
  "gleaph-gql-ic-wire",
  "half 2.7.1",
  "ic-cdk",
+ "rust_decimal",
  "serde",
  "serde_json",
 ]
@@ -1726,19 +1728,17 @@ dependencies = [
 name = "gleaph-gql"
 version = "0.0.1"
 dependencies = [
- "base64 0.23.0",
  "ethnum",
  "f256",
  "gleaph-gql-keywords",
  "gleaph-gql-macros",
+ "gleaph-gql-value",
  "half 2.7.1",
- "jiff",
  "num-bigint 0.5.1",
  "num-traits",
  "rapidhash",
  "rkyv 0.8.17",
  "rust_decimal",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]
@@ -1808,6 +1808,24 @@ dependencies = [
  "gleaph-graph-kernel",
  "rapidhash",
  "rkyv 0.8.17",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gleaph-gql-value"
+version = "0.0.1"
+dependencies = [
+ "base64 0.23.0",
+ "ethnum",
+ "f256",
+ "half 2.7.1",
+ "jiff",
+ "num-bigint 0.5.1",
+ "num-traits",
+ "rkyv 0.8.17",
+ "rust_decimal",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

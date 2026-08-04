@@ -239,11 +239,10 @@ pub fn hash_value_for_join<H: Hasher>(value: &Value, hasher: &mut H) {
 mod tests {
     use super::*;
     use crate::types::Decimal;
-    use rapidhash::fast::RapidHasher;
-    use std::hash::Hasher;
+    use std::hash::{DefaultHasher, Hasher};
 
     fn hash64(v: &Value) -> u64 {
-        let mut h = RapidHasher::default();
+        let mut h = DefaultHasher::new();
         hash_value_for_join(v, &mut h);
         h.finish()
     }
