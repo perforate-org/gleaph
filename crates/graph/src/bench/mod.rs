@@ -11,6 +11,7 @@ mod large;
 mod ordered_batch;
 mod plan_batch;
 mod stable_layout;
+mod timer_maintenance;
 
 use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
 use crate::facade::GraphStore;

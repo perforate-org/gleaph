@@ -225,6 +225,26 @@ defect from being rediscovered without its prior reasoning.
   from the Router alone (the cross-canister leg, like the Graph plan-batch drain, needs an
   end-to-end harness; the Router chunk-dispatch path serves the GQL mutation path whose
   dispatch count is bounded by live shard count, so no dedicated boundary test is added here).
+- **Progress (2026-08-04, Graph timer maintenance):** canbench targets added in
+  `crates/graph/src/bench/timer_maintenance.rs`, persisted in
+  `crates/graph/canbench_results.yml`. The bounded loop is
+  `DeferredBidirectionalLabeledLaraGraph::maintenance_with_observers`, which checks
+  `should_cutoff(32B, used, 0, 100M, 0)` before each work item, so the maximum work between
+  budget checks is one work item plus the report. The benches exercise the production
+  `run_timer_maintenance_tick` entrypoint (the ADR 0020 timer pass under
+  `timer_lara_maintenance_budget()`) on a dense 2048-edge hub with an 8-byte inline property:
+  the fixture inserts the hub edges (the dense insert path enqueues
+  `CompactDenseLabeledVertexMaintenance`) and the host fixture test asserts the queue is
+  non-empty, drains to zero, and produces measurable compaction work. Measured (canbench,
+  2026-08-04): one work item under the timer budget (`max_work_items: 1` on
+  `timer_lara_maintenance_budget()`) costs 61.60K instructions; the whole tick draining the
+  2048-edge hub costs 1.33M instructions (3 work items: the dense segment compaction, the
+  overflow rewrite, and the finishing step). Derived acceptance: the worst single work item
+  between budget checks is bounded by the whole tick (1.33M), which is ≈1.3% of the 100M
+  `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` reserve — so the cutoff always fires with the final
+  work item and report well inside the 32B `MAX_TIMER_MAINTENANCE_INSTRUCTIONS` cap, and a
+  realistic backlog (2048-edge hub) drains in ≈0.004% of the cap, so the cap does not
+  prematurely bound a tick. The loop is fully local and needs no PocketIC boundary test.
 - **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
   [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
   [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
