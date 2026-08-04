@@ -23,6 +23,9 @@ pub use serde;
 /// JSON facade used by generated canister bindings for open record values.
 pub use serde_json;
 
+/// Candid facade used by generated canister bindings for entrypoint arguments and results.
+pub use candid;
+
 pub use types::{
     AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,

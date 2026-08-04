@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use gleaph_cdk::candid::CandidType;
 use gleaph_cdk::GqlParams;
 use gleaph_cdk::GqlValue;
 use gleaph_cdk::serde::de::DeserializeOwned;
@@ -12,7 +13,8 @@ use std::pin::Pin;
 pub const GLEAPH_GRAPH_ID: &str = "fixture-graph";
 
 /// Result returned by a canister-side prepared-query executor.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct PreparedCanisterResponse<Row> {
     /// Number of rows observed by the runtime.
@@ -62,7 +64,8 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
     Pin<Box<dyn Future<Output = Result<PreparedCanisterResponse<Row>, Error>> + 'a>>;
 
 /// Date-time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct PreparedDateTime {
     pub seconds: i64,
@@ -70,7 +73,8 @@ pub struct PreparedDateTime {
 }
 
 /// Zoned date-time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct PreparedZonedDateTime {
     pub seconds: i64,
@@ -79,7 +83,8 @@ pub struct PreparedZonedDateTime {
 }
 
 /// Zoned time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct PreparedZonedTime {
     pub nanos: u64,
@@ -87,7 +92,8 @@ pub struct PreparedZonedTime {
 }
 
 /// Duration representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct PreparedDuration {
     pub months: i32,
@@ -95,7 +101,8 @@ pub struct PreparedDuration {
 }
 
 /// Path element representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub enum PreparedPathElement {
     Vertex(Vec<u8>),
@@ -104,7 +111,8 @@ pub enum PreparedPathElement {
 
 /// Find users by their search term.
 /// Parameters for the prepared operation find-users.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct FindUsersParams {
     /// Text to search for.
@@ -121,7 +129,8 @@ impl FindUsersParams {
 }
 
 /// One result row from the prepared operation find-users.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
+#[candid_path("gleaph_cdk::candid")]
 #[serde(crate = "gleaph_cdk::serde")]
 pub struct FindUsersRow {
     /// Wire column user_name.
