@@ -20,7 +20,9 @@ use gleaph_gql_params::GqlParams;
 pub use gleaph_gql_params::GqlValue;
 
 /// Path element in a logical GQL value.
-pub use gleaph_gql_value::types::PathElement as GqlPathElement;
+pub use gleaph_gql_params::GqlPathElement;
+/// Typed path element binding used by generated canister bindings.
+pub use gleaph_gql_params::{EdgePathElementId, PathElement, VertexPathElementId};
 
 /// Ordered GQL record representation.
 ///
