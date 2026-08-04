@@ -7,14 +7,18 @@ description = "Gleaph canister SDK helpers for inter-canister calls to the Gleap
 
 [dependencies]
 candid.workspace = true
+ethnum.workspace = true
 f256.workspace = true
-half.workspace = true
-gleaph-gql = { path = "../../../crates/gql", default-features = false, features = ["f256"] }
 gleaph-gql-ic-wire.workspace = true
+gleaph-gql-params.workspace = true
+gleaph-gql-value.workspace = true
+gleaph-prepared-api.workspace = true
+half.workspace = true
 ic-cdk.workspace = true
+rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [features]
 default = []
-nightly-f128 = ["gleaph-gql/f128", "gleaph-gql-ic-wire/nightly-f128"]
+nightly-f128 = ["gleaph-gql-value/f128", "gleaph-gql-ic-wire/nightly-f128"]

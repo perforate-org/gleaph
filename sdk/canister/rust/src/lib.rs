@@ -1,14 +1,21 @@
 //! Gleaph canister SDK.
 //!
-//! Small, opinionated helpers for application canisters that delegate fixed read scenarios to the
-//! Gleaph Router via its `prepared_query` interface. The API is intentionally generic: it
-//! knows the Candid shape of a prepared query call `(String name, Vec<u8> params)` and how to make
-//! a bounded-wait inter-canister call, but it does not know application-specific scenario names or
-//! semantics.
+//! Small, opinionated helpers for application canisters that delegate GQL execution to the
+//! Gleaph Router via bounded-wait inter-canister calls. The query-building layer ([`gql!`],
+//! [`IntoGqlParam`], [`GqlQuery`]) is general-purpose and lives in `gleaph-gql-params`; this
+//! crate adds the Router-bound client ([`GleaphClient`]), the wire types it needs, and the
+//! typed-binding helpers used by `gleaph-codegen` output.
 
 #![cfg_attr(feature = "nightly-f128", feature(f128))]
 
 use candid::{CandidType, Deserialize, Principal};
+
+pub mod types;
+
+/// Query-building helpers re-exported from `gleaph-gql-params`.
+pub use gleaph_gql_params::{
+    GqlParams, GqlQuery, IntoGqlParam, encode_gql_params, gql, gql_param_value,
+};
 
 /// Serde facade used by generated canister bindings.
 pub use serde;
@@ -16,878 +23,23 @@ pub use serde;
 /// JSON facade used by generated canister bindings for open record values.
 pub use serde_json;
 
-/// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
-pub use gleaph_gql::Value as GqlValue;
-pub use gleaph_gql_ic_wire::GqlPrincipal;
+pub use types::{
+    AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
+    BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
+    BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
+    FromGqlRow, GqlDecimal, GqlFloat16, GqlFloat256, GqlInt256, GqlPathElement, GqlPrincipal,
+    GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError, GqlWireRows,
+    MutationLifecyclePhase, MutationToken, MutationTokenShard, ReadMode, RouterError,
+    VectorActivationBlockReason, gql_principal_from_value, gql_principal_value,
+    gql_record_to_json_map, gql_value_to_json, take_gql_row_field,
+};
 
-/// Wrap an IC Principal extension as a logical GQL value.
-pub fn gql_principal_value(principal: GqlPrincipal) -> GqlValue {
-    GqlValue::Extension(Box::new(principal))
-}
-
-/// Extract an IC Principal extension from a logical GQL value.
-pub fn gql_principal_from_value(value: GqlValue) -> Result<GqlPrincipal, GqlWireDecodeError> {
-    match value {
-        GqlValue::Extension(value) => value
-            .as_any()
-            .downcast_ref::<GqlPrincipal>()
-            .copied()
-            .ok_or(GqlWireDecodeError::TypeMismatch("Principal")),
-        _ => Err(GqlWireDecodeError::TypeMismatch("Principal")),
-    }
-}
-
-/// Rust signed binary256 integer used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GqlInt256(gleaph_gql::types::Int256);
-
-impl GqlInt256 {
-    /// Construct from the shared GQL integer wrapper.
-    pub const fn from_inner(value: gleaph_gql::types::Int256) -> Self {
-        Self(value)
-    }
-
-    /// Return the shared GQL integer wrapper.
-    pub const fn into_inner(self) -> gleaph_gql::types::Int256 {
-        self.0
-    }
-}
-
-impl core::fmt::Display for GqlInt256 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl core::str::FromStr for GqlInt256 {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value
-            .parse::<gleaph_gql::types::Int256>()
-            .map(Self::from_inner)
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl serde::Serialize for GqlInt256 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlInt256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Rust unsigned binary256 integer used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GqlUint256(gleaph_gql::types::Uint256);
-
-impl GqlUint256 {
-    /// Construct from the shared GQL integer wrapper.
-    pub const fn from_inner(value: gleaph_gql::types::Uint256) -> Self {
-        Self(value)
-    }
-
-    /// Return the shared GQL integer wrapper.
-    pub const fn into_inner(self) -> gleaph_gql::types::Uint256 {
-        self.0
-    }
-}
-
-impl core::fmt::Display for GqlUint256 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl core::str::FromStr for GqlUint256 {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value
-            .parse::<gleaph_gql::types::Uint256>()
-            .map(Self::from_inner)
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl serde::Serialize for GqlUint256 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlUint256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Rust decimal value used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GqlDecimal(gleaph_gql::types::Decimal);
-
-impl GqlDecimal {
-    /// Construct from the shared GQL decimal wrapper.
-    pub const fn from_inner(value: gleaph_gql::types::Decimal) -> Self {
-        Self(value)
-    }
-
-    /// Return the shared GQL decimal wrapper.
-    pub const fn into_inner(self) -> gleaph_gql::types::Decimal {
-        self.0
-    }
-}
-
-impl core::fmt::Display for GqlDecimal {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl core::str::FromStr for GqlDecimal {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        gleaph_gql::types::Decimal::parse(value)
-            .map(Self::from_inner)
-            .ok_or_else(|| format!("invalid GQL decimal {value:?}"))
-    }
-}
-
-impl serde::Serialize for GqlDecimal {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlDecimal {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Rust binary16 value used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GqlFloat16(half::f16);
-
-impl GqlFloat16 {
-    /// Construct from the IEEE 754 binary16 bit pattern.
-    pub const fn from_bits(bits: u16) -> Self {
-        Self(half::f16::from_bits(bits))
-    }
-
-    /// Return the IEEE 754 binary16 bit pattern.
-    pub const fn to_bits(self) -> u16 {
-        self.0.to_bits()
-    }
-
-    /// Return the upstream half-precision value.
-    pub const fn into_inner(self) -> half::f16 {
-        self.0
-    }
-}
-
-impl serde::Serialize for GqlFloat16 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u16(self.to_bits())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlFloat16 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(Self::from_bits(u16::deserialize(deserializer)?))
-    }
-}
-
-/// Rust binary256 value used by generated canister bindings.
-///
-/// The Serde representation is exactly 32 little-endian bytes. The wrapper is necessary because
-/// the upstream `f256` type intentionally does not provide Serde implementations.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GqlFloat256(f256::f256);
-
-impl GqlFloat256 {
-    /// Construct a logical GQL float256 from the upstream numeric value.
-    pub const fn from_inner(value: f256::f256) -> Self {
-        Self(value)
-    }
-
-    /// Return the upstream numeric value.
-    pub const fn into_inner(self) -> f256::f256 {
-        self.0
-    }
-
-    /// Construct from the canonical little-endian wire representation.
-    pub const fn from_le_bytes(bytes: [u8; 32]) -> Self {
-        Self(f256::f256::from_le_bytes(bytes))
-    }
-
-    /// Return the canonical little-endian wire representation.
-    pub const fn to_le_bytes(self) -> [u8; 32] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl serde::Serialize for GqlFloat256 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bytes(&self.to_le_bytes())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlFloat256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        let bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"32 bytes"))?;
-        Ok(Self::from_le_bytes(bytes))
-    }
-}
+/// Prepared-operation wire types shared with the Router.
+pub use gleaph_prepared_api::{PreparedManifest, PreparedOperation, PreparedSortSpec};
 
 /// Rust binary128 value used by generated canister bindings.
 #[cfg(feature = "nightly-f128")]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GqlFloat128(f128);
-
-#[cfg(feature = "nightly-f128")]
-impl GqlFloat128 {
-    /// Construct a logical GQL float128 from the primitive value.
-    pub const fn from_inner(value: f128) -> Self {
-        Self(value)
-    }
-
-    /// Return the primitive value.
-    pub const fn into_inner(self) -> f128 {
-        self.0
-    }
-
-    /// Construct from the canonical little-endian wire representation.
-    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
-        Self(f128::from_bits(u128::from_le_bytes(bytes)))
-    }
-
-    /// Return the canonical little-endian wire representation.
-    pub const fn to_le_bytes(self) -> [u8; 16] {
-        self.0.to_bits().to_le_bytes()
-    }
-}
-
-#[cfg(feature = "nightly-f128")]
-impl serde::Serialize for GqlFloat128 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bytes(&self.to_le_bytes())
-    }
-}
-
-#[cfg(feature = "nightly-f128")]
-impl<'de> serde::Deserialize<'de> for GqlFloat128 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        let bytes: [u8; 16] = bytes
-            .try_into()
-            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"16 bytes"))?;
-        Ok(Self::from_le_bytes(bytes))
-    }
-}
-
-/// Ordered GQL record representation.
-///
-/// GQL record order is retained because the compact wire representation preserves field order.
-pub type GqlRecord = Vec<(String, GqlValue)>;
-
-/// Named GQL parameters, usable by dynamic GQL and prepared operations.
-pub type GqlParams = GqlRecord;
-
-/// One GQL result row.
-pub type GqlRow = GqlRecord;
-
-/// Convert one logical GQL result row into a generated Rust row type.
-pub trait FromGqlRow: Sized {
-    /// Convert an ordered logical GQL record into this typed row.
-    fn from_gql_row(row: GqlRow) -> Result<Self, GqlWireDecodeError>;
-}
-
-/// Remove one named field from an ordered logical GQL row.
-pub fn take_gql_row_field(row: &mut GqlRow, name: &str) -> Result<GqlValue, GqlWireDecodeError> {
-    let mut found = None;
-    for (index, (field_name, _)) in row.iter().enumerate() {
-        if field_name == name {
-            if found.is_some() {
-                return Err(GqlWireDecodeError::DuplicateField(name.to_string()));
-            }
-            found = Some(index);
-        }
-    }
-    found
-        .map(|index| row.remove(index).1)
-        .ok_or_else(|| GqlWireDecodeError::MissingField(name.to_string()))
-}
-
-/// Project a logical GQL value into the JSON representation used by generated open records.
-// The workspace can unify `gleaph-gql/f128` through another dependent crate even when this SDK's
-// `nightly-f128` feature is disabled, while a standalone SDK build has no Float128 variant.
-#[allow(
-    unreachable_patterns,
-    reason = "Float128 depends on the SDK nightly-f128 feature"
-)]
-pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDecodeError> {
-    let json = match value {
-        GqlValue::Null => serde_json::Value::Null,
-        GqlValue::Bool(value) => serde_json::Value::Bool(value),
-        GqlValue::Int8(value) => serde_json::json!(value),
-        GqlValue::Int16(value) => serde_json::json!(value),
-        GqlValue::Int32(value) => serde_json::json!(value),
-        GqlValue::Int64(value) => serde_json::json!(value),
-        GqlValue::Int128(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Int256(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Uint8(value) => serde_json::json!(value),
-        GqlValue::Uint16(value) => serde_json::json!(value),
-        GqlValue::Uint32(value) => serde_json::json!(value),
-        GqlValue::Uint64(value) => serde_json::json!(value),
-        GqlValue::Uint128(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Uint256(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Float16(value) => serde_json::json!(value.to_f32()),
-        GqlValue::Float32(value) => serde_json::to_value(value)
-            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
-        GqlValue::Float64(value) => serde_json::to_value(value)
-            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
-        #[cfg(feature = "nightly-f128")]
-        GqlValue::Float128(value) => serde_json::to_value(GqlFloat128::from_inner(value))
-            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
-        GqlValue::Float256(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Decimal(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Text(value) => serde_json::Value::String(value),
-        GqlValue::Bytes(value) => serde_json::Value::Array(
-            value
-                .into_iter()
-                .map(|value| serde_json::json!(value))
-                .collect(),
-        ),
-        GqlValue::Date(value) => serde_json::json!(value),
-        GqlValue::Time(value) => serde_json::json!(value),
-        GqlValue::LocalTime(value) => serde_json::json!(value),
-        GqlValue::DateTime(seconds, nanos) | GqlValue::LocalDateTime(seconds, nanos) => {
-            serde_json::json!({ "seconds": seconds, "nanos": nanos })
-        }
-        GqlValue::ZonedDateTime(seconds, nanos, offset_seconds) => {
-            serde_json::json!({
-                "seconds": seconds,
-                "nanos": nanos,
-                "offset_seconds": offset_seconds
-            })
-        }
-        GqlValue::ZonedTime(nanos, offset_seconds) => {
-            serde_json::json!({ "nanos": nanos, "offset_seconds": offset_seconds })
-        }
-        GqlValue::Duration(months, nanos) => {
-            serde_json::json!({ "months": months, "nanos": nanos })
-        }
-        GqlValue::List(values) => serde_json::Value::Array(
-            values
-                .into_iter()
-                .map(gql_value_to_json)
-                .collect::<Result<_, _>>()?,
-        ),
-        GqlValue::Path(values) => serde_json::Value::Array(
-            values
-                .into_iter()
-                .map(|value| match value {
-                    GqlPathElement::Vertex(value) => {
-                        serde_json::json!({ "Vertex": value.as_ref().to_vec() })
-                    }
-                    GqlPathElement::Edge(value) => {
-                        serde_json::json!({ "Edge": value.as_ref().to_vec() })
-                    }
-                })
-                .collect(),
-        ),
-        GqlValue::Record(values) => {
-            let mut object = serde_json::Map::new();
-            for (name, value) in values {
-                if object.contains_key(&name) {
-                    return Err(GqlWireDecodeError::DuplicateField(name));
-                }
-                object.insert(name, gql_value_to_json(value)?);
-            }
-            serde_json::Value::Object(object)
-        }
-        GqlValue::Extension(value) => value
-            .as_any()
-            .downcast_ref::<GqlPrincipal>()
-            .map(|principal| serde_json::Value::String(principal.to_string()))
-            .ok_or(GqlWireDecodeError::UnsupportedValue("extension"))?,
-        #[cfg(not(feature = "nightly-f128"))]
-        _ => return Err(GqlWireDecodeError::UnsupportedValue("Float128")),
-    };
-    Ok(json)
-}
-
-/// Project a logical GQL record into the generated open-record map shape.
-pub fn gql_record_to_json_map(
-    value: GqlValue,
-) -> Result<std::collections::BTreeMap<String, serde_json::Value>, GqlWireDecodeError> {
-    match value {
-        GqlValue::Record(values) => {
-            let mut record = std::collections::BTreeMap::new();
-            for (name, value) in values {
-                if record.contains_key(&name) {
-                    return Err(GqlWireDecodeError::DuplicateField(name));
-                }
-                record.insert(name, gql_value_to_json(value)?);
-            }
-            Ok(record)
-        }
-        _ => Err(GqlWireDecodeError::TypeMismatch("Record")),
-    }
-}
-
-/// Path element in a logical GQL value.
-pub use gleaph_gql::types::PathElement as GqlPathElement;
-pub use gleaph_gql_ic_wire::{
-    GqlWireDecodeError, GqlWirePathElement, GqlWireRow, GqlWireRows, GqlWireValue, decode_rows_blob,
-};
-
-/// Error returned when logical GQL parameters cannot be compact-binary encoded.
-pub type GqlEncodingError = gleaph_gql::ValueBinaryError;
-
-/// Encode ordered named GQL parameters for a dynamic GQL or prepared-query call.
-pub fn encode_gql_params(params: GqlParams) -> Result<Vec<u8>, GqlEncodingError> {
-    GqlValue::Record(params).to_binary_bytes()
-}
-
-/// Router query response envelope shared by dynamic GQL and prepared operations.
-///
-/// The materialized rows remain an opaque compact Candid blob until the public IC wire codec is
-/// selected. This keeps the CDK API independent from graph-kernel implementation types.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct GqlResponse {
-    /// Number of rows returned by the Router.
-    pub row_count: u64,
-    /// Optional compact Candid rows blob.
-    pub rows_blob: Option<Vec<u8>>,
-}
-
-impl GqlResponse {
-    /// Return the materialized rows blob, if the query produced one.
-    pub fn rows_blob(&self) -> Option<&[u8]> {
-        self.rows_blob.as_deref()
-    }
-
-    /// Decode materialized rows using the lightweight public IC wire codec.
-    pub fn decode_rows(&self) -> Result<Option<GqlWireRows>, GqlWireDecodeError> {
-        self.rows_blob.as_deref().map(decode_rows_blob).transpose()
-    }
-
-    /// Decode materialized rows directly into generated Rust row types.
-    pub fn decode_typed_rows<Row: FromGqlRow>(
-        &self,
-    ) -> Result<Option<Vec<Row>>, GqlWireDecodeError> {
-        self.decode_rows()?
-            .map(|rows| {
-                rows.rows
-                    .into_iter()
-                    .map(|row| Row::from_gql_row(row.try_into_gql_row()?))
-                    .collect()
-            })
-            .transpose()
-    }
-}
-
-/// Error returned when a prepared-query inter-canister call fails before yielding a typed result.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum PreparedCallError {
-    /// The IC rejected the call (timeout, canister error, destination invalid, etc.).
-    Reject {
-        /// Reject code as a human-readable string. This is the textual form of
-        /// [`ic_cdk::call::RejectCode`] when available, or the raw numeric code otherwise.
-        code: String,
-        /// Reject or transport-level error message.
-        message: String,
-    },
-    /// The call succeeded at the transport layer but the response could not be Candid-decoded as `R`.
-    Decode {
-        /// Candid decode error message.
-        message: String,
-    },
-}
-
-impl core::fmt::Display for PreparedCallError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            PreparedCallError::Reject { code, message } => {
-                write!(f, "prepared query rejected ({code}): {message}")
-            }
-            PreparedCallError::Decode { message } => {
-                write!(f, "failed to decode prepared query response: {message}")
-            }
-        }
-    }
-}
-
-/// Candid-encode the `(String, Vec<u8>)` argument tuple used by Router prepared queries.
-///
-/// # Panics
-///
-/// Panics only if the inputs somehow fail to encode, which cannot happen for the `(String, Vec<u8>)`
-/// tuple under normal Candid operation.
-/// A caller-selected ordering for a prepared query.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PreparedSortSpec {
-    /// Stable sort-key identifier.
-    pub key: String,
-    /// Sort direction (asc, ascending, desc, or descending).
-    pub direction: String,
-}
-
-/// Per-shard watermarks carried by a Router mutation token.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MutationTokenShard {
-    pub shard_id: u32,
-    pub label_stats_seq: Option<u64>,
-}
-
-/// Read-your-writes token returned by an idempotent Router mutation.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MutationToken {
-    pub mutation_id: u64,
-    pub shards: Vec<MutationTokenShard>,
-}
-
-/// Read freshness contract accepted by Router query entry points.
-#[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Deserialize)]
-pub enum ReadMode {
-    #[default]
-    Eventual,
-    AtLeast(MutationToken),
-}
-
-/// Maximum number of chunk receipts accepted by one Router bulk-load status page.
-pub const MAX_BULK_LOAD_RECEIPTS_PER_PAGE: u32 = 64;
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct AtomicInsertPropertyV1 {
-    pub property_name: String,
-    pub value: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct AtomicInsertVertexV1 {
-    pub vertex_labels: Vec<String>,
-    pub initial_properties: Vec<AtomicInsertPropertyV1>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct BulkLoadEdgeV1 {
-    pub source: Vec<u8>,
-    pub target: Vec<u8>,
-    pub directed: bool,
-    pub edge_label_name: Option<String>,
-    pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<AtomicInsertPropertyV1>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BulkLoadChunkV1 {
-    Vertices(Vec<AtomicInsertVertexV1>),
-    Edges(Vec<BulkLoadEdgeV1>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BulkLoadCommand {
-    Start {
-        logical_graph_name: String,
-        client_bulk_key: String,
-    },
-    Append {
-        logical_graph_name: String,
-        client_bulk_key: String,
-        chunk_index: u32,
-        chunk: BulkLoadChunkV1,
-    },
-    Finalize {
-        logical_graph_name: String,
-        client_bulk_key: String,
-    },
-    Abort {
-        logical_graph_name: String,
-        client_bulk_key: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct AtomicInsertReceiptV1 {
-    pub logical_operation_count: u64,
-    pub logical_vertex_count: u64,
-    pub logical_edge_count: u64,
-    pub allocated_vertex_ids: Vec<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BulkLoadPublicStateV1 {
-    Open,
-    AppendPending,
-    FinalizePending,
-    AbortPending,
-    Completed,
-    Aborted,
-    Failed { reason: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BulkLoadResponse {
-    Started {
-        next_chunk_index: u32,
-    },
-    Appended {
-        chunk_index: u32,
-        /// Operations of this candidate batch committed as this chunk; the client resumes the
-        /// remainder at `chunk_index + 1` (ADR 0060 `Resumable` execution).
-        next_offset: u32,
-        receipt: AtomicInsertReceiptV1,
-    },
-    FinalizeAccepted {
-        state: BulkLoadPublicStateV1,
-    },
-    AbortAccepted {
-        state: BulkLoadPublicStateV1,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct BulkLoadChunkReceiptV1 {
-    pub chunk_index: u32,
-    pub receipt: AtomicInsertReceiptV1,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct BulkLoadStatusPage {
-    pub state: BulkLoadPublicStateV1,
-    pub next_chunk_index: u32,
-    pub committed_chunk_count: u32,
-    pub completed_chunk_count: u32,
-    pub terminal_at_ns: Option<u64>,
-    pub expires_at_ns: Option<u64>,
-    pub receipts: Vec<BulkLoadChunkReceiptV1>,
-    pub next_receipt_cursor: Option<u32>,
-}
-
-/// Candid-encode one Router `bulk_load` command.
-pub fn encode_bulk_load_args(command: BulkLoadCommand) -> Vec<u8> {
-    candid::utils::encode_args((command,)).expect("Candid encode bulk-load command arguments")
-}
-
-/// Candid-encode one Router `bulk_load_status` query.
-pub fn encode_bulk_load_status_args(
-    logical_graph_name: impl Into<String>,
-    client_bulk_key: impl Into<String>,
-    receipt_cursor: Option<u32>,
-    max_receipts: u32,
-) -> Vec<u8> {
-    candid::utils::encode_args((
-        logical_graph_name.into(),
-        client_bulk_key.into(),
-        receipt_cursor,
-        max_receipts,
-    ))
-    .expect("Candid encode bulk-load status arguments")
-}
-
-/// Candid-encode the Router `prepared_query` arguments.
-pub fn encode_prepared_query_args(
-    name: impl Into<String>,
-    params: Vec<u8>,
-    read_mode: ReadMode,
-) -> Vec<u8> {
-    encode_prepared_query_args_with_sort(name, params, None, read_mode)
-}
-
-/// Candid-encode prepared-query arguments with an optional caller-selected sort.
-pub fn encode_prepared_query_args_with_sort(
-    name: impl Into<String>,
-    params: Vec<u8>,
-    sort: Option<Vec<PreparedSortSpec>>,
-    read_mode: ReadMode,
-) -> Vec<u8> {
-    candid::utils::encode_args((name.into(), params, sort, read_mode))
-        .expect("Candid encode prepared query arguments")
-}
-
-/// Make a bounded-wait call to `prepared_query` on `canister_id`.
-///
-/// `name` is the registered prepared-query name; `params` is the compact-binary GQL parameter blob
-/// produced by the caller (often via `gleaph-gql-ic`). On success the Router's return value is
-/// Candid-decoded into `R`, which is typically `Result<T, RouterError>`.
-pub async fn call_prepared_query<R>(
-    canister_id: Principal,
-    name: impl Into<String>,
-    params: Vec<u8>,
-    read_mode: ReadMode,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    call_prepared_query_with_sort(canister_id, name, params, None, read_mode).await
-}
-
-/// Make a bounded-wait prepared query call with an optional caller-selected sort.
-pub async fn call_prepared_query_with_sort<R>(
-    canister_id: Principal,
-    name: impl Into<String>,
-    params: Vec<u8>,
-    sort: Option<Vec<PreparedSortSpec>>,
-    read_mode: ReadMode,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    let args = encode_prepared_query_args_with_sort(name, params, sort, read_mode);
-    call_prepared_method(canister_id, "prepared_query", args).await
-}
-
-/// Make a bounded-wait call to the Router's dynamic `gql_query` endpoint.
-pub async fn call_gql_query<R>(
-    canister_id: Principal,
-    query: impl Into<String>,
-    params: GqlParams,
-    read_mode: ReadMode,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    let params = encode_gql_params(params).map_err(|error| PreparedCallError::Decode {
-        message: format!("failed to encode GQL params: {error:?}"),
-    })?;
-    let args = candid::utils::encode_args((query.into(), params, read_mode))
-        .expect("Candid encode GQL query arguments");
-    call_prepared_method(canister_id, "gql_query", args).await
-}
-
-/// Make a bounded-wait call to `prepared_mutate` on `canister_id`.
-pub async fn call_prepared_mutate<R>(
-    canister_id: Principal,
-    name: impl Into<String>,
-    params: Vec<u8>,
-    client_mutation_key: impl Into<String>,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    let args = candid::utils::encode_args((name.into(), params, client_mutation_key.into()))
-        .expect("Candid encode prepared mutation arguments");
-    call_prepared_method(canister_id, "prepared_mutate", args).await
-}
-
-/// Make a bounded-wait call to the Router `bulk_load` update.
-pub async fn call_bulk_load<R>(
-    canister_id: Principal,
-    command: BulkLoadCommand,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    call_prepared_method(canister_id, "bulk_load", encode_bulk_load_args(command)).await
-}
-
-/// Make a bounded-wait call to the Router `bulk_load_status` query.
-pub async fn call_bulk_load_status<R>(
-    canister_id: Principal,
-    logical_graph_name: impl Into<String>,
-    client_bulk_key: impl Into<String>,
-    receipt_cursor: Option<u32>,
-    max_receipts: u32,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    call_prepared_method(
-        canister_id,
-        "bulk_load_status",
-        encode_bulk_load_status_args(
-            logical_graph_name,
-            client_bulk_key,
-            receipt_cursor,
-            max_receipts,
-        ),
-    )
-    .await
-}
-
-async fn call_prepared_method<R>(
-    canister_id: Principal,
-    method: &str,
-    args: Vec<u8>,
-) -> Result<R, PreparedCallError>
-where
-    R: CandidType + for<'de> Deserialize<'de>,
-{
-    use ic_cdk::call::{CallFailed, Response};
-
-    let call_result: Result<Response, CallFailed> =
-        ic_cdk::call::Call::bounded_wait(canister_id, method)
-            .with_raw_args(&args)
-            .await;
-
-    match call_result {
-        Ok(response) => response.candid().map_err(|e| PreparedCallError::Decode {
-            message: e.to_string(),
-        }),
-        Err(CallFailed::CallRejected(rejected)) => Err(PreparedCallError::Reject {
-            code: rejected
-                .reject_code()
-                .map(|code| format!("{code:?}"))
-                .unwrap_or_else(|_| rejected.raw_reject_code().to_string()),
-            message: rejected.reject_message().to_string(),
-        }),
-        Err(other) => Err(PreparedCallError::Reject {
-            code: "CallFailed".to_string(),
-            message: other.to_string(),
-        }),
-    }
-}
+pub use types::GqlFloat128;
 
 /// Canister-id-bound client for dynamic GQL and prepared operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -901,188 +53,228 @@ impl GleaphClient {
         Self { canister_id }
     }
 
-    /// Execute a named prepared query through the configured Router canister.
-    pub async fn prepared_query<R>(
-        &self,
-        name: impl Into<String>,
-        params: Vec<u8>,
-        read_mode: ReadMode,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_prepared_query(self.canister_id, name, params, read_mode).await
+    /// Execute dynamic GQL through the configured Router canister.
+    ///
+    /// Reads use the default [`ReadMode::Eventual`] freshness contract; use
+    /// [`gql_query_with_mode`](Self::gql_query_with_mode) for read-your-writes.
+    pub async fn gql_query(&self, query: impl Into<GqlQuery>) -> Result<GqlQueryResult, CallError> {
+        self.gql_query_with_mode(query, ReadMode::Eventual).await
     }
 
-    /// Execute a named prepared query with an optional caller-selected sort.
-    pub async fn execute_with_sort<R>(
+    /// Execute dynamic GQL with an explicit read freshness contract.
+    pub async fn gql_query_with_mode(
+        &self,
+        query: impl Into<GqlQuery>,
+        read_mode: ReadMode,
+    ) -> Result<GqlQueryResult, CallError> {
+        let query = query.into();
+        let params = encode_gql_params(query.params).map_err(|error| CallError::Decode {
+            message: format!("failed to encode GQL params: {error:?}"),
+        })?;
+        let args = candid::utils::encode_args((query.query, params, read_mode))
+            .expect("Candid encode GQL query arguments");
+        let result: Result<GqlQueryResult, RouterError> =
+            call_router(self.canister_id, "gql_query", args).await?;
+        result.map_err(CallError::Router)
+    }
+
+    /// Execute an idempotent dynamic GQL mutation.
+    ///
+    /// Reuse `client_mutation_key` only for retries of the same mutation. The returned
+    /// [`GqlQueryResult`] carries the ADR 0029 federated mutation lifecycle `phase` and the
+    /// read-your-writes [`MutationToken`].
+    pub async fn gql_mutate(
+        &self,
+        query: impl Into<GqlQuery>,
+        client_mutation_key: impl Into<String>,
+    ) -> Result<GqlQueryResult, CallError> {
+        let query = query.into();
+        let params = encode_gql_params(query.params).map_err(|error| CallError::Decode {
+            message: format!("failed to encode GQL params: {error:?}"),
+        })?;
+        let args = candid::utils::encode_args((query.query, params, client_mutation_key.into()))
+            .expect("Candid encode GQL mutate arguments");
+        let result: Result<GqlQueryResult, RouterError> =
+            call_router(self.canister_id, "gql_mutate", args).await?;
+        result.map_err(CallError::Router)
+    }
+
+    /// Execute a named prepared query through the configured Router canister.
+    ///
+    /// Mirrors the Router `prepared_query` signature: raw compact-binary `params` and an
+    /// optional caller-selected sort.
+    pub async fn prepared_query(
         &self,
         name: impl Into<String>,
         params: Vec<u8>,
         sort: Option<Vec<PreparedSortSpec>>,
         read_mode: ReadMode,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_prepared_query_with_sort(self.canister_id, name, params, sort, read_mode).await
+    ) -> Result<GqlQueryResult, CallError> {
+        let args = candid::utils::encode_args((name.into(), params, sort, read_mode))
+            .expect("Candid encode prepared query arguments");
+        let result: Result<GqlQueryResult, RouterError> =
+            call_router(self.canister_id, "prepared_query", args).await?;
+        result.map_err(CallError::Router)
     }
 
-    /// Execute a named prepared query from logical GQL parameters.
-    pub async fn execute_gql_params<R>(
-        &self,
-        name: impl Into<String>,
-        params: GqlParams,
-        read_mode: ReadMode,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        let params = encode_gql_params(params).map_err(|error| PreparedCallError::Decode {
-            message: format!("failed to encode GQL params: {error:?}"),
-        })?;
-        call_prepared_query(self.canister_id, name, params, read_mode).await
-    }
-
-    /// Execute dynamic GQL through the configured Router canister.
-    pub async fn gql_query<R>(
-        &self,
-        query: impl Into<String>,
-        params: GqlParams,
-        read_mode: ReadMode,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_gql_query(self.canister_id, query, params, read_mode).await
-    }
-
-    /// Execute a named prepared mutation through the configured Router canister.
-    pub async fn prepared_mutate<R>(
+    /// Execute an idempotent named prepared mutation.
+    pub async fn prepared_mutate(
         &self,
         name: impl Into<String>,
         params: Vec<u8>,
         client_mutation_key: impl Into<String>,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_prepared_mutate(self.canister_id, name, params, client_mutation_key).await
+    ) -> Result<GqlQueryResult, CallError> {
+        let args = candid::utils::encode_args((name.into(), params, client_mutation_key.into()))
+            .expect("Candid encode prepared mutation arguments");
+        let result: Result<GqlQueryResult, RouterError> =
+            call_router(self.canister_id, "prepared_mutate", args).await?;
+        result.map_err(CallError::Router)
     }
 
-    /// Execute one durable Router bulk-load command.
-    pub async fn bulk_load<R>(&self, command: BulkLoadCommand) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_bulk_load(self.canister_id, command).await
+    /// Execute one durable Router bulk-load command (ADR 0057).
+    pub async fn bulk_load(&self, command: BulkLoadCommand) -> Result<BulkLoadResponse, CallError> {
+        let args = candid::utils::encode_args((command,)).expect("Candid encode bulk-load command");
+        let result: Result<BulkLoadResponse, RouterError> =
+            call_router(self.canister_id, "bulk_load", args).await?;
+        result.map_err(CallError::Router)
     }
 
     /// Read one bounded page of durable Router bulk-load status.
-    pub async fn bulk_load_status<R>(
+    pub async fn bulk_load_status(
         &self,
-        logical_graph_name: impl Into<String>,
+        graph_name: Option<String>,
         client_bulk_key: impl Into<String>,
         receipt_cursor: Option<u32>,
         max_receipts: u32,
-    ) -> Result<R, PreparedCallError>
-    where
-        R: CandidType + for<'de> Deserialize<'de>,
-    {
-        call_bulk_load_status(
-            self.canister_id,
-            logical_graph_name,
-            client_bulk_key,
+    ) -> Result<BulkLoadStatusPage, CallError> {
+        let args = candid::utils::encode_args((
+            graph_name,
+            client_bulk_key.into(),
             receipt_cursor,
             max_receipts,
-        )
-        .await
+        ))
+        .expect("Candid encode bulk-load status arguments");
+        let result: Result<BulkLoadStatusPage, RouterError> =
+            call_router(self.canister_id, "bulk_load_status", args).await?;
+        result.map_err(CallError::Router)
+    }
+
+    /// Register or replace one named prepared operation (idempotent upsert).
+    pub async fn prepare(
+        &self,
+        name: impl Into<String>,
+        query: impl Into<String>,
+        metadata: Option<PreparedOperation>,
+    ) -> Result<(), CallError> {
+        let args = candid::utils::encode_args((name.into(), query.into(), metadata))
+            .expect("Candid encode prepare arguments");
+        let result: Result<(), RouterError> =
+            call_router(self.canister_id, "prepare", args).await?;
+        result.map_err(CallError::Router)
+    }
+
+    /// Remove one named prepared operation.
+    pub async fn drop_prepared(&self, name: impl Into<String>) -> Result<(), CallError> {
+        let args =
+            candid::utils::encode_args((name.into(),)).expect("Candid encode drop-prepared args");
+        let result: Result<(), RouterError> =
+            call_router(self.canister_id, "drop_prepared", args).await?;
+        result.map_err(CallError::Router)
+    }
+
+    /// The full prepared-operation manifest for one graph.
+    pub async fn list_prepared(
+        &self,
+        graph_name: Option<String>,
+    ) -> Result<PreparedManifest, CallError> {
+        let args =
+            candid::utils::encode_args((graph_name,)).expect("Candid encode list-prepared args");
+        let result: Result<PreparedManifest, RouterError> =
+            call_router(self.canister_id, "list_prepared", args).await?;
+        result.map_err(CallError::Router)
+    }
+}
+
+/// Error returned when a Router inter-canister call fails before yielding a typed result.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// The IC rejected the call (timeout, canister error, destination invalid, etc.).
+    Reject {
+        /// Reject code as a human-readable string; the textual form of
+        /// [`ic_cdk::call::RejectCode`] when available, or the raw numeric code otherwise.
+        code: String,
+        /// Reject or transport-level error message.
+        message: String,
+    },
+    /// The call succeeded at the transport layer but the response could not be Candid-decoded.
+    Decode {
+        /// Candid decode error message.
+        message: String,
+    },
+    /// The call succeeded and the Router rejected it with a structured error.
+    Router(RouterError),
+}
+
+impl core::fmt::Display for CallError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Reject { code, message } => {
+                write!(formatter, "Router call rejected ({code}): {message}")
+            }
+            Self::Decode { message } => {
+                write!(formatter, "failed to decode Router response: {message}")
+            }
+            Self::Router(error) => write!(formatter, "Router error: {error:?}"),
+        }
+    }
+}
+
+impl std::error::Error for CallError {}
+
+/// Make a bounded-wait call to `method` on `canister_id` and Candid-decode the response as `R`.
+async fn call_router<R>(canister_id: Principal, method: &str, args: Vec<u8>) -> Result<R, CallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    use ic_cdk::call::{CallFailed, Response};
+
+    let call_result: Result<Response, CallFailed> =
+        ic_cdk::call::Call::bounded_wait(canister_id, method)
+            .with_raw_args(&args)
+            .await;
+
+    match call_result {
+        Ok(response) => response.candid().map_err(|error| CallError::Decode {
+            message: error.to_string(),
+        }),
+        Err(CallFailed::CallRejected(rejected)) => Err(CallError::Reject {
+            code: rejected
+                .reject_code()
+                .map(|code| format!("{code:?}"))
+                .unwrap_or_else(|_| rejected.raw_reject_code().to_string()),
+            message: rejected.reject_message().to_string(),
+        }),
+        Err(other) => Err(CallError::Reject {
+            code: "CallFailed".to_string(),
+            message: other.to_string(),
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_gql_ic_wire::{GqlWireRow, GqlWireValue};
 
     #[test]
-    fn encode_prepared_query_args_round_trips() {
-        let name = "alice_home_feed";
-        let params: Vec<u8> = vec![0, 1, 2, 255];
-        let encoded = encode_prepared_query_args(name, params.clone(), ReadMode::Eventual);
-
-        let (decoded_name, decoded_params, decoded_sort, decoded_read_mode): (
-            String,
-            Vec<u8>,
-            Option<Vec<PreparedSortSpec>>,
-            ReadMode,
-        ) = candid::utils::decode_args(&encoded).expect("decode args");
-
-        assert_eq!(decoded_name, name);
-        assert_eq!(decoded_params, params);
-        assert_eq!(decoded_sort, None);
-        assert_eq!(decoded_read_mode, ReadMode::Eventual);
-    }
-
-    #[test]
-    fn prepared_call_error_display_contains_context() {
-        let err = PreparedCallError::Reject {
+    fn call_error_display_contains_context() {
+        let err = CallError::Reject {
             code: "CanisterReject".to_string(),
             message: "no query".to_string(),
         };
         let text = format!("{err}");
         assert!(text.contains("no query"), "{text}");
         assert!(text.contains("CanisterReject"), "{text}");
-    }
-
-    #[test]
-    fn encode_prepared_mutate_args_round_trips() {
-        let encoded = candid::utils::encode_args((
-            "increment".to_string(),
-            vec![1_u8, 2, 3],
-            "request-1".to_string(),
-        ))
-        .expect("encode args");
-        let decoded: (String, Vec<u8>, String) =
-            candid::utils::decode_args(&encoded).expect("decode args");
-        assert_eq!(
-            decoded,
-            ("increment".into(), vec![1, 2, 3], "request-1".into())
-        );
-    }
-
-    #[test]
-    fn encode_bulk_load_args_round_trips_all_command_fields() {
-        let command = BulkLoadCommand::Append {
-            logical_graph_name: "tenant.main".into(),
-            client_bulk_key: "bulk-1".into(),
-            chunk_index: 3,
-            chunk: BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
-                source: vec![1; 8],
-                target: vec![2; 8],
-                directed: true,
-                edge_label_name: Some("follows".into()),
-                inline_property: Some(vec![7, 8]),
-                initial_edge_properties: vec![AtomicInsertPropertyV1 {
-                    property_name: "weight".into(),
-                    value: vec![9],
-                }],
-            }]),
-        };
-        let encoded = encode_bulk_load_args(command.clone());
-        let (decoded,): (BulkLoadCommand,) =
-            candid::utils::decode_args(&encoded).expect("decode bulk-load args");
-        assert_eq!(decoded, command);
-    }
-
-    #[test]
-    fn encode_bulk_load_status_args_round_trips_optional_cursor() {
-        let encoded = encode_bulk_load_status_args("tenant.main", "bulk-1", Some(8), 16);
-        let decoded: (String, String, Option<u32>, u32) =
-            candid::utils::decode_args(&encoded).expect("decode bulk-load status args");
-        assert_eq!(
-            decoded,
-            ("tenant.main".into(), "bulk-1".into(), Some(8), 16)
-        );
     }
 
     #[test]
@@ -1097,15 +289,179 @@ mod tests {
     }
 
     #[test]
-    fn gql_response_envelope_round_trips() {
-        let response = GqlResponse {
+    fn gql_query_result_envelope_round_trips() {
+        let result = GqlQueryResult {
             row_count: 2,
             rows_blob: Some(vec![1, 2, 3]),
+            phase: None,
+            token: None,
         };
-        let bytes = candid::encode_one(&response).expect("encode response");
-        let decoded: GqlResponse = candid::decode_one(&bytes).expect("decode response");
-        assert_eq!(decoded, response);
+        let bytes = candid::encode_one(&result).expect("encode result");
+        let decoded: GqlQueryResult = candid::decode_one(&bytes).expect("decode result");
+        assert_eq!(decoded, result);
         assert_eq!(decoded.rows_blob(), Some(&[1, 2, 3][..]));
+    }
+
+    #[test]
+    fn gql_query_result_decodes_from_router_result_envelope() {
+        // The Router responds with `Result<GqlQueryResult, RouterError>`; the CDK must decode
+        // through the Candid Ok/Err variant, matching the wire shape exactly.
+        let ok = Ok::<GqlQueryResult, RouterError>(GqlQueryResult {
+            row_count: 1,
+            rows_blob: None,
+            phase: Some(MutationLifecyclePhase::Completed),
+            token: None,
+        });
+        let bytes = candid::encode_one(&ok).expect("encode ok envelope");
+        let decoded: Result<GqlQueryResult, RouterError> =
+            candid::decode_one(&bytes).expect("decode ok envelope");
+        assert_eq!(decoded, ok);
+
+        let err = Err::<GqlQueryResult, RouterError>(RouterError::ProjectionLag {
+            shard_id: 3,
+            watermark: "label_stats".into(),
+            required: 10,
+            current: 7,
+        });
+        let bytes = candid::encode_one(&err).expect("encode err envelope");
+        let decoded: Result<GqlQueryResult, RouterError> =
+            candid::decode_one(&bytes).expect("decode err envelope");
+        assert_eq!(decoded, err);
+    }
+
+    #[test]
+    fn router_error_mirror_round_trips_candid() {
+        let errors = [
+            RouterError::NotAuthorized,
+            RouterError::NotFound("graph".into()),
+            RouterError::Busy {
+                operation: "bulk_load.append".into(),
+            },
+            RouterError::UnsupportedMultiDmlBundle {
+                dml_statements: 2,
+                shard_count: 4,
+            },
+            RouterError::VectorDispatchActivationBlocked(
+                VectorActivationBlockReason::DispatchNotActivated,
+            ),
+            RouterError::AckConflict { stored: 7 },
+            RouterError::Internal("boom".into()),
+        ];
+        for error in errors {
+            let bytes = candid::encode_one(&error).expect("encode router error");
+            let decoded: RouterError = candid::decode_one(&bytes).expect("decode router error");
+            assert_eq!(decoded, error);
+        }
+    }
+
+    #[test]
+    fn mutation_lifecycle_phase_round_trips_candid() {
+        let phases = [
+            MutationLifecyclePhase::Routing,
+            MutationLifecyclePhase::CanonicalPending,
+            MutationLifecyclePhase::CanonicalCommitted,
+            MutationLifecyclePhase::ProjectionPending,
+            MutationLifecyclePhase::Completed,
+            MutationLifecyclePhase::Failed,
+        ];
+        for phase in phases {
+            let bytes = candid::encode_one(phase).expect("encode phase");
+            let decoded: MutationLifecyclePhase = candid::decode_one(&bytes).expect("decode phase");
+            assert_eq!(decoded, phase);
+        }
+    }
+
+    #[test]
+    fn prepared_query_args_round_trip() {
+        let args = candid::utils::encode_args((
+            "alice_home_feed".to_string(),
+            vec![0_u8, 1, 2],
+            Some(vec![PreparedSortSpec {
+                key: "created_at".into(),
+                direction: "desc".into(),
+            }]),
+            ReadMode::Eventual,
+        ))
+        .expect("encode prepared query args");
+        let decoded: (String, Vec<u8>, Option<Vec<PreparedSortSpec>>, ReadMode) =
+            candid::utils::decode_args(&args).expect("decode prepared query args");
+        assert_eq!(
+            decoded,
+            (
+                "alice_home_feed".into(),
+                vec![0, 1, 2],
+                Some(vec![PreparedSortSpec {
+                    key: "created_at".into(),
+                    direction: "desc".into(),
+                }]),
+                ReadMode::Eventual
+            )
+        );
+    }
+
+    #[test]
+    fn bulk_load_command_round_trips_candid() {
+        let command = BulkLoadCommand::Append {
+            graph_name: Some("tenant.main".into()),
+            client_bulk_key: "bulk-1".into(),
+            chunk_index: 3,
+            chunk: BulkLoadChunkV1::Edges(vec![BulkLoadEdgeV1 {
+                source: BulkLoadEndpointV1::ByProperty(BulkLoadPropertyEndpointV1 {
+                    vertex_label: "Person".into(),
+                    property_name: "email".into(),
+                    value: vec![1, 2, 3],
+                }),
+                target: BulkLoadEndpointV1::Existing(vec![9; 16]),
+                directed: true,
+                edge_label_name: Some("follows".into()),
+                inline_property: Some(vec![7, 8]),
+                initial_edge_properties: vec![AtomicInsertPropertyV1 {
+                    property_name: "weight".into(),
+                    value: vec![9],
+                }],
+            }]),
+        };
+        let bytes = candid::encode_one(&command).expect("encode bulk-load command");
+        let decoded: BulkLoadCommand =
+            candid::decode_one(&bytes).expect("decode bulk-load command");
+        assert_eq!(decoded, command);
+    }
+
+    #[test]
+    fn bulk_load_status_args_round_trip() {
+        let args = candid::utils::encode_args((
+            Some("tenant.main".to_string()),
+            "bulk-1".to_string(),
+            Some(8_u32),
+            16_u32,
+        ))
+        .expect("encode bulk-load status args");
+        let decoded: (Option<String>, String, Option<u32>, u32) =
+            candid::utils::decode_args(&args).expect("decode bulk-load status args");
+        assert_eq!(
+            decoded,
+            (Some("tenant.main".into()), "bulk-1".into(), Some(8), 16)
+        );
+    }
+
+    #[test]
+    fn gql_mutate_args_round_trip() {
+        let args = candid::utils::encode_args((
+            "MATCH (n) RETURN n".to_string(),
+            vec![1_u8, 2, 3],
+            "request-1".to_string(),
+        ))
+        .expect("encode gql mutate args");
+        let decoded: (String, Vec<u8>, String) =
+            candid::utils::decode_args(&args).expect("decode gql mutate args");
+        assert_eq!(
+            decoded,
+            (
+                "MATCH (n) RETURN n".into(),
+                vec![1, 2, 3],
+                "request-1".into()
+            )
+        );
     }
 
     #[test]
@@ -1115,9 +471,11 @@ mod tests {
                 columns: vec![("name".into(), GqlWireValue::Text("Ada".into()))],
             }],
         };
-        let response = GqlResponse {
+        let response = GqlQueryResult {
             row_count: 1,
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
+            phase: None,
+            token: None,
         };
         assert_eq!(response.decode_rows().unwrap(), Some(rows));
     }
@@ -1144,9 +502,11 @@ mod tests {
                 columns: vec![("name".into(), GqlWireValue::Text("Ada".into()))],
             }],
         };
-        let response = GqlResponse {
+        let response = GqlQueryResult {
             row_count: 1,
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
+            phase: None,
+            token: None,
         };
         assert_eq!(
             response.decode_typed_rows::<TypedRow>().unwrap(),
