@@ -9,6 +9,7 @@
 #![cfg_attr(feature = "nightly-f128", feature(f128))]
 
 use candid::{CandidType, Deserialize, Principal};
+use std::marker::PhantomData;
 
 pub mod types;
 
@@ -44,18 +45,65 @@ pub use gleaph_prepared_api::{PreparedManifest, PreparedOperation, PreparedSortS
 #[cfg(feature = "nightly-f128")]
 pub use types::GqlFloat128;
 
+/// Marker for a client without generated prepared operations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoPrepared;
+
 /// Canister-id-bound client for dynamic GQL and prepared operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GleaphClient {
+///
+/// The `Prepared` type parameter marks whether generated prepared operations are available:
+/// [`GleaphClient::new`] yields [`GleaphClient<NoPrepared>`](Self), while
+/// [`GleaphClient::with_prepared`] enables the operations generated for `Prepared` (see the
+/// `PreparedExt` trait emitted by `gleaph-codegen`).
+pub struct GleaphClient<Prepared = NoPrepared> {
     canister_id: Principal,
+    _prepared: PhantomData<Prepared>,
 }
 
-impl GleaphClient {
-    /// Bind the client to a Router canister.
+impl<Prepared> Clone for GleaphClient<Prepared> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Prepared> Copy for GleaphClient<Prepared> {}
+
+impl<Prepared> std::fmt::Debug for GleaphClient<Prepared> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GleaphClient")
+            .field("canister_id", &self.canister_id)
+            .finish()
+    }
+}
+
+impl<Prepared> PartialEq for GleaphClient<Prepared> {
+    fn eq(&self, other: &Self) -> bool {
+        self.canister_id == other.canister_id
+    }
+}
+
+impl<Prepared> Eq for GleaphClient<Prepared> {}
+
+impl GleaphClient<NoPrepared> {
+    /// Bind the client to a Router canister without generated prepared operations.
     pub const fn new(canister_id: Principal) -> Self {
-        Self { canister_id }
+        Self {
+            canister_id,
+            _prepared: PhantomData,
+        }
     }
 
+    /// Bind the client and enable the generated prepared operations for `Prepared`.
+    pub fn with_prepared<Prepared>(canister_id: Principal) -> GleaphClient<Prepared> {
+        GleaphClient {
+            canister_id,
+            _prepared: PhantomData,
+        }
+    }
+}
+
+impl<Prepared> GleaphClient<Prepared> {
     /// Execute dynamic GQL through the configured Router canister.
     ///
     /// Reads use the default [`ReadMode::Eventual`] freshness contract; use

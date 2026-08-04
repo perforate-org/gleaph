@@ -95,9 +95,9 @@ impl GqlQueryResult {
 
     /// Decode materialized rows into any serde-deserializable row type.
     ///
-    /// This is the path used by `gleaph-codegen`'s `PreparedCanisterExecutor`, whose `Row`
-    /// bound is `DeserializeOwned`: each wire row is projected to JSON (see
-    /// [`gql_value_to_json`]) and deserialized with the row type's serde derives and renames.
+    /// This is the path used by `gleaph-codegen`'s `PreparedExt` operations: each wire row is
+    /// projected to JSON (see [`gql_value_to_json`]) and deserialized with the row type's
+    /// serde derives and renames.
     pub fn decode_serde_rows<Row>(&self) -> Result<Option<Vec<Row>>, GqlWireDecodeError>
     where
         Row: serde::de::DeserializeOwned,
