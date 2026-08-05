@@ -93,6 +93,12 @@ export interface ApiQueryRequest {
   params: Record<string, ApiValue>;
 }
 
+export interface ApiMutationRequest {
+  query: string;
+  params: Record<string, ApiValue>;
+  client_mutation_key: string;
+}
+
 export interface ApiPrepareRequest {
   name: string;
   query: string;

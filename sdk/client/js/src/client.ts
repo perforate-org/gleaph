@@ -1,4 +1,5 @@
 import type {
+  ApiMutationRequest,
   ApiPlanResponse,
   ApiPrepareRequest,
   ApiPrepareResponse,
@@ -22,6 +23,7 @@ import { makePreparedQueryRequest } from "./values.ts";
 export interface GleaphTransport {
   explain(request: ApiQueryRequest): Promise<ApiPlanResponse>;
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult>;
+  gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(graphName: string): Promise<PreparedManifest>;
   preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult>;
@@ -34,6 +36,7 @@ export interface GleaphTransport {
 export interface GleaphClient {
   explain(request: ApiQueryRequest): Promise<ApiPlanResponse>;
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult>;
+  gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(graphName: string): Promise<PreparedManifest>;
   preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult>;
@@ -63,6 +66,10 @@ class TransportBackedGleaphClient implements GleaphClient {
 
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {
     return this.transport.gqlQuery(request);
+  }
+
+  gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult> {
+    return this.transport.gqlMutate(request);
   }
 
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse> {
@@ -140,6 +147,10 @@ export class GleaphClientWrapper implements GleaphClient {
 
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {
     return this.inner.gqlQuery(request);
+  }
+
+  gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult> {
+    return this.inner.gqlMutate(request);
   }
 
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse> {

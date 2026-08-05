@@ -9,6 +9,7 @@ import {
 import { GleaphCanisterError } from "./errors.ts";
 import { GqlQueryRows, graphIdlFactory } from "./idl.ts";
 import type {
+  ApiMutationRequest,
   ApiPreparedMutationRequest,
   ApiPlanResponse,
   ApiPrepareRequest,
@@ -170,6 +171,18 @@ class IcGleaphTransport implements GleaphTransport {
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
         await this.actor.gql_query(request.query, encodeParams(request.params), { Eventual: null }),
+      ),
+    );
+  }
+
+  async gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult> {
+    return toGqlQueryResult(
+      unwrapResult<GqlQueryWireResult>(
+        await this.actor.gql_mutate(
+          request.query,
+          encodeParams(request.params),
+          request.client_mutation_key,
+        ),
       ),
     );
   }

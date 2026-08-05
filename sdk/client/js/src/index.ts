@@ -1,6 +1,7 @@
 export type {
   ApiExecutionResult,
   ApiExecutionSummary,
+  ApiMutationRequest,
   ApiPlanResponse,
   ApiPlanSummary,
   ApiPrepareRequest,
@@ -88,6 +89,7 @@ export {
   f16NumberToBits,
   fromApiValue,
   isApiValue,
+  makeMutationRequest,
   makePreparedMutationRequest,
   makePreparedQueryRequest,
   makePrepareRequest,

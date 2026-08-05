@@ -34,19 +34,28 @@ shortest decimal string that round-trips; `toNumber()` rounds to the nearest f64
 ## Usage
 
 ```ts
-import { createGleaphClient } from "@gleaph/sdk";
+import { createGleaphClient, makeQueryRequest, makeMutationRequest } from "@gleaph/sdk";
 
 const client = await createGleaphClient({
   canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai",
 });
 
-const result = await client.gqlQuery({
-  query: "MATCH (n:Person {id: $id}) RETURN n.name",
-  params: { id: "alice" },
-});
+// Dynamic read; `makeQueryRequest` converts user values to the wire `ApiValue` form.
+const result = await client.gqlQuery(
+  makeQueryRequest("MATCH (n:Person {id: $id}) RETURN n.name", { id: "alice" }),
+);
+
+// Idempotent dynamic mutation; reuse the key only when retrying the same mutation.
+const mutated = await client.gqlMutate(
+  makeMutationRequest(
+    "MATCH (n:Person {id: $id}) SET n.name = $name",
+    { id: "alice", name: "alicia" },
+    "rename-alice-1",
+  ),
+);
 ```
 
-Generated prepared-operation bindings (from `gleaph-codegen`) wrap `gqlQuery`/`preparedQuery`
+Generated prepared-operation bindings (from `gleaph-codegen`) wrap `preparedQuery`/`preparedMutate`
 and expose typed `*Params` / `*Row` shapes backed by the value types above.
 
 ## Development
