@@ -633,10 +633,14 @@ mod tests {
             },
         ];
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("GqlValue::DateTime(self.created_at.seconds"));
-        assert!(output.contains("GqlValue::LocalDateTime(self.local_created_at.seconds"));
-        assert!(output.contains("GqlValue::ZonedDateTime(self.window.seconds"));
-        assert!(output.contains("GqlValue::Duration(self.duration.months"));
+        assert!(output.contains("GqlValue::from(self.created_at)"));
+        assert!(output.contains("GqlValue::from(self.local_created_at)"));
+        assert!(output.contains("GqlValue::from(self.window)"));
+        assert!(output.contains("GqlValue::from(self.duration)"));
+        assert!(output.contains("pub created_at: gleaph_cdk::GqlDateTime"));
+        assert!(output.contains("pub local_created_at: gleaph_cdk::GqlLocalDateTime"));
+        assert!(output.contains("pub window: gleaph_cdk::GqlZonedDateTime"));
+        assert!(output.contains("pub duration: gleaph_cdk::GqlDuration"));
         assert!(contains_compact(
             &output,
             "GqlValue::List(self.ids.into_iter().map(|value| GqlValue::Int32(value))",
@@ -676,7 +680,7 @@ mod tests {
             },
         ];
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("pub created_at: PreparedDateTime"));
+        assert!(output.contains("pub created_at: gleaph_cdk::GqlDateTime"));
         assert!(output.contains("pub owner: gleaph_cdk::candid::Principal"));
         assert!(output.contains("pub route: Vec<gleaph_cdk::PathElement>"));
         assert!(output.contains("pub ids: Vec<i32>"));

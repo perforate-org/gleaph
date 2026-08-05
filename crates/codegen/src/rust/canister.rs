@@ -53,7 +53,6 @@ pub struct PreparedResponse<Row> {
 
 "#,
     );
-    out.push_str(runtime_types());
 
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
@@ -280,28 +279,15 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         crate::SemanticType::Principal => {
             format!("GqlValue::Extension(Box::new(gleaph_cdk::GqlPrincipal::from_inner({access})))")
         }
-        crate::SemanticType::Date => format!("GqlValue::Date({access})"),
-        crate::SemanticType::Time => format!("GqlValue::Time({access})"),
-        crate::SemanticType::LocalTime => format!("GqlValue::LocalTime({access})"),
+        crate::SemanticType::Date => format!("GqlValue::from({access})"),
+        crate::SemanticType::Time => format!("GqlValue::from({access})"),
+        crate::SemanticType::LocalTime => format!("GqlValue::from({access})"),
         crate::SemanticType::DateTime | crate::SemanticType::LocalDateTime => {
-            let variant = match semantic_type {
-                crate::SemanticType::DateTime => "DateTime",
-                crate::SemanticType::LocalDateTime => "LocalDateTime",
-                _ => unreachable!(),
-            };
-            format!("GqlValue::{variant}({access}.seconds, {access}.nanos)")
+            format!("GqlValue::from({access})")
         }
-        crate::SemanticType::ZonedDateTime => {
-            format!(
-                "GqlValue::ZonedDateTime({access}.seconds, {access}.nanos, {access}.offset_seconds)"
-            )
-        }
-        crate::SemanticType::ZonedTime => {
-            format!("GqlValue::ZonedTime({access}.nanos, {access}.offset_seconds)")
-        }
-        crate::SemanticType::Duration => {
-            format!("GqlValue::Duration({access}.months, {access}.nanos)")
-        }
+        crate::SemanticType::ZonedDateTime => format!("GqlValue::from({access})"),
+        crate::SemanticType::ZonedTime => format!("GqlValue::from({access})"),
+        crate::SemanticType::Duration => format!("GqlValue::from({access})"),
         crate::SemanticType::Record { .. } => format!("GqlValue::Record({access})"),
         crate::SemanticType::Path => format!(
             "GqlValue::Path({access}.into_iter().map(gleaph_cdk::PathElement::into_gql).collect())"
@@ -314,47 +300,6 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
     Some(value)
 }
 
-fn runtime_types() -> &'static str {
-    r#"/// Date-time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedDateTime {
-    pub seconds: i64,
-    pub nanos: u32,
-}
-
-/// Zoned date-time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedZonedDateTime {
-    pub seconds: i64,
-    pub nanos: u32,
-    pub offset_seconds: i32,
-}
-
-/// Zoned time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedZonedTime {
-    pub nanos: u64,
-    pub offset_seconds: i32,
-}
-
-/// Duration representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedDuration {
-    pub months: i32,
-    pub nanos: i64,
-}
-
-"#
-}
-
 fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
     match semantic_type {
         crate::SemanticType::Int256 => "gleaph_cdk::GqlInt256".to_string(),
@@ -364,6 +309,14 @@ fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
         crate::SemanticType::Float16 => "gleaph_cdk::GqlFloat16".to_string(),
         crate::SemanticType::Float128 => "gleaph_cdk::Float128".to_string(),
         crate::SemanticType::Float256 => "gleaph_cdk::Float256".to_string(),
+        crate::SemanticType::Date => "gleaph_cdk::GqlDate".to_string(),
+        crate::SemanticType::Time => "gleaph_cdk::GqlTime".to_string(),
+        crate::SemanticType::LocalTime => "gleaph_cdk::GqlLocalTime".to_string(),
+        crate::SemanticType::DateTime => "gleaph_cdk::GqlDateTime".to_string(),
+        crate::SemanticType::LocalDateTime => "gleaph_cdk::GqlLocalDateTime".to_string(),
+        crate::SemanticType::ZonedDateTime => "gleaph_cdk::GqlZonedDateTime".to_string(),
+        crate::SemanticType::ZonedTime => "gleaph_cdk::GqlZonedTime".to_string(),
+        crate::SemanticType::Duration => "gleaph_cdk::GqlDuration".to_string(),
         crate::SemanticType::Path => "Vec<gleaph_cdk::PathElement>".to_string(),
         crate::SemanticType::Record { .. } => {
             "std::collections::BTreeMap<String, gleaph_cdk::serde_json::Value>".to_string()
