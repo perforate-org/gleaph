@@ -9,6 +9,8 @@ description = "Internet Computer types as gleaph-gql Value::Extension (Candid Pr
 candid.workspace = true
 f256.workspace = true
 half.workspace = true
+ethnum.workspace = true
+rust_decimal.workspace = true
 gleaph-gql = { path = "../gql", features = [
     "ast-rkyv-no-span",
     "f128",

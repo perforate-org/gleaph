@@ -54,14 +54,14 @@ pub enum IcWireValue {
     Uint64(u64),
     Int128(i128),
     Uint128(u128),
-    Int256(String),
-    Uint256(String),
+    Int256(Vec<u8>),
+    Uint256(Vec<u8>),
     Float16(u16),
     Float32(f32),
     Float64(f64),
     Float128(Vec<u8>),
     Float256(Vec<u8>),
-    Decimal(String),
+    Decimal(Vec<u8>),
     Text(String),
     Bytes(Vec<u8>),
     Date(i32),
@@ -182,19 +182,19 @@ impl IcWireValue {
             Value::Int32(v) => Self::Int32(*v),
             Value::Int64(v) => Self::Int64(*v),
             Value::Int128(v) => Self::Int128(*v),
-            Value::Int256(v) => Self::Int256(v.to_string()),
+            Value::Int256(v) => Self::Int256(v.0.to_le_bytes().to_vec()),
             Value::Uint8(v) => Self::Uint8(*v),
             Value::Uint16(v) => Self::Uint16(*v),
             Value::Uint32(v) => Self::Uint32(*v),
             Value::Uint64(v) => Self::Uint64(*v),
             Value::Uint128(v) => Self::Uint128(*v),
-            Value::Uint256(v) => Self::Uint256(v.to_string()),
+            Value::Uint256(v) => Self::Uint256(v.0.to_le_bytes().to_vec()),
             Value::Float16(v) => Self::Float16(v.to_bits()),
             Value::Float32(v) => Self::Float32(*v),
             Value::Float64(v) => Self::Float64(*v),
             Value::Float128(_) => Self::Float128(canonical_float128_bytes(value)?),
             Value::Float256(v) => Self::Float256(v.to_le_bytes().to_vec()),
-            Value::Decimal(v) => Self::Decimal(v.to_string()),
+            Value::Decimal(v) => Self::Decimal(v.0.serialize().to_vec()),
             Value::Text(v) => Self::Text(v.clone()),
             Value::Bytes(v) => Self::Bytes(v.clone()),
             Value::Date(v) => Self::Date(*v),
@@ -270,12 +270,18 @@ impl IcWireValue {
             Self::Uint64(v) => Value::Uint64(*v),
             Self::Int128(v) => Value::Int128(*v),
             Self::Uint128(v) => Value::Uint128(*v),
-            Self::Int256(s) => gleaph_gql::types::Int256::parse(s)
-                .map(Value::Int256)
-                .ok_or(WireError::InvalidNumericString { kind: "Int256" })?,
-            Self::Uint256(s) => gleaph_gql::types::Uint256::parse(s)
-                .map(Value::Uint256)
-                .ok_or(WireError::InvalidNumericString { kind: "Uint256" })?,
+            Self::Int256(bytes) => {
+                Value::Int256(gleaph_gql::types::Int256(ethnum::I256::from_le_bytes(
+                    <[u8; 32]>::try_from(bytes.as_slice())
+                        .map_err(|_| WireError::InvalidNumericString { kind: "Int256" })?,
+                )))
+            }
+            Self::Uint256(bytes) => {
+                Value::Uint256(gleaph_gql::types::Uint256(ethnum::U256::from_le_bytes(
+                    <[u8; 32]>::try_from(bytes.as_slice())
+                        .map_err(|_| WireError::InvalidNumericString { kind: "Uint256" })?,
+                )))
+            }
             Self::Float16(bits) => Value::Float16(half::f16::from_bits(*bits)),
             Self::Float32(v) => Value::Float32(*v),
             Self::Float64(v) => Value::Float64(*v),
@@ -292,9 +298,12 @@ impl IcWireValue {
                     .map_err(|_| WireError::InvalidFloatRepresentation { kind: "Float256" })?;
                 Value::Float256(f256::from_le_bytes(bytes))
             }
-            Self::Decimal(s) => gleaph_gql::types::Decimal::parse(s)
-                .map(Value::Decimal)
-                .ok_or(WireError::InvalidNumericString { kind: "Decimal" })?,
+            Self::Decimal(bytes) => Value::Decimal(gleaph_gql::types::Decimal(
+                rust_decimal::Decimal::deserialize(
+                    <[u8; 16]>::try_from(bytes.as_slice())
+                        .map_err(|_| WireError::InvalidNumericString { kind: "Decimal" })?,
+                ),
+            )),
             Self::Text(v) => Value::Text(v.clone()),
             Self::Bytes(v) => Value::Bytes(v.clone()),
             Self::Date(v) => Value::Date(*v),
@@ -455,6 +464,36 @@ mod tests {
         assert_eq!(blob.len(), 16);
         let back = w.try_into_value().expect("from wire");
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn big_integer_and_decimal_round_trip_as_packed_bytes() {
+        let original = Value::Record(vec![
+            (
+                "big".to_owned(),
+                Value::Int256(gleaph_gql::types::Int256(ethnum::I256::from(-7))),
+            ),
+            (
+                "unsigned".to_owned(),
+                Value::Uint256(gleaph_gql::types::Uint256(ethnum::U256::from(42u64))),
+            ),
+            (
+                "price".to_owned(),
+                Value::Decimal(gleaph_gql::types::Decimal(
+                    "1.25".parse::<rust_decimal::Decimal>().unwrap(),
+                )),
+            ),
+        ]);
+        let wire = IcWireValue::try_from_value(&original).expect("to wire");
+        match &wire {
+            IcWireValue::Record(fields) => {
+                assert!(matches!(&fields[0].1, IcWireValue::Int256(bytes) if bytes.len() == 32));
+                assert!(matches!(&fields[1].1, IcWireValue::Uint256(bytes) if bytes.len() == 32));
+                assert!(matches!(&fields[2].1, IcWireValue::Decimal(bytes) if bytes.len() == 16));
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
+        assert_eq!(wire.try_into_value().expect("from wire"), original);
     }
 
     #[test]
