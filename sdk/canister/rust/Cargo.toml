@@ -9,7 +9,7 @@ description = "Gleaph canister SDK helpers for inter-canister calls to the Gleap
 candid.workspace = true
 ethnum = { workspace = true, features = ["serde"] }
 f256.workspace = true
-gleaph-gql-ic-wire.workspace = true
+gleaph-gql-ic-wire = { workspace = true, default-features = false }
 gleaph-gql-params.workspace = true
 gleaph-gql-value.workspace = true
 gleaph-prepared-api.workspace = true
@@ -21,5 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [features]
-default = []
+default = ["temporal-jiff"]
+temporal-jiff = ["gleaph-gql-ic-wire/jiff"]
+temporal-chrono = ["gleaph-gql-ic-wire/chrono"]
 nightly-f128 = ["gleaph-gql-value/f128", "gleaph-gql-ic-wire/nightly-f128"]

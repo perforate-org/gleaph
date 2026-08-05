@@ -51,6 +51,48 @@ pub use gleaph_gql_ic_wire::GqlInt256;
 /// Unsigned 256-bit integer row binding used by generated canister bindings.
 pub use gleaph_gql_ic_wire::GqlUint256;
 
+/// GQL `Date` row binding used by generated canister bindings.
+///
+/// Backed by `jiff::civil::Date` (default `temporal-jiff` feature) or `chrono::NaiveDate`
+/// (`temporal-chrono`). Serde and Candid use the days-since-epoch wire form
+/// ([`GqlWireValue::Date`]).
+pub use gleaph_gql_ic_wire::GqlDate;
+/// GQL `DateTime` row binding used by generated canister bindings.
+///
+/// Backed by `jiff::Timestamp` or `chrono::DateTime<Utc>`; serde and Candid use the
+/// `{seconds, nanos}` wire form ([`GqlWireValue::DateTime`]).
+pub use gleaph_gql_ic_wire::GqlDateTime;
+/// GQL `Duration` row binding used by generated canister bindings.
+///
+/// Backed by `jiff::Span` (faithful, includes months) or `chrono::TimeDelta` (months are not
+/// representable and are serialized as zero); serde and Candid use the `{months, nanos}` wire
+/// form ([`GqlWireValue::Duration`]).
+pub use gleaph_gql_ic_wire::GqlDuration;
+/// GQL `LocalDateTime` row binding used by generated canister bindings.
+///
+/// Backed by `jiff::civil::DateTime` or `chrono::NaiveDateTime`, interpreted as a civil
+/// date-time in UTC; serde and Candid use the `{seconds, nanos}` wire form.
+pub use gleaph_gql_ic_wire::GqlLocalDateTime;
+/// GQL `LocalTime` row binding used by generated canister bindings.
+///
+/// Same representation as [`GqlTime`] but projects to `Value::LocalTime`.
+pub use gleaph_gql_ic_wire::GqlLocalTime;
+/// GQL `Time` row binding used by generated canister bindings.
+///
+/// Backed by `jiff::civil::Time` or `chrono::NaiveTime`; serde and Candid use nanoseconds since
+/// midnight ([`GqlWireValue::Time`]).
+pub use gleaph_gql_ic_wire::GqlTime;
+/// GQL `ZonedDateTime` row binding used by generated canister bindings.
+///
+/// Backed by `jiff::Zoned` or `chrono::DateTime<FixedOffset>`; serde and Candid use the
+/// `{seconds, nanos, offset_seconds}` wire form ([`GqlWireValue::ZonedDateTime`]).
+pub use gleaph_gql_ic_wire::GqlZonedDateTime;
+/// GQL `ZonedTime` row binding used by generated canister bindings.
+///
+/// Time of day with a fixed UTC offset; neither `jiff` nor `chrono` models this, so the binding
+/// keeps the `{nanos, offset_seconds}` wire record form.
+pub use gleaph_gql_ic_wire::GqlZonedTime;
+
 /// Ordered GQL record representation.
 ///
 /// GQL record order is retained because the compact wire representation preserves field order.
