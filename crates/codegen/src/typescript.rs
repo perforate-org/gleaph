@@ -7,7 +7,7 @@ use crate::common::{append_jsdoc, encode_expression, json_string, ts_property};
 use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
-/// Generate a TypeScript prepared adapter over the existing SDK GraphClient.
+/// Generate a TypeScript prepared adapter over the existing SDK GleaphClient.
 pub fn generate_typescript(manifest: &PreparedManifest) -> Result<String, ManifestError> {
     let ir = normalize_manifest(manifest)?;
     validate_runtime_features(&ir)?;
@@ -40,7 +40,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
             collect_type_uses(&column.semantic_type, &mut uses, true);
         }
     }
-    let mut type_imports = vec!["ApiValue".to_string(), "GraphClient".to_string()];
+    let mut type_imports = vec!["ApiValue".to_string(), "GleaphClient".to_string()];
     if has_updates {
         type_imports.push("GqlMutationResult".to_string());
     }
@@ -165,7 +165,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
     }
     out.push_str("}\n\n");
     out.push_str(
-        "export function withPreparedQueries(client: GraphClient): PreparedQueries {\n  return {\n",
+        "export function withPreparedQueries(client: GleaphClient): PreparedQueries {\n  return {\n",
     );
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;

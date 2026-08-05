@@ -19,7 +19,7 @@ import type {
 } from "./bulk.ts";
 import { makeExecutePreparedRequest } from "./values.ts";
 
-export interface GraphTransport {
+export interface GleaphTransport {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
   execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
@@ -31,7 +31,7 @@ export interface GraphTransport {
   dropPrepared(name: string): Promise<boolean>;
 }
 
-export interface GraphClient {
+export interface GleaphClient {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
   execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
@@ -54,8 +54,8 @@ export interface GraphClient {
   dropPrepared(name: string): Promise<boolean>;
 }
 
-class TransportBackedGraphClient implements GraphClient {
-  constructor(private readonly transport: GraphTransport) {}
+class TransportBackedGleaphClient implements GleaphClient {
+  constructor(private readonly transport: GleaphTransport) {}
 
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse> {
     return this.transport.plan(request);
@@ -123,6 +123,6 @@ class TransportBackedGraphClient implements GraphClient {
   }
 }
 
-export function createGraphClient(transport: GraphTransport): GraphClient {
-  return new TransportBackedGraphClient(transport);
+export function createGleaphClientFromTransport(transport: GleaphTransport): GleaphClient {
+  return new TransportBackedGleaphClient(transport);
 }

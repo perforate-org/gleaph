@@ -34,9 +34,11 @@ shortest decimal string that round-trips; `toNumber()` rounds to the nearest f64
 ## Usage
 
 ```ts
-import { createIcGraphClient } from "@gleaph/sdk";
+import { createGleaphClient } from "@gleaph/sdk";
 
-const client = createIcGraphClient({ canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai" });
+const client = createGleaphClient({
+  canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai",
+});
 
 const result = await client.execute({
   query: "MATCH (n:Person {id: $id}) RETURN n.name",

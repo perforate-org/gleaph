@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createPrivateKey } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { Secp256k1KeyIdentity } from "../../../sdk/client/js/node_modules/@icp-sdk/core/lib/esm/identity/secp256k1/secp256k1.js";
-import { createIcGraphClient } from "../../../sdk/client/js/dist/index.mjs";
+import { createGleaphClient } from "../../../sdk/client/js/dist/index.mjs";
 
 const generatedPath = process.env.GLEAPH_CODEGEN_OUTPUT;
 const routerCanister = process.env.GLEAPH_ROUTER_CANISTER;
@@ -17,7 +17,7 @@ const key = createPrivateKey(await readFile(identityPem, "utf8"));
 const jwk = key.export({ format: "jwk" });
 const secretKey = Uint8Array.from(Buffer.from(jwk.d, "base64url"));
 const identity = Secp256k1KeyIdentity.fromSecretKey(secretKey);
-const graph = await createIcGraphClient({
+const graph = await createGleaphClient({
   canisterId: routerCanister,
   host: "http://localhost:8000",
   identity,

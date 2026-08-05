@@ -17,9 +17,10 @@ TypeScript, JavaScript, Rust application clients, Rust canisters, and Motoko can
 
 The repository already has two runtime boundaries:
 
-- `@gleaph/sdk` in `sdk/client/js`, whose current public runtime is `GraphClient` constructed by
-  `createGraphClient` or `createIcGraphClient`. It exposes dynamic GQL and low-level prepared
-  execution methods such as `executePrepared` and `executePreparedMutation`.
+- `@gleaph/sdk` in `sdk/client/js`, whose public runtime is `GleaphClient` constructed by
+  `createGleaphClient` (IC transport) or `createGleaphClientFromTransport`. It exposes dynamic GQL
+  and low-level prepared execution methods such as `executePrepared` and
+  `executePreparedMutation`.
 - `gleaph-cdk` in `sdk/canister/rust`, which is an `ic-cdk` helper for canisters calling the
   Router's prepared_query endpoint, including caller-selected sort specifications. It owns Candid argument encoding and
   inter-canister call/decode errors.
@@ -45,7 +46,7 @@ The older SDK-side prepared DTOs are insufficient as the long-term cross-languag
 they contain client-facing parameter hints and query metadata, but do not yet define a stable,
 language-neutral result type schema used by code generation. The Router now exposes the
 graph-scoped `prepared_manifest` endpoint backed by `gleaph-prepared-api`, and the JS SDK exposes
-it as `GraphClient.getPreparedManifest`. The generator library consumes an explicit local manifest
+it as `GleaphClient.getPreparedManifest`. The generator library consumes an explicit local manifest
 snapshot; the `gleaph-codegen` CLI can also fetch the same manifest from Router.
 
 ## Existing architecture assessment
@@ -139,9 +140,10 @@ await client.gql.query({ query, params });
 await client.prepared.searchUsers(params);
 ```
 
-The current `GraphClient`/`createGraphClient` API is existing implementation state and is not
-renamed by this ADR. Any migration to `GleaphClient`/`createGleaphClient` requires a separate SDK
-API decision and compatibility plan.
+The SDK's public client is `GleaphClient`, constructed by `createGleaphClient` (IC transport) or
+`createGleaphClientFromTransport`. The earlier `GraphClient`/`createIcGraphClient` names were
+renamed separately from this ADR; the rename keeps the JS client aligned with the Rust CDK's
+`GleaphClient`.
 
 For Rust, generated code exposes a manifest-specific `PreparedExt` trait implemented for the
 SDK's `GleaphClient<Prepared>`, where `Prepared` is a generated marker type selected by
@@ -224,7 +226,7 @@ Accepted costs and risks:
   remain subject to this ADR's open decisions.
 - The semantic type system and result schema require explicit design and compatibility rules.
 - Runtime packages need coordinated version compatibility with generated output.
-- Existing `GraphClient` APIs cannot be silently replaced by this ADR.
+- Existing `GleaphClient` APIs cannot be silently replaced by this ADR.
 - Generated code may need a manifest-specific namespace or trait when multiple manifests are used
   in one application.
 
@@ -240,8 +242,9 @@ The following points are intentionally not resolved by this proposed ADR:
 3. **Result schema:** What is the stable row/column wire shape, including nullability, nested
    records, large integers, decimals, paths, and temporal values? Scalar width and floating-point
    representation are governed by [ADR 0055](0055-exact-scalar-types-at-router-api-boundary.md).
-4. **SDK naming migration:** Does the JS SDK eventually rename `GraphClient`/`createGraphClient`
-   to `GleaphClient`/`createGleaphClient`, and is that in this slice or a separate SDK ADR?
+4. **SDK naming migration:** Resolved. The JS SDK renamed `GraphClient`/`createIcGraphClient` to
+   `GleaphClient`/`createGleaphClient` (with `createGleaphClientFromTransport` for the
+   transport-backed factory), aligning with the Rust CDK's `GleaphClient`.
 5. **Rust SDK:** What package owns the non-CDK Rust client, and does it share a transport trait with
    generated code or expose a concrete `ic-agent` implementation first?
 6. **Generated composition:** Is the primary generated API `withPreparedQueries(client)`, a
@@ -332,7 +335,7 @@ as a release-stable contract.
 - a `gleaph` top-level entrypoint in `crates/cli` whose `codegen` subcommand delegates to that
   same CLI implementation and accepts the same codegen options.
 
-The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
+The generated TypeScript composes with the `@gleaph/sdk` `GleaphClient`, emits
 operation-specific parameter and row types, encodes semantic parameter values, and selects
 `executePrepared` versus `executePreparedMutation`. Transport, Candid, authorization, and
 common errors remain SDK-owned. The shared manifest shape is an implementation scaffold, not yet

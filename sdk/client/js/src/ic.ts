@@ -1,7 +1,11 @@
 import { Actor, HttpAgent, type ActorSubclass, type Identity } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
-import { createGraphClient, type GraphClient, type GraphTransport } from "./client.ts";
+import {
+  createGleaphClientFromTransport,
+  type GleaphClient,
+  type GleaphTransport,
+} from "./client.ts";
 import { GleaphCanisterError } from "./errors.ts";
 import { GqlQueryRows, graphIdlFactory } from "./idl.ts";
 import type {
@@ -28,7 +32,7 @@ import { encodeCanonicalGqlValue } from "./canonical-value.ts";
 type Result<T> = { Ok: T; Err?: never } | { Ok?: never; Err: Record<string, unknown> };
 type ActorInterfaceFactory = Parameters<typeof Actor.createActor>[0];
 
-interface GraphActorMethods {
+interface GleaphActorMethods {
   explain(query: string): Promise<Result<ApiPlanResponse>>;
   gql_query(
     query: string,
@@ -76,7 +80,7 @@ type GqlQueryWireResult = {
     | [{ mutation_id: bigint; shards: { shard_id: number; label_stats_seq: [] | [bigint] }[] }];
 };
 
-type GraphActor = ActorSubclass<GraphActorMethods>;
+type GleaphActor = ActorSubclass<GleaphActorMethods>;
 
 function decodeRows(result: GqlQueryWireResult): Record<string, import("./types").ApiValue>[] {
   if (result.rows_blob.length === 0) {
@@ -132,7 +136,7 @@ function toGqlQueryResult(result: GqlQueryWireResult): GqlQueryResult {
   };
 }
 
-export interface IcGraphTransportOptions {
+export interface GleaphTransportOptions {
   canisterId: string | Principal;
   host?: string;
   identity?: Identity;
@@ -155,8 +159,8 @@ function unwrapResult<T>(result: Result<T>): T {
   throw new GleaphCanisterError(message, result);
 }
 
-class IcGraphTransport implements GraphTransport {
-  constructor(private readonly actor: GraphActor) {}
+class IcGleaphTransport implements GleaphTransport {
+  constructor(private readonly actor: GleaphActor) {}
 
   async plan(request: ApiQueryRequest): Promise<ApiPlanResponse> {
     return unwrapResult<ApiPlanResponse>(await this.actor.explain(request.query));
@@ -231,9 +235,9 @@ class IcGraphTransport implements GraphTransport {
   }
 }
 
-export async function createIcGraphTransport(
-  options: IcGraphTransportOptions,
-): Promise<GraphTransport> {
+export async function createGleaphTransport(
+  options: GleaphTransportOptions,
+): Promise<GleaphTransport> {
   const agentOptions: { host: string; identity?: Identity } = {
     host: options.host ?? "https://icp-api.io",
   };
@@ -244,17 +248,17 @@ export async function createIcGraphTransport(
   if (options.fetchRootKey) {
     await agent.fetchRootKey();
   }
-  const actor = Actor.createActor<GraphActorMethods>(
+  const actor = Actor.createActor<GleaphActorMethods>(
     graphIdlFactory as unknown as ActorInterfaceFactory,
     {
       agent,
       canisterId: principalFrom(options.canisterId),
     },
   );
-  return new IcGraphTransport(actor);
+  return new IcGleaphTransport(actor);
 }
 
-export async function createIcGraphClient(options: IcGraphTransportOptions): Promise<GraphClient> {
-  const transport = await createIcGraphTransport(options);
-  return createGraphClient(transport);
+export async function createGleaphClient(options: GleaphTransportOptions): Promise<GleaphClient> {
+  const transport = await createGleaphTransport(options);
+  return createGleaphClientFromTransport(transport);
 }

@@ -5,7 +5,7 @@
 
 import { Temporal } from "@js-temporal/polyfill";
 import { AuthClient } from "@icp-sdk/auth/client";
-import { createIcGraphClient, GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
+import { createGleaphClient, GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
 import { withPreparedQueries } from "../generated.ts";
 
 // `AuthClient` persists a delegation in IndexedDB; the caller principal seen by the Router is
@@ -17,7 +17,7 @@ const identity = authClient.isAuthenticated()
   : await authClient.signIn();
 console.log(identity.getPrincipal().toText());
 
-const graph = await createIcGraphClient({
+const graph = await createGleaphClient({
   canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai",
   host: "http://localhost:8000",
   identity,

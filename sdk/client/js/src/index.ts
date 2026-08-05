@@ -38,8 +38,8 @@ export type {
   ReadMode,
   Temporal,
 } from "./types.ts";
-export type { GraphClient, GraphTransport } from "./client.ts";
-export type { IcGraphTransportOptions } from "./ic.ts";
+export type { GleaphClient, GleaphTransport } from "./client.ts";
+export type { GleaphTransportOptions } from "./ic.ts";
 export {
   makeBulkLoadAbortCommand,
   makeBulkLoadAppendCommand,
@@ -99,5 +99,5 @@ export {
 export { GqlFloat16 } from "./values.ts";
 export { GqlDecimal } from "./types.ts";
 export { GqlFloat128, GqlFloat256 } from "./float-values.ts";
-export { createGraphClient } from "./client.ts";
-export { createIcGraphClient, createIcGraphTransport } from "./ic.ts";
+export { createGleaphClientFromTransport } from "./client.ts";
+export { createGleaphClient, createGleaphTransport } from "./ic.ts";

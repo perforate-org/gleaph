@@ -20,7 +20,7 @@ client fit together.
    `PrincipalLike`). Query operations wrap `executePrepared`; update operations wrap
    `executePreparedMutation` and take an explicit `clientMutationKey`.
 
-3. **Use the client**: build a `GraphClient` with `createIcGraphClient`, wrap it with
+3. **Use the client**: build a `GleaphClient` with `createGleaphClient`, wrap it with
    `withPreparedQueries`, and call the typed operations. See [`src/main.ts`](src/main.ts).
 
 ## What the example shows
@@ -36,7 +36,7 @@ client fit together.
 ## Authentication
 
 `src/main.ts` authenticates with [`@icp-sdk/auth`](https://www.npmjs.com/package/@icp-sdk/auth)
-and passes the resulting identity to `createIcGraphClient`:
+and passes the resulting identity to `createGleaphClient`:
 
 ```ts
 import { AuthClient } from "@icp-sdk/auth/client";
@@ -46,7 +46,7 @@ const identity = authClient.isAuthenticated()
   ? await authClient.getIdentity() // restore a stored session
   : await authClient.signIn(); // open the identity provider (Internet Identity / OpenID)
 
-const graph = await createIcGraphClient({ canisterId, identity });
+const graph = await createGleaphClient({ canisterId, identity });
 ```
 
 The caller principal the Router sees is `identity.getPrincipal()`.
