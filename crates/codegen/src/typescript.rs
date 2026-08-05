@@ -34,10 +34,10 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
     let mut uses = TypeUses::default();
     for operation_ir in &ir.operations {
         for parameter in &operation_ir.operation.parameters {
-            collect_type_uses(&parameter.semantic_type, &mut uses);
+            collect_type_uses(&parameter.semantic_type, &mut uses, false);
         }
         for column in &operation_ir.operation.result.columns {
-            collect_type_uses(&column.semantic_type, &mut uses);
+            collect_type_uses(&column.semantic_type, &mut uses, true);
         }
     }
     let mut type_imports = vec!["ApiValue".to_string(), "GraphClient".to_string()];
@@ -76,6 +76,9 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
         "import type {{ {} }} from \"@gleaph/sdk\";\n",
         type_imports.join(", ")
     ));
+    if uses.principal {
+        out.push_str("import type { Principal } from \"@icp-sdk/core/principal\";\n");
+    }
     if has_params {
         out.push_str("import { toApiValue } from \"@gleaph/sdk\";\n");
     }
@@ -109,7 +112,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
                 "  {}{}: {};\n",
                 ts_property(&parameter.name),
                 optional,
-                ts_type(&parameter.semantic_type, parameter.nullable)
+                ts_type(&parameter.semantic_type, parameter.nullable, false)
             ));
         }
         out.push_str("}\n\n");
@@ -118,7 +121,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
             out.push_str(&format!(
                 "  {}: {};\n",
                 ts_property(&column.name),
-                ts_type(&column.semantic_type, column.nullable)
+                ts_type(&column.semantic_type, column.nullable, true)
             ));
         }
         out.push_str("}\n\n");
@@ -220,7 +223,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
                     "        {}: fromApiValue(row[{}]) as {},\n",
                     ts_property(&column.name),
                     json_string(&column.name),
-                    ts_type(&column.semantic_type, column.nullable)
+                    ts_type(&column.semantic_type, column.nullable, true)
                 ));
             }
             out.push_str("      })) };\n    },\n");
@@ -242,9 +245,10 @@ struct TypeUses {
     zoned_time: bool,
     temporal: bool,
     path: bool,
+    principal: bool,
 }
 
-fn collect_type_uses(semantic_type: &SemanticType, uses: &mut TypeUses) {
+fn collect_type_uses(semantic_type: &SemanticType, uses: &mut TypeUses, row: bool) {
     match semantic_type {
         SemanticType::Decimal => uses.decimal = true,
         SemanticType::Float16 => uses.float16 = true,
@@ -259,10 +263,15 @@ fn collect_type_uses(semantic_type: &SemanticType, uses: &mut TypeUses) {
         | SemanticType::ZonedDateTime
         | SemanticType::Duration => uses.temporal = true,
         SemanticType::Path => uses.path = true,
-        SemanticType::List { element } => collect_type_uses(element, uses),
+        SemanticType::Principal => {
+            if row {
+                uses.principal = true;
+            }
+        }
+        SemanticType::List { element } => collect_type_uses(element, uses, row),
         SemanticType::Record { fields } => {
             for field in fields {
-                collect_type_uses(&field.semantic_type, uses);
+                collect_type_uses(&field.semantic_type, uses, row);
             }
         }
         _ => {}
@@ -302,7 +311,7 @@ fn append_encoded_params(out: &mut String, operation: &crate::PreparedOperation)
     }
 }
 
-fn ts_type(semantic_type: &SemanticType, nullable: bool) -> String {
+fn ts_type(semantic_type: &SemanticType, nullable: bool, row: bool) -> String {
     let base = match semantic_type {
         SemanticType::Null => "null".to_string(),
         SemanticType::Bool => "boolean".to_string(),
@@ -331,9 +340,19 @@ fn ts_type(semantic_type: &SemanticType, nullable: bool) -> String {
         SemanticType::ZonedTime => "GqlZonedTime".to_string(),
         SemanticType::Duration => "Temporal.Duration".to_string(),
         SemanticType::Text => "string".to_string(),
-        SemanticType::Principal => "PrincipalLike".to_string(),
+        // Parameters accept a principal text or object; decoded rows always carry a real
+        // `Principal` instance.
+        SemanticType::Principal => {
+            if row {
+                "Principal".to_string()
+            } else {
+                "PrincipalLike".to_string()
+            }
+        }
         SemanticType::Bytes => "Uint8Array".to_string(),
-        SemanticType::List { element } => format!("Array<{}>", ts_type(element, false)),
+        SemanticType::List { element } => {
+            format!("Array<{}>", ts_type(element, false, row))
+        }
         SemanticType::Path => "ApiPathElement[]".to_string(),
         SemanticType::Record { fields } => {
             let fields = fields
@@ -342,7 +361,7 @@ fn ts_type(semantic_type: &SemanticType, nullable: bool) -> String {
                     format!(
                         "{}: {}",
                         ts_property(&field.name),
-                        ts_type(&field.semantic_type, field.nullable)
+                        ts_type(&field.semantic_type, field.nullable, row)
                     )
                 })
                 .collect::<Vec<_>>()
