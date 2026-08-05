@@ -116,12 +116,13 @@ validation and generation.
 The API contract preserves the Gleaph type. Each runtime and generator maps that type to an
 appropriate language representation:
 
-| Gleaph type                   | Rust                                                 | TypeScript/JavaScript                  |
-| ----------------------------- | ---------------------------------------------------- | -------------------------------------- |
-| `Int8`/`Int16`/`Int32`        | `i8`/`i16`/`i32`                                     | `number`                               |
-| `Int64`/`Uint64`              | `i64`/`u64` or runtime bigint wrapper                | `bigint`                               |
-| `Float16`/`Float32`/`Float64` | exact runtime float wrapper or native supported type | `number` with exact runtime conversion |
-| `Float128`/`Float256`         | Gleaph runtime float wrapper                         | Gleaph runtime float wrapper           |
+| Gleaph type            | Rust                                                 | TypeScript/JavaScript            |
+| ---------------------- | ---------------------------------------------------- | -------------------------------- |
+| `Int8`/`Int16`/`Int32` | `i8`/`i16`/`i32`                                     | `number`                         |
+| `Int64`/`Uint64`       | `i64`/`u64` or runtime bigint wrapper                | `bigint`                         |
+| `Float16`              | exact runtime float wrapper or native supported type | `GqlFloat16` (bit-exact wrapper) |
+| `Float32`/`Float64`    | exact runtime float wrapper or native supported type | `number`                         |
+| `Float128`/`Float256`  | Gleaph runtime float wrapper                         | Gleaph runtime float wrapper     |
 
 Where a language cannot represent a scalar natively, the SDK/CDK runtime owns the wrapper and
 conversion rules. Generated code must not silently substitute a wider native type.
@@ -215,4 +216,7 @@ IDL/types, and codegen manifest version 1 preserve exact integer and floating-po
 variants. `Float16` uses its raw `u16` bits; `Float128` and `Float256` use canonical 16-byte and
 32-byte little-endian representations; `Int256` and `Uint256` use 32 little-endian bytes and
 `Decimal` the 16-byte packed form. Runtime-specific wrapper ergonomics remain owned by the
-SDK/CDK profiles and can be extended without changing this wire contract.
+SDK/CDK profiles and can be extended without changing this wire contract. The JS SDK exposes
+`GqlFloat16`, `GqlFloat128`, and `GqlFloat256` bindings whose decimal conversion is implemented in
+pure JavaScript `BigInt` arithmetic (no wasm), with shortest round-trip formatting and exact
+round-to-nearest-even parsing.
