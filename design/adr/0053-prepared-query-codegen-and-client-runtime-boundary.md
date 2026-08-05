@@ -315,7 +315,13 @@ as a release-stable contract.
   derive `CandidType` + serde, with exotic row fields bound through the cdk row-binding wrappers
   (`GqlInt256`, `GqlUint256`, `GqlDecimal`, `GqlFloat16`, `Float128`, `Float256` in
   `gleaph-gql-ic-wire`, plus candid-native `Principal`) so canisters return prepared rows
-  directly over their candid interface; and
+  directly over their candid interface. Temporal row fields bind through `gleaph-cdk`
+  temporal wrappers (`GqlDate`, `GqlTime`, `GqlLocalTime`, `GqlDateTime`, `GqlLocalDateTime`,
+  `GqlZonedDateTime`, `GqlZonedTime`, `GqlDuration`) backed by `jiff` (default
+  `temporal-jiff` feature) or `chrono` (opt-in `temporal-chrono`), with serde and candid forms
+  mirroring the wire representations; `GqlZonedTime` keeps the `{nanos, offset_seconds}` record
+  because neither crate models a time-of-day with an offset, and the `chrono` duration binding
+  cannot represent calendar months; and
 - a Motoko canister profile exposed by `generate_motoko`, emitting operation-specific
   parameter/result declarations and a transport-neutral typed executor boundary; and
 - a standalone `gleaph-codegen` entrypoint that accepts either a local `--manifest <path>` or a
