@@ -321,8 +321,18 @@ mod tests {
     fn generates_typed_adapter_using_sdk_runtime() {
         let output = generate_typescript(&manifest()).unwrap();
         assert!(output.contains("export interface FindUsersParams"));
-        assert!(output.contains("client.executePrepared(\"find-users\""));
+        assert!(output.contains("this.executePrepared(\"find-users\""));
         assert!(output.contains("fromApiValue(row[\"user_name\"])"));
+        assert!(output.contains("export class PreparedGleaphClient extends GleaphClientWrapper"));
+        assert!(output.contains(
+            "export function withPreparedQueries(client: GleaphClient): PreparedGleaphClient"
+        ));
+        assert!(output.contains(
+            "export async function createPreparedGleaphClient(options: GleaphTransportOptions): Promise<PreparedGleaphClient>"
+        ));
+        assert!(output.contains(
+            "export function createPreparedGleaphClientFromTransport(transport: GleaphTransport): PreparedGleaphClient"
+        ));
         assert!(!output.contains("PreparedSortSpec"));
         assert!(!output.contains("ApiPathElement"));
         assert!(!output.contains("ic-agent"));
@@ -332,7 +342,12 @@ mod tests {
     fn generates_runtime_javascript_without_type_syntax() {
         let output = generate_javascript(&manifest()).unwrap();
         assert!(output.contains("export function withPreparedQueries(client)"));
-        assert!(output.contains("client.executePrepared(\"find-users\""));
+        assert!(output.contains("this.executePrepared(\"find-users\""));
+        assert!(output.contains("export class PreparedGleaphClient extends GleaphClientWrapper"));
+        assert!(output.contains("export async function createPreparedGleaphClient(options)"));
+        assert!(
+            output.contains("export function createPreparedGleaphClientFromTransport(transport)")
+        );
         assert!(!output.contains("interface FindUsersParams"));
         assert!(!output.contains(" as const"));
     }
@@ -828,7 +843,7 @@ mod tests {
         assert!(typescript.contains("/**\n   * Text to search for.\n   */"));
 
         let javascript = generate_javascript(&value).unwrap();
-        assert!(javascript.contains("/**\n     * Find users by their search term.\n     */"));
+        assert!(javascript.contains("/**\n   * Find users by their search term.\n   */"));
 
         let rust = generate_rust(&value).unwrap();
         assert!(rust.contains("/// Find users by their search term."));

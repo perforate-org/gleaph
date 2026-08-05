@@ -111,6 +111,23 @@ pub(crate) fn ts_property(name: &str) -> String {
     }
 }
 
+/// Lower-camel-case method identifier derived from a wire name ("find-users" -> "findUsers").
+///
+/// Derived from [`pascal_case`] so identifier collisions are identical across profiles: two wire
+/// names collide as camel-case iff they collide as Pascal-case.
+pub(crate) fn camel_case(name: &str) -> String {
+    let pascal = pascal_case(name);
+    let mut chars = pascal.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut result = first.to_ascii_lowercase().to_string();
+            result.push_str(chars.as_str());
+            result
+        }
+        None => String::new(),
+    }
+}
+
 pub(crate) fn append_line_doc(out: &mut String, indent: &str, prefix: &str, text: &str) {
     for line in text.lines() {
         out.push_str(indent);

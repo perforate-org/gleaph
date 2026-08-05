@@ -3,7 +3,7 @@
 //! Generated code delegates transport and common error handling to the JavaScript SDK and owns
 //! only profile-specific runtime wrappers and value projection.
 
-use crate::common::{append_jsdoc, encode_expression, json_string, ts_property};
+use crate::common::{append_jsdoc, camel_case, encode_expression, json_string, ts_property};
 use crate::ir::normalize_manifest;
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
@@ -35,22 +35,36 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
         .operations
         .iter()
         .any(|operation| operation.operation.kind == OperationKind::Query);
+    let mut value_imports = vec![
+        "GleaphClientWrapper".to_string(),
+        "createGleaphClient".to_string(),
+        "createGleaphClientFromTransport".to_string(),
+    ];
     if has_params {
-        out.push_str("import { toApiValue } from \"@gleaph/sdk\";\n");
+        value_imports.push("toApiValue".to_string());
     }
     if has_queries {
-        out.push_str("import { fromApiValue } from \"@gleaph/sdk\";\n");
+        value_imports.push("fromApiValue".to_string());
     }
+    out.push_str(&format!(
+        "import {{ {} }} from \"@gleaph/sdk\";\n",
+        value_imports.join(", ")
+    ));
     out.push('\n');
     out.push_str("export const GLEAPH_GRAPH_ID = ");
     out.push_str(&json_string(&ir.graph_id));
     out.push_str(";\n\n");
-    out.push_str("export function withPreparedQueries(client) {\n  return {\n");
-    for operation_ir in &ir.operations {
+    out.push_str("export class PreparedGleaphClient extends GleaphClientWrapper {\n");
+    out.push_str("  constructor(client) {\n    super(client);\n  }\n\n");
+    for (index, operation_ir) in ir.operations.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
         let operation = &operation_ir.operation;
         if let Some(description) = &operation.description {
-            append_jsdoc(&mut out, "    ", description);
+            append_jsdoc(&mut out, "  ", description);
         }
+        let method_name = camel_case(&operation_ir.wire_name);
         let method = match operation.kind {
             OperationKind::Query => "executePrepared",
             OperationKind::Update => "executePreparedMutation",
@@ -68,19 +82,18 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
             impl_args.push("sort".to_string());
         }
         out.push_str(&format!(
-            "    {}: async ({}) => {{\n",
-            ts_property(&operation.name),
+            "  async {method_name}({}) {{\n",
             impl_args.join(", ")
         ));
-        out.push_str("      const encodedParams = {};\n");
+        out.push_str("    const encodedParams = {};\n");
         for parameter in &operation.parameters {
             let key = json_string(&parameter.name);
             let value = encode_expression(&format!("params[{key}]"), &parameter.semantic_type);
             if parameter.required {
-                out.push_str(&format!("      encodedParams[{key}] = {value};\n"));
+                out.push_str(&format!("    encodedParams[{key}] = {value};\n"));
             } else {
                 out.push_str(&format!(
-                    "      if (params[{key}] !== undefined) encodedParams[{key}] = {value};\n"
+                    "    if (params[{key}] !== undefined) encodedParams[{key}] = {value};\n"
                 ));
             }
         }
@@ -106,22 +119,36 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
             )
         };
         out.push_str(&format!(
-            "      const response = await client.{method}({call_args});\n"
+            "    const response = await this.{method}({call_args});\n"
         ));
         if operation.kind == OperationKind::Query {
-            out.push_str("      return { ...response, rows: response.rows.map((row) => ({\n");
+            out.push_str("    return { ...response, rows: response.rows.map((row) => ({\n");
             for column in &operation.result.columns {
                 out.push_str(&format!(
-                    "        {}: fromApiValue(row[{}]),\n",
+                    "      {}: fromApiValue(row[{}]),\n",
                     ts_property(&column.name),
                     json_string(&column.name)
                 ));
             }
-            out.push_str("      })) };\n    },\n");
+            out.push_str("    })) };\n");
         } else {
-            out.push_str("      return response;\n    },\n");
+            out.push_str("    return response;\n");
         }
+        out.push_str("  }\n");
     }
-    out.push_str("  };\n}\n");
+    out.push_str("}\n\n");
+    out.push_str("export function withPreparedQueries(client) {\n");
+    out.push_str("  return new PreparedGleaphClient(client);\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "/** Construct a client bound to the graph's prepared operations and dynamic GQL. */\n",
+    );
+    out.push_str("export async function createPreparedGleaphClient(options) {\n");
+    out.push_str("  return withPreparedQueries(await createGleaphClient(options));\n");
+    out.push_str("}\n\n");
+    out.push_str("/** Construct a prepared client over an existing SDK transport. */\n");
+    out.push_str("export function createPreparedGleaphClientFromTransport(transport) {\n");
+    out.push_str("  return withPreparedQueries(createGleaphClientFromTransport(transport));\n");
+    out.push_str("}\n");
     Ok(out)
 }
