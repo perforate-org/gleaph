@@ -12,6 +12,25 @@ importers:
         specifier: ^0.2.1
         version: 0.2.1(@types/node@22.19.19)(jiti@2.7.0)(typescript@5.9.3)(vite@8.0.3(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))(yaml@2.9.0)
 
+  examples/typescript-app:
+    dependencies:
+      '@gleaph/sdk':
+        specifier: workspace:*
+        version: link:../../sdk/client/js
+      '@icp-sdk/core':
+        specifier: ^6.0.0
+        version: 6.0.0
+      '@js-temporal/polyfill':
+        specifier: ^0.5.1
+        version: 0.5.1
+      decimal.js:
+        specifier: ^10.6.0
+        version: 10.6.0
+    devDependencies:
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   frontend/apps/dashboard:
     dependencies:
       '@kobalte/core':

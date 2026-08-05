@@ -56,6 +56,21 @@ check_generated typescript-basic/manifest.json motoko \
   motoko-basic/src/generated.mo
 
 pnpm sdk:build
+
+# Example app: the generated adapter must stay in sync, type-check, and pass its smoke test.
+example_generated="$OUTPUT_ROOT/example-generated.ts"
+cargo run -q -p gleaph-codegen -- \
+  --manifest "$REPO_ROOT/examples/typescript-app/manifest.json" \
+  --target typescript \
+  --output "$example_generated"
+cmp -s "$example_generated" "$REPO_ROOT/examples/typescript-app/generated.ts" || {
+  echo "example generated output is out of sync: examples/typescript-app/generated.ts" >&2
+  diff -u "$REPO_ROOT/examples/typescript-app/generated.ts" "$example_generated" || true
+  exit 1
+}
+tsc -p "$REPO_ROOT/examples/typescript-app/tsconfig.json" --noEmit
+(cd "$REPO_ROOT/examples/typescript-app" && node --experimental-strip-types scripts/smoke.mjs)
+
 tsc -p "$FIXTURE_ROOT/typescript-basic/tsconfig.json" --noEmit
 tsc -p "$FIXTURE_ROOT/typescript-advanced/tsconfig.json" --noEmit
 node --check "$FIXTURE_ROOT/typescript-basic/generated.js"

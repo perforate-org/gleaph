@@ -1,6 +1,7 @@
 packages:
   - "sdk/client/js"
   - "frontend/apps/*"
+  - "examples/typescript-app"
 
 allowBuilds:
   esbuild: true

@@ -1,0 +1,74 @@
+{
+  "manifest_version": 1,
+  "graph": { "id": "default", "name": null },
+  "operations": [
+    {
+      "name": "find-users",
+      "description": "Find users whose name starts with the given term.",
+      "kind": "Query",
+      "parameters": [
+        {
+          "name": "term",
+          "description": "Name prefix to search for.",
+          "required": true,
+          "nullable": false,
+          "type": "Text"
+        }
+      ],
+      "result": {
+        "columns": [
+          { "name": "user_name", "type": "Text", "nullable": false },
+          { "name": "user_id", "type": "Uint64", "nullable": false },
+          { "name": "joined_on", "type": "Date", "nullable": false },
+          { "name": "rating", "type": "Float16", "nullable": true }
+        ]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": [{ "key": "user_name", "label": "Name" }]
+    },
+    {
+      "name": "user-account",
+      "description": "Read an account profile with exotic scalar types.",
+      "kind": "Query",
+      "parameters": [
+        { "name": "user_id", "required": true, "nullable": false, "type": "Uint64" }
+      ],
+      "result": {
+        "columns": [
+          { "name": "balance", "type": "Int256", "nullable": false },
+          { "name": "amount", "type": "Decimal", "nullable": false },
+          { "name": "score", "type": "Float128", "nullable": true },
+          { "name": "joined_at", "type": "DateTime", "nullable": false },
+          { "name": "zoned_at", "type": "ZonedDateTime", "nullable": false },
+          { "name": "elapsed", "type": "Duration", "nullable": false },
+          { "name": "owner", "type": "Principal", "nullable": false },
+          { "name": "tags", "type": { "List": { "element": "Text" } }, "nullable": false }
+        ]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": []
+    },
+    {
+      "name": "create-user",
+      "description": "Create a user. Idempotent when retried with the same client mutation key.",
+      "kind": "Update",
+      "parameters": [
+        { "name": "user_id", "required": true, "nullable": false, "type": "Uint64" },
+        { "name": "user_name", "required": true, "nullable": false, "type": "Text" },
+        { "name": "joined_on", "required": true, "nullable": false, "type": "Date" },
+        { "name": "signup_fee", "required": false, "nullable": true, "type": "Decimal" },
+        { "name": "score", "required": false, "nullable": true, "type": "Float128" }
+      ],
+      "result": {
+        "columns": [
+          { "name": "user_id", "type": "Uint64", "nullable": false }
+        ]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": []
+    }
+  ]
+}

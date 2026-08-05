@@ -1,0 +1,19 @@
+{
+  "name": "@gleaph/example-typescript-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "node --experimental-strip-types scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@gleaph/sdk": "workspace:*",
+    "@icp-sdk/core": "^6.0.0",
+    "@js-temporal/polyfill": "^0.5.1",
+    "decimal.js": "^10.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
