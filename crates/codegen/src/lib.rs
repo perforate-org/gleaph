@@ -720,12 +720,12 @@ mod tests {
 
         let typescript = generate_typescript(&value).unwrap();
         assert!(typescript.contains("small: number"));
-        assert!(typescript.contains("wide_float: Uint8Array"));
+        assert!(typescript.contains("wide_float: GqlFloat128"));
         assert!(typescript.contains("user_name: number"));
 
         let javascript = generate_javascript(&value).unwrap();
-        assert!(javascript.contains("{ Int8: params[\"small\"] }"));
-        assert!(javascript.contains("{ Float128: params[\"wide_float\"] }"));
+        assert!(javascript.contains("toApiValue(params[\"small\"], \"Int8\")"));
+        assert!(javascript.contains("toApiValue(params[\"wide_float\"], \"Float128\")"));
 
         let rust = generate_rust(&value).unwrap();
         assert!(rust.contains("pub small: i8"));
@@ -791,18 +791,24 @@ mod tests {
         ];
 
         let typescript = generate_typescript(&value).unwrap();
-        assert!(typescript.contains("local_time: bigint | number"));
-        assert!(typescript.contains("when: { seconds: bigint | number"));
-        assert!(typescript.contains("metadata: { created_at: { seconds: bigint | number"));
-        assert!(typescript.contains("local: { seconds: bigint | number"));
-        assert!(typescript.contains("duration: { months: number"));
-        assert!(typescript.contains("zoned_time: { nanos: bigint | number"));
+        assert!(typescript.contains("local_time: Temporal.PlainTime"));
+        assert!(typescript.contains("when: Temporal.ZonedDateTime"));
+        assert!(
+            typescript.contains(
+                "metadata: { created_at: Temporal.Instant; path: ApiPathElement[] | null }"
+            )
+        );
+        assert!(typescript.contains("local: Temporal.PlainDateTime"));
+        assert!(typescript.contains("duration: Temporal.Duration"));
+        assert!(typescript.contains("zoned_time: GqlZonedTime"));
 
         let javascript = generate_javascript(&value).unwrap();
-        assert!(javascript.contains(r#"{ LocalTime: params["local_time"] }"#));
-        assert!(javascript.contains(r#"{ ZonedDateTime: params["when"] }"#));
-        assert!(javascript.contains(r#"{ DateTime: params["metadata"]["created_at"] }"#));
-        assert!(javascript.contains(r#"{ Path: params["metadata"]["path"] }"#));
+        assert!(javascript.contains("toApiValue(params[\"local_time\"], \"LocalTime\")"));
+        assert!(javascript.contains("toApiValue(params[\"when\"], \"ZonedDateTime\")"));
+        assert!(
+            javascript.contains("toApiValue(params[\"metadata\"][\"created_at\"], \"DateTime\")")
+        );
+        assert!(javascript.contains("toApiValue(params[\"metadata\"][\"path\"], \"Path\")"));
 
         let rust = generate_rust(&value).unwrap();
         assert!(rust.contains("pub local_time: u64"));

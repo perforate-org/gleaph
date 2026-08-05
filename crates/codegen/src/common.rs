@@ -5,44 +5,58 @@
 
 use crate::SemanticType;
 
+/// The `ApiValueHint` name for a leaf semantic type (matches the SDK's wire hints).
+fn semantic_hint(semantic_type: &SemanticType) -> &'static str {
+    match semantic_type {
+        SemanticType::Null => "Null",
+        SemanticType::Bool => "Bool",
+        SemanticType::Int8 => "Int8",
+        SemanticType::Int16 => "Int16",
+        SemanticType::Int32 => "Int32",
+        SemanticType::Int64 => "Int64",
+        SemanticType::Uint8 => "Uint8",
+        SemanticType::Uint16 => "Uint16",
+        SemanticType::Uint32 => "Uint32",
+        SemanticType::Uint64 => "Uint64",
+        SemanticType::Int128 => "Int128",
+        SemanticType::Uint128 => "Uint128",
+        SemanticType::Int256 => "Int256",
+        SemanticType::Uint256 => "Uint256",
+        SemanticType::Float16 => "Float16",
+        SemanticType::Float32 => "Float32",
+        SemanticType::Float64 => "Float64",
+        SemanticType::Float128 => "Float128",
+        SemanticType::Float256 => "Float256",
+        SemanticType::Decimal => "Decimal",
+        SemanticType::Text => "Text",
+        SemanticType::Bytes => "Bytes",
+        SemanticType::Date => "Date",
+        SemanticType::Time => "Time",
+        SemanticType::LocalTime => "LocalTime",
+        SemanticType::DateTime => "DateTime",
+        SemanticType::LocalDateTime => "LocalDateTime",
+        SemanticType::ZonedDateTime => "ZonedDateTime",
+        SemanticType::ZonedTime => "ZonedTime",
+        SemanticType::Duration => "Duration",
+        SemanticType::Principal => "Principal",
+        SemanticType::List { .. } | SemanticType::Record { .. } => {
+            // Unreachable: containers recurse in [`encode_expression`].
+            "List"
+        }
+        SemanticType::Path => "Path",
+    }
+}
+
+/// Render an expression that converts a user value into the wire [`ApiValue`].
+///
+/// Generated code passes the semantic type as an `ApiValueHint` so the SDK picks the exact wire
+/// variant; list and record elements recurse so nested exotic values keep their element hints.
 pub(crate) fn encode_expression(access: &str, semantic_type: &SemanticType) -> String {
     match semantic_type {
-        SemanticType::Null => "{ Null: null }".to_string(),
-        SemanticType::Bool => format!("{{ Bool: {access} }}"),
-        SemanticType::Int8 => format!("{{ Int8: {access} }}"),
-        SemanticType::Int16 => format!("{{ Int16: {access} }}"),
-        SemanticType::Int32 => format!("{{ Int32: {access} }}"),
-        SemanticType::Int64 => format!("{{ Int64: {access} }}"),
-        SemanticType::Uint8 => format!("{{ Uint8: {access} }}"),
-        SemanticType::Uint16 => format!("{{ Uint16: {access} }}"),
-        SemanticType::Uint32 => format!("{{ Uint32: {access} }}"),
-        SemanticType::Uint64 => format!("{{ Uint64: {access} }}"),
-        SemanticType::Int128 => format!("{{ Int128: {access} }}"),
-        SemanticType::Uint128 => format!("{{ Uint128: {access} }}"),
-        SemanticType::Int256 => format!("{{ Int256: {access} }}"),
-        SemanticType::Uint256 => format!("{{ Uint256: {access} }}"),
-        SemanticType::Float16 => format!("{{ Float16: {access} }}"),
-        SemanticType::Float32 => format!("{{ Float32: {access} }}"),
-        SemanticType::Float64 => format!("{{ Float64: {access} }}"),
-        SemanticType::Float128 => format!("{{ Float128: {access} }}"),
-        SemanticType::Float256 => format!("{{ Float256: {access} }}"),
-        SemanticType::Decimal => format!("{{ Decimal: {access} }}"),
-        SemanticType::Text => format!("{{ Text: {access} }}"),
-        SemanticType::Bytes => format!("{{ Bytes: {access} }}"),
-        SemanticType::Date => format!("{{ Date: {access} }}"),
-        SemanticType::Time => format!("{{ Time: {access} }}"),
-        SemanticType::LocalTime => format!("{{ LocalTime: {access} }}"),
-        SemanticType::DateTime => format!("{{ DateTime: {access} }}"),
-        SemanticType::LocalDateTime => format!("{{ LocalDateTime: {access} }}"),
-        SemanticType::ZonedDateTime => format!("{{ ZonedDateTime: {access} }}"),
-        SemanticType::ZonedTime => format!("{{ ZonedTime: {access} }}"),
-        SemanticType::Duration => format!("{{ Duration: {access} }}"),
-        SemanticType::Principal => format!("{{ Principal: {access} }}"),
         SemanticType::List { element } => format!(
             "{{ List: {access}.map((value) => {}) }}",
             encode_expression("value", element)
         ),
-        SemanticType::Path => format!("{{ Path: {access} }}"),
         SemanticType::Record { fields } => {
             let fields = fields
                 .iter()
@@ -56,6 +70,7 @@ pub(crate) fn encode_expression(access: &str, semantic_type: &SemanticType) -> S
                 .join(", ");
             format!("{{ Record: Object.fromEntries([{fields}]) }}")
         }
+        _ => format!("toApiValue({access}, \"{}\")", semantic_hint(semantic_type)),
     }
 }
 

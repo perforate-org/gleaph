@@ -23,9 +23,162 @@
       },
       "supports_consistency": false,
       "supports_idempotency": false,
-      "allowed_sorts": [
-        { "key": "display_name", "label": "Display name" }
-      ]
+      "allowed_sorts": [{ "key": "display_name", "label": "Display name" }]
+    },
+    {
+      "name": "report-metrics",
+      "description": "Report a metrics snapshot with exotic scalar types.",
+      "kind": "Query",
+      "parameters": [
+        {
+          "name": "balance",
+          "required": true,
+          "nullable": false,
+          "type": "Int256"
+        },
+        {
+          "name": "quota",
+          "required": true,
+          "nullable": false,
+          "type": "Uint256"
+        },
+        {
+          "name": "amount",
+          "required": true,
+          "nullable": false,
+          "type": "Decimal"
+        },
+        {
+          "name": "score",
+          "required": false,
+          "nullable": true,
+          "type": "Float16"
+        },
+        {
+          "name": "wider",
+          "required": false,
+          "nullable": true,
+          "type": "Float128"
+        },
+        {
+          "name": "widest",
+          "required": false,
+          "nullable": true,
+          "type": "Float256"
+        },
+        { "name": "day", "required": true, "nullable": false, "type": "Date" },
+        {
+          "name": "at",
+          "required": true,
+          "nullable": false,
+          "type": "DateTime"
+        },
+        {
+          "name": "local_at",
+          "required": true,
+          "nullable": false,
+          "type": "LocalDateTime"
+        },
+        {
+          "name": "zoned_at",
+          "required": true,
+          "nullable": false,
+          "type": "ZonedDateTime"
+        },
+        {
+          "name": "local_time",
+          "required": true,
+          "nullable": false,
+          "type": "LocalTime"
+        },
+        {
+          "name": "offset_time",
+          "required": true,
+          "nullable": false,
+          "type": "ZonedTime"
+        },
+        {
+          "name": "elapsed",
+          "required": true,
+          "nullable": false,
+          "type": "Duration"
+        },
+        {
+          "name": "owner",
+          "required": true,
+          "nullable": false,
+          "type": "Principal"
+        },
+        {
+          "name": "blob",
+          "required": true,
+          "nullable": false,
+          "type": "Bytes"
+        },
+        {
+          "name": "counters",
+          "required": true,
+          "nullable": false,
+          "type": { "List": { "element": "Uint256" } }
+        },
+        {
+          "name": "meta",
+          "required": true,
+          "nullable": false,
+          "type": {
+            "Record": {
+              "fields": [
+                { "name": "kind", "type": "Text", "nullable": false },
+                { "name": "rank", "type": "Int64", "nullable": true }
+              ]
+            }
+          }
+        }
+      ],
+      "result": {
+        "columns": [
+          { "name": "balance", "type": "Int256", "nullable": false },
+          { "name": "amount", "type": "Decimal", "nullable": false },
+          { "name": "score", "type": "Float16", "nullable": true },
+          { "name": "wider", "type": "Float128", "nullable": true },
+          { "name": "day", "type": "Date", "nullable": false },
+          { "name": "zoned_at", "type": "ZonedDateTime", "nullable": false },
+          { "name": "elapsed", "type": "Duration", "nullable": false },
+          {
+            "name": "counters",
+            "type": { "List": { "element": "Uint256" } },
+            "nullable": false
+          }
+        ]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": []
+    },
+    {
+      "name": "record-metrics",
+      "description": "Store a metrics snapshot.",
+      "kind": "Update",
+      "parameters": [
+        {
+          "name": "amount",
+          "required": true,
+          "nullable": false,
+          "type": "Decimal"
+        },
+        {
+          "name": "at",
+          "required": true,
+          "nullable": false,
+          "type": "DateTime"
+        }
+      ],
+      "result": {
+        "columns": [{ "name": "stored", "type": "Bool", "nullable": false }]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": []
     }
   ]
 }
