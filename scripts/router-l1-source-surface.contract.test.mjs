@@ -11,7 +11,7 @@ async function source(relativePath) {
 test("Router L1 runtime and generated surfaces expose only the replacement names", async () => {
   const retiredGqlMethod = ["gql_execute", "batch"].join("_");
   const retiredGqlType = ["GqlExecuteIdempotent", "Batch"].join("");
-  const [client, types, routerDid, sdkIndex, sdkAtomic, sdkBulk, sdkIdl, sdkClient, sdkIc, cdk, gateway] = await Promise.all([
+  const [client, types, routerDid, sdkIndex, sdkAtomic, sdkBulk, sdkIdl, sdkClient, sdkIc, cdk, gateway, bulkApi] = await Promise.all([
     source("crates/router/src/api/client.rs"),
     source("crates/router/src/types.rs"),
     source("frontend/apps/social-demo/src/generated/gleaph_router/declarations/gleaph_router.did"),
@@ -23,6 +23,7 @@ test("Router L1 runtime and generated surfaces expose only the replacement names
     source("sdk/client/js/src/ic.ts"),
     source("sdk/canister/rust/src/lib.rs"),
     source("crates/social-demo-gateway/src/lib.rs"),
+    source("crates/bulk-load-api/src/lib.rs"),
   ]);
 
   for (const symbol of [
@@ -56,8 +57,11 @@ test("Router L1 runtime and generated surfaces expose only the replacement names
   assert.doesNotMatch(routerDid, new RegExp(`^type\\s+${retiredGqlType}`, "m"));
   assert.match(client, /async\s+fn\s+bulk_load\s*\(/, "bulk_load update entrypoint");
   assert.match(client, /fn\s+bulk_load_status\s*\(/, "bulk_load_status query entrypoint");
-  assert.match(types, /enum\s+BulkLoadCommand\b/, "BulkLoadCommand wire type");
-  assert.match(types, /enum\s+BulkLoadResponse\b/, "BulkLoadResponse wire type");
+  // The bulk-load wire enums live in gleaph-bulk-load-api (ADR 0057/0060) and are re-exported
+  // from Router types.rs; assert both the owning crate and the Router re-export.
+  assert.match(bulkApi, /enum\s+BulkLoadCommand\b/, "BulkLoadCommand wire type");
+  assert.match(bulkApi, /enum\s+BulkLoadResponse\b/, "BulkLoadResponse wire type");
+  assert.match(types, /pub use gleaph_bulk_load_api::[\s\S]*\bBulkLoadCommand\b/, "Router re-exports BulkLoadCommand");
   assert.match(routerDid, /^[ \t]*bulk_load\s*:/m, "generated bulk_load update");
   assert.match(routerDid, /^[ \t]*bulk_load_status\s*:/m, "generated bulk_load_status query");
   assert.match(sdkBulk, /makeBulkLoadCommand/);
