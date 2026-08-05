@@ -7,16 +7,20 @@ description = "Lightweight Candid wire types for GQL query rows"
 
 [dependencies]
 candid.workspace = true
+chrono = { workspace = true, optional = true }
 ethnum = { workspace = true, features = ["serde"] }
 f256.workspace = true
 gleaph-gql = { path = "../gql", default-features = false, features = ["f256"] }
 half = { workspace = true, features = ["serde"] }
+jiff = { workspace = true, optional = true }
 rust_decimal = { workspace = true, features = ["serde"] }
 serde.workspace = true
 thiserror.workspace = true
 
 [features]
-default = []
+default = ["jiff"]
+jiff = ["dep:jiff"]
+chrono = ["dep:chrono"]
 nightly-f128 = ["gleaph-gql/f128"]
 
 [dev-dependencies]

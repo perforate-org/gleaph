@@ -657,6 +657,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1782,10 +1791,12 @@ name = "gleaph-gql-ic-wire"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "chrono",
  "ethnum",
  "f256",
  "gleaph-gql",
  "half 2.7.1",
+ "jiff",
  "rust_decimal",
  "serde",
  "serde_json",

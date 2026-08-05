@@ -14,6 +14,11 @@ use ethnum::{I256, U256};
 use gleaph_gql::{ExtensionValue, Value};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "chrono")]
+mod temporal_chrono;
+#[cfg(all(feature = "jiff", not(feature = "chrono")))]
+mod temporal_jiff;
+
 /// A path element in a GQL result value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum GqlWirePathElement {
@@ -744,6 +749,34 @@ impl GqlWireRows {
             .collect()
     }
 }
+
+/// GQL `ZonedTime` row binding (time of day with a fixed UTC offset).
+///
+/// Neither `jiff` nor `chrono` models a time-of-day with an offset, so this binding keeps the
+/// wire record form directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct GqlZonedTime {
+    /// Nanoseconds since midnight (local time of day).
+    pub nanos: u64,
+    /// UTC offset in seconds.
+    pub offset_seconds: i32,
+}
+
+impl From<GqlZonedTime> for Value {
+    fn from(value: GqlZonedTime) -> Value {
+        Value::ZonedTime(value.nanos, value.offset_seconds)
+    }
+}
+
+#[cfg(feature = "chrono")]
+pub use temporal_chrono::{
+    GqlDate, GqlDateTime, GqlDuration, GqlLocalDateTime, GqlLocalTime, GqlTime, GqlZonedDateTime,
+};
+/// GQL temporal row bindings backed by `jiff` (default) or `chrono` (opt-in).
+#[cfg(all(feature = "jiff", not(feature = "chrono")))]
+pub use temporal_jiff::{
+    GqlDate, GqlDateTime, GqlDuration, GqlLocalDateTime, GqlLocalTime, GqlTime, GqlZonedDateTime,
+};
 
 #[cfg(test)]
 mod tests {
