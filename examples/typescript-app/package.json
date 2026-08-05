@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@gleaph/sdk": "workspace:*",
+    "@icp-sdk/auth": "^8.0.1",
     "@icp-sdk/core": "^6.0.0",
     "@js-temporal/polyfill": "^0.5.1",
     "decimal.js": "^10.6.0"

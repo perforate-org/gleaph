@@ -1,30 +1,26 @@
-//! Example application: `gleaph-codegen` output + the `@gleaph/sdk` client.
-//!
-//! End-to-end flow:
-//!   1. `manifest.json` declares prepared operations.
-//!   2. Codegen generates the typed adapter into `generated.ts`:
-//!      `cargo run -p gleaph-codegen -- --manifest manifest.json --target typescript \
-//!         --output generated.ts`
-//!   3. This file builds a `GraphClient` with [`createIcGraphClient`] and wraps it with
-//!      [`withPreparedQueries`], then runs typed prepared operations against the Gleaph Router.
-//!
-//! The entrypoints demonstrate the API surface:
-//! - prepared reads returning real value types (`bigint`, `Temporal`, `GqlFloat16`, ...);
-//! - exotic scalar decoding (`GqlDecimal`, `GqlFloat128`, `Temporal`, `Principal`);
-//! - dynamic GQL for ad-hoc reads; and
-//! - an idempotent mutation passing an explicit `clientMutationKey`.
-//!
-//! The Router principal and identity are placeholders; configure them from environment or
-//! deployment configuration. `scripts/smoke.mjs` runs the same adapter against a mock client
-//! without needing a live Router.
+//! Browser-style entrypoint: authenticate with `@icp-sdk/auth` and run typed prepared
+//! operations against the Gleaph Router. Type-checked by `pnpm typecheck`; the smoke test
+//! (`scripts/smoke.mjs`) runs the same adapter against a mock client without a Router or a
+//! browser.
 
 import { Temporal } from "@js-temporal/polyfill";
+import { AuthClient } from "@icp-sdk/auth/client";
 import { createIcGraphClient, GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
 import { withPreparedQueries } from "../generated.ts";
+
+// `AuthClient` persists a delegation in IndexedDB; the caller principal seen by the Router is
+// `identity.getPrincipal()`. `signIn` opens the identity provider (Internet Identity / OpenID)
+// in a popup; with a prior session it restores the stored delegation instead.
+const authClient = new AuthClient();
+const identity = authClient.isAuthenticated()
+  ? await authClient.getIdentity()
+  : await authClient.signIn();
+console.log(identity.getPrincipal().toText());
 
 const graph = await createIcGraphClient({
   canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai",
   host: "http://localhost:8000",
+  identity,
   fetchRootKey: true,
 });
 const prepared = withPreparedQueries(graph);

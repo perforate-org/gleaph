@@ -17,6 +17,9 @@ importers:
       '@gleaph/sdk':
         specifier: workspace:*
         version: link:../../sdk/client/js
+      '@icp-sdk/auth':
+        specifier: ^8.0.1
+        version: 8.0.1(@icp-sdk/core@6.0.0)
       '@icp-sdk/core':
         specifier: ^6.0.0
         version: 6.0.0
@@ -421,6 +424,11 @@ packages:
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
 
+  '@icp-sdk/auth@8.0.1':
+    resolution: {integrity: sha512-VEYPr3QdpQOEY20c5B/dIOUsVa4V+DgR6LP+NDDnQCaEoG1/dCXuSIlS1/RmNdOlz4/IuhfS88cwhDmu6ZrfcQ==}
+    peerDependencies:
+      '@icp-sdk/core': ^5
+
   '@icp-sdk/bindgen@0.4.0':
     resolution: {integrity: sha512-WXJoPIVnqCgFSNcprVpHwPBNWA1prwPh1/ezQYVrCP+Zj8CCJ7zj9L7p5cFcN7ghxoxfbx6tYT8t/HN9fyeYkA==}
     hasBin: true
@@ -430,6 +438,11 @@ packages:
 
   '@icp-sdk/core@6.0.0':
     resolution: {integrity: sha512-z+oHm+MTB/Xo27LQCYXDpVcUyFQwceupoyqkYCW6aaiZ2GJ1BvhRbSMsm7XDHAgCuZmWULPxpiTFUnHZLDEKzw==}
+
+  '@icp-sdk/signer@5.6.0':
+    resolution: {integrity: sha512-zL8SR7YvMaTrEq6/8+ZX5wvTsXSUOm79dyZz7dj8MvHNZpH8pOKxE8QNmqThW4112EKES4ZLGxnAr3BJV1Oryg==}
+    peerDependencies:
+      '@icp-sdk/core': ^5
 
   '@internationalized/date@3.12.1':
     resolution: {integrity: sha512-6IedsVWXyq4P9Tj+TxuU8WGWM70hYLl12nbYU8jkikVpa6WXapFazPUcHUMDMoWftIDE2ILDkFFte6W2nFCkRQ==}
@@ -1883,6 +1896,9 @@ packages:
   html-entities@2.3.3:
     resolution: {integrity: sha512-DV5Ln36z34NNTDgnz0EWGBLZENelNAtkiFA4kyNOG2tDI6Mz1uSWiq1wAKdyjnJwyDiDO7Fa2SO1CTxPXL8VxA==}
 
+  idb@7.1.1:
+    resolution: {integrity: sha512-gchesWBzyvGHRO9W8tzUWFDycow5gwjvFKfyV9FF32Y7F50yZMp7mP+T2mJIWFx49zicqyC4uefHM17o6xKIVQ==}
+
   is-binary-path@2.1.0:
     resolution: {integrity: sha512-ZMERYes6pDydyuGidse7OsHxtbI7WVeUEozgR/g7rd0xUimYNlvZRE/K2MgZTjWy725IfelLeVcEM97mmtRGXw==}
     engines: {node: '>=8'}
@@ -2816,6 +2832,12 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
+  '@icp-sdk/auth@8.0.1(@icp-sdk/core@6.0.0)':
+    dependencies:
+      '@icp-sdk/core': 6.0.0
+      '@icp-sdk/signer': 5.6.0(@icp-sdk/core@6.0.0)
+      idb: 7.1.1
+
   '@icp-sdk/bindgen@0.4.0':
     dependencies:
       commander: 14.0.3
@@ -2837,6 +2859,10 @@ snapshots:
       '@scure/bip32': 2.2.0
       '@scure/bip39': 2.2.0
       asn1js: 3.0.7
+
+  '@icp-sdk/signer@5.6.0(@icp-sdk/core@6.0.0)':
+    dependencies:
+      '@icp-sdk/core': 6.0.0
 
   '@internationalized/date@3.12.1':
     dependencies:
@@ -3985,6 +4011,8 @@ snapshots:
       function-bind: 1.1.2
 
   html-entities@2.3.3: {}
+
+  idb@7.1.1: {}
 
   is-binary-path@2.1.0:
     dependencies:

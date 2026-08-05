@@ -30,3 +30,11 @@ minimumReleaseAgeExclude:
   - "@typescript/typescript-win32-arm64@7.0.2"
   - "@typescript/typescript-win32-x64@7.0.2"
   - typescript@7.0.2
+
+# @icp-sdk/auth (and @icp-sdk/signer) declare `@icp-sdk/core ^5`, but the workspace
+# standardizes on core 6 (the SDK and social-demo use it, and the SDK's types resolve its own
+# core 6 install). The example pins core 6 and runs auth against it; types unify on one core.
+peerDependencyRules:
+  allowedVersions:
+    "@icp-sdk/auth>@icp-sdk/core": "6"
+    "@icp-sdk/signer>@icp-sdk/core": "6"

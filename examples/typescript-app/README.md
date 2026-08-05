@@ -19,17 +19,44 @@ client fit together.
    types (`bigint`, `GqlDecimal`, `GqlFloat16`, `GqlFloat128`, `Temporal.*`, `GqlZonedTime`,
    `PrincipalLike`). Query operations wrap `executePrepared`; update operations wrap
    `executePreparedMutation` and take an explicit `clientMutationKey`.
+
 3. **Use the client**: build a `GraphClient` with `createIcGraphClient`, wrap it with
    `withPreparedQueries`, and call the typed operations. See [`src/main.ts`](src/main.ts).
 
 ## What the example shows
 
-| Operation     | Pattern                                                                              |
-| ------------- | ------------------------------------------------------------------------------------ |
-| `find-users`  | Prepared read with a caller-selected sort key; `Date` and `Float16` row decoding      |
-| `user-account`| Exotic scalar decoding: `Int256`, `Decimal`, `Float128`, temporal, `Principal`, lists |
-| `create-user` | Idempotent mutation passing a `clientMutationKey` and exotic parameter encoding       |
-| `main.ts`     | Dynamic GQL via `graph.execute(...)` for ad-hoc reads                                |
+| Operation      | Pattern                                                                               |
+| -------------- | ------------------------------------------------------------------------------------- |
+| `find-users`   | Prepared read with a caller-selected sort key; `Date` and `Float16` row decoding      |
+| `user-account` | Exotic scalar decoding: `Int256`, `Decimal`, `Float128`, temporal, `Principal`, lists |
+| `create-user`  | Idempotent mutation passing a `clientMutationKey` and exotic parameter encoding       |
+| `main.ts`      | Browser entrypoint: `@icp-sdk/auth` sign-in, then typed prepared operations           |
+| `main.ts`      | Dynamic GQL via `graph.execute(...)` for ad-hoc reads                                 |
+
+## Authentication
+
+`src/main.ts` authenticates with [`@icp-sdk/auth`](https://www.npmjs.com/package/@icp-sdk/auth)
+and passes the resulting identity to `createIcGraphClient`:
+
+```ts
+import { AuthClient } from "@icp-sdk/auth/client";
+
+const authClient = new AuthClient(); // persists the delegation in IndexedDB
+const identity = authClient.isAuthenticated()
+  ? await authClient.getIdentity() // restore a stored session
+  : await authClient.signIn(); // open the identity provider (Internet Identity / OpenID)
+
+const graph = await createIcGraphClient({ canisterId, identity });
+```
+
+The caller principal the Router sees is `identity.getPrincipal()`.
+
+### Version note
+
+`@icp-sdk/auth` (and `@icp-sdk/signer`) currently declare `@icp-sdk/core ^5`, while this
+workspace standardizes on core 6. `pnpm-workspace.yaml` therefore allows the auth packages to
+run against core 6 so the example keeps a single `@icp-sdk/core` version (mixing versions would
+split the `Principal` class across two installs and break `instanceof` checks and types).
 
 ## Validation (no Router required)
 
