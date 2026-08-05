@@ -24,7 +24,7 @@ const duration = new Temporal.Duration(0, 0, 0, 0, 1, 30);
 
 const calls = [];
 const client = {
-  async executePrepared(name, params, sort) {
+  async preparedQuery(name, params, sort) {
     calls.push({ name, params, sort });
     switch (name) {
       case "find-users":
@@ -64,7 +64,7 @@ const client = {
         throw new Error(`unexpected prepared call ${name}`);
     }
   },
-  async executePreparedMutation(name, params, clientMutationKey) {
+  async preparedMutate(name, params, clientMutationKey) {
     calls.push({ name, params, clientMutationKey });
     return { row_count: 1n };
   },

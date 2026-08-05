@@ -17,8 +17,8 @@ client fit together.
 
    The generated code declares `*Params` / `*Row` interfaces backed by the SDK's real value
    types (`bigint`, `GqlDecimal`, `GqlFloat16`, `GqlFloat128`, `Temporal.*`, `GqlZonedTime`,
-   `PrincipalLike`). Query operations wrap `executePrepared`; update operations wrap
-   `executePreparedMutation` and take an explicit `clientMutationKey`.
+   `PrincipalLike`). Query operations wrap `preparedQuery`; update operations wrap
+   `preparedMutate` and take an explicit `clientMutationKey`.
 
 3. **Use the client**: one generated factory call constructs the client with the typed
    operations and the full dynamic GQL surface on the same value:
@@ -28,7 +28,7 @@ client fit together.
 
    const client = await createPreparedGleaphClient({ canisterId, identity });
    await client.findUsers({ term: "al" }); // camelCase names derived from the wire operation names
-   await client.execute({ query, params }); // dynamic GQL stays available
+   await client.gqlQuery({ query, params }); // dynamic GQL stays available
    ```
 
    See [`src/main.ts`](src/main.ts). For custom transports or mocked clients that have no
@@ -44,7 +44,7 @@ client fit together.
 | `user-account` | Exotic scalar decoding: `Int256`, `Decimal`, `Float128`, temporal, `Principal`, lists |
 | `create-user`  | Idempotent mutation passing a `clientMutationKey` and exotic parameter encoding       |
 | `main.ts`      | Browser entrypoint: `@icp-sdk/auth` sign-in, then typed prepared operations           |
-| `main.ts`      | Dynamic GQL via `client.execute(...)` for ad-hoc reads                                |
+| `main.ts`      | Dynamic GQL via `client.gqlQuery(...)` for ad-hoc reads                               |
 
 ## Authentication
 

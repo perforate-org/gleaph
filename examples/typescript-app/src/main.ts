@@ -50,7 +50,7 @@ if (profile !== undefined) {
 
 // Dynamic GQL for ad-hoc reads that are not prepared. The dynamic path takes wire-encoded
 // params, so wrap user values with `toApiValue` (generated adapters do this automatically).
-const dynamic = await client.execute({
+const dynamic = await client.gqlQuery({
   query: "MATCH (n:Person {user_id: $user_id}) RETURN n.name AS user_name",
   params: { user_id: toApiValue(42n, "Uint64") },
 });

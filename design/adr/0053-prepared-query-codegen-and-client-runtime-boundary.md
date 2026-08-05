@@ -19,8 +19,7 @@ The repository already has two runtime boundaries:
 
 - `@gleaph/sdk` in `sdk/client/js`, whose public runtime is `GleaphClient` constructed by
   `createGleaphClient` (IC transport) or `createGleaphClientFromTransport`. It exposes dynamic GQL
-  and low-level prepared execution methods such as `executePrepared` and
-  `executePreparedMutation`.
+  and low-level prepared execution methods such as `preparedQuery` and `preparedMutate`.
 - `gleaph-cdk` in `sdk/canister/rust`, which is an `ic-cdk` helper for canisters calling the
   Router's prepared_query endpoint, including caller-selected sort specifications. It owns Candid argument encoding and
   inter-canister call/decode errors.
@@ -46,7 +45,7 @@ The older SDK-side prepared DTOs are insufficient as the long-term cross-languag
 they contain client-facing parameter hints and query metadata, but do not yet define a stable,
 language-neutral result type schema used by code generation. The Router now exposes the
 graph-scoped `prepared_manifest` endpoint backed by `gleaph-prepared-api`, and the JS SDK exposes
-it as `GleaphClient.getPreparedManifest`. The generator library consumes an explicit local manifest
+it as `GleaphClient.listPrepared`. The generator library consumes an explicit local manifest
 snapshot; the `gleaph-codegen` CLI can also fetch the same manifest from Router.
 
 ## Existing architecture assessment
@@ -136,7 +135,7 @@ available together:
 ```ts
 const client = await createPreparedGleaphClient({ canisterId, identity });
 
-await client.execute({ query, params });
+await client.gqlQuery({ query, params });
 await client.findUsers(params);
 ```
 
@@ -208,7 +207,7 @@ consumer types.
 Rejected. It duplicates runtime behavior across languages, makes SDK/CDK fixes ineffective for
 existing generated code, and exposes multiple implementations of the prepared wire contract.
 
-### Generate only generic `executePrepared(name, params)` helpers
+### Generate only generic `preparedQuery(name, params)` helpers
 
 Rejected as the primary API. It can remain a low-level runtime escape hatch, but it does not
 provide the typed parameter/result boundary that motivates codegen.
@@ -353,9 +352,9 @@ as a release-stable contract.
 
 The generated TypeScript composes with the `@gleaph/sdk` `GleaphClient`, emits
 operation-specific parameter and row types, encodes semantic parameter values, selects
-`executePrepared` versus `executePreparedMutation`, and exposes the operations as camelCase
-methods on a generated `PreparedGleaphClient` that extends the SDK's `GleaphClientWrapper`.
-Transport, Candid, authorization, and common errors remain SDK-owned. The shared manifest shape is an
+`preparedQuery` versus `preparedMutate`, and exposes the operations as camelCase methods on a
+generated `PreparedGleaphClient` that extends the SDK's `GleaphClientWrapper`. Transport, Candid,
+authorization, and common errors remain SDK-owned. The shared manifest shape is an
 implementation scaffold, not yet the accepted Router endpoint ABI. Consistency options and
 idempotent updates fail closed in this profile until the corresponding runtime methods are part
 of the stable SDK boundary. The Rust profile similarly delegates transport, response decoding,

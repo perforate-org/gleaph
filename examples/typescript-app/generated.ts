@@ -77,7 +77,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
   async findUsers(params: FindUsersParams, sort?: PreparedSortSpec[]): Promise<PreparedResponse<FindUsersRow>> {
     const encodedParams: Record<string, ApiValue> = {};
     encodedParams["term"] = toApiValue(params["term"], "Text");
-    const response = await this.executePrepared("find-users", encodedParams, sort);
+    const response = await this.preparedQuery("find-users", encodedParams, sort);
     return { ...response, rows: response.rows.map((row) => ({
       user_name: fromApiValue(row["user_name"]) as string,
       user_id: fromApiValue(row["user_id"]) as bigint,
@@ -92,7 +92,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
   async userAccount(params: UserAccountParams): Promise<PreparedResponse<UserAccountRow>> {
     const encodedParams: Record<string, ApiValue> = {};
     encodedParams["user_id"] = toApiValue(params["user_id"], "Uint64");
-    const response = await this.executePrepared("user-account", encodedParams);
+    const response = await this.preparedQuery("user-account", encodedParams);
     return { ...response, rows: response.rows.map((row) => ({
       balance: fromApiValue(row["balance"]) as bigint,
       amount: fromApiValue(row["amount"]) as GqlDecimal,
@@ -115,7 +115,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
     encodedParams["joined_on"] = toApiValue(params["joined_on"], "Date");
     if (params["signup_fee"] !== undefined) encodedParams["signup_fee"] = toApiValue(params["signup_fee"], "Decimal");
     if (params["score"] !== undefined) encodedParams["score"] = toApiValue(params["score"], "Float128");
-    const response = await this.executePreparedMutation("create-user", encodedParams, clientMutationKey);
+    const response = await this.preparedMutate("create-user", encodedParams, clientMutationKey);
     return response;
   }
 }
