@@ -27,7 +27,9 @@ fn prepared_and_plain_clients_construct_with_distinct_markers() {
 
 #[test]
 fn generated_params_encode_to_router_blob() {
-    let params = FindUsersParams { term: "ada".into() }.into_gql_params();
+    let params = FindUsersParams { term: "ada".into() }
+        .into_gql_params()
+        .unwrap();
     let blob = gleaph_cdk::encode_gql_params(params).unwrap();
     assert!(!blob.is_empty());
 }

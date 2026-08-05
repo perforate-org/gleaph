@@ -14,6 +14,9 @@
 //! - [`user_names_by_prefix`]: dynamic GQL built with the [`gql!`] macro.
 //! - [`create_user_and_read`]: idempotent mutation plus read-your-writes via the returned
 //!   [`MutationToken`](gleaph_cdk::MutationToken).
+//!
+//! Generated `*Row` structs derive [`CandidType`] and serde, so a canister can return them
+//! directly over its candid interface without hand-written mapping types.
 
 use candid::Principal;
 use gleaph_cdk::{CallError, GleaphClient, GqlQueryResult, MutationToken, ReadMode, gql};

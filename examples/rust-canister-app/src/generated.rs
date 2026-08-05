@@ -60,20 +60,17 @@ pub struct PreparedDuration {
 
 /// Find users whose name starts with the given term.
 /// Parameters for the prepared operation find-users.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
+#[derive(Clone, Debug)]
 pub struct FindUsersParams {
     /// Name prefix to search for.
     /// Wire parameter term.
-    #[serde(rename = "term")]
     pub term: String,
 }
 
 impl FindUsersParams {
     /// Convert typed parameters to ordered logical GQL parameters.
-    pub fn into_gql_params(self) -> GqlParams {
-        vec![("term".to_string(), GqlValue::Text(self.term))]
+    pub fn into_gql_params(self) -> Result<GqlParams, gleaph_cdk::CallError> {
+        Ok(vec![("term".to_string(), GqlValue::Text(self.term))])
     }
 }
 
@@ -111,7 +108,8 @@ impl PreparedExt for gleaph_cdk::GleaphClient<Prepared> {
         &self,
         params: FindUsersParams,
     ) -> Result<PreparedResponse<FindUsersRow>, gleaph_cdk::CallError> {
-        let params = gleaph_cdk::encode_gql_params(params.into_gql_params()).map_err(|error| {
+        let params = params.into_gql_params()?;
+        let params = gleaph_cdk::encode_gql_params(params).map_err(|error| {
             gleaph_cdk::CallError::Decode {
                 message: format!("failed to encode GQL params: {error:?}"),
             }
