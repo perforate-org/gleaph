@@ -21,43 +21,6 @@ pub struct PreparedResponse<Row> {
     pub rows: Vec<Row>,
 }
 
-/// Date-time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedDateTime {
-    pub seconds: i64,
-    pub nanos: u32,
-}
-
-/// Zoned date-time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedZonedDateTime {
-    pub seconds: i64,
-    pub nanos: u32,
-    pub offset_seconds: i32,
-}
-
-/// Zoned time representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedZonedTime {
-    pub nanos: u64,
-    pub offset_seconds: i32,
-}
-
-/// Duration representation used by generated declarations.
-#[derive(Clone, Debug, Deserialize, Serialize, CandidType)]
-#[candid_path("gleaph_cdk::candid")]
-#[serde(crate = "gleaph_cdk::serde")]
-pub struct PreparedDuration {
-    pub months: i32,
-    pub nanos: i64,
-}
-
 /// Find users by their search term.
 /// Parameters for the prepared operation find-users.
 #[derive(Clone, Debug)]
