@@ -20,8 +20,21 @@ client fit together.
    `PrincipalLike`). Query operations wrap `executePrepared`; update operations wrap
    `executePreparedMutation` and take an explicit `clientMutationKey`.
 
-3. **Use the client**: build a `GleaphClient` with `createGleaphClient`, wrap it with
-   `withPreparedQueries`, and call the typed operations. See [`src/main.ts`](src/main.ts).
+3. **Use the client**: one generated factory call constructs the client with the typed
+   operations and the full dynamic GQL surface on the same value:
+
+   ```ts
+   import { createPreparedGleaphClient } from "./generated.ts";
+
+   const client = await createPreparedGleaphClient({ canisterId, identity });
+   await client.findUsers({ term: "al" }); // camelCase names derived from the wire operation names
+   await client.execute({ query, params }); // dynamic GQL stays available
+   ```
+
+   See [`src/main.ts`](src/main.ts). For custom transports or mocked clients that have no
+   `GleaphTransportOptions`, the lower-level `withPreparedQueries(client)` compose helper
+   (used by the smoke test) and `createPreparedGleaphClientFromTransport(transport)` remain
+   available.
 
 ## What the example shows
 
@@ -31,22 +44,23 @@ client fit together.
 | `user-account` | Exotic scalar decoding: `Int256`, `Decimal`, `Float128`, temporal, `Principal`, lists |
 | `create-user`  | Idempotent mutation passing a `clientMutationKey` and exotic parameter encoding       |
 | `main.ts`      | Browser entrypoint: `@icp-sdk/auth` sign-in, then typed prepared operations           |
-| `main.ts`      | Dynamic GQL via `graph.execute(...)` for ad-hoc reads                                 |
+| `main.ts`      | Dynamic GQL via `client.execute(...)` for ad-hoc reads                                |
 
 ## Authentication
 
 `src/main.ts` authenticates with [`@icp-sdk/auth`](https://www.npmjs.com/package/@icp-sdk/auth)
-and passes the resulting identity to `createGleaphClient`:
+and passes the resulting identity to the generated `createPreparedGleaphClient`:
 
 ```ts
 import { AuthClient } from "@icp-sdk/auth/client";
+import { createPreparedGleaphClient } from "./generated.ts";
 
 const authClient = new AuthClient(); // persists the delegation in IndexedDB
 const identity = authClient.isAuthenticated()
   ? await authClient.getIdentity() // restore a stored session
   : await authClient.signIn(); // open the identity provider (Internet Identity / OpenID)
 
-const graph = await createGleaphClient({ canisterId, identity });
+const client = await createPreparedGleaphClient({ canisterId, identity });
 ```
 
 The caller principal the Router sees is `identity.getPrincipal()`.

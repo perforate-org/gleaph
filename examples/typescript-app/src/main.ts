@@ -5,8 +5,8 @@
 
 import { Temporal } from "@js-temporal/polyfill";
 import { AuthClient } from "@icp-sdk/auth/client";
-import { createGleaphClient, GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
-import { withPreparedQueries } from "../generated.ts";
+import { GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
+import { createPreparedGleaphClient } from "../generated.ts";
 
 // `AuthClient` persists a delegation in IndexedDB; the caller principal seen by the Router is
 // `identity.getPrincipal()`. `signIn` opens the identity provider (Internet Identity / OpenID)
@@ -17,26 +17,25 @@ const identity = authClient.isAuthenticated()
   : await authClient.signIn();
 console.log(identity.getPrincipal().toText());
 
-const graph = await createGleaphClient({
+// One generated factory: the returned `PreparedGleaphClient` carries the typed prepared
+// operations and the full dynamic GQL surface on the same value.
+const client = await createPreparedGleaphClient({
   canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai",
   host: "http://localhost:8000",
   identity,
   fetchRootKey: true,
 });
-const prepared = withPreparedQueries(graph);
 
 // Prepared read with a caller-selected sort key. Rows carry real values: `user_id` is a bigint,
 // `joined_on` a `Temporal.PlainDate`, and `rating` a `GqlFloat16` (or null).
-const users = await prepared["find-users"]({ term: "al" }, [
-  { key: "user_name", direction: "asc" },
-]);
+const users = await client.findUsers({ term: "al" }, [{ key: "user_name", direction: "asc" }]);
 for (const row of users.rows) {
   console.log(row.user_name, row.user_id, row.joined_on.toString(), row.rating?.toNumber());
 }
 
 // Prepared read returning exotic scalars: Int256, Decimal, Float128, and temporal values decode
 // into their real JavaScript types without hand-written wire conversion.
-const account = await prepared["user-account"]({ user_id: 42n });
+const account = await client.userAccount({ user_id: 42n });
 const profile = account.rows[0];
 if (profile !== undefined) {
   console.log(profile.balance.toString());
@@ -51,14 +50,14 @@ if (profile !== undefined) {
 
 // Dynamic GQL for ad-hoc reads that are not prepared. The dynamic path takes wire-encoded
 // params, so wrap user values with `toApiValue` (generated adapters do this automatically).
-const dynamic = await graph.execute({
+const dynamic = await client.execute({
   query: "MATCH (n:Person {user_id: $user_id}) RETURN n.name AS user_name",
   params: { user_id: toApiValue(42n, "Uint64") },
 });
 
 // Idempotent mutation. Reuse `clientMutationKey` only when retrying the same mutation; a new
 // mutation needs a fresh key.
-const created = await prepared["create-user"](
+const created = await client.createUser(
   {
     user_id: 43n,
     user_name: "ada",

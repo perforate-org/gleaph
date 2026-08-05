@@ -73,7 +73,7 @@ const client = {
 const prepared = withPreparedQueries(client);
 
 // Prepared read with a sort key: params are encoded as wire values, rows decode to real types.
-const users = await prepared["find-users"]({ term: "al" }, [
+const users = await prepared.findUsers({ term: "al" }, [
   { key: "user_name", direction: "asc" },
 ]);
 assert.deepEqual(calls[0].params, { term: { Text: "al" } });
@@ -88,7 +88,7 @@ assert.ok(user.rating instanceof GqlFloat16);
 assert.equal(user.rating.toNumber(), 4.5);
 
 // Exotic scalar decode: Int256, Decimal, Float128, temporal, Principal, and lists.
-const account = await prepared["user-account"]({ user_id: 42n });
+const account = await prepared.userAccount({ user_id: 42n });
 assert.deepEqual(calls[1].params, { user_id: { Uint64: 42n } });
 const [profile] = account.rows;
 assert.equal(profile.balance, 10n ** 40n);
@@ -109,7 +109,7 @@ assert.deepEqual(profile.tags, ["alpha", "beta"]);
 
 // Idempotent mutation: the explicit client mutation key reaches the transport and exotic params
 // are encoded into their wire bytes.
-const created = await prepared["create-user"](
+const created = await prepared.createUser(
   {
     user_id: 43n,
     user_name: "ada",
