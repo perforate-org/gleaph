@@ -45,6 +45,7 @@ client fit together.
 | `create-user`  | Idempotent mutation passing a `clientMutationKey` and exotic parameter encoding       |
 | `main.ts`      | Browser entrypoint: `@icp-sdk/auth` sign-in, then typed prepared operations           |
 | `main.ts`      | Dynamic GQL via `client.gqlQuery(...)` for ad-hoc reads                               |
+| `main.ts`      | Dynamic mutation via `client.gqlMutate(...)` for ad-hoc writes                        |
 
 ## Authentication
 

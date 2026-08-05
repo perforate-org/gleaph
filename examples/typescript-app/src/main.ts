@@ -67,4 +67,15 @@ const created = await client.createUser(
   },
   "create-user-ada-1",
 );
-console.log(created.row_count, dynamic.rows.length);
+
+// Dynamic mutation for ad-hoc writes that are not prepared. Like prepared mutations, reuse
+// `client_mutation_key` only when retrying the same mutation.
+const dynamicCreated = await client.gqlMutate({
+  query: "MATCH (n:Person {user_id: $user_id}) SET n.name = $name",
+  params: {
+    user_id: toApiValue(43n, "Uint64"),
+    name: toApiValue("grace", "Text"),
+  },
+  client_mutation_key: "rename-user-43-1",
+});
+console.log(created.row_count, dynamic.rows.length, dynamicCreated.row_count);
