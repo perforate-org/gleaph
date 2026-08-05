@@ -19,9 +19,13 @@
     "test": "node --experimental-strip-types ./scripts/conformance-test.mjs",
     "build": "vp pack"
   },
+  "dependencies": {
+    "@js-temporal/polyfill": "^0.5.1",
+    "decimal.js": "^10.6.0"
+  },
   "devDependencies": {
-    "@icp-sdk/core": "^5.4.0",
-    "typescript": "^6.0.3"
+    "@icp-sdk/core": "^6.0.0",
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@icp-sdk/core": ">=5.4.0"

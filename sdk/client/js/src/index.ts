@@ -13,13 +13,15 @@ export type {
   ApiQueryRequest,
   ApiTypeDiagnostic,
   ApiUseGraphPushdownInfo,
-  GqlMutationResult,
+  ApiValue,
+  ApiValueHint,
+  ApiPathElement,
   GqlQueryResult,
+  GqlMutationResult,
+  GqlZonedTime,
   MutationLifecyclePhase,
   MutationToken,
   MutationTokenShard,
-  ApiValue,
-  ApiPathElement,
   PreparedManifest,
   PreparedManifestColumn,
   PreparedManifestGraph,
@@ -34,9 +36,10 @@ export type {
   PreparedSortKey,
   PreparedSortSpec,
   ReadMode,
-} from "./types";
-export type { GraphClient, GraphTransport } from "./client";
-export type { IcGraphTransportOptions } from "./ic";
+  Temporal,
+} from "./types.ts";
+export type { GraphClient, GraphTransport } from "./client.ts";
+export type { IcGraphTransportOptions } from "./ic.ts";
 export {
   makeBulkLoadAbortCommand,
   makeBulkLoadAppendCommand,
@@ -44,7 +47,7 @@ export {
   makeBulkLoadFinalizeCommand,
   makeBulkLoadStartCommand,
   makeBulkLoadStatusRequest,
-} from "./bulk";
+} from "./bulk.ts";
 export type {
   AtomicInsertReceipt,
   BulkLoadChunk,
@@ -56,15 +59,15 @@ export type {
   BulkLoadResponse,
   BulkLoadStatusPage,
   BulkLoadStatusRequest,
-} from "./bulk";
+} from "./bulk.ts";
 export {
   isUnsupportedUseGraphPushdown,
   unsupportedUseGraphPushdowns,
   USE_GRAPH_PUSHDOWN_WARNING_PREFIX,
-} from "./helpers";
-export { GleaphCanisterError, GleaphSdkError } from "./errors";
-export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value";
-export { makeAtomicInsertRequest } from "./atomic";
+} from "./helpers.ts";
+export { GleaphCanisterError, GleaphSdkError } from "./errors.ts";
+export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value.ts";
+export { makeAtomicInsertRequest } from "./atomic.ts";
 export type {
   AtomicInsertEdge,
   AtomicInsertEdgeInput,
@@ -79,16 +82,22 @@ export type {
   AtomicInsertVertex,
   AtomicInsertVertexInput,
   CandidOption,
-} from "./atomic";
+} from "./atomic.ts";
 export {
+  f16BitsToNumber,
+  f16NumberToBits,
   fromApiValue,
   isApiValue,
   makeExecutePreparedRequest,
+  makePreparedMutationRequest,
   makePrepareRequest,
   makeQueryRequest,
   toApiParams,
   toApiPathElement,
   toApiValue,
-} from "./values";
-export { createGraphClient } from "./client";
-export { createIcGraphClient, createIcGraphTransport } from "./ic";
+} from "./values.ts";
+export { GqlFloat16 } from "./values.ts";
+export { GqlDecimal } from "./types.ts";
+export { GqlFloat128, GqlFloat256 } from "./float-values.ts";
+export { createGraphClient } from "./client.ts";
+export { createIcGraphClient, createIcGraphTransport } from "./ic.ts";

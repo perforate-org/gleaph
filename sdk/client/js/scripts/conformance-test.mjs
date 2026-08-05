@@ -243,3 +243,241 @@ assertBuilderRejects(
 console.log(
   `sdk/js conformance: ${fixture.vectors.length} value vectors and unified atomic insert request builder passed`,
 );
+
+// ---------------------------------------------------------------------------
+// New value-layer conformance: byte-based integers/decimals, Temporal, floats.
+// ---------------------------------------------------------------------------
+
+import {
+  decimalFromWireBytes,
+  decimalToWireBytes,
+  f16BitsToNumber,
+  f16NumberToBits,
+  fromApiValue,
+  toApiValue,
+} from "../src/values.ts";
+import { GqlFloat128, GqlFloat256 } from "../src/float-values.ts";
+import { Temporal } from "@js-temporal/polyfill";
+import GqlDecimal from "decimal.js";
+
+// Decimal: rust_decimal packed wire (flags first, scale << 16, sign bit 31).
+{
+  const cases = [
+    ["123.45", "00000200393000000000000000000000"],
+    ["0", "00000000000000000000000000000000"],
+    ["-0.001", "00000380010000000000000000000000"],
+    ["7922816251426433759354395.0335", "00000400ffffffffffffffffffffffff"],
+  ];
+  for (const [text, hex] of cases) {
+    const wire = decimalToWireBytes(new GqlDecimal(text));
+    const actual = bytesToHex(wire);
+    if (actual !== hex) throw new Error(`decimal ${text}: expected ${hex}, got ${actual}`);
+    const back = decimalFromWireBytes(wire);
+    if (!back.eq(new GqlDecimal(text))) throw new Error(`decimal ${text} did not round-trip`);
+  }
+}
+
+// Integers: Int256/Uint256 as 32 little-endian bytes.
+{
+  const wire = toApiValue(-2n, "Int256");
+  if (!("Int256" in wire)) throw new Error("Int256 hint did not produce Int256");
+  if (fromApiValue(wire) !== -2n) throw new Error("Int256 round-trip failed");
+  const unsigned = toApiValue(2n ** 255n + 1n, "Uint256");
+  if (fromApiValue(unsigned) !== 2n ** 255n + 1n) throw new Error("Uint256 round-trip failed");
+}
+
+// Temporal round trips.
+{
+  const date = new Temporal.PlainDate(2024, 1, 15);
+  const dateWire = toApiValue(date);
+  if (!("Date" in dateWire) || dateWire.Date !== 19737) throw new Error("Date encode failed");
+  const dateBack = fromApiValue(dateWire);
+  if (!(dateBack instanceof Temporal.PlainDate) || dateBack.year !== 2024)
+    throw new Error("Date decode failed");
+
+  const instant = Temporal.Instant.from("2023-11-14T22:13:20.123456789Z");
+  const instantWire = toApiValue(instant);
+  const instantBack = fromApiValue(instantWire);
+  if (
+    !(instantBack instanceof Temporal.Instant) ||
+    instantBack.epochNanoseconds !== instant.epochNanoseconds
+  )
+    throw new Error("DateTime round-trip failed");
+
+  const local = new Temporal.PlainDateTime(2024, 1, 15, 10, 30, 0, 0, 0, 0);
+  const localWire = toApiValue(local);
+  const localBack = fromApiValue(localWire);
+  if (
+    !(localBack instanceof Temporal.PlainDateTime) ||
+    localBack.year !== 2024 ||
+    localBack.hour !== 10
+  )
+    throw new Error("LocalDateTime round-trip failed");
+
+  const zoned = Temporal.ZonedDateTime.from({
+    timeZone: "+09:00",
+    year: 2024,
+    month: 1,
+    day: 15,
+    hour: 10,
+    minute: 30,
+  });
+  const zonedWire = toApiValue(zoned);
+  const zonedBack = fromApiValue(zonedWire);
+  if (
+    !(zonedBack instanceof Temporal.ZonedDateTime) ||
+    zonedBack.epochNanoseconds !== zoned.epochNanoseconds
+  )
+    throw new Error("ZonedDateTime round-trip failed");
+
+  const duration = new Temporal.Duration(1, 2, 0, 3, 4, 5, 6, 7, 8, 9);
+  const durationWire = toApiValue(duration);
+  const durationBack = fromApiValue(durationWire);
+  // Duration has no `equals` in the final Temporal spec; compare fields.
+  const durationFields = [
+    "years",
+    "months",
+    "days",
+    "hours",
+    "minutes",
+    "seconds",
+    "milliseconds",
+    "microseconds",
+    "nanoseconds",
+  ];
+  if (
+    !(durationBack instanceof Temporal.Duration) ||
+    durationBack.sign !== duration.sign ||
+    durationFields.some((field) => durationBack[field] !== duration[field])
+  )
+    throw new Error("Duration round-trip failed");
+
+  const time = new Temporal.PlainTime(23, 59, 59, 999, 999, 999);
+  const timeWire = toApiValue(time);
+  if (!("Time" in timeWire)) throw new Error("Time encode failed");
+  const timeBack = fromApiValue(timeWire);
+  if (!(timeBack instanceof Temporal.PlainTime) || !timeBack.equals(time))
+    throw new Error("Time round-trip failed");
+
+  const zonedTime = { nanos: 37800000000000n, offset_seconds: 9 * 3600 };
+  const zonedTimeWire = toApiValue(zonedTime);
+  const zonedTimeBack = fromApiValue(zonedTimeWire);
+  if (zonedTimeBack.nanos !== zonedTime.nanos || zonedTimeBack.offset_seconds !== 32400)
+    throw new Error("ZonedTime round-trip failed");
+}
+
+// Float16 pure-JS bits.
+{
+  const cases = [
+    [0x3c00, 1],
+    [0x8000, -0],
+    [0x7c00, Infinity],
+    [0xfc00, -Infinity],
+    [0x7e00, NaN],
+    [0x0001, 5.960464477539063e-8],
+    [0x3555, 0.333251953125],
+  ];
+  for (const [bits, expected] of cases) {
+    const number = f16BitsToNumber(bits);
+    if (Object.is(number, expected)) continue;
+    if (Number.isNaN(expected) && Number.isNaN(number)) continue;
+    throw new Error(`f16 0x${bits.toString(16)}: expected ${expected}, got ${number}`);
+  }
+  if (f16NumberToBits(1) !== 0x3c00) throw new Error("f16 encode 1 failed");
+  if (f16NumberToBits(-0) !== 0x8000) throw new Error("f16 encode -0 failed");
+  if (f16NumberToBits(Infinity) !== 0x7c00) throw new Error("f16 encode inf failed");
+  if (f16NumberToBits(0.333251953125) !== 0x3555) throw new Error("f16 encode 0.33325 failed");
+}
+
+function bytesEqual(a, b) {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let index = 0; index < a.byteLength; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+// Float128/Float256 pure-BigInt conversions (no wasm, no async init).
+{
+  const f256 = GqlFloat256.fromString("1.5");
+  if (f256.toString() !== "1.5") throw new Error("float256 to_string failed");
+  if (f256.toNumber() !== 1.5) throw new Error("float256 to_number failed");
+  const fromNumber = GqlFloat256.fromNumber(2.25);
+  if (fromNumber.toString() !== "2.25") throw new Error("float256 from_number failed");
+
+  const f128 = GqlFloat128.fromString("2.5");
+  if (f128.toString() !== "2.5") throw new Error("float128 to_string failed");
+  const f128FromNumber = GqlFloat128.fromNumber(1.25);
+  if (f128FromNumber.toString() !== "1.25") throw new Error("float128 from_number failed");
+
+  // Special values.
+  if (GqlFloat128.fromString("Infinity").toString() !== "Infinity") throw new Error("inf failed");
+  if (GqlFloat128.fromString("-Infinity").toNumber() !== -Infinity) throw new Error("-inf failed");
+  if (GqlFloat128.fromString("NaN").toString() !== "NaN") throw new Error("nan failed");
+  if (GqlFloat128.fromNumber(-0).toString() !== "-0") throw new Error("-0 failed");
+  if (GqlFloat128.fromNumber(NaN).toString() !== "NaN") throw new Error("fromNumber nan failed");
+
+  // Exact f64 widening round-trips.
+  for (const value of [0, -0, 1, -1.5, 3.141592653589793, Number.MAX_VALUE, 5e-324]) {
+    if (!Object.is(GqlFloat128.fromNumber(value).toNumber(), value))
+      throw new Error(`f128 f64 round-trip ${value}`);
+    if (!Object.is(GqlFloat256.fromNumber(value).toNumber(), value))
+      throw new Error(`f256 f64 round-trip ${value}`);
+  }
+
+  // Decimal round-trips through the shortest form.
+  for (const text of [
+    "0",
+    "-0",
+    "1",
+    "-1.5",
+    "0.1",
+    "1e100",
+    "-1e-100",
+    "79228162514264337593543950335",
+  ]) {
+    const f = GqlFloat128.fromString(text);
+    const back = GqlFloat128.fromString(f.toString());
+    if (!bytesEqual(f.toBytes(), back.toBytes())) throw new Error(`f128 round-trip ${text}`);
+  }
+  for (const text of ["0.1", "1e-78000", "1e78000", "1.7976931348623157e308"]) {
+    const f = GqlFloat256.fromString(text);
+    const back = GqlFloat256.fromString(f.toString());
+    if (!bytesEqual(f.toBytes(), back.toBytes())) throw new Error(`f256 round-trip ${text}`);
+  }
+
+  // Subnormal f128: the old wasm widen/narrow path dropped these to zero.
+  const subnormal = new Uint8Array(16);
+  subnormal[0] = 1; // 2^-16494
+  const subText = GqlFloat128.fromBytes(subnormal).toString();
+  if (subText.length > 30 || !subText.includes("e-49"))
+    throw new Error(`subnormal shortest too long: ${subText}`);
+  if (!bytesEqual(GqlFloat128.fromString(subText).toBytes(), subnormal))
+    throw new Error("subnormal f128 round-trip failed");
+
+  // f128 overflow/underflow bounds (max ~1.19e4932, min subnormal ~6.5e-4966).
+  if (GqlFloat128.fromString("1e4933").toNumber() !== Infinity) throw new Error("f128 overflow");
+  if (!bytesEqual(GqlFloat128.fromString("1e-4966").toBytes(), new Uint8Array(16)))
+    throw new Error("f128 underflow");
+  if (!bytesEqual(GqlFloat128.fromString("6e-4966").toBytes(), subnormal))
+    throw new Error("f128 min subnormal rounding");
+
+  // toApiValue hint / inference for float bindings.
+  const wired = toApiValue(GqlFloat128.fromString("1.5"), "Float128");
+  if (!("Float128" in wired) || wired.Float128.byteLength !== 16)
+    throw new Error("Float128 toApiValue failed");
+  const inferred = toApiValue(GqlFloat128.fromString("1.5"));
+  if (!("Float128" in inferred)) throw new Error("Float128 inference failed");
+}
+
+// toApiValue inference for the dynamic path.
+{
+  const inferred = toApiValue(7n);
+  if (!("Int64" in inferred) || inferred.Int64 !== 7n) throw new Error("bigint inference failed");
+  const decimal = toApiValue(new GqlDecimal("1.5"));
+  if (!("Decimal" in decimal)) throw new Error("decimal inference failed");
+  const instant = toApiValue(Temporal.Instant.from("2024-01-01T00:00:00Z"));
+  if (!("DateTime" in instant)) throw new Error("instant inference failed");
+}
+
+console.log("value-layer conformance OK");

@@ -1,4 +1,4 @@
-import type { ApiPlanResponse, ApiPreparedQueryInfo, ApiUseGraphPushdownInfo } from "./types";
+import type { ApiPlanResponse, ApiPreparedQueryInfo, ApiUseGraphPushdownInfo } from "./types.ts";
 
 export const USE_GRAPH_PUSHDOWN_WARNING_PREFIX = "remote USE GRAPH pushdown unavailable";
 

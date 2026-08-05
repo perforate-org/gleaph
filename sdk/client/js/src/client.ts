@@ -10,14 +10,14 @@ import type {
   ApiValue,
   PreparedManifest,
   PreparedSortSpec,
-} from "./types";
+} from "./types.ts";
 import type {
   BulkLoadCommand,
   BulkLoadResponse,
   BulkLoadStatusPage,
   BulkLoadStatusRequest,
-} from "./bulk";
-import { makeExecutePreparedRequest } from "./values";
+} from "./bulk.ts";
+import { makeExecutePreparedRequest } from "./values.ts";
 
 export interface GraphTransport {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;

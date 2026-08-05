@@ -83,32 +83,6 @@ function appendText(out: number[], value: string): void {
   appendLengthPrefixed(out, textEncoder.encode(value));
 }
 
-function decimalParts(value: string): { coefficient: bigint; scale: number; negative: boolean } {
-  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(value);
-  if (!match) throw new Error("Decimal must be a plain finite decimal string");
-  const fraction = match[3] ?? "";
-  const scale = fraction.length;
-  const coefficient = BigInt(`${match[2]}${fraction}`);
-  return { coefficient, scale, negative: match[1] === "-" && coefficient !== 0n };
-}
-
-function appendDecimal(out: number[], value: string): void {
-  const { coefficient, scale, negative } = decimalParts(value);
-  if (scale > 28 || coefficient > 0xffffffffffffffffffffffffn) {
-    throw new Error("Decimal is outside the supported 96-bit / 28-scale range");
-  }
-  const bytes = new Uint8Array(16);
-  const view = new DataView(bytes.buffer);
-  let rest = coefficient;
-  view.setUint32(0, Number(rest & 0xffffffffn), true);
-  rest >>= 32n;
-  view.setUint32(4, Number(rest & 0xffffffffn), true);
-  rest >>= 32n;
-  view.setUint32(8, Number(rest & 0xffffffffn), true);
-  view.setUint32(12, (scale << 16) | (negative ? 0x80000000 : 0), true);
-  appendBytes(out, bytes);
-}
-
 function appendPath(out: number[], items: ApiPathElement[]): void {
   appendU32(out, items.length);
   for (const item of items) {
@@ -150,11 +124,13 @@ function appendValue(out: number[], value: ApiValue): void {
     appendU8(out, 12);
     appendBigIntFixed(out, toSafeBigInt(value.Uint128, "Uint128"), 16, false);
   } else if ("Int256" in value) {
+    if (value.Int256.byteLength !== 32) throw new Error("Int256 must contain 32 canonical bytes");
     appendU8(out, 7);
-    appendBigIntFixed(out, BigInt(value.Int256), 32, true);
+    appendBytes(out, value.Int256);
   } else if ("Uint256" in value) {
+    if (value.Uint256.byteLength !== 32) throw new Error("Uint256 must contain 32 canonical bytes");
     appendU8(out, 13);
-    appendBigIntFixed(out, BigInt(value.Uint256), 32, false);
+    appendBytes(out, value.Uint256);
   } else if ("Uint8" in value) {
     appendU8(out, 8);
     appendBigIntFixed(out, BigInt(value.Uint8), 1, false);
@@ -184,8 +160,9 @@ function appendValue(out: number[], value: ApiValue): void {
     appendU8(out, 32);
     appendBytes(out, value.Float256);
   } else if ("Decimal" in value) {
+    if (value.Decimal.byteLength !== 16) throw new Error("Decimal must contain 16 canonical bytes");
     appendU8(out, 17);
-    appendDecimal(out, value.Decimal);
+    appendBytes(out, value.Decimal);
   } else if ("Text" in value) {
     appendU8(out, 18);
     appendText(out, value.Text);

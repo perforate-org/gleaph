@@ -1,9 +1,9 @@
 import { Actor, HttpAgent, type ActorSubclass, type Identity } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
-import { createGraphClient, type GraphClient, type GraphTransport } from "./client";
-import { GleaphCanisterError } from "./errors";
-import { GqlQueryRows, graphIdlFactory } from "./idl";
+import { createGraphClient, type GraphClient, type GraphTransport } from "./client.ts";
+import { GleaphCanisterError } from "./errors.ts";
+import { GqlQueryRows, graphIdlFactory } from "./idl.ts";
 import type {
   ApiExecutePreparedRequest,
   ApiPreparedMutationRequest,
@@ -15,15 +15,15 @@ import type {
   GqlQueryResult,
   PreparedManifest,
   ReadMode,
-} from "./types";
+} from "./types.ts";
 import type {
   BulkLoadCommand,
   BulkLoadResponse,
   BulkLoadStatusPage,
   BulkLoadStatusRequest,
-} from "./bulk";
-import { toApiParams } from "./values";
-import { encodeCanonicalGqlValue } from "./canonical-value";
+} from "./bulk.ts";
+import { toApiParams } from "./values.ts";
+import { encodeCanonicalGqlValue } from "./canonical-value.ts";
 
 type Result<T> = { Ok: T; Err?: never } | { Ok?: never; Err: Record<string, unknown> };
 type ActorInterfaceFactory = Parameters<typeof Actor.createActor>[0];

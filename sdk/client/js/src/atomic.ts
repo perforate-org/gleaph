@@ -1,5 +1,5 @@
 import { encodeCanonicalGqlValue } from "./canonical-value.ts";
-import type { ApiValue } from "./types";
+import type { ApiValue } from "./types.ts";
 
 const ENCODED_VERTEX_ID_BYTES = 8;
 const MAX_ATOMIC_INSERT_OPERATIONS = 1024;

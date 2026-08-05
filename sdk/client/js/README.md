@@ -1,60 +1,54 @@
 # @gleaph/sdk
 
-Location: `sdk/client/js` (moved from `sdk/js` during the SDK reorganization).
+JavaScript/TypeScript SDK for application canisters that delegate read scenarios to the Gleaph
+Router. The SDK mirrors the Router wire format (`IcWireValue`): generated bindings reference real
+JavaScript types directly, and the SDK converts them to and from the wire form — users never write
+wire conversions by hand.
 
-Workspace package for the JS/TS Gleaph SDK.
+## Values
 
-Current scope:
+| GQL type                      | JS type                                                   |
+| ----------------------------- | --------------------------------------------------------- |
+| Int8/16/32, Uint8/16/32       | `number`                                                  |
+| Int64/128/256, Uint64/128/256 | `bigint` (Int256/Uint256 carry 32-byte forms on the wire) |
+| Float16                       | `GqlFloat16`                                              |
+| Float32/64                    | `number`                                                  |
+| Float128                      | `GqlFloat128`                                             |
+| Float256                      | `GqlFloat256`                                             |
+| Decimal                       | `GqlDecimal` (decimal.js)                                 |
+| Date                          | `Temporal.PlainDate`                                      |
+| Time / LocalTime              | `Temporal.PlainTime`                                      |
+| DateTime                      | `Temporal.Instant`                                        |
+| LocalDateTime                 | `Temporal.PlainDateTime`                                  |
+| ZonedDateTime                 | `Temporal.ZonedDateTime`                                  |
+| ZonedTime                     | `GqlZonedTime`                                            |
+| Duration                      | `Temporal.Duration`                                       |
+| Bytes / Path                  | `Uint8Array`                                              |
+| Principal                     | `Principal` (`@icp-sdk/core`)                             |
 
-- core graph DTO types
-- generic `GraphClient` contract
-- `USE GRAPH` pushdown helpers
-- IC canister transport factory
-- `ApiValue` codec and request builders
-- canonical GQL value encoding for independently encoded mutation boundaries
-- Rust/JavaScript conformance vectors for the canonical value codec
-- prepared-query codegen runtime surface (`executePrepared` / `executePreparedMutation`) backed by Router `prepared_query` / `prepared_mutate`
-- prepared-query manifest retrieval (`getPreparedManifest`)
-- codegen integration with `gleaph-codegen`
+`GqlFloat128` / `GqlFloat256` hold the canonical little-endian wire bytes and convert to/from
+decimal strings and JavaScript numbers in pure `BigInt` arithmetic, so they work in Node, browsers,
+workers, and edge runtimes without any wasm or async initialization. `toString()` emits the
+shortest decimal string that round-trips; `toNumber()` rounds to the nearest f64.
 
-Planned scope:
-
-- `frontend` sample integration
-
-Planned entrypoint shape:
-
-```ts
-import { createIcGraphClient, unsupportedUseGraphPushdowns } from "@gleaph/sdk";
-
-const graph = await createIcGraphClient({
-  canisterId: "bkyz2-fmaaa-aaaaa-qaaaq-cai",
-});
-
-const plan = await graph.plan(
-  makeQueryRequest("USE myGraph MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN b"),
-);
-
-console.log(unsupportedUseGraphPushdowns(plan));
-```
-
-Generated prepared clients from `gleaph-codegen` can call the SDK directly:
+## Usage
 
 ```ts
 import { createIcGraphClient } from "@gleaph/sdk";
-import { createPreparedClient } from "./generated/gleaph.prepared";
 
-const graph = await createIcGraphClient({
-  canisterId: "bkyz2-fmaaa-aaaaa-qaaaq-cai",
+const client = createIcGraphClient({ canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai" });
+
+const result = await client.execute({
+  query: "MATCH (n:Person {id: $id}) RETURN n.name",
+  params: { id: "alice" },
 });
-
-const prepared = createPreparedClient(graph);
-await prepared.find_user({ name: "alice" });
 ```
 
-The Router-owned typed manifest can be retrieved separately when a tool or client needs the
-language-neutral prepared-operation schema:
+Generated prepared-operation bindings (from `gleaph-codegen`) wrap `execute`/`executePreparedQuery`
+and expose typed `*Params` / `*Row` shapes backed by the value types above.
 
-```ts
-const manifest = await graph.getPreparedManifest("default");
-console.log(manifest.operations);
-```
+## Development
+
+- `pnpm check` — format, lint, and type checks
+- `pnpm test` — conformance tests against the shared GQL value vectors
+- `pnpm build` — build the library with `vp pack`

@@ -1,11 +1,12 @@
 export class GleaphSdkError extends Error {
-  constructor(
-    message: string,
-    readonly code = "GLEAPH_SDK_ERROR",
-    readonly causeValue?: unknown,
-  ) {
+  readonly code: string;
+  readonly causeValue: unknown | undefined;
+
+  constructor(message: string, code = "GLEAPH_SDK_ERROR", causeValue?: unknown) {
     super(message);
     this.name = "GleaphSdkError";
+    this.code = code;
+    this.causeValue = causeValue;
   }
 }
 

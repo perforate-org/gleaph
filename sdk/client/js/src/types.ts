@@ -1,5 +1,12 @@
 import type { Principal } from "@icp-sdk/core/principal";
 
+/** TC39 Temporal types used by generated bindings and SDK conversions. */
+export type { Temporal } from "@js-temporal/polyfill";
+
+/** Arbitrary-precision decimal value used by generated bindings (decimal.js). */
+export { default as GqlDecimal } from "decimal.js";
+
+/** One value in the Router wire format (the `IcWireValue` candid mirror). */
 export type ApiValue =
   | { Null: null }
   | { Bool: boolean }
@@ -13,14 +20,14 @@ export type ApiValue =
   | { Uint64: bigint | number }
   | { Int128: bigint | number }
   | { Uint128: bigint | number }
-  | { Int256: string }
-  | { Uint256: string }
+  | { Int256: Uint8Array }
+  | { Uint256: Uint8Array }
   | { Float16: number }
   | { Float32: number }
   | { Float64: number }
   | { Float128: Uint8Array }
   | { Float256: Uint8Array }
-  | { Decimal: string }
+  | { Decimal: Uint8Array }
   | { Text: string }
   | { Bytes: Uint8Array }
   | { Date: number }
@@ -37,6 +44,49 @@ export type ApiValue =
   | { Record: Record<string, ApiValue> };
 
 export type ApiPathElement = { Vertex: Uint8Array } | { Edge: Uint8Array };
+
+/** User-facing `ZonedTime` value: time of day with a fixed UTC offset. */
+export interface GqlZonedTime {
+  nanos: bigint;
+  offset_seconds: number;
+}
+
+/** Semantic-type hint passed to `toApiValue` by generated code for exact wire conversion. */
+export type ApiValueHint =
+  | "Null"
+  | "Bool"
+  | "Int8"
+  | "Int16"
+  | "Int32"
+  | "Int64"
+  | "Uint8"
+  | "Uint16"
+  | "Uint32"
+  | "Uint64"
+  | "Int128"
+  | "Uint128"
+  | "Int256"
+  | "Uint256"
+  | "Float16"
+  | "Float32"
+  | "Float64"
+  | "Float128"
+  | "Float256"
+  | "Decimal"
+  | "Text"
+  | "Bytes"
+  | "Date"
+  | "Time"
+  | "LocalTime"
+  | "DateTime"
+  | "LocalDateTime"
+  | "ZonedDateTime"
+  | "ZonedTime"
+  | "Duration"
+  | "Principal"
+  | "List"
+  | "Path"
+  | "Record";
 
 export interface ApiQueryRequest {
   query: string;
@@ -119,58 +169,33 @@ export interface ApiPreparedParameterInfo {
 
 export interface ApiPreparedColumnInfo {
   name: string;
-  expr: string;
-  aliased: boolean;
-}
-
-export interface ApiTypeDiagnostic {
-  code?: string | null;
-  message: string;
-  span_start: number;
-  span_end: number;
-  severity: "Error" | "Warning";
+  type_hints: string[];
 }
 
 export interface ApiPreparedQueryInfo {
   name: string;
-  kind: "Query" | "Update";
-  requires_caller: boolean;
-  extension_types: string[];
-  source: string;
   description?: string | null;
-  columns: ApiPreparedColumnInfo[];
+  kind: "Query" | "Update";
   parameters: ApiPreparedParameterInfo[];
-  allowed_sorts: PreparedSortKey[];
-  default_sort?: PreparedSortSpec[] | null;
-  type_warnings: ApiTypeDiagnostic[];
-  explain: string;
-  summary: ApiPlanSummary;
+  result: { columns: ApiPreparedColumnInfo[] };
+  supports_consistency: boolean;
+  supports_idempotency: boolean;
+  allowed_sorts: PreparedSortSpec[];
   use_graph_pushdown: ApiUseGraphPushdownInfo[];
+  explain: string;
+}
+
+export interface ApiTypeDiagnostic {
+  severity: "error" | "warning" | "info";
+  message: string;
+  span: { start: number; end: number };
+  kind: string;
 }
 
 export interface ApiPrepareResponse {
+  diagnostics: ApiTypeDiagnostic[];
   prepared: ApiPreparedQueryInfo;
 }
-
-export type MutationLifecyclePhase =
-  | "Routing"
-  | "CanonicalPending"
-  | "CanonicalCommitted"
-  | "ProjectionPending"
-  | "Completed"
-  | "Failed";
-
-export interface MutationTokenShard {
-  shard_id: number;
-  label_stats_seq?: bigint;
-}
-
-export interface MutationToken {
-  mutation_id: bigint;
-  shards: MutationTokenShard[];
-}
-
-export type ReadMode = { Eventual: null } | { AtLeast: MutationToken };
 
 /** Decoded result returned by Router GQL query and prepared-query calls. */
 export interface GqlQueryResult<Row = Record<string, ApiValue>> {
@@ -185,18 +210,95 @@ export interface GqlMutationResult {
   row_count: bigint;
 }
 
-export interface PreparedManifest {
-  manifest_version: number;
-  graph: PreparedManifestGraph;
-  operations: PreparedManifestOperation[];
+export type MutationLifecyclePhase =
+  | "Routing"
+  | "CanonicalPending"
+  | "CanonicalCommitted"
+  | "ProjectionPending"
+  | "Completed"
+  | "Failed";
+
+export interface MutationTokenShard {
+  shard_id: number;
+  label_stats_seq?: bigint | null;
 }
+
+export interface MutationToken {
+  mutation_id: bigint;
+  shards: MutationTokenShard[];
+}
+
+export type ReadMode = { Eventual: null } | { AtLeast: MutationToken };
 
 export interface PreparedManifestGraph {
   id: string;
   name?: string | null;
 }
 
+export type PreparedSemanticType =
+  | "Null"
+  | "Bool"
+  | "Int8"
+  | "Int16"
+  | "Int32"
+  | "Int64"
+  | "Int128"
+  | "Int256"
+  | "Uint8"
+  | "Uint16"
+  | "Uint32"
+  | "Uint64"
+  | "Uint128"
+  | "Uint256"
+  | "Float16"
+  | "Float32"
+  | "Float64"
+  | "Float128"
+  | "Float256"
+  | "Decimal"
+  | "Text"
+  | "Bytes"
+  | "Date"
+  | "Time"
+  | "LocalTime"
+  | "DateTime"
+  | "LocalDateTime"
+  | "ZonedDateTime"
+  | "ZonedTime"
+  | "Duration"
+  | "Principal"
+  | "Path"
+  | "Record";
+
+export interface PreparedManifestParameter {
+  name: string;
+  required: boolean;
+  nullable: boolean;
+  semantic_type: PreparedSemanticType;
+}
+
+export interface PreparedManifestRecordField {
+  name: string;
+  semantic_type: PreparedSemanticType;
+  nullable: boolean;
+}
+
+export interface PreparedManifestColumn {
+  name: string;
+  semantic_type: PreparedSemanticType;
+  nullable: boolean;
+}
+
+export interface PreparedManifestResultSchema {
+  columns: PreparedManifestColumn[];
+}
+
 export type PreparedManifestOperationKind = "Query" | "Update";
+
+export interface PreparedManifestSortKey {
+  key: string;
+  label?: string | null;
+}
 
 export interface PreparedManifestOperation {
   name: string;
@@ -209,67 +311,8 @@ export interface PreparedManifestOperation {
   allowed_sorts: PreparedManifestSortKey[];
 }
 
-export interface PreparedManifestParameter {
-  name: string;
-  description?: string | null;
-  required: boolean;
-  nullable: boolean;
-  type: PreparedSemanticType;
+export interface PreparedManifest {
+  manifest_version: number;
+  graph: PreparedManifestGraph;
+  operations: PreparedManifestOperation[];
 }
-
-export interface PreparedManifestResultSchema {
-  columns: PreparedManifestColumn[];
-}
-
-export interface PreparedManifestColumn {
-  name: string;
-  type: PreparedSemanticType;
-  nullable: boolean;
-}
-
-export interface PreparedManifestSortKey {
-  key: string;
-  label?: string | null;
-}
-
-export interface PreparedManifestRecordField {
-  name: string;
-  type: PreparedSemanticType;
-  nullable: boolean;
-}
-
-export type PreparedSemanticType =
-  | { Null: null }
-  | { Bool: null }
-  | { Int8: null }
-  | { Int16: null }
-  | { Int32: null }
-  | { Int64: null }
-  | { Uint8: null }
-  | { Uint16: null }
-  | { Uint32: null }
-  | { Uint64: null }
-  | { Int128: null }
-  | { Uint128: null }
-  | { Int256: null }
-  | { Uint256: null }
-  | { Float16: null }
-  | { Float32: null }
-  | { Float64: null }
-  | { Float128: null }
-  | { Float256: null }
-  | { Decimal: null }
-  | { Text: null }
-  | { Bytes: null }
-  | { Date: null }
-  | { Time: null }
-  | { Principal: null }
-  | { LocalTime: null }
-  | { DateTime: null }
-  | { LocalDateTime: null }
-  | { ZonedDateTime: null }
-  | { ZonedTime: null }
-  | { Duration: null }
-  | { List: { element: PreparedSemanticType } }
-  | { Record: { fields: PreparedManifestRecordField[] } }
-  | { Path: null };
