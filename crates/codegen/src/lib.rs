@@ -391,7 +391,11 @@ mod tests {
         assert!(output.contains("pub struct Prepared;"));
         assert!(output.contains("impl PreparedExt for gleaph_cdk::GleaphClient<Prepared>"));
         assert!(output.contains("use gleaph_cdk::GqlParams"));
-        assert!(output.contains("pub fn into_gql_params(self) -> GqlParams"));
+        assert!(
+            output.contains(
+                "pub fn into_gql_params(self) -> Result<GqlParams, gleaph_cdk::CallError>"
+            )
+        );
         assert!(output.contains("fn find_users("));
         assert!(output.contains(
             "impl Future<Output = Result<PreparedResponse<FindUsersRow>, gleaph_cdk::CallError>> + Send;"
@@ -502,18 +506,39 @@ mod tests {
                 semantic_type: SemanticType::Decimal,
             },
         ];
+        value.operations[0].result.columns = vec![
+            Column {
+                name: "quad".into(),
+                semantic_type: SemanticType::Float128,
+                nullable: false,
+            },
+            Column {
+                name: "oct".into(),
+                semantic_type: SemanticType::Float256,
+                nullable: true,
+            },
+        ];
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("pub quad: gleaph_cdk::GqlFloat128"));
+        assert!(output.contains("pub quad: f128"));
         assert!(output.contains("pub oct: gleaph_cdk::GqlFloat256"));
         assert!(output.contains("pub signed: gleaph_cdk::GqlInt256"));
         assert!(output.contains("pub unsigned: gleaph_cdk::GqlUint256"));
         assert!(output.contains("pub price: gleaph_cdk::GqlDecimal"));
+        assert!(output.contains("pub quad: gleaph_cdk::Float128"));
+        assert!(output.contains("pub oct: Option<gleaph_cdk::Float256>"));
+        assert!(output.contains("GqlValue::Float128(self.quad)"));
+        assert!(output.contains("GqlValue::Float256(self.oct)"));
+        assert!(output.contains("GqlValue::from(self.signed)"));
+        assert!(output.contains("GqlValue::from(self.unsigned)"));
+        assert!(output.contains("GqlValue::from(self.price)"));
         assert!(output.contains("#[serde(crate = \"gleaph_cdk::serde\")]"));
-        assert!(output.contains("GqlValue::Float128(self.quad.into_inner())"));
-        assert!(output.contains("GqlValue::Float256(self.oct.into_inner())"));
-        assert!(output.contains("GqlValue::Int256(self.signed.into_inner())"));
-        assert!(output.contains("GqlValue::Uint256(self.unsigned.into_inner())"));
-        assert!(output.contains("GqlValue::Decimal(self.price.into_inner())"));
+        assert!(output.contains("#[candid_path(\"gleaph_cdk::candid\")]"));
+        assert!(output.contains("use gleaph_cdk::candid::CandidType"));
+        assert!(
+            output.contains(
+                "pub fn into_gql_params(self) -> Result<GqlParams, gleaph_cdk::CallError>"
+            )
+        );
     }
 
     #[test]
@@ -555,8 +580,10 @@ mod tests {
             },
         ];
         let output = generate_rust_canister(&value).unwrap();
-        assert!(output.contains("pub owner: gleaph_cdk::GqlPrincipal"));
-        assert!(output.contains("gleaph_cdk::gql_principal_value(self.owner)"));
+        assert!(output.contains("pub owner: gleaph_cdk::candid::Principal"));
+        assert!(output.contains(
+            "GqlValue::Extension(Box::new(gleaph_cdk::GqlPrincipal::from_inner(self.owner)))"
+        ));
         assert!(output.contains(
             "GqlValue::Path(self.route.into_iter().map(gleaph_cdk::PathElement::into_gql).collect())"
         ));
@@ -650,7 +677,7 @@ mod tests {
         ];
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub created_at: PreparedDateTime"));
-        assert!(output.contains("pub owner: gleaph_cdk::GqlPrincipal"));
+        assert!(output.contains("pub owner: gleaph_cdk::candid::Principal"));
         assert!(output.contains("pub route: Vec<gleaph_cdk::PathElement>"));
         assert!(output.contains("pub ids: Vec<i32>"));
         assert!(output.contains("pub deleted_at: ()"));
