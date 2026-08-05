@@ -5,9 +5,9 @@ ADR owns the prepared-query/runtime boundary, while exact scalar representation 
 ADR 0055.
 
 Date: 2026-07-29
-Status: proposed
+Status: accepted
 Last revised: 2026-08-05
-Anchor timestamp: 2026-08-05 07:21:25 UTC +0000
+Anchor timestamp: 2026-08-05 13:10:38 UTC +0000
 
 ## Context
 
@@ -282,6 +282,14 @@ The following points are intentionally not resolved by this proposed ADR:
 
 These decisions are required before changing the Router public API or declaring the manifest ABI
 accepted. They do not block recording the boundary and scope decisions in this proposed ADR.
+
+Acceptance status: decisions 1, 2, 4, and 6 are resolved (1 and 2 by
+[ADR 0061](0061-prepared-cli-registration-and-batch-catalog-api.md)); decision 3 is governed by
+[ADR 0055](0055-exact-scalar-types-at-router-api-boundary.md) and materialized by the implemented
+Router result-schema completion. Decisions 5 (non-CDK Rust client ownership) and 7 (released
+runtime/manifest compatibility policy) remain post-release follow-ups and do not block this
+acceptance: the implemented codegen/runtime boundary and the version-1 development manifest
+contract are accepted as-is.
 
 ## Migration
 

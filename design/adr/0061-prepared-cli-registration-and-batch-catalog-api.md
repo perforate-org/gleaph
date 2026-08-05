@@ -7,9 +7,9 @@ metadata API) and 2 (manifest authority). The metadata contract, codegen boundar
 vocabulary remain owned by ADR 0053 and ADR 0055 respectively.
 
 Date: 2026-08-05
-Status: proposed
+Status: accepted
 Last revised: 2026-08-05
-Anchor timestamp: 2026-08-05 07:21:25 UTC +0000
+Anchor timestamp: 2026-08-05 13:10:38 UTC +0000
 
 ## Context
 
