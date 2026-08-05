@@ -9,9 +9,22 @@ description = "Named GQL parameters, the IntoGqlParam conversion trait, and the 
 
 [dependencies]
 candid.workspace = true
+ethnum = { workspace = true, optional = true }
 gleaph-gql-ic-wire.workspace = true
 gleaph-gql-value.workspace = true
+f256 = { workspace = true, optional = true }
+half = { workspace = true, optional = true }
+rust_decimal = { workspace = true, optional = true }
 serde.workspace = true
+
+[features]
+default = ["i256", "u256", "f16", "f256", "decimal"]
+i256 = ["dep:ethnum"]
+u256 = ["dep:ethnum"]
+f16 = ["dep:half"]
+f128 = []
+f256 = ["dep:f256"]
+decimal = ["dep:rust_decimal"]
 
 [dev-dependencies]
 serde_json.workspace = true

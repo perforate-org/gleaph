@@ -27,7 +27,7 @@ use std::str;
 #[cfg(feature = "cmp")]
 pub mod cmp;
 mod enum_;
-mod impls;
+pub mod impls;
 #[cfg(feature = "join_hash")]
 pub mod join_hash;
 pub mod numeric_order;

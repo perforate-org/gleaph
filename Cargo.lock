@@ -1371,6 +1371,9 @@ name = "ethnum"
 version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "event-listener"
@@ -1684,6 +1687,7 @@ dependencies = [
  "gleaph-prepared-api",
  "half 2.7.1",
  "ic-cdk",
+ "ic_principal",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -1760,12 +1764,14 @@ name = "gleaph-gql-ic"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "ethnum",
  "f256",
  "gleaph-gql",
  "gleaph-graph-kernel",
  "half 2.7.1",
  "ic-stable-structures",
  "rkyv 0.8.17",
+ "rust_decimal",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1816,8 +1822,12 @@ name = "gleaph-gql-params"
 version = "0.0.1"
 dependencies = [
  "candid",
+ "ethnum",
+ "f256",
  "gleaph-gql-ic-wire",
  "gleaph-gql-value",
+ "half 2.7.1",
+ "rust_decimal",
  "serde",
  "serde_json",
 ]
@@ -2136,6 +2146,7 @@ checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
  "cfg-if",
  "crunchy",
+ "serde",
  "zerocopy",
 ]
 

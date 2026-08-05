@@ -21,8 +21,9 @@
 //! `From` conversions `gleaph-gql-value` provides, and keep the `Principal` special case
 //! conflict-free.
 
+#![cfg_attr(feature = "f128", feature(f128))]
+
 use candid::{CandidType, Deserialize, Principal};
-use gleaph_gql_value::types::Decimal;
 use serde::Serialize;
 use std::fmt;
 
@@ -91,6 +92,12 @@ impl IntoGqlParam for Principal {
     }
 }
 
+impl IntoGqlParam for () {
+    fn into_gql_param(self) -> GqlValue {
+        self.into()
+    }
+}
+
 impl IntoGqlParam for bool {
     fn into_gql_param(self) -> GqlValue {
         self.into()
@@ -127,6 +134,13 @@ impl IntoGqlParam for i128 {
     }
 }
 
+#[cfg(feature = "i256")]
+impl IntoGqlParam for ethnum::I256 {
+    fn into_gql_param(self) -> GqlValue {
+        self.into()
+    }
+}
+
 impl IntoGqlParam for u8 {
     fn into_gql_param(self) -> GqlValue {
         self.into()
@@ -157,6 +171,20 @@ impl IntoGqlParam for u128 {
     }
 }
 
+#[cfg(feature = "u256")]
+impl IntoGqlParam for ethnum::U256 {
+    fn into_gql_param(self) -> GqlValue {
+        self.into()
+    }
+}
+
+#[cfg(feature = "f16")]
+impl IntoGqlParam for half::f16 {
+    fn into_gql_param(self) -> GqlValue {
+        self.into()
+    }
+}
+
 impl IntoGqlParam for f32 {
     fn into_gql_param(self) -> GqlValue {
         self.into()
@@ -164,6 +192,20 @@ impl IntoGqlParam for f32 {
 }
 
 impl IntoGqlParam for f64 {
+    fn into_gql_param(self) -> GqlValue {
+        self.into()
+    }
+}
+
+#[cfg(feature = "f128")]
+impl IntoGqlParam for f128 {
+    fn into_gql_param(self) -> GqlValue {
+        self.into()
+    }
+}
+
+#[cfg(feature = "f256")]
+impl IntoGqlParam for f256::f256 {
     fn into_gql_param(self) -> GqlValue {
         self.into()
     }
@@ -187,7 +229,8 @@ impl IntoGqlParam for Vec<u8> {
     }
 }
 
-impl IntoGqlParam for Decimal {
+#[cfg(feature = "decimal")]
+impl IntoGqlParam for rust_decimal::Decimal {
     fn into_gql_param(self) -> GqlValue {
         self.into()
     }

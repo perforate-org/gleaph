@@ -345,6 +345,16 @@ impl<'a> BinaryCursor<'a> {
 
 // ──── From impls ────
 
+impl From<()> for Value {
+    fn from(_v: ()) -> Self {
+        Self::Null
+    }
+}
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
 impl From<i8> for Value {
     fn from(v: i8) -> Self {
         Self::Int8(v)
@@ -368,6 +378,12 @@ impl From<i64> for Value {
 impl From<i128> for Value {
     fn from(v: i128) -> Self {
         Self::Int128(v)
+    }
+}
+#[cfg(feature = "i256")]
+impl From<ethnum::i256> for Value {
+    fn from(v: ethnum::i256) -> Self {
+        Self::Int256(Int256(v))
     }
 }
 impl From<u8> for Value {
@@ -395,6 +411,18 @@ impl From<u128> for Value {
         Self::Uint128(v)
     }
 }
+#[cfg(feature = "u256")]
+impl From<ethnum::u256> for Value {
+    fn from(v: ethnum::u256) -> Self {
+        Self::Uint256(Uint256(v))
+    }
+}
+#[cfg(feature = "f16")]
+impl From<half::f16> for Value {
+    fn from(v: half::f16) -> Self {
+        Self::Float16(v)
+    }
+}
 impl From<f32> for Value {
     fn from(v: f32) -> Self {
         Self::Float32(v)
@@ -403,6 +431,18 @@ impl From<f32> for Value {
 impl From<f64> for Value {
     fn from(v: f64) -> Self {
         Self::Float64(v)
+    }
+}
+#[cfg(feature = "f128")]
+impl From<f128> for Value {
+    fn from(v: f128) -> Self {
+        Self::Float128(v)
+    }
+}
+#[cfg(feature = "f256")]
+impl From<f256::f256> for Value {
+    fn from(v: f256::f256) -> Self {
+        Self::Float256(v)
     }
 }
 impl From<String> for Value {
@@ -415,19 +455,21 @@ impl From<&str> for Value {
         Self::Text(v.to_string())
     }
 }
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Self::Bool(v)
-    }
-}
 impl From<Vec<u8>> for Value {
     fn from(v: Vec<u8>) -> Self {
         Self::Bytes(v)
     }
 }
+#[cfg(feature = "decimal")]
 impl From<Decimal> for Value {
     fn from(d: Decimal) -> Self {
         Self::Decimal(d)
+    }
+}
+#[cfg(feature = "decimal")]
+impl From<rust_decimal::Decimal> for Value {
+    fn from(d: rust_decimal::Decimal) -> Self {
+        Self::Decimal(Decimal(d))
     }
 }
 impl<T: Into<Value>> From<Option<T>> for Value {
