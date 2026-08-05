@@ -9,10 +9,10 @@ import { Principal } from "@icp-sdk/core/principal";
 import { Temporal } from "@js-temporal/polyfill";
 import GqlDecimal from "decimal.js";
 import type {
-  ApiExecutePreparedRequest,
   ApiPathElement,
   ApiPrepareRequest,
   ApiPreparedMutationRequest,
+  ApiPreparedQueryRequest,
   ApiQueryRequest,
   ApiValue,
   ApiValueHint,
@@ -840,12 +840,12 @@ export function makePrepareRequest(
   return request;
 }
 
-export function makeExecutePreparedRequest(
+export function makePreparedQueryRequest(
   name: string,
   params?: Record<string, unknown | ApiValue>,
   sort?: PreparedSortSpec[],
-): ApiExecutePreparedRequest {
-  const request: ApiExecutePreparedRequest = {
+): ApiPreparedQueryRequest {
+  const request: ApiPreparedQueryRequest = {
     name,
     params: toApiParams(params),
   };
@@ -861,6 +861,6 @@ export function makePreparedMutationRequest(
   clientMutationKey: string,
   sort?: PreparedSortSpec[],
 ): ApiPreparedMutationRequest {
-  const request = makeExecutePreparedRequest(name, params, sort);
+  const request = makePreparedQueryRequest(name, params, sort);
   return { ...request, client_mutation_key: clientMutationKey };
 }

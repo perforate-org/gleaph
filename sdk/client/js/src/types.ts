@@ -99,13 +99,13 @@ export interface ApiPrepareRequest {
   options?: PreparedOptions;
 }
 
-export interface ApiExecutePreparedRequest {
+export interface ApiPreparedQueryRequest {
   name: string;
   params: Record<string, ApiValue>;
   sort?: PreparedSortSpec[];
 }
 
-export interface ApiPreparedMutationRequest extends ApiExecutePreparedRequest {
+export interface ApiPreparedMutationRequest extends ApiPreparedQueryRequest {
   client_mutation_key: string;
 }
 

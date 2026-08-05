@@ -2,10 +2,10 @@ import type {
   ApiPlanResponse,
   ApiPrepareRequest,
   ApiPrepareResponse,
+  ApiPreparedQueryRequest,
   ApiQueryRequest,
   GqlMutationResult,
   GqlQueryResult,
-  ApiExecutePreparedRequest,
   ApiPreparedMutationRequest,
   ApiValue,
   PreparedManifest,
@@ -17,33 +17,33 @@ import type {
   BulkLoadStatusPage,
   BulkLoadStatusRequest,
 } from "./bulk.ts";
-import { makeExecutePreparedRequest } from "./values.ts";
+import { makePreparedQueryRequest } from "./values.ts";
 
 export interface GleaphTransport {
-  plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
-  execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
+  explain(request: ApiQueryRequest): Promise<ApiPlanResponse>;
+  gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
-  getPreparedManifest(graphName: string): Promise<PreparedManifest>;
-  executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
-  executePreparedUpdate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
+  listPrepared(graphName: string): Promise<PreparedManifest>;
+  preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult>;
+  preparedMutate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
   bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse>;
   bulkLoadStatus(request: BulkLoadStatusRequest): Promise<BulkLoadStatusPage>;
   dropPrepared(name: string): Promise<boolean>;
 }
 
 export interface GleaphClient {
-  plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
-  execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
+  explain(request: ApiQueryRequest): Promise<ApiPlanResponse>;
+  gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
-  getPreparedManifest(graphName: string): Promise<PreparedManifest>;
-  executePrepared(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
-  executePrepared(
+  listPrepared(graphName: string): Promise<PreparedManifest>;
+  preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult>;
+  preparedQuery(
     name: string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
   ): Promise<GqlQueryResult>;
-  executePreparedMutation(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
-  executePreparedMutation(
+  preparedMutate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
+  preparedMutate(
     name: string,
     params: Record<string, unknown | ApiValue> | undefined,
     clientMutationKey: string,
@@ -57,55 +57,55 @@ export interface GleaphClient {
 class TransportBackedGleaphClient implements GleaphClient {
   constructor(private readonly transport: GleaphTransport) {}
 
-  plan(request: ApiQueryRequest): Promise<ApiPlanResponse> {
-    return this.transport.plan(request);
+  explain(request: ApiQueryRequest): Promise<ApiPlanResponse> {
+    return this.transport.explain(request);
   }
 
-  execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
-    return this.transport.execute(request);
+  gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {
+    return this.transport.gqlQuery(request);
   }
 
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse> {
     return this.transport.prepare(request);
   }
 
-  getPreparedManifest(graphName: string): Promise<PreparedManifest> {
-    return this.transport.getPreparedManifest(graphName);
+  listPrepared(graphName: string): Promise<PreparedManifest> {
+    return this.transport.listPrepared(graphName);
   }
 
-  executePrepared(
-    requestOrName: ApiExecutePreparedRequest | string,
+  preparedQuery(
+    requestOrName: ApiPreparedQueryRequest | string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
   ): Promise<GqlQueryResult> {
     const request =
       typeof requestOrName === "string"
-        ? makeExecutePreparedRequest(requestOrName, params, sort)
+        ? makePreparedQueryRequest(requestOrName, params, sort)
         : requestOrName;
-    return this.transport.executePreparedQuery(request);
+    return this.transport.preparedQuery(request);
   }
 
-  executePreparedMutation(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
-  executePreparedMutation(
+  preparedMutate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
+  preparedMutate(
     name: string,
     params: Record<string, unknown | ApiValue> | undefined,
     clientMutationKey: string,
     sort?: PreparedSortSpec[],
   ): Promise<GqlMutationResult>;
-  executePreparedMutation(
+  preparedMutate(
     requestOrName: ApiPreparedMutationRequest | string,
     params?: Record<string, unknown | ApiValue>,
     clientMutationKey?: string,
     sort?: PreparedSortSpec[],
   ): Promise<GqlMutationResult> {
     if (typeof requestOrName !== "string") {
-      return this.transport.executePreparedUpdate(requestOrName);
+      return this.transport.preparedMutate(requestOrName);
     }
     if (clientMutationKey === undefined) {
       throw new Error("clientMutationKey is required for prepared mutations");
     }
-    return this.transport.executePreparedUpdate({
-      ...makeExecutePreparedRequest(requestOrName, params, sort),
+    return this.transport.preparedMutate({
+      ...makePreparedQueryRequest(requestOrName, params, sort),
       client_mutation_key: clientMutationKey,
     });
   }
@@ -134,59 +134,59 @@ class TransportBackedGleaphClient implements GleaphClient {
 export class GleaphClientWrapper implements GleaphClient {
   constructor(protected readonly inner: GleaphClient) {}
 
-  plan(request: ApiQueryRequest): Promise<ApiPlanResponse> {
-    return this.inner.plan(request);
+  explain(request: ApiQueryRequest): Promise<ApiPlanResponse> {
+    return this.inner.explain(request);
   }
 
-  execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
-    return this.inner.execute(request);
+  gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {
+    return this.inner.gqlQuery(request);
   }
 
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse> {
     return this.inner.prepare(request);
   }
 
-  getPreparedManifest(graphName: string): Promise<PreparedManifest> {
-    return this.inner.getPreparedManifest(graphName);
+  listPrepared(graphName: string): Promise<PreparedManifest> {
+    return this.inner.listPrepared(graphName);
   }
 
-  executePrepared(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
-  executePrepared(
+  preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult>;
+  preparedQuery(
     name: string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
   ): Promise<GqlQueryResult>;
-  executePrepared(
-    requestOrName: ApiExecutePreparedRequest | string,
+  preparedQuery(
+    requestOrName: ApiPreparedQueryRequest | string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
   ): Promise<GqlQueryResult> {
     if (typeof requestOrName === "string") {
-      return this.inner.executePrepared(requestOrName, params, sort);
+      return this.inner.preparedQuery(requestOrName, params, sort);
     }
-    return this.inner.executePrepared(requestOrName);
+    return this.inner.preparedQuery(requestOrName);
   }
 
-  executePreparedMutation(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
-  executePreparedMutation(
+  preparedMutate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
+  preparedMutate(
     name: string,
     params: Record<string, unknown | ApiValue> | undefined,
     clientMutationKey: string,
     sort?: PreparedSortSpec[],
   ): Promise<GqlMutationResult>;
-  executePreparedMutation(
+  preparedMutate(
     requestOrName: ApiPreparedMutationRequest | string,
     params?: Record<string, unknown | ApiValue>,
     clientMutationKey?: string,
     sort?: PreparedSortSpec[],
   ): Promise<GqlMutationResult> {
     if (typeof requestOrName !== "string") {
-      return this.inner.executePreparedMutation(requestOrName);
+      return this.inner.preparedMutate(requestOrName);
     }
     if (clientMutationKey === undefined) {
       throw new Error("clientMutationKey is required for prepared mutations");
     }
-    return this.inner.executePreparedMutation(requestOrName, params, clientMutationKey, sort);
+    return this.inner.preparedMutate(requestOrName, params, clientMutationKey, sort);
   }
 
   bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse> {

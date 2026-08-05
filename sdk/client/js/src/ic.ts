@@ -9,11 +9,11 @@ import {
 import { GleaphCanisterError } from "./errors.ts";
 import { GqlQueryRows, graphIdlFactory } from "./idl.ts";
 import type {
-  ApiExecutePreparedRequest,
   ApiPreparedMutationRequest,
   ApiPlanResponse,
   ApiPrepareRequest,
   ApiPrepareResponse,
+  ApiPreparedQueryRequest,
   ApiQueryRequest,
   GqlMutationResult,
   GqlQueryResult,
@@ -162,11 +162,11 @@ function unwrapResult<T>(result: Result<T>): T {
 class IcGleaphTransport implements GleaphTransport {
   constructor(private readonly actor: GleaphActor) {}
 
-  async plan(request: ApiQueryRequest): Promise<ApiPlanResponse> {
+  async explain(request: ApiQueryRequest): Promise<ApiPlanResponse> {
     return unwrapResult<ApiPlanResponse>(await this.actor.explain(request.query));
   }
 
-  async execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
+  async gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
         await this.actor.gql_query(request.query, encodeParams(request.params), { Eventual: null }),
@@ -184,11 +184,11 @@ class IcGleaphTransport implements GleaphTransport {
     );
   }
 
-  async getPreparedManifest(graphName: string): Promise<PreparedManifest> {
+  async listPrepared(graphName: string): Promise<PreparedManifest> {
     return unwrapResult<PreparedManifest>(await this.actor.list_prepared(graphName));
   }
 
-  async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult> {
+  async preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult> {
     const sort: [] | [{ key: string; direction: string }[]] =
       request.sort && request.sort.length > 0
         ? [request.sort.map(({ key, direction }) => ({ key, direction }))]
@@ -202,7 +202,7 @@ class IcGleaphTransport implements GleaphTransport {
     );
   }
 
-  async executePreparedUpdate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult> {
+  async preparedMutate(request: ApiPreparedMutationRequest): Promise<GqlMutationResult> {
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
         await this.actor.prepared_mutate(

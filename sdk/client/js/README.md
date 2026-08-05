@@ -36,17 +36,17 @@ shortest decimal string that round-trips; `toNumber()` rounds to the nearest f64
 ```ts
 import { createGleaphClient } from "@gleaph/sdk";
 
-const client = createGleaphClient({
+const client = await createGleaphClient({
   canisterId: "rrkah-fqaaa-aaaaa-aaaaq-cai",
 });
 
-const result = await client.execute({
+const result = await client.gqlQuery({
   query: "MATCH (n:Person {id: $id}) RETURN n.name",
   params: { id: "alice" },
 });
 ```
 
-Generated prepared-operation bindings (from `gleaph-codegen`) wrap `execute`/`executePreparedQuery`
+Generated prepared-operation bindings (from `gleaph-codegen`) wrap `gqlQuery`/`preparedQuery`
 and expose typed `*Params` / `*Row` shapes backed by the value types above.
 
 ## Development
