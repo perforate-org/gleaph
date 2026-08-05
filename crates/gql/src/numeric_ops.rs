@@ -2,7 +2,13 @@
 
 use crate::Value;
 use crate::ast::{BinaryOp, UnaryOp};
-use crate::types::{Decimal, Int256, Uint256, narrow_signed, narrow_unsigned};
+#[cfg(feature = "decimal")]
+use crate::types::Decimal;
+#[cfg(feature = "i256")]
+use crate::types::Int256;
+#[cfg(feature = "u256")]
+use crate::types::Uint256;
+use crate::types::{narrow_signed, narrow_unsigned};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericOpError {
@@ -33,6 +39,7 @@ pub fn eval_abs_numeric(value: Value) -> Result<Value, NumericOpError> {
         return Ok(Value::Null);
     }
     match value {
+        #[cfg(feature = "decimal")]
         Value::Decimal(value) => {
             if value.0.is_sign_negative() {
                 Ok(Value::Decimal(Decimal::new(-value.0)))
@@ -40,6 +47,7 @@ pub fn eval_abs_numeric(value: Value) -> Result<Value, NumericOpError> {
                 Ok(Value::Decimal(value))
             }
         }
+        #[cfg(feature = "f16")]
         Value::Float16(value) => finite_float16(half::f16::from_f32(value.to_f32().abs())),
         Value::Float32(value) => finite_float32(value.abs()),
         Value::Float64(value) => finite_float64(value.abs()),
@@ -47,6 +55,7 @@ pub fn eval_abs_numeric(value: Value) -> Result<Value, NumericOpError> {
         Value::Float128(value) => finite_float128(value.abs()),
         #[cfg(feature = "f256")]
         Value::Float256(value) => finite_float256(value.abs()),
+        #[cfg(feature = "i256")]
         Value::Int256(value) => value
             .0
             .checked_abs()
@@ -60,6 +69,7 @@ pub fn eval_abs_numeric(value: Value) -> Result<Value, NumericOpError> {
                 .and_then(|value| narrow_signed_min_width(value, width))
                 .ok_or(NumericOpError::Overflow)
         }
+        #[cfg(feature = "u256")]
         Value::Uint256(value) => Ok(Value::Uint256(value)),
         value if value.is_unsigned_int() => Ok(value),
         _ => Err(NumericOpError::InvalidOperand),
@@ -75,12 +85,14 @@ pub fn eval_binary_numeric(
         return Ok(Value::Null);
     }
 
+    #[cfg(feature = "decimal")]
     if (matches!(left, Value::Decimal(_)) || matches!(right, Value::Decimal(_)))
         && (left.is_float() || right.is_float())
     {
         return eval_float_binary(left, op, right);
     }
 
+    #[cfg(feature = "decimal")]
     if matches!(left, Value::Decimal(_)) || matches!(right, Value::Decimal(_)) {
         return eval_decimal_binary(left, op, right);
     }
@@ -101,7 +113,9 @@ fn eval_neg(value: Value) -> Result<Value, NumericOpError> {
         return Ok(Value::Null);
     }
     match value {
+        #[cfg(feature = "decimal")]
         Value::Decimal(value) => Ok(Value::Decimal(Decimal::new(-value.0))),
+        #[cfg(feature = "f16")]
         Value::Float16(value) => finite_float16(-value),
         Value::Float32(value) => finite_float32(-value),
         Value::Float64(value) => finite_float64(-value),
@@ -109,6 +123,7 @@ fn eval_neg(value: Value) -> Result<Value, NumericOpError> {
         Value::Float128(value) => finite_float128(-value),
         #[cfg(feature = "f256")]
         Value::Float256(value) => finite_float256(-value),
+        #[cfg(feature = "i256")]
         Value::Int256(value) => value
             .0
             .checked_neg()
@@ -122,6 +137,7 @@ fn eval_neg(value: Value) -> Result<Value, NumericOpError> {
                 .and_then(|value| narrow_signed_min_width(value, width))
                 .ok_or(NumericOpError::Overflow)
         }
+        #[cfg(feature = "u256")]
         Value::Uint256(value) => {
             if value.0 == ethnum::U256::ZERO {
                 Ok(Value::Uint256(value))
@@ -144,6 +160,7 @@ fn eval_neg(value: Value) -> Result<Value, NumericOpError> {
     }
 }
 
+#[cfg(feature = "decimal")]
 fn eval_decimal_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, NumericOpError> {
     let left = value_to_decimal(&left).ok_or(NumericOpError::InvalidOperand)?;
     let right = value_to_decimal(&right).ok_or(NumericOpError::InvalidOperand)?;
@@ -164,6 +181,7 @@ fn eval_decimal_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value,
         .ok_or(NumericOpError::Overflow)
 }
 
+#[cfg(feature = "decimal")]
 fn value_to_decimal(value: &Value) -> Option<Decimal> {
     match value {
         Value::Decimal(value) => Some(*value),
@@ -174,14 +192,23 @@ fn value_to_decimal(value: &Value) -> Option<Decimal> {
 }
 
 fn eval_integer_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, NumericOpError> {
+    #[cfg(feature = "i256")]
     if matches!(left, Value::Int256(_)) || matches!(right, Value::Int256(_)) {
         return eval_i256_binary(left, op, right);
     }
+    #[cfg(feature = "u256")]
     if matches!(left, Value::Uint256(_)) || matches!(right, Value::Uint256(_)) {
         if left.is_unsigned_int() && right.is_unsigned_int() {
             return eval_u256_binary(left, op, right);
         }
-        return eval_i256_binary(left, op, right);
+        #[cfg(feature = "i256")]
+        {
+            return eval_i256_binary(left, op, right);
+        }
+        #[cfg(not(feature = "i256"))]
+        {
+            return Err(NumericOpError::InvalidOperand);
+        }
     }
     if left.is_unsigned_int() && right.is_unsigned_int() {
         return eval_u128_binary(left, op, right);
@@ -204,26 +231,46 @@ fn eval_i128_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
                 return Err(NumericOpError::DivisionByZero);
             }
             let Some(remainder) = left.checked_rem(right) else {
-                return eval_i256_binary(left_value, op, right_value);
+                #[cfg(feature = "i256")]
+                {
+                    return eval_i256_binary(left_value, op, right_value);
+                }
+                #[cfg(not(feature = "i256"))]
+                {
+                    return Err(NumericOpError::Overflow);
+                }
             };
             if remainder == 0 {
                 return match left.checked_div(right) {
                     Some(value) => {
                         narrow_signed_min_width(value, width).ok_or(NumericOpError::Overflow)
                     }
+                    #[cfg(feature = "i256")]
                     None => eval_i256_binary(left_value, op, right_value),
+                    #[cfg(not(feature = "i256"))]
+                    None => Err(NumericOpError::Overflow),
                 };
             }
-            let value = Decimal::from_i128(left)
-                .0
-                .checked_div(Decimal::from_i128(right).0)
-                .ok_or(NumericOpError::Overflow)?;
-            return Ok(Value::Decimal(Decimal::new(value).normalize()));
+            #[cfg(feature = "decimal")]
+            {
+                let value = Decimal::from_i128(left)
+                    .0
+                    .checked_div(Decimal::from_i128(right).0)
+                    .ok_or(NumericOpError::Overflow)?;
+                return Ok(Value::Decimal(Decimal::new(value).normalize()));
+            }
+            #[cfg(not(feature = "decimal"))]
+            {
+                return Err(NumericOpError::UnsupportedConversion);
+            }
         }
     };
     match value.and_then(|value| narrow_signed_min_width(value, width)) {
         Some(value) => Ok(value),
+        #[cfg(feature = "i256")]
         None => eval_i256_binary(left_value, op, right_value),
+        #[cfg(not(feature = "i256"))]
+        None => Err(NumericOpError::Overflow),
     }
 }
 
@@ -240,7 +287,16 @@ fn eval_u128_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
             .checked_add(right)
             .and_then(|value| narrow_unsigned_min_width(value, width))
             .ok_or(NumericOpError::Overflow)
-            .or_else(|_| eval_u256_binary(left_value, op, right_value)),
+            .or_else(|_| {
+                #[cfg(feature = "u256")]
+                {
+                    eval_u256_binary(left_value, op, right_value)
+                }
+                #[cfg(not(feature = "u256"))]
+                {
+                    Err(NumericOpError::Overflow)
+                }
+            }),
         BinaryOp::Sub => {
             if let Some(value) = left.checked_sub(right) {
                 return narrow_unsigned_min_width(value, width).ok_or(NumericOpError::Overflow);
@@ -250,15 +306,31 @@ fn eval_u128_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
                 .and_then(|value| i128::try_from(value).ok())
                 .and_then(i128::checked_neg)
                 .and_then(|value| narrow_signed_min_width(value, 128));
-            value
-                .ok_or(NumericOpError::Overflow)
-                .or_else(|_| eval_u256_binary(left_value, op, right_value))
+            value.ok_or(NumericOpError::Overflow).or_else(|_| {
+                #[cfg(feature = "u256")]
+                {
+                    eval_u256_binary(left_value, op, right_value)
+                }
+                #[cfg(not(feature = "u256"))]
+                {
+                    Err(NumericOpError::Overflow)
+                }
+            })
         }
         BinaryOp::Mul => left
             .checked_mul(right)
             .and_then(|value| narrow_unsigned_min_width(value, width))
             .ok_or(NumericOpError::Overflow)
-            .or_else(|_| eval_u256_binary(left_value, op, right_value)),
+            .or_else(|_| {
+                #[cfg(feature = "u256")]
+                {
+                    eval_u256_binary(left_value, op, right_value)
+                }
+                #[cfg(not(feature = "u256"))]
+                {
+                    Err(NumericOpError::Overflow)
+                }
+            }),
         BinaryOp::Div => {
             if right == 0 {
                 return Err(NumericOpError::DivisionByZero);
@@ -269,15 +341,23 @@ fn eval_u128_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
                     .and_then(|value| narrow_unsigned_min_width(value, width))
                     .ok_or(NumericOpError::Overflow);
             }
-            let value = Decimal::from_u128(left)
-                .0
-                .checked_div(Decimal::from_u128(right).0)
-                .ok_or(NumericOpError::Overflow)?;
-            Ok(Value::Decimal(Decimal::new(value).normalize()))
+            #[cfg(feature = "decimal")]
+            {
+                let value = Decimal::from_u128(left)
+                    .0
+                    .checked_div(Decimal::from_u128(right).0)
+                    .ok_or(NumericOpError::Overflow)?;
+                Ok(Value::Decimal(Decimal::new(value).normalize()))
+            }
+            #[cfg(not(feature = "decimal"))]
+            {
+                Err(NumericOpError::UnsupportedConversion)
+            }
         }
     }
 }
 
+#[cfg(feature = "i256")]
 fn eval_i256_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, NumericOpError> {
     let left = left.as_i256().ok_or(NumericOpError::InvalidOperand)?;
     let right = right.as_i256().ok_or(NumericOpError::InvalidOperand)?;
@@ -311,6 +391,7 @@ fn eval_i256_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
         .ok_or(NumericOpError::Overflow)
 }
 
+#[cfg(feature = "u256")]
 fn eval_u256_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, NumericOpError> {
     let left = left.as_u256().ok_or(NumericOpError::InvalidOperand)?;
     let right = right.as_u256().ok_or(NumericOpError::InvalidOperand)?;
@@ -356,6 +437,7 @@ fn eval_u256_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
 
 fn eval_float_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, NumericOpError> {
     match max_float_rank(&left, &right) {
+        #[cfg(feature = "f16")]
         Some(FloatRank::F16) => {
             let left = float16_value(&left).ok_or(NumericOpError::UnsupportedConversion)?;
             let right = float16_value(&right).ok_or(NumericOpError::UnsupportedConversion)?;
@@ -441,6 +523,7 @@ fn narrow_unsigned_min_width(value: u128, min_width: u16) -> Option<Value> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum FloatRank {
+    #[cfg(feature = "f16")]
     F16,
     F32,
     F64,
@@ -456,14 +539,26 @@ fn max_float_rank(left: &Value, right: &Value) -> Option<FloatRank> {
 
 fn float_rank(value: &Value) -> Option<FloatRank> {
     match value {
+        #[cfg(feature = "f16")]
         Value::Float16(_) => Some(FloatRank::F16),
         Value::Float32(_) => Some(FloatRank::F32),
-        Value::Float64(_) | Value::Decimal(_) => Some(FloatRank::F64),
+        Value::Float64(_) => Some(FloatRank::F64),
+        #[cfg(feature = "decimal")]
+        Value::Decimal(_) => Some(FloatRank::F64),
         #[cfg(feature = "f128")]
         Value::Float128(_) => Some(FloatRank::F128),
         #[cfg(feature = "f256")]
         Value::Float256(_) => Some(FloatRank::F256),
-        value if value.is_any_int() => Some(FloatRank::F16),
+        value if value.is_any_int() => {
+            #[cfg(feature = "f16")]
+            {
+                Some(FloatRank::F16)
+            }
+            #[cfg(not(feature = "f16"))]
+            {
+                Some(FloatRank::F32)
+            }
+        }
         _ => None,
     }
 }
@@ -476,6 +571,7 @@ fn finite_f32_from_f64(v: f64) -> Option<f32> {
     narrowed.is_finite().then_some(narrowed)
 }
 
+#[cfg(feature = "f16")]
 fn finite_f16_from_f64(v: f64) -> Option<half::f16> {
     if !v.is_finite() {
         return None;
@@ -484,6 +580,7 @@ fn finite_f16_from_f64(v: f64) -> Option<half::f16> {
     narrowed.is_finite().then_some(narrowed)
 }
 
+#[cfg(feature = "f16")]
 fn float16_value(value: &Value) -> Option<half::f16> {
     match value {
         Value::Float16(value) => value.is_finite().then_some(*value),
@@ -493,6 +590,7 @@ fn float16_value(value: &Value) -> Option<half::f16> {
 
 fn float32_value(value: &Value) -> Option<f32> {
     match value {
+        #[cfg(feature = "f16")]
         Value::Float16(value) => {
             let narrowed = value.to_f32();
             narrowed.is_finite().then_some(narrowed)
@@ -502,7 +600,7 @@ fn float32_value(value: &Value) -> Option<f32> {
     }
 }
 
-#[cfg(feature = "f256")]
+#[cfg(all(feature = "f256", feature = "i256"))]
 fn i256_to_f256(value: ethnum::I256) -> Result<f256::f256, NumericOpError> {
     value
         .to_string()
@@ -510,7 +608,7 @@ fn i256_to_f256(value: ethnum::I256) -> Result<f256::f256, NumericOpError> {
         .map_err(|_| NumericOpError::UnsupportedConversion)
 }
 
-#[cfg(feature = "f256")]
+#[cfg(all(feature = "f256", feature = "u256"))]
 fn u256_to_f256(value: ethnum::U256) -> Result<f256::f256, NumericOpError> {
     value
         .to_string()
@@ -518,6 +616,7 @@ fn u256_to_f256(value: ethnum::U256) -> Result<f256::f256, NumericOpError> {
         .map_err(|_| NumericOpError::UnsupportedConversion)
 }
 
+#[cfg(feature = "f16")]
 fn finite_float16(value: half::f16) -> Result<Value, NumericOpError> {
     if value.is_finite() {
         Ok(Value::Float16(value))
@@ -574,12 +673,19 @@ mod tests {
             eval_binary_numeric(Value::Uint8(250), BinaryOp::Add, Value::Uint8(10)).unwrap(),
             Value::Uint16(260)
         );
+        #[cfg(feature = "i256")]
         assert_eq!(
             eval_binary_numeric(Value::Int128(i128::MAX), BinaryOp::Add, Value::Int64(1)).unwrap(),
             Value::Int256(Int256::new(ethnum::I256::from(i128::MAX) + 1))
         );
+        #[cfg(not(feature = "i256"))]
+        assert_eq!(
+            eval_binary_numeric(Value::Int128(i128::MAX), BinaryOp::Add, Value::Int64(1)),
+            Err(NumericOpError::Overflow)
+        );
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn returns_decimal_for_fractional_128_bit_integer_division() {
         assert_eq!(
@@ -588,7 +694,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "f256")]
+    #[cfg(all(feature = "f256", feature = "i256"))]
     #[test]
     fn returns_float256_for_fractional_256_bit_integer_division() {
         assert_eq!(
@@ -616,7 +722,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "f256")]
+    #[cfg(all(feature = "f256", feature = "decimal"))]
     #[test]
     fn promotes_decimal_and_float256_to_float256() {
         assert_eq!(
@@ -635,6 +741,7 @@ mod tests {
         assert!(float32_value(&Value::Float64(1e40)).is_none());
     }
 
+    #[cfg(feature = "f16")]
     #[test]
     fn float16_value_rejects_f64_overflow() {
         assert!(float16_value(&Value::Float64(1e40)).is_none());

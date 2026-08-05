@@ -105,17 +105,33 @@ fn encode_value_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKe
         | Value::Int32(_)
         | Value::Int64(_)
         | Value::Int128(_)
-        | Value::Int256(_)
         | Value::Uint8(_)
         | Value::Uint16(_)
         | Value::Uint32(_)
         | Value::Uint64(_)
         | Value::Uint128(_)
-        | Value::Uint256(_)
-        | Value::Decimal(_)
-        | Value::Float16(_)
         | Value::Float32(_)
         | Value::Float64(_)) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, out)?;
+        }
+        #[cfg(feature = "i256")]
+        value @ Value::Int256(_) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, out)?;
+        }
+        #[cfg(feature = "u256")]
+        value @ Value::Uint256(_) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, out)?;
+        }
+        #[cfg(feature = "decimal")]
+        value @ Value::Decimal(_) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, out)?;
+        }
+        #[cfg(feature = "f16")]
+        value @ Value::Float16(_) => {
             out.push(INDEX_KEY_NUMERIC);
             encode_numeric_key(value, out)?;
         }
@@ -332,7 +348,12 @@ pub fn numeric_range_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Decimal, Int256, Uint256};
+    #[cfg(feature = "decimal")]
+    use crate::types::Decimal;
+    #[cfg(feature = "i256")]
+    use crate::types::Int256;
+    #[cfg(feature = "u256")]
+    use crate::types::Uint256;
     use crate::value::{ExtensionSortableKey, ExtensionValue};
     use std::any::Any;
     use std::borrow::Cow;
@@ -343,6 +364,7 @@ mod tests {
         value_to_index_key_bytes(&value).unwrap().unwrap()
     }
 
+    #[cfg(feature = "decimal")]
     fn decimal(value: &str) -> Value {
         Value::Decimal(Decimal::parse(value).expect("decimal"))
     }
@@ -444,6 +466,7 @@ mod tests {
         assert_eq!(index_key_bytes_to_value(&key), Some(value));
     }
 
+    #[cfg(all(feature = "i256", feature = "u256", feature = "decimal"))]
     #[test]
     fn index_key_orders_exact_numeric_values() {
         let values = [
@@ -464,6 +487,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "i256", feature = "u256", feature = "decimal"))]
     #[test]
     fn index_key_unifies_equal_exact_numeric_values_across_widths() {
         let keys = [
@@ -478,12 +502,14 @@ mod tests {
         assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn index_key_unifies_equal_float_decimal_values() {
         let keys = [Value::Float64(1.5), Value::Float32(1.5), decimal("1.5")].map(key);
         assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn index_key_unifies_numeric_zero_values() {
         let keys = [
@@ -496,6 +522,7 @@ mod tests {
         assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn index_key_distinguishes_exact_binary_and_decimal_tenths() {
         let float_key = key(Value::Float64(0.1));
@@ -504,8 +531,10 @@ mod tests {
         assert!(decimal_key < float_key);
     }
 
+    #[cfg(all(feature = "decimal", feature = "cmp"))]
     #[test]
     fn index_key_order_matches_mixed_numeric_comparison() {
+        #[cfg(feature = "cmp")]
         use crate::value::cmp::compare_values;
 
         let ordered = [
@@ -522,6 +551,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn index_key_orders_decimal_scale_cases() {
         let ordered = [
@@ -540,6 +570,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn index_key_orders_negative_decimal_magnitudes_in_reverse() {
         let ordered = [
@@ -702,9 +733,11 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cmp")]
     #[test]
     fn index_key_order_matches_path_comparison() {
         use crate::types::PathElement;
+        #[cfg(feature = "cmp")]
         use crate::value::cmp::compare_values;
 
         let ordered = [
@@ -781,6 +814,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cmp")]
     #[test]
     fn index_key_order_matches_extension_cmp_within_domain() {
         let left = extension("domain/v1", b"a");
@@ -822,9 +856,11 @@ mod tests {
         assert!(numeric_range_bounds(&Value::Float64(f64::INFINITY), CmpOp::Lt).is_err());
     }
 
+    #[cfg(feature = "cmp")]
     #[test]
     fn numeric_range_bounds_are_half_open_and_ordered() {
         use crate::ast::CmpOp;
+        #[cfg(feature = "cmp")]
         use crate::value::cmp::compare_values;
 
         // Pick values that straddle the bound.
@@ -897,6 +933,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn numeric_range_bounds_unifies_across_numeric_widths() {
         use crate::ast::CmpOp;

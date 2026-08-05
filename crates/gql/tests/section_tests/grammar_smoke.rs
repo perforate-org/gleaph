@@ -1761,6 +1761,7 @@ fn s20_03_bytes_literal() {
     ok_syntax("MATCH (n) RETURN X'DEADBEEF'");
 }
 
+#[cfg(feature = "decimal")]
 #[test]
 fn s20_03_decimal_literal() {
     ok_syntax("MATCH (n) RETURN 123.45M");

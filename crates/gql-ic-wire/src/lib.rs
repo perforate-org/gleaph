@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use candid::{CandidType, Principal};
+#[cfg(any(feature = "i256", feature = "u256"))]
 use ethnum::{I256, U256};
 use gleaph_gql::{ExtensionValue, Value};
 use serde::{Deserialize, Serialize};
@@ -229,9 +230,11 @@ impl<'de> Deserialize<'de> for Float128 {
 /// The serde representation is the canonical little-endian 32-byte wire form; the upstream
 /// `f256` type intentionally provides no serde support, so this wrapper carries it for row
 /// decoding.
+#[cfg(feature = "f256")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Float256(f256::f256);
 
+#[cfg(feature = "f256")]
 impl Float256 {
     /// Construct from the canonical little-endian wire representation.
     pub const fn from_le_bytes(bytes: [u8; 32]) -> Self {
@@ -249,6 +252,7 @@ impl Float256 {
     }
 }
 
+#[cfg(feature = "f256")]
 impl Serialize for Float256 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -258,6 +262,7 @@ impl Serialize for Float256 {
     }
 }
 
+#[cfg(feature = "f256")]
 impl<'de> Deserialize<'de> for Float256 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -287,6 +292,7 @@ impl CandidType for Float128 {
     }
 }
 
+#[cfg(feature = "f256")]
 impl CandidType for Float256 {
     fn _ty() -> candid::types::Type {
         candid::types::Type::from(candid::types::TypeInner::Vec(
@@ -306,9 +312,11 @@ impl CandidType for Float256 {
 ///
 /// Serde and Candid both use the decimal textual form (matching the JSON row projection); the
 /// Router wire form is 32 little-endian bytes ([`GqlWireValue::Int256`]).
+#[cfg(feature = "i256")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GqlInt256(I256);
 
+#[cfg(feature = "i256")]
 impl GqlInt256 {
     /// Wrap an upstream 256-bit signed integer.
     pub const fn from_inner(value: I256) -> Self {
@@ -321,18 +329,21 @@ impl GqlInt256 {
     }
 }
 
+#[cfg(feature = "i256")]
 impl From<I256> for GqlInt256 {
     fn from(value: I256) -> Self {
         Self(value)
     }
 }
 
+#[cfg(feature = "i256")]
 impl From<GqlInt256> for I256 {
     fn from(value: GqlInt256) -> Self {
         value.0
     }
 }
 
+#[cfg(feature = "i256")]
 impl Serialize for GqlInt256 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -342,6 +353,7 @@ impl Serialize for GqlInt256 {
     }
 }
 
+#[cfg(feature = "i256")]
 impl<'de> Deserialize<'de> for GqlInt256 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -351,6 +363,7 @@ impl<'de> Deserialize<'de> for GqlInt256 {
     }
 }
 
+#[cfg(feature = "i256")]
 impl CandidType for GqlInt256 {
     fn _ty() -> candid::types::Type {
         candid::types::TypeInner::Text.into()
@@ -368,9 +381,11 @@ impl CandidType for GqlInt256 {
 ///
 /// Serde and Candid both use the decimal textual form (matching the JSON row projection); the
 /// Router wire form is 32 little-endian bytes ([`GqlWireValue::Uint256`]).
+#[cfg(feature = "u256")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GqlUint256(U256);
 
+#[cfg(feature = "u256")]
 impl GqlUint256 {
     /// Wrap an upstream 256-bit unsigned integer.
     pub const fn from_inner(value: U256) -> Self {
@@ -383,18 +398,21 @@ impl GqlUint256 {
     }
 }
 
+#[cfg(feature = "u256")]
 impl From<U256> for GqlUint256 {
     fn from(value: U256) -> Self {
         Self(value)
     }
 }
 
+#[cfg(feature = "u256")]
 impl From<GqlUint256> for U256 {
     fn from(value: GqlUint256) -> Self {
         value.0
     }
 }
 
+#[cfg(feature = "u256")]
 impl Serialize for GqlUint256 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -404,6 +422,7 @@ impl Serialize for GqlUint256 {
     }
 }
 
+#[cfg(feature = "u256")]
 impl<'de> Deserialize<'de> for GqlUint256 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -413,6 +432,7 @@ impl<'de> Deserialize<'de> for GqlUint256 {
     }
 }
 
+#[cfg(feature = "u256")]
 impl CandidType for GqlUint256 {
     fn _ty() -> candid::types::Type {
         candid::types::TypeInner::Text.into()
@@ -430,9 +450,11 @@ impl CandidType for GqlUint256 {
 ///
 /// Serde and Candid both use the textual form (matching the JSON row projection); the Router
 /// wire form is the packed 16-byte form ([`GqlWireValue::Decimal`]).
+#[cfg(feature = "decimal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GqlDecimal(rust_decimal::Decimal);
 
+#[cfg(feature = "decimal")]
 impl GqlDecimal {
     /// Wrap an upstream decimal value.
     pub const fn from_inner(value: rust_decimal::Decimal) -> Self {
@@ -445,18 +467,21 @@ impl GqlDecimal {
     }
 }
 
+#[cfg(feature = "decimal")]
 impl From<rust_decimal::Decimal> for GqlDecimal {
     fn from(value: rust_decimal::Decimal) -> Self {
         Self(value)
     }
 }
 
+#[cfg(feature = "decimal")]
 impl From<GqlDecimal> for rust_decimal::Decimal {
     fn from(value: GqlDecimal) -> Self {
         value.0
     }
 }
 
+#[cfg(feature = "decimal")]
 impl Serialize for GqlDecimal {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -466,6 +491,7 @@ impl Serialize for GqlDecimal {
     }
 }
 
+#[cfg(feature = "decimal")]
 impl<'de> Deserialize<'de> for GqlDecimal {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -475,6 +501,7 @@ impl<'de> Deserialize<'de> for GqlDecimal {
     }
 }
 
+#[cfg(feature = "decimal")]
 impl CandidType for GqlDecimal {
     fn _ty() -> candid::types::Type {
         candid::types::TypeInner::Text.into()
@@ -492,9 +519,11 @@ impl CandidType for GqlDecimal {
 ///
 /// Serde and Candid both use the raw `u16` bit pattern (matching the JSON row projection and
 /// [`GqlWireValue::Float16`]).
+#[cfg(feature = "f16")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GqlFloat16(half::f16);
 
+#[cfg(feature = "f16")]
 impl GqlFloat16 {
     /// Wrap an upstream half-precision float.
     pub const fn from_inner(value: half::f16) -> Self {
@@ -507,42 +536,49 @@ impl GqlFloat16 {
     }
 }
 
+#[cfg(feature = "f16")]
 impl From<half::f16> for GqlFloat16 {
     fn from(value: half::f16) -> Self {
         Self(value)
     }
 }
 
+#[cfg(feature = "f16")]
 impl From<GqlFloat16> for half::f16 {
     fn from(value: GqlFloat16) -> Self {
         value.0
     }
 }
 
+#[cfg(feature = "i256")]
 impl From<GqlInt256> for Value {
     fn from(value: GqlInt256) -> Self {
         Value::Int256(gleaph_gql::types::Int256(value.0))
     }
 }
 
+#[cfg(feature = "u256")]
 impl From<GqlUint256> for Value {
     fn from(value: GqlUint256) -> Self {
         Value::Uint256(gleaph_gql::types::Uint256(value.0))
     }
 }
 
+#[cfg(feature = "decimal")]
 impl From<GqlDecimal> for Value {
     fn from(value: GqlDecimal) -> Self {
         Value::Decimal(gleaph_gql::types::Decimal(value.0))
     }
 }
 
+#[cfg(feature = "f16")]
 impl From<GqlFloat16> for Value {
     fn from(value: GqlFloat16) -> Self {
         Value::Float16(value.0)
     }
 }
 
+#[cfg(feature = "f16")]
 impl Serialize for GqlFloat16 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -552,6 +588,7 @@ impl Serialize for GqlFloat16 {
     }
 }
 
+#[cfg(feature = "f16")]
 impl<'de> Deserialize<'de> for GqlFloat16 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -561,6 +598,7 @@ impl<'de> Deserialize<'de> for GqlFloat16 {
     }
 }
 
+#[cfg(feature = "f16")]
 impl CandidType for GqlFloat16 {
     fn _ty() -> candid::types::Type {
         candid::types::TypeInner::Nat16.into()
@@ -575,18 +613,21 @@ impl CandidType for GqlFloat16 {
 }
 
 /// Decode the canonical little-endian 32-byte form of a signed 256-bit integer.
+#[cfg(feature = "i256")]
 fn i256_from_le_bytes(bytes: &[u8]) -> Option<I256> {
     let bytes: [u8; 32] = bytes.try_into().ok()?;
     Some(I256::from_le_bytes(bytes))
 }
 
 /// Decode the canonical little-endian 32-byte form of an unsigned 256-bit integer.
+#[cfg(feature = "u256")]
 fn u256_from_le_bytes(bytes: &[u8]) -> Option<U256> {
     let bytes: [u8; 32] = bytes.try_into().ok()?;
     Some(U256::from_le_bytes(bytes))
 }
 
 /// Decode the canonical little-endian 16-byte packed form of a decimal.
+#[cfg(feature = "decimal")]
 fn decimal_from_le_bytes(bytes: &[u8]) -> Option<rust_decimal::Decimal> {
     let bytes: [u8; 16] = bytes.try_into().ok()?;
     Some(rust_decimal::Decimal::deserialize(bytes))
@@ -639,18 +680,33 @@ impl GqlWireValue {
             Self::Int32(value) => Value::Int32(value),
             Self::Int64(value) => Value::Int64(value),
             Self::Int128(value) => Value::Int128(value),
+            #[cfg(feature = "i256")]
             Self::Int256(value) => Value::Int256(gleaph_gql::types::Int256(
                 i256_from_le_bytes(&value).ok_or(GqlWireDecodeError::InvalidNumeric("Int256"))?,
             )),
+            #[cfg(not(feature = "i256"))]
+            Self::Int256(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Int256"));
+            }
             Self::Uint8(value) => Value::Uint8(value),
             Self::Uint16(value) => Value::Uint16(value),
             Self::Uint32(value) => Value::Uint32(value),
             Self::Uint64(value) => Value::Uint64(value),
             Self::Uint128(value) => Value::Uint128(value),
+            #[cfg(feature = "u256")]
             Self::Uint256(value) => Value::Uint256(gleaph_gql::types::Uint256(
                 u256_from_le_bytes(&value).ok_or(GqlWireDecodeError::InvalidNumeric("Uint256"))?,
             )),
+            #[cfg(not(feature = "u256"))]
+            Self::Uint256(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Uint256"));
+            }
+            #[cfg(feature = "f16")]
             Self::Float16(bits) => Value::Float16(half::f16::from_bits(bits)),
+            #[cfg(not(feature = "f16"))]
+            Self::Float16(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Float16"));
+            }
             Self::Float32(value) => Value::Float32(value),
             Self::Float64(value) => Value::Float64(value),
             Self::Float128(bytes) => {
@@ -666,15 +722,25 @@ impl GqlWireValue {
                     return Err(GqlWireDecodeError::UnsupportedValue("Float128"));
                 }
             }
+            #[cfg(feature = "f256")]
             Self::Float256(bytes) => {
                 let bytes = <[u8; 32]>::try_from(bytes.as_slice())
                     .map_err(|_| GqlWireDecodeError::InvalidNumeric("Float256"))?;
                 Value::Float256(f256::f256::from_le_bytes(bytes))
             }
+            #[cfg(not(feature = "f256"))]
+            Self::Float256(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Float256"));
+            }
+            #[cfg(feature = "decimal")]
             Self::Decimal(value) => Value::Decimal(gleaph_gql::types::Decimal(
                 decimal_from_le_bytes(&value)
                     .ok_or(GqlWireDecodeError::InvalidNumeric("Decimal"))?,
             )),
+            #[cfg(not(feature = "decimal"))]
+            Self::Decimal(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Decimal"));
+            }
             Self::Text(value) => Value::Text(value),
             Self::Bytes(value) => Value::Bytes(value),
             Self::Date(value) => Value::Date(value),
@@ -793,6 +859,7 @@ mod tests {
         assert_eq!(decoded, rows);
     }
 
+    #[cfg(all(feature = "i256", feature = "decimal"))]
     #[test]
     fn projects_exact_scalars_and_principal() {
         assert_eq!(
@@ -822,6 +889,7 @@ mod tests {
         assert!(matches!(value, Value::Extension(_)));
     }
 
+    #[cfg(feature = "f256")]
     #[test]
     fn wide_float_wrappers_round_trip_serde_bytes() {
         let bytes = [0xabu8; 32];
@@ -849,6 +917,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "f256")]
     #[test]
     fn projects_float256_from_canonical_bytes() {
         let value = GqlWireValue::Float256(f256::f256::from(1.25_f64).to_le_bytes().to_vec())

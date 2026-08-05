@@ -28,27 +28,33 @@ pub use gleaph_gql_params::{EdgePathElementId, PathElement, VertexPathElementId}
 
 /// Upstream binary256 value used by generated canister bindings; serde is unavailable upstream,
 /// so params use the raw primitive and rows decode through [`Float256`].
+#[cfg(feature = "f256")]
 pub use f256::f256 as GqlFloat256;
 /// Binary128 row binding carrying the canonical little-endian wire form.
 #[cfg(feature = "nightly-f128")]
 pub use gleaph_gql_ic_wire::Float128;
 /// Binary256 row binding carrying the canonical little-endian wire form.
+#[cfg(feature = "f256")]
 pub use gleaph_gql_ic_wire::Float256;
 /// Decimal row binding used by generated canister bindings.
 ///
 /// Serde and Candid use the textual form; the Router wire form is the packed 16-byte form
 /// ([`GqlWireValue::Decimal`]).
+#[cfg(feature = "decimal")]
 pub use gleaph_gql_ic_wire::GqlDecimal;
 /// Half-precision float row binding used by generated canister bindings.
 ///
 /// Serde and Candid use the raw `u16` bit pattern ([`GqlWireValue::Float16`]).
+#[cfg(feature = "f16")]
 pub use gleaph_gql_ic_wire::GqlFloat16;
 /// Signed 256-bit integer row binding used by generated canister bindings.
 ///
 /// Serde and Candid use the decimal textual form; the Router wire form is 32 little-endian
 /// bytes ([`GqlWireValue::Int256`]).
+#[cfg(feature = "i256")]
 pub use gleaph_gql_ic_wire::GqlInt256;
 /// Unsigned 256-bit integer row binding used by generated canister bindings.
+#[cfg(feature = "u256")]
 pub use gleaph_gql_ic_wire::GqlUint256;
 
 /// GQL `Date` row binding used by generated canister bindings.
@@ -56,36 +62,43 @@ pub use gleaph_gql_ic_wire::GqlUint256;
 /// Backed by `jiff::civil::Date` (default `temporal-jiff` feature) or `chrono::NaiveDate`
 /// (`temporal-chrono`). Serde and Candid use the days-since-epoch wire form
 /// ([`GqlWireValue::Date`]).
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlDate;
 /// GQL `DateTime` row binding used by generated canister bindings.
 ///
 /// Backed by `jiff::Timestamp` or `chrono::DateTime<Utc>`; serde and Candid use the
 /// `{seconds, nanos}` wire form ([`GqlWireValue::DateTime`]).
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlDateTime;
 /// GQL `Duration` row binding used by generated canister bindings.
 ///
 /// Backed by `jiff::Span` (faithful, includes months) or `chrono::TimeDelta` (months are not
 /// representable and are serialized as zero); serde and Candid use the `{months, nanos}` wire
 /// form ([`GqlWireValue::Duration`]).
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlDuration;
 /// GQL `LocalDateTime` row binding used by generated canister bindings.
 ///
 /// Backed by `jiff::civil::DateTime` or `chrono::NaiveDateTime`, interpreted as a civil
 /// date-time in UTC; serde and Candid use the `{seconds, nanos}` wire form.
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlLocalDateTime;
 /// GQL `LocalTime` row binding used by generated canister bindings.
 ///
 /// Same representation as [`GqlTime`] but projects to `Value::LocalTime`.
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlLocalTime;
 /// GQL `Time` row binding used by generated canister bindings.
 ///
 /// Backed by `jiff::civil::Time` or `chrono::NaiveTime`; serde and Candid use nanoseconds since
 /// midnight ([`GqlWireValue::Time`]).
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlTime;
 /// GQL `ZonedDateTime` row binding used by generated canister bindings.
 ///
 /// Backed by `jiff::Zoned` or `chrono::DateTime<FixedOffset>`; serde and Candid use the
 /// `{seconds, nanos, offset_seconds}` wire form ([`GqlWireValue::ZonedDateTime`]).
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
 pub use gleaph_gql_ic_wire::GqlZonedDateTime;
 /// GQL `ZonedTime` row binding used by generated canister bindings.
 ///
@@ -272,7 +285,9 @@ pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDe
             .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
         #[cfg(feature = "nightly-f128")]
         GqlValue::Float128(value) => serde_json::json!(value.to_bits().to_le_bytes().to_vec()),
+        #[cfg(feature = "f256")]
         GqlValue::Float256(value) => serde_json::json!(value.to_le_bytes().to_vec()),
+        #[cfg(feature = "decimal")]
         GqlValue::Decimal(value) => serde_json::Value::String(value.to_string()),
         GqlValue::Text(value) => serde_json::Value::String(value),
         GqlValue::Bytes(value) => serde_json::Value::Array(
@@ -334,8 +349,16 @@ pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDe
             .downcast_ref::<GqlPrincipal>()
             .map(|principal| serde_json::Value::String(principal.to_string()))
             .ok_or(GqlWireDecodeError::UnsupportedValue("extension"))?,
-        #[cfg(not(feature = "nightly-f128"))]
-        _ => return Err(GqlWireDecodeError::UnsupportedValue("Float128")),
+        #[cfg(any(
+            not(feature = "nightly-f128"),
+            not(feature = "f256"),
+            not(feature = "decimal")
+        ))]
+        _ => {
+            return Err(GqlWireDecodeError::UnsupportedValue(
+                "Float128 or Float256 or Decimal",
+            ));
+        }
     };
     Ok(json)
 }
@@ -376,20 +399,30 @@ pub fn gql_wire_value_to_json(
         GqlWireValue::Int32(value) => serde_json::json!(value),
         GqlWireValue::Int64(value) => serde_json::json!(value),
         GqlWireValue::Int128(value) => serde_json::json!(value),
+        #[cfg(feature = "i256")]
         GqlWireValue::Int256(value) => {
             let bytes = <[u8; 32]>::try_from(value.as_slice())
                 .map_err(|_| GqlWireDecodeError::InvalidNumeric("Int256"))?;
             serde_json::Value::String(ethnum::I256::from_le_bytes(bytes).to_string())
+        }
+        #[cfg(not(feature = "i256"))]
+        GqlWireValue::Int256(_) => {
+            return Err(GqlWireDecodeError::UnsupportedValue("Int256"));
         }
         GqlWireValue::Uint8(value) => serde_json::json!(value),
         GqlWireValue::Uint16(value) => serde_json::json!(value),
         GqlWireValue::Uint32(value) => serde_json::json!(value),
         GqlWireValue::Uint64(value) => serde_json::json!(value),
         GqlWireValue::Uint128(value) => serde_json::json!(value),
+        #[cfg(feature = "u256")]
         GqlWireValue::Uint256(value) => {
             let bytes = <[u8; 32]>::try_from(value.as_slice())
                 .map_err(|_| GqlWireDecodeError::InvalidNumeric("Uint256"))?;
             serde_json::Value::String(ethnum::U256::from_le_bytes(bytes).to_string())
+        }
+        #[cfg(not(feature = "u256"))]
+        GqlWireValue::Uint256(_) => {
+            return Err(GqlWireDecodeError::UnsupportedValue("Uint256"));
         }
         GqlWireValue::Float16(value) => serde_json::json!(value),
         GqlWireValue::Float32(value) => serde_json::to_value(value)
@@ -398,10 +431,15 @@ pub fn gql_wire_value_to_json(
             .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
         GqlWireValue::Float128(value) => serde_json::json!(value),
         GqlWireValue::Float256(value) => serde_json::json!(value),
+        #[cfg(feature = "decimal")]
         GqlWireValue::Decimal(value) => {
             let bytes = <[u8; 16]>::try_from(value.as_slice())
                 .map_err(|_| GqlWireDecodeError::InvalidNumeric("Decimal"))?;
             serde_json::Value::String(rust_decimal::Decimal::deserialize(bytes).to_string())
+        }
+        #[cfg(not(feature = "decimal"))]
+        GqlWireValue::Decimal(_) => {
+            return Err(GqlWireDecodeError::UnsupportedValue("Decimal"));
         }
         GqlWireValue::Text(value) => serde_json::Value::String(value),
         GqlWireValue::Bytes(value) => serde_json::Value::Array(

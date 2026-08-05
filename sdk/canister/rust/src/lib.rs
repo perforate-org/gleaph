@@ -27,17 +27,29 @@ pub use serde_json;
 /// Candid facade used by generated canister bindings for entrypoint arguments and results.
 pub use candid;
 
+#[cfg(feature = "decimal")]
+pub use types::GqlDecimal;
+#[cfg(feature = "f16")]
+pub use types::GqlFloat16;
+#[cfg(feature = "i256")]
+pub use types::GqlInt256;
+#[cfg(feature = "u256")]
+pub use types::GqlUint256;
 pub use types::{
     AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
     BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
-    EdgePathElementId, Float256, FromGqlRow, GqlDate, GqlDateTime, GqlDecimal, GqlDuration,
-    GqlFloat16, GqlFloat256, GqlInt256, GqlLocalDateTime, GqlLocalTime, GqlPrincipal,
-    GqlQueryResult, GqlRecord, GqlRow, GqlTime, GqlUint256, GqlValue, GqlWireDecodeError,
-    GqlWireRow, GqlWireRows, GqlWireValue, GqlZonedDateTime, GqlZonedTime, MutationLifecyclePhase,
-    MutationToken, MutationTokenShard, PathElement, ReadMode, RouterError,
+    EdgePathElementId, FromGqlRow, GqlPrincipal, GqlQueryResult, GqlRecord, GqlRow, GqlValue,
+    GqlWireDecodeError, GqlWireRow, GqlWireRows, GqlWireValue, GqlZonedTime,
+    MutationLifecyclePhase, MutationToken, MutationTokenShard, PathElement, ReadMode, RouterError,
     VectorActivationBlockReason, VertexPathElementId, gql_principal_from_value,
     gql_record_to_json_map, gql_value_to_json, gql_wire_value_to_json, take_gql_row_field,
+};
+#[cfg(feature = "f256")]
+pub use types::{Float256, GqlFloat256};
+#[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
+pub use types::{
+    GqlDate, GqlDateTime, GqlDuration, GqlLocalDateTime, GqlLocalTime, GqlTime, GqlZonedDateTime,
 };
 
 /// Binary128 row binding carrying the canonical little-endian wire form.
@@ -649,6 +661,13 @@ mod tests {
         );
     }
 
+    #[cfg(all(
+        feature = "i256",
+        feature = "u256",
+        feature = "f16",
+        feature = "decimal",
+        feature = "f256"
+    ))]
     #[test]
     fn value_bindings_build_logical_values_from_real_types() {
         assert_eq!(
@@ -675,6 +694,12 @@ mod tests {
         ));
     }
 
+    #[cfg(all(
+        feature = "i256",
+        feature = "decimal",
+        feature = "f16",
+        feature = "f256"
+    ))]
     #[test]
     fn row_binding_wrappers_round_trip_serde_and_candid() {
         let value = GqlInt256::from(ethnum::I256::from(-42));
@@ -705,6 +730,13 @@ mod tests {
         assert_eq!(parsed.into_inner(), anonymous);
     }
 
+    #[cfg(all(
+        feature = "i256",
+        feature = "u256",
+        feature = "f16",
+        feature = "decimal",
+        feature = "f256"
+    ))]
     #[test]
     fn wire_value_projection_matches_generated_row_shapes() {
         let rows = GqlWireRows {

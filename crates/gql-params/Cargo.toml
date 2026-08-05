@@ -18,13 +18,17 @@ rust_decimal = { workspace = true, optional = true }
 serde.workspace = true
 
 [features]
-default = ["i256", "u256", "f16", "f256", "decimal"]
-i256 = ["dep:ethnum"]
-u256 = ["dep:ethnum"]
-f16 = ["dep:half"]
-f128 = []
-f256 = ["dep:f256"]
-decimal = ["dep:rust_decimal"]
+default = ["i256", "u256", "f16", "decimal"]
+i256 = ["dep:ethnum", "gleaph-gql-value/i256", "gleaph-gql-ic-wire/i256"]
+u256 = ["dep:ethnum", "gleaph-gql-value/u256", "gleaph-gql-ic-wire/u256"]
+f16 = ["dep:half", "gleaph-gql-value/f16", "gleaph-gql-ic-wire/f16"]
+f128 = ["gleaph-gql-value/f128"]
+f256 = ["dep:f256", "gleaph-gql-value/f256", "gleaph-gql-ic-wire/f256"]
+decimal = [
+    "dep:rust_decimal",
+    "gleaph-gql-value/decimal",
+    "gleaph-gql-ic-wire/decimal",
+]
 
 [dev-dependencies]
 serde_json.workspace = true

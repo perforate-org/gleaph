@@ -55,6 +55,7 @@ fn bigint_u128() {
     }
 }
 
+#[cfg(feature = "decimal")]
 #[test]
 fn exact_numeric() {
     // Lines 396-401

@@ -22,16 +22,16 @@ flowchart TB
 
 ## Crate boundaries
 
-| Crate | Owns / exposes | Must not contain |
-|-------|----------------|------------------|
-| `gleaph-gql` | Parser, validator, `program_modification`, standard types | IC principals, shard ids, canister calls |
-| `gleaph-gql-planner` | `build_*_plan`, `PhysicalPlan`, optimizations | GraphStore, federation, stable memory |
+| Crate                    | Owns / exposes                                                                                                                                                                            | Must not contain                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `gleaph-gql`             | Parser, validator, `program_modification`, standard types                                                                                                                                 | IC principals, shard ids, canister calls                                                             |
+| `gleaph-gql-planner`     | `build_*_plan`, `PhysicalPlan`, optimizations                                                                                                                                             | GraphStore, federation, stable memory                                                                |
 | `gleaph-gql-integration` | Gleaph-specific integration boundary between portable GQL planning and Gleaph execution. Public modules: `path_extension` (path-extension-to-planner policy). Shared by Router and Graph. | IC principals, shard ids, canister calls, storage layout, generic GQL syntax, planner cost internals |
-| `gleaph-gql-ic` | Parameter encoding for canisters | Planner logic |
-| `gleaph-graph-kernel` | Wire types shared by router/graph/index | Full executor |
-| `gleaph-gql-integration` | Gleaph-specific integration boundary; currently the path-extension-to-planner policy shared by Router and Graph | Portable wire ownership or generic GQL planning |
-| `gleaph-graph` | Plan execution, storage, federation expand | GQL parse (except helpers) |
-| `gleaph-router` | RBAC, planning entry, dispatch | LARA mutation |
+| `gleaph-gql-ic`          | Parameter encoding for canisters                                                                                                                                                          | Planner logic                                                                                        |
+| `gleaph-graph-kernel`    | Wire types shared by router/graph/index                                                                                                                                                   | Full executor                                                                                        |
+| `gleaph-gql-integration` | Gleaph-specific integration boundary; currently the path-extension-to-planner policy shared by Router and Graph                                                                           | Portable wire ownership or generic GQL planning                                                      |
+| `gleaph-graph`           | Plan execution, storage, federation expand                                                                                                                                                | GQL parse (except helpers)                                                                           |
+| `gleaph-router`          | RBAC, planning entry, dispatch                                                                                                                                                            | LARA mutation                                                                                        |
 
 Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `gql-planner`.
 
@@ -51,6 +51,29 @@ The Rust formatter and feature boundary are implemented. The social demo's thin 
 adapter owns browser bindings and packaging and does not become a second source of GQL
 formatting rules. Future CLI, query-log, administration-console, and LSP consumers may
 use the same Rust API directly or through their own integration adapter.
+
+## Numeric vocabulary feature model
+
+**Status:** Implemented (binary-size optimization).
+
+`gleaph-gql-value` / `gleaph-gql` / `gleaph-gql-ic-wire` / `gleaph-gql-params` / the
+canister SDK gate the wide numeric vocabulary behind per-type features:
+
+- `i256`, `u256`, `f16`, `decimal` are **default** on for canister-facing crates and for
+  `gleaph-gql` itself (full language vocabulary);
+- `f256` (the `f256` crate plus its LUTs is the largest numeric dependency) is **opt-in**
+  everywhere except `gleaph-gql`, whose default keeps the full standard vocabulary;
+- `f128` requires nightly (`nightly-f128` in the IC-facing crates).
+
+Consumers can opt out per crate to shrink binaries: the social demo's format-only WASM
+builds `gleaph-gql` with `default-features = false, features = ["format", "gleaph"]` and
+compiles without `ethnum` / `half` / `rust_decimal` / `f256`.
+
+Feature-forwarding contract: every IC-facing crate that enables a numeric feature must
+forward it to both `gleaph-gql` and `gleaph-gql-value` (and consumers that declare
+`default-features = false` on `gleaph-gql-ic-wire` must forward their own features), so
+gql's `Value` match arms stay aligned with the variants that actually exist in the
+unified feature graph.
 
 ## End-to-end read path
 
@@ -88,12 +111,12 @@ Mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX_LIST`, e
 
 ## USE GRAPH vs federation
 
-| Feature | Meaning |
-|---------|---------|
-| **Session current graph** | `SESSION SET GRAPH` in `session_activity`; default for plain `MATCH` when no `USE` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| **HOME graph** | `HOME_GRAPH` or sole visible graph; optional `GraphRegistryEntry.is_home` when multiple graphs are visible |
-| **USE GRAPH** (planner) | Focused sub-plan scope; router **defocuses** or **peels** nested chains, replans with target graph stats, dispatches per graph (read path; pushdown rules in planner). Sequential top-level segments merge with row union at router (U2). |
-| **Federation** (router/graph) | Shards of **one** logical graph; `GlobalVertexId`, placement, encoded element ids |
+| Feature                       | Meaning                                                                                                                                                                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Session current graph**     | `SESSION SET GRAPH` in `session_activity`; default for plain `MATCH` when no `USE` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md))                                                                                  |
+| **HOME graph**                | `HOME_GRAPH` or sole visible graph; optional `GraphRegistryEntry.is_home` when multiple graphs are visible                                                                                                                                |
+| **USE GRAPH** (planner)       | Focused sub-plan scope; router **defocuses** or **peels** nested chains, replans with target graph stats, dispatches per graph (read path; pushdown rules in planner). Sequential top-level segments merge with row union at router (U2). |
+| **Federation** (router/graph) | Shards of **one** logical graph; `GlobalVertexId`, placement, encoded element ids                                                                                                                                                         |
 
 **Implemented (2026-06-13):** program-based graph resolution (R0–R2), validator session seed (R1), remote top-level `USE GRAPH` dispatch (U1b), multi-graph USE v2 (nested peel, NEXT union, cross-graph cartesian/hash join at router). **Not implemented:** remote `USE` DML, prepared multi-graph plans, cross-call session persistence.
 

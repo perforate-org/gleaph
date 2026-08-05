@@ -17,8 +17,11 @@
 //!   This feature is **non-default**; standard-GQL consumers should not enable it.
 //! - `format` -- Enables the AST-based query formatter (`crate::format`). Does not imply `gleaph`;
 //!   select both features to format Gleaph-specific syntax.
+//! - `i256` / `u256` / `f16` / `decimal` -- Enable the matching `Value` variants and numeric
+//!   operations (default). Turn them off to drop `ethnum` / `half` / `rust_decimal` from the
+//!   build (e.g. a format-only WASM bundle).
 //! - `f128` -- Enables `Value::Float128` using `std::f128` (requires nightly).
-//! - `f256` -- Enables `Value::Float256` using the `f256` crate.
+//! - `f256` -- Enables `Value::Float256` using the `f256` crate (large; opt-in, not default).
 //! - `serde` -- Enables canonical text (JSON / NDJSON) (de)serialization of
 //!   [`Value`](value::Value) via the `serde` traits (external-tag single-key objects,
 //!   decimal strings for wide numerics, base64 `Bytes`, order-preserving `Record`,
@@ -65,6 +68,7 @@ mod extension_macro_tests;
 pub use error::{GqlError, GqlResult};
 pub use gleaph_gql_value as value;
 pub use parser::ParseResult;
+#[cfg(feature = "join_hash")]
 pub use value::join_hash::{hash_path_element_for_join, hash_value_for_join};
 pub use value::numeric_order;
 #[cfg(feature = "ast-rkyv-no-span")]

@@ -8,20 +8,30 @@ description = "Lightweight Candid wire types for GQL query rows"
 [dependencies]
 candid.workspace = true
 chrono = { workspace = true, optional = true }
-ethnum = { workspace = true, features = ["serde"] }
-f256.workspace = true
-gleaph-gql = { path = "../gql", default-features = false, features = ["f256"] }
-half = { workspace = true, features = ["serde"] }
+ethnum = { workspace = true, optional = true, features = ["serde"] }
+f256 = { workspace = true, optional = true }
+gleaph-gql = { path = "../gql", default-features = false }
+gleaph-gql-value.workspace = true
+half = { workspace = true, optional = true, features = ["serde"] }
 jiff = { workspace = true, optional = true }
-rust_decimal = { workspace = true, features = ["serde"] }
+rust_decimal = { workspace = true, optional = true, features = ["serde"] }
 serde.workspace = true
 thiserror.workspace = true
 
 [features]
-default = ["jiff"]
+# Numeric vocabulary is opt-in so lightweight consumers (SDK bindings, wire-only
+# runtimes) can drop the heavy numeric crates. i256/u256/f16/decimal are default;
+# f256 (large) and nightly f128 are opt-in. Each feature forwards to `gleaph-gql` so
+# gql's own feature gates stay aligned with gql-value's variants in the unified graph.
+default = ["i256", "u256", "f16", "decimal"]
+i256 = ["dep:ethnum", "gleaph-gql/i256", "gleaph-gql-value/i256"]
+u256 = ["dep:ethnum", "gleaph-gql/u256", "gleaph-gql-value/u256"]
+f16 = ["dep:half", "gleaph-gql/f16", "gleaph-gql-value/f16"]
+decimal = ["dep:rust_decimal", "gleaph-gql/decimal", "gleaph-gql-value/decimal"]
 jiff = ["dep:jiff"]
 chrono = ["dep:chrono"]
-nightly-f128 = ["gleaph-gql/f128"]
+nightly-f128 = ["gleaph-gql/f128", "gleaph-gql-value/f128"]
+f256 = ["dep:f256", "gleaph-gql/f256", "gleaph-gql-value/f256"]
 
 [dev-dependencies]
 serde_json.workspace = true

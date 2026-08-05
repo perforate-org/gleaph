@@ -8,9 +8,11 @@
 
 use crate::Value;
 use crate::types::PathElement;
+#[cfg(feature = "f16")]
 use half::f16;
 use std::hash::Hasher;
 
+#[cfg(feature = "f16")]
 #[inline]
 fn canonical_f16_bits(v: f16) -> u16 {
     if v == f16::ZERO {
@@ -103,6 +105,7 @@ pub fn hash_value_for_join<H: Hasher>(value: &Value, hasher: &mut H) {
             hasher.write_u8(26);
             hasher.write_i128(*v);
         }
+        #[cfg(feature = "i256")]
         Value::Int256(v) => {
             hasher.write_u8(27);
             hasher.write(v.0.to_le_bytes().as_slice());
@@ -127,10 +130,12 @@ pub fn hash_value_for_join<H: Hasher>(value: &Value, hasher: &mut H) {
             hasher.write_u8(32);
             hasher.write_u128(*v);
         }
+        #[cfg(feature = "u256")]
         Value::Uint256(v) => {
             hasher.write_u8(33);
             hasher.write(v.0.to_le_bytes().as_slice());
         }
+        #[cfg(feature = "f16")]
         Value::Float16(v) => {
             hasher.write_u8(34);
             hasher.write_u16(canonical_f16_bits(*v));
@@ -153,6 +158,7 @@ pub fn hash_value_for_join<H: Hasher>(value: &Value, hasher: &mut H) {
             hasher.write_u8(38);
             hasher.write(canonical_f256_le_bytes(*v).as_slice());
         }
+        #[cfg(feature = "decimal")]
         Value::Decimal(d) => {
             hasher.write_u8(39);
             hasher.write(&d.normalize().0.serialize());

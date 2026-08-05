@@ -20,7 +20,7 @@ rkyv = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 [features]
-default = ["cmp", "join_hash", "i256", "u256", "f16", "f256", "decimal"]
+default = ["cmp", "join_hash", "i256", "u256", "f16", "decimal"]
 
 cmp = []
 join_hash = []

@@ -1,5 +1,11 @@
 use super::ExtensionValue;
-use crate::types::{Decimal, Int256, PathElement, Uint256};
+#[cfg(feature = "decimal")]
+use crate::types::Decimal;
+#[cfg(feature = "i256")]
+use crate::types::Int256;
+use crate::types::PathElement;
+#[cfg(feature = "u256")]
+use crate::types::Uint256;
 
 // ──── Value enum ────
 

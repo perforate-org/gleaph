@@ -2,7 +2,13 @@ use std::fmt;
 use std::str;
 
 use super::{DenyExtensionBinaryDecode, ExtensionBinaryDecode, Value, ValueBinaryError};
-use crate::types::{Decimal, Int256, PathElement, Uint256};
+#[cfg(feature = "decimal")]
+use crate::types::Decimal;
+#[cfg(feature = "i256")]
+use crate::types::Int256;
+use crate::types::PathElement;
+#[cfg(feature = "u256")]
+use crate::types::Uint256;
 
 // ──── Clone ────
 
@@ -16,13 +22,16 @@ impl Clone for Value {
             Self::Int32(v) => Self::Int32(*v),
             Self::Int64(v) => Self::Int64(*v),
             Self::Int128(v) => Self::Int128(*v),
+            #[cfg(feature = "i256")]
             Self::Int256(v) => Self::Int256(*v),
             Self::Uint8(v) => Self::Uint8(*v),
             Self::Uint16(v) => Self::Uint16(*v),
             Self::Uint32(v) => Self::Uint32(*v),
             Self::Uint64(v) => Self::Uint64(*v),
             Self::Uint128(v) => Self::Uint128(*v),
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => Self::Uint256(*v),
+            #[cfg(feature = "f16")]
             Self::Float16(v) => Self::Float16(*v),
             Self::Float32(v) => Self::Float32(*v),
             Self::Float64(v) => Self::Float64(*v),
@@ -30,6 +39,7 @@ impl Clone for Value {
             Self::Float128(v) => Self::Float128(*v),
             #[cfg(feature = "f256")]
             Self::Float256(v) => Self::Float256(*v),
+            #[cfg(feature = "decimal")]
             Self::Decimal(v) => Self::Decimal(*v),
             Self::Text(v) => Self::Text(v.clone()),
             Self::Bytes(v) => Self::Bytes(v.clone()),
@@ -61,13 +71,16 @@ impl fmt::Debug for Value {
             Self::Int32(v) => write!(f, "Int32({v})"),
             Self::Int64(v) => write!(f, "Int64({v})"),
             Self::Int128(v) => write!(f, "Int128({v})"),
+            #[cfg(feature = "i256")]
             Self::Int256(v) => write!(f, "Int256({v})"),
             Self::Uint8(v) => write!(f, "Uint8({v})"),
             Self::Uint16(v) => write!(f, "Uint16({v})"),
             Self::Uint32(v) => write!(f, "Uint32({v})"),
             Self::Uint64(v) => write!(f, "Uint64({v})"),
             Self::Uint128(v) => write!(f, "Uint128({v})"),
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => write!(f, "Uint256({v})"),
+            #[cfg(feature = "f16")]
             Self::Float16(v) => write!(f, "Float16({v})"),
             Self::Float32(v) => write!(f, "Float32({v})"),
             Self::Float64(v) => write!(f, "Float64({v})"),
@@ -75,6 +88,7 @@ impl fmt::Debug for Value {
             Self::Float128(v) => write!(f, "Float128({v:?})"),
             #[cfg(feature = "f256")]
             Self::Float256(v) => write!(f, "Float256({v})"),
+            #[cfg(feature = "decimal")]
             Self::Decimal(v) => write!(f, "Decimal({v})"),
             Self::Text(v) => write!(f, "Text({v:?})"),
             Self::Bytes(v) => write!(f, "Bytes(len={})", v.len()),
@@ -106,13 +120,16 @@ impl PartialEq for Value {
             (Self::Int32(a), Self::Int32(b)) => a == b,
             (Self::Int64(a), Self::Int64(b)) => a == b,
             (Self::Int128(a), Self::Int128(b)) => a == b,
+            #[cfg(feature = "i256")]
             (Self::Int256(a), Self::Int256(b)) => a == b,
             (Self::Uint8(a), Self::Uint8(b)) => a == b,
             (Self::Uint16(a), Self::Uint16(b)) => a == b,
             (Self::Uint32(a), Self::Uint32(b)) => a == b,
             (Self::Uint64(a), Self::Uint64(b)) => a == b,
             (Self::Uint128(a), Self::Uint128(b)) => a == b,
+            #[cfg(feature = "u256")]
             (Self::Uint256(a), Self::Uint256(b)) => a == b,
+            #[cfg(feature = "f16")]
             (Self::Float16(a), Self::Float16(b)) => a == b,
             (Self::Float32(a), Self::Float32(b)) => a == b,
             (Self::Float64(a), Self::Float64(b)) => a == b,
@@ -120,6 +137,7 @@ impl PartialEq for Value {
             (Self::Float128(a), Self::Float128(b)) => a == b,
             #[cfg(feature = "f256")]
             (Self::Float256(a), Self::Float256(b)) => a == b,
+            #[cfg(feature = "decimal")]
             (Self::Decimal(a), Self::Decimal(b)) => a == b,
             (Self::Text(a), Self::Text(b)) => a == b,
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
@@ -154,13 +172,16 @@ impl fmt::Display for Value {
             Self::Int32(v) => write!(f, "{v}"),
             Self::Int64(v) => write!(f, "{v}"),
             Self::Int128(v) => write!(f, "{v}"),
+            #[cfg(feature = "i256")]
             Self::Int256(v) => write!(f, "{v}"),
             Self::Uint8(v) => write!(f, "{v}"),
             Self::Uint16(v) => write!(f, "{v}"),
             Self::Uint32(v) => write!(f, "{v}"),
             Self::Uint64(v) => write!(f, "{v}"),
             Self::Uint128(v) => write!(f, "{v}"),
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => write!(f, "{v}"),
+            #[cfg(feature = "f16")]
             Self::Float16(v) => write!(f, "{v}"),
             Self::Float32(v) => write!(f, "{v}"),
             Self::Float64(v) => write!(f, "{v}"),
@@ -168,6 +189,7 @@ impl fmt::Display for Value {
             Self::Float128(v) => write!(f, "{v:?}"),
             #[cfg(feature = "f256")]
             Self::Float256(v) => write!(f, "{v}"),
+            #[cfg(feature = "decimal")]
             Self::Decimal(v) => write!(f, "{v}"),
             Self::Text(v) => write!(f, "{v}"),
             Self::Bytes(v) => write!(f, "0x{}", hex_encode(v)),
@@ -558,6 +580,7 @@ impl Value {
                 out.push(6);
                 out.extend_from_slice(&v.to_le_bytes());
             }
+            #[cfg(feature = "i256")]
             Self::Int256(v) => {
                 out.push(7);
                 out.extend_from_slice(&v.0.to_le_bytes());
@@ -582,10 +605,12 @@ impl Value {
                 out.push(12);
                 out.extend_from_slice(&v.to_le_bytes());
             }
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => {
                 out.push(13);
                 out.extend_from_slice(&v.0.to_le_bytes());
             }
+            #[cfg(feature = "f16")]
             Self::Float16(v) => {
                 out.push(14);
                 out.extend_from_slice(&v.to_bits().to_le_bytes());
@@ -598,6 +623,7 @@ impl Value {
                 out.push(16);
                 out.extend_from_slice(&v.to_le_bytes());
             }
+            #[cfg(feature = "decimal")]
             Self::Decimal(v) => {
                 out.push(17);
                 out.extend_from_slice(&v.0.serialize());
@@ -728,6 +754,7 @@ impl Value {
             4 => Ok(Self::Int32(i32::from_le_bytes(cursor.read_array()?))),
             5 => Ok(Self::Int64(i64::from_le_bytes(cursor.read_array()?))),
             6 => Ok(Self::Int128(i128::from_le_bytes(cursor.read_array()?))),
+            #[cfg(feature = "i256")]
             7 => {
                 let bytes = cursor.read_array::<32>()?;
                 Ok(Self::Int256(Int256::new(ethnum::I256::from_le_bytes(
@@ -739,17 +766,20 @@ impl Value {
             10 => Ok(Self::Uint32(u32::from_le_bytes(cursor.read_array()?))),
             11 => Ok(Self::Uint64(u64::from_le_bytes(cursor.read_array()?))),
             12 => Ok(Self::Uint128(u128::from_le_bytes(cursor.read_array()?))),
+            #[cfg(feature = "u256")]
             13 => {
                 let bytes = cursor.read_array::<32>()?;
                 Ok(Self::Uint256(Uint256::new(ethnum::U256::from_le_bytes(
                     bytes,
                 ))))
             }
+            #[cfg(feature = "f16")]
             14 => Ok(Self::Float16(half::f16::from_bits(u16::from_le_bytes(
                 cursor.read_array()?,
             )))),
             15 => Ok(Self::Float32(f32::from_le_bytes(cursor.read_array()?))),
             16 => Ok(Self::Float64(f64::from_le_bytes(cursor.read_array()?))),
+            #[cfg(feature = "decimal")]
             17 => {
                 let bytes = cursor.read_array::<16>()?;
                 Ok(Self::Decimal(Decimal::new(
@@ -849,6 +879,7 @@ impl Value {
             Self::Int32(v) => Some(*v as i64),
             Self::Int64(v) => Some(*v),
             Self::Int128(v) => i64::try_from(*v).ok(),
+            #[cfg(feature = "i256")]
             Self::Int256(v) => v.0.try_into().ok(),
             _ => None,
         }
@@ -879,9 +910,12 @@ impl Value {
     }
 
     /// Extract an integer value as i256, when the value can be represented as signed 256-bit.
+    #[cfg(any(feature = "i256", feature = "u256"))]
     pub fn as_i256(&self) -> Option<ethnum::I256> {
         match self {
+            #[cfg(feature = "i256")]
             Self::Int256(v) => Some(v.0),
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => ethnum::I256::try_from(v.0).ok(),
             value => value
                 .as_i128()
@@ -891,9 +925,12 @@ impl Value {
     }
 
     /// Extract an integer value as u256, when the value can be represented as unsigned 256-bit.
+    #[cfg(any(feature = "i256", feature = "u256"))]
     pub fn as_u256(&self) -> Option<ethnum::U256> {
         match self {
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => Some(v.0),
+            #[cfg(feature = "i256")]
             Self::Int256(v) if !v.0.is_negative() => Some(v.0.as_u256()),
             value => value.as_u128().map(ethnum::U256::from).or_else(|| {
                 value
@@ -918,7 +955,7 @@ impl Value {
             .or_else(|| v.to_string().parse::<f64>().ok().map(|x| x as f128))
     }
 
-    #[cfg(feature = "f128")]
+    #[cfg(all(feature = "f128", any(feature = "i256", feature = "u256")))]
     fn i256_to_f128(v: ethnum::I256) -> Option<f128> {
         i128::try_from(v)
             .ok()
@@ -941,7 +978,7 @@ impl Value {
             .or_else(|| finite_f64_to_f128(v.as_f64()))
     }
 
-    #[cfg(feature = "f128")]
+    #[cfg(all(feature = "f128", any(feature = "i256", feature = "u256")))]
     fn u256_to_f128(v: ethnum::U256) -> Option<f128> {
         u128::try_from(v)
             .ok()
@@ -969,14 +1006,30 @@ impl Value {
             Self::Float128(v) => Some(*v),
             #[cfg(feature = "f256")]
             Self::Float256(_) => None,
-            value if value.is_signed_int() => value
-                .as_i128()
-                .map(|value| value as f128)
-                .or_else(|| value.as_i256().and_then(Self::i256_to_f128)),
-            value if value.is_unsigned_int() => value
-                .as_u128()
-                .map(|value| value as f128)
-                .or_else(|| value.as_u256().and_then(Self::u256_to_f128)),
+            value if value.is_signed_int() => {
+                value.as_i128().map(|value| value as f128).or_else(|| {
+                    #[cfg(any(feature = "i256", feature = "u256"))]
+                    {
+                        value.as_i256().and_then(Self::i256_to_f128)
+                    }
+                    #[cfg(not(any(feature = "i256", feature = "u256")))]
+                    {
+                        None
+                    }
+                })
+            }
+            value if value.is_unsigned_int() => {
+                value.as_u128().map(|value| value as f128).or_else(|| {
+                    #[cfg(any(feature = "i256", feature = "u256"))]
+                    {
+                        value.as_u256().and_then(Self::u256_to_f128)
+                    }
+                    #[cfg(not(any(feature = "i256", feature = "u256")))]
+                    {
+                        None
+                    }
+                })
+            }
             value => value.as_f64().map(|value| value as f128),
         }
     }
@@ -990,13 +1043,33 @@ impl Value {
             Self::Float128(_) => self
                 .as_f64()
                 .and_then(|value| value.to_string().parse::<f256::f256>().ok()),
+            #[cfg(feature = "decimal")]
             Self::Decimal(v) => v.to_string().parse::<f256::f256>().ok(),
-            value if value.is_signed_int() => value
-                .as_i256()
-                .and_then(|value| value.to_string().parse::<f256::f256>().ok()),
-            value if value.is_unsigned_int() => value
-                .as_u256()
-                .and_then(|value| value.to_string().parse::<f256::f256>().ok()),
+            value if value.is_signed_int() => {
+                #[cfg(any(feature = "i256", feature = "u256"))]
+                {
+                    value
+                        .as_i256()
+                        .and_then(|value| value.to_string().parse::<f256::f256>().ok())
+                }
+                #[cfg(not(any(feature = "i256", feature = "u256")))]
+                {
+                    None
+                }
+            }
+            value if value.is_unsigned_int() => {
+                #[cfg(any(feature = "i256", feature = "u256"))]
+                {
+                    value
+                        .as_u256()
+                        .and_then(|value| value.to_string().parse::<f256::f256>().ok())
+                }
+                #[cfg(not(any(feature = "i256", feature = "u256")))]
+                {
+                    None
+                }
+            }
+            #[cfg(feature = "f16")]
             Self::Float16(v) => Some(f256::f256::from(v.to_f64())),
             Self::Float32(v) => Some(f256::f256::from(*v)),
             Self::Float64(v) => Some(f256::f256::from(*v)),
@@ -1012,13 +1085,16 @@ impl Value {
             Self::Int32(v) => Some(*v as f64),
             Self::Int64(v) => Some(*v as f64),
             Self::Int128(v) => Some(*v as f64),
+            #[cfg(feature = "i256")]
             Self::Int256(v) => Some(v.0.as_f64()),
             Self::Uint8(v) => Some(*v as f64),
             Self::Uint16(v) => Some(*v as f64),
             Self::Uint32(v) => Some(*v as f64),
             Self::Uint64(v) => Some(*v as f64),
             Self::Uint128(v) => Some(*v as f64),
+            #[cfg(feature = "u256")]
             Self::Uint256(v) => Some(v.0.as_f64()),
+            #[cfg(feature = "f16")]
             Self::Float16(v) => Some(v.to_f64()),
             Self::Float32(v) => Some(*v as f64),
             Self::Float64(v) => Some(*v),
@@ -1029,6 +1105,7 @@ impl Value {
                 // f256 → f64 via string roundtrip (no direct cast available)
                 v.to_string().parse::<f64>().ok()
             }
+            #[cfg(feature = "decimal")]
             Self::Decimal(v) => v.to_f64(),
             _ => None,
         }
@@ -1038,26 +1115,30 @@ impl Value {
     pub fn is_signed_int(&self) -> bool {
         matches!(
             self,
-            Self::Int8(_)
-                | Self::Int16(_)
-                | Self::Int32(_)
-                | Self::Int64(_)
-                | Self::Int128(_)
-                | Self::Int256(_)
-        )
+            Self::Int8(_) | Self::Int16(_) | Self::Int32(_) | Self::Int64(_) | Self::Int128(_)
+        ) || {
+            #[cfg(feature = "i256")]
+            {
+                matches!(self, Self::Int256(_))
+            }
+            #[cfg(not(feature = "i256"))]
+            false
+        }
     }
 
     /// Returns true for Uint8..Uint256.
     pub fn is_unsigned_int(&self) -> bool {
         matches!(
             self,
-            Self::Uint8(_)
-                | Self::Uint16(_)
-                | Self::Uint32(_)
-                | Self::Uint64(_)
-                | Self::Uint128(_)
-                | Self::Uint256(_)
-        )
+            Self::Uint8(_) | Self::Uint16(_) | Self::Uint32(_) | Self::Uint64(_) | Self::Uint128(_)
+        ) || {
+            #[cfg(feature = "u256")]
+            {
+                matches!(self, Self::Uint256(_))
+            }
+            #[cfg(not(feature = "u256"))]
+            false
+        }
     }
 
     /// Returns true for any integer variant.
@@ -1073,6 +1154,7 @@ impl Value {
             Self::Int32(_) | Self::Uint32(_) => Some(32),
             Self::Int64(_) | Self::Uint64(_) => Some(64),
             Self::Int128(_) | Self::Uint128(_) => Some(128),
+            #[cfg(any(feature = "i256", feature = "u256"))]
             Self::Int256(_) | Self::Uint256(_) => Some(256),
             _ => None,
         }
@@ -1080,7 +1162,15 @@ impl Value {
 
     /// Returns true for any float variant (Float16, Float32, Float64, Float128, Float256).
     pub fn is_float(&self) -> bool {
-        matches!(self, Self::Float16(_) | Self::Float32(_) | Self::Float64(_))
+        matches!(self, Self::Float32(_) | Self::Float64(_))
+            || {
+                #[cfg(feature = "f16")]
+                {
+                    matches!(self, Self::Float16(_))
+                }
+                #[cfg(not(feature = "f16"))]
+                false
+            }
             || {
                 #[cfg(feature = "f128")]
                 {
@@ -1101,7 +1191,14 @@ impl Value {
 
     /// Returns true for any numeric variant (integer, float, or decimal).
     pub fn is_numeric(&self) -> bool {
-        self.is_any_int() || self.is_float() || matches!(self, Self::Decimal(_))
+        self.is_any_int() || self.is_float() || {
+            #[cfg(feature = "decimal")]
+            {
+                matches!(self, Self::Decimal(_))
+            }
+            #[cfg(not(feature = "decimal"))]
+            false
+        }
     }
 }
 
@@ -1111,6 +1208,7 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::*;
+    #[cfg(feature = "cmp")]
     use crate::cmp::compare_values;
     use crate::{Any, ExtensionValue};
 
@@ -1209,6 +1307,7 @@ mod tests {
         assert!(Value::Int32(1).is_signed_int());
         assert!(Value::Uint16(1).is_unsigned_int());
         assert!(Value::Float64(1.0).is_float());
+        #[cfg(feature = "decimal")]
         assert!(Value::Decimal(Decimal::from_i64(1)).is_numeric());
     }
 
@@ -1273,9 +1372,11 @@ mod tests {
 
     #[test]
     fn as_f64_floats() {
+        #[cfg(feature = "f16")]
         assert_eq!(Value::Float16(half::f16::from_f64(1.5)).as_f64(), Some(1.5));
         assert_eq!(Value::Float32(2.5).as_f64(), Some(2.5));
         assert_eq!(Value::Float64(3.5).as_f64(), Some(3.5));
+        #[cfg(feature = "decimal")]
         assert!(Value::Decimal(Decimal::from_i64(7)).as_f64().is_some());
         assert_eq!(Value::Null.as_f64(), None);
     }
@@ -1291,7 +1392,7 @@ mod tests {
         assert!(f128_is_finite(large));
     }
 
-    #[cfg(feature = "f128")]
+    #[cfg(all(feature = "f128", feature = "i256"))]
     #[test]
     fn as_f128_int256() {
         use crate::types::Int256;
@@ -1299,7 +1400,7 @@ mod tests {
         assert_eq!(v.as_f128(), Some(1_000_000_000_000_000.0f128));
     }
 
-    #[cfg(all(feature = "f128", feature = "f256"))]
+    #[cfg(all(feature = "f128", feature = "f256", feature = "i256"))]
     #[test]
     fn as_f128_int256_beyond_f64_mantissa() {
         use crate::types::Int256;
@@ -1312,7 +1413,7 @@ mod tests {
         assert_eq!(via_f128, 9_007_199_254_740_993.0f128);
     }
 
-    #[cfg(all(feature = "f128", feature = "f256"))]
+    #[cfg(all(feature = "f128", feature = "f256", feature = "i256"))]
     #[test]
     fn as_f128_int256_via_f256_tier() {
         use crate::types::Int256;
@@ -1326,7 +1427,7 @@ mod tests {
         assert_ne!(via_f128, via_f64);
     }
 
-    #[cfg(all(feature = "f128", feature = "f256"))]
+    #[cfg(all(feature = "f128", feature = "f256", feature = "u256"))]
     #[test]
     fn as_f128_uint256_via_f256_tier() {
         use crate::types::Uint256;
@@ -1373,6 +1474,7 @@ mod tests {
 
     #[test]
     fn is_float_variants() {
+        #[cfg(feature = "f16")]
         assert!(Value::Float16(half::f16::ZERO).is_float());
         assert!(Value::Float32(0.0).is_float());
         assert!(!Value::Int32(0).is_float());
@@ -1383,6 +1485,7 @@ mod tests {
         assert!(Value::Int8(0).is_numeric());
         assert!(Value::Uint64(0).is_numeric());
         assert!(Value::Float32(0.0).is_numeric());
+        #[cfg(feature = "decimal")]
         assert!(Value::Decimal(Decimal::from_i64(0)).is_numeric());
         assert!(!Value::Text("x".into()).is_numeric());
         assert!(!Value::Null.is_numeric());
@@ -1402,6 +1505,7 @@ mod tests {
         assert_eq!(Value::from(1.0f32), Value::Float32(1.0));
         assert_eq!(Value::from(2.0f64), Value::Float64(2.0));
         assert_eq!(Value::from(vec![1u8, 2]), Value::Bytes(vec![1, 2]));
+        #[cfg(feature = "decimal")]
         assert_eq!(
             Value::from(Decimal::from_i64(1)),
             Value::Decimal(Decimal::from_i64(1))
@@ -1443,7 +1547,8 @@ mod tests {
 
     #[test]
     fn clone_all_variants() {
-        let values: Vec<Value> = vec![
+        #[allow(unused_mut)] // pushes below are feature-gated
+        let mut values: Vec<Value> = vec![
             Value::Null,
             Value::Bool(true),
             Value::Int8(1),
@@ -1456,10 +1561,8 @@ mod tests {
             Value::Uint32(3),
             Value::Uint64(4),
             Value::Uint128(5),
-            Value::Float16(half::f16::from_f64(1.0)),
             Value::Float32(1.0),
             Value::Float64(1.0),
-            Value::Decimal(Decimal::from_i64(1)),
             Value::Text("hi".into()),
             Value::Bytes(vec![1]),
             Value::Date(0),
@@ -1474,6 +1577,10 @@ mod tests {
             Value::Path(vec![]),
             Value::Record(vec![]),
         ];
+        #[cfg(feature = "f16")]
+        values.push(Value::Float16(half::f16::from_f64(1.0)));
+        #[cfg(feature = "decimal")]
+        values.push(Value::Decimal(Decimal::from_i64(1)));
         for v in &values {
             assert_eq!(v, &v.clone());
         }
@@ -1586,7 +1693,9 @@ mod tests {
         assert_eq!(format!("{:?}", Value::Uint32(3)), "Uint32(3)");
         assert_eq!(format!("{:?}", Value::Uint64(4)), "Uint64(4)");
         assert_eq!(format!("{:?}", Value::Uint128(5)), "Uint128(5)");
+        #[cfg(feature = "f16")]
         assert!(format!("{:?}", Value::Float16(half::f16::from_f64(1.0))).contains("Float16"));
+        #[cfg(feature = "decimal")]
         assert!(format!("{:?}", Value::Decimal(Decimal::from_i64(1))).contains("Decimal"));
     }
 
@@ -1598,13 +1707,16 @@ mod tests {
         assert_eq!(format!("{}", Value::Uint16(1000)), "1000");
         assert_eq!(format!("{}", Value::Uint64(42)), "42");
         assert_eq!(format!("{}", Value::Uint128(99)), "99");
+        #[cfg(feature = "f16")]
         assert_eq!(
             format!("{}", Value::Float16(half::f16::from_f64(1.5))),
             "1.5"
         );
+        #[cfg(feature = "decimal")]
         let _ = format!("{}", Value::Decimal(Decimal::from_i64(42)));
     }
 
+    #[cfg(feature = "i256")]
     #[test]
     fn as_i64_int256() {
         let v = Value::Int256(crate::types::Int256::new(ethnum::I256::new(42)));
@@ -1614,6 +1726,7 @@ mod tests {
         assert!(big.as_i64().is_none());
     }
 
+    #[cfg(all(feature = "i256", feature = "u256"))]
     #[test]
     fn as_f64_int256_uint256() {
         let v = Value::Int256(crate::types::Int256::new(ethnum::I256::new(100)));
@@ -1622,6 +1735,7 @@ mod tests {
         assert_eq!(u.as_f64(), Some(200.0));
     }
 
+    #[cfg(all(feature = "i256", feature = "u256"))]
     #[test]
     fn int_width_256() {
         let v = Value::Int256(crate::types::Int256::new(ethnum::I256::new(0)));
@@ -1631,6 +1745,7 @@ mod tests {
         assert_eq!(Value::Uint128(0).int_width(), Some(128));
     }
 
+    #[cfg(feature = "i256")]
     #[test]
     fn is_signed_int_256() {
         let v = Value::Int256(crate::types::Int256::new(ethnum::I256::new(0)));
@@ -1639,6 +1754,7 @@ mod tests {
         assert!(v.is_numeric());
     }
 
+    #[cfg(feature = "u256")]
     #[test]
     fn is_unsigned_int_256() {
         let u = Value::Uint256(crate::types::Uint256::new(ethnum::U256::new(0)));
@@ -1706,16 +1822,19 @@ mod tests {
 
     #[test]
     fn eq_float_variants() {
+        #[cfg(feature = "f16")]
         assert_eq!(
             Value::Float16(half::f16::from_f64(1.0)),
             Value::Float16(half::f16::from_f64(1.0))
         );
+        #[cfg(feature = "f16")]
         assert_ne!(
             Value::Float16(half::f16::from_f64(1.0)),
             Value::Float16(half::f16::from_f64(2.0))
         );
         assert_eq!(Value::Float32(1.0), Value::Float32(1.0));
         assert_ne!(Value::Float32(1.0), Value::Float32(2.0));
+        #[cfg(feature = "decimal")]
         assert_eq!(
             Value::Decimal(Decimal::from_i64(1)),
             Decimal::from_i64(1).into()
@@ -1730,6 +1849,7 @@ mod tests {
         assert_ne!(Value::Text("a".into()), Value::Text("b".into()));
     }
 
+    #[cfg(all(feature = "i256", feature = "u256"))]
     #[test]
     fn eq_256_variants() {
         let a = Value::Int256(crate::types::Int256::new(ethnum::I256::new(42)));
@@ -1745,6 +1865,7 @@ mod tests {
         assert_ne!(ua, uc);
     }
 
+    #[cfg(all(feature = "i256", feature = "u256"))]
     #[test]
     fn display_256_variants() {
         let v = Value::Int256(crate::types::Int256::new(ethnum::I256::new(42)));
@@ -1756,6 +1877,7 @@ mod tests {
         assert!(format!("{:?}", u).contains("Uint256"));
     }
 
+    #[cfg(all(feature = "i256", feature = "u256"))]
     #[test]
     fn clone_256_and_temporal() {
         let v = Value::Int256(crate::types::Int256::new(ethnum::I256::new(42)));
@@ -1953,15 +2075,18 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cmp")]
     #[derive(Debug, Clone)]
     struct NonOrderableExtension(&'static str);
 
+    #[cfg(feature = "cmp")]
     impl fmt::Display for NonOrderableExtension {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "NonOrderableExtension({})", self.0)
         }
     }
 
+    #[cfg(feature = "cmp")]
     impl ExtensionValue for NonOrderableExtension {
         fn type_name(&self) -> &str {
             "NonOrderableExtension"
@@ -1983,6 +2108,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cmp")]
     #[test]
     fn extension_ordering_and_sortable_key_are_opt_in() {
         let left = NonOrderableExtension("a");
@@ -1998,6 +2124,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cmp")]
     #[test]
     fn orderable_extension_controls_compare_values() {
         assert_eq!(
@@ -2044,8 +2171,10 @@ mod tests {
         assert_ne!(ext, Value::Int64(42));
     }
 
+    #[cfg(feature = "join_hash")]
     #[test]
     fn extension_hash_join_key_aligns_with_eq_for_short_blob_type() {
+        #[cfg(feature = "join_hash")]
         use crate::join_hash::hash_value_for_join;
         use std::hash::{DefaultHasher, Hasher};
 
@@ -2059,8 +2188,10 @@ mod tests {
         assert_eq!(ha.finish(), hb.finish());
     }
 
+    #[cfg(feature = "join_hash")]
     #[test]
     fn extension_hash_join_key_aligns_with_eq_for_mock_ext_binary_payload() {
+        #[cfg(feature = "join_hash")]
         use crate::join_hash::hash_value_for_join;
         use std::hash::{DefaultHasher, Hasher};
 
@@ -2115,6 +2246,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "i256")]
     #[test]
     fn binary_value_int256_fixed_len_roundtrips() {
         let v = Value::Int256(Int256::new(ethnum::I256::new(-123)));
@@ -2125,6 +2257,7 @@ mod tests {
         assert_eq!(back, v);
     }
 
+    #[cfg(feature = "u256")]
     #[test]
     fn binary_value_uint256_fixed_len_roundtrips() {
         let v = Value::Uint256(Uint256::new(ethnum::U256::new(123)));
@@ -2135,6 +2268,7 @@ mod tests {
         assert_eq!(back, v);
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn binary_value_decimal_fixed_len_roundtrips() {
         let v = Value::Decimal(Decimal::parse("123.456").expect("valid decimal"));

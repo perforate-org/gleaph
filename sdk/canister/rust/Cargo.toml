@@ -7,21 +7,35 @@ description = "Gleaph canister SDK helpers for inter-canister calls to the Gleap
 
 [dependencies]
 candid.workspace = true
-ethnum = { workspace = true, features = ["serde"] }
-f256.workspace = true
-gleaph-gql-ic-wire = { workspace = true, default-features = false }
-gleaph-gql-params.workspace = true
+ethnum = { workspace = true, optional = true }
+f256 = { workspace = true, optional = true }
+gleaph-gql-ic-wire.workspace = true
+gleaph-gql-params = { workspace = true, features = [
+    "i256",
+    "u256",
+    "f16",
+    "decimal",
+] }
 gleaph-gql-value.workspace = true
 gleaph-prepared-api.workspace = true
-half = { workspace = true, features = ["serde"] }
+half = { workspace = true, optional = true }
 ic-cdk.workspace = true
 ic_principal = { version = "0.1", features = ["serde"] }
-rust_decimal = { workspace = true, features = ["serde"] }
+rust_decimal = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 
 [features]
-default = ["temporal-jiff"]
+default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]
+i256 = ["dep:ethnum", "gleaph-gql-value/i256", "gleaph-gql-ic-wire/i256"]
+u256 = ["dep:ethnum", "gleaph-gql-value/u256", "gleaph-gql-ic-wire/u256"]
+f16 = ["dep:half", "gleaph-gql-value/f16", "gleaph-gql-ic-wire/f16"]
+decimal = [
+    "dep:rust_decimal",
+    "gleaph-gql-value/decimal",
+    "gleaph-gql-ic-wire/decimal",
+]
 temporal-jiff = ["gleaph-gql-ic-wire/jiff"]
 temporal-chrono = ["gleaph-gql-ic-wire/chrono"]
 nightly-f128 = ["gleaph-gql-value/f128", "gleaph-gql-ic-wire/nightly-f128"]
+f256 = ["dep:f256", "gleaph-gql-value/f256", "gleaph-gql-ic-wire/f256"]

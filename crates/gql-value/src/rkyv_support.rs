@@ -77,17 +77,17 @@ impl Drop for RkyvExtensionDecodeScopeGuard {
     }
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "f16"))]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = half::f16)]
 pub(crate) struct F16Def(#[rkyv(getter = f16_to_bits)] u16);
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "f16"))]
 fn f16_to_bits(x: &half::f16) -> u16 {
     x.to_bits()
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "f16"))]
 impl From<F16Def> for half::f16 {
     fn from(F16Def(bits): F16Def) -> Self {
         half::f16::from_bits(bits)

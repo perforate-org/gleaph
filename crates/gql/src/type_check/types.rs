@@ -181,6 +181,7 @@ pub fn infer_literal(v: &Value) -> Type {
         Value::Int128(_) => Type::Scalar(ValueType::Int128 {
             keyword: Keyword::new("INT128"),
         }),
+        #[cfg(feature = "i256")]
         Value::Int256(_) => Type::Scalar(ValueType::Int256 {
             keyword: Keyword::new("INT256"),
         }),
@@ -199,9 +200,11 @@ pub fn infer_literal(v: &Value) -> Type {
         Value::Uint128(_) => Type::Scalar(ValueType::Uint128 {
             keyword: Keyword::new("UINT128"),
         }),
+        #[cfg(feature = "u256")]
         Value::Uint256(_) => Type::Scalar(ValueType::Uint256 {
             keyword: Keyword::new("UINT256"),
         }),
+        #[cfg(feature = "f16")]
         Value::Float16(_) => Type::Scalar(ValueType::Float16 {
             keyword: Keyword::new("FLOAT16"),
         }),
@@ -215,6 +218,7 @@ pub fn infer_literal(v: &Value) -> Type {
         Value::Float128(_) => Type::Scalar(ValueType::Float128),
         #[cfg(feature = "f256")]
         Value::Float256(_) => Type::Scalar(ValueType::Float256),
+        #[cfg(feature = "decimal")]
         Value::Decimal(_) => Type::Scalar(ValueType::Decimal {
             keyword: Keyword::new("DECIMAL"),
             precision: None,

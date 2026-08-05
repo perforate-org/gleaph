@@ -29,18 +29,24 @@ thiserror = "2"
 rkyv = { workspace = true, optional = true }
 
 [features]
-default = ["f128", "f256"]
+default = ["cmp", "join_hash", "i256", "u256", "f16", "f128", "f256", "decimal"]
 ast-rkyv-no-span = ["dep:rkyv", "gleaph-gql-value/rkyv"]
+cmp = ["gleaph-gql-value/cmp"]
 cypher = []
+join_hash = ["gleaph-gql-value/join_hash"]
+i256 = ["gleaph-gql-value/i256"]
+u256 = ["gleaph-gql-value/u256"]
+f16 = ["gleaph-gql-value/f16"]
 sql-compat = []
 f128 = ["gleaph-gql-value/f128"]
-f256 = ["dep:f256"]
+f256 = ["dep:f256", "gleaph-gql-value/f256"]
 # Gleaph-specific GQL dialect (e.g. `SEARCH ... VECTOR INDEX ...` and edge `INLINE`).
 # Non-default: standard-GQL consumers do not need to enable it.
 gleaph = []
 # AST-based query formatter. Does not imply `gleaph`; format-only consumers
 # may enable it alone. Gleaph syntax formatting requires both `format` and `gleaph`.
 format = []
+decimal = ["gleaph-gql-value/decimal"]
 # Canonical text (JSON / NDJSON) (de)serialization of `Value`: external-tag single-key
 # objects, decimal strings for wide numerics, base64 `Bytes`, order-preserving `Record`
 # with duplicate-key rejection, and `Extension` rejected (fail-closed).

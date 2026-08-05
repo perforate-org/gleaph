@@ -28,7 +28,13 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
 use crate::Value;
-use crate::types::{Decimal, Int256, PathElement, PathElementId, Uint256};
+#[cfg(feature = "decimal")]
+use crate::types::Decimal;
+#[cfg(feature = "i256")]
+use crate::types::Int256;
+#[cfg(feature = "u256")]
+use crate::types::Uint256;
+use crate::types::{PathElement, PathElementId};
 
 // ──── helpers ────
 
@@ -189,6 +195,7 @@ where
     parse(&text).ok_or_else(|| de::Error::custom(format!("invalid decimal value {text:?}")))
 }
 
+#[cfg(feature = "f16")]
 fn next_f16<'de, A>(map: &mut A) -> Result<half::f16, A::Error>
 where
     A: MapAccess<'de>,
@@ -443,13 +450,16 @@ impl Serialize for Value {
             Value::Int32(value) => map.serialize_entry("Int32", value)?,
             Value::Int64(value) => map.serialize_entry("Int64", value)?,
             Value::Int128(value) => map.serialize_entry("Int128", &value.to_string())?,
+            #[cfg(feature = "i256")]
             Value::Int256(value) => map.serialize_entry("Int256", &value.to_string())?,
             Value::Uint8(value) => map.serialize_entry("Uint8", value)?,
             Value::Uint16(value) => map.serialize_entry("Uint16", value)?,
             Value::Uint32(value) => map.serialize_entry("Uint32", value)?,
             Value::Uint64(value) => map.serialize_entry("Uint64", value)?,
             Value::Uint128(value) => map.serialize_entry("Uint128", &value.to_string())?,
+            #[cfg(feature = "u256")]
             Value::Uint256(value) => map.serialize_entry("Uint256", &value.to_string())?,
+            #[cfg(feature = "f16")]
             Value::Float16(value) => {
                 finite_ser::<S>("Float16", value.is_finite())?;
                 map.serialize_entry("Float16", &value.to_f64())?
@@ -474,6 +484,7 @@ impl Serialize for Value {
                 finite_ser::<S>("Float256", value.is_finite())?;
                 map.serialize_entry("Float256", &value.to_string())?
             }
+            #[cfg(feature = "decimal")]
             Value::Decimal(value) => map.serialize_entry("Decimal", &value.0.to_string())?,
             Value::Text(value) => map.serialize_entry("Text", value)?,
             Value::Bytes(value) => {
@@ -564,6 +575,7 @@ impl<'de> Deserialize<'de> for Value {
                     "Int32" => Value::Int32(map.next_value_seed(FlexSeed::<i32>(PhantomData))?),
                     "Int64" => Value::Int64(map.next_value_seed(FlexSeed::<i64>(PhantomData))?),
                     "Int128" => Value::Int128(map.next_value_seed(FlexSeed::<i128>(PhantomData))?),
+                    #[cfg(feature = "i256")]
                     "Int256" => Value::Int256(next_parsed(&mut map, Int256::parse)?),
                     "Uint8" => Value::Uint8(map.next_value_seed(FlexSeed::<u8>(PhantomData))?),
                     "Uint16" => Value::Uint16(map.next_value_seed(FlexSeed::<u16>(PhantomData))?),
@@ -572,7 +584,9 @@ impl<'de> Deserialize<'de> for Value {
                     "Uint128" => {
                         Value::Uint128(map.next_value_seed(FlexSeed::<u128>(PhantomData))?)
                     }
+                    #[cfg(feature = "u256")]
                     "Uint256" => Value::Uint256(next_parsed(&mut map, Uint256::parse)?),
+                    #[cfg(feature = "f16")]
                     "Float16" => Value::Float16(next_f16(&mut map)?),
                     "Float32" => Value::Float32(map.next_value::<f32>()?),
                     "Float64" => Value::Float64(map.next_value::<f64>()?),
@@ -580,6 +594,7 @@ impl<'de> Deserialize<'de> for Value {
                     "Float128" => Value::Float128(next_float128(&mut map)?),
                     #[cfg(feature = "f256")]
                     "Float256" => Value::Float256(next_float256(&mut map)?),
+                    #[cfg(feature = "decimal")]
                     "Decimal" => Value::Decimal(next_parsed(&mut map, Decimal::parse)?),
                     "Text" => Value::Text(map.next_value::<String>()?),
                     "Bytes" => Value::Bytes(next_base64(&mut map)?),

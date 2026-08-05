@@ -1797,6 +1797,7 @@ dependencies = [
  "ethnum",
  "f256",
  "gleaph-gql",
+ "gleaph-gql-value",
  "half 2.7.1",
  "jiff",
  "rust_decimal",

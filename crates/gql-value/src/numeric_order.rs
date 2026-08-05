@@ -35,6 +35,7 @@ pub fn normalized_numeric_parts(
     match value {
         value if value.is_signed_int() => signed_integer_parts(value),
         value if value.is_unsigned_int() => unsigned_integer_parts(value),
+        #[cfg(feature = "decimal")]
         Value::Decimal(value) => {
             let decimal = value.normalize().0;
             let mantissa = decimal.mantissa();
@@ -47,6 +48,7 @@ pub fn normalized_numeric_parts(
                 decimal.scale(),
             )?))
         }
+        #[cfg(feature = "f16")]
         Value::Float16(value) => {
             if !value.is_finite() {
                 return Err(NumericOrderError::NonFiniteFloat);
@@ -140,6 +142,9 @@ pub fn compare_normalized_numeric(left: &Value, right: &Value) -> Option<Orderin
     }
 }
 
+/// Signed integer parts. With `i256` enabled, signed values widen through `as_i256`;
+/// without it, all signed variants fit in `i128` and the wider conversion is unnecessary.
+#[cfg(feature = "i256")]
 fn signed_integer_parts(value: &Value) -> Result<Option<NormalizedNumeric>, NumericOrderError> {
     let signed = value.as_i256().ok_or(NumericOrderError::UnsupportedValue)?;
     if signed == ethnum::I256::ZERO {
@@ -152,9 +157,38 @@ fn signed_integer_parts(value: &Value) -> Result<Option<NormalizedNumeric>, Nume
     )?))
 }
 
+#[cfg(not(feature = "i256"))]
+fn signed_integer_parts(value: &Value) -> Result<Option<NormalizedNumeric>, NumericOrderError> {
+    let signed = value.as_i128().ok_or(NumericOrderError::UnsupportedValue)?;
+    if signed == 0 {
+        return Ok(None);
+    }
+    Ok(Some(parts_from_digits_and_scale(
+        signed < 0,
+        signed.unsigned_abs().to_string(),
+        0,
+    )?))
+}
+
+/// Unsigned integer parts. With `u256` enabled, unsigned values widen through `as_u256`;
+/// without it, all unsigned variants fit in `u128`.
+#[cfg(feature = "u256")]
 fn unsigned_integer_parts(value: &Value) -> Result<Option<NormalizedNumeric>, NumericOrderError> {
     let unsigned = value.as_u256().ok_or(NumericOrderError::UnsupportedValue)?;
     if unsigned == ethnum::U256::ZERO {
+        return Ok(None);
+    }
+    Ok(Some(parts_from_digits_and_scale(
+        false,
+        unsigned.to_string(),
+        0,
+    )?))
+}
+
+#[cfg(not(feature = "u256"))]
+fn unsigned_integer_parts(value: &Value) -> Result<Option<NormalizedNumeric>, NumericOrderError> {
+    let unsigned = value.as_u128().ok_or(NumericOrderError::UnsupportedValue)?;
+    if unsigned == 0 {
         return Ok(None);
     }
     Ok(Some(parts_from_digits_and_scale(
@@ -272,9 +306,11 @@ fn cmp_magnitude(left: &NormalizedNumeric, right: &NormalizedNumeric) -> Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "decimal")]
     use crate::types::Decimal;
     use std::cmp::Ordering;
 
+    #[cfg(feature = "decimal")]
     fn decimal(value: &str) -> Value {
         Value::Decimal(Decimal::parse(value).expect("decimal"))
     }
@@ -290,6 +326,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn exact_numeric_comparison_distinguishes_binary_and_decimal_literals() {
         assert_eq!(
@@ -302,6 +339,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "decimal", feature = "f16"))]
     #[test]
     fn exact_numeric_comparison_orders_mixed_float_int_decimal_values() {
         let values = [
@@ -347,7 +385,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "f128")]
+    #[cfg(all(feature = "f128", feature = "decimal"))]
     #[test]
     fn exact_numeric_comparison_supports_float128() {
         assert_eq!(
@@ -360,7 +398,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "f256")]
+    #[cfg(all(feature = "f256", feature = "decimal"))]
     #[test]
     fn exact_numeric_comparison_supports_float256() {
         assert_eq!(

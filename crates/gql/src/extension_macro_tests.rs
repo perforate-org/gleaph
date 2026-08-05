@@ -6,9 +6,11 @@
 //! at a second crate instance inside `gleaph-gql-value`'s own unit-test build.
 
 use std::borrow::Cow;
+#[cfg(feature = "cmp")]
 use std::cmp::Ordering;
 use std::fmt;
 
+#[cfg(feature = "cmp")]
 use crate::value::cmp::compare_values;
 use gleaph_gql_macros::define_gql_extension;
 use gleaph_gql_value::{ExtensionValue, Value, ValueBinaryError};
@@ -100,6 +102,7 @@ define_gql_extension! {
     ],
 }
 
+#[cfg(feature = "cmp")]
 #[test]
 fn macro_defined_non_orderable_extension_is_incomparable() {
     let left = Value::Extension(Box::new(MacroTokenExt(vec![1])));
@@ -118,6 +121,7 @@ fn macro_defined_non_orderable_extension_is_incomparable() {
     assert_eq!(left_ext.type_name(), "TT.test.MacroToken");
 }
 
+#[cfg(feature = "cmp")]
 #[test]
 fn macro_defined_orderable_extension_supports_compare_and_sortable_key() {
     let left = Value::Extension(Box::new(MacroRankExt(1)));

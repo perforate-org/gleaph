@@ -2,10 +2,13 @@
 //!
 //! These are GQL-centric types, independent of any specific platform (IC, etc.).
 
-use std::{fmt, ops::Deref};
+#[cfg(any(feature = "i256", feature = "u256", feature = "decimal"))]
+use std::fmt;
+use std::ops::Deref;
 
 // ──── 256-bit integer wrappers ────
 
+#[cfg(any(feature = "i256", feature = "u256"))]
 fn u256_decimal_digit_count(n: ethnum::U256) -> u64 {
     let ten = ethnum::U256::from(10u8);
     let zero = ethnum::U256::ZERO;
@@ -19,9 +22,11 @@ fn u256_decimal_digit_count(n: ethnum::U256) -> u64 {
 }
 
 /// 256-bit signed integer wrapping [`ethnum::I256`].
+#[cfg(feature = "i256")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Int256(pub ethnum::I256);
 
+#[cfg(feature = "i256")]
 impl Int256 {
     pub fn new(v: ethnum::I256) -> Self {
         Self(v)
@@ -44,6 +49,7 @@ impl Int256 {
     }
 }
 
+#[cfg(feature = "i256")]
 impl std::str::FromStr for Int256 {
     type Err = <ethnum::I256 as std::str::FromStr>::Err;
 
@@ -52,6 +58,7 @@ impl std::str::FromStr for Int256 {
     }
 }
 
+#[cfg(feature = "i256")]
 impl fmt::Display for Int256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -59,9 +66,11 @@ impl fmt::Display for Int256 {
 }
 
 /// 256-bit unsigned integer wrapping [`ethnum::U256`].
+#[cfg(feature = "u256")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Uint256(pub ethnum::U256);
 
+#[cfg(feature = "u256")]
 impl Uint256 {
     pub fn new(v: ethnum::U256) -> Self {
         Self(v)
@@ -83,6 +92,7 @@ impl Uint256 {
     }
 }
 
+#[cfg(feature = "u256")]
 impl std::str::FromStr for Uint256 {
     type Err = <ethnum::U256 as std::str::FromStr>::Err;
 
@@ -91,6 +101,7 @@ impl std::str::FromStr for Uint256 {
     }
 }
 
+#[cfg(feature = "u256")]
 impl fmt::Display for Uint256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -100,9 +111,11 @@ impl fmt::Display for Uint256 {
 // ──── Decimal wrapper ────
 
 /// Fixed-point decimal wrapping [`rust_decimal::Decimal`].
+#[cfg(feature = "decimal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Decimal(pub rust_decimal::Decimal);
 
+#[cfg(feature = "decimal")]
 impl Decimal {
     pub fn new(d: rust_decimal::Decimal) -> Self {
         Self(d)
@@ -182,6 +195,7 @@ impl Decimal {
     }
 }
 
+#[cfg(feature = "decimal")]
 fn sql_mantissa_digit_count(decimal: &rust_decimal::Decimal) -> usize {
     if decimal.is_zero() {
         return 1;
@@ -190,6 +204,7 @@ fn sql_mantissa_digit_count(decimal: &rust_decimal::Decimal) -> usize {
     (mantissa.ilog10() as usize) + 1
 }
 
+#[cfg(feature = "decimal")]
 fn sql_integer_mantissa_digit_count(decimal: &rust_decimal::Decimal) -> usize {
     let truncated = decimal.trunc().abs();
     if truncated.is_zero() {
@@ -198,6 +213,7 @@ fn sql_integer_mantissa_digit_count(decimal: &rust_decimal::Decimal) -> usize {
     sql_mantissa_digit_count(&truncated)
 }
 
+#[cfg(feature = "decimal")]
 impl fmt::Display for Decimal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -374,6 +390,7 @@ pub fn narrow_signed(v: i128, width: u16) -> Option<crate::Value> {
         32 => i32::try_from(v).ok().map(Value::Int32),
         64 => i64::try_from(v).ok().map(Value::Int64),
         128 => Some(Value::Int128(v)),
+        #[cfg(feature = "i256")]
         256 => Some(Value::Int256(Int256::new(ethnum::I256::from(v)))),
         _ => None,
     }
@@ -389,6 +406,7 @@ pub fn narrow_unsigned(v: u128, width: u16) -> Option<crate::Value> {
         32 => u32::try_from(v).ok().map(Value::Uint32),
         64 => u64::try_from(v).ok().map(Value::Uint64),
         128 => Some(Value::Uint128(v)),
+        #[cfg(feature = "u256")]
         256 => Some(Value::Uint256(Uint256::new(ethnum::U256::from(v)))),
         _ => None,
     }
@@ -396,51 +414,51 @@ pub fn narrow_unsigned(v: u128, width: u16) -> Option<crate::Value> {
 
 // ──── rkyv remote defs (`rkyv` feature) ────
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "i256"))]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = Int256)]
 pub(crate) struct Int256Def(#[rkyv(getter = int256_le_bytes)] [u8; 32]);
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "i256"))]
 fn int256_le_bytes(i: &Int256) -> [u8; 32] {
     i.0.to_le_bytes()
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "i256"))]
 impl From<Int256Def> for Int256 {
     fn from(Int256Def(bytes): Int256Def) -> Self {
         Int256(ethnum::I256::from_le_bytes(bytes))
     }
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "u256"))]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = Uint256)]
 pub(crate) struct Uint256Def(#[rkyv(getter = uint256_le_bytes)] [u8; 32]);
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "u256"))]
 fn uint256_le_bytes(i: &Uint256) -> [u8; 32] {
     i.0.to_le_bytes()
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "u256"))]
 impl From<Uint256Def> for Uint256 {
     fn from(Uint256Def(bytes): Uint256Def) -> Self {
         Uint256(ethnum::U256::from_le_bytes(bytes))
     }
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "decimal"))]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(remote = Decimal)]
 pub(crate) struct DecimalDef(#[rkyv(getter = decimal_le_bytes)] [u8; 16]);
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "decimal"))]
 fn decimal_le_bytes(d: &Decimal) -> [u8; 16] {
     d.0.serialize()
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(all(feature = "rkyv", feature = "decimal"))]
 impl From<DecimalDef> for Decimal {
     fn from(DecimalDef(bytes): DecimalDef) -> Self {
         Decimal(rust_decimal::Decimal::deserialize(bytes))
@@ -477,119 +495,140 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_display() {
         let v = Int256::new(ethnum::I256::from(42));
         assert_eq!(v.to_string(), "42");
     }
 
     #[test]
+    #[cfg(feature = "u256")]
     fn uint256_display() {
         let v = Uint256::new(ethnum::U256::from(100u128));
         assert_eq!(v.to_string(), "100");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_roundtrip() {
         let d = Decimal::parse("123.456").unwrap();
         assert_eq!(d.to_string(), "123.456");
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_parse_valid() {
         let v = Int256::parse("12345678901234567890").unwrap();
         assert_eq!(v.to_string(), "12345678901234567890");
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_parse_negative() {
         let v = Int256::parse("-999").unwrap();
         assert_eq!(v.0, ethnum::I256::from(-999));
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_parse_invalid() {
         assert!(Int256::parse("not_a_number").is_none());
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_from_str() {
         let v: Int256 = "42".parse().unwrap();
         assert_eq!(v.0, ethnum::I256::from(42));
     }
 
     #[test]
+    #[cfg(feature = "u256")]
     fn uint256_parse_valid() {
         let v = Uint256::parse("99999999999999999999").unwrap();
         assert_eq!(v.to_string(), "99999999999999999999");
     }
 
     #[test]
+    #[cfg(feature = "u256")]
     fn uint256_parse_invalid() {
         assert!(Uint256::parse("abc").is_none());
     }
 
     #[test]
+    #[cfg(feature = "u256")]
     fn uint256_from_str() {
         let v: Uint256 = "100".parse().unwrap();
         assert_eq!(v.0, ethnum::U256::from(100u128));
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_new_and_display() {
         let d = Decimal::new(rust_decimal::Decimal::new(314, 2));
         assert_eq!(d.to_string(), "3.14");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_to_f64() {
         let d = Decimal::parse("2.5").unwrap();
         assert_eq!(d.to_f64(), Some(2.5));
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_from_i64() {
         assert_eq!(Decimal::from_i64(42).to_string(), "42");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_from_u64() {
         assert_eq!(Decimal::from_u64(100).to_string(), "100");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_from_i128() {
         assert_eq!(Decimal::from_i128(-1).to_string(), "-1");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_from_u128() {
         assert_eq!(Decimal::from_u128(999).to_string(), "999");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_normalize() {
         let d = Decimal::parse("1.2000").unwrap();
         assert_eq!(d.normalize().to_string(), "1.2");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_parse_invalid() {
         assert!(Decimal::parse("not_decimal").is_none());
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_from_f64_rejects_non_finite() {
         assert!(Decimal::from_f64(f64::NAN).is_none());
         assert!(Decimal::from_f64(f64::INFINITY).is_none());
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_from_f64_round_trips_simple_values() {
         let d = Decimal::from_f64(2.5).expect("finite float");
         assert_eq!(d.to_f64(), Some(2.5));
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_fits_sql_precision_scale() {
         let d = Decimal::parse("12.34").expect("decimal");
         assert!(d.fits_sql_precision_scale(4, 2));
@@ -598,12 +637,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_round_to_scale() {
         let d = Decimal::parse("12.345").expect("decimal");
         assert_eq!(d.round_to_scale(2).to_string(), "12.34");
     }
 
     #[test]
+    #[cfg(feature = "decimal")]
     fn decimal_fits_sql_precision_scale_rejects_large_integer_part() {
         let d = Decimal::from_f64(999.9).expect("decimal");
         assert!(!d.fits_sql_precision_scale(4, 2));
@@ -612,12 +653,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_unsigned_decimal_digit_count() {
         let v = Int256::parse("1000000000000000").expect("int256");
         assert_eq!(v.unsigned_decimal_digit_count(), 16);
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_wrong_literal_is_not_min() {
         let wrong = Int256::parse("-170141183460469231731687303715884105728");
         assert_ne!(wrong, Some(Int256::new(ethnum::I256::MIN)));
@@ -625,18 +668,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_min_unsigned_decimal_digit_count_does_not_panic() {
         let v = Int256::new(ethnum::I256::MIN);
         assert_eq!(v.unsigned_decimal_digit_count(), 77);
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_negative_unsigned_decimal_digit_count() {
         let v = Int256::new(ethnum::I256::from(-42));
         assert_eq!(v.unsigned_decimal_digit_count(), 2);
     }
 
     #[test]
+    #[cfg(feature = "i256")]
     fn int256_is_zero() {
         assert!(Int256::new(ethnum::I256::ZERO).is_zero());
         assert!(!Int256::new(ethnum::I256::from(1)).is_zero());
@@ -653,6 +699,7 @@ mod tests {
         ));
         assert!(matches!(narrow_signed(1, 64), Some(Value::Int64(1))));
         assert!(matches!(narrow_signed(1, 128), Some(Value::Int128(1))));
+        #[cfg(feature = "i256")]
         assert!(matches!(narrow_signed(1, 256), Some(Value::Int256(_))));
         assert!(narrow_signed(1, 7).is_none());
     }
@@ -677,6 +724,7 @@ mod tests {
         ));
         assert!(matches!(narrow_unsigned(1, 64), Some(Value::Uint64(1))));
         assert!(matches!(narrow_unsigned(1, 128), Some(Value::Uint128(1))));
+        #[cfg(feature = "u256")]
         assert!(matches!(narrow_unsigned(1, 256), Some(Value::Uint256(_))));
         assert!(narrow_unsigned(1, 7).is_none());
     }

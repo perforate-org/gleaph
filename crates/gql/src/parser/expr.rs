@@ -7,6 +7,7 @@ use crate::ast::{
 };
 use crate::error::GqlError;
 use crate::token::Token;
+#[cfg(feature = "decimal")]
 use crate::types::Decimal;
 
 use super::helpers::Parser;
@@ -492,6 +493,7 @@ impl Parser<'_> {
             }
 
             // ── Exact numeric (M suffix) ─────────────────────────────────
+            #[cfg(feature = "decimal")]
             Some(Token::ExactNumeric(s)) => {
                 let s = s.clone();
                 self.advance();
@@ -499,6 +501,10 @@ impl Parser<'_> {
                     .ok_or_else(|| self.error(format!("invalid exact numeric: {s}M")))?;
                 Ok(Expr { span: self.span_since(start), kind: ExprKind::Literal(Value::Decimal(d)) })
             }
+            #[cfg(not(feature = "decimal"))]
+            Some(Token::ExactNumeric(s)) => Err(self.error(format!(
+                "exact numeric literal {s}M requires the `decimal` feature"
+            ))),
 
             // ── String literal ───────────────────────────────────────────
             Some(Token::StringLit(s)) => {
@@ -986,6 +992,7 @@ impl Parser<'_> {
             });
         }
         // Try Int256
+        #[cfg(feature = "i256")]
         if let Some(v) = crate::types::Int256::parse(s) {
             return Ok(Expr {
                 span: self.span_since(start),
@@ -993,6 +1000,7 @@ impl Parser<'_> {
             });
         }
         // Try Uint256
+        #[cfg(feature = "u256")]
         if let Some(v) = crate::types::Uint256::parse(s) {
             return Ok(Expr {
                 span: self.span_since(start),

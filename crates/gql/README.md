@@ -23,8 +23,12 @@ Provides lexing, parsing, AST construction, type checking, and validation for qu
 | `sql-compat` | SQL-compatible syntax extensions                                                  |
 | `gleaph`     | Gleaph-specific GQL extensions (e.g. `SEARCH ... VECTOR INDEX ...`). Non-default. |
 | `format`     | AST-based query formatter. Non-default; does not imply `gleaph`.                  |
+| `i256`       | `Int256` values and operations (default)                                          |
+| `u256`       | `Uint256` values and operations (default)                                         |
+| `f16`        | `Float16` values and operations (default)                                         |
+| `decimal`    | `Decimal` values and operations (default)                                         |
 | `f128`       | 128-bit float via `std::f128` (requires nightly)                                  |
-| `f256`       | 256-bit float via the `f256` crate                                                |
+| `f256`       | 256-bit float via the `f256` crate (opt-in)                                       |
 
 ## Usage
 

@@ -53,10 +53,10 @@ gleaph-gql = { path = "crates/gql" }
 gleaph-gql-integration = { path = "crates/gql-integration" }
 gleaph-gql-keywords = { path = "crates/gql-keywords" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
-gleaph-gql-ic-wire = { path = "crates/gql-ic-wire", default-features = false }
-gleaph-gql-params = { path = "crates/gql-params" }
+gleaph-gql-ic-wire = { path = "crates/gql-ic-wire" }
+gleaph-gql-params = { path = "crates/gql-params", default-features = false }
 gleaph-gql-planner = { path = "crates/gql-planner" }
-gleaph-gql-value = { path = "crates/gql-value" }
+gleaph-gql-value = { path = "crates/gql-value", default-features = false }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
