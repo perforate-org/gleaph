@@ -130,20 +130,32 @@ prepared parameter encoding in every output language.
 
 ### 4. Generated APIs compose with the base client
 
-The long-term JS/TS target is a unified Gleaph client with dynamic GQL and generated prepared
-operations available together:
+The JS/TS target is a unified Gleaph client with dynamic GQL and generated prepared operations
+available together:
 
 ```ts
-const client = withPreparedQueries(createGleaphClient(actor));
+const client = await createPreparedGleaphClient({ canisterId, identity });
 
-await client.gql.query({ query, params });
-await client.prepared.searchUsers(params);
+await client.execute({ query, params });
+await client.findUsers(params);
 ```
 
 The SDK's public client is `GleaphClient`, constructed by `createGleaphClient` (IC transport) or
 `createGleaphClientFromTransport`. The earlier `GraphClient`/`createIcGraphClient` names were
 renamed separately from this ADR; the rename keeps the JS client aligned with the Rust CDK's
 `GleaphClient`.
+
+Generated TypeScript declares a `PreparedQueries` interface and a `PreparedGleaphClient` class
+that extends the SDK's forwarding base `GleaphClientWrapper` and implements `PreparedQueries`.
+`withPreparedQueries(client)` returns `new PreparedGleaphClient(client)`; prepared operation
+names are camelCase conversions of the wire names (`find-users` -> `findUsers`). The wrapper
+delegates all base operations to the inner client without mutating it, so the prepared and
+dynamic GQL surfaces share one value.
+
+The generated module also exports `createPreparedGleaphClient(options)` and
+`createPreparedGleaphClientFromTransport(transport)` factories that construct the
+`PreparedGleaphClient` from the same option/transport shapes as the SDK's `createGleaphClient`
+and `createGleaphClientFromTransport`; `createPreparedGleaphClient` is the primary entry point.
 
 For Rust, generated code exposes a manifest-specific `PreparedExt` trait implemented for the
 SDK's `GleaphClient<Prepared>`, where `Prepared` is a generated marker type selected by
@@ -247,8 +259,12 @@ The following points are intentionally not resolved by this proposed ADR:
    transport-backed factory), aligning with the Rust CDK's `GleaphClient`.
 5. **Rust SDK:** What package owns the non-CDK Rust client, and does it share a transport trait with
    generated code or expose a concrete `ic-agent` implementation first?
-6. **Generated composition:** Is the primary generated API `withPreparedQueries(client)`, a
-   manifest-specific Rust trait/facade, or another composition mechanism?
+6. **Generated composition:** Resolved. The JS/TS primary composition is the generated
+   `createPreparedGleaphClient(options)` factory (with `createPreparedGleaphClientFromTransport`
+   and the lower-level `withPreparedQueries(client)` compose helper), which returns a
+   `PreparedGleaphClient` extending the SDK's `GleaphClientWrapper`; the Rust canister
+   composition is the manifest-specific `PreparedExt` trait implemented for
+   `GleaphClient<Prepared>`.
 7. **Compatibility policy:** Once the API is released, which runtime and manifest versions may
    be combined, and does generation fail closed when the versions are unsupported? Until then,
    manifest version `1` remains the development contract and may receive destructive changes
@@ -336,14 +352,15 @@ as a release-stable contract.
   same CLI implementation and accepts the same codegen options.
 
 The generated TypeScript composes with the `@gleaph/sdk` `GleaphClient`, emits
-operation-specific parameter and row types, encodes semantic parameter values, and selects
-`executePrepared` versus `executePreparedMutation`. Transport, Candid, authorization, and
-common errors remain SDK-owned. The shared manifest shape is an implementation scaffold, not yet
-the accepted Router endpoint ABI. Consistency options and idempotent updates fail closed in this
-profile until the corresponding runtime methods are part of the stable SDK boundary. The Rust
-profile similarly delegates transport, response decoding, and error handling to a generated
-`PreparedExecutor` implementation; its `serde_json` parameter map is a provisional runtime
-boundary and is not the Router wire ABI.
+operation-specific parameter and row types, encodes semantic parameter values, selects
+`executePrepared` versus `executePreparedMutation`, and exposes the operations as camelCase
+methods on a generated `PreparedGleaphClient` that extends the SDK's `GleaphClientWrapper`.
+Transport, Candid, authorization, and common errors remain SDK-owned. The shared manifest shape is an
+implementation scaffold, not yet the accepted Router endpoint ABI. Consistency options and
+idempotent updates fail closed in this profile until the corresponding runtime methods are part
+of the stable SDK boundary. The Rust profile similarly delegates transport, response decoding,
+and error handling to a generated `PreparedExecutor` implementation; its `serde_json` parameter
+map is a provisional runtime boundary and is not the Router wire ABI.
 
 The Rust canister profile binds generated operations directly to the `gleaph-cdk` client; the
 Motoko canister profile remains a runtime boundary scaffold: a future Motoko CDK adapter must
