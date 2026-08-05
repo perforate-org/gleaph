@@ -9,13 +9,13 @@ renders one of the supported language profiles.
 
 ## Supported targets
 
-| Target | Output |
-| --- | --- |
-| `typescript` / `ts` | TypeScript client helpers using `@gleaph/sdk` |
-| `javascript` / `js` | JavaScript client helpers using `@gleaph/sdk` |
-| `rust` / `rs` | Rust application-client declarations and executor facade |
-| `rust-canister` | Rust canister declarations and `gleaph-cdk` executor boundary |
-| `motoko` / `mo` | Motoko canister declarations and executor boundary |
+| Target              | Output                                                        |
+| ------------------- | ------------------------------------------------------------- |
+| `typescript` / `ts` | TypeScript client helpers using `@gleaph/sdk`                 |
+| `javascript` / `js` | JavaScript client helpers using `@gleaph/sdk`                 |
+| `rust` / `rs`       | Rust application-client declarations and executor facade      |
+| `rust-canister`     | Rust canister declarations and `gleaph-cdk` executor boundary |
+| `motoko` / `mo`     | Motoko canister declarations and executor boundary            |
 
 The generated Rust and Motoko canister profiles define transport boundaries;
 the application must provide the runtime executor that performs Router calls,
