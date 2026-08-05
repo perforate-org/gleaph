@@ -3,7 +3,7 @@
 use candid::Principal;
 use ic_cdk::api::msg_caller;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::gql::build_router_block_plan;
 use gleaph_gql::program_modification::classify_program;
@@ -15,7 +15,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
 use gleaph_prepared_api::{
     GraphIdentity, MANIFEST_VERSION, OperationKind, PreparedManifest, PreparedOperation,
-    PreparedSortSpec,
+    PreparedOperationRecord, PreparedRegistration, PreparedSortSpec,
 };
 use gleaph_prepared_runtime::parse_prepared_source;
 
@@ -35,6 +35,9 @@ use crate::state::RouterError;
 use crate::vector_sync;
 
 const POST_UPGRADE_PREPARED_CACHE_LIMIT: usize = 32;
+
+/// Maximum number of operations accepted by one [`prepare`] batch (ADR 0061).
+pub const MAX_PREPARED_BATCH: usize = 32;
 
 #[derive(Clone)]
 struct PreparedQueryCache {
@@ -57,7 +60,7 @@ thread_local! {
 
 /// Plan a prepared query through the production Router ingress planning seam.
 ///
-/// This is the exact planning path used by `prepared_upsert` after authorization,
+/// This is the exact planning path used by prepared registration after authorization,
 /// exposed without `msg_caller` so unit tests can drive it with an explicit principal.
 #[cfg_attr(
     not(test),
@@ -146,72 +149,118 @@ fn plan_prepared_program(
     Ok((plan, graph_id, requires_write_path))
 }
 
-/// Register or replace one named prepared operation (idempotent upsert) together with optional
-/// graph-scoped metadata.
-pub fn prepare(
-    name: String,
-    query: String,
-    metadata: Option<PreparedOperation>,
-) -> Result<(), RouterError> {
+/// Register or replace named prepared operations in one atomic batch (idempotent upsert).
+///
+/// The batch is all-or-nothing: every operation is parsed, planned, and metadata-completed
+/// before any stable record or heap-cache entry is written; a single failure leaves the catalog
+/// unchanged and reports the first failing operation in batch order (ADR 0061).
+pub fn prepare(operations: Vec<PreparedRegistration>) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let caller = msg_caller();
-    prepared_upsert_core(&name, &query, caller, metadata)
+    prepare_batch_core(&operations, caller)
 }
 
-fn prepared_upsert_core(
-    name: &str,
-    query: &str,
+pub(crate) fn prepare_batch_core(
+    operations: &[PreparedRegistration],
     caller: Principal,
-    metadata: Option<PreparedOperation>,
 ) -> Result<(), RouterError> {
-    let (cache, graph_id) = build_prepared_cache(query, caller, None)?;
-    let requires_write_path = cache.requires_write_path;
-    let mut metadata = metadata;
-    if let Some(metadata) = &mut metadata {
-        let open = NoSchema;
-        let mut typed = None;
-        let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
-            graph_id, &open, &mut typed,
-        )?;
-        crate::prepared_documentation::complete_parameter_metadata(
-            &cache._program,
-            schema,
-            metadata,
-        )
-        .map_err(RouterError::InvalidArgument)?;
-        crate::prepared_documentation::apply_to_operation(&cache._program.doc_comments, metadata);
+    if operations.len() > MAX_PREPARED_BATCH {
+        return Err(RouterError::InvalidArgument(format!(
+            "prepared batch exceeds the limit of {MAX_PREPARED_BATCH} operations"
+        )));
     }
-    if let Some(metadata) = &metadata {
-        let expected_kind = if requires_write_path {
-            OperationKind::Update
-        } else {
-            OperationKind::Query
-        };
-        if metadata.name != name {
+    let mut names = BTreeSet::new();
+    for operation in operations {
+        if !names.insert(operation.name.as_str()) {
             return Err(RouterError::InvalidArgument(format!(
-                "prepared metadata name {:?} does not match upsert name {:?}",
-                metadata.name, name
-            )));
-        }
-        if metadata.kind != expected_kind {
-            return Err(RouterError::InvalidArgument(format!(
-                "prepared metadata kind for {:?} does not match the planned execution path",
-                name
+                "duplicate prepared operation name {:?} in batch",
+                operation.name
             )));
         }
     }
-    let key = prepared_key(graph_id, name);
-    insert_prepared_plan(
-        key,
-        PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
-            query: query.to_owned(),
-            metadata,
-        }),
-    );
-    insert_prepared_cache(
-        prepared_key(graph_id, name),
-        PreparedCacheEntry::Ready(Box::new(cache)),
-    );
+    // Phase 1: plan and complete metadata for every operation without writing. The first
+    // failure in batch order aborts the whole batch before any catalog mutation.
+    let mut committed = Vec::with_capacity(operations.len());
+    for operation in operations {
+        let (cache, graph_id) = build_prepared_cache(&operation.query, caller, None)
+            .map_err(|error| batch_op_error(&operation.name, error))?;
+        let mut metadata = operation.metadata.clone();
+        if let Some(metadata) = &mut metadata {
+            let open = NoSchema;
+            let mut typed = None;
+            let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
+                graph_id, &open, &mut typed,
+            )
+            .map_err(|error| batch_op_error(&operation.name, error))?;
+            crate::prepared_documentation::complete_parameter_metadata(
+                &cache._program,
+                schema,
+                metadata,
+            )
+            .map_err(|error| {
+                batch_op_error(&operation.name, RouterError::InvalidArgument(error))
+            })?;
+            crate::prepared_documentation::complete_result_schema(
+                &cache._program,
+                schema,
+                metadata,
+            )
+            .map_err(|error| {
+                batch_op_error(&operation.name, RouterError::InvalidArgument(error))
+            })?;
+            crate::prepared_documentation::apply_to_operation(
+                &cache._program.doc_comments,
+                metadata,
+            );
+        }
+        validate_prepared_metadata(&operation.name, cache.requires_write_path, &metadata)
+            .map_err(|error| batch_op_error(&operation.name, error))?;
+        committed.push((
+            prepared_key(graph_id, &operation.name),
+            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                query: operation.query.clone(),
+                metadata,
+            }),
+            cache,
+        ));
+    }
+    // Phase 2: commit every stable record and heap-cache entry only after all operations planned.
+    for (key, record, cache) in committed {
+        insert_prepared_plan(key.clone(), record);
+        insert_prepared_cache(key, PreparedCacheEntry::Ready(Box::new(cache)));
+    }
+    Ok(())
+}
+
+fn batch_op_error(name: &str, error: RouterError) -> RouterError {
+    RouterError::InvalidArgument(format!("prepared op '{name}': {error}"))
+}
+
+fn validate_prepared_metadata(
+    name: &str,
+    requires_write_path: bool,
+    metadata: &Option<PreparedOperation>,
+) -> Result<(), RouterError> {
+    let Some(metadata) = metadata else {
+        return Ok(());
+    };
+    let expected_kind = if requires_write_path {
+        OperationKind::Update
+    } else {
+        OperationKind::Query
+    };
+    if metadata.name != name {
+        return Err(RouterError::InvalidArgument(format!(
+            "prepared metadata name {:?} does not match upsert name {:?}",
+            metadata.name, name
+        )));
+    }
+    if metadata.kind != expected_kind {
+        return Err(RouterError::InvalidArgument(format!(
+            "prepared metadata kind for {:?} does not match the planned execution path",
+            name
+        )));
+    }
     Ok(())
 }
 
@@ -357,6 +406,32 @@ pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
     let graph_id = resolve_prepared_graph_id(&store, msg_caller(), name)?;
     remove_prepared_plan(&prepared_key(graph_id, name));
     Ok(())
+}
+
+/// Return the stored source and metadata of one registered prepared operation.
+///
+/// Resolution scans the caller's visible graphs for the name (the same rule `drop_prepared`
+/// uses): zero matches is `NotFound`, more than one is an ambiguity error (ADR 0061).
+pub fn get_prepared(name: &str) -> Result<PreparedOperationRecord, RouterError> {
+    authorize_prepared_execute(&msg_caller())?;
+    get_prepared_core(name, msg_caller())
+}
+
+/// Resolution and read-back for [`get_prepared`], exposed without `msg_caller` so unit tests can
+/// drive it with an explicit principal.
+pub(crate) fn get_prepared_core(
+    name: &str,
+    caller: Principal,
+) -> Result<PreparedOperationRecord, RouterError> {
+    let store = RouterStore::new();
+    let graph_id = resolve_prepared_graph_id(&store, caller, name)?;
+    let record = get_prepared_plan(&prepared_key(graph_id, name))
+        .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
+    let v1 = record.as_v1()?;
+    Ok(PreparedOperationRecord {
+        query: v1.query.clone(),
+        metadata: v1.metadata.clone(),
+    })
 }
 
 /// Read-only prepared execution with an explicit ADR 0029 §5 consistency contract (Phase 3).
@@ -655,10 +730,15 @@ pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> PreparedPlanKey {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreparedPlanRecord, PreparedPlanRecordV1, cached_prepared_cache, insert_prepared_plan,
+        MAX_PREPARED_BATCH, PreparedPlanRecord, PreparedPlanRecordV1, cached_prepared_cache,
+        get_prepared_core, get_prepared_plan, insert_prepared_plan, prepare_batch_core,
         prepared_key, rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
     };
+    use crate::state::RouterError;
     use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_prepared_api::{
+        OperationKind, PreparedOperation, PreparedRegistration, ResultSchema, SemanticType,
+    };
 
     #[test]
     fn prepared_key_scopes_by_graph_and_name() {
@@ -805,5 +885,226 @@ mod tests {
 
         remove_prepared_plan(&valid_key);
         remove_prepared_plan(&invalid_key);
+    }
+
+    fn home_graph(owner: Principal, graph_name: &str) -> GraphId {
+        let store = crate::facade::store::RouterStore::new();
+        crate::facade::auth::grant_admins(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: graph_name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+            )
+            .expect("register graph");
+        // `admin_register_graph` interns the graph id from the name; resolve the canonical id.
+        crate::facade::stable::graph_catalog::lookup_graph_id(graph_name)
+            .expect("interned graph id")
+    }
+
+    fn registration(name: &str, query: &str) -> PreparedRegistration {
+        PreparedRegistration {
+            name: name.into(),
+            query: query.into(),
+            metadata: None,
+        }
+    }
+
+    fn operation(name: &str) -> PreparedOperation {
+        PreparedOperation {
+            name: name.into(),
+            description: None,
+            kind: OperationKind::Query,
+            parameters: vec![],
+            result: ResultSchema { columns: vec![] },
+            supports_consistency: false,
+            supports_idempotency: false,
+            allowed_sorts: vec![],
+        }
+    }
+
+    #[test]
+    fn batch_prepare_registers_all_operations() {
+        let owner = Principal::from_slice(&[11; 29]);
+        let graph = home_graph(owner, "batch-register");
+        let operations = vec![
+            registration("alpha", "MATCH (n) RETURN 'a' AS tag"),
+            registration("beta", "MATCH (n) RETURN n"),
+        ];
+        prepare_batch_core(&operations, owner).expect("batch registers");
+        let alpha = get_prepared_plan(&prepared_key(graph, "alpha")).expect("alpha stored");
+        let alpha = alpha.as_v1().expect("v1");
+        assert_eq!(alpha.query, "MATCH (n) RETURN 'a' AS tag");
+        assert!(alpha.metadata.is_none());
+        assert!(
+            cached_prepared_cache(&prepared_key(graph, "alpha")).is_some(),
+            "alpha heap cache must be inserted"
+        );
+        let beta = get_prepared_plan(&prepared_key(graph, "beta")).expect("beta stored");
+        let beta = beta.as_v1().expect("v1");
+        assert_eq!(beta.query, "MATCH (n) RETURN n");
+        remove_prepared_plan(&prepared_key(graph, "alpha"));
+        remove_prepared_plan(&prepared_key(graph, "beta"));
+    }
+
+    #[test]
+    fn batch_prepare_is_atomic_when_one_operation_fails() {
+        let owner = Principal::from_slice(&[12; 29]);
+        let graph = home_graph(owner, "batch-atomic");
+        let operations = vec![
+            registration("alpha", "MATCH (n) RETURN 'a' AS tag"),
+            registration("broken", "this is not a prepared query"),
+        ];
+        let error = prepare_batch_core(&operations, owner).expect_err("batch must fail");
+        assert!(error.to_string().contains("prepared op 'broken'"));
+        assert!(
+            get_prepared_plan(&prepared_key(graph, "alpha")).is_none(),
+            "a failed batch must not commit the valid prefix"
+        );
+        assert!(
+            cached_prepared_cache(&prepared_key(graph, "alpha")).is_none(),
+            "a failed batch must not cache the valid prefix"
+        );
+    }
+
+    #[test]
+    fn batch_prepare_rejects_oversized_batch() {
+        let owner = Principal::from_slice(&[13; 29]);
+        home_graph(owner, "batch-limit");
+        let operations: Vec<_> = (0..=MAX_PREPARED_BATCH)
+            .map(|i| registration(&format!("op-{i}"), "MATCH (n) RETURN 'x' AS tag"))
+            .collect();
+        let error = prepare_batch_core(&operations, owner).expect_err("batch must exceed limit");
+        assert!(error.to_string().contains("exceeds the limit"));
+    }
+
+    #[test]
+    fn batch_prepare_rejects_duplicate_names() {
+        let owner = Principal::from_slice(&[14; 29]);
+        home_graph(owner, "batch-duplicate");
+        let operations = vec![
+            registration("dup", "MATCH (n) RETURN 'x' AS tag"),
+            registration("dup", "MATCH (n) RETURN n"),
+        ];
+        let error = prepare_batch_core(&operations, owner).expect_err("duplicate must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate prepared operation name")
+        );
+    }
+
+    #[test]
+    fn batch_prepare_reports_the_first_failure_in_batch_order() {
+        let owner = Principal::from_slice(&[19; 29]);
+        let graph = home_graph(owner, "batch-first-failure");
+        let operations = vec![
+            registration("first-ok", "MATCH (n) RETURN 'a' AS tag"),
+            registration("second-bad", "this is not a prepared query"),
+            registration("third-bad", "also not a prepared query"),
+        ];
+        let error = prepare_batch_core(&operations, owner).expect_err("batch must fail");
+        assert!(error.to_string().contains("prepared op 'second-bad'"));
+        assert!(
+            !error.to_string().contains("third-bad"),
+            "iteration must stop at the first failure in batch order"
+        );
+        assert!(
+            get_prepared_plan(&prepared_key(graph, "first-ok")).is_none(),
+            "the valid prefix must not commit"
+        );
+    }
+
+    #[test]
+    fn batch_prepare_rejects_kind_mismatch() {
+        let owner = Principal::from_slice(&[20; 29]);
+        home_graph(owner, "batch-kind");
+        // A read-only program registered with Update metadata must fail the planned-path check.
+        let mut op = registration("read-only", "MATCH (n) RETURN 'x' AS tag");
+        let mut metadata = operation("read-only");
+        metadata.kind = OperationKind::Update;
+        op.metadata = Some(metadata);
+        let error = prepare_batch_core(&[op], owner).expect_err("kind mismatch must fail");
+        assert!(error.to_string().contains("prepared op 'read-only'"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match the planned execution path")
+        );
+    }
+
+    #[test]
+    fn batch_prepare_with_no_operations_is_a_no_op() {
+        let owner = Principal::from_slice(&[21; 29]);
+        home_graph(owner, "batch-empty");
+        prepare_batch_core(&[], owner).expect("empty batch is a no-op success");
+    }
+
+    #[test]
+    fn batch_prepare_rejects_metadata_name_mismatch() {
+        let owner = Principal::from_slice(&[15; 29]);
+        home_graph(owner, "batch-meta-mismatch");
+        let mut op = registration("real-name", "MATCH (n) RETURN 'x' AS tag");
+        let mut metadata = operation("other-name");
+        metadata.name = "other-name".into();
+        op.metadata = Some(metadata);
+        let error = prepare_batch_core(&[op], owner).expect_err("mismatch must fail");
+        assert!(error.to_string().contains("prepared op 'real-name'"));
+        assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn batch_prepare_completes_result_schema() {
+        let owner = Principal::from_slice(&[16; 29]);
+        let graph = home_graph(owner, "batch-result");
+        let mut op = registration("scalar-op", "MATCH (n) RETURN 'ok' AS tag");
+        op.metadata = Some(operation("scalar-op"));
+        prepare_batch_core(&[op], owner).expect("batch registers");
+        let stored = get_prepared_plan(&prepared_key(graph, "scalar-op")).expect("stored");
+        let record = stored.as_v1().expect("v1");
+        let columns = record
+            .metadata
+            .as_ref()
+            .expect("completed metadata")
+            .result
+            .columns
+            .clone();
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].name, "tag");
+        assert_eq!(columns[0].semantic_type, SemanticType::Text);
+        remove_prepared_plan(&prepared_key(graph, "scalar-op"));
+    }
+
+    #[test]
+    fn get_prepared_returns_stored_query_and_metadata() {
+        let owner = Principal::from_slice(&[17; 29]);
+        let graph = home_graph(owner, "get-prepared");
+        let mut op = registration("fetch-me", "MATCH (n) RETURN 'ok' AS tag");
+        op.metadata = Some(operation("fetch-me"));
+        prepare_batch_core(&[op], owner).expect("register");
+        let record = get_prepared_core("fetch-me", owner).expect("get_prepared");
+        assert_eq!(record.query, "MATCH (n) RETURN 'ok' AS tag");
+        let metadata = record.metadata.expect("metadata");
+        assert_eq!(metadata.name, "fetch-me");
+        assert_eq!(metadata.result.columns.len(), 1);
+        remove_prepared_plan(&prepared_key(graph, "fetch-me"));
+    }
+
+    #[test]
+    fn get_prepared_returns_not_found_for_missing_name() {
+        let owner = Principal::from_slice(&[18; 29]);
+        home_graph(owner, "get-prepared-missing");
+        let error = get_prepared_core("nope", owner).expect_err("missing must fail");
+        assert!(matches!(error, RouterError::NotFound(_)));
     }
 }

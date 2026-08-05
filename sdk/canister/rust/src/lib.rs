@@ -45,7 +45,9 @@ pub use types::{
 pub use types::Float128;
 
 /// Prepared-operation wire types shared with the Router.
-pub use gleaph_prepared_api::{PreparedManifest, PreparedOperation, PreparedSortSpec};
+pub use gleaph_prepared_api::{
+    PreparedManifest, PreparedOperation, PreparedRegistration, PreparedSortSpec,
+};
 
 /// Marker for a client without generated prepared operations.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -212,15 +214,11 @@ impl<Prepared> GleaphClient<Prepared> {
         result.map_err(CallError::Router)
     }
 
-    /// Register or replace one named prepared operation (idempotent upsert).
-    pub async fn prepare(
-        &self,
-        name: impl Into<String>,
-        query: impl Into<String>,
-        metadata: Option<PreparedOperation>,
-    ) -> Result<(), CallError> {
-        let args = candid::utils::encode_args((name.into(), query.into(), metadata))
-            .expect("Candid encode prepare arguments");
+    /// Register or replace named prepared operations in one atomic batch (idempotent upsert).
+    /// Per-operation `metadata` is optional (ADR 0061).
+    pub async fn prepare(&self, operations: Vec<PreparedRegistration>) -> Result<(), CallError> {
+        let args =
+            candid::utils::encode_args((operations,)).expect("Candid encode prepare arguments");
         let result: Result<(), RouterError> =
             call_router(self.canister_id, "prepare", args).await?;
         result.map_err(CallError::Router)

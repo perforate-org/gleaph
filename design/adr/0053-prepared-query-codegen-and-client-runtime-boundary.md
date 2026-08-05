@@ -6,8 +6,8 @@ ADR 0055.
 
 Date: 2026-07-29
 Status: proposed
-Last revised: 2026-08-04
-Anchor timestamp: 2026-08-04 18:18:33 UTC +0000
+Last revised: 2026-08-05
+Anchor timestamp: 2026-08-05 07:21:25 UTC +0000
 
 ## Context
 
@@ -248,8 +248,19 @@ The following points are intentionally not resolved by this proposed ADR:
 1. **Router metadata API:** Is the endpoint `prepared_manifest`, a revised
    `list_prepared_api`, or another name? Is graph selection explicit, and what caller visibility
    and public-execution policy applies?
+   **Resolved by [ADR 0061](0061-prepared-cli-registration-and-batch-catalog-api.md):** the
+   registration API is the multi-operation `prepare(vec PreparedRegistration)` plus
+   `get_prepared(name)`; `list_prepared` remains the graph-scoped manifest query for codegen;
+   `prepared_query` / `prepared_mutate` execution is unchanged. Graph selection stays
+   program-derived (ADR 0011); registration takes no graph argument.
 2. **Manifest authority:** Are parameter/result types inferred and frozen at registration, supplied
    explicitly by the registrar, or allowed to be generated only from a checked-in manifest?
+   **Resolved by [ADR 0061](0061-prepared-cli-registration-and-batch-catalog-api.md):**
+   registration is source-first with Router-owned materialization. Parameter types/nullability and
+   doc descriptions are completed by Router from the program (existing); the result schema is
+   completed by Router from typed output inference (new). Explicit metadata (`description`,
+   `allowed_sorts`, consistency/idempotency flags) may be authored in an optional sidecar;
+   conflicts fail closed.
 3. **Result schema:** What is the stable row/column wire shape, including nullability, nested
    records, large integers, decimals, paths, and temporal values? Scalar width and floating-point
    representation are governed by [ADR 0055](0055-exact-scalar-types-at-router-api-boundary.md).
@@ -374,3 +385,6 @@ authenticated identity selection for CLI retrieval remain outside this slice.
   implemented, not treated as evidence that the planned manifest API already exists.
 - `design/implementation-gaps.md` should record the Router metadata/API gap and any prepared
   visibility decision that remains open.
+- [ADR 0061](0061-prepared-cli-registration-and-batch-catalog-api.md) defines the operator
+  registration workflow (`gleaph prepared`, the `prepared/` artifact format, the batch
+  `prepare` API, and `get_prepared`) and resolves open decisions 1 and 2 above.

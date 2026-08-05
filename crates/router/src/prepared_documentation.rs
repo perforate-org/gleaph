@@ -13,7 +13,7 @@ use gleaph_gql::ast::{
 };
 use gleaph_gql::token::DocComment;
 use gleaph_gql::type_check::{PropertySchema, Type};
-use gleaph_prepared_api::{PreparedOperation, SemanticType};
+use gleaph_prepared_api::{Column, PreparedOperation, SemanticType};
 
 /// Apply GQL source documentation to metadata fields that were not explicitly supplied.
 pub(crate) fn apply_to_operation(comments: &[DocComment], operation: &mut PreparedOperation) {
@@ -69,6 +69,76 @@ pub(crate) fn complete_parameter_metadata(
         if not_null && parameter.nullable {
             return Err(format!(
                 "GQL parameter {name:?} is non-null but metadata permits null"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Complete and validate result-schema metadata inferred from the GQL program output.
+///
+/// Output columns whose type has no [`SemanticType`] mapping (vertex, edge, union, unknown) are
+/// omitted from an empty result schema; an explicit schema is validated fail-closed against the
+/// inferred output, mirroring [`complete_parameter_metadata`]. A program whose final statement is
+/// not a query reports environment bindings rather than result rows, so completion is skipped.
+/// Current DML-tail bindings are vertex/edge-only (unmappable), so the gate also guards future
+/// type-checker changes that could surface scalar bindings from a DML tail.
+pub(crate) fn complete_result_schema(
+    program: &GqlProgram,
+    schema: &dyn PropertySchema,
+    operation: &mut PreparedOperation,
+) -> Result<(), String> {
+    let block = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|activity| activity.body.as_ref())
+        .ok_or_else(|| "missing transaction body".to_owned())?;
+    let final_statement = block
+        .next
+        .last()
+        .map_or(&block.first, |next| &next.statement);
+    if !matches!(final_statement, Statement::Query(_)) {
+        return Ok(());
+    }
+    let inferred =
+        gleaph_gql::type_check::infer_statement_block_output_types_with_schema(block, schema);
+    if operation.result.columns.is_empty() {
+        operation.result.columns = inferred
+            .into_iter()
+            .filter_map(|(name, ty)| {
+                let (semantic_type, not_null) = semantic_type_from_type(&ty)?;
+                Some(Column {
+                    name,
+                    semantic_type,
+                    nullable: !not_null,
+                })
+            })
+            .collect();
+        return Ok(());
+    }
+    for column in &operation.result.columns {
+        let Some((_, ty)) = inferred.iter().find(|(name, _)| name == &column.name) else {
+            return Err(format!(
+                "result column {:?} is not produced by the program output",
+                column.name
+            ));
+        };
+        let (semantic_type, not_null) = semantic_type_from_type(ty).ok_or_else(|| {
+            format!(
+                "result column {:?} has unsupported type {ty:?}",
+                column.name
+            )
+        })?;
+        if column.semantic_type != semantic_type {
+            return Err(format!(
+                "result column {:?} has type {:?}, metadata declares {:?}",
+                column.name, semantic_type, column.semantic_type
+            ));
+        }
+        if not_null && column.nullable {
+            return Err(format!(
+                "result column {:?} is non-null but metadata permits null",
+                column.name
             ));
         }
     }
@@ -269,7 +339,7 @@ fn parse_comments(comments: &[DocComment]) -> Documentation {
 mod tests {
     use super::*;
     use gleaph_gql::type_check::NoSchema;
-    use gleaph_prepared_api::{OperationKind, Parameter, ResultSchema, SemanticType};
+    use gleaph_prepared_api::{Column, OperationKind, Parameter, ResultSchema, SemanticType};
 
     fn operation() -> PreparedOperation {
         PreparedOperation {
@@ -406,5 +476,137 @@ mod tests {
         assert_eq!(operation.parameters[0].semantic_type, SemanticType::Int32);
         assert!(operation.parameters[0].required);
         assert!(!operation.parameters[0].nullable);
+    }
+
+    #[test]
+    fn fills_empty_result_columns_from_scalar_output() {
+        let program = gleaph_gql::parser::parse("MATCH (n) RETURN 'ok' AS tag")
+            .expect("literal output should parse");
+        let mut operation = operation();
+        complete_result_schema(&program, &NoSchema, &mut operation)
+            .expect("literal output should complete");
+        assert_eq!(operation.result.columns.len(), 1);
+        assert_eq!(operation.result.columns[0].name, "tag");
+        assert_eq!(
+            operation.result.columns[0].semantic_type,
+            SemanticType::Text
+        );
+    }
+
+    #[test]
+    fn omits_unmappable_result_columns() {
+        let program =
+            gleaph_gql::parser::parse("MATCH (n) RETURN n AS name").expect("node return parses");
+        let mut operation = operation();
+        complete_result_schema(&program, &NoSchema, &mut operation)
+            .expect("node output completes with omitted columns");
+        assert!(operation.result.columns.is_empty());
+    }
+
+    #[test]
+    fn validates_explicit_result_column_type_fail_closed() {
+        let program = gleaph_gql::parser::parse("MATCH (n) RETURN 'ok' AS tag")
+            .expect("literal output should parse");
+        let mut operation = operation();
+        operation.result.columns = vec![Column {
+            name: "tag".into(),
+            semantic_type: SemanticType::Int32,
+            nullable: false,
+        }];
+        let error = complete_result_schema(&program, &NoSchema, &mut operation)
+            .expect_err("type mismatch must fail");
+        assert!(error.contains("result column"));
+        assert!(error.contains("tag"));
+    }
+
+    #[test]
+    fn rejects_explicit_result_column_not_in_output() {
+        let program = gleaph_gql::parser::parse("MATCH (n) RETURN 'ok' AS tag")
+            .expect("literal output should parse");
+        let mut operation = operation();
+        operation.result.columns = vec![Column {
+            name: "missing".into(),
+            semantic_type: SemanticType::Text,
+            nullable: false,
+        }];
+        let error = complete_result_schema(&program, &NoSchema, &mut operation)
+            .expect_err("unknown column must fail");
+        assert!(error.contains("missing"));
+    }
+
+    #[test]
+    fn rejects_explicit_nullable_for_non_null_output() {
+        struct UserSchema;
+
+        impl PropertySchema for UserSchema {
+            fn node_property_types(&self, labels: &[String]) -> Vec<(String, ValueType, bool)> {
+                if labels.iter().any(|label| label == "User") {
+                    vec![(
+                        "age".into(),
+                        ValueType::Int32 {
+                            keyword: gleaph_gql::ast::Keyword::new("INT32"),
+                        },
+                        true,
+                    )]
+                } else {
+                    vec![]
+                }
+            }
+
+            fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+                vec![]
+            }
+        }
+
+        let program = gleaph_gql::parser::parse("MATCH (u:User) RETURN u.age AS age")
+            .expect("property output should parse");
+        let mut operation = operation();
+        operation.result.columns = vec![Column {
+            name: "age".into(),
+            semantic_type: SemanticType::Int32,
+            nullable: true,
+        }];
+        let error = complete_result_schema(&program, &UserSchema, &mut operation)
+            .expect_err("nullable claim on non-null output must fail");
+        assert!(error.contains("non-null"));
+    }
+
+    #[test]
+    fn accepts_explicit_result_columns_matching_output() {
+        let program = gleaph_gql::parser::parse("MATCH (n) RETURN 'ok' AS tag")
+            .expect("literal output should parse");
+        let mut operation = operation();
+        operation.result.columns = vec![Column {
+            name: "tag".into(),
+            semantic_type: SemanticType::Text,
+            nullable: true,
+        }];
+        complete_result_schema(&program, &NoSchema, &mut operation)
+            .expect("matching explicit columns should pass");
+        assert_eq!(operation.result.columns.len(), 1);
+        assert_eq!(operation.result.columns[0].name, "tag");
+    }
+
+    #[test]
+    fn skips_result_completion_for_dml_tail_without_consulting_schema() {
+        // A labeled MATCH consults the schema during type checking. The DML-tail gate must
+        // return before inference, so a schema that panics when consulted proves the gate
+        // short-circuits a DML tail (a gate-less implementation would panic here).
+        struct PanicSchema;
+        impl PropertySchema for PanicSchema {
+            fn node_property_types(&self, _labels: &[String]) -> Vec<(String, ValueType, bool)> {
+                panic!("schema consulted during DML tail");
+            }
+            fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+                panic!("schema consulted during DML tail");
+            }
+        }
+
+        let program = gleaph_gql::parser::parse("MATCH (n:User) RETURN n NEXT INSERT (m)")
+            .expect("DML tail parses");
+        let mut operation = operation();
+        complete_result_schema(&program, &PanicSchema, &mut operation)
+            .expect("DML tail skips result completion");
+        assert!(operation.result.columns.is_empty());
     }
 }

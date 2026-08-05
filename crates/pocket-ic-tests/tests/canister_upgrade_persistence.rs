@@ -23,7 +23,7 @@ use gleaph_pocket_ic_tests::{
     gql_query_as_admin, install_single_shard_federation, list_prepared_as_admin, prepare_as_admin,
     prepared_query_with_params_as, seed_upgrade_fixture_graph, upgrade_fixture_query, wasm_bytes,
 };
-use gleaph_prepared_api::{OperationKind, PreparedOperation, ResultSchema};
+use gleaph_prepared_api::{OperationKind, PreparedOperation, PreparedRegistration, ResultSchema};
 use gleaph_router::types::BackfillKind;
 use std::collections::BTreeSet;
 
@@ -152,7 +152,12 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
             env.router,
             env.admin,
             "prepare",
-            Encode!(&name.to_owned(), &query.to_owned(), &Some(metadata)).expect("encode prepare"),
+            Encode!(&vec![PreparedRegistration {
+                name: name.to_owned(),
+                query: query.to_owned(),
+                metadata: Some(metadata),
+            }])
+            .expect("encode prepare"),
         )
         .expect("prepare call");
     let result = candid::Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
@@ -178,6 +183,10 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
     assert_eq!(
         operation.parameters[0].description.as_deref(),
         Some("Search term")
+    );
+    assert!(
+        operation.result.columns.is_empty(),
+        "a node-returning prepared query must keep an empty result schema (unmappable columns omitted)"
     );
 
     let snapshot = serde_json::to_string(&manifest).expect("serialize manifest snapshot");

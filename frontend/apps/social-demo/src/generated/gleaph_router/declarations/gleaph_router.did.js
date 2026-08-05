@@ -541,219 +541,6 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : IndexedPropertyCatalog,
     'Err' : RouterError,
   });
-  const ShardRegistryEntry = IDL.Record({
-    'graph_id' : IDL.Nat32,
-    'registered_at_ns' : IDL.Nat64,
-    'vector_index_attached' : IDL.Bool,
-    'shard_id' : IDL.Nat32,
-    'index_canister' : IDL.Principal,
-    'graph_canister' : IDL.Principal,
-    'vector_index_canister' : IDL.Opt(IDL.Principal),
-    'index_attached' : IDL.Bool,
-  });
-  const Result_19 = IDL.Variant({
-    'Ok' : ShardRegistryEntry,
-    'Err' : RouterError,
-  });
-  const StableMemoryRegionStats = IDL.Record({
-    'slack_pages' : IDL.Nat64,
-    'logical_pages' : IDL.Nat64,
-    'logical_bytes' : IDL.Nat64,
-    'name' : IDL.Text,
-    'allocated_pages' : IDL.Nat64,
-    'memory_id' : IDL.Nat8,
-    'bucket_pages' : IDL.Nat16,
-  });
-  const StableMemoryStats = IDL.Record({
-    'regions' : IDL.Vec(StableMemoryRegionStats),
-    'bucket_pages' : IDL.Nat16,
-    'estimated_allocated_pages' : IDL.Nat64,
-    'estimated_allocated_bytes' : IDL.Nat64,
-    'logical_total_pages' : IDL.Nat64,
-    'logical_total_bytes' : IDL.Nat64,
-  });
-  const GraphStableMemoryStats = IDL.Record({
-    'memory' : StableMemoryStats,
-    'shard_id' : IDL.Nat32,
-    'graph_canister' : IDL.Principal,
-  });
-  const Result_20 = IDL.Variant({
-    'Ok' : IDL.Vec(GraphStableMemoryStats),
-    'Err' : RouterError,
-  });
-  const VectorIndexActivationStateView = IDL.Variant({
-    'DispatchBlocked' : IDL.Null,
-    'DispatchEnabled' : IDL.Null,
-    'Registered' : IDL.Null,
-  });
-  const VectorIndexActivationStatus = IDL.Record({
-    'blocked_reason' : IDL.Opt(IDL.Text),
-    'index_id' : IDL.Nat32,
-    'activation_state' : VectorIndexActivationStateView,
-  });
-  const Result_21 = IDL.Variant({
-    'Ok' : VectorIndexActivationStatus,
-    'Err' : RouterError,
-  });
-  const Result_22 = IDL.Variant({ 'Ok' : IDL.Principal, 'Err' : RouterError });
-  const VectorMaintenancePolicy = IDL.Record({
-    'min_total_rows' : IDL.Nat64,
-    'min_tombstoned_rows' : IDL.Nat64,
-    'required_tombstone_ratio_bps' : IDL.Nat32,
-    'required_skew_ratio_bps' : IDL.Nat32,
-    'recommended_skew_ratio_bps' : IDL.Nat32,
-    'recommended_tombstone_ratio_bps' : IDL.Nat32,
-  });
-  const VectorMaintenancePolicyView = IDL.Record({
-    'graph_id' : IDL.Nat32,
-    'target_nlist' : IDL.Opt(IDL.Nat32),
-    'rebuild_max_subjects' : IDL.Nat32,
-    'enabled' : IDL.Bool,
-    'sample_limit' : IDL.Nat32,
-    'cleanup_max_work' : IDL.Nat32,
-    'scan_max_pages' : IDL.Nat32,
-    'index_id' : IDL.Nat32,
-    'policy' : VectorMaintenancePolicy,
-  });
-  const Result_23 = IDL.Variant({
-    'Ok' : IDL.Opt(VectorMaintenancePolicyView),
-    'Err' : RouterError,
-  });
-  const VectorPartitionPageHealth = IDL.Record({
-    'tombstoned_rows' : IDL.Nat64,
-    'total_rows' : IDL.Nat64,
-    'index_version' : IDL.Nat64,
-    'page_count' : IDL.Nat64,
-    'physical_live_rows' : IDL.Nat64,
-    'index_id' : IDL.Nat32,
-  });
-  const VectorMaintenanceStateView = IDL.Variant({
-    'Scanning' : IDL.Record({
-      'merged' : VectorPartitionPageHealth,
-      'cursor_present' : IDL.Bool,
-      'exhausted' : IDL.Bool,
-    }),
-    'Failed' : VectorMaintenanceFailure,
-    'Idle' : IDL.Null,
-  });
-  const VectorMaintenanceStatusView = IDL.Record({
-    'maintenance_state' : IDL.Opt(VectorMaintenanceStateView),
-    'target' : IDL.Opt(IDL.Principal),
-    'blocked_reason' : IDL.Opt(IDL.Text),
-    'index_id' : IDL.Nat32,
-    'policy_enabled' : IDL.Bool,
-    'dispatch_ready' : IDL.Bool,
-    'rebuild_status' : IDL.Opt(VectorRebuildStatus),
-  });
-  const Result_24 = IDL.Variant({
-    'Ok' : VectorMaintenanceStatusView,
-    'Err' : RouterError,
-  });
-  const VectorPartitionHealthSummary = IDL.Record({
-    'partitions_examined' : IDL.Nat32,
-    'nlist' : IDL.Nat32,
-    'max_partition_live_rows' : IDL.Nat64,
-    'page_count' : IDL.Nat64,
-    'live_rows' : IDL.Nat64,
-  });
-  const Result_25 = IDL.Variant({
-    'Ok' : VectorPartitionHealthSummary,
-    'Err' : RouterError,
-  });
-  const VectorSlabGlobalStats = IDL.Record({
-    'estimated_unreferenced_bytes' : IDL.Nat64,
-    'slab_size_bytes' : IDL.Nat64,
-    'occupied_tail_bytes' : IDL.Nat64,
-    'referenced_page_bytes_global' : IDL.Nat64,
-  });
-  const VectorSlabScopeStats = IDL.Record({
-    'physical_live_row_count' : IDL.Nat64,
-    'referenced_page_bytes' : IDL.Nat64,
-    'row_count' : IDL.Nat64,
-    'tombstone_row_count' : IDL.Nat64,
-    'page_count' : IDL.Nat64,
-    'index_id' : IDL.Opt(IDL.Nat32),
-  });
-  const VectorSlabVersionStats = IDL.Record({
-    'physical_live_row_count' : IDL.Nat64,
-    'referenced_page_bytes' : IDL.Nat64,
-    'row_count' : IDL.Nat64,
-    'tombstone_row_count' : IDL.Nat64,
-    'index_version' : IDL.Nat64,
-    'page_count' : IDL.Nat64,
-    'index_id' : IDL.Nat32,
-  });
-  const VectorSlabStats = IDL.Record({
-    'slab' : VectorSlabGlobalStats,
-    'scope' : VectorSlabScopeStats,
-    'versions' : IDL.Vec(VectorSlabVersionStats),
-  });
-  const Result_26 = IDL.Variant({
-    'Ok' : VectorSlabStats,
-    'Err' : RouterError,
-  });
-  const MutationTokenShard = IDL.Record({
-    'label_stats_seq' : IDL.Opt(IDL.Nat64),
-    'shard_id' : IDL.Nat32,
-  });
-  const MutationToken = IDL.Record({
-    'mutation_id' : IDL.Nat64,
-    'shards' : IDL.Vec(MutationTokenShard),
-  });
-  const GqlQueryResult = IDL.Record({
-    'rows_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-    'token' : IDL.Opt(MutationToken),
-    'row_count' : IDL.Nat64,
-    'phase' : IDL.Opt(MutationLifecyclePhase),
-  });
-  const Result_27 = IDL.Variant({ 'Ok' : GqlQueryResult, 'Err' : RouterError });
-  const ReadMode = IDL.Variant({
-    'Eventual' : IDL.Null,
-    'AtLeast' : MutationToken,
-  });
-  const GrantRoleArgs = IDL.Record({
-    'role' : IDL.Text,
-    'manager_caps' : IDL.Nat64,
-    'target' : IDL.Principal,
-  });
-  const AdminIngestVertexEmbeddingBatchItem = IDL.Record({
-    'values' : IDL.Vec(IDL.Float32),
-    'encoded_vertex_id' : IDL.Vec(IDL.Nat8),
-  });
-  const AdminIngestVertexEmbeddingBatchArgs = IDL.Record({
-    'embedding_name' : IDL.Text,
-    'items' : IDL.Vec(AdminIngestVertexEmbeddingBatchItem),
-    'logical_graph_name' : IDL.Text,
-  });
-  const VertexEmbeddingProjectionOutcome = IDL.Variant({
-    'DeferredForRepair' : IDL.Null,
-    'Applied' : IDL.Null,
-  });
-  const VertexEmbeddingIngestionResult = IDL.Record({
-    'embedding_version' : IDL.Nat64,
-    'projection_outcome' : VertexEmbeddingProjectionOutcome,
-  });
-  const Result_28 = IDL.Variant({
-    'Ok' : VertexEmbeddingIngestionResult,
-    'Err' : IDL.Text,
-  });
-  const Result_29 = IDL.Variant({
-    'Ok' : IDL.Vec(Result_28),
-    'Err' : RouterError,
-  });
-  const BackfillShardStatus = IDL.Record({
-    'done' : IDL.Bool,
-    'shard_id' : IDL.Nat32,
-    'kind' : BackfillKind,
-  });
-  const Result_30 = IDL.Variant({
-    'Ok' : IDL.Vec(BackfillShardStatus),
-    'Err' : RouterError,
-  });
-  const Result_31 = IDL.Variant({
-    'Ok' : IDL.Vec(GraphSummary),
-    'Err' : RouterError,
-  });
   const RecordField = IDL.Record({
     'nullable' : IDL.Bool,
     'name' : IDL.Text,
@@ -825,6 +612,227 @@ export const idlFactory = ({ IDL }) => {
     'supports_idempotency' : IDL.Bool,
     'supports_consistency' : IDL.Bool,
   });
+  const PreparedOperationRecord = IDL.Record({
+    'metadata' : IDL.Opt(PreparedOperation),
+    'query' : IDL.Text,
+  });
+  const Result_19 = IDL.Variant({
+    'Ok' : PreparedOperationRecord,
+    'Err' : RouterError,
+  });
+  const ShardRegistryEntry = IDL.Record({
+    'graph_id' : IDL.Nat32,
+    'registered_at_ns' : IDL.Nat64,
+    'vector_index_attached' : IDL.Bool,
+    'shard_id' : IDL.Nat32,
+    'index_canister' : IDL.Principal,
+    'graph_canister' : IDL.Principal,
+    'vector_index_canister' : IDL.Opt(IDL.Principal),
+    'index_attached' : IDL.Bool,
+  });
+  const Result_20 = IDL.Variant({
+    'Ok' : ShardRegistryEntry,
+    'Err' : RouterError,
+  });
+  const StableMemoryRegionStats = IDL.Record({
+    'slack_pages' : IDL.Nat64,
+    'logical_pages' : IDL.Nat64,
+    'logical_bytes' : IDL.Nat64,
+    'name' : IDL.Text,
+    'allocated_pages' : IDL.Nat64,
+    'memory_id' : IDL.Nat8,
+    'bucket_pages' : IDL.Nat16,
+  });
+  const StableMemoryStats = IDL.Record({
+    'regions' : IDL.Vec(StableMemoryRegionStats),
+    'bucket_pages' : IDL.Nat16,
+    'estimated_allocated_pages' : IDL.Nat64,
+    'estimated_allocated_bytes' : IDL.Nat64,
+    'logical_total_pages' : IDL.Nat64,
+    'logical_total_bytes' : IDL.Nat64,
+  });
+  const GraphStableMemoryStats = IDL.Record({
+    'memory' : StableMemoryStats,
+    'shard_id' : IDL.Nat32,
+    'graph_canister' : IDL.Principal,
+  });
+  const Result_21 = IDL.Variant({
+    'Ok' : IDL.Vec(GraphStableMemoryStats),
+    'Err' : RouterError,
+  });
+  const VectorIndexActivationStateView = IDL.Variant({
+    'DispatchBlocked' : IDL.Null,
+    'DispatchEnabled' : IDL.Null,
+    'Registered' : IDL.Null,
+  });
+  const VectorIndexActivationStatus = IDL.Record({
+    'blocked_reason' : IDL.Opt(IDL.Text),
+    'index_id' : IDL.Nat32,
+    'activation_state' : VectorIndexActivationStateView,
+  });
+  const Result_22 = IDL.Variant({
+    'Ok' : VectorIndexActivationStatus,
+    'Err' : RouterError,
+  });
+  const Result_23 = IDL.Variant({ 'Ok' : IDL.Principal, 'Err' : RouterError });
+  const VectorMaintenancePolicy = IDL.Record({
+    'min_total_rows' : IDL.Nat64,
+    'min_tombstoned_rows' : IDL.Nat64,
+    'required_tombstone_ratio_bps' : IDL.Nat32,
+    'required_skew_ratio_bps' : IDL.Nat32,
+    'recommended_skew_ratio_bps' : IDL.Nat32,
+    'recommended_tombstone_ratio_bps' : IDL.Nat32,
+  });
+  const VectorMaintenancePolicyView = IDL.Record({
+    'graph_id' : IDL.Nat32,
+    'target_nlist' : IDL.Opt(IDL.Nat32),
+    'rebuild_max_subjects' : IDL.Nat32,
+    'enabled' : IDL.Bool,
+    'sample_limit' : IDL.Nat32,
+    'cleanup_max_work' : IDL.Nat32,
+    'scan_max_pages' : IDL.Nat32,
+    'index_id' : IDL.Nat32,
+    'policy' : VectorMaintenancePolicy,
+  });
+  const Result_24 = IDL.Variant({
+    'Ok' : IDL.Opt(VectorMaintenancePolicyView),
+    'Err' : RouterError,
+  });
+  const VectorPartitionPageHealth = IDL.Record({
+    'tombstoned_rows' : IDL.Nat64,
+    'total_rows' : IDL.Nat64,
+    'index_version' : IDL.Nat64,
+    'page_count' : IDL.Nat64,
+    'physical_live_rows' : IDL.Nat64,
+    'index_id' : IDL.Nat32,
+  });
+  const VectorMaintenanceStateView = IDL.Variant({
+    'Scanning' : IDL.Record({
+      'merged' : VectorPartitionPageHealth,
+      'cursor_present' : IDL.Bool,
+      'exhausted' : IDL.Bool,
+    }),
+    'Failed' : VectorMaintenanceFailure,
+    'Idle' : IDL.Null,
+  });
+  const VectorMaintenanceStatusView = IDL.Record({
+    'maintenance_state' : IDL.Opt(VectorMaintenanceStateView),
+    'target' : IDL.Opt(IDL.Principal),
+    'blocked_reason' : IDL.Opt(IDL.Text),
+    'index_id' : IDL.Nat32,
+    'policy_enabled' : IDL.Bool,
+    'dispatch_ready' : IDL.Bool,
+    'rebuild_status' : IDL.Opt(VectorRebuildStatus),
+  });
+  const Result_25 = IDL.Variant({
+    'Ok' : VectorMaintenanceStatusView,
+    'Err' : RouterError,
+  });
+  const VectorPartitionHealthSummary = IDL.Record({
+    'partitions_examined' : IDL.Nat32,
+    'nlist' : IDL.Nat32,
+    'max_partition_live_rows' : IDL.Nat64,
+    'page_count' : IDL.Nat64,
+    'live_rows' : IDL.Nat64,
+  });
+  const Result_26 = IDL.Variant({
+    'Ok' : VectorPartitionHealthSummary,
+    'Err' : RouterError,
+  });
+  const VectorSlabGlobalStats = IDL.Record({
+    'estimated_unreferenced_bytes' : IDL.Nat64,
+    'slab_size_bytes' : IDL.Nat64,
+    'occupied_tail_bytes' : IDL.Nat64,
+    'referenced_page_bytes_global' : IDL.Nat64,
+  });
+  const VectorSlabScopeStats = IDL.Record({
+    'physical_live_row_count' : IDL.Nat64,
+    'referenced_page_bytes' : IDL.Nat64,
+    'row_count' : IDL.Nat64,
+    'tombstone_row_count' : IDL.Nat64,
+    'page_count' : IDL.Nat64,
+    'index_id' : IDL.Opt(IDL.Nat32),
+  });
+  const VectorSlabVersionStats = IDL.Record({
+    'physical_live_row_count' : IDL.Nat64,
+    'referenced_page_bytes' : IDL.Nat64,
+    'row_count' : IDL.Nat64,
+    'tombstone_row_count' : IDL.Nat64,
+    'index_version' : IDL.Nat64,
+    'page_count' : IDL.Nat64,
+    'index_id' : IDL.Nat32,
+  });
+  const VectorSlabStats = IDL.Record({
+    'slab' : VectorSlabGlobalStats,
+    'scope' : VectorSlabScopeStats,
+    'versions' : IDL.Vec(VectorSlabVersionStats),
+  });
+  const Result_27 = IDL.Variant({
+    'Ok' : VectorSlabStats,
+    'Err' : RouterError,
+  });
+  const MutationTokenShard = IDL.Record({
+    'label_stats_seq' : IDL.Opt(IDL.Nat64),
+    'shard_id' : IDL.Nat32,
+  });
+  const MutationToken = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'shards' : IDL.Vec(MutationTokenShard),
+  });
+  const GqlQueryResult = IDL.Record({
+    'rows_blob' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'token' : IDL.Opt(MutationToken),
+    'row_count' : IDL.Nat64,
+    'phase' : IDL.Opt(MutationLifecyclePhase),
+  });
+  const Result_28 = IDL.Variant({ 'Ok' : GqlQueryResult, 'Err' : RouterError });
+  const ReadMode = IDL.Variant({
+    'Eventual' : IDL.Null,
+    'AtLeast' : MutationToken,
+  });
+  const GrantRoleArgs = IDL.Record({
+    'role' : IDL.Text,
+    'manager_caps' : IDL.Nat64,
+    'target' : IDL.Principal,
+  });
+  const AdminIngestVertexEmbeddingBatchItem = IDL.Record({
+    'values' : IDL.Vec(IDL.Float32),
+    'encoded_vertex_id' : IDL.Vec(IDL.Nat8),
+  });
+  const AdminIngestVertexEmbeddingBatchArgs = IDL.Record({
+    'embedding_name' : IDL.Text,
+    'items' : IDL.Vec(AdminIngestVertexEmbeddingBatchItem),
+    'logical_graph_name' : IDL.Text,
+  });
+  const VertexEmbeddingProjectionOutcome = IDL.Variant({
+    'DeferredForRepair' : IDL.Null,
+    'Applied' : IDL.Null,
+  });
+  const VertexEmbeddingIngestionResult = IDL.Record({
+    'embedding_version' : IDL.Nat64,
+    'projection_outcome' : VertexEmbeddingProjectionOutcome,
+  });
+  const Result_29 = IDL.Variant({
+    'Ok' : VertexEmbeddingIngestionResult,
+    'Err' : IDL.Text,
+  });
+  const Result_30 = IDL.Variant({
+    'Ok' : IDL.Vec(Result_29),
+    'Err' : RouterError,
+  });
+  const BackfillShardStatus = IDL.Record({
+    'done' : IDL.Bool,
+    'shard_id' : IDL.Nat32,
+    'kind' : BackfillKind,
+  });
+  const Result_31 = IDL.Variant({
+    'Ok' : IDL.Vec(BackfillShardStatus),
+    'Err' : RouterError,
+  });
+  const Result_32 = IDL.Variant({
+    'Ok' : IDL.Vec(GraphSummary),
+    'Err' : RouterError,
+  });
   const GraphIdentity = IDL.Record({
     'id' : IDL.Text,
     'name' : IDL.Opt(IDL.Text),
@@ -834,7 +842,7 @@ export const idlFactory = ({ IDL }) => {
     'operations' : IDL.Vec(PreparedOperation),
     'graph' : GraphIdentity,
   });
-  const Result_32 = IDL.Variant({
+  const Result_33 = IDL.Variant({
     'Ok' : PreparedManifest,
     'Err' : RouterError,
   });
@@ -852,11 +860,11 @@ export const idlFactory = ({ IDL }) => {
   const ListSchemaMigrationsResult = IDL.Variant({
     'V1' : ListSchemaMigrationsResultV1,
   });
-  const Result_33 = IDL.Variant({
+  const Result_34 = IDL.Variant({
     'Ok' : ListSchemaMigrationsResult,
     'Err' : RouterError,
   });
-  const Result_34 = IDL.Variant({
+  const Result_35 = IDL.Variant({
     'Ok' : IDL.Vec(ShardRegistryEntry),
     'Err' : RouterError,
   });
@@ -868,16 +876,21 @@ export const idlFactory = ({ IDL }) => {
     'index_id' : IDL.Nat32,
     'activation_state' : VectorIndexActivationStateView,
   });
-  const Result_35 = IDL.Variant({
+  const Result_36 = IDL.Variant({
     'Ok' : IDL.Vec(VectorIndexInfo),
     'Err' : RouterError,
   });
-  const Result_36 = IDL.Variant({
+  const Result_37 = IDL.Variant({
     'Ok' : IDL.Vec(VectorMaintenancePolicyView),
     'Err' : RouterError,
   });
-  const Result_37 = IDL.Variant({ 'Ok' : MutationStatus, 'Err' : RouterError });
-  const Result_38 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : RouterError });
+  const Result_38 = IDL.Variant({ 'Ok' : MutationStatus, 'Err' : RouterError });
+  const Result_39 = IDL.Variant({ 'Ok' : IDL.Text, 'Err' : RouterError });
+  const PreparedRegistration = IDL.Record({
+    'metadata' : IDL.Opt(PreparedOperation),
+    'name' : IDL.Text,
+    'query' : IDL.Text,
+  });
   const PreparedSortSpec = IDL.Record({
     'key' : IDL.Text,
     'direction' : IDL.Text,
@@ -918,7 +931,7 @@ export const idlFactory = ({ IDL }) => {
     }),
     'Completed' : IDL.Record({ 'accepted_registry_version' : IDL.Nat64 }),
   });
-  const Result_39 = IDL.Variant({
+  const Result_40 = IDL.Variant({
     'Ok' : ProvisionGraphResponse,
     'Err' : RouterError,
   });
@@ -954,7 +967,7 @@ export const idlFactory = ({ IDL }) => {
   const RouterAckResponse = IDL.Record({
     'accepted_registry_version' : IDL.Nat64,
   });
-  const Result_40 = IDL.Variant({
+  const Result_41 = IDL.Variant({
     'Ok' : RouterAckResponse,
     'Err' : RouterError,
   });
@@ -963,7 +976,7 @@ export const idlFactory = ({ IDL }) => {
     'exhausted' : IDL.Bool,
     'partial' : VectorPartitionPageHealth,
   });
-  const Result_41 = IDL.Variant({
+  const Result_42 = IDL.Variant({
     'Ok' : VectorPartitionHealthStep,
     'Err' : RouterError,
   });
@@ -972,7 +985,7 @@ export const idlFactory = ({ IDL }) => {
     'exhausted' : IDL.Bool,
     'partial' : VectorSlabStats,
   });
-  const Result_42 = IDL.Variant({
+  const Result_43 = IDL.Variant({
     'Ok' : VectorSlabStatsStep,
     'Err' : RouterError,
   });
@@ -1007,7 +1020,7 @@ export const idlFactory = ({ IDL }) => {
     'next_cursor' : IDL.Opt(ClientMutationKey),
     'removed' : IDL.Nat32,
   });
-  const Result_43 = IDL.Variant({
+  const Result_44 = IDL.Variant({
     'Ok' : AdminSweepMutationKeysStepResult,
     'Err' : RouterError,
   });
@@ -1021,7 +1034,7 @@ export const idlFactory = ({ IDL }) => {
     'embedding_incarnation' : IDL.Nat64,
   });
   const VectorSearchResult = IDL.Record({ 'hits' : IDL.Vec(VectorSearchHit) });
-  const Result_44 = IDL.Variant({
+  const Result_45 = IDL.Variant({
     'Ok' : VectorSearchResult,
     'Err' : RouterError,
   });
@@ -1115,10 +1128,11 @@ export const idlFactory = ({ IDL }) => {
         [Result_18],
         ['query'],
       ),
-    'get_shard' : IDL.Func([IDL.Text, IDL.Nat32], [Result_19], ['query']),
+    'get_prepared' : IDL.Func([IDL.Text], [Result_19], ['query']),
+    'get_shard' : IDL.Func([IDL.Text, IDL.Nat32], [Result_20], ['query']),
     'get_stable_memory_stats' : IDL.Func(
         [IDL.Text],
-        [Result_20],
+        [Result_21],
         ['composite_query'],
       ),
     'get_vector_centroid_cache' : IDL.Func(
@@ -1129,27 +1143,27 @@ export const idlFactory = ({ IDL }) => {
     'get_vector_dispatch_enabled' : IDL.Func([], [IDL.Bool], ['query']),
     'get_vector_index_status' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_21],
+        [Result_22],
         ['query'],
       ),
     'get_vector_index_target' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_22],
+        [Result_23],
         ['query'],
       ),
     'get_vector_maintenance_policy' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_23],
+        [Result_24],
         ['query'],
       ),
     'get_vector_maintenance_status' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_24],
+        [Result_25],
         ['composite_query'],
       ),
     'get_vector_partition_health' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_25],
+        [Result_26],
         ['composite_query'],
       ),
     'get_vector_rebuild_status' : IDL.Func(
@@ -1159,17 +1173,17 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_vector_slab_stats' : IDL.Func(
         [IDL.Text, IDL.Opt(IDL.Nat32)],
-        [Result_26],
+        [Result_27],
         ['composite_query'],
       ),
     'gql_mutate' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Text],
-        [Result_27],
+        [Result_28],
         [],
       ),
     'gql_query' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), ReadMode],
-        [Result_27],
+        [Result_28],
         ['composite_query'],
       ),
     'grant_role' : IDL.Func([GrantRoleArgs], [Result], []),
@@ -1185,22 +1199,22 @@ export const idlFactory = ({ IDL }) => {
       ),
     'ingest_vertex_embeddings' : IDL.Func(
         [AdminIngestVertexEmbeddingBatchArgs],
-        [Result_29],
+        [Result_30],
         [],
       ),
-    'list_backfill_status' : IDL.Func([IDL.Text], [Result_30], ['query']),
-    'list_graphs' : IDL.Func([], [Result_31], ['query']),
-    'list_prepared' : IDL.Func([IDL.Opt(IDL.Text)], [Result_32], ['query']),
+    'list_backfill_status' : IDL.Func([IDL.Text], [Result_31], ['query']),
+    'list_graphs' : IDL.Func([], [Result_32], ['query']),
+    'list_prepared' : IDL.Func([IDL.Opt(IDL.Text)], [Result_33], ['query']),
     'list_schema_migrations' : IDL.Func(
         [ListSchemaMigrationsArgs],
-        [Result_33],
+        [Result_34],
         ['query'],
       ),
-    'list_shards' : IDL.Func([IDL.Text], [Result_34], ['query']),
-    'list_vector_indexes' : IDL.Func([IDL.Text], [Result_35], ['query']),
+    'list_shards' : IDL.Func([IDL.Text], [Result_35], ['query']),
+    'list_vector_indexes' : IDL.Func([IDL.Text], [Result_36], ['query']),
     'list_vector_maintenance_policies' : IDL.Func(
         [IDL.Text],
-        [Result_36],
+        [Result_37],
         ['query'],
       ),
     'lookup_edge_label_id' : IDL.Func(
@@ -1220,18 +1234,14 @@ export const idlFactory = ({ IDL }) => {
       ),
     'mutation_status' : IDL.Func(
         [IDL.Opt(IDL.Text), IDL.Text],
-        [Result_37],
+        [Result_38],
         ['query'],
       ),
-    'my_role' : IDL.Func([], [Result_38], ['query']),
-    'prepare' : IDL.Func(
-        [IDL.Text, IDL.Text, IDL.Opt(PreparedOperation)],
-        [Result],
-        [],
-      ),
+    'my_role' : IDL.Func([], [Result_39], ['query']),
+    'prepare' : IDL.Func([IDL.Vec(PreparedRegistration)], [Result], []),
     'prepared_mutate' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Text],
-        [Result_27],
+        [Result_28],
         [],
       ),
     'prepared_query' : IDL.Func(
@@ -1241,10 +1251,10 @@ export const idlFactory = ({ IDL }) => {
           IDL.Opt(IDL.Vec(PreparedSortSpec)),
           ReadMode,
         ],
-        [Result_27],
+        [Result_28],
         ['composite_query'],
       ),
-    'provision_graph' : IDL.Func([ProvisionGraphArgs], [Result_39], []),
+    'provision_graph' : IDL.Func([ProvisionGraphArgs], [Result_40], []),
     'publish_vector_rebuild' : IDL.Func([IDL.Text, IDL.Nat32], [Result], []),
     'register_graph' : IDL.Func([RegisterGraphArgs], [Result], []),
     'register_shard' : IDL.Func([AdminRegisterShardArgs], [Result], []),
@@ -1256,28 +1266,28 @@ export const idlFactory = ({ IDL }) => {
     'reset_vector_maintenance' : IDL.Func([IDL.Text, IDL.Nat32], [Result], []),
     'reverse_edge_label_name' : IDL.Func(
         [IDL.Text, IDL.Nat16],
-        [Result_38],
+        [Result_39],
         ['query'],
       ),
     'reverse_property_name' : IDL.Func(
         [IDL.Text, IDL.Nat32],
-        [Result_38],
+        [Result_39],
         ['query'],
       ),
     'reverse_vertex_label_name' : IDL.Func(
         [IDL.Text, IDL.Nat16],
-        [Result_38],
+        [Result_39],
         ['query'],
       ),
-    'router_ack' : IDL.Func([RouterProvisionAck], [Result_40], []),
+    'router_ack' : IDL.Func([RouterProvisionAck], [Result_41], []),
     'scan_partition_health' : IDL.Func(
         [IDL.Text, IDL.Nat32, IDL.Opt(IDL.Vec(IDL.Nat8)), IDL.Nat32],
-        [Result_41],
+        [Result_42],
         ['composite_query'],
       ),
     'scan_slab_stats' : IDL.Func(
         [IDL.Text, IDL.Opt(IDL.Vec(IDL.Nat8)), IDL.Nat32, IDL.Opt(IDL.Nat32)],
-        [Result_42],
+        [Result_43],
         ['composite_query'],
       ),
     'set_vector_dispatch_enabled' : IDL.Func([IDL.Bool], [Result], []),
@@ -1298,7 +1308,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'sweep_expired_mutation_keys' : IDL.Func(
         [AdminSweepMutationKeysStepArgs],
-        [Result_43],
+        [Result_44],
         [],
       ),
     'unregister_graph' : IDL.Func([IDL.Text], [Result], []),
@@ -1310,7 +1320,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'vector_search' : IDL.Func(
         [IDL.Opt(IDL.Text), IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat32],
-        [Result_44],
+        [Result_45],
         ['composite_query'],
       ),
     'warm_vector_centroid_cache' : IDL.Func(

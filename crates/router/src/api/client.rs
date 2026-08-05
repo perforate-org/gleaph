@@ -138,13 +138,10 @@ fn bulk_load_status(
 }
 
 #[update]
-/// Register or replace one named prepared operation (idempotent upsert). `metadata` is optional.
-fn prepare(
-    name: String,
-    query: String,
-    metadata: Option<gleaph_prepared_api::PreparedOperation>,
-) -> Result<(), RouterError> {
-    prepared::prepare(name, query, metadata)
+/// Register or replace named prepared operations in one atomic batch (idempotent upsert).
+/// Per-operation `metadata` is optional (ADR 0061).
+fn prepare(operations: Vec<gleaph_prepared_api::PreparedRegistration>) -> Result<(), RouterError> {
+    prepared::prepare(operations)
 }
 
 /// Remove one named prepared operation.
@@ -159,6 +156,12 @@ fn list_prepared(
     graph_name: Option<String>,
 ) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
     prepared::list_prepared(graph_name)
+}
+
+/// The stored source and metadata of one registered prepared operation.
+#[query]
+fn get_prepared(name: String) -> Result<gleaph_prepared_api::PreparedOperationRecord, RouterError> {
+    prepared::get_prepared(&name)
 }
 
 /// Read-only prepared execution with an explicit ADR 0029 §5 read-consistency contract.

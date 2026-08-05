@@ -67,6 +67,21 @@ pub struct PreparedOperation {
     pub allowed_sorts: Vec<SortKey>,
 }
 
+/// One operation in a batch prepared-query registration request.
+///
+/// The Router resolves the target graph from the program (`USE GRAPH`) or the caller's home
+/// graph (ADR 0011 / ADR 0061), so the envelope carries no graph selector. Metadata is optional:
+/// when supplied, Router-owned completion fills parameters and result columns from the program.
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PreparedRegistration {
+    /// Operation name exposed by the Router, unique within the batch.
+    pub name: String,
+    /// Prepared-query source: a GQL transaction with a statement body.
+    pub query: String,
+    /// Optional operation metadata completed and validated by the Router.
+    pub metadata: Option<PreparedOperation>,
+}
+
 /// Input parameter metadata for a prepared operation.
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Parameter {
@@ -122,6 +137,18 @@ pub struct PreparedSortSpec {
     pub key: String,
     /// Direction, accepted as `asc`, `ascending`, `desc`, or `descending`.
     pub direction: String,
+}
+
+/// The stored source and metadata of one registered prepared operation.
+///
+/// Returned by the Router's `get_prepared` query so operators can diff a local artifact against
+/// the durable catalog without re-fetching the whole manifest (ADR 0061).
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PreparedOperationRecord {
+    /// The exact registered query source.
+    pub query: String,
+    /// The stored operation metadata, absent when registered without metadata.
+    pub metadata: Option<PreparedOperation>,
 }
 
 /// Language-neutral type supported by the manifest profiles.
@@ -255,5 +282,73 @@ mod tests {
         let bytes = candid::encode_one(&manifest).expect("encode manifest");
         let decoded: PreparedManifest = candid::decode_one(&bytes).expect("decode manifest");
         assert_eq!(decoded, manifest);
+    }
+
+    fn sample_operation(name: &str) -> PreparedOperation {
+        PreparedOperation {
+            name: name.into(),
+            description: Some("docs".into()),
+            kind: OperationKind::Query,
+            parameters: vec![Parameter {
+                name: "term".into(),
+                description: None,
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Text,
+            }],
+            result: ResultSchema {
+                columns: vec![Column {
+                    name: "user_name".into(),
+                    semantic_type: SemanticType::Text,
+                    nullable: false,
+                }],
+            },
+            supports_consistency: true,
+            supports_idempotency: false,
+            allowed_sorts: vec![SortKey {
+                key: "name".into(),
+                label: Some("Name".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn prepared_registration_round_trips_through_candid() {
+        let registration = PreparedRegistration {
+            name: "find-users".into(),
+            query: "MATCH (n) RETURN n".into(),
+            metadata: Some(sample_operation("find-users")),
+        };
+
+        let bytes = candid::encode_one(&registration).expect("encode registration");
+        let decoded: PreparedRegistration =
+            candid::decode_one(&bytes).expect("decode registration");
+        assert_eq!(decoded, registration);
+    }
+
+    #[test]
+    fn prepared_registration_round_trips_without_metadata() {
+        let registration = PreparedRegistration {
+            name: "bare".into(),
+            query: "MATCH (n) RETURN n".into(),
+            metadata: None,
+        };
+
+        let bytes = candid::encode_one(&registration).expect("encode registration");
+        let decoded: PreparedRegistration =
+            candid::decode_one(&bytes).expect("decode registration");
+        assert_eq!(decoded, registration);
+    }
+
+    #[test]
+    fn prepared_operation_record_round_trips_through_candid() {
+        let record = PreparedOperationRecord {
+            query: "MATCH (n) RETURN n".into(),
+            metadata: Some(sample_operation("find-users")),
+        };
+
+        let bytes = candid::encode_one(&record).expect("encode record");
+        let decoded: PreparedOperationRecord = candid::decode_one(&bytes).expect("decode record");
+        assert_eq!(decoded, record);
     }
 }

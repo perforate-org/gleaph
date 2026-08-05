@@ -3,7 +3,7 @@
 use candid::{CandidType, Decode, Encode, Principal};
 
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
+use gleaph_graph_kernel::federation::{GlobalVertexId, RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
 use gleaph_provision::canister::init::ProvisionInitArgs;
@@ -1635,7 +1635,7 @@ pub fn gql_query_on_router(
     }
 }
 
-/// Register a named prepared operation as the bootstrap admin principal.
+/// Register a named prepared operation as the bootstrap admin principal through the batch API.
 pub fn prepare_as_admin(env: &FederationEnv, name: &str, query: &str) {
     use gleaph_graph_kernel::federation::RouterError;
 
@@ -1645,11 +1645,11 @@ pub fn prepare_as_admin(env: &FederationEnv, name: &str, query: &str) {
             env.router,
             env.admin,
             "prepare",
-            Encode!(
-                &name.to_string(),
-                &query.to_string(),
-                &Option::<gleaph_prepared_api::PreparedOperation>::None
-            )
+            Encode!(&vec![gleaph_prepared_api::PreparedRegistration {
+                name: name.to_string(),
+                query: query.to_string(),
+                metadata: None,
+            }])
             .expect("encode prepare"),
         )
         .unwrap_or_else(|e| panic!("prepare on router: {e:?}"));
@@ -1657,6 +1657,53 @@ pub fn prepare_as_admin(env: &FederationEnv, name: &str, query: &str) {
         Ok(Ok(())) => {}
         Ok(Err(err)) => panic!("prepare rejected: {err:?}"),
         Err(err) => panic!("decode prepare: {err}"),
+    }
+}
+
+/// Register a batch of prepared operations as the bootstrap admin principal; returns the Router
+/// verdict so tests can assert rejection and all-or-nothing atomicity.
+pub fn prepare_batch_as_admin(
+    env: &FederationEnv,
+    operations: &[gleaph_prepared_api::PreparedRegistration],
+) -> Result<(), RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "prepare",
+            Encode!(&operations.to_vec()).expect("encode prepare batch"),
+        )
+        .unwrap_or_else(|e| panic!("prepare on router: {e:?}"));
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(result) => result,
+        Err(err) => panic!("decode prepare: {err}"),
+    }
+}
+
+/// Read the stored source and metadata of one prepared operation as the bootstrap admin principal.
+pub fn get_prepared_as_admin(
+    env: &FederationEnv,
+    name: &str,
+) -> gleaph_prepared_api::PreparedOperationRecord {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "get_prepared",
+            Encode!(&name.to_string()).expect("encode get_prepared"),
+        )
+        .unwrap_or_else(|e| panic!("get_prepared on router: {e:?}"));
+    match Decode!(
+        &bytes,
+        Result<gleaph_prepared_api::PreparedOperationRecord, RouterError>
+    ) {
+        Ok(Ok(record)) => record,
+        Ok(Err(err)) => panic!("get_prepared rejected: {err:?}"),
+        Err(err) => panic!("decode get_prepared: {err}"),
     }
 }
 

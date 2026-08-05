@@ -32,7 +32,11 @@ fn client_methods_are_awaitable_from_an_external_crate() {
         client_bulk_key: "bulk-1".into(),
     }));
     assert_future(&client.bulk_load_status(None, "bulk-1", None, 16));
-    assert_future(&client.prepare("find-users", "MATCH (n) RETURN n", None));
+    assert_future(&client.prepare(vec![gleaph_cdk::PreparedRegistration {
+        name: "find-users".into(),
+        query: "MATCH (n) RETURN n".into(),
+        metadata: None,
+    }]));
     assert_future(&client.drop_prepared("find-users"));
     assert_future(&client.list_prepared(None));
 }
