@@ -106,6 +106,60 @@ fn bench_router_prepared_plan_growth_32x256k() -> canbench_rs::BenchResult {
     })
 }
 
+/// ADR 0061 batch-registration cost: plan, complete metadata, and commit a full 32-operation
+/// batch through the production batch core. Setup (admin grant + home-graph registration) stays
+/// outside the measured closure; each iteration re-upserts the same keys, so the stable map stays
+/// bounded and the measurement reflects registration cost, not storage growth.
+#[bench(raw)]
+fn bench_router_prepared_batch_register_32() -> canbench_rs::BenchResult {
+    use candid::Principal;
+    use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+    use gleaph_prepared_api::{
+        OperationKind, PreparedOperation, PreparedRegistration, ResultSchema,
+    };
+
+    let caller = Principal::from_slice(&[0xAB; 29]);
+    crate::facade::auth::grant_admins(&[caller]);
+    let store = RouterStore::new();
+    store
+        .admin_register_graph(
+            caller,
+            GraphRegistryEntry {
+                graph_id: GraphId::from_raw(970_003),
+                graph_name: "bench-prepared-batch".to_owned(),
+                canister_id: Principal::management_canister(),
+                owner: caller,
+                admins: Default::default(),
+                status: GraphStatus::Active,
+                version: 1,
+                updated_at_ns: 0,
+                provisioning_state: ProvisioningState::None,
+                is_home: true,
+            },
+        )
+        .expect("register bench graph");
+    let operations: Vec<PreparedRegistration> = (0..32)
+        .map(|index| PreparedRegistration {
+            name: format!("bench-batch-{index:02}"),
+            query: "MATCH (n) RETURN n".to_string(),
+            metadata: Some(PreparedOperation {
+                name: format!("bench-batch-{index:02}"),
+                description: None,
+                kind: OperationKind::Query,
+                parameters: vec![],
+                result: ResultSchema { columns: vec![] },
+                supports_consistency: false,
+                supports_idempotency: false,
+                allowed_sorts: vec![],
+            }),
+        })
+        .collect();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("router_prepared_batch_register_32");
+        crate::prepared::prepare_batch_core(&operations, caller).expect("batch registers");
+    })
+}
+
 // ----------------------------------------------------------------------------
 // ADR 0030 cross-shard uniqueness write-path benchmarks (Router-side only).
 //

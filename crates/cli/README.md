@@ -22,6 +22,7 @@ cargo build -p gleaph-cli --release
 | ------------------ | ---------------------------------------------------------------------------------- | ---------------------------------------- |
 | `gleaph codegen`   | Generate typed prepared-query clients and canister adapters from a Router manifest | [`docs/codegen.md`](docs/codegen.md)     |
 | `gleaph migration` | Create, validate, plan, and apply immutable schema migrations                      | [`docs/migration.md`](docs/migration.md) |
+| `gleaph prepared`  | Register prepared queries from local `.gql` files (plan/status/apply/drop)         | [`docs/prepared.md`](docs/prepared.md)   |
 | `gleaph load`      | Load initial vertices and edges into an existing logical graph                     | [`docs/load.md`](docs/load.md)           |
 
 ### `gleaph migration`

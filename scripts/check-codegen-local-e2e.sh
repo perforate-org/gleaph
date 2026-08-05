@@ -120,26 +120,18 @@ main() {
     }
   )"
 
-  call_ok "$router" admin_register_graph "(
+  call_ok "$router" register_graph "(
     record {
-      graph_id = 0 : nat32;
       graph_name = \"$GRAPH_NAME\";
-      canister_id = principal \"$graph\";
       owner = principal \"$admin\";
       admins = vec {};
-      status = variant { Active };
-      version = 1 : nat64;
-      updated_at_ns = 0 : nat64;
-      provisioning_state = variant { None };
       is_home = true;
-    }
-  )"
-  call_ok "$router" admin_register_shard "(
-    record {
-      shard_id = 0 : nat32;
-      graph_canister = principal \"$graph\";
-      index_canister = principal \"$index\";
-      logical_graph_name = \"$GRAPH_NAME\";
+      shards = vec { record {
+        shard_id = 0 : nat32;
+        graph_canister = principal \"$graph\";
+        index_canister = principal \"$index\";
+      } };
+      requested_resources = vec {};
     }
   )"
   install_canister "$graph" "$graph_wasm" "(
@@ -151,22 +143,21 @@ main() {
     }
   )"
 
-  local prepared_query_literal
-  prepared_query_literal="\"$(sed 's/\\/\\\\/g; s/"/\\"/g' "$E2E_ROOT/manifest/empty-query.gql" | tr -d '\n')\""
-  call_ok "$router" prepared_upsert_with_metadata "(
-    \"list-vertices\",
-    $prepared_query_literal,
-    record {
-      name = \"list-vertices\";
-      description = opt \"List vertices in the default graph.\";
-      kind = variant { Query };
-      parameters = vec {};
-      result = record { columns = vec {} };
-      supports_consistency = false;
-      supports_idempotency = false;
-      allowed_sorts = vec { record { key = \"name\"; label = opt \"Name\" } };
-    }
-  )"
+  local prepared_dir="$E2E_ROOT/prepared"
+  mkdir -p "$prepared_dir"
+  cp "$E2E_ROOT/manifest/empty-query.gql" "$prepared_dir/list-vertices.gql"
+  cat > "$prepared_dir/list-vertices.toml" <<'TOML'
+description = "List vertices in the default graph."
+[[allowed_sorts]]
+key = "name"
+label = "Name"
+TOML
+  cargo run -p gleaph-cli -- \
+    prepared apply \
+    --dir "$prepared_dir" \
+    --canister "$router" \
+    -n local \
+    --identity "$IDENTITY_PEM"
 
   pnpm --dir "$ROOT" sdk:build
   cargo run -p gleaph-codegen -- \

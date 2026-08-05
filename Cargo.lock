@@ -1715,6 +1715,8 @@ dependencies = [
  "gleaph-index-ddl",
  "gleaph-message-sizing",
  "gleaph-migration-api",
+ "gleaph-prepared-api",
+ "gleaph-prepared-runtime",
  "ic-agent",
  "serde",
  "serde_json",

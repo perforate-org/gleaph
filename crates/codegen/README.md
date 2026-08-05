@@ -48,6 +48,9 @@ standalone and top-level commands.
 
 Schema migrations are a separate top-level `gleaph migration` workflow owned by
 `gleaph-cli`; they do not change the prepared-query code-generation contract.
+Prepared-query registration is likewise a separate top-level `gleaph prepared` workflow
+(`gleaph-cli`), which registers operations from local `.gql` files through the Router's batch
+`prepare` API; the manifest consumed here is then retrieved from the Router via `list_prepared`.
 
 The default output is stdout. Use `--output` to write a file instead.
 
@@ -107,9 +110,7 @@ The manifest is JSON-serializable and is shared with the
         }
       ],
       "result": {
-        "columns": [
-          { "name": "user_name", "type": "Text", "nullable": false }
-        ]
+        "columns": [{ "name": "user_name", "type": "Text", "nullable": false }]
       },
       "supports_consistency": false,
       "supports_idempotency": false,

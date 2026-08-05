@@ -6,10 +6,12 @@ use thiserror::Error;
 
 pub mod load;
 pub mod migration;
+pub mod prepared;
 pub mod remote;
 
 use load::{LoadArgs, LoadError};
 use migration::{MigrationDirArgs, MigrationError};
+use prepared::PreparedDirArgs;
 
 #[derive(Debug, Error)]
 enum CliError {
@@ -17,6 +19,8 @@ enum CliError {
     Codegen(#[from] gleaph_codegen::CodegenError),
     #[error(transparent)]
     Migration(#[from] MigrationError),
+    #[error(transparent)]
+    Prepared(#[from] prepared::PreparedError),
     #[error(transparent)]
     Load(#[from] LoadError),
     /// Argument parsing or dispatch failures.
@@ -49,6 +53,9 @@ enum TopLevelCommand {
     Migration(MigrationCommand),
     /// Load initial vertices and edges into an existing logical graph.
     Load(LoadArgs),
+    /// Register prepared queries from local .gql files.
+    #[command(subcommand)]
+    Prepared(PreparedCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -61,6 +68,20 @@ enum MigrationCommand {
     Status(RemoteMigrationArgs),
     /// Apply pending migrations through Router in parent order.
     Apply(RemoteMigrationArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum PreparedCommand {
+    /// Scaffold a new prepared-query source file.
+    New(NewPreparedArgs),
+    /// Validate and print the local prepared directory without remote calls.
+    Plan(PreparedDirArgs),
+    /// Compare the local prepared directory with Router storage.
+    Status(RemotePreparedArgs),
+    /// Register local prepared operations through Router in bounded batches.
+    Apply(RemotePreparedArgs),
+    /// Remove one named prepared operation from Router storage.
+    Drop(DropPreparedArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -79,6 +100,45 @@ struct RemoteMigrationArgs {
     /// Fetch the network root key before querying a custom endpoint.
     #[arg(long)]
     fetch_root_key: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct RemotePreparedArgs {
+    #[command(flatten)]
+    dir: PreparedDirArgs,
+    /// Router canister principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    canister: String,
+    /// Network name (ic/local) or an HTTP(S) endpoint URL.
+    #[arg(short = 'n', long, default_value = "ic", value_name = "NETWORK")]
+    network: String,
+    /// PEM file containing a Secp256k1 identity.
+    #[arg(long, value_name = "PATH")]
+    identity: Option<std::path::PathBuf>,
+    /// Fetch the network root key before querying a custom endpoint.
+    #[arg(long)]
+    fetch_root_key: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct DropPreparedArgs {
+    #[command(flatten)]
+    remote: RemotePreparedArgs,
+    /// Prepared operation name to remove.
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct NewPreparedArgs {
+    #[command(flatten)]
+    dir: PreparedDirArgs,
+    /// Lowercase kebab-case operation name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Human-readable description emitted as the source doc comment.
+    #[arg(long, default_value = "")]
+    description: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -109,7 +169,7 @@ fn parse_and_dispatch(args: Vec<String>) -> Result<(), CliError> {
     };
     if !matches!(
         first.as_str(),
-        "codegen" | "migration" | "load" | "-h" | "--help"
+        "codegen" | "migration" | "load" | "prepared" | "-h" | "--help"
     ) {
         return Err(CliError::Message(format!("unknown command {first:?}")));
     }
@@ -137,6 +197,93 @@ fn dispatch(command: TopLevelCommand) -> Result<(), CliError> {
                     println!("bulk load already completed; skipped (job key: {key})")
                 }
             }
+            Ok(())
+        }
+        TopLevelCommand::Prepared(command) => Ok(execute_prepared(command)?),
+    }
+}
+
+fn execute_prepared(command: PreparedCommand) -> Result<(), prepared::PreparedError> {
+    use prepared::{PreparedError, RouterPreparedTransport};
+    match command {
+        PreparedCommand::New(args) => {
+            let artifact = prepared::new(&args.dir.dir, &args.name, &args.description)?;
+            println!(
+                "created {} ({})",
+                artifact.name,
+                args.dir
+                    .dir
+                    .join(format!("{}.gql", artifact.name))
+                    .display()
+            );
+            Ok(())
+        }
+        PreparedCommand::Plan(args) => {
+            let artifacts = prepared::plan(&args.dir)?;
+            if artifacts.is_empty() {
+                println!("no prepared operations");
+            } else {
+                for artifact in artifacts {
+                    println!("{} {:?}", artifact.name, artifact.kind);
+                }
+            }
+            Ok(())
+        }
+        PreparedCommand::Status(args) => {
+            let mut transport = RouterPreparedTransport::connect(
+                &args.canister,
+                &args.network,
+                args.identity.as_deref(),
+                args.fetch_root_key,
+            )?;
+            let status = prepared::status(&args.dir.dir, &mut transport)?;
+            for name in &status.missing {
+                println!("{name} missing");
+            }
+            for name in &status.drift {
+                println!("{name} drift");
+            }
+            for name in &status.remote_only {
+                println!("{name} remote-only");
+            }
+            println!(
+                "up-to-date {}/{}",
+                status.up_to_date.len(),
+                status.up_to_date.len() + status.missing.len() + status.drift.len()
+            );
+            if !status.missing.is_empty() || !status.drift.is_empty() {
+                return Err(PreparedError::Message(
+                    "prepared operations are missing or drifted".into(),
+                ));
+            }
+            Ok(())
+        }
+        PreparedCommand::Apply(args) => {
+            let mut transport = RouterPreparedTransport::connect(
+                &args.canister,
+                &args.network,
+                args.identity.as_deref(),
+                args.fetch_root_key,
+            )?;
+            let outcome = prepared::apply(&args.dir.dir, &mut transport)?;
+            if outcome.registered.is_empty() {
+                println!("no prepared operations");
+            } else {
+                for name in &outcome.registered {
+                    println!("{name} registered");
+                }
+            }
+            Ok(())
+        }
+        PreparedCommand::Drop(args) => {
+            let mut transport = RouterPreparedTransport::connect(
+                &args.remote.canister,
+                &args.remote.network,
+                args.remote.identity.as_deref(),
+                args.remote.fetch_root_key,
+            )?;
+            prepared::drop(&args.name, &mut transport)?;
+            println!("dropped {}", args.name);
             Ok(())
         }
     }
