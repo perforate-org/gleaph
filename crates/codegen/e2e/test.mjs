@@ -27,9 +27,6 @@ const prepared = await generated.createPreparedGleaphClient({
 const response = await prepared.listVertices({}, [
   { key: "name", direction: "desc" },
 ]);
-const response = await prepared.listVertices({}, [
-  { key: "name", direction: "desc" },
-]);
 
 assert.equal(response.rows.length, 0);
 console.log("codegen local E2E passed");
