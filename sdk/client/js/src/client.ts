@@ -123,6 +123,85 @@ class TransportBackedGleaphClient implements GleaphClient {
   }
 }
 
+/**
+ * Forwarding base for generated prepared clients.
+ *
+ * A `GleaphClientWrapper` delegates every operation to an inner `GleaphClient`, so generated
+ * code can extend it and add prepared operations while keeping the full dynamic GQL surface on
+ * the same value. The generated `withPreparedQueries` helper constructs it; the inner client is
+ * never mutated.
+ */
+export class GleaphClientWrapper implements GleaphClient {
+  constructor(protected readonly inner: GleaphClient) {}
+
+  plan(request: ApiQueryRequest): Promise<ApiPlanResponse> {
+    return this.inner.plan(request);
+  }
+
+  execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
+    return this.inner.execute(request);
+  }
+
+  prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse> {
+    return this.inner.prepare(request);
+  }
+
+  getPreparedManifest(graphName: string): Promise<PreparedManifest> {
+    return this.inner.getPreparedManifest(graphName);
+  }
+
+  executePrepared(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
+  executePrepared(
+    name: string,
+    params?: Record<string, unknown | ApiValue>,
+    sort?: PreparedSortSpec[],
+  ): Promise<GqlQueryResult>;
+  executePrepared(
+    requestOrName: ApiExecutePreparedRequest | string,
+    params?: Record<string, unknown | ApiValue>,
+    sort?: PreparedSortSpec[],
+  ): Promise<GqlQueryResult> {
+    if (typeof requestOrName === "string") {
+      return this.inner.executePrepared(requestOrName, params, sort);
+    }
+    return this.inner.executePrepared(requestOrName);
+  }
+
+  executePreparedMutation(request: ApiPreparedMutationRequest): Promise<GqlMutationResult>;
+  executePreparedMutation(
+    name: string,
+    params: Record<string, unknown | ApiValue> | undefined,
+    clientMutationKey: string,
+    sort?: PreparedSortSpec[],
+  ): Promise<GqlMutationResult>;
+  executePreparedMutation(
+    requestOrName: ApiPreparedMutationRequest | string,
+    params?: Record<string, unknown | ApiValue>,
+    clientMutationKey?: string,
+    sort?: PreparedSortSpec[],
+  ): Promise<GqlMutationResult> {
+    if (typeof requestOrName !== "string") {
+      return this.inner.executePreparedMutation(requestOrName);
+    }
+    if (clientMutationKey === undefined) {
+      throw new Error("clientMutationKey is required for prepared mutations");
+    }
+    return this.inner.executePreparedMutation(requestOrName, params, clientMutationKey, sort);
+  }
+
+  bulkLoad(command: BulkLoadCommand): Promise<BulkLoadResponse> {
+    return this.inner.bulkLoad(command);
+  }
+
+  bulkLoadStatus(request: BulkLoadStatusRequest): Promise<BulkLoadStatusPage> {
+    return this.inner.bulkLoadStatus(request);
+  }
+
+  dropPrepared(name: string): Promise<boolean> {
+    return this.inner.dropPrepared(name);
+  }
+}
+
 export function createGleaphClientFromTransport(transport: GleaphTransport): GleaphClient {
   return new TransportBackedGleaphClient(transport);
 }

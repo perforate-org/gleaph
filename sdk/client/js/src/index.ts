@@ -99,5 +99,5 @@ export {
 export { GqlFloat16 } from "./values.ts";
 export { GqlDecimal } from "./types.ts";
 export { GqlFloat128, GqlFloat256 } from "./float-values.ts";
-export { createGleaphClientFromTransport } from "./client.ts";
+export { GleaphClientWrapper, createGleaphClientFromTransport } from "./client.ts";
 export { createGleaphClient, createGleaphTransport } from "./ic.ts";
