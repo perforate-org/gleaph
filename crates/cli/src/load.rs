@@ -66,46 +66,46 @@ pub enum Format {
 pub struct LoadArgs {
     /// One YAML/JSON artifact, or the vertices and edges NDJSON files.
     #[arg(value_name = "ARTIFACT")]
-    artifacts: Vec<PathBuf>,
-    /// Router canister principal.
+    pub artifacts: Vec<PathBuf>,
+    /// Router canister principal (required unless supplied by GLEAPH_CANISTER or `gleaph.toml`).
     #[arg(long, value_name = "PRINCIPAL")]
-    canister: String,
+    pub canister: Option<String>,
     /// Logical graph name; omitted for the caller's default (HOME) graph.
     #[arg(long, value_name = "NAME")]
-    graph: Option<String>,
+    pub graph: Option<String>,
     /// Durable bulk-load job key. Terminal jobs are single-use: a completed/failed/aborted key
     /// cannot be reused, so re-loading after a terminal state requires a new key or `--fresh`.
-    #[arg(short = 'k', long, default_value = DEFAULT_BULK_KEY, value_name = "KEY")]
-    key: String,
+    #[arg(short = 'k', long, value_name = "KEY")]
+    pub key: Option<String>,
     /// Network name (ic/local) or an HTTP(S) endpoint URL.
-    #[arg(short = 'n', long, default_value = "ic", value_name = "NETWORK")]
-    network: String,
+    #[arg(short = 'n', long, value_name = "NETWORK")]
+    pub network: Option<String>,
     /// PEM file containing a Secp256k1 identity.
     #[arg(long, value_name = "PATH")]
-    identity: Option<PathBuf>,
+    pub identity: Option<PathBuf>,
     /// Fetch the network root key before querying a custom endpoint.
-    #[arg(long)]
-    fetch_root_key: bool,
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub fetch_root_key: Option<bool>,
     /// Artifact format; inferred from the file extension when omitted.
     #[arg(long, value_name = "FORMAT")]
-    format: Option<Format>,
+    pub format: Option<Format>,
     /// NDJSON vertices file only (no edges). Mutually exclusive with positional ARTIFACT.
     #[arg(long, value_name = "FILE")]
-    vertices: Option<PathBuf>,
+    pub vertices: Option<PathBuf>,
     /// NDJSON edges file only (no vertices). Endpoints must use the property-based
     /// `{ label, property, value }` form; `source_id` references cannot resolve without vertices
     /// in the same artifact.
     #[arg(long, value_name = "FILE")]
-    edges: Option<PathBuf>,
+    pub edges: Option<PathBuf>,
     /// Start a new job under a derived key instead of resuming or skipping; the effective key is
     /// printed and recorded in `--state-file` when given.
     #[arg(long)]
-    fresh: bool,
+    pub fresh: bool,
     /// State file recording the effective job key and the loaded artifact digest. When present,
     /// the recorded key is reused (resume/skip identity) and skip-on-Completed requires the
     /// digest to match.
     #[arg(long, value_name = "PATH")]
-    state_file: Option<PathBuf>,
+    pub state_file: Option<PathBuf>,
 }
 
 /// Failures raised by `gleaph load`, mapped to the documented exit codes:
@@ -1442,6 +1442,11 @@ fn resolve_edge_endpoint(
 
 // ──── entry point ────
 
+/// The base job key: the explicit `--key` (or `[load] key`) or the built-in default.
+fn base_key(args: &LoadArgs) -> &str {
+    args.key.as_deref().unwrap_or(DEFAULT_BULK_KEY)
+}
+
 /// Resolve the effective job key: the state-file record (resume/skip identity), a fresh derived
 /// key under `--fresh`, or the base `--key`.
 fn effective_key(args: &LoadArgs) -> Result<String, LoadError> {
@@ -1450,26 +1455,32 @@ fn effective_key(args: &LoadArgs) -> Result<String, LoadError> {
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
-        return Ok(format!("{}.{nonce}", args.key));
+        return Ok(format!("{}.{nonce}", base_key(args)));
     }
     if let Some(path) = &args.state_file
         && let Some(state) = read_state_file(path)?
     {
         return Ok(state.bulk_key);
     }
-    Ok(args.key.clone())
+    Ok(base_key(args).to_owned())
 }
 
 /// Validate and run one `gleaph load` invocation.
 pub fn execute(args: &LoadArgs) -> Result<LoadOutcome, LoadError> {
+    let canister = args
+        .canister
+        .as_deref()
+        .ok_or_else(|| LoadError::Usage("--canister is required".into()))?;
     let input = resolve_input(args)?;
-    let prepared = prepare_artifact(&input, args.graph.as_deref(), &args.key)?;
+    let prepared = prepare_artifact(&input, args.graph.as_deref(), base_key(args))?;
     let key = effective_key(args)?;
     let mut transport = RemoteBulkLoadTransport::connect(
-        &args.canister,
-        &args.network,
+        canister,
+        args.network
+            .as_deref()
+            .unwrap_or(crate::config::DEFAULT_NETWORK),
         args.identity.as_deref(),
-        args.fetch_root_key,
+        args.fetch_root_key.unwrap_or(false),
     )?;
     let outcome = run_load(
         &mut transport,
@@ -1504,12 +1515,12 @@ mod tests {
     fn load_args(artifacts: &[&str]) -> LoadArgs {
         LoadArgs {
             artifacts: artifacts.iter().map(PathBuf::from).collect(),
-            canister: "aaaaa-aa".into(),
+            canister: Some("aaaaa-aa".into()),
             graph: None,
-            key: "test-key".into(),
-            network: "local".into(),
+            key: Some("test-key".into()),
+            network: Some("local".into()),
             identity: None,
-            fetch_root_key: false,
+            fetch_root_key: Some(false),
             format: None,
             vertices: None,
             edges: None,
@@ -1668,7 +1679,7 @@ mod tests {
     fn fresh_key_is_derived_and_state_file_reuses_the_recorded_key() {
         let mut args = load_args(&[]);
         args.fresh = true;
-        args.key = "base".into();
+        args.key = Some("base".into());
         let fresh = effective_key(&args).expect("fresh key");
         assert!(fresh.starts_with("base."), "fresh key must derive: {fresh}");
 
@@ -1679,7 +1690,7 @@ mod tests {
         );
         let mut args = load_args(&[]);
         args.state_file = Some(state.clone());
-        args.key = "base".into();
+        args.key = Some("base".into());
         let reused = effective_key(&args).expect("recorded key");
         assert_eq!(reused, "recorded-key");
         fs::remove_file(state).expect("cleanup");

@@ -35,9 +35,10 @@ pub const DEFAULT_PREPARED_DIR: &str = "prepared";
 /// Prepared-query directory selection shared by the subcommands.
 #[derive(Clone, Debug, clap::Args)]
 pub struct PreparedDirArgs {
-    /// Prepared-query directory. Defaults to `./prepared`.
-    #[arg(long, value_name = "PATH", default_value = "prepared")]
-    pub dir: PathBuf,
+    /// Prepared-query directory; defaults to `./prepared` (configurable via `[dirs]` in
+    /// `gleaph.toml`, ADR 0062).
+    #[arg(long, value_name = "PATH")]
+    pub dir: Option<PathBuf>,
 }
 
 const GQL_EXTENSION: &str = ".gql";

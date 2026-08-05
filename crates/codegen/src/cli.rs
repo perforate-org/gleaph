@@ -28,17 +28,17 @@ pub struct CodegenArgs {
     #[arg(long, value_name = "NAME")]
     pub graph: Option<String>,
     /// Network name (`ic` or `local`) or an HTTP(S) endpoint URL.
-    #[arg(short = 'n', long, default_value = "ic", value_name = "NETWORK")]
-    pub network: String,
+    #[arg(short = 'n', long, value_name = "NETWORK")]
+    pub network: Option<String>,
     /// PEM file containing a Secp256k1 identity for Router queries.
     #[arg(long, value_name = "PATH")]
     pub identity: Option<PathBuf>,
     /// Fetch the network root key before querying a custom endpoint.
-    #[arg(long)]
-    pub fetch_root_key: bool,
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub fetch_root_key: Option<bool>,
     /// Output profile (`typescript`, `javascript`, `rust`, `rust-canister`, or `motoko`).
     #[arg(long, value_name = "TARGET")]
-    pub target: String,
+    pub target: Option<String>,
     /// Write generated source to this path instead of stdout.
     #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
@@ -196,10 +196,11 @@ pub fn run(args: CodegenArgs) -> Result<(), CodegenError> {
     if args.canister.is_some() != args.graph.is_some() {
         return Err(CodegenError::IncompleteRemoteSource);
     }
-    if args.target.trim().is_empty() {
+    let target_text = args.target.as_deref().ok_or(CodegenError::MissingTarget)?;
+    if target_text.trim().is_empty() {
         return Err(CodegenError::MissingTarget);
     }
-    let target = parse_target(&args.target)?;
+    let target = parse_target(target_text)?;
     let manifest = if let Some(manifest_path) = args.manifest {
         let input =
             fs::read_to_string(&manifest_path).map_err(|error| CodegenError::ReadManifest {
@@ -219,8 +220,8 @@ pub fn run(args: CodegenArgs) -> Result<(), CodegenError> {
             .block_on(fetch_manifest(
                 &canister,
                 graph,
-                &args.network,
-                args.fetch_root_key,
+                args.network.as_deref().unwrap_or("ic"),
+                args.fetch_root_key.unwrap_or(false),
                 args.identity.as_deref(),
             ))?
     } else {
@@ -389,11 +390,19 @@ mod tests {
             "rust=never",
         ]);
 
-        assert_eq!(args.target, "ts");
-        assert_eq!(args.network, "local");
+        assert_eq!(args.target, Some("ts".to_owned()));
+        assert_eq!(args.network, Some("local".to_owned()));
         assert_eq!(args.identity, Some(PathBuf::from("identity.pem")));
-        assert!(args.fetch_root_key);
+        assert_eq!(args.fetch_root_key, Some(true));
         assert_eq!(args.format, vec!["rust=never"]);
+    }
+
+    #[test]
+    fn rejects_missing_target() {
+        let error = run(parse_args(&["--manifest", "manifest.json"]))
+            .expect_err("a missing output profile must fail after the merge layer");
+
+        assert_eq!(error.to_string(), "--target is required");
     }
 
     #[test]

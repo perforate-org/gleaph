@@ -54,6 +54,13 @@ Remote subcommands (`migration status`, `migration apply`, `load`, and
 | `--identity <PATH>`       | PEM file containing a Secp256k1 identity                                |
 | `--fetch-root-key`        | Fetch the network root key before querying a custom endpoint            |
 
+These flags and the `--dir` defaults can be pinned per project in
+[`gleaph.toml`](docs/config.md): per-network `[deployment.<network>]` profiles, `[dirs]`, and
+`default_network`, with `GLEAPH_NETWORK` / `GLEAPH_CANISTER` / `GLEAPH_IDENTITY` /
+`GLEAPH_FETCH_ROOT_KEY` / `GLEAPH_CONFIG` as per-machine overrides (ADR 0062). `--canister`
+remains required for remote subcommands unless a config or environment source supplies it; the
+standalone `gleaph-codegen` binary stays flag-only.
+
 ## Exit codes
 
 | Code | Meaning                                                                                                          |
@@ -68,6 +75,8 @@ Remote subcommands (`migration status`, `migration apply`, `load`, and
 
 ## Detailed specifications
 
+- [`docs/config.md`](docs/config.md) — `gleaph.toml` project configuration: discovery, setting
+  tables, precedence, path resolution, and `fetch_root_key` rules.
 - [`docs/load.md`](docs/load.md) — `gleaph load` artifact schema, flags,
   lifecycle, resume/skip semantics, streaming reads, and exit codes.
 - [`docs/migration.md`](docs/migration.md) — `gleaph migration` package

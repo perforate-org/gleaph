@@ -21,6 +21,8 @@ IDENTITY_PEM="$ICP_CLI_HOME/Library/Application Support/org.dfinity.icp-cli/iden
 
 cleanup() {
   rm -f "$GENERATED"
+  rm -f "$E2E_ROOT/gleaph.toml"
+  rm -rf "$E2E_ROOT/prepared"
 }
 trap cleanup EXIT
 
@@ -152,21 +154,26 @@ description = "List vertices in the default graph."
 key = "name"
 label = "Name"
 TOML
-  cargo run -p gleaph-cli -- \
-    prepared apply \
-    --dir "$prepared_dir" \
-    --canister "$router" \
-    -n local \
-    --identity "$IDENTITY_PEM"
+  cat > "$E2E_ROOT/gleaph.toml" <<TOML
+format_version = 1
+default_network = "local"
+
+[dirs]
+prepared = "prepared"
+
+[deployment.local]
+canister = "$router"
+identity = "$IDENTITY_PEM"
+# fetch_root_key omitted: the local network fetches the root key by default
+
+[codegen]
+target = "javascript"
+graph = "$GRAPH_NAME"
+TOML
+  cargo run -p gleaph-cli -- prepared apply
 
   pnpm --dir "$ROOT" sdk:build
-  cargo run -p gleaph-codegen -- \
-    --canister "$router" \
-    --graph "$GRAPH_NAME" \
-    --target javascript \
-    --network local \
-    --identity "$IDENTITY_PEM" \
-    --output "$GENERATED"
+  cargo run -p gleaph-cli -- codegen --output "$GENERATED"
 
   (
     cd "$SDK_ROOT"

@@ -107,9 +107,10 @@ fn file_snapshot(metadata: &fs::Metadata) -> Result<FileSnapshot, MigrationError
 /// CLI options shared by migration subcommands.
 #[derive(Args, Clone, Debug)]
 pub struct MigrationDirArgs {
-    /// Migration directory. Defaults to `./migrations`.
-    #[arg(long, value_name = "PATH", default_value = "migrations")]
-    pub dir: PathBuf,
+    /// Migration directory; defaults to `./migrations` (configurable via `[dirs]` in
+    /// `gleaph.toml`, ADR 0062).
+    #[arg(long, value_name = "PATH")]
+    pub dir: Option<PathBuf>,
 }
 
 /// Strict v1 migration manifest.  Descriptions are human metadata and are intentionally excluded
