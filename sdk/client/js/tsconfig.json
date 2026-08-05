@@ -6,6 +6,7 @@
     "allowImportingTsExtensions": true,
     "rootDir": "./src",
     "strict": true,
+    "noEmit": true,
     "declaration": true,
     "declarationMap": true,
     "verbatimModuleSyntax": true,
