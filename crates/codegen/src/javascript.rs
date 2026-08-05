@@ -66,8 +66,8 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
         }
         let method_name = camel_case(&operation_ir.wire_name);
         let method = match operation.kind {
-            OperationKind::Query => "executePrepared",
-            OperationKind::Update => "executePreparedMutation",
+            OperationKind::Query => "preparedQuery",
+            OperationKind::Update => "preparedMutate",
         };
         let mut impl_args = Vec::new();
         if !operation.parameters.is_empty() {

@@ -183,8 +183,8 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
         }
         let method_name = camel_case(&operation_ir.wire_name);
         let method = match operation.kind {
-            OperationKind::Query => "executePrepared",
-            OperationKind::Update => "executePreparedMutation",
+            OperationKind::Query => "preparedQuery",
+            OperationKind::Update => "preparedMutate",
         };
         let params_type = &operation_ir.params_type_name;
         let mut impl_args = Vec::new();

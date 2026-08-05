@@ -321,7 +321,7 @@ mod tests {
     fn generates_typed_adapter_using_sdk_runtime() {
         let output = generate_typescript(&manifest()).unwrap();
         assert!(output.contains("export interface FindUsersParams"));
-        assert!(output.contains("this.executePrepared(\"find-users\""));
+        assert!(output.contains("this.preparedQuery(\"find-users\""));
         assert!(output.contains("fromApiValue(row[\"user_name\"])"));
         assert!(output.contains("export class PreparedGleaphClient extends GleaphClientWrapper"));
         assert!(output.contains(
@@ -342,7 +342,7 @@ mod tests {
     fn generates_runtime_javascript_without_type_syntax() {
         let output = generate_javascript(&manifest()).unwrap();
         assert!(output.contains("export function withPreparedQueries(client)"));
-        assert!(output.contains("this.executePrepared(\"find-users\""));
+        assert!(output.contains("this.preparedQuery(\"find-users\""));
         assert!(output.contains("export class PreparedGleaphClient extends GleaphClientWrapper"));
         assert!(output.contains("export async function createPreparedGleaphClient(options)"));
         assert!(

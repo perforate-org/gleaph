@@ -87,7 +87,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
   async findRelated(params: FindRelatedParams, sort?: PreparedSortSpec[]): Promise<PreparedResponse<FindRelatedRow>> {
     const encodedParams: Record<string, ApiValue> = {};
     encodedParams["route"] = toApiValue(params["route"], "Path");
-    const response = await this.executePrepared("find-related", encodedParams, sort);
+    const response = await this.preparedQuery("find-related", encodedParams, sort);
     return { ...response, rows: response.rows.map((row) => ({
       display_name: fromApiValue(row["display_name"]) as string,
       next_route: fromApiValue(row["next_route"]) as ApiPathElement[] | null,
@@ -116,7 +116,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
     encodedParams["blob"] = toApiValue(params["blob"], "Bytes");
     encodedParams["counters"] = { List: params["counters"].map((value) => toApiValue(value, "Uint256")) };
     encodedParams["meta"] = { Record: Object.fromEntries([["kind", toApiValue(params["meta"]["kind"], "Text")], ["rank", toApiValue(params["meta"]["rank"], "Int64")]]) };
-    const response = await this.executePrepared("report-metrics", encodedParams);
+    const response = await this.preparedQuery("report-metrics", encodedParams);
     return { ...response, rows: response.rows.map((row) => ({
       balance: fromApiValue(row["balance"]) as bigint,
       amount: fromApiValue(row["amount"]) as GqlDecimal,
@@ -136,7 +136,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
     const encodedParams: Record<string, ApiValue> = {};
     encodedParams["amount"] = toApiValue(params["amount"], "Decimal");
     encodedParams["at"] = toApiValue(params["at"], "DateTime");
-    const response = await this.executePreparedMutation("record-metrics", encodedParams, clientMutationKey);
+    const response = await this.preparedMutate("record-metrics", encodedParams, clientMutationKey);
     return response;
   }
 }

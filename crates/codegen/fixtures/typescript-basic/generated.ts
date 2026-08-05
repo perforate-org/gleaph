@@ -38,7 +38,7 @@ export class PreparedGleaphClient extends GleaphClientWrapper implements Prepare
   async findUsers(params: FindUsersParams): Promise<PreparedResponse<FindUsersRow>> {
     const encodedParams: Record<string, ApiValue> = {};
     encodedParams["term"] = toApiValue(params["term"], "Text");
-    const response = await this.executePrepared("find-users", encodedParams);
+    const response = await this.preparedQuery("find-users", encodedParams);
     return { ...response, rows: response.rows.map((row) => ({
       user_name: fromApiValue(row["user_name"]) as string,
     })) };
