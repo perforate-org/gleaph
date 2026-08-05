@@ -1,13 +1,13 @@
 //! Router-facing wire types, the query response envelope, read freshness contracts, and the
 //! typed-binding helpers used by `gleaph-codegen` output.
 
-use candid::{CandidType, Deserialize};
-use gleaph_gql_value::types::{Decimal, Int256, Uint256};
+use candid::{CandidType, Deserialize, Principal};
 
 /// Principal extension used when projecting IC wire values into logical GQL values.
 pub use gleaph_gql_ic_wire::GqlPrincipal;
 /// Decode error for the Router rows blob.
 pub use gleaph_gql_ic_wire::GqlWireDecodeError;
+use gleaph_gql_ic_wire::GqlWirePathElement;
 /// One row in the wire rows blob.
 pub use gleaph_gql_ic_wire::GqlWireRow;
 /// Materialized rows returned in a Router response blob.
@@ -25,6 +25,31 @@ pub use gleaph_gql_params::GqlValue;
 /// Path element ids are fixed-length opaque bytes on the Router wire (vertex 8 bytes,
 /// edge 12 bytes; ADR 0005), enforced by [`VertexPathElementId`] / [`EdgePathElementId`].
 pub use gleaph_gql_params::{EdgePathElementId, PathElement, VertexPathElementId};
+
+/// Upstream binary256 value used by generated canister bindings; serde is unavailable upstream,
+/// so params use the raw primitive and rows decode through [`Float256`].
+pub use f256::f256 as GqlFloat256;
+/// Binary128 row binding carrying the canonical little-endian wire form.
+#[cfg(feature = "nightly-f128")]
+pub use gleaph_gql_ic_wire::Float128;
+/// Binary256 row binding carrying the canonical little-endian wire form.
+pub use gleaph_gql_ic_wire::Float256;
+/// Decimal row binding used by generated canister bindings.
+///
+/// Serde and Candid use the textual form; the Router wire form is the packed 16-byte form
+/// ([`GqlWireValue::Decimal`]).
+pub use gleaph_gql_ic_wire::GqlDecimal;
+/// Half-precision float row binding used by generated canister bindings.
+///
+/// Serde and Candid use the raw `u16` bit pattern ([`GqlWireValue::Float16`]).
+pub use gleaph_gql_ic_wire::GqlFloat16;
+/// Signed 256-bit integer row binding used by generated canister bindings.
+///
+/// Serde and Candid use the decimal textual form; the Router wire form is 32 little-endian
+/// bytes ([`GqlWireValue::Int256`]).
+pub use gleaph_gql_ic_wire::GqlInt256;
+/// Unsigned 256-bit integer row binding used by generated canister bindings.
+pub use gleaph_gql_ic_wire::GqlUint256;
 
 /// Ordered GQL record representation.
 ///
@@ -99,8 +124,8 @@ impl GqlQueryResult {
 
     /// Decode materialized rows into any serde-deserializable row type.
     ///
-    /// This is the path used by `gleaph-codegen`'s `PreparedExt` operations: each wire row is
-    /// projected to JSON (see [`gql_value_to_json`]) and deserialized with the row type's
+    /// This is the path used by `gleaph-codegen`'s `PreparedExt` operations: each wire value is
+    /// projected to JSON (see [`gql_wire_value_to_json`]) and deserialized with the row type's
     /// serde derives and renames.
     pub fn decode_serde_rows<Row>(&self) -> Result<Option<Vec<Row>>, GqlWireDecodeError>
     where
@@ -111,10 +136,9 @@ impl GqlQueryResult {
                 rows.rows
                     .into_iter()
                     .map(|row| {
-                        let row = row.try_into_gql_row()?;
                         let mut object = serde_json::Map::new();
-                        for (name, value) in row {
-                            object.insert(name, gql_value_to_json(value)?);
+                        for (name, value) in row.columns {
+                            object.insert(name, gql_wire_value_to_json(value)?);
                         }
                         serde_json::from_value(serde_json::Value::Object(object))
                             .map_err(|error| GqlWireDecodeError::Json(error.to_string()))
@@ -175,303 +199,6 @@ pub fn take_gql_row_field(row: &mut GqlRow, name: &str) -> Result<GqlValue, GqlW
         .ok_or_else(|| GqlWireDecodeError::MissingField(name.to_string()))
 }
 
-/// Rust signed binary256 integer used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GqlInt256(Int256);
-
-impl GqlInt256 {
-    /// Construct from the shared GQL integer wrapper.
-    pub const fn from_inner(value: Int256) -> Self {
-        Self(value)
-    }
-
-    /// Return the shared GQL integer wrapper.
-    pub const fn into_inner(self) -> Int256 {
-        self.0
-    }
-}
-
-impl core::fmt::Display for GqlInt256 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl core::str::FromStr for GqlInt256 {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value
-            .parse::<Int256>()
-            .map(Self::from_inner)
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl serde::Serialize for GqlInt256 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlInt256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Rust unsigned binary256 integer used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GqlUint256(Uint256);
-
-impl GqlUint256 {
-    /// Construct from the shared GQL integer wrapper.
-    pub const fn from_inner(value: Uint256) -> Self {
-        Self(value)
-    }
-
-    /// Return the shared GQL integer wrapper.
-    pub const fn into_inner(self) -> Uint256 {
-        self.0
-    }
-}
-
-impl core::fmt::Display for GqlUint256 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl core::str::FromStr for GqlUint256 {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value
-            .parse::<Uint256>()
-            .map(Self::from_inner)
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl serde::Serialize for GqlUint256 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlUint256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Rust decimal value used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GqlDecimal(Decimal);
-
-impl GqlDecimal {
-    /// Construct from the shared GQL decimal wrapper.
-    pub const fn from_inner(value: Decimal) -> Self {
-        Self(value)
-    }
-
-    /// Return the shared GQL decimal wrapper.
-    pub const fn into_inner(self) -> Decimal {
-        self.0
-    }
-}
-
-impl core::fmt::Display for GqlDecimal {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl core::str::FromStr for GqlDecimal {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Decimal::parse(value)
-            .map(Self::from_inner)
-            .ok_or_else(|| format!("invalid GQL decimal {value:?}"))
-    }
-}
-
-impl serde::Serialize for GqlDecimal {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlDecimal {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Rust binary16 value used by generated canister bindings.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GqlFloat16(half::f16);
-
-impl GqlFloat16 {
-    /// Construct from the IEEE 754 binary16 bit pattern.
-    pub const fn from_bits(bits: u16) -> Self {
-        Self(half::f16::from_bits(bits))
-    }
-
-    /// Return the IEEE 754 binary16 bit pattern.
-    pub const fn to_bits(self) -> u16 {
-        self.0.to_bits()
-    }
-
-    /// Return the upstream half-precision value.
-    pub const fn into_inner(self) -> half::f16 {
-        self.0
-    }
-}
-
-impl serde::Serialize for GqlFloat16 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u16(self.to_bits())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlFloat16 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(Self::from_bits(u16::deserialize(deserializer)?))
-    }
-}
-
-/// Rust binary128 value used by generated canister bindings.
-#[cfg(feature = "nightly-f128")]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GqlFloat128(f128);
-
-#[cfg(feature = "nightly-f128")]
-impl GqlFloat128 {
-    /// Construct a logical GQL float128 from the primitive value.
-    pub const fn from_inner(value: f128) -> Self {
-        Self(value)
-    }
-
-    /// Return the primitive value.
-    pub const fn into_inner(self) -> f128 {
-        self.0
-    }
-
-    /// Construct from the canonical little-endian wire representation.
-    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
-        Self(f128::from_bits(u128::from_le_bytes(bytes)))
-    }
-
-    /// Return the canonical little-endian wire representation.
-    pub const fn to_le_bytes(self) -> [u8; 16] {
-        self.0.to_bits().to_le_bytes()
-    }
-}
-
-#[cfg(feature = "nightly-f128")]
-impl serde::Serialize for GqlFloat128 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bytes(&self.to_le_bytes())
-    }
-}
-
-#[cfg(feature = "nightly-f128")]
-impl<'de> serde::Deserialize<'de> for GqlFloat128 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        let bytes: [u8; 16] = bytes
-            .try_into()
-            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"16 bytes"))?;
-        Ok(Self::from_le_bytes(bytes))
-    }
-}
-
-/// Rust binary256 value used by generated canister bindings.
-///
-/// The Serde representation is exactly 32 little-endian bytes. The wrapper is necessary because
-/// the upstream `f256` type intentionally does not provide Serde implementations.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GqlFloat256(f256::f256);
-
-impl GqlFloat256 {
-    /// Construct a logical GQL float256 from the upstream numeric value.
-    pub const fn from_inner(value: f256::f256) -> Self {
-        Self(value)
-    }
-
-    /// Return the upstream numeric value.
-    pub const fn into_inner(self) -> f256::f256 {
-        self.0
-    }
-
-    /// Construct from the canonical little-endian wire representation.
-    pub const fn from_le_bytes(bytes: [u8; 32]) -> Self {
-        Self(f256::f256::from_le_bytes(bytes))
-    }
-
-    /// Return the canonical little-endian wire representation.
-    pub const fn to_le_bytes(self) -> [u8; 32] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl serde::Serialize for GqlFloat256 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bytes(&self.to_le_bytes())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GqlFloat256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        let bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"32 bytes"))?;
-        Ok(Self::from_le_bytes(bytes))
-    }
-}
-
 /// Project a logical GQL value into the JSON representation used by generated open records.
 // The workspace can unify `gleaph-gql-value/f128` through another dependent crate (e.g.
 // `gleaph-gql` default features) even when this SDK's `nightly-f128` feature is disabled, while a
@@ -488,23 +215,22 @@ pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDe
         GqlValue::Int16(value) => serde_json::json!(value),
         GqlValue::Int32(value) => serde_json::json!(value),
         GqlValue::Int64(value) => serde_json::json!(value),
-        GqlValue::Int128(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Int128(value) => serde_json::json!(value),
         GqlValue::Int256(value) => serde_json::Value::String(value.to_string()),
         GqlValue::Uint8(value) => serde_json::json!(value),
         GqlValue::Uint16(value) => serde_json::json!(value),
         GqlValue::Uint32(value) => serde_json::json!(value),
         GqlValue::Uint64(value) => serde_json::json!(value),
-        GqlValue::Uint128(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Uint128(value) => serde_json::json!(value),
         GqlValue::Uint256(value) => serde_json::Value::String(value.to_string()),
-        GqlValue::Float16(value) => serde_json::json!(value.to_f32()),
+        GqlValue::Float16(value) => serde_json::json!(value.to_bits()),
         GqlValue::Float32(value) => serde_json::to_value(value)
             .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
         GqlValue::Float64(value) => serde_json::to_value(value)
             .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
         #[cfg(feature = "nightly-f128")]
-        GqlValue::Float128(value) => serde_json::to_value(GqlFloat128::from_inner(value))
-            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
-        GqlValue::Float256(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Float128(value) => serde_json::json!(value.to_bits().to_le_bytes().to_vec()),
+        GqlValue::Float256(value) => serde_json::json!(value.to_le_bytes().to_vec()),
         GqlValue::Decimal(value) => serde_json::Value::String(value.to_string()),
         GqlValue::Text(value) => serde_json::Value::String(value),
         GqlValue::Bytes(value) => serde_json::Value::Array(
@@ -572,7 +298,7 @@ pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDe
     Ok(json)
 }
 
-/// Project a logical GQL record into the generated open-record map shape.
+/// Project one logical GQL record into the generated open-record map shape.
 pub fn gql_record_to_json_map(
     value: GqlValue,
 ) -> Result<std::collections::BTreeMap<String, serde_json::Value>, GqlWireDecodeError> {
@@ -591,9 +317,122 @@ pub fn gql_record_to_json_map(
     }
 }
 
-/// Wrap an IC Principal extension as a logical GQL value.
-pub fn gql_principal_value(principal: GqlPrincipal) -> GqlValue {
-    GqlValue::Extension(Box::new(principal))
+/// Project one wire value into the JSON representation used by generated row types.
+///
+/// The projection mirrors the wire representations exactly (big integers and decimals as decimal
+/// strings, floats as bit patterns or little-endian bytes, principals as text), so generated row
+/// fields deserialize without lossy conversion. It is the row-decode counterpart of
+/// [`gql_value_to_json`], which projects the logical value model instead.
+pub fn gql_wire_value_to_json(
+    value: GqlWireValue,
+) -> Result<serde_json::Value, GqlWireDecodeError> {
+    let json = match value {
+        GqlWireValue::Null => serde_json::Value::Null,
+        GqlWireValue::Bool(value) => serde_json::Value::Bool(value),
+        GqlWireValue::Int8(value) => serde_json::json!(value),
+        GqlWireValue::Int16(value) => serde_json::json!(value),
+        GqlWireValue::Int32(value) => serde_json::json!(value),
+        GqlWireValue::Int64(value) => serde_json::json!(value),
+        GqlWireValue::Int128(value) => serde_json::json!(value),
+        GqlWireValue::Int256(value) => {
+            let bytes = <[u8; 32]>::try_from(value.as_slice())
+                .map_err(|_| GqlWireDecodeError::InvalidNumeric("Int256"))?;
+            serde_json::Value::String(ethnum::I256::from_le_bytes(bytes).to_string())
+        }
+        GqlWireValue::Uint8(value) => serde_json::json!(value),
+        GqlWireValue::Uint16(value) => serde_json::json!(value),
+        GqlWireValue::Uint32(value) => serde_json::json!(value),
+        GqlWireValue::Uint64(value) => serde_json::json!(value),
+        GqlWireValue::Uint128(value) => serde_json::json!(value),
+        GqlWireValue::Uint256(value) => {
+            let bytes = <[u8; 32]>::try_from(value.as_slice())
+                .map_err(|_| GqlWireDecodeError::InvalidNumeric("Uint256"))?;
+            serde_json::Value::String(ethnum::U256::from_le_bytes(bytes).to_string())
+        }
+        GqlWireValue::Float16(value) => serde_json::json!(value),
+        GqlWireValue::Float32(value) => serde_json::to_value(value)
+            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
+        GqlWireValue::Float64(value) => serde_json::to_value(value)
+            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
+        GqlWireValue::Float128(value) => serde_json::json!(value),
+        GqlWireValue::Float256(value) => serde_json::json!(value),
+        GqlWireValue::Decimal(value) => {
+            let bytes = <[u8; 16]>::try_from(value.as_slice())
+                .map_err(|_| GqlWireDecodeError::InvalidNumeric("Decimal"))?;
+            serde_json::Value::String(rust_decimal::Decimal::deserialize(bytes).to_string())
+        }
+        GqlWireValue::Text(value) => serde_json::Value::String(value),
+        GqlWireValue::Bytes(value) => serde_json::Value::Array(
+            value
+                .into_iter()
+                .map(|value| serde_json::json!(value))
+                .collect(),
+        ),
+        GqlWireValue::Date(value) => serde_json::json!(value),
+        GqlWireValue::Time(value) => serde_json::json!(value),
+        GqlWireValue::LocalTime(value) => serde_json::json!(value),
+        GqlWireValue::DateTime { seconds, nanos } => {
+            serde_json::json!({ "seconds": seconds, "nanos": nanos })
+        }
+        GqlWireValue::LocalDateTime { seconds, nanos } => {
+            serde_json::json!({ "seconds": seconds, "nanos": nanos })
+        }
+        GqlWireValue::ZonedDateTime {
+            seconds,
+            nanos,
+            offset_seconds,
+        } => serde_json::json!({
+            "seconds": seconds,
+            "nanos": nanos,
+            "offset_seconds": offset_seconds
+        }),
+        GqlWireValue::ZonedTime {
+            nanos,
+            offset_seconds,
+        } => serde_json::json!({ "nanos": nanos, "offset_seconds": offset_seconds }),
+        GqlWireValue::Duration { months, nanos } => {
+            serde_json::json!({ "months": months, "nanos": nanos })
+        }
+        GqlWireValue::Principal(bytes) => {
+            let principal = Principal::try_from_slice(&bytes)
+                .map_err(|_| GqlWireDecodeError::InvalidNumeric("Principal"))?;
+            serde_json::Value::String(principal.to_text())
+        }
+        GqlWireValue::ExtensionLeaf { .. } => {
+            return Err(GqlWireDecodeError::UnsupportedValue("ExtensionLeaf"));
+        }
+        GqlWireValue::ValueBinary(bytes) => {
+            let value = GqlValue::from_binary_bytes(&bytes)
+                .map_err(|_| GqlWireDecodeError::UnsupportedValue("ValueBinary"))?;
+            return gql_value_to_json(value);
+        }
+        GqlWireValue::List(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(gql_wire_value_to_json)
+                .collect::<Result<_, _>>()?,
+        ),
+        GqlWireValue::Path(elements) => serde_json::Value::Array(
+            elements
+                .into_iter()
+                .map(|element| match element {
+                    GqlWirePathElement::Vertex(id) => serde_json::json!({ "Vertex": id }),
+                    GqlWirePathElement::Edge(id) => serde_json::json!({ "Edge": id }),
+                })
+                .collect(),
+        ),
+        GqlWireValue::Record(fields) => {
+            let mut object = serde_json::Map::new();
+            for (name, value) in fields {
+                if object.contains_key(&name) {
+                    return Err(GqlWireDecodeError::DuplicateField(name));
+                }
+                object.insert(name, gql_wire_value_to_json(value)?);
+            }
+            serde_json::Value::Object(object)
+        }
+    };
+    Ok(json)
 }
 
 /// Extract an IC Principal extension from a logical GQL value.

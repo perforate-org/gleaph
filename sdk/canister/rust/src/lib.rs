@@ -31,20 +31,20 @@ pub use types::{
     AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
     BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
-    EdgePathElementId, FromGqlRow, GqlDecimal, GqlFloat16, GqlFloat256, GqlInt256, GqlPrincipal,
-    GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError, GqlWireRow,
-    GqlWireRows, GqlWireValue, MutationLifecyclePhase, MutationToken, MutationTokenShard,
-    PathElement, ReadMode, RouterError, VectorActivationBlockReason, VertexPathElementId,
-    gql_principal_from_value, gql_principal_value, gql_record_to_json_map, gql_value_to_json,
-    take_gql_row_field,
+    EdgePathElementId, Float256, FromGqlRow, GqlDecimal, GqlFloat16, GqlFloat256, GqlInt256,
+    GqlPrincipal, GqlQueryResult, GqlRecord, GqlRow, GqlUint256, GqlValue, GqlWireDecodeError,
+    GqlWireRow, GqlWireRows, GqlWireValue, MutationLifecyclePhase, MutationToken,
+    MutationTokenShard, PathElement, ReadMode, RouterError, VectorActivationBlockReason,
+    VertexPathElementId, gql_principal_from_value, gql_record_to_json_map, gql_value_to_json,
+    gql_wire_value_to_json, take_gql_row_field,
 };
+
+/// Binary128 row binding carrying the canonical little-endian wire form.
+#[cfg(feature = "nightly-f128")]
+pub use types::Float128;
 
 /// Prepared-operation wire types shared with the Router.
 pub use gleaph_prepared_api::{PreparedManifest, PreparedOperation, PreparedSortSpec};
-
-/// Rust binary128 value used by generated canister bindings.
-#[cfg(feature = "nightly-f128")]
-pub use types::GqlFloat128;
 
 /// Marker for a client without generated prepared operations.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -650,85 +650,124 @@ mod tests {
         );
     }
 
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct StableFloatSerdeFixture {
-        float256: GqlFloat256,
-        #[cfg(feature = "nightly-f128")]
-        float128: GqlFloat128,
-    }
-
     #[test]
-    fn shared_wide_float_types_support_serde_derives() {
-        fn assert_serde<T: serde::Serialize + for<'de> serde::Deserialize<'de>>() {}
-
-        assert_serde::<StableFloatSerdeFixture>();
-    }
-
-    #[test]
-    fn float256_serde_uses_exact_little_endian_bytes() {
-        let bytes = [0xabu8; 32];
-        let value = GqlFloat256::from_le_bytes(bytes);
-        let encoded = serde_json::to_vec(&value).expect("serialize float256");
-        let decoded: GqlFloat256 = serde_json::from_slice(&encoded).expect("deserialize float256");
-        assert_eq!(decoded.to_le_bytes(), bytes);
-    }
-
-    #[test]
-    fn float16_serde_uses_exact_bit_pattern() {
-        let value = GqlFloat16::from_bits(0x3c00);
-        let encoded = serde_json::to_vec(&value).expect("serialize float16");
-        let decoded: GqlFloat16 = serde_json::from_slice(&encoded).expect("deserialize float16");
-        assert_eq!(decoded.to_bits(), 0x3c00);
-    }
-
-    #[test]
-    fn exact_integer_and_decimal_wrappers_round_trip_through_serde() {
-        let int256: GqlInt256 = "-123456789012345678901234567890".parse().unwrap();
-        let uint256: GqlUint256 = "123456789012345678901234567890".parse().unwrap();
-        let decimal: GqlDecimal = "123.4500".parse().unwrap();
-
-        let int256_json = serde_json::to_string(&int256).unwrap();
-        let uint256_json = serde_json::to_string(&uint256).unwrap();
-        let decimal_json = serde_json::to_string(&decimal).unwrap();
-
+    fn value_bindings_build_logical_values_from_real_types() {
         assert_eq!(
-            serde_json::from_str::<GqlInt256>(&int256_json).unwrap(),
-            int256
+            GqlValue::from(GqlFloat16::from(half::f16::from_bits(0x3c00)).into_inner()),
+            GqlValue::Float16(half::f16::from_bits(0x3c00))
         );
-        assert_eq!(
-            serde_json::from_str::<GqlUint256>(&uint256_json).unwrap(),
-            uint256
-        );
-        assert_eq!(
-            serde_json::from_str::<GqlDecimal>(&decimal_json).unwrap(),
-            decimal
-        );
-        assert_eq!(int256.to_string(), "-123456789012345678901234567890");
-        assert_eq!(uint256.to_string(), "123456789012345678901234567890");
-        assert_eq!(decimal.to_string(), "123.4500");
-    }
-
-    #[test]
-    fn principal_value_uses_the_shared_extension() {
-        let principal = GqlPrincipal::from_inner(Principal::anonymous());
         assert!(matches!(
-            gql_principal_value(principal),
-            GqlValue::Extension(_)
+            GqlValue::from(GqlInt256::from(ethnum::I256::from(-7)).into_inner()),
+            GqlValue::Int256(_)
         ));
-        let encoded = serde_json::to_string(&principal).unwrap();
-        assert_eq!(
-            serde_json::from_str::<GqlPrincipal>(&encoded).unwrap(),
-            principal
-        );
+        assert!(matches!(
+            GqlValue::from(GqlUint256::from(ethnum::U256::from(7u64)).into_inner()),
+            GqlValue::Uint256(_)
+        ));
+        assert!(matches!(
+            GqlValue::from(
+                GqlDecimal::from("123.4500".parse::<rust_decimal::Decimal>().unwrap()).into_inner()
+            ),
+            GqlValue::Decimal(_)
+        ));
+        assert!(matches!(
+            GqlValue::from(f256::f256::from(1.25_f64)),
+            GqlValue::Float256(_)
+        ));
     }
 
-    #[cfg(feature = "nightly-f128")]
     #[test]
-    fn float128_serde_uses_exact_little_endian_bytes() {
-        let bytes = [0xabu8; 16];
-        let value = GqlFloat128::from_le_bytes(bytes);
-        let encoded = serde_json::to_vec(&value).expect("serialize float128");
-        let decoded: GqlFloat128 = serde_json::from_slice(&encoded).expect("deserialize float128");
-        assert_eq!(decoded.to_le_bytes(), bytes);
+    fn row_binding_wrappers_round_trip_serde_and_candid() {
+        let value = GqlInt256::from(ethnum::I256::from(-42));
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(json, "\"-42\"");
+        assert_eq!(serde_json::from_str::<GqlInt256>(&json).unwrap(), value);
+
+        let value = GqlDecimal::from("1.25".parse::<rust_decimal::Decimal>().unwrap());
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(serde_json::from_str::<GqlDecimal>(&json).unwrap(), value);
+
+        let value = GqlFloat16::from(half::f16::from_bits(0x3c00));
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(json, "15360");
+        assert_eq!(serde_json::from_str::<GqlFloat16>(&json).unwrap(), value);
+
+        let bytes = [0xabu8; 32];
+        let value = Float256::from_le_bytes(bytes);
+        let encoded = candid::encode_one(value).unwrap();
+        assert_eq!(candid::decode_one::<Float256>(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn principal_value_wraps_the_shared_extension() {
+        let anonymous = Principal::anonymous();
+        let value = GqlValue::Extension(Box::new(GqlPrincipal::from_inner(anonymous)));
+        let parsed = gql_principal_from_value(value).expect("parse principal extension");
+        assert_eq!(parsed.into_inner(), anonymous);
+    }
+
+    #[test]
+    fn wire_value_projection_matches_generated_row_shapes() {
+        let rows = GqlWireRows {
+            rows: vec![GqlWireRow {
+                columns: vec![
+                    ("name".into(), GqlWireValue::Text("Ada".into())),
+                    (
+                        "big".into(),
+                        GqlWireValue::Int256(ethnum::I256::from(42).to_le_bytes().to_vec()),
+                    ),
+                    ("wide".into(), GqlWireValue::Int128(i128::from(i64::MAX))),
+                    (
+                        "price".into(),
+                        GqlWireValue::Decimal(
+                            "123.45"
+                                .parse::<rust_decimal::Decimal>()
+                                .unwrap()
+                                .serialize()
+                                .to_vec(),
+                        ),
+                    ),
+                    ("bits".into(), GqlWireValue::Float16(0x3c00)),
+                    ("raw".into(), GqlWireValue::Float256(vec![0xabu8; 32])),
+                    ("data".into(), GqlWireValue::Bytes(vec![1, 2, 3])),
+                    (
+                        "owner".into(),
+                        GqlWireValue::Principal(Principal::anonymous().as_slice().to_vec()),
+                    ),
+                ],
+            }],
+        };
+
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct WireRow {
+            name: String,
+            big: GqlInt256,
+            wide: i128,
+            price: GqlDecimal,
+            bits: GqlFloat16,
+            raw: Float256,
+            data: Vec<u8>,
+            owner: Principal,
+        }
+
+        let response = GqlQueryResult {
+            row_count: 1,
+            rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
+            phase: None,
+            token: None,
+        };
+        assert_eq!(
+            response.decode_serde_rows::<WireRow>().unwrap(),
+            Some(vec![WireRow {
+                name: "Ada".into(),
+                big: GqlInt256::from(ethnum::I256::from(42)),
+                wide: i128::from(i64::MAX),
+                price: GqlDecimal::from("123.45".parse::<rust_decimal::Decimal>().unwrap()),
+                bits: GqlFloat16::from(half::f16::from_bits(0x3c00)),
+                raw: Float256::from_le_bytes([0xabu8; 32]),
+                data: vec![1, 2, 3],
+                owner: Principal::anonymous(),
+            }])
+        );
     }
 }
