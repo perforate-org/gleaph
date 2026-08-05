@@ -19,8 +19,7 @@
 //! without needing a live Router.
 
 import { Temporal } from "@js-temporal/polyfill";
-import { Principal } from "@icp-sdk/core/principal";
-import { createIcGraphClient, GqlDecimal, GqlFloat128, GqlFloat16, toApiValue } from "@gleaph/sdk";
+import { createIcGraphClient, GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
 import { withPreparedQueries } from "../generated.ts";
 
 const graph = await createIcGraphClient({
