@@ -24,6 +24,11 @@ pub enum GqlWirePathElement {
 }
 
 /// A scalar or composite value in the Candid GQL result wire format.
+///
+/// Exotic scalar values use opaque byte representations (big integers and decimals as
+/// little-endian packed bytes, floats as bit patterns or little-endian bytes) so the wire
+/// format stays independent of upstream numeric crates. Construct values through the
+/// [`From`] impls for the upstream types where one exists.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
 pub enum GqlWireValue {
     Null,
@@ -33,19 +38,19 @@ pub enum GqlWireValue {
     Int32(i32),
     Int64(i64),
     Int128(i128),
-    Int256(String),
+    Int256(Vec<u8>),
     Uint8(u8),
     Uint16(u16),
     Uint32(u32),
     Uint64(u64),
     Uint128(u128),
-    Uint256(String),
+    Uint256(Vec<u8>),
     Float16(u16),
     Float32(f32),
     Float64(f64),
     Float128(Vec<u8>),
     Float256(Vec<u8>),
-    Decimal(String),
+    Decimal(Vec<u8>),
     Text(String),
     Bytes(Vec<u8>),
     Date(i32),
@@ -164,6 +169,424 @@ pub struct GqlWireRows {
     pub rows: Vec<GqlWireRow>,
 }
 
+/// Rust binary128 value used by generated canister bindings.
+///
+/// The serde representation is the canonical little-endian 16-byte wire form; the upstream
+/// `f128` primitive has no serde support, so this wrapper carries it for row decoding.
+#[cfg(feature = "nightly-f128")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Float128(f128);
+
+#[cfg(feature = "nightly-f128")]
+impl Float128 {
+    /// Construct from the canonical little-endian wire representation.
+    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
+        Self(f128::from_bits(u128::from_le_bytes(bytes)))
+    }
+
+    /// Return the canonical little-endian wire representation.
+    pub const fn to_le_bytes(self) -> [u8; 16] {
+        self.0.to_bits().to_le_bytes()
+    }
+
+    /// Return the upstream primitive value.
+    pub const fn into_inner(self) -> f128 {
+        self.0
+    }
+}
+
+#[cfg(feature = "nightly-f128")]
+impl Serialize for Float128 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.to_le_bytes())
+    }
+}
+
+#[cfg(feature = "nightly-f128")]
+impl<'de> Deserialize<'de> for Float128 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"16 bytes"))?;
+        Ok(Self::from_le_bytes(bytes))
+    }
+}
+
+/// Rust binary256 value used by generated canister bindings.
+///
+/// The serde representation is the canonical little-endian 32-byte wire form; the upstream
+/// `f256` type intentionally provides no serde support, so this wrapper carries it for row
+/// decoding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Float256(f256::f256);
+
+impl Float256 {
+    /// Construct from the canonical little-endian wire representation.
+    pub const fn from_le_bytes(bytes: [u8; 32]) -> Self {
+        Self(f256::f256::from_le_bytes(bytes))
+    }
+
+    /// Return the canonical little-endian wire representation.
+    pub const fn to_le_bytes(self) -> [u8; 32] {
+        self.0.to_le_bytes()
+    }
+
+    /// Return the upstream numeric value.
+    pub const fn into_inner(self) -> f256::f256 {
+        self.0
+    }
+}
+
+impl Serialize for Float256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.to_le_bytes())
+    }
+}
+
+impl<'de> Deserialize<'de> for Float256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"32 bytes"))?;
+        Ok(Self::from_le_bytes(bytes))
+    }
+}
+
+#[cfg(feature = "nightly-f128")]
+impl CandidType for Float128 {
+    fn _ty() -> candid::types::Type {
+        candid::types::Type::from(candid::types::TypeInner::Vec(
+            candid::types::TypeInner::Nat8.into(),
+        ))
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_blob(&self.to_le_bytes())
+    }
+}
+
+impl CandidType for Float256 {
+    fn _ty() -> candid::types::Type {
+        candid::types::Type::from(candid::types::TypeInner::Vec(
+            candid::types::TypeInner::Nat8.into(),
+        ))
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_blob(&self.to_le_bytes())
+    }
+}
+
+/// Signed 256-bit integer row binding used by generated canister bindings.
+///
+/// Serde and Candid both use the decimal textual form (matching the JSON row projection); the
+/// Router wire form is 32 little-endian bytes ([`GqlWireValue::Int256`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GqlInt256(I256);
+
+impl GqlInt256 {
+    /// Wrap an upstream 256-bit signed integer.
+    pub const fn from_inner(value: I256) -> Self {
+        Self(value)
+    }
+
+    /// Return the wrapped upstream 256-bit signed integer.
+    pub const fn into_inner(self) -> I256 {
+        self.0
+    }
+}
+
+impl From<I256> for GqlInt256 {
+    fn from(value: I256) -> Self {
+        Self(value)
+    }
+}
+
+impl From<GqlInt256> for I256 {
+    fn from(value: GqlInt256) -> Self {
+        value.0
+    }
+}
+
+impl Serialize for GqlInt256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ethnum::serde::decimal::serialize(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GqlInt256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        ethnum::serde::decimal::deserialize(deserializer).map(Self)
+    }
+}
+
+impl CandidType for GqlInt256 {
+    fn _ty() -> candid::types::Type {
+        candid::types::TypeInner::Text.into()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_text(&self.0.to_string())
+    }
+}
+
+/// Unsigned 256-bit integer row binding used by generated canister bindings.
+///
+/// Serde and Candid both use the decimal textual form (matching the JSON row projection); the
+/// Router wire form is 32 little-endian bytes ([`GqlWireValue::Uint256`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GqlUint256(U256);
+
+impl GqlUint256 {
+    /// Wrap an upstream 256-bit unsigned integer.
+    pub const fn from_inner(value: U256) -> Self {
+        Self(value)
+    }
+
+    /// Return the wrapped upstream 256-bit unsigned integer.
+    pub const fn into_inner(self) -> U256 {
+        self.0
+    }
+}
+
+impl From<U256> for GqlUint256 {
+    fn from(value: U256) -> Self {
+        Self(value)
+    }
+}
+
+impl From<GqlUint256> for U256 {
+    fn from(value: GqlUint256) -> Self {
+        value.0
+    }
+}
+
+impl Serialize for GqlUint256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ethnum::serde::decimal::serialize(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GqlUint256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        ethnum::serde::decimal::deserialize(deserializer).map(Self)
+    }
+}
+
+impl CandidType for GqlUint256 {
+    fn _ty() -> candid::types::Type {
+        candid::types::TypeInner::Text.into()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_text(&self.0.to_string())
+    }
+}
+
+/// Decimal row binding used by generated canister bindings.
+///
+/// Serde and Candid both use the textual form (matching the JSON row projection); the Router
+/// wire form is the packed 16-byte form ([`GqlWireValue::Decimal`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GqlDecimal(rust_decimal::Decimal);
+
+impl GqlDecimal {
+    /// Wrap an upstream decimal value.
+    pub const fn from_inner(value: rust_decimal::Decimal) -> Self {
+        Self(value)
+    }
+
+    /// Return the wrapped upstream decimal value.
+    pub const fn into_inner(self) -> rust_decimal::Decimal {
+        self.0
+    }
+}
+
+impl From<rust_decimal::Decimal> for GqlDecimal {
+    fn from(value: rust_decimal::Decimal) -> Self {
+        Self(value)
+    }
+}
+
+impl From<GqlDecimal> for rust_decimal::Decimal {
+    fn from(value: GqlDecimal) -> Self {
+        value.0
+    }
+}
+
+impl Serialize for GqlDecimal {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serde::Serialize::serialize(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GqlDecimal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <rust_decimal::Decimal as serde::Deserialize>::deserialize(deserializer).map(Self)
+    }
+}
+
+impl CandidType for GqlDecimal {
+    fn _ty() -> candid::types::Type {
+        candid::types::TypeInner::Text.into()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_text(&self.0.to_string())
+    }
+}
+
+/// Half-precision float row binding used by generated canister bindings.
+///
+/// Serde and Candid both use the raw `u16` bit pattern (matching the JSON row projection and
+/// [`GqlWireValue::Float16`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GqlFloat16(half::f16);
+
+impl GqlFloat16 {
+    /// Wrap an upstream half-precision float.
+    pub const fn from_inner(value: half::f16) -> Self {
+        Self(value)
+    }
+
+    /// Return the wrapped upstream half-precision float.
+    pub const fn into_inner(self) -> half::f16 {
+        self.0
+    }
+}
+
+impl From<half::f16> for GqlFloat16 {
+    fn from(value: half::f16) -> Self {
+        Self(value)
+    }
+}
+
+impl From<GqlFloat16> for half::f16 {
+    fn from(value: GqlFloat16) -> Self {
+        value.0
+    }
+}
+
+impl From<GqlInt256> for Value {
+    fn from(value: GqlInt256) -> Self {
+        Value::Int256(gleaph_gql::types::Int256(value.0))
+    }
+}
+
+impl From<GqlUint256> for Value {
+    fn from(value: GqlUint256) -> Self {
+        Value::Uint256(gleaph_gql::types::Uint256(value.0))
+    }
+}
+
+impl From<GqlDecimal> for Value {
+    fn from(value: GqlDecimal) -> Self {
+        Value::Decimal(gleaph_gql::types::Decimal(value.0))
+    }
+}
+
+impl From<GqlFloat16> for Value {
+    fn from(value: GqlFloat16) -> Self {
+        Value::Float16(value.0)
+    }
+}
+
+impl Serialize for GqlFloat16 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GqlFloat16 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        half::f16::deserialize(deserializer).map(Self)
+    }
+}
+
+impl CandidType for GqlFloat16 {
+    fn _ty() -> candid::types::Type {
+        candid::types::TypeInner::Nat16.into()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_nat16(self.0.to_bits())
+    }
+}
+
+/// Decode the canonical little-endian 32-byte form of a signed 256-bit integer.
+fn i256_from_le_bytes(bytes: &[u8]) -> Option<I256> {
+    let bytes: [u8; 32] = bytes.try_into().ok()?;
+    Some(I256::from_le_bytes(bytes))
+}
+
+/// Decode the canonical little-endian 32-byte form of an unsigned 256-bit integer.
+fn u256_from_le_bytes(bytes: &[u8]) -> Option<U256> {
+    let bytes: [u8; 32] = bytes.try_into().ok()?;
+    Some(U256::from_le_bytes(bytes))
+}
+
+/// Decode the canonical little-endian 16-byte packed form of a decimal.
+fn decimal_from_le_bytes(bytes: &[u8]) -> Option<rust_decimal::Decimal> {
+    let bytes: [u8; 16] = bytes.try_into().ok()?;
+    Some(rust_decimal::Decimal::deserialize(bytes))
+}
+
 /// Error while decoding the Router rows blob.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum GqlWireDecodeError {
@@ -212,9 +635,7 @@ impl GqlWireValue {
             Self::Int64(value) => Value::Int64(value),
             Self::Int128(value) => Value::Int128(value),
             Self::Int256(value) => Value::Int256(gleaph_gql::types::Int256(
-                value
-                    .parse::<I256>()
-                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Int256"))?,
+                i256_from_le_bytes(&value).ok_or(GqlWireDecodeError::InvalidNumeric("Int256"))?,
             )),
             Self::Uint8(value) => Value::Uint8(value),
             Self::Uint16(value) => Value::Uint16(value),
@@ -222,9 +643,7 @@ impl GqlWireValue {
             Self::Uint64(value) => Value::Uint64(value),
             Self::Uint128(value) => Value::Uint128(value),
             Self::Uint256(value) => Value::Uint256(gleaph_gql::types::Uint256(
-                value
-                    .parse::<U256>()
-                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Uint256"))?,
+                u256_from_le_bytes(&value).ok_or(GqlWireDecodeError::InvalidNumeric("Uint256"))?,
             )),
             Self::Float16(bits) => Value::Float16(half::f16::from_bits(bits)),
             Self::Float32(value) => Value::Float32(value),
@@ -248,9 +667,8 @@ impl GqlWireValue {
                 Value::Float256(f256::f256::from_le_bytes(bytes))
             }
             Self::Decimal(value) => Value::Decimal(gleaph_gql::types::Decimal(
-                value
-                    .parse::<rust_decimal::Decimal>()
-                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Decimal"))?,
+                decimal_from_le_bytes(&value)
+                    .ok_or(GqlWireDecodeError::InvalidNumeric("Decimal"))?,
             )),
             Self::Text(value) => Value::Text(value),
             Self::Bytes(value) => Value::Bytes(value),
@@ -345,17 +763,23 @@ mod tests {
     #[test]
     fn projects_exact_scalars_and_principal() {
         assert_eq!(
-            GqlWireValue::Int256("-7".into())
+            GqlWireValue::Int256(I256::from(-7).to_le_bytes().to_vec())
                 .try_into_gql_value()
                 .unwrap()
                 .to_string(),
             "-7"
         );
         assert_eq!(
-            GqlWireValue::Decimal("1.25".into())
-                .try_into_gql_value()
-                .unwrap()
-                .to_string(),
+            GqlWireValue::Decimal(
+                "1.25"
+                    .parse::<rust_decimal::Decimal>()
+                    .unwrap()
+                    .serialize()
+                    .to_vec()
+            )
+            .try_into_gql_value()
+            .unwrap()
+            .to_string(),
             "1.25"
         );
         let principal = Principal::anonymous();
@@ -363,6 +787,16 @@ mod tests {
             .try_into_gql_value()
             .unwrap();
         assert!(matches!(value, Value::Extension(_)));
+    }
+
+    #[test]
+    fn wide_float_wrappers_round_trip_serde_bytes() {
+        let bytes = [0xabu8; 32];
+        let value = Float256::from_le_bytes(bytes);
+        let encoded = serde_json::to_vec(&value).unwrap();
+        let decoded: Float256 = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.to_le_bytes(), bytes);
+        assert_eq!(decoded.into_inner(), value.into_inner());
     }
 
     #[test]

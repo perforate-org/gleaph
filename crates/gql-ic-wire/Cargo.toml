@@ -7,11 +7,11 @@ description = "Lightweight Candid wire types for GQL query rows"
 
 [dependencies]
 candid.workspace = true
-ethnum.workspace = true
+ethnum = { workspace = true, features = ["serde"] }
 f256.workspace = true
 gleaph-gql = { path = "../gql", default-features = false, features = ["f256"] }
-half.workspace = true
-rust_decimal.workspace = true
+half = { workspace = true, features = ["serde"] }
+rust_decimal = { workspace = true, features = ["serde"] }
 serde.workspace = true
 thiserror.workspace = true
 
