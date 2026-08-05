@@ -2,8 +2,8 @@
 
 Date: 2026-07-30
 Status: implemented
-Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 03:58:09 UTC +0000
+Last revised: 2026-08-05
+Anchor timestamp: 2026-08-05 01:48:42 UTC +0000
 
 ## Context
 
@@ -77,11 +77,14 @@ primitive, but the variant and its representation contract must remain explicit.
 The implemented Candid projection is:
 
 ```rust
-Float16(u16)      // canonical IEEE 754 binary16 bit pattern
+Float16(u16)       // canonical IEEE 754 binary16 bit pattern
 Float32(f32)
 Float64(f64)
-Float128(Vec<u8>) // canonical Gleaph binary representation
+Float128(Vec<u8>)  // canonical Gleaph binary representation
 Float256(Vec<u8>)
+Int256(Vec<u8>)    // 32 little-endian bytes
+Uint256(Vec<u8>)   // 32 little-endian bytes
+Decimal(Vec<u8>)   // 16-byte packed decimal form
 ```
 
 `Float16` is transported as its raw 16-bit bit pattern so conversion does not silently alter
@@ -89,10 +92,13 @@ NaN payloads, signed zero, or subnormal values. `Float128` and `Float256` use a 
 canonical binary representation owned by the GQL value codec. They must not be represented by
 `Float64` or an untyped `ValueBinary` variant.
 
-Integer widths that have a direct Candid representation use that representation. `Int256`,
-`Uint256`, and arbitrary-precision `Decimal` may continue to use canonical decimal strings if
-that is the selected Candid binding representation; this is an explicit representation, not
-numeric widening.
+Integer widths that have a direct Candid representation use that representation. `Int256` and
+`Uint256` use 32 little-endian bytes (`ethnum` `to_le_bytes` / `from_le_bytes`) and
+arbitrary-precision `Decimal` uses the 16-byte packed form (`rust_decimal`
+`serialize` / `deserialize`); these are explicit fixed-length representations, not numeric
+widening or lossy string parsing. The generated canister bindings decode these bytes through the
+cdk row-binding wrappers (`GqlInt256`, `GqlUint256`, `GqlDecimal`), whose serde and Candid forms
+are the decimal/textual values.
 
 ### 3. Keep manifest types exact
 
@@ -110,12 +116,12 @@ validation and generation.
 The API contract preserves the Gleaph type. Each runtime and generator maps that type to an
 appropriate language representation:
 
-| Gleaph type | Rust | TypeScript/JavaScript |
-| --- | --- | --- |
-| `Int8`/`Int16`/`Int32` | `i8`/`i16`/`i32` | `number` |
-| `Int64`/`Uint64` | `i64`/`u64` or runtime bigint wrapper | `bigint` |
+| Gleaph type                   | Rust                                                 | TypeScript/JavaScript                  |
+| ----------------------------- | ---------------------------------------------------- | -------------------------------------- |
+| `Int8`/`Int16`/`Int32`        | `i8`/`i16`/`i32`                                     | `number`                               |
+| `Int64`/`Uint64`              | `i64`/`u64` or runtime bigint wrapper                | `bigint`                               |
 | `Float16`/`Float32`/`Float64` | exact runtime float wrapper or native supported type | `number` with exact runtime conversion |
-| `Float128`/`Float256` | Gleaph runtime float wrapper | Gleaph runtime float wrapper |
+| `Float128`/`Float256`         | Gleaph runtime float wrapper                         | Gleaph runtime float wrapper           |
 
 Where a language cannot represent a scalar natively, the SDK/CDK runtime owns the wrapper and
 conversion rules. Generated code must not silently substitute a wider native type.
@@ -207,5 +213,6 @@ The accepted implementation satisfies:
 Implemented in the pre-release wire contract. `IcWireValue`, the GQL compact codec, the JS SDK
 IDL/types, and codegen manifest version 1 preserve exact integer and floating-point scalar
 variants. `Float16` uses its raw `u16` bits; `Float128` and `Float256` use canonical 16-byte and
-32-byte little-endian representations. Runtime-specific wrapper ergonomics remain owned by the
+32-byte little-endian representations; `Int256` and `Uint256` use 32 little-endian bytes and
+`Decimal` the 16-byte packed form. Runtime-specific wrapper ergonomics remain owned by the
 SDK/CDK profiles and can be extended without changing this wire contract.

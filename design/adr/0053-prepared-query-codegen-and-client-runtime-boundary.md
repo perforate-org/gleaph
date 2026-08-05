@@ -309,7 +309,13 @@ as a release-stable contract.
   for `gleaph_cdk::GleaphClient<Prepared>` that wraps the Router's `prepared_query` (reads) and
   `prepared_mutate` (idempotent updates with an explicit `client_mutation_key`). Path-typed
   parameters and results reference the shared `gleaph-cdk::PathElement` binding whose
-  fixed-length vertex/edge ids mirror the Router wire contract (ADR 0005); and
+  fixed-length vertex/edge ids mirror the Router wire contract (ADR 0005). Generated `*Params`
+  structs are `Clone + Debug` only (converted to logical GQL parameters by `into_gql_params` at
+  call time, allowing raw `f128`/`f256` fields); generated `*Row` structs and `PreparedResponse`
+  derive `CandidType` + serde, with exotic row fields bound through the cdk row-binding wrappers
+  (`GqlInt256`, `GqlUint256`, `GqlDecimal`, `GqlFloat16`, `Float128`, `Float256` in
+  `gleaph-gql-ic-wire`, plus candid-native `Principal`) so canisters return prepared rows
+  directly over their candid interface; and
 - a Motoko canister profile exposed by `generate_motoko`, emitting operation-specific
   parameter/result declarations and a transport-neutral typed executor boundary; and
 - a standalone `gleaph-codegen` entrypoint that accepts either a local `--manifest <path>` or a
