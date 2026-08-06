@@ -8,6 +8,7 @@ import {
 } from "./client.ts";
 import { GleaphCanisterError } from "./errors.ts";
 import { GqlQueryRows, graphIdlFactory } from "./idl.ts";
+import { normalizeManifest, type RawPreparedManifest } from "./manifest.ts";
 import type {
   ApiMutationRequest,
   ApiPreparedMutationRequest,
@@ -50,7 +51,7 @@ interface GleaphActorMethods {
     query: string,
     options: [] | [ApiPrepareRequest["options"]],
   ): Promise<Result<ApiPrepareResponse>>;
-  list_prepared(graphName: string | null): Promise<Result<PreparedManifest>>;
+  list_prepared(graphName: string | null): Promise<Result<RawPreparedManifest>>;
   prepared_query(
     name: string,
     params: Uint8Array,
@@ -198,7 +199,7 @@ class IcGleaphTransport implements GleaphTransport {
   }
 
   async listPrepared(graphName: string): Promise<PreparedManifest> {
-    return unwrapResult<PreparedManifest>(await this.actor.list_prepared(graphName));
+    return normalizeManifest(unwrapResult(await this.actor.list_prepared(graphName)));
   }
 
   async preparedQuery(request: ApiPreparedQueryRequest): Promise<GqlQueryResult> {

@@ -274,10 +274,12 @@ export type PreparedSemanticType =
   | "Duration"
   | "Principal"
   | "Path"
-  | "Record";
+  | { List: { element: PreparedSemanticType } }
+  | { Record: { fields: PreparedManifestRecordField[] } };
 
 export interface PreparedManifestParameter {
   name: string;
+  description?: string | null;
   required: boolean;
   nullable: boolean;
   semantic_type: PreparedSemanticType;

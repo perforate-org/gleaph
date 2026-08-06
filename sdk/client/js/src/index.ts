@@ -68,6 +68,16 @@ export {
 } from "./helpers.ts";
 export { GleaphCanisterError, GleaphSdkError } from "./errors.ts";
 export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value.ts";
+export { decodeRow, decodeRows } from "./rows.ts";
+export { normalizeManifest, normalizeSemanticType } from "./manifest.ts";
+export type {
+  RawPreparedManifest,
+  RawPreparedManifestColumn,
+  RawPreparedManifestOperation,
+  RawPreparedManifestParameter,
+  RawPreparedManifestRecordField,
+  RawPreparedManifestSortKey,
+} from "./manifest.ts";
 export { makeAtomicInsertRequest } from "./atomic.ts";
 export type {
   AtomicInsertEdge,

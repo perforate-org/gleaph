@@ -481,3 +481,180 @@ function bytesEqual(a, b) {
 }
 
 console.log("value-layer conformance OK");
+
+// Schema-driven row decoder (rows.ts).
+{
+  const { decodeRow, decodeRows } = await import("../src/rows.ts");
+  const columns = [
+    { name: "post_id", semantic_type: "Int64", nullable: false },
+    { name: "parent_post_id", semantic_type: "Int64", nullable: true },
+    { name: "body", semantic_type: "Text", nullable: false },
+    { name: "created_at", semantic_type: "DateTime", nullable: false },
+    { name: "edge_id", semantic_type: "Bytes", nullable: false },
+    { name: "distance", semantic_type: "Float64", nullable: false },
+  ];
+  const row = {
+    post_id: { Int64: 7 },
+    parent_post_id: { Null: null },
+    body: { Text: "hello" },
+    created_at: { DateTime: { seconds: 1783927200n, nanos: 0 } },
+    edge_id: { Bytes: Uint8Array.from([0xab, 0xcd]) },
+    distance: { Float64: 0.25 },
+    extra: { Bool: true },
+  };
+
+  const decoded = decodeRow(row, columns);
+  if (decoded.post_id !== 7n) throw new Error("Int64 number did not normalize to bigint");
+  if (decoded.parent_post_id !== null) throw new Error("nullable Null did not decode to null");
+  if (decoded.body !== "hello") throw new Error("Text decode failed");
+  if (
+    !(decoded.created_at instanceof Temporal.Instant) ||
+    decoded.created_at.epochNanoseconds / 1_000_000_000n !== 1783927200n
+  )
+    throw new Error("DateTime did not decode to Temporal.Instant");
+  if (decoded.edge_id.constructor !== Uint8Array || bytesToHex(decoded.edge_id) !== "abcd")
+    throw new Error("Bytes decode failed");
+  if (decoded.distance !== 0.25) throw new Error("Float64 decode failed");
+  if ("extra" in decoded) throw new Error("undeclared column leaked into decoded row");
+  if (decodeRows([row], columns).length !== 1) throw new Error("decodeRows failed");
+
+  const nonNullNull = decodeRow({ ...row, parent_post_id: { Int64: 9n } }, columns);
+  if (nonNullNull.parent_post_id !== 9n) throw new Error("nullable Int64 decode failed");
+
+  let threw = false;
+  try {
+    decodeRow({ ...row, post_id: { Text: "oops" } }, columns);
+  } catch (err) {
+    threw = err instanceof Error && err.message.includes("declared Int64 but received Text");
+  }
+  if (!threw) throw new Error("tag mismatch did not throw");
+  threw = false;
+  try {
+    decodeRow({ ...row, post_id: { Null: null } }, columns);
+  } catch (err) {
+    threw = err instanceof Error && err.message.includes("declared non-null");
+  }
+  if (!threw) throw new Error("non-null Null did not throw");
+  threw = false;
+  try {
+    decodeRow({ ...row, body: undefined }, columns);
+  } catch (err) {
+    threw = err instanceof Error && err.message.includes('missing column "body"');
+  }
+  if (!threw) throw new Error("missing column did not throw");
+}
+
+// List and Record columns decode recursively against their element/field schema.
+{
+  const { decodeRow } = await import("../src/rows.ts");
+  const columns = [
+    {
+      name: "tags",
+      semantic_type: { List: { element: "Int64" } },
+      nullable: false,
+    },
+    {
+      name: "meta",
+      semantic_type: { List: { element: { Record: { fields: [] } } } },
+      nullable: false,
+    },
+    {
+      name: "profile",
+      semantic_type: {
+        Record: {
+          fields: [
+            { name: "handle", semantic_type: "Text", nullable: false },
+            { name: "age", semantic_type: "Int64", nullable: true },
+          ],
+        },
+      },
+      nullable: false,
+    },
+  ];
+  const row = {
+    tags: { List: [{ Int64: 1 }, { Int64: 2n }] },
+    meta: { List: [{ Record: {} }] },
+    profile: { Record: { handle: { Text: "alice" }, age: { Null: null } } },
+  };
+
+  const decoded = decodeRow(row, columns);
+  if (decoded.tags.length !== 2 || decoded.tags[0] !== 1n || decoded.tags[1] !== 2n)
+    throw new Error("List<Int64> decode failed (elements must normalize to bigint)");
+  if (decoded.meta.length !== 1 || typeof decoded.meta[0] !== "object")
+    throw new Error("nested List<Record> decode failed");
+  if (decoded.profile.handle !== "alice" || decoded.profile.age !== null)
+    throw new Error("Record field decode failed");
+
+  let threw = false;
+  try {
+    decodeRow({ ...row, tags: { Text: "oops" } }, columns);
+  } catch (err) {
+    threw = err instanceof Error && err.message.includes("declared List but received Text");
+  }
+  if (!threw) throw new Error("List tag mismatch did not throw");
+}
+
+// Manifest boundary normalization (manifest.ts): Candid variant/opt forms -> typed API.
+{
+  const { normalizeManifest, normalizeSemanticType } = await import("../src/manifest.ts");
+  if (normalizeSemanticType({ Text: null }) !== "Text")
+    throw new Error("scalar variant did not normalize");
+  const listType = normalizeSemanticType({
+    List: { element: { Int64: null } },
+  });
+  if (!("List" in listType) || listType.List.element !== "Int64")
+    throw new Error("List element did not normalize");
+  const recordType = normalizeSemanticType({
+    Record: { fields: [{ name: "a", type: { Bytes: null }, nullable: true }] },
+  });
+  if (!("Record" in recordType) || recordType.Record.fields[0].semantic_type !== "Bytes")
+    throw new Error("Record field did not normalize");
+  if (normalizeSemanticType("Text") !== "Text") throw new Error("flat string passthrough failed");
+
+  const manifest = normalizeManifest({
+    manifest_version: 1,
+    graph: { id: "1", name: [] },
+    operations: [
+      {
+        name: "find_users",
+        description: ["docs"],
+        kind: { Query: null },
+        parameters: [
+          {
+            name: "term",
+            description: [],
+            required: true,
+            nullable: false,
+            type: { Text: null },
+          },
+        ],
+        result: {
+          columns: [
+            { name: "user_name", type: { Text: null }, nullable: false },
+            {
+              name: "tags",
+              type: { List: { element: { Int64: null } } },
+              nullable: true,
+            },
+          ],
+        },
+        supports_consistency: true,
+        supports_idempotency: false,
+        allowed_sorts: [{ key: "created_at", label: ["Created"] }],
+      },
+    ],
+  });
+  const op = manifest.operations[0];
+  if (op.kind !== "Query") throw new Error("kind variant did not normalize");
+  if (op.description !== "docs") throw new Error("operation description opt did not normalize");
+  if (op.parameters[0].semantic_type !== "Text")
+    throw new Error("parameter type did not normalize");
+  if (op.parameters[0].description !== null)
+    throw new Error("parameter description opt did not normalize to null");
+  if (op.result.columns[1].semantic_type.List.element !== "Int64")
+    throw new Error("column List type did not normalize");
+  if (op.allowed_sorts[0].label !== "Created") throw new Error("sort label opt did not normalize");
+  if (manifest.graph.name !== null) throw new Error("graph name opt did not normalize to null");
+}
+
+console.log("row-decoder conformance OK");
