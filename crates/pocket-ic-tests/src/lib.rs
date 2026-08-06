@@ -14,7 +14,6 @@ use gleaph_router::types::{
     BulkLoadResponse, BulkLoadStatusPage, RegisterGraphArgs, RegisterGraphShard,
     RegisterVectorIndexArgs,
 };
-// use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -2815,7 +2814,7 @@ pub fn gql_mutate_pair_concurrent_as_admin(
 }
 
 // const SOCIAL_LOAD_JSON: &str =
-//     include_str!("../../../frontend/apps/social-demo/seeds/social-load.json");
+//     include_str!("../../../demo/social/seeds/vertices.jsonl");
 
 const UPGRADE_FIXTURE_QUERY: &str = "\
 MATCH ()-[e:UPGRADE_EDGE]->() WHERE e.fixture_edge_id IS NOT NULL \

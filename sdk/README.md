@@ -45,7 +45,9 @@ Admin/management operations are not included; they belong in `sdk/admin/rust` wh
 ## Status
 
 - Client SDK moved to `sdk/client/js` and workspace references updated.
-- `gleaph-cdk` crate created at `sdk/canister/rust` and adopted by `crates/social-demo-gateway`.
+- `gleaph-cdk` crate created at `sdk/canister/rust` and adopted by `gleaph-codegen` output and the
+  `examples/rust-canister-app` example (the social-demo gateway, its former consumer, was removed in
+  2026-08-06 with the SDK-direct frontend).
 - Admin SDK boundary documented above but not implemented.
 
 ## Build-from-source expectation

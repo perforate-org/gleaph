@@ -1,3 +1,9 @@
+# Gleaph platform canisters (Router, graph index, graph shard, vector).
+#
+# This project is the "manual deployment" prerequisite for the social demo:
+# deploy these canisters (and register the demo graph) before running the
+# demo's own flow under demo/social/. See demo/social/README.md.
+#
 # yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/icp-yaml-schema.json
 
 canisters:
@@ -24,26 +30,12 @@ canisters:
         features: batch-instr-log
         package: gleaph-graph
 
-  - name: gleaph-social-demo-gateway
-    recipe:
-      type: "@dfinity/rust@v3.3.0"
-      configuration:
-        shrink: true
-        package: gleaph-social-demo-gateway
-
   - name: gleaph-vector
     recipe:
       type: "@dfinity/rust@v3.3.0"
       configuration:
         shrink: true
         package: gleaph-graph-vector-index
-
-  - name: social-demo
-    recipe:
-      type: "@dfinity/asset-canister@v2.2.1"
-      configuration:
-        shrink: true
-        dir: frontend/apps/social-demo/dist
 
 networks:
   # Override the local network with a docker network

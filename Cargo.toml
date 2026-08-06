@@ -31,7 +31,6 @@ members = [
     "crates/prepared-api",
     "crates/provision",
     "crates/router",
-    "crates/social-demo-gateway",
     "examples/rust-canister-app",
     "sdk/canister/rust",
 ]
@@ -67,7 +66,6 @@ gleaph-migration-api = { path = "crates/migration-api" }
 gleaph-prepared-runtime = { path = "crates/prepared-runtime" }
 gleaph-graph-vector-index = { path = "crates/graph-vector-index" }
 gleaph-router = { path = "crates/router" }
-gleaph-social-demo-gateway = { path = "crates/social-demo-gateway" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }

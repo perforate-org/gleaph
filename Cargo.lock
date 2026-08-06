@@ -2103,21 +2103,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gleaph-social-demo-gateway"
-version = "0.1.0"
-dependencies = [
- "candid",
- "gleaph-gql",
- "gleaph-gql-ic",
- "gleaph-graph-kernel",
- "gleaph-prepared-api",
- "ic-cdk",
- "ic-cdk-macros",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
