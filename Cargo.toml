@@ -73,7 +73,7 @@ ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 base64 = "0.23"
 bitflags = "2.13.1"
-canbench-rs = "0.6"
+canbench-rs = "0.7"
 candid = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4.6", features = ["derive"] }
