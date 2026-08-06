@@ -557,10 +557,10 @@ fn load_artifact_named(
     })
 }
 
-/// Load a `up/` fragment directory: regular `*.gql` files only, concatenated in sorted filename
-/// order into one migration payload. Every fragment must be LF-terminated so the concatenation is
-/// deterministic and satisfies the same LF and trailing-newline contract as a single `up.gql`.
-fn load_up_directory(up: &Path) -> Result<String, MigrationError> {
+/// Read a `up/` fragment directory: regular `*.gql` files only, returned in sorted filename order
+/// with every fragment validated as LF-terminated UTF-8 and the concatenated payload within the
+/// migration statement bound.
+fn load_up_fragments(up: &Path) -> Result<Vec<(String, String)>, MigrationError> {
     let mut fragments = BTreeMap::new();
     for entry in fs::read_dir(up)? {
         let entry = entry?;
@@ -604,20 +604,33 @@ fn load_up_directory(up: &Path) -> Result<String, MigrationError> {
             reason: "up/ must contain at least one .gql file".into(),
         });
     }
-    let mut payload = String::new();
-    for (_, (fragment_path, snapshot)) in fragments {
+    let mut payload_len = 0usize;
+    let mut ordered = Vec::with_capacity(fragments.len());
+    for (name, (fragment_path, snapshot)) in fragments {
         let fragment = read_text_file_with_identity(
             &fragment_path,
             true,
             Some(snapshot),
             Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES),
         )?;
-        if payload.len() + fragment.len() > MAX_SCHEMA_MIGRATION_STATEMENT_BYTES {
+        payload_len = payload_len.saturating_add(fragment.len());
+        if payload_len > MAX_SCHEMA_MIGRATION_STATEMENT_BYTES {
             return Err(statement_too_large_error(
                 &fragment_path,
                 MAX_SCHEMA_MIGRATION_STATEMENT_BYTES,
             ));
         }
+        ordered.push((name, fragment));
+    }
+    Ok(ordered)
+}
+
+/// Concatenate a `up/` fragment directory into one migration payload in sorted filename order.
+/// Every fragment must be LF-terminated so the concatenation is deterministic and satisfies the
+/// same LF and trailing-newline contract as a single `up.gql`.
+fn load_up_directory(up: &Path) -> Result<String, MigrationError> {
+    let mut payload = String::new();
+    for (_, fragment) in load_up_fragments(up)? {
         payload.push_str(&fragment);
     }
     Ok(payload)
@@ -943,21 +956,41 @@ pub fn create_new(
         graph: None,
         description: description.to_owned(),
     };
-    let gql_bytes = if let Some(source) = gql {
-        read_file_bytes_checked(source, None, Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES))?
-    } else {
-        format!("CREATE GRAPH TYPE {slug} {{}}\n").into_bytes()
-    };
-    let gql = String::from_utf8(gql_bytes)
-        .map_err(|error| MigrationError::Io(format!("up.gql is not UTF-8: {error}")))?;
-
     let temporary = temporary_path(root);
     fs::create_dir(&temporary)?;
     let result = (|| {
         let manifest_text = toml::to_string(&manifest)
             .map_err(|e| MigrationError::Manifest(format!("serialize migration manifest: {e}")))?;
         write_new_file(&temporary.join(MANIFEST_FILE), manifest_text.as_bytes())?;
-        write_new_file(&temporary.join(GQL_FILE), gql.as_bytes())?;
+        match gql {
+            // A directory source scaffolds the `up/` fragment form; the fragments are copied
+            // verbatim in sorted filename order and re-validated by `load_artifact_named` below.
+            Some(source) if fs::symlink_metadata(source)?.is_dir() => {
+                fs::create_dir(temporary.join(UP_DIRECTORY))?;
+                for (name, fragment) in load_up_fragments(source)? {
+                    write_new_file(
+                        &temporary.join(UP_DIRECTORY).join(name),
+                        fragment.as_bytes(),
+                    )?;
+                }
+            }
+            Some(source) => {
+                let gql_bytes = read_file_bytes_checked(
+                    source,
+                    None,
+                    Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES),
+                )?;
+                let gql = String::from_utf8(gql_bytes)
+                    .map_err(|error| MigrationError::Io(format!("up.gql is not UTF-8: {error}")))?;
+                write_new_file(&temporary.join(GQL_FILE), gql.as_bytes())?;
+            }
+            None => {
+                write_new_file(
+                    &temporary.join(GQL_FILE),
+                    format!("CREATE GRAPH TYPE {slug} {{}}\n").as_bytes(),
+                )?;
+            }
+        }
         let mut artifact = load_artifact_named(&temporary, &id)?;
         let final_path = root.join(&id);
         if final_path.exists() {
@@ -2026,6 +2059,93 @@ mod tests {
         let error = create_new(&root.join("migrations"), "init", "first", Some(&source))
             .expect_err("symlinked source must fail the lstat check");
         assert!(error.to_string().contains("regular non-symlink"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn create_new_scaffolds_up_directory_fragments() {
+        let root = temp_root();
+        let source = root.join("fragments");
+        fs::create_dir_all(&source).expect("source directory");
+        fs::write(
+            source.join("02_bind.gql"),
+            "NEXT CREATE GRAPH social TYPED Social\n",
+        )
+        .expect("fragment");
+        fs::write(
+            source.join("01_type.gql"),
+            "CREATE GRAPH TYPE Social { NODE Person }\n",
+        )
+        .expect("fragment");
+
+        let artifact = create_new(&root.join("migrations"), "social", "demo", Some(&source))
+            .expect("scaffolded migration");
+        assert_eq!(artifact.id(), "000001_social");
+        assert_eq!(artifact.path, root.join("migrations/000001_social"));
+        assert_eq!(
+            artifact.gql,
+            "CREATE GRAPH TYPE Social { NODE Person }\nNEXT CREATE GRAPH social TYPED Social\n"
+        );
+        assert_eq!(
+            artifact.profile,
+            vec![
+                SchemaMigrationStatementProfile::CreateGraphType,
+                SchemaMigrationStatementProfile::CreateTypedGraph,
+            ]
+        );
+        let package_entries: BTreeSet<_> = fs::read_dir(&artifact.path)
+            .expect("package entries")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            package_entries,
+            BTreeSet::from([MANIFEST_FILE.into(), UP_DIRECTORY.into()])
+        );
+        let mut fragment_names: Vec<_> = fs::read_dir(artifact.path.join(UP_DIRECTORY))
+            .expect("fragment entries")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        fragment_names.sort();
+        assert_eq!(
+            fragment_names,
+            vec!["01_type.gql".to_owned(), "02_bind.gql".to_owned()]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn create_new_rejects_invalid_up_directory_source() {
+        // A non-.gql fragment fails source validation without publishing a package.
+        let root = temp_root();
+        let source = root.join("fragments");
+        fs::create_dir_all(&source).expect("source directory");
+        fs::write(source.join("notes.txt"), "x\n").expect("non-gql fragment");
+        let error = create_new(&root.join("migrations"), "social", "demo", Some(&source))
+            .expect_err("non-gql fragment must be rejected");
+        assert!(error.to_string().contains("must end in \".gql\""));
+        assert!(!root.join("migrations/000001_social").exists());
+        fs::remove_dir_all(root).expect("cleanup");
+
+        // An empty source directory is rejected without publishing a package.
+        let root = temp_root();
+        let source = root.join("empty");
+        fs::create_dir_all(&source).expect("source directory");
+        let error = create_new(&root.join("migrations"), "social", "demo", Some(&source))
+            .expect_err("empty source must be rejected");
+        assert!(error.to_string().contains("at least one"));
+        assert!(!root.join("migrations/000001_social").exists());
         fs::remove_dir_all(root).expect("cleanup");
     }
 

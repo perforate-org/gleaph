@@ -156,7 +156,8 @@ struct NewMigrationArgs {
     /// Human-readable migration description.
     #[arg(long, default_value = "")]
     description: String,
-    /// Read up.gql bytes from this path. Without it, a minimal graph-type template is created.
+    /// Read the migration payload from this path: a single GQL file or a directory of `*.gql`
+    /// fragments scaffolded as `up/`. Without it, a minimal graph-type template is created.
     #[arg(long, value_name = "PATH")]
     up: Option<std::path::PathBuf>,
 }

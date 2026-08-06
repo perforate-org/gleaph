@@ -139,7 +139,9 @@ gleaph migration status [--dir PATH] --canister PRINCIPAL [-n ic|local|URL] [--i
 gleaph migration apply  [--dir PATH] --canister PRINCIPAL [-n ic|local|URL] [--identity PEM] [--fetch-root-key]
 ```
 
-`new` creates the next package through a same-filesystem temporary directory and rename. `plan`
+`new` creates the next package through a same-filesystem temporary directory and rename. Its `--up`
+option accepts either a single GQL file (published as `up.gql`) or a directory of `*.gql`
+fragments (published as a `up/` package, copied verbatim in sorted filename order). `plan`
 performs local validation only. `status` lists the Router ledger page by page and verifies that
 it is a checksum-matching prefix of the local chain. `apply` performs the same preflight, then
 submits only the remaining parent-ordered artifacts. A pending index artifact is resubmitted with
