@@ -8,6 +8,7 @@ description = "Generate typed clients and canister adapters for Gleaph prepared 
 [dependencies]
 candid = { workspace = true, features = ["value"] }
 clap.workspace = true
+gleaph-graph-kernel.workspace = true
 gleaph-prepared-api.workspace = true
 ic-agent.workspace = true
 serde.workspace = true

@@ -1,7 +1,8 @@
 //! Command-line implementation shared by `gleaph-codegen` and `gleaph codegen`.
 
-use candid::{Decode, Encode, IDLArgs, IDLValue, Principal};
+use candid::{Decode, Encode, Principal};
 use clap::Args;
+use gleaph_graph_kernel::federation::RouterError;
 use ic_agent::identity::Secp256k1Identity;
 use std::fs;
 use std::path::PathBuf;
@@ -54,8 +55,11 @@ pub enum CodegenError {
     #[error("--manifest and --canister are mutually exclusive")]
     ConflictingManifestSources,
     /// A remote manifest source was not given both required fields.
-    #[error("--canister and --graph must be provided together")]
-    IncompleteRemoteSource,
+    #[error("the Router manifest source needs --canister and --graph; missing {missing}")]
+    IncompleteRemoteSource {
+        /// The missing field with actionable sources.
+        missing: &'static str,
+    },
     /// No manifest source was selected.
     #[error("one manifest source is required: --manifest or --canister/--graph")]
     MissingManifestSource,
@@ -127,9 +131,6 @@ pub enum CodegenError {
     /// The Router response envelope could not be decoded.
     #[error("decode list_prepared response: {0}")]
     DecodeResponse(String),
-    /// The manifest payload in a successful Router response could not be decoded.
-    #[error("decode list_prepared payload: {0}")]
-    DecodePayload(String),
     /// The Router returned a rejected result variant.
     #[error("Router rejected list_prepared: {0}")]
     RouterRejected(String),
@@ -194,7 +195,12 @@ pub fn run(args: CodegenArgs) -> Result<(), CodegenError> {
         return Err(CodegenError::ConflictingManifestSources);
     }
     if args.canister.is_some() != args.graph.is_some() {
-        return Err(CodegenError::IncompleteRemoteSource);
+        let missing = if args.canister.is_none() {
+            "canister (set --canister or GLEAPH_CANISTER)"
+        } else {
+            "graph (set --graph or [codegen] graph)"
+        };
+        return Err(CodegenError::IncompleteRemoteSource { missing });
     }
     let target_text = args.target.as_deref().ok_or(CodegenError::MissingTarget)?;
     if target_text.trim().is_empty() {
@@ -214,7 +220,7 @@ pub fn run(args: CodegenArgs) -> Result<(), CodegenError> {
         let graph = args
             .graph
             .as_deref()
-            .ok_or(CodegenError::IncompleteRemoteSource)?;
+            .ok_or(CodegenError::IncompleteRemoteSource { missing: "graph" })?;
         tokio::runtime::Runtime::new()
             .map_err(|error| CodegenError::CreateRuntime(error.to_string()))?
             .block_on(fetch_manifest(
@@ -317,22 +323,16 @@ fn resolve_network(network: &str, fetch_root_key_flag: bool) -> Result<(&str, bo
 fn decode_manifest_response(
     response: &[u8],
 ) -> Result<gleaph_prepared_api::PreparedManifest, CodegenError> {
-    let args = IDLArgs::from_bytes(response)
-        .map_err(|error| CodegenError::DecodeResponse(error.to_string()))?;
-    let Some(IDLValue::Variant(result)) = args.args.first() else {
-        return Err(CodegenError::DecodeResponse(
-            "expected Result variant".to_string(),
-        ));
-    };
-    let value = &result.0.val;
-    if result.0.id.get_id() != candid::idl_hash("Ok") {
-        return Err(CodegenError::RouterRejected(format!("{value:?}")));
+    // Decode the `Result` envelope directly. Round-tripping through `IDLArgs`/`IDLValue` is
+    // lossy: it re-encodes `None` options as `opt empty` and collapses variants to their single
+    // observed member, so `Decode!` can no longer match record types that contain options or
+    // multi-member variants (a manifest with prepared operations always does).
+    match Decode!(response, Result<gleaph_prepared_api::PreparedManifest, RouterError>)
+        .map_err(|error| CodegenError::DecodeResponse(error.to_string()))?
+    {
+        Ok(manifest) => Ok(manifest),
+        Err(error) => Err(CodegenError::RouterRejected(error.to_string())),
     }
-    let payload = IDLArgs::new(std::slice::from_ref(value))
-        .to_bytes()
-        .map_err(|error| CodegenError::DecodePayload(error.to_string()))?;
-    Decode!(&payload, gleaph_prepared_api::PreparedManifest)
-        .map_err(|error| CodegenError::DecodePayload(error.to_string()))
 }
 
 #[cfg(test)]
@@ -340,7 +340,11 @@ mod tests {
     use super::{CodegenArgs, run};
     use candid::Encode;
     use clap::Parser;
-    use gleaph_prepared_api::{GraphIdentity, MANIFEST_VERSION, PreparedManifest};
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_prepared_api::{
+        Column, GraphIdentity, MANIFEST_VERSION, OperationKind, Parameter, PreparedManifest,
+        PreparedOperation, ResultSchema, SemanticType, SortKey,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -565,7 +569,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "--canister and --graph must be provided together"
+            "the Router manifest source needs --canister and --graph; missing graph (set --graph or [codegen] graph)"
         );
     }
 
@@ -590,21 +594,50 @@ mod tests {
     }
 
     #[test]
-    fn decodes_router_manifest_response() {
+    fn decodes_router_manifest_response_with_operations_and_semantic_types() {
+        // Regression: the response must decode directly as `Result<_, RouterError>`. The previous
+        // `IDLArgs`/`IDLValue` round-trip re-encoded `None` options as `opt empty` and collapsed
+        // multi-member variants (`OperationKind`, `SemanticType`) to their single observed member,
+        // so any manifest carrying prepared operations failed to decode.
         let manifest = PreparedManifest {
             manifest_version: MANIFEST_VERSION,
             graph: GraphIdentity {
                 id: "default".into(),
-                name: None,
+                name: Some("Default".into()),
             },
-            operations: Vec::new(),
+            operations: vec![PreparedOperation {
+                name: "find-users".into(),
+                description: Some("Find users by their search term.".into()),
+                kind: OperationKind::Query,
+                parameters: vec![Parameter {
+                    name: "term".into(),
+                    description: None,
+                    required: true,
+                    nullable: true,
+                    semantic_type: SemanticType::Text,
+                }],
+                result: ResultSchema {
+                    columns: vec![Column {
+                        name: "user_id".into(),
+                        semantic_type: SemanticType::Uint64,
+                        nullable: false,
+                    }],
+                },
+                supports_consistency: true,
+                supports_idempotency: false,
+                allowed_sorts: vec![SortKey {
+                    key: "name".into(),
+                    label: None,
+                }],
+            }],
         };
-        let response = Encode!(&Result::<PreparedManifest, String>::Ok(manifest))
-            .expect("manifest response should encode");
+        let response = Encode!(&Result::<PreparedManifest, RouterError>::Ok(
+            manifest.clone()
+        ))
+        .expect("manifest response should encode");
 
         let decoded = super::decode_manifest_response(&response).expect("manifest should decode");
-        assert_eq!(decoded.manifest_version, MANIFEST_VERSION);
-        assert_eq!(decoded.graph.id, "default");
+        assert_eq!(decoded, manifest);
     }
 
     #[test]
