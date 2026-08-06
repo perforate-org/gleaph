@@ -237,12 +237,16 @@ impl BulkLoadChunkEnvelopeV1 {
 /// Stable value for one `(job, chunk_index)` row.
 #[derive(Clone, Debug, PartialEq, CandidType, Deserialize)]
 pub struct BulkLoadChunkReceiptRecordV1 {
+    /// Router-owned fingerprint of the normalized incoming chunk. Retained as the resume
+    /// idempotency key; the chunk envelope itself is not persisted (its only role was read-time
+    /// re-derivation of this digest, which the Graph-request fingerprint handshake already covers
+    /// for replay correctness).
     pub chunk_fingerprint: [u8; 32],
-    /// Immutable public chunk envelope retained so durable decode/replay can recompute the
-    /// Router-owned chunk fingerprint instead of trusting a detached digest.
-    pub chunk_envelope: BulkLoadChunkEnvelopeV1,
-    pub graph_request: BulkLoadGraphRequestV1,
-    pub graph_request_fingerprint: [u8; 32],
+    /// Resolved Graph request retained only while the child can still be replayed
+    /// (progress != Completed). `complete_bulk_load_child` compacts it away together with its
+    /// fingerprint, so completed rows carry receipts only and never re-decode chunk payloads.
+    pub graph_request: Option<BulkLoadGraphRequestV1>,
+    pub graph_request_fingerprint: Option<[u8; 32]>,
     pub child_mutation_id: MutationId,
     pub progress: BulkLoadChunkProgressV1,
     pub public_receipt: Option<AtomicInsertReceiptV1>,
@@ -254,32 +258,32 @@ impl BulkLoadChunkReceiptRecordV1 {
     /// Validate every cross-field invariant before a receipt-map write.  The parent store facade
     /// additionally checks job identity, target pinning, and active-child agreement.
     pub fn validate(&self) -> Result<(), String> {
-        self.chunk_envelope.validate()?;
-        let computed_chunk_fingerprint = self.chunk_envelope.fingerprint()?;
-        if computed_chunk_fingerprint != self.chunk_fingerprint {
-            return Err("bulk-load chunk fingerprint mismatch".into());
-        }
-        match (&self.chunk_envelope, &self.graph_request) {
-            (BulkLoadChunkEnvelopeV1::Vertices(_), BulkLoadGraphRequestV1::Vertex(request))
-                if self.chunk_envelope.operation_count() == request.items.len() => {}
-            (BulkLoadChunkEnvelopeV1::Edges(_), BulkLoadGraphRequestV1::Edge(request))
-                if self.chunk_envelope.operation_count() == request.items.len() => {}
+        match (&self.graph_request, self.graph_request_fingerprint) {
+            (Some(request), Some(fingerprint)) => {
+                request.validate()?;
+                let computed = request.fingerprint()?;
+                if computed != fingerprint {
+                    return Err("bulk-load Graph request fingerprint mismatch".into());
+                }
+            }
+            (None, None) => {}
             _ => {
                 return Err(
-                    "bulk-load chunk envelope and Graph request variant/count mismatch".into(),
+                    "bulk-load Graph request and fingerprint must be present or compacted together"
+                        .into(),
                 );
             }
-        }
-        self.graph_request.validate()?;
-        let computed_graph_fingerprint = self.graph_request.fingerprint()?;
-        if computed_graph_fingerprint != self.graph_request_fingerprint {
-            return Err("bulk-load Graph request fingerprint mismatch".into());
         }
         if self.child_mutation_id == 0 {
             return Err("bulk-load child mutation id must be non-zero".into());
         }
         match self.progress {
             BulkLoadChunkProgressV1::CanonicalPending => {
+                if self.graph_request.is_none() {
+                    return Err(
+                        "bulk-load CanonicalPending row must retain the Graph request".into(),
+                    );
+                }
                 if self.public_receipt.is_some()
                     || self.graph_receipt.is_some()
                     || self.completed_at_ns.is_some()
@@ -293,6 +297,12 @@ impl BulkLoadChunkReceiptRecordV1 {
             BulkLoadChunkProgressV1::CanonicalCommitted
             | BulkLoadChunkProgressV1::ProjectionPending
             | BulkLoadChunkProgressV1::RetirementPending => {
+                if self.graph_request.is_none() {
+                    return Err(
+                        "bulk-load non-terminal row must retain the Graph request for replay"
+                            .into(),
+                    );
+                }
                 let graph_receipt = self
                     .graph_receipt
                     .as_ref()
@@ -309,6 +319,11 @@ impl BulkLoadChunkReceiptRecordV1 {
                 }
             }
             BulkLoadChunkProgressV1::Completed => {
+                if self.graph_request.is_some() {
+                    return Err(
+                        "completed bulk-load row must be compacted (Graph request removed)".into(),
+                    );
+                }
                 let graph_receipt = self
                     .graph_receipt
                     .as_ref()
@@ -403,7 +418,8 @@ mod tests {
         OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedPropertyTable,
     };
 
-    fn fixture_row() -> (BulkLoadChunkReceiptKey, BulkLoadChunkReceiptRecordV1) {
+    fn fixture_active_row() -> (BulkLoadChunkReceiptKey, BulkLoadChunkReceiptRecordV1) {
+        // CanonicalPending: retains the resolved Graph request for replay, carries no receipts.
         let graph_canister = Principal::self_authenticating([7; 32]);
         let request = OrderedVertexBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(1),
@@ -416,14 +432,31 @@ mod tests {
                 resolved_initial_properties: Vec::new(),
             }],
         };
-        let graph_request = BulkLoadGraphRequestV1::Vertex(request.clone());
+        let graph_request = BulkLoadGraphRequestV1::Vertex(request);
         let graph_request_fingerprint = graph_request.fingerprint().unwrap();
         let chunk = BulkLoadChunkV1::Vertices(vec![crate::types::AtomicInsertVertexV1 {
             vertex_labels: Vec::new(),
             initial_properties: Vec::new(),
         }]);
-        let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
-        let chunk_fingerprint = chunk_envelope.fingerprint().unwrap();
+        let chunk_fingerprint = BulkLoadChunkEnvelopeV1::from_chunk(&chunk)
+            .fingerprint()
+            .unwrap();
+        let row = BulkLoadChunkReceiptRecordV1 {
+            chunk_fingerprint,
+            graph_request: Some(graph_request),
+            graph_request_fingerprint: Some(graph_request_fingerprint),
+            child_mutation_id: 2,
+            progress: BulkLoadChunkProgressV1::CanonicalPending,
+            public_receipt: None,
+            graph_receipt: None,
+            completed_at_ns: None,
+        };
+        row.validate().unwrap();
+        (BulkLoadChunkReceiptKey::new(1, 0), row)
+    }
+
+    fn fixture_completed_row() -> (BulkLoadChunkReceiptKey, BulkLoadChunkReceiptRecordV1) {
+        // Completed rows are compacted: the Graph request and its fingerprint are dropped.
         let graph_receipt = BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
             logical_vertex_count: 1,
             emitted_delta_first_seq: None,
@@ -440,10 +473,9 @@ mod tests {
             ],
         };
         let row = BulkLoadChunkReceiptRecordV1 {
-            chunk_fingerprint,
-            chunk_envelope,
-            graph_request,
-            graph_request_fingerprint,
+            chunk_fingerprint: [7; 32],
+            graph_request: None,
+            graph_request_fingerprint: None,
             child_mutation_id: 2,
             progress: BulkLoadChunkProgressV1::Completed,
             public_receipt: Some(public_receipt),
@@ -466,44 +498,51 @@ mod tests {
 
     #[test]
     fn bulk_load_receipt_validation_rejects_tampered_fingerprints() {
-        let (_key, row) = fixture_row();
-
-        let mut tampered_chunk = row.clone();
-        tampered_chunk.chunk_fingerprint[0] ^= 1;
-        assert!(
-            tampered_chunk
-                .validate()
-                .is_err_and(|error| error.contains("chunk fingerprint"))
-        );
+        let (_key, row) = fixture_active_row();
 
         let mut tampered_graph = row.clone();
-        tampered_graph.graph_request_fingerprint[0] ^= 1;
+        tampered_graph.graph_request_fingerprint.as_mut().unwrap()[0] ^= 1;
         assert!(
             tampered_graph
                 .validate()
                 .is_err_and(|error| error.contains("Graph request fingerprint"))
         );
+    }
 
-        let mut tampered_envelope = row;
-        let BulkLoadChunkEnvelopeV1::Vertices(items) = &mut tampered_envelope.chunk_envelope else {
-            panic!("vertex fixture envelope");
-        };
-        items[0].vertex_labels.push("tampered".into());
+    #[test]
+    fn bulk_load_receipt_compaction_invariants() {
+        let (_key, active) = fixture_active_row();
+
+        // Non-terminal rows must retain the Graph request for replay.
+        let mut missing_request = active.clone();
+        missing_request.graph_request = None;
+        missing_request.graph_request_fingerprint = None;
         assert!(
-            tampered_envelope
+            missing_request
                 .validate()
-                .is_err_and(|error| error.contains("chunk fingerprint"))
+                .is_err_and(|error| error.contains("retain the Graph request"))
+        );
+
+        // Completed rows must be compacted; a request-bearing completed row is invalid.
+        let mut uncompacted = active;
+        uncompacted.progress = BulkLoadChunkProgressV1::Completed;
+        uncompacted.completed_at_ns = Some(10);
+        assert!(
+            uncompacted
+                .validate()
+                .is_err_and(|error| error.contains("compacted"))
         );
     }
 
     #[test]
-    fn bulk_load_receipt_decode_revalidates_tampered_envelope() {
-        let (key, row) = fixture_row();
+    fn bulk_load_receipt_decode_revalidates_tampered_graph_request() {
+        let (key, row) = fixture_active_row();
         let mut tampered = row;
-        let BulkLoadChunkEnvelopeV1::Vertices(items) = &mut tampered.chunk_envelope else {
-            panic!("vertex fixture envelope");
+        let BulkLoadGraphRequestV1::Vertex(request) = tampered.graph_request.as_mut().unwrap()
+        else {
+            panic!("vertex fixture request");
         };
-        items[0].vertex_labels.push("tampered".into());
+        request.items.push(request.items[0].clone());
         let bytes = Encode!(&tampered).expect("encode tampered receipt");
         let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             BulkLoadChunkReceiptRecordV1::from_bytes(Cow::Owned(bytes))
@@ -530,7 +569,7 @@ mod tests {
 
     #[test]
     fn bulk_load_receipt_map_reopens_memory_id_49() {
-        let (key, row) = fixture_row();
+        let (key, row) = fixture_completed_row();
         {
             let mut map = memory::init_bulk_load_chunk_receipts();
             map.clear_new();

@@ -452,7 +452,11 @@ impl RouterStore {
         })?;
         child.child_mutation_id = child_mutation_id;
         child.validate().map_err(RouterError::InvalidArgument)?;
-        let (request_graph_id, target_shard, target_canister) = child.graph_request.target();
+        let (request_graph_id, target_shard, target_canister) = child
+            .graph_request
+            .as_ref()
+            .ok_or_else(|| RouterError::Internal("bulk-load child lacks Graph request".into()))?
+            .target();
         if request_graph_id != graph_id
             || target_shard != coordinator.target.shard_id
             || target_canister != coordinator.target.graph_canister
@@ -734,6 +738,11 @@ impl RouterStore {
                 }
                 child.progress = BulkLoadChunkProgressV1::Completed;
                 child.completed_at_ns = Some(now);
+                // Compact the row: a Completed child is never replayed, so drop the resolved
+                // Graph request (the largest remaining payload) and its fingerprint. Status,
+                // finalize, and GC then only ever decode receipt-sized rows.
+                child.graph_request = None;
+                child.graph_request_fingerprint = None;
                 coordinator.completed_chunk_count = coordinator
                     .completed_chunk_count
                     .checked_add(1)
@@ -1095,8 +1104,9 @@ mod tests {
             vertex_labels: Vec::new(),
             initial_properties: Vec::new(),
         }]);
-        let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
-        let chunk_fingerprint = chunk_envelope.fingerprint().unwrap();
+        let chunk_fingerprint = BulkLoadChunkEnvelopeV1::from_chunk(&chunk)
+            .fingerprint()
+            .unwrap();
         let graph_receipt = BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
             logical_vertex_count: 1,
             emitted_delta_first_seq: None,
@@ -1114,9 +1124,8 @@ mod tests {
         };
         let row = BulkLoadChunkReceiptRecordV1 {
             chunk_fingerprint,
-            chunk_envelope,
-            graph_request: request,
-            graph_request_fingerprint,
+            graph_request: Some(request),
+            graph_request_fingerprint: Some(graph_request_fingerprint),
             child_mutation_id: 1,
             progress: BulkLoadChunkProgressV1::CanonicalPending,
             public_receipt: None,
@@ -1350,6 +1359,10 @@ mod tests {
                 .progress,
             BulkLoadChunkProgressV1::Completed
         );
+        // Completed rows are compacted: the Graph request and its fingerprint are dropped.
+        let completed_row = store.bulk_load_chunk_receipt(parent_id, 0).unwrap();
+        assert!(completed_row.graph_request.is_none());
+        assert!(completed_row.graph_request_fingerprint.is_none());
     }
 
     #[test]

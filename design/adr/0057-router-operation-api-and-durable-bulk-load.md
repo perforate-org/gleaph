@@ -2,8 +2,8 @@
 
 Date: 2026-08-02
 Status: implemented
-Last revised: 2026-08-02
-Anchor timestamp: 2026-08-02 14:40:37 UTC +0000
+Last revised: 2026-08-06
+Anchor timestamp: 2026-08-06 07:02:35 UTC +0000
 
 ## Context
 
@@ -54,17 +54,17 @@ The operation-execution subset of the client-facing Router data plane uses these
 `prepare`, `drop_prepared`, `list_prepared`, and `vector_search` remain unchanged and are part of the
 complete L1 surface even though they are not operation-execution renames.
 
-| Method | IC call | Contract |
-| --- | --- | --- |
-| `gql_query` | query | Read-only ad-hoc GQL; rejects a mutating plan. |
-| `gql_mutate` | update | Idempotent ad-hoc GQL mutation. |
-| `prepared_query` | query | Read-only registered operation; manifest kind must match. |
-| `prepared_mutate` | update | Idempotent registered mutation; manifest kind must match. |
-| `atomic_insert` | update | Bounded typed vertex/edge insertion whose accepted canonical request is shard-local atomic. |
-| `bulk_load` | update | Durable client-driven initial-load lifecycle; chunks commit as a prefix and the whole job is not atomic. |
-| `mutation_status` | query | GQL/prepared mutation lifecycle only. |
-| `atomic_insert_status` | query | Atomic-insert lifecycle and exact durable receipt only. |
-| `bulk_load_status` | query | Bulk job state and paged committed-chunk receipts only. |
+| Method                 | IC call | Contract                                                                                                 |
+| ---------------------- | ------- | -------------------------------------------------------------------------------------------------------- |
+| `gql_query`            | query   | Read-only ad-hoc GQL; rejects a mutating plan.                                                           |
+| `gql_mutate`           | update  | Idempotent ad-hoc GQL mutation.                                                                          |
+| `prepared_query`       | query   | Read-only registered operation; manifest kind must match.                                                |
+| `prepared_mutate`      | update  | Idempotent registered mutation; manifest kind must match.                                                |
+| `atomic_insert`        | update  | Bounded typed vertex/edge insertion whose accepted canonical request is shard-local atomic.              |
+| `bulk_load`            | update  | Durable client-driven initial-load lifecycle; chunks commit as a prefix and the whole job is not atomic. |
+| `mutation_status`      | query   | GQL/prepared mutation lifecycle only.                                                                    |
+| `atomic_insert_status` | query   | Atomic-insert lifecycle and exact durable receipt only.                                                  |
+| `bulk_load_status`     | query   | Bulk job state and paged committed-chunk receipts only.                                                  |
 
 The non-bulk wire signatures are fixed as follows; `GqlQueryResult`, `ReadMode`, prepared sort, and
 parameter encodings retain their existing definitions:
@@ -253,14 +253,22 @@ another status shape.
 
 One new canonical Router map, `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` at the next free Router MemoryId 49,
 is keyed by
-`(bulk_job_mutation_id, chunk_index)` and stores the immutable chunk fingerprint, exact atomic-insert
-request envelope, unique child Graph mutation ID, state
+`(bulk_job_mutation_id, chunk_index)` and stores the immutable chunk fingerprint, resolved Graph
+request while the child can still be replayed, unique child Graph mutation ID, state
 (`CanonicalPending | CanonicalCommitted | ProjectionPending | RetirementPending | Completed`),
 exact atomic-insert receipt when committed, and completion metadata. The Router writes
 the parent `AppendPending` transition and the complete child row atomically before the first Graph
 `await`. This map provides bounded status pagination and response-loss
 recovery without growing and rewriting one unbounded parent value. Receipt insertion and parent
 cursor advancement occur in one Router message segment before Graph retirement is requested.
+
+Rows are deliberately sized to their lifecycle. The chunk envelope is **not persisted**: the stored
+chunk fingerprint is the resume idempotency key, and replay integrity is enforced by the
+Graph-request fingerprint handshake with the shard, so retaining a second copy of the payload only
+for read-time digest recomputation is dropped. `complete_bulk_load_child` **compacts completed rows**
+in place by dropping the resolved Graph request and its fingerprint; a completed child is never
+replayed, so status pagination, finalize, and receipt-GC decode only receipt-sized rows regardless
+of how large the original chunks were.
 
 Each chunk receives a distinct child `MutationId`; the parent job ID is never reused as a Graph
 journal key. Graph uses its existing ordered mutation journal at MemoryId 39 for each chunk and
@@ -319,28 +327,28 @@ bounded to `1..=MAX_BULK_LOAD_RECEIPTS_PER_PAGE`. Public status exposes no shard
 
 Command transitions are exhaustive:
 
-| Command | Current state | Result |
-| --- | --- | --- |
-| Any command | `receipt_gc_cursor.is_some()` | reject client-key-expired `Conflict` before dispatch; GC continues from its durable cursor |
-| Start | absent | create Open and return Started |
-| Start | same graph-scoped key exists as BulkLoadJob and GC is inactive | return `Started { next_chunk_index }` from the canonical coordinator |
-| Start | same graph-scoped key exists as another mutation family | reject Conflict |
-| Start | same textual key exists only on another graph | create an independent Open job |
-| Append(i,f) | Open and i == next | persist child then drive it |
-| Append(i,f) | same active or completed i/f | resume or return exact receipt |
-| Append(i,f) | every other lifecycle/fingerprint/index combination | reject Conflict before dispatch |
-| Finalize | Open with no active child | enter/resume FinalizePending, then Completed |
-| Finalize | FinalizePending | resume the exact persisted stage/cursor, then Completed |
-| Finalize | AppendPending | return `Busy { operation: "bulk_load.append" }` without transition |
-| Finalize | AbortPending | return `Busy { operation: "bulk_load.abort" }` without transition |
-| Finalize | Completed | return exact completed result |
-| Finalize | Aborted | reject Conflict |
-| Finalize | Failed | return the stored non-retryable failure verbatim |
-| Abort | Open | enter Aborted without canonical work |
-| Abort | AppendPending | enter AbortPending, finish exact child, then Aborted |
-| Abort | AbortPending or Aborted | resume or return exact aborted result |
-| Abort | FinalizePending or Completed | reject Conflict |
-| Abort | Failed | return the stored non-retryable failure verbatim |
+| Command     | Current state                                                  | Result                                                                                     |
+| ----------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Any command | `receipt_gc_cursor.is_some()`                                  | reject client-key-expired `Conflict` before dispatch; GC continues from its durable cursor |
+| Start       | absent                                                         | create Open and return Started                                                             |
+| Start       | same graph-scoped key exists as BulkLoadJob and GC is inactive | return `Started { next_chunk_index }` from the canonical coordinator                       |
+| Start       | same graph-scoped key exists as another mutation family        | reject Conflict                                                                            |
+| Start       | same textual key exists only on another graph                  | create an independent Open job                                                             |
+| Append(i,f) | Open and i == next                                             | persist child then drive it                                                                |
+| Append(i,f) | same active or completed i/f                                   | resume or return exact receipt                                                             |
+| Append(i,f) | every other lifecycle/fingerprint/index combination            | reject Conflict before dispatch                                                            |
+| Finalize    | Open with no active child                                      | enter/resume FinalizePending, then Completed                                               |
+| Finalize    | FinalizePending                                                | resume the exact persisted stage/cursor, then Completed                                    |
+| Finalize    | AppendPending                                                  | return `Busy { operation: "bulk_load.append" }` without transition                         |
+| Finalize    | AbortPending                                                   | return `Busy { operation: "bulk_load.abort" }` without transition                          |
+| Finalize    | Completed                                                      | return exact completed result                                                              |
+| Finalize    | Aborted                                                        | reject Conflict                                                                            |
+| Finalize    | Failed                                                         | return the stored non-retryable failure verbatim                                           |
+| Abort       | Open                                                           | enter Aborted without canonical work                                                       |
+| Abort       | AppendPending                                                  | enter AbortPending, finish exact child, then Aborted                                       |
+| Abort       | AbortPending or Aborted                                        | resume or return exact aborted result                                                      |
+| Abort       | FinalizePending or Completed                                   | reject Conflict                                                                            |
+| Abort       | Failed                                                         | return the stored non-retryable failure verbatim                                           |
 
 Every `BulkLoadCoordinator::Failed` state is non-retryable; transient remote or projection failures
 remain in their resumable pending state and use the enclosing record's diagnostic field. The

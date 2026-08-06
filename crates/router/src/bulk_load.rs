@@ -644,13 +644,20 @@ async fn drive_bulk_child(
         }
         match child.progress {
             BulkLoadChunkProgressV1::CanonicalPending => {
+                let graph_request = child.graph_request.as_ref().ok_or_else(|| {
+                    RouterError::Internal("bulk-load child lacks its Graph request".into())
+                })?;
                 let graph_receipt = dispatch_graph_child(
-                    &child.graph_request,
+                    graph_request,
                     child.child_mutation_id,
-                    child.graph_request_fingerprint,
+                    child.graph_request_fingerprint.ok_or_else(|| {
+                        RouterError::Internal(
+                            "bulk-load child lacks its Graph request fingerprint".into(),
+                        )
+                    })?,
                 )
                 .await?;
-                let (request_graph_id, shard_id, graph_canister) = child.graph_request.target();
+                let (request_graph_id, shard_id, graph_canister) = graph_request.target();
                 if request_graph_id != graph_id
                     || shard_id != target.shard_id
                     || graph_canister != target.graph_canister
@@ -706,9 +713,15 @@ async fn drive_bulk_child(
                     RouterError::Internal("bulk-load child lacks its Graph receipt".into())
                 })?;
                 retire_graph_child(
-                    &child.graph_request,
+                    child.graph_request.as_ref().ok_or_else(|| {
+                        RouterError::Internal("bulk-load child lacks its Graph request".into())
+                    })?,
                     child.child_mutation_id,
-                    child.graph_request_fingerprint,
+                    child.graph_request_fingerprint.ok_or_else(|| {
+                        RouterError::Internal(
+                            "bulk-load child lacks its Graph request fingerprint".into(),
+                        )
+                    })?,
                     &graph_receipt,
                 )
                 .await?;
@@ -824,9 +837,8 @@ async fn append_bulk_load(
     )?;
     let child = BulkLoadChunkReceiptRecordV1 {
         chunk_fingerprint,
-        chunk_envelope,
-        graph_request,
-        graph_request_fingerprint,
+        graph_request: Some(graph_request),
+        graph_request_fingerprint: Some(graph_request_fingerprint),
         child_mutation_id: 1,
         progress: BulkLoadChunkProgressV1::CanonicalPending,
         public_receipt: None,
@@ -972,6 +984,8 @@ pub(crate) fn bulk_load_status_public(
     let record = bulk_record(&store, caller, graph_id, &client_bulk_key)?;
     let coordinator = bulk_parent(&record)?;
     let cursor = receipt_cursor.unwrap_or(0);
+    // Completed rows are compacted by `complete_bulk_load_child`, so status pagination decodes
+    // only receipt-sized rows; a job has at most one transient in-flight child at a time.
     let rows =
         store.list_bulk_load_chunk_receipts(record.as_v1().mutation_id, cursor, max_receipts)?;
     let receipts = rows

@@ -1705,37 +1705,57 @@ fn bulk_load_gc_fixture_row(
         vertex_labels: Vec::new(),
         initial_properties: Vec::new(),
     }]);
-    let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
-    let chunk_fingerprint = chunk_envelope.fingerprint().expect("chunk fingerprint");
-    let (public_receipt, graph_receipt, completed_at_ns) = match progress {
-        BulkLoadChunkProgressV1::CanonicalPending => (None, None, None),
-        BulkLoadChunkProgressV1::CanonicalCommitted
-        | BulkLoadChunkProgressV1::ProjectionPending
-        | BulkLoadChunkProgressV1::RetirementPending
-        | BulkLoadChunkProgressV1::Completed => {
-            let graph_receipt = BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
-                logical_vertex_count: 1,
-                emitted_delta_first_seq: None,
-                emitted_delta_last_seq: None,
-                hot_forward_vertices: Vec::new(),
-                allocated_vertex_ids: vec![chunk_index + 1],
-            });
-            let public_receipt = crate::types::AtomicInsertReceiptV1 {
-                logical_operation_count: 1,
-                logical_vertex_count: 1,
-                logical_edge_count: 0,
-                allocated_vertex_ids: vec![vec![
-                    0;
-                    gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
-                ]],
-            };
-            let completed_at_ns = (progress == BulkLoadChunkProgressV1::Completed).then_some(10);
-            (Some(public_receipt), Some(graph_receipt), completed_at_ns)
-        }
-    };
+    let chunk_fingerprint = BulkLoadChunkEnvelopeV1::from_chunk(&chunk)
+        .fingerprint()
+        .expect("chunk fingerprint");
+    let (graph_request, graph_request_fingerprint, public_receipt, graph_receipt, completed_at_ns) =
+        match progress {
+            BulkLoadChunkProgressV1::CanonicalPending => (
+                Some(graph_request),
+                Some(graph_request_fingerprint),
+                None,
+                None,
+                None,
+            ),
+            BulkLoadChunkProgressV1::CanonicalCommitted
+            | BulkLoadChunkProgressV1::ProjectionPending
+            | BulkLoadChunkProgressV1::RetirementPending
+            | BulkLoadChunkProgressV1::Completed => {
+                let graph_receipt =
+                    BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
+                        logical_vertex_count: 1,
+                        emitted_delta_first_seq: None,
+                        emitted_delta_last_seq: None,
+                        hot_forward_vertices: Vec::new(),
+                        allocated_vertex_ids: vec![chunk_index + 1],
+                    });
+                let public_receipt = crate::types::AtomicInsertReceiptV1 {
+                    logical_operation_count: 1,
+                    logical_vertex_count: 1,
+                    logical_edge_count: 0,
+                    allocated_vertex_ids: vec![vec![
+                        0;
+                        gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+                    ]],
+                };
+                let completed_at_ns =
+                    (progress == BulkLoadChunkProgressV1::Completed).then_some(10);
+                // Completed rows are compacted; non-terminal rows retain the Graph request.
+                let request =
+                    (progress != BulkLoadChunkProgressV1::Completed).then_some(graph_request);
+                let fingerprint = (progress != BulkLoadChunkProgressV1::Completed)
+                    .then_some(graph_request_fingerprint);
+                (
+                    request,
+                    fingerprint,
+                    Some(public_receipt),
+                    Some(graph_receipt),
+                    completed_at_ns,
+                )
+            }
+        };
     let row = BulkLoadChunkReceiptRecordV1 {
         chunk_fingerprint,
-        chunk_envelope,
         graph_request,
         graph_request_fingerprint,
         child_mutation_id: parent_mutation_id + chunk_index as u64 + 1,

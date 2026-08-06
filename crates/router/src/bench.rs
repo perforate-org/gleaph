@@ -46,8 +46,10 @@ fn router_stable_reopen_round() {
     black_box(memory::init_provisioning_by_graph());
     black_box(memory::init_provisioning_intent_locks());
     black_box(memory::init_provision_config());
-    // schema migrations
+    // durable bulk-load receipts (ADR 0057) and the index-catalog epoch fence (ADR 0059)
+    black_box(memory::init_bulk_load_chunk_receipts());
     black_box(memory::init_schema_migrations());
+    black_box(memory::init_index_catalog_epoch());
     // telemetry
     black_box(memory::init_vertex_label_stats());
     black_box(memory::init_edge_label_stats());
@@ -880,34 +882,54 @@ fn bulk_bench_receipt_row(
     let graph_request = bulk_bench_graph_request(graph_id, target, operation_count);
     let graph_request_fingerprint = graph_request.fingerprint().expect("Graph fingerprint");
     let chunk = bulk_bench_chunk_envelope(operation_count);
-    let chunk_envelope = BulkLoadChunkEnvelopeV1::from_chunk(&chunk);
-    let chunk_fingerprint = chunk_envelope.fingerprint().expect("Chunk fingerprint");
-    let (graph_receipt, public_receipt, completed_at_ns) = match progress {
-        BulkLoadChunkProgressV1::CanonicalPending => (None, None, None),
-        BulkLoadChunkProgressV1::CanonicalCommitted
-        | BulkLoadChunkProgressV1::ProjectionPending
-        | BulkLoadChunkProgressV1::RetirementPending
-        | BulkLoadChunkProgressV1::Completed => {
-            let graph_receipt = BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
-                logical_vertex_count: operation_count as u64,
-                emitted_delta_first_seq: None,
-                emitted_delta_last_seq: None,
-                hot_forward_vertices: Vec::new(),
-                allocated_vertex_ids: (0..operation_count as u32).collect(),
-            });
-            let public_receipt = AtomicInsertReceiptV1 {
-                logical_operation_count: operation_count as u64,
-                logical_vertex_count: operation_count as u64,
-                logical_edge_count: 0,
-                allocated_vertex_ids: vec![vec![0; 8]; operation_count],
-            };
-            let completed_at_ns = (progress == BulkLoadChunkProgressV1::Completed).then_some(1_u64);
-            (Some(graph_receipt), Some(public_receipt), completed_at_ns)
-        }
-    };
+    let chunk_fingerprint = BulkLoadChunkEnvelopeV1::from_chunk(&chunk)
+        .fingerprint()
+        .expect("Chunk fingerprint");
+    let (graph_request, graph_request_fingerprint, graph_receipt, public_receipt, completed_at_ns) =
+        match progress {
+            BulkLoadChunkProgressV1::CanonicalPending => (
+                Some(graph_request),
+                Some(graph_request_fingerprint),
+                None,
+                None,
+                None,
+            ),
+            BulkLoadChunkProgressV1::CanonicalCommitted
+            | BulkLoadChunkProgressV1::ProjectionPending
+            | BulkLoadChunkProgressV1::RetirementPending
+            | BulkLoadChunkProgressV1::Completed => {
+                let graph_receipt =
+                    BulkLoadGraphReceiptV1::Vertex(GraphOrderedVertexBatchReceiptV1 {
+                        logical_vertex_count: operation_count as u64,
+                        emitted_delta_first_seq: None,
+                        emitted_delta_last_seq: None,
+                        hot_forward_vertices: Vec::new(),
+                        allocated_vertex_ids: (0..operation_count as u32).collect(),
+                    });
+                let public_receipt = AtomicInsertReceiptV1 {
+                    logical_operation_count: operation_count as u64,
+                    logical_vertex_count: operation_count as u64,
+                    logical_edge_count: 0,
+                    allocated_vertex_ids: vec![vec![0; 8]; operation_count],
+                };
+                let completed_at_ns =
+                    (progress == BulkLoadChunkProgressV1::Completed).then_some(1_u64);
+                // Completed rows are compacted; non-terminal rows retain the Graph request.
+                let request =
+                    (progress != BulkLoadChunkProgressV1::Completed).then_some(graph_request);
+                let fingerprint = (progress != BulkLoadChunkProgressV1::Completed)
+                    .then_some(graph_request_fingerprint);
+                (
+                    request,
+                    fingerprint,
+                    Some(graph_receipt),
+                    Some(public_receipt),
+                    completed_at_ns,
+                )
+            }
+        };
     let row = BulkLoadChunkReceiptRecordV1 {
         chunk_fingerprint,
-        chunk_envelope,
         graph_request,
         graph_request_fingerprint,
         child_mutation_id: parent_mutation_id + chunk_index as u64 + 1,
