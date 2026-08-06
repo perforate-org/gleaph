@@ -1,13 +1,13 @@
 # Social Graph and GraphRAG Comparison Demo
 
-Last updated: 2026-08-03
+Last updated: 2026-08-06
 Anchor timestamp: 2026-07-13 08:15:23 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice and Yui home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the six fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-13 the timeline and home feeds use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all six scenarios, including vector distance values, a comparison of vector-only versus graph-constrained results, and a Japanese-clustered Yui home feed. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
+**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice and Yui home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end by the frontend calling Router `prepared_query` directly through `@gleaph/sdk` (prepared-query names are global per ADR 0063, so anonymous browser callers execute them without a gateway principal). As of 2026-07-13 the timeline and home feeds use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all six scenarios, including vector distance values, a comparison of vector-only versus graph-constrained results, and a Japanese-clustered Yui home feed. The local `icp` deployment bootstrap (`scripts/deploy-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
 
-As of 2026-08-03 the Gateway PocketIC e2e target (`crates/pocket-ic-tests/tests/social_graph_demo.rs`) was removed from the suite pending re-establishment as an independent test target; the verification record below remains the historical contract for the Gateway read path.
+As of 2026-08-03 the Gateway PocketIC e2e target (`crates/pocket-ic-tests/tests/social_graph_demo.rs`) was removed from the suite pending re-establishment as an independent test target; the verification record below remains the historical contract for the Gateway read path. As of 2026-08-06 the frontend connects directly to the Router through `@gleaph/sdk`; the `gleaph-social-demo-gateway` canister and the `crates/social-demo-gateway` crate were removed.
 
 The deterministic fixture contains 11 users and 25 Posts (24 public), with Alice following six
 active authors. The posts use opaque generator-owned graph keys; authored reply references remain
@@ -17,35 +17,36 @@ readable as `<author>/<post-stem>` paths.
 
 As of 2026-07-31 05:00:26 UTC +0000:
 
-- Canonical manifest: `frontend/apps/social-demo/seeds/social-graph.json`.
-- Generated typed-load artifact: `frontend/apps/social-demo/seeds/social-load.json`.
-- Config-driven build: `frontend/apps/social-demo/scripts/build-config.mjs`.
+- Canonical manifest: `demo/social/seeds/social-graph.json`.
+- Generated load artifact (`gleaph load` NDJSON schema): `demo/social/seeds/vertices.jsonl` + `edges.jsonl`.
+- Config-driven build: `demo/social/scripts/build-config.mjs`.
 - The seed graph now includes a `public-feed` Feed vertex and materialized `IN_PUBLIC_FEED` /
   `IN_HOME_FEED` edges so the public timeline and home feed read paths need no runtime sort key.
-- Seed generator: `frontend/apps/social-demo/scripts/build-config.mjs` emits the canonical graph
+- Seed generator: `demo/social/scripts/build-config.mjs` emits the canonical graph
   manifest and seed artifact from the social-demo configuration.
-- Seed applier: `frontend/apps/social-demo/scripts/apply-social-load.mjs` exact-replays durable
-  vertex and edge chunks, recovers canonical IDs from vertex receipts, ingests embeddings from those
-  IDs, and fences whole-load completion with the permanent `SeedLoad` marker.
-- Gateway canister: `crates/social-demo-gateway`.
-- Committed Gateway Candid: `crates/social-demo-gateway/social_demo_gateway.did`.
-- Candid drift check: `scripts/check-social-demo-gateway-candid.sh` verifies the committed
-  interface matches the Rust-exported WASM `candid:service` metadata.
+- Schema and seed applier: `gleaph migration apply` (graph type, typed graph, property
+  indexes in `demo/social/migrations/`) then `gleaph load seeds/vertices.jsonl seeds/edges.jsonl`
+  (durable `bulk_load` with receipt replay and `--state-file` skip/resume).
+- Gateway canister and crate: `crates/social-demo-gateway` (removed 2026-08-06 with the SDK-direct
+  frontend; the demo no longer deploys or invokes a gateway canister).
 - Gateway PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs` (removed 2026-08-03 pending re-establishment as an independent target).
-- Public comparison frontend: `frontend/apps/social-demo`.
+- Public comparison frontend: `demo/social`.
   - Dedicated Solid application.
-  - Browser calls only the Gateway actor; no Router `gql_query`, arbitrary GQL, prepared-query
-    names, graph names, or client-controlled parameters are exposed.
-  - Three fixed scenario selectors matching the Gateway enum.
-  - Fail-closed row decoder validates columns, row counts, and `rows_blob` shape.
-  - Loading, retry, missing-canister-config, Gateway `Err`, and inter-canister failure states.
+  - Browser calls Router `prepared_query` directly through `@gleaph/sdk` by prepared-query
+    name; no arbitrary GQL, graph names, or client-controlled query text are exposed.
+  - Six fixed scenario selectors matching the registered prepared queries.
+  - Fail-closed row decoder validates columns and row shapes over the SDK-decoded rows.
+  - Loading, retry, missing-Router-config, and canister-error states.
   - Microblog-style layout with relational-baseline and graph-value explanation for each
     scenario; topic path renders the returned edge identities as a relationship trail.
   - Anonymous read-only notice and no login affordance.
-- Asset canister: `social-demo` in `icp.yaml`, receiving
-  `PUBLIC_CANISTER_ID:gleaph-social-demo-gateway` from deployment.
-- Local deployment script: `scripts/deploy-social-demo-local.sh` creates/deploys the asset
-  canister after backend setup and prints the frontend URL. Before canister creation it ensures
+- Asset canister: `social-demo` in `demo/social/icp.yaml`, with the Router principal baked into
+  the bundle at build time through `VITE_GLEAPH_ROUTER_CANISTER_ID` (written to `.env.local` by
+  the deploy scripts before the frontend build).
+- Local deployment script: `scripts/deploy-demo-local.sh` bootstraps the platform (Router/
+  Index/Graph/Vector from the repository-root `icp.yaml`), registers the `social` graph and
+  vector wiring, then runs the demo flow (`demo/social/scripts/deploy-local.sh`), which
+  creates/deploys the asset canister and prints the frontend URL. Before canister creation it ensures
   the named local deployer has the bootstrap cycle budget by transferring fabricated cycles from
   the local `anonymous` identity; this is a local-network convenience and is not a mainnet funding
   contract.
@@ -64,12 +65,11 @@ As of 2026-07-31 05:00:26 UTC +0000:
   - topic explanation path through a followee's post, returning the node and edge identities
     that explain why the result was selected, with a non-matching topic adversary excluded,
     executed by an anonymous caller through the Gateway;
-  - fail-closed RBAC (the Gateway principal is graph-visible and a default Router Executor with no
-    ad-hoc `Read` role; a default-Executor principal and anonymous callers cannot run general
-    ad-hoc `gql_query` directly on Router);
-  - the Gateway API cannot express arbitrary GQL, prepared-query names, graph names, or
-    client-controlled parameters;
-  - the frontend boundary cannot reach Router directly.
+  - fail-closed RBAC (prepared execution is name-addressed and public per ADR 0063; callers cannot
+    run arbitrary ad-hoc `gql_query` on Router);
+  - the frontend boundary cannot express arbitrary GQL, prepared-query names, graph names, or
+    client-controlled query text; it calls only the six registered prepared queries by name;
+  - the frontend connects directly to the Router; there is no intermediary gateway canister.
 
 ## Purpose
 
@@ -154,19 +154,19 @@ authenticated viewer.
 
 Consequences:
 
-- the frontend may execute only the six fixed read-only scenarios through the application-owned
-  `gleaph-social-demo-gateway` canister, which delegates to administrator-registered Router
-  prepared queries as the Gateway principal;
-- the Gateway exposes no arbitrary GQL, prepared-query name, graph selection, or client-controlled
-  parameters;
+- the frontend may execute only the six fixed read-only scenarios by calling Router
+  `prepared_query` by name through `@gleaph/sdk`; prepared execution is name-addressed and
+  public (ADR 0063), so no gateway principal is involved;
+- the frontend never sends arbitrary GQL, graph selection, or client-controlled query text;
+  prepared-query names are global and collision-avoidance is the Gleaph user's responsibility;
 - interactive writes, private drafts, account settings, and ownership-sensitive mutations are out
   of scope;
 - the UI must not display a fake login state or imply that the selected scenario user is
   `MSG_CALLER()`;
 - the demo must not present its query predicates as an RLS-equivalent security proof;
-- Router observes the Gateway principal, not the anonymous browser caller. A future caller-aware
-  prepared query may capture `ic_cdk::api::msg_caller()` in the Gateway before `await` and pass it
-  as a Gateway-generated `IC.PRINCIPAL` parameter; this slice does not add that plumbing.
+- Router observes the anonymous browser caller directly. Caller-aware prepared-query semantics
+  (per-query authorization, public-vs-visible graphs) are deferred to the future access-control
+  design (ADR 0063); this slice does not add that plumbing.
 
 Internet Identity should be added in a later application phase when the demo intentionally covers
 caller-owned drafts or mutations. That addition is application work unless it reveals a missing
@@ -289,8 +289,8 @@ As verified against the repository on 2026-07-04 UTC:
 | Property equality/range indexes                           | Implemented with documented consistency semantics                                   | Candidate filtering                                                                                                                       |
 | Prepared queries and `MSG_CALLER()`                       | Implemented                                                                         | Narrow public read surface now; caller-aware queries later                                                                                |
 | Graph-scoped Router roles                                 | Implemented                                                                         | Protect administration and ad-hoc query access                                                                                            |
-| Application-owned public read Gateway                     | Implemented                                                                         | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params                                              |
-| Dedicated public comparison frontend                      | Implemented                                                                         | Browser calls only the Gateway; no Router GQL, arbitrary inputs, auth, vector, or LLM scope                                               |
+| Application-owned public read Gateway                     | Removed 2026-08-06                                                                  | Historical trusted-deputy pattern; superseded by name-addressed public prepared queries (ADR 0063)                                        |
+| Dedicated public comparison frontend                      | Implemented                                                                         | Browser calls Router `prepared_query` by name through `@gleaph/sdk`; no arbitrary GQL, auth, vector, or LLM scope                         |
 | Transparent row-level policy engine                       | Not implemented                                                                     | Do not claim RLS parity                                                                                                                   |
 | Canonical vertex embeddings and derived vector indexes    | Implemented                                                                         | Semantic post retrieval through Router canonical ingestion; vector canister installed, activated, and attached by the local deploy script |
 | Vector `SEARCH` joined with graph execution               | Implemented for bounded vertex-only shapes and the two social demo prepared queries | Graph-aware semantic retrieval rendered in the frontend with exact distance values                                                        |
@@ -332,7 +332,7 @@ The demo also selects Yui as a Japanese-clustered scenario subject. Yui's home f
 materialized-edge read path, but the seeded follows and posts make a mostly Japanese-language
 neighborhood visible, with occasional cross-cluster posts where the canonical seed includes a
 bridge relationship. This is presentation data, not a language or identity classification enforced
-by the Gateway.
+by the Router or the prepared queries.
 
 ### Scenario C: topic and discussion propagation
 
@@ -359,21 +359,17 @@ the application-owned `ic-llm` client, and render:
 ```mermaid
 flowchart LR
     U["Viewer"] --> F["Social demo frontend"]
-    F --> GW["Social demo Gateway"]
-    GW --> R["Gleaph Router"]
+    F --> R["Gleaph Router"]
     R --> P["Property Index"]
     R --> V["Vector Index"]
     R --> G["Graph shard"]
     F -.planned.> O["GraphRAG orchestration service"]
     O --> R
-    O -.planned.> E["Embedding provider"]
-    O --> L["IC LLM canister via ic-llm"]
 ```
 
-For the first read-only graph comparison, the browser calls only the application-owned Gateway for
-the six fixed scenarios. Router sees the Gateway principal on the delegated composite query; the
-original browser caller remains anonymous and has no graph visibility. GraphRAG, embedding, and
-LLM components remain absent until Phase 3.
+For the first read-only graph comparison, the browser calls Router `prepared_query` directly
+through `@gleaph/sdk` for the six fixed scenarios; prepared queries are name-addressed and public
+(ADR 0063). GraphRAG, embedding, and LLM components remain absent until Phase 3.
 
 When GraphRAG is enabled, the orchestration service calls only Router-facing APIs; it must not
 query Graph, Property Index, or Vector Index canisters directly.
@@ -405,15 +401,18 @@ strategy, and time-bucketed public feeds to address the hot-vertex concern.
 
 ## Frontend and reuse strategy
 
-The public comparison is implemented as a dedicated `frontend/apps/social-demo` Solid application.
-It uses the workspace's pnpm/Vite/Tailwind/Solid tooling and the `safeGetCanisterEnv` canister
-environment pattern. The Gateway owns the scenario contract and row shape; the frontend owns
+The public comparison is implemented as a dedicated `demo/social` Solid application.
+It uses the workspace's pnpm/Vite/Tailwind/Solid tooling, with the Router principal configured
+through `VITE_GLEAPH_ROUTER_CANISTER_ID` (plus `VITE_IC_HOST` / `VITE_FETCH_ROOT_KEY` for local
+replicas). The prepared queries own the scenario contract and row shape; the frontend owns
 presentation, fail-closed decoding, and comparison copy.
 
-In `pnpm --filter @gleaph/social-demo dev`, `scripts/deploy-social-demo-local.sh` writes `frontend/apps/social-demo/.env.local` with the deployed Gateway id and the local replica URL; the file is gitignored. The write is gated on a `/api/v2/status` listen check, so a half-up replica never poisons the env. Set `GLEAPH_DEMO_SKIP_VITE_ENV=1` to opt out entirely, or `GLEAPH_DEMO_FORCE_VITE_IC_HOST=1` to also overwrite the cached `VITE_IC_HOST` (default keeps a hand-pinned host stable for CI).
+In `pnpm --filter @gleaph/social-demo dev`, `demo/social/scripts/deploy-local.sh` writes
+`demo/social/.env.local` with the deployed Router id and the local replica URL; the file is
+gitignored.
 
 When Phase 2/3 add vector comparison and GraphRAG orchestration, the same dedicated application
-should extend only through new Gateway scenarios and application-owned orchestration calls, not by
+should extend only through new prepared queries and application-owned orchestration calls, not by
 adding arbitrary query controls or Router GQL entrypoints to the public UI.
 
 ## Source-of-truth and security rules
@@ -445,7 +444,7 @@ adding arbitrary query controls or Router GQL entrypoints to the public UI.
 
 - Add externally generated Post embeddings to the deterministic seed. **(implemented)**
 - Register and activate one vector index through the current admin surface. **(implemented for the PocketIC fixture and the local `icp` deploy wiring)**
-- Add vector-only and graph-aware semantic retrieval scenarios. **(implemented: backend prepared-query and Gateway scenario contracts, plus frontend rendering)**
+- Add vector-only and graph-aware semantic retrieval scenarios. **(implemented: backend prepared-query contracts plus frontend rendering)**
 - Make ranking and path explanations independently visible. **(implemented; distance values and the adversarial unfollowed-Post comparison are rendered in the frontend)**
 
 ### Phase 3: GraphRAG orchestration

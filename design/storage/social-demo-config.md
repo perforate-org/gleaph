@@ -3,25 +3,25 @@
 Date: 2026-07-17
 Status: Implemented
 Anchor timestamp: 2026-07-17 03:17:35 UTC +0000
-Last updated: 2026-08-02 UTC
+Last updated: 2026-08-06 UTC
 
 ## Purpose
 
 The social-demo sample graph is authored as per-file YAML under
-`frontend/apps/social-demo/config/` rather than as a single hand-maintained JSON
+`demo/social/config/` rather than as a single hand-maintained JSON
 file and inline shell literals. A single build script emits the five artifacts
 that the rest of the pipeline already consumes:
 
-1. `frontend/apps/social-demo/seeds/social-graph.json` — graph topology.
-2. `frontend/apps/social-demo/seeds/social-load.json` — ordered typed vertices, edges, and embeddings.
-3. `frontend/apps/social-demo/src/data/scenarios.generated.ts` — TypeScript
+1. `demo/social/seeds/social-graph.json` — graph topology (canonical manifest).
+2. `demo/social/seeds/vertices.jsonl` + `edges.jsonl` — ordered typed vertices and edges as an NDJSON row stream in the `gleaph load` artifact schema (`format_version: 1`).
+3. `demo/social/src/data/scenarios.generated.ts` — TypeScript
    scenario definitions for the React app.
-4. `frontend/apps/social-demo/src/data/scenarios.generated.json` — scenario
+4. `demo/social/src/data/scenarios.generated.json` — scenario
    metadata for deploy tooling.
-5. `frontend/apps/social-demo/src/data/userAvatars.generated.ts` — avatar lookup metadata.
+5. `demo/social/src/data/userAvatars.generated.ts` — avatar lookup metadata.
 
-All five artifacts are committed to the repository (option A), so the React app
-and deploy script can run without first regenerating them.
+All five artifacts are committed to the repository (option A), so the frontend
+and the CLI flow can run without first regenerating them.
 
 The current fixture has 23 users, 61 Posts (60 public and one private), 8 reply
 edges, and Alice follows six active authors. It is large enough to make multi-hop
@@ -56,8 +56,8 @@ the Candid wire). Allocation is users, communities, topics, posts, then feeds; e
 by its configuration path. The current fixture therefore allocates users `1..23`, its community
 as `24`, topics `25..26`, Posts `27..87`, and `public-feed` as `88`.
 
-The typed load artifact emits each `demo_id` as the logical value `{ "Int64": <N> }` and the
-loader passes it through the JS SDK canonical value encoder. The id-to-string mapping is emitted as `DEMO_ID_MAP` in
+The typed load artifact emits each `demo_id` as the logical value `{ "Int64": <N> }` and
+`gleaph load` passes it through the CLI's canonical value encoder. The id-to-string mapping is emitted as `DEMO_ID_MAP` in
 `scenarios.generated.ts` so the React app can convert textual keys to numeric
 values when needed.
 
@@ -75,13 +75,13 @@ values when needed.
 
 ### `users/<user>/posts/<stem>.yaml`
 
-| Field        | Type              | Use                                                                                               |
-| ------------ | ----------------- | ------------------------------------------------------------------------------------------------- |
-| `body`       | string            | Post `body` property and display label.                                                           |
-| `created_at` | 12-digit integer (optional) | `YYYYMMDDHHmm`; normalized to UTC `DateTime`, with two-digit hour/minute overflow carried forward. Defaults deterministically from the file path. |
-| `is_public`  | bool (optional)   | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
-| `topics`     | list of topic ids | Generates `HAS_TOPIC` edges.                                                                      |
-| `reply_to`   | `<author>/<stem>` (optional) | Resolves a parent config path and generates one canonical outgoing `REPLY_TO` edge.       |
+| Field        | Type                         | Use                                                                                                                                               |
+| ------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `body`       | string                       | Post `body` property and display label.                                                                                                           |
+| `created_at` | 12-digit integer (optional)  | `YYYYMMDDHHmm`; normalized to UTC `DateTime`, with two-digit hour/minute overflow carried forward. Defaults deterministically from the file path. |
+| `is_public`  | bool (optional)              | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`).                                                 |
+| `topics`     | list of topic ids            | Generates `HAS_TOPIC` edges.                                                                                                                      |
+| `reply_to`   | `<author>/<stem>` (optional) | Resolves a parent config path and generates one canonical outgoing `REPLY_TO` edge.                                                               |
 
 An explicit post `id` is rejected. The generator owns opaque Post identity, resolves
 `reply_to` through `<author>/<stem>`, and derives the numeric `demo_id` from the global allocator.
@@ -104,21 +104,24 @@ An explicit post `id` is rejected. The generator owns opaque Post identity, reso
 
 ### `scenarios/<id>.yaml`
 
-| Field              | Type                     | Use                                               |
-| ------------------ | ------------------------ | ------------------------------------------------- |
-| `id`               | string                   | PascalCase `SocialDemoScenario` variant name.     |
-| `preparedQueryId`  | string                   | snake_case name sent to `prepared_upsert`.      |
-| `label`            | string                   | Display label.                                    |
-| `shortLabel`       | string                   | Short display label.                              |
-| `feedTitle`        | string                   | Feed panel title.                                 |
-| `rdbSummary`       | string                   | Relational summary text.                          |
-| `graphSummary`     | string                   | Graph summary text.                               |
-| `preparedQuery`    | string                   | GQL string for `prepared_upsert`. Must include a `LIMIT ... OFFSET $offset` clause so the frontend can page. |
-| `semanticVector`   | list of floats or `null` | Optional reference vector for semantic scenarios. |
+| Field             | Type                     | Use                                                                                         |
+| ----------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| `id`              | string                   | PascalCase `SocialDemoScenario` variant name.                                               |
+| `preparedQueryId` | string                   | kebab-case stem of `prepared/<preparedQueryId>.gql`; registered by `gleaph prepared apply`. |
+| `label`           | string                   | Display label.                                                                              |
+| `shortLabel`      | string                   | Short display label.                                                                        |
+| `feedTitle`       | string                   | Feed panel title.                                                                           |
+| `rdbSummary`      | string                   | Relational summary text.                                                                    |
+| `graphSummary`    | string                   | Graph summary text.                                                                         |
+| `semanticVector`  | list of floats or `null` | Optional reference vector for semantic scenarios.                                           |
+
+The prepared-query source is authored as `prepared/<preparedQueryId>.gql` (the Gleaph CLI's
+native format) rather than in the scenario YAML; the generator embeds it into
+`scenarios.generated.*` after stripping `///` doc-comment lines.
 
 ## Build pipeline
 
-`frontend/apps/social-demo/scripts/build-config.mjs` is the single source of
+`demo/social/scripts/build-config.mjs` is the single source of
 truth for the emitted artifacts:
 
 1. Walk `config/users/<user>/{profile.yaml,posts/*.yaml}` to materialize User
@@ -133,10 +136,13 @@ truth for the emitted artifacts:
    one author's posts together.
 6. Emit vertices before edges in manifest order. Edge endpoints retain application `source_id`
    references and are converted to canonical IDs only from replay-proven vertex receipts.
-7. Emit `social-graph.json` and `social-load.json` in the exact shape consumed
-   by the social-demo typed-load path.
+7. Emit `social-graph.json` and the `gleaph load` artifact as an NDJSON pair
+   (`vertices.jsonl` + `edges.jsonl`; one row per line, edge rows use
+   `source`/`target` endpoints). The CLI validates and chunks NDJSON as a
+   bounded-memory stream; the single-file JSON family is capped at 64 MiB.
 8. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
-   scenario YAMLs.
+   scenario YAMLs; the prepared-query text is read from
+   `prepared/<preparedQueryId>.gql`.
 
 ## Deterministic post id allocator and ordering
 
@@ -229,15 +235,15 @@ parent is absent from the current feed remains visible as a root rather than bei
 
 The 6 scenario `preparedQuery` strings share a common set of RETURN columns:
 
-| Column                                               | Type                                       | Source              | Use                                                     |
-| ---------------------------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------- |
-| `post_id`                                            | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id`         | Stable deterministic post id from the global allocator. |
-| `body`                                               | text                                       | `p.body`            | The post content rendered by the React app.             |
-| `created_at`                                         | UTC DateTime                               | `p.created_at`      | Deterministic chronological value for non-semantic scenarios. |
-| `parent_post_id`                                     | numeric or `NULL`                          | `parent.demo_id`    | Optional canonical reply parent for timeline tree display. |
-| `distance`                                           | float32                                    | vector SEARCH       | L2-squared distance for semantic scenarios only.        |
-| `follows_edge_id`, `second_follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text | edge `demo_edge_id` | Four-hop relationship trail explanation in `TopicPath`. |
-| `topic_id`                                           | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id`         | Stable topic id in `TopicPath`.                         |
+| Column                                                                         | Type                                       | Source              | Use                                                           |
+| ------------------------------------------------------------------------------ | ------------------------------------------ | ------------------- | ------------------------------------------------------------- |
+| `post_id`                                                                      | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id`         | Stable deterministic post id from the global allocator.       |
+| `body`                                                                         | text                                       | `p.body`            | The post content rendered by the React app.                   |
+| `created_at`                                                                   | UTC DateTime                               | `p.created_at`      | Deterministic chronological value for non-semantic scenarios. |
+| `parent_post_id`                                                               | numeric or `NULL`                          | `parent.demo_id`    | Optional canonical reply parent for timeline tree display.    |
+| `distance`                                                                     | float32                                    | vector SEARCH       | L2-squared distance for semantic scenarios only.              |
+| `follows_edge_id`, `second_follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text                                       | edge `demo_edge_id` | Four-hop relationship trail explanation in `TopicPath`.       |
+| `topic_id`                                                                     | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id`         | Stable topic id in `TopicPath`.                               |
 
 All columns except `distance` are stored graph properties or edge properties; the
 GQL layer simply projects them. The `body` column was added to the seed GQL in
@@ -286,23 +292,21 @@ The two semantic scenarios (`SemanticDiscovery`, `AliceSemanticFeed`) use an
 `semanticVector:` and emitted into `scenarios.generated.json` by
 `build-config.mjs`.
 
-The `social-demo-gateway` canister loads the vector at init time through Rust
-`include_str!` on `frontend/apps/social-demo/src/data/scenarios.generated.json`
-(no separate `build.rs`). The JSON is parsed once with `serde_json::from_str` and
-stored in a thread-local; `scenario_to_request` selects the vector for the active
-scenario and encodes it as a compact-binary GQL parameter blob. Updating the
-vector therefore requires only changing the YAML and rebuilding the canister
-(after regenerating the JSON artifact).
+The `social-demo-gateway` canister loaded the vector at init time through Rust
+`include_str!` on `demo/social/src/data/scenarios.generated.json`; the crate was removed on
+2026-08-06 with the SDK-direct frontend. The frontend now passes the vector directly: the
+semantic prepared queries declare a `Bytes` parameter `$query`, and the frontend sends the
+8-byte query vector (from `semanticVector` in the generated scenario definitions) as the
+parameter value through `@gleaph/sdk`. Updating the vector therefore requires only changing
+the YAML and rerunning `pnpm build:config`.
 
 ## Pagination
 
 Every scenario supports server-side pagination through the GQL `OFFSET $offset`
-parameter. The `social-demo-gateway` `SocialDemoScenario` variant carries an
-`offset : nat32` field; the Gateway encodes it as an `Int64` GQL parameter named
-`$offset` (the graph executor binds parameters by their source token, including
-the leading `$`). The prepared query strings include `OFFSET $offset` and a fixed page
-size (currently `LIMIT 20`). The React app tracks an accumulated feed and loads
-the next page through an IntersectionObserver sentinel at the bottom of the list.
+parameter. The frontend sends `$offset` as an `Int64` GQL parameter (a JS number is
+encoded as `{Int64}` by the SDK). The prepared query strings include `OFFSET $offset` and
+a fixed page size (currently `LIMIT 20`). The React app tracks an accumulated feed and
+loads the next page through an IntersectionObserver sentinel at the bottom of the list.
 The page size is shared between the YAML `LIMIT` and the frontend constant
 `PAGE_SIZE` in `SocialDemo.tsx`.
 

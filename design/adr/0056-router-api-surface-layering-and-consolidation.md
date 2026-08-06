@@ -101,21 +101,21 @@ crates/router/src/
 
 ### 3. L1 client surface (data plane, ~11)
 
-| New API                                                        | Kind            | Replaces                                                                                 |
-| -------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------- |
-| `gql_query(query, params, read_mode)`                          | composite query | `gql_query` + `gql_query_with_consistency`                                               |
-| `gql_mutate(query, params, client_mutation_key)`              | update          | prior `gql_execute_idempotent`/non-idempotent split; no compatibility alias              |
-| `atomic_insert(request)`                                      | update          | retired typed public insert names; no compatibility alias                                      |
-| `bulk_load(command)`                                         | update          | durable start/append/finalize/abort initial-load lifecycle                                |
-| `mutation_status(graph, client_mutation_key)`                 | query           | prior `get_mutation_status`                                                              |
-| `atomic_insert_status(graph, client_mutation_key)`             | query           | new family-specific ordered receipt lookup                                                |
-| `bulk_load_status(graph, client_load_key, receipt_cursor)`     | query           | durable bulk job state and paged committed receipts                                       |
-| `prepare(graph, name, query, metadata: opt PreparedOperation)` | update          | `prepared_upsert_with_metadata`; removes `prepared_upsert` and superseded variants       |
-| `drop_prepared(name)`                                          | update          | `prepared_delete`                                                                        |
-| `list_prepared(graph_name)`                                    | query           | `prepared_manifest` (return type `PreparedManifest` unchanged)                           |
-| `prepared_query(name, params, sort, read_mode)`                | composite query | prior `execute_prepared` + consistency variant                                             |
-| `prepared_mutate(name, params, client_mutation_key)`           | update          | prior `execute_prepared_update`/`prepared_update_idempotent`; no compatibility alias       |
-| `vector_search(graph, index_name, query, top_k)`               | composite query | `vector_search` (addresses the vector index by `(graph, index_name)`, not `index_id`)    |
+| New API                                                        | Kind            | Replaces                                                                              |
+| -------------------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------- |
+| `gql_query(query, params, read_mode)`                          | composite query | `gql_query` + `gql_query_with_consistency`                                            |
+| `gql_mutate(query, params, client_mutation_key)`               | update          | prior `gql_execute_idempotent`/non-idempotent split; no compatibility alias           |
+| `atomic_insert(request)`                                       | update          | retired typed public insert names; no compatibility alias                             |
+| `bulk_load(command)`                                           | update          | durable start/append/finalize/abort initial-load lifecycle                            |
+| `mutation_status(graph, client_mutation_key)`                  | query           | prior `get_mutation_status`                                                           |
+| `atomic_insert_status(graph, client_mutation_key)`             | query           | new family-specific ordered receipt lookup                                            |
+| `bulk_load_status(graph, client_load_key, receipt_cursor)`     | query           | durable bulk job state and paged committed receipts                                   |
+| `prepare(graph, name, query, metadata: opt PreparedOperation)` | update          | `prepared_upsert_with_metadata`; removes `prepared_upsert` and superseded variants    |
+| `drop_prepared(name)`                                          | update          | `prepared_delete`                                                                     |
+| `list_prepared(graph_name)`                                    | query           | `prepared_manifest` (return type `PreparedManifest` unchanged)                        |
+| `prepared_query(name, params, sort, read_mode)`                | composite query | prior `execute_prepared` + consistency variant                                        |
+| `prepared_mutate(name, params, client_mutation_key)`           | update          | prior `execute_prepared_update`/`prepared_update_idempotent`; no compatibility alias  |
+| `vector_search(graph, index_name, query, top_k)`               | composite query | `vector_search` (addresses the vector index by `(graph, index_name)`, not `index_id`) |
 
 Graph resolution follows the current model: the GQL family (`gql_query` / `gql_mutate`) resolves
 the graph from the program (`USE GRAPH`, including multi-graph segments and joins) and takes no
@@ -194,7 +194,7 @@ vec record { shard_id : nat32; graph_canister : principal; index_canister : prin
 - The `ProvisioningState` write path (`Pending { request_id }` / `Failed` / `None`) on
   `GraphRegistryEntry` is implemented and fixed by store-level unit tests (the field is currently
   never written in `crates/router`). Resolution excludes non-`None` provisioning states: a `Pending`
-    or `Failed` entry is not resolvable for data-plane dispatch (`gql_query` / `gql_mutate` /
+  or `Failed` entry is not resolvable for data-plane dispatch (`gql_query` / `gql_mutate` /
   prepared / `vector_search`) until it reaches `ProvisioningState::None`. No new `GraphStatus`
   variant is required; `GraphStatus` stays `Active` / `ReadOnly` / `Deprecated` / `Deleting`. The
   guard is enforced once in the registry resolution path (`RouterStore::resolve_graph_id*`), which
@@ -257,12 +257,12 @@ type GraphHealthView = record {
 - Client-visible surface shrinks from ~95 to ~34 methods (L1 + L2); L3 (~40) remains documented as
   federation-internal. Total production surface drops to ~74 plus `init` / `post_upgrade`.
 - Breaking change, no compatibility wrappers (pre-release; same stance as ADR 0049).
-- Update targets on implementation: `pocket-ic-tests/src/lib.rs` helpers, generated `.did` and
-  frontend bindings (`scripts/check-router-and-graph-candid.sh`), `social-demo-gateway` (uses
-  `prepared_query` with an explicit `ReadMode`), `crates/codegen/src/cli.rs` (uses `prepared_manifest` →
-  `list_prepared`), and `apply-social-load.mjs` (uses `gql_mutate`, `mutation_status`,
-  `index_vertex_property`, durable typed `bulk_load` / `bulk_load_status`, and
-  `ingest_vertex_embeddings`).
+- Update targets on implementation: `pocket-ic-tests/src/lib.rs` helpers,
+  `crates/codegen/src/cli.rs` (uses `prepared_manifest` → `list_prepared`), and the demo loader, which moved to the Gleaph CLI
+  (`crates/cli/src/load.rs` drives durable `bulk_load` / `bulk_load_status`; the former
+  `apply-social-load.mjs` JS driver was retired). The social frontend later dropped committed
+  actor bindings for the SDK-direct client (2026-08-06); `scripts/check-router-and-graph-candid.sh`
+  now asserts the live Candid surface from freshly built wasm instead of diffing checked-in bindings.
 - Design docs to update on implementation: `design/index/derived-state-query-semantics.md`
   (entrypoint table), `design/architecture/acid-roadmap.md`, `design/security/rbac-and-prepared.md`,
   `design/storage/stable-memory-inventory.md`; `crates/router/docs/pr1-candid.md` is superseded and

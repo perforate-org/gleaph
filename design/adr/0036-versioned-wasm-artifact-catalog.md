@@ -120,8 +120,8 @@ archive / HTTP outcall (still deferred to a future slice).
 
 The social-demo sample data (users, posts, topics, communities, and prepared
 query scenarios) is now authored as per-file YAML under
-`frontend/apps/social-demo/config/` and emitted by
-`frontend/apps/social-demo/scripts/build-config.mjs`. This is a configuration
+`demo/social/config/` and emitted by
+`demo/social/scripts/build-config.mjs`. This is a configuration
 surface change, not a WASM artifact-catalog schema change, and is documented in
 detail in [`design/storage/social-demo-config.md`](../storage/social-demo-config.md).
 
@@ -133,12 +133,13 @@ plain integer literals `demo_id: <N>` (no `: u64` cast). This is a
 literal-format migration, not a change to the artifact-catalog schema.
 
 Per Plan 0064, the 5 prepared queries RETURN `p.body AS body` so the frontend
-renders the post text, and the two semantic scenarios load their query vectors
-at canister init time from `frontend/apps/social-demo/src/data/scenarios.generated.json`
-via Rust `include_str!` (parsed with `serde_json::from_str`). The vector is
-authored in per-scenario YAML, emitted by `build-config.mjs`, and consumed at
-compile time by `crates/social-demo-gateway/src/lib.rs`. The candid interface is
-unchanged.
+renders the post text, and the two semantic scenarios carry their query vectors
+in the generated scenario definitions (`semanticVector` in
+`demo/social/src/data/scenarios.generated.*`, emitted by `build-config.mjs` from
+per-scenario YAML). The frontend passes the vector as a `Bytes` parameter named
+`$query` to the semantic prepared queries through `@gleaph/sdk`; the gateway
+canister that previously embedded the JSON via Rust `include_str!` was removed on
+2026-08-06 with the SDK-direct frontend. The candid interface is unchanged.
 
 Per Plan 0065, social-demo's `is_public` property is stored and compared as a
 native GQL `BOOL` instead of `Int64` `1`/`0`. Seed GQL writes

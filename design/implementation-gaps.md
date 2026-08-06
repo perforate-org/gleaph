@@ -191,37 +191,31 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 
 ### GAP-2026-07-04-001 — Prepared execution still requires graph visibility
 
-- **Status:** Open
+- **Status:** Closed by ADR 0063 (2026-08-06)
 - **Severity:** P2 product gap; P1 if a public frontend must call Router prepared queries directly
 - **Owner:** Router prepared catalog resolution and graph authorization
-- **Observed behavior:** `authorize_prepared_execute` permits the default Router `Executor` role,
-  including an anonymous caller, but prepared-plan resolution searches only graphs visible to the
-  caller. A principal that is not the graph owner or in the graph `admins` set therefore cannot
-  resolve the prepared plan. The social demo test must currently add its application caller to the
-  graph administrators while leaving its Router role at `Executor`.
-- **Expected or needed behavior:** an application should be able to expose an administrator-registered
-  read-only prepared query without granting its calling principal graph-administrator membership,
-  or the product contract must explicitly require an application backend principal with graph
-  visibility.
-- **Evidence:** `crates/router/src/rbac.rs::authorize_prepared_execute`,
-  `crates/router/src/prepared.rs::resolve_prepared_graph_id`, and the shared
-  `install_single_shard_federation_with_graph_admins` fixture in
+- **Observed behavior:** `authorize_prepared_execute` permitted the default Router `Executor` role,
+  including an anonymous caller, but prepared-plan resolution searched only graphs visible to the
+  caller. A principal that is not the graph owner or in the graph `admins` set therefore could not
+  resolve the prepared plan. The social demo test had to add its application caller to the graph
+  administrators while leaving its Router role at `Executor`.
+- **Resolution (ADR 0063, 2026-08-06):** prepared queries are addressed by global name and bound to
+  a graph at registration time; `authorize_prepared_execute` and `resolve_prepared_graph_id` were
+  removed, so any caller can execute an administrator-registered prepared query. Caller-aware
+  authorization (public vs visible graphs, per-query permissions) is deferred to a future
+  access-control ADR.
+- **Historical evidence:** `crates/router/src/rbac.rs::authorize_prepared_execute`,
+  `crates/router/src/prepared.rs::resolve_prepared_graph_id` (both removed by ADR 0063), and the
+  shared `install_single_shard_federation_with_graph_admins` fixture in
   `crates/pocket-ic-tests/src/lib.rs`.
-- **Impact:** the initial public social demo cannot truthfully claim direct anonymous prepared-query
-  execution. The current bounded workaround is a graph-visible application principal with no Router
-  ad-hoc `Read` role; anonymous and default-Executor semantics must not be conflated.
-- **Next decision:** assess three existing-boundary alternatives before adding an API: application
-  backend canister principal with graph visibility; a graph-level read/execute membership distinct
-  from administrators; or a prepared-plan public-execution flag whose graph is resolved at
-  registration. If the latter two are chosen, write an authorization ADR and adversarial cross-graph
-  tests.
-- **Implemented workaround (does not close this gap):** `crates/social-demo-gateway` provides an
-  application-owned canister with a fixed three-variant scenario enum. The Gateway principal is
-  registered as a graph administrator so Router can resolve the prepared plan, but it remains a
-  default Router Executor with no ad-hoc `Read` role. Anonymous callers execute the fixed scenarios
-  through the Gateway; Router observes the Gateway principal, not the original caller. This is an
+- **Historical workaround (removed 2026-08-06):** `crates/social-demo-gateway` was an
+  application-owned canister with a fixed scenario enum. The Gateway principal was registered as a
+  graph administrator so Router could resolve the prepared plan, but it remained a default Router
+  Executor with no ad-hoc `Read` role. Anonymous callers executed the fixed scenarios through the
+  Gateway; Router observed the Gateway principal, not the original caller. This was an
   application-layer trusted-deputy pattern, not a product change to Router prepared-query
-  authorization.
+  authorization. The crate was removed together with the SDK-direct frontend; the frontend now
+  calls Router `prepared_query` by name through `@gleaph/sdk`.
 - **Related contracts:** [security/rbac-and-prepared.md](security/rbac-and-prepared.md),
   [demo/social-graph-rag.md](demo/social-graph-rag.md)
 
@@ -230,9 +224,10 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 - **Status:** Resolved by Plan 0204 on 2026-08-02 UTC
 - **Severity:** P2 demo-tooling drift; blocks trusting `pnpm run build:config` as an idempotent
   regeneration step
-- **Owner:** `frontend/apps/social-demo/scripts/build-config.mjs` and the committed seed/avatar
+- **Owner:** `demo/social/scripts/build-config.mjs` and the committed seed/avatar
   artifacts
-- **Resolution:** The generator now emits one ordered `social-load.json` directly from the canonical
+- **Resolution:** The generator now emits one ordered NDJSON pair (`seeds/vertices.jsonl` +
+  `seeds/edges.jsonl`) directly from the canonical
   node/edge model. Its typed properties contain no execution-time values, application endpoint keys
   remain explicit, and exact UTC timestamps are deterministic. Focused contracts cover source-ID
   closure and byte-stable generation inputs; the durable loader uses the full artifact SHA-256 plus

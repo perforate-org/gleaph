@@ -9,7 +9,7 @@ Anchor timestamp: 2026-07-14 23:09:57 UTC +0000
 
 The social demo's right-hand query panel should display the GQL query that is being
 executed. It currently applies a small regular-expression-based formatter in
-`frontend/apps/social-demo/src/components/QueryPanel.tsx`.
+`demo/social/src/components/QueryPanel.tsx`.
 
 That formatter does not understand GQL structure. In particular, a `LIMIT` inside a
 compound vector-search clause such as
@@ -162,7 +162,7 @@ not a GQL syntax error.
 
 ### 4. Integrate the formatter with the social demo through a thin WASM adapter
 
-Build a small adapter for `frontend/apps/social-demo` that compiles the formatter
+Build a small adapter for `demo/social` that compiles the formatter
 with the `format` feature and exposes a narrow string-in/string-out boundary to
 TypeScript. The adapter owns JavaScript/WASM conversion, packaging, and generated
 TypeScript declarations. It must not duplicate GQL formatting rules.
