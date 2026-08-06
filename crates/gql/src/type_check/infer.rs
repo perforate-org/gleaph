@@ -169,8 +169,10 @@ pub(crate) fn infer_expr(env: &TypeEnv<'_>, expr: &Expr) -> Type {
             keyword: Keyword::new("LOCAL_TIMESTAMP"),
         }),
 
-        // Element ID
-        ExprKind::ElementId(_) => Type::Scalar(ValueType::Bytes { max_length: None }),
+        // Element ID — always present for the referenced element, so never null.
+        ExprKind::ElementId(_) => Type::NonNull(Box::new(Type::Scalar(ValueType::Bytes {
+            max_length: None,
+        }))),
 
         // Datetime constructors
         ExprKind::DateLiteral(_) | ExprKind::DateFunction(_) => Type::Scalar(ValueType::Date),
@@ -1008,7 +1010,7 @@ mod tests {
     use crate::type_check::schema::NoSchema;
 
     #[test]
-    fn element_id_infers_bytes() {
+    fn element_id_infers_non_null_bytes() {
         let env = TypeEnv::new(&NoSchema);
         let expr = Expr::new(ExprKind::ElementId(Box::new(Expr::new(
             ExprKind::Variable("n".to_owned()),
@@ -1016,7 +1018,9 @@ mod tests {
 
         assert_eq!(
             infer_expr(&env, &expr),
-            Type::Scalar(ValueType::Bytes { max_length: None })
+            Type::NonNull(Box::new(Type::Scalar(ValueType::Bytes {
+                max_length: None
+            })))
         );
     }
 }

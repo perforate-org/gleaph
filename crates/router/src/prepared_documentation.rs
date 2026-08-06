@@ -719,8 +719,9 @@ mod tests {
         // empty (generated clients then cannot decode rows into typed values).
         let definition = gleaph_gql::parser::parse(
             "CREATE GRAPH TYPE SocialGraph { \
-             NODE User { user_id STRING, name STRING }, \
-             NODE Post { demo_id INT64, body STRING, created_at DATETIME, is_public BOOL } \
+             NODE User { user_id STRING NOT NULL, name STRING NOT NULL }, \
+             NODE Post { demo_id INT64 NOT NULL, body STRING NOT NULL, \
+             created_at DATETIME NOT NULL, is_public BOOL NOT NULL } \
              }",
         )
         .expect("graph type should parse");
@@ -738,12 +739,23 @@ mod tests {
             .result
             .columns
             .iter()
-            .map(|column| (column.name.as_str(), column.semantic_type.clone()))
+            .map(|column| {
+                (
+                    column.name.as_str(),
+                    (column.semantic_type.clone(), column.nullable),
+                )
+            })
             .collect();
-        assert_eq!(by_name.get("post_id"), Some(&SemanticType::Int64));
-        assert_eq!(by_name.get("author_name"), Some(&SemanticType::Text));
-        assert_eq!(by_name.get("body"), Some(&SemanticType::Text));
-        assert_eq!(by_name.get("created_at"), Some(&SemanticType::DateTime));
+        assert_eq!(by_name.get("post_id"), Some(&(SemanticType::Int64, false)));
+        assert_eq!(
+            by_name.get("author_name"),
+            Some(&(SemanticType::Text, false))
+        );
+        assert_eq!(by_name.get("body"), Some(&(SemanticType::Text, false)));
+        assert_eq!(
+            by_name.get("created_at"),
+            Some(&(SemanticType::DateTime, false))
+        );
     }
 
     #[test]
@@ -753,8 +765,9 @@ mod tests {
         // optional anchor must still resolve through the schema (it only strips non-null).
         let definition = gleaph_gql::parser::parse(
             "CREATE GRAPH TYPE SocialGraph { \
-             NODE User { user_id STRING, name STRING }, \
-             NODE Post { demo_id INT64, body STRING, created_at DATETIME, is_public BOOL } \
+             NODE User { user_id STRING NOT NULL, name STRING NOT NULL }, \
+             NODE Post { demo_id INT64 NOT NULL, body STRING NOT NULL, \
+             created_at DATETIME NOT NULL, is_public BOOL NOT NULL } \
              }",
         )
         .expect("graph type should parse");
@@ -777,18 +790,40 @@ mod tests {
             .result
             .columns
             .iter()
-            .map(|column| (column.name.as_str(), column.semantic_type.clone()))
+            .map(|column| {
+                (
+                    column.name.as_str(),
+                    (column.semantic_type.clone(), column.nullable),
+                )
+            })
             .collect();
-        assert_eq!(by_name.get("post_id"), Some(&SemanticType::Int64));
-        assert_eq!(by_name.get("parent_post_id"), Some(&SemanticType::Int64));
-        assert_eq!(by_name.get("author_name"), Some(&SemanticType::Text));
-        assert_eq!(by_name.get("parent_author_name"), Some(&SemanticType::Text));
-        assert_eq!(by_name.get("body"), Some(&SemanticType::Text));
-        assert_eq!(by_name.get("parent_body"), Some(&SemanticType::Text));
-        assert_eq!(by_name.get("created_at"), Some(&SemanticType::DateTime));
+        // Non-optional anchors keep their NOT NULL schema types.
+        assert_eq!(by_name.get("post_id"), Some(&(SemanticType::Int64, false)));
+        assert_eq!(
+            by_name.get("author_name"),
+            Some(&(SemanticType::Text, false))
+        );
+        assert_eq!(by_name.get("body"), Some(&(SemanticType::Text, false)));
+        assert_eq!(
+            by_name.get("created_at"),
+            Some(&(SemanticType::DateTime, false))
+        );
+        // OPTIONAL MATCH targets are nullable (row may have no parent).
+        assert_eq!(
+            by_name.get("parent_post_id"),
+            Some(&(SemanticType::Int64, true))
+        );
+        assert_eq!(
+            by_name.get("parent_author_name"),
+            Some(&(SemanticType::Text, true))
+        );
+        assert_eq!(
+            by_name.get("parent_body"),
+            Some(&(SemanticType::Text, true))
+        );
         assert_eq!(
             by_name.get("parent_created_at"),
-            Some(&SemanticType::DateTime)
+            Some(&(SemanticType::DateTime, true))
         );
     }
 
@@ -814,6 +849,173 @@ mod tests {
         };
         gleaph_gql::type_check::GraphTypePropertySchema::try_from_definition(&create.definition)
             .expect("graph type schema")
+    }
+
+    /// The social demo's `CREATE GRAPH TYPE` (mirrors demo/social/migrations/000001).
+    fn demo_graph_type_schema() -> gleaph_gql::type_check::GraphTypePropertySchema {
+        let definition = gleaph_gql::parser::parse(
+            "CREATE GRAPH TYPE SocialGraph { \
+             NODE User { user_id STRING NOT NULL, name STRING NOT NULL, demo_graph STRING NOT NULL }, \
+             NODE Post { demo_id INT64 NOT NULL, body STRING NOT NULL, \
+             created_at DATETIME NOT NULL, is_public BOOL NOT NULL, demo_graph STRING NOT NULL }, \
+             NODE Feed { demo_id INT64 NOT NULL, name STRING NOT NULL, demo_graph STRING NOT NULL }, \
+             NODE Topic { demo_id INT64 NOT NULL, name STRING NOT NULL, demo_graph STRING NOT NULL }, \
+             NODE Community { demo_id INT64 NOT NULL, name STRING NOT NULL, demo_graph STRING NOT NULL } \
+             }",
+        )
+        .expect("demo graph type should parse");
+        graph_type_schema(&definition)
+    }
+
+    #[test]
+    fn social_demo_queries_complete_realistic_result_schemas() {
+        // End-to-end shape check for all six social-demo prepared queries against the demo
+        // graph type: NOT NULL schema properties stay non-null unless an OPTIONAL MATCH target
+        // or a search distance makes the column nullable. Mirrors the queries under
+        // demo/social/prepared/ and the manifest the generated client consumes.
+        let schema = demo_graph_type_schema();
+        let cases = [
+            (
+                "alice-home-feed",
+                "MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+                 WHERE p.is_public = TRUE \
+                 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) \
+                 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, \
+                 parent_author.name AS parent_author_name, parent.body AS parent_body, \
+                 parent.created_at AS parent_created_at, author.name AS author_name, \
+                 p.body AS body, p.created_at AS created_at ORDER BY INSERTION(e) DESC \
+                 LIMIT 20 OFFSET $offset",
+                &[
+                    ("post_id", false),
+                    ("parent_post_id", true),
+                    ("parent_author_name", true),
+                    ("parent_body", true),
+                    ("parent_created_at", true),
+                    ("author_name", false),
+                    ("body", false),
+                    ("created_at", false),
+                ][..],
+            ),
+            (
+                "alice-semantic-feed",
+                "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) \
+                 WHERE u.user_id = 'alice' AND p.is_public = TRUE \
+                 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance \
+                 RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, \
+                 distance ORDER BY distance ASC LIMIT 20 OFFSET $offset",
+                &[
+                    ("post_id", false),
+                    ("author_name", false),
+                    ("body", false),
+                    ("distance", true),
+                ][..],
+            ),
+            (
+                "public-timeline",
+                "MATCH (feed:Feed {name: 'Public feed'})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+                 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) \
+                 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, \
+                 parent_author.name AS parent_author_name, parent.body AS parent_body, \
+                 parent.created_at AS parent_created_at, author.name AS author_name, \
+                 p.body AS body, p.created_at AS created_at ORDER BY INSERTION(e) DESC \
+                 LIMIT 20 OFFSET $offset",
+                &[
+                    ("post_id", false),
+                    ("parent_post_id", true),
+                    ("parent_author_name", true),
+                    ("parent_body", true),
+                    ("parent_created_at", true),
+                    ("author_name", false),
+                    ("body", false),
+                    ("created_at", false),
+                ][..],
+            ),
+            (
+                "semantic-discovery",
+                "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE \
+                 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance \
+                 RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, \
+                 distance ORDER BY distance ASC LIMIT 20 OFFSET $offset",
+                &[
+                    ("post_id", false),
+                    ("author_name", false),
+                    ("body", false),
+                    ("distance", true),
+                ][..],
+            ),
+            (
+                "topic-path-explanation",
+                "MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User) \
+                 -[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) \
+                 WHERE u.user_id = 'alice' AND t.name = 'Graph databases' \
+                 RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, \
+                 p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows1) AS follows_edge_id, \
+                 ELEMENT_ID(follows2) AS second_follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, \
+                 ELEMENT_ID(has_topic) AS topic_edge_id LIMIT 20 OFFSET $offset",
+                &[
+                    ("post_id", false),
+                    ("author_name", false),
+                    ("topic_id", false),
+                    ("body", false),
+                    ("created_at", false),
+                    ("follows_edge_id", false),
+                    ("second_follows_edge_id", false),
+                    ("posted_edge_id", false),
+                    ("topic_edge_id", false),
+                ][..],
+            ),
+            (
+                "yui-home-feed",
+                "MATCH (u:User {user_id: 'yui'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+                 WHERE p.is_public = TRUE \
+                 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) \
+                 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, \
+                 parent_author.name AS parent_author_name, parent.body AS parent_body, \
+                 parent.created_at AS parent_created_at, author.name AS author_name, \
+                 p.body AS body, p.created_at AS created_at ORDER BY INSERTION(e) DESC \
+                 LIMIT 20 OFFSET $offset",
+                &[
+                    ("post_id", false),
+                    ("parent_post_id", true),
+                    ("parent_author_name", true),
+                    ("parent_body", true),
+                    ("parent_created_at", true),
+                    ("author_name", false),
+                    ("body", false),
+                    ("created_at", false),
+                ][..],
+            ),
+        ];
+        for (name, query, expected) in cases {
+            let program = gleaph_gql::parser::parse(query)
+                .unwrap_or_else(|error| panic!("{name}: query should parse: {error}"));
+            let mut operation = operation();
+            operation.parameters.clear();
+            complete_parameter_metadata(&program, &schema, &mut operation)
+                .unwrap_or_else(|error| panic!("{name}: parameter completion failed: {error}"));
+            complete_result_schema(&program, &schema, &mut operation)
+                .unwrap_or_else(|error| panic!("{name}: result completion failed: {error}"));
+            let by_name: std::collections::BTreeMap<_, _> = operation
+                .result
+                .columns
+                .iter()
+                .map(|column| (column.name.as_str(), column.nullable))
+                .collect();
+            assert_eq!(
+                by_name.len(),
+                expected.len(),
+                "{name}: unexpected column count: {:?}",
+                by_name.keys().collect::<Vec<_>>()
+            );
+            for (column, nullable) in expected {
+                let actual = by_name.get(*column).copied();
+                assert_eq!(
+                    actual,
+                    Some(*nullable),
+                    "{name}: column {column:?} nullability mismatch (columns: {by_name:?})"
+                );
+            }
+        }
     }
 
     #[test]

@@ -87,16 +87,18 @@ fn bind_node(env: &mut TypeEnv<'_>, node: &NodePattern, optional: bool, group: b
     let Some(ref var) = node.variable else {
         return;
     };
+    let labels = extract_label_names(&node.label);
+    let already_bound = !matches!(env.get(var), Type::Unknown);
+    if labels.is_empty() && already_bound {
+        // An unlabeled node reference to an already-bound variable (e.g. an OPTIONAL MATCH
+        // anchor like `(p)-[:REPLY_TO]->...`) references the in-scope variable: it must
+        // neither overwrite the existing binding nor become optional (the anchor exists
+        // regardless of whether the OPTIONAL MATCH matches), so later property accesses
+        // keep their schema types and non-nullability.
+        return;
+    }
     if optional {
         env.optional_vars.insert(var.clone());
-    }
-    let labels = extract_label_names(&node.label);
-    if labels.is_empty() && !matches!(env.get(var), Type::Unknown) {
-        // An unlabeled node reference to an already-bound variable (e.g. an OPTIONAL MATCH
-        // anchor like `(p)-[:REPLY_TO]->...`) must not overwrite the existing binding:
-        // rebinding with an empty label set would discard the label and property schema,
-        // making every later property access on the variable infer as Unknown.
-        return;
     }
     let properties = if !labels.is_empty() {
         env.schema.node_property_types(&labels)
@@ -132,6 +134,14 @@ fn bind_edge(
     let Some(ref var) = edge.variable else {
         return;
     };
+    let label = extract_single_label(&edge.label);
+    let already_bound = !matches!(env.get(var), Type::Unknown);
+    if label.is_none() && already_bound {
+        // Mirrors bind_node: an unlabeled edge reference to an already-bound variable is an
+        // OPTIONAL MATCH anchor, not a new binding, so keep the existing type and do not
+        // mark the variable optional.
+        return;
+    }
     if optional {
         env.optional_vars.insert(var.clone());
     }
@@ -165,7 +175,6 @@ fn bind_edge(
         return;
     }
 
-    let label = extract_single_label(&edge.label);
     let (endpoints, properties) = if let Some(ref l) = label {
         (
             env.schema.edge_endpoint_types(l),
