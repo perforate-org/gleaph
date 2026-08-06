@@ -149,7 +149,10 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
         let existing = existing.0;
         let existing_v1 = super::record_v1(&existing)?;
         if !super::record_matches_args(existing_v1, &args)
-            || existing_v1.profile != SchemaMigrationStatementProfile::CreateIndex
+            || !matches!(
+                existing_v1.profile.as_slice(),
+                [SchemaMigrationStatementProfile::CreateIndex]
+            )
         {
             return Err(RouterError::Conflict(format!(
                 "schema migration id `{}` already exists with a different payload",
@@ -223,7 +226,7 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
         actor: caller,
         recorded_at,
         statement: args.statement,
-        profile: SchemaMigrationStatementProfile::CreateIndex,
+        profile: vec![SchemaMigrationStatementProfile::CreateIndex],
         state: SchemaMigrationRecordState::PendingIndex {
             index_name_id,
             physical_index_id: prepared.physical_index_id,

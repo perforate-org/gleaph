@@ -2,8 +2,8 @@
 
 Date: 2026-08-03
 Status: accepted
-Last revised: 2026-08-03
-Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
+Last revised: 2026-08-06
+Anchor timestamp: 2026-08-06 10:57:52 UTC +0000
 Implementation status: Partially implemented. The versioned artifact/wire, Router durable
 lifecycle and migration ledger, Active-only planner gate, Graph canonical export scope,
 graph-index build worker/state, and the production Router cross-canister driver with seal/drain
@@ -12,12 +12,12 @@ artifacts/ledgers are not yet regenerated.
 
 ## Context
 
-ADR 0058 deliberately limits the first migration artifact to one additive catalog statement.
-`CREATE INDEX` is an existing Router extension, but its catalog registration and historical
-posting backfill are separate operations. Registering an index before its existing canonical
-values have converged can expose false-negative index reads. The current backfill endpoints also
-do not provide one lifecycle that covers vertex values, edge sidecar values, and edge `INLINE`
-values together.
+ADR 0058 allows one or more additive catalog statements per migration but deliberately keeps
+`CREATE INDEX` as exactly one statement per artifact, because its catalog registration and
+historical posting backfill are separate operations. Registering an index before its existing
+canonical values have converged can expose false-negative index reads. The current backfill
+endpoints also do not provide one lifecycle that covers vertex values, edge sidecar values, and
+edge `INLINE` values together.
 
 The ownership boundaries are already clear: Router owns the index catalog, graph shards own
 canonical vertex/edge/property storage, and graph-index owns posting storage and posting reads.

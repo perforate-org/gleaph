@@ -9,8 +9,8 @@ use candid::{decode_one, encode_one};
 use gleaph_migration_api::SchemaMigrationRecord;
 pub(crate) use gleaph_migration_api::{
     MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES, MAX_SCHEMA_MIGRATION_ID_BYTES,
-    MAX_SCHEMA_MIGRATION_LIST_LIMIT, MAX_SCHEMA_MIGRATION_STATEMENT_BYTES, MAX_SCHEMA_MIGRATIONS,
-    SCHEMA_MIGRATION_CHECKSUM_BYTES,
+    MAX_SCHEMA_MIGRATION_LIST_LIMIT, MAX_SCHEMA_MIGRATION_STATEMENT_BYTES,
+    MAX_SCHEMA_MIGRATION_STATEMENTS, MAX_SCHEMA_MIGRATIONS, SCHEMA_MIGRATION_CHECKSUM_BYTES,
 };
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
@@ -23,18 +23,21 @@ use std::borrow::Cow;
 pub(crate) struct StableSchemaMigrationRecord(pub(crate) SchemaMigrationRecord);
 
 /// Conservative allowance for the fixed Candid envelope: DIDL header/type table, version/option
-/// variants, LEB128 lengths, checksum algorithm, principal, timestamp, and statement profile.
-/// Variable payload bytes are accounted for separately from the shared public limits below.
+/// variants, LEB128 lengths, checksum algorithm, principal, and timestamp. The profile vector is
+/// accounted for explicitly (LEB128 length plus one variant byte per additive statement), and
+/// variable payload bytes are accounted for separately from the shared public limits below.
 const SCHEMA_MIGRATION_RECORD_CANDID_OVERHEAD_BYTES: u32 = 4 * 1024;
 
 /// Maximum encoded stable value size. A record contains one id, an optional parent id, one fixed
-/// checksum, one statement, and selector/resolved graph names; all other current fields fit inside
-/// the conservative Candid envelope allowance.
+/// checksum, one statement, selector/resolved graph names, and one profile per additive statement;
+/// all other current fields fit inside the conservative Candid envelope allowance.
 pub(crate) const MAX_SCHEMA_MIGRATION_RECORD_BYTES: u32 = MAX_SCHEMA_MIGRATION_STATEMENT_BYTES
     as u32
     + 2 * MAX_SCHEMA_MIGRATION_ID_BYTES as u32
     + 2 * MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES as u32
     + SCHEMA_MIGRATION_CHECKSUM_BYTES as u32
+    + 2
+    + MAX_SCHEMA_MIGRATION_STATEMENTS as u32
     + 16
     + SCHEMA_MIGRATION_RECORD_CANDID_OVERHEAD_BYTES;
 

@@ -156,9 +156,13 @@ cargo run -p gleaph-cli -- migration status --canister <router-principal> -n loc
 cargo run -p gleaph-cli -- migration apply --canister <router-principal> -n local --identity path/to/admin.pem
 ```
 
-Migration v1 accepts exactly one additive `CREATE GRAPH TYPE` or `CREATE GRAPH …
-TYPED` statement per package. The Router records the immutable checksum and parent
-link in its canonical ledger; see [ADR 0058](design/adr/0058-versioned-additive-schema-migrations.md).
+Migration v1 accepts one or more additive `CREATE GRAPH TYPE` or `CREATE GRAPH …
+TYPED` statements per package, chained with `NEXT` and applied atomically as one
+immutable wire payload; a `CREATE INDEX` package remains exactly one statement. The
+payload is authored either as a single `up.gql` or as `up/*.gql` fragments
+concatenated in sorted filename order. The Router records the immutable checksum
+and parent link in its canonical ledger; see
+[ADR 0058](design/adr/0058-versioned-additive-schema-migrations.md).
 
 ## Design Documentation
 

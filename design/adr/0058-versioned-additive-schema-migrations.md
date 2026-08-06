@@ -2,8 +2,8 @@
 
 Date: 2026-08-02
 Status: implemented
-Last revised: 2026-08-03
-Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
+Last revised: 2026-08-06
+Anchor timestamp: 2026-08-06 10:57:52 UTC +0000
 
 ## Context
 
@@ -46,8 +46,9 @@ write Router stable memory directly or reimplement catalog ownership.
 ### Artifact format (v1)
 
 Each migration is one directory named `<six-digit-sequence>_<lowercase-slug>` under the migration
-root (`./migrations` by default). The directory must contain exactly two regular files:
-`migration.toml` and `up.gql`; symlinks, extra files, and nested directories are rejected.
+root (`./migrations` by default). The directory must contain `migration.toml` plus exactly one
+execution source: either the single file `up.gql` or a `up/` directory of `*.gql` fragments.
+Symlinks, extra entries, and nested directories are rejected.
 
 `migration.toml` is strict TOML (`deny_unknown_fields`) with these fields:
 
@@ -60,19 +61,23 @@ description = "Initial graph schema"
 
 `id` must match the directory name. `parent` is omitted for the root (TOML has no null literal) and
 must name the immediate prior migration otherwise. Description text is human metadata and is not
-part of execution identity. `up.gql` must be UTF-8, LF-terminated, and contain exactly one
-statement.
+part of execution identity. The execution source must be UTF-8 and LF-terminated and contain one or
+more additive statements. A `up/` directory concatenates its `*.gql` fragments in sorted filename
+order into one payload; each fragment must be LF-terminated, and chained statements use `NEXT`, so
+fragment boundaries are arbitrary text splits of the same payload.
 
-The v1 dialect accepts only one additive catalog statement:
+The v1 dialect accepts one or more additive catalog statements chained with `NEXT`; the whole
+payload travels as one immutable wire statement:
 
 - `CREATE GRAPH TYPE <name> { ... }`; or
 - `CREATE GRAPH <name> TYPED <type>` with literal names and a literal typed schema; or
 - migration-driven `CREATE INDEX` under ADR 0059's separate resumable lifecycle.
 
-Parameters, `SESSION`, transaction control, `NEXT` chains, `IF NOT EXISTS`, `OR REPLACE`, `DROP
-INDEX`, and `COPY` are rejected. Backfill pages, DML, stable-memory operations, and federation
-operations are not arbitrary migration statements; `CREATE INDEX` dispatches only through ADR
-0059's typed control plane.
+A `CREATE INDEX` artifact remains exactly one statement, because index backfill dispatches through
+ADR 0059's separate non-atomic lifecycle. Parameters, `SESSION`, transaction control, `IF NOT
+EXISTS`, `OR REPLACE`, `DROP INDEX`, and `COPY` are rejected. `NEXT` chains are permitted only
+between additive catalog statements from the allowlist; any other statement kind, DML, stable-memory
+operations, and federation operations are not migration statements.
 
 ### Chain and checksum
 
@@ -94,7 +99,9 @@ big-endian byte length followed by the framed bytes. The checksum stream is:
    `frame(parent UTF-8 bytes)`; and
 4. one raw graph-selector marker (`0` for `Default`, `1` for `Named`), followed for `Named` by
    `frame(graph name UTF-8 bytes)`; and
-5. `frame(raw up.gql UTF-8 bytes)`, including comments, whitespace, and its final LF.
+5. `frame(raw payload UTF-8 bytes)`, including comments, whitespace, and its final LF. The payload
+   is the exact `up.gql` bytes or the sorted `up/` concatenation; for a multi-statement payload the
+   framed bytes are the `NEXT`-chained sequence, so statement order is part of execution identity.
 
 TOML formatting, description, directory paths, and parsed AST formatting are excluded. Router
 recomputes this digest for new ids before any catalog or ledger mutation; existing ids are first
@@ -104,10 +111,12 @@ replacement checksum.
 ### Router apply and replay
 
 `apply_schema_migration` is admin-only and rejects the anonymous principal. It validates the v1
-request envelope, parses and profiles the statement, verifies the checksum, validates the chain,
-and applies the catalog statement. The immutable `SchemaMigrationRecord::V1` stores `id`,
+request envelope, parses and profiles every statement, verifies the checksum, validates the chain,
+and applies the catalog statement batch. A batch applies atomically in statement order, and a graph
+type created by an earlier statement in the same payload is visible to a later `CREATE GRAPH ...
+TYPED` binding. The immutable `SchemaMigrationRecord::V1` stores `id`,
 `parent`, graph selector, optional Router-resolved graph, `checksum`, `actor`, `recorded_at`, exact
-`statement`, the derived statement profile, and a compact pending/applied/failed state.
+`statement`, the derived per-statement profile vector, and a compact pending/applied/failed state.
 
 Graph type/binding catalog mutation and ledger insertion remain one synchronous Router update
 boundary. `CREATE INDEX` instead co-writes one hidden Preparing catalog row and a compact Pending
@@ -164,7 +173,8 @@ Positive:
 
 Costs and limits:
 
-- v1 supports only one additive catalog statement per artifact and one global linear chain.
+- v1 supports one or more additive catalog statements per artifact (a `CREATE INDEX` artifact
+  remains exactly one statement) and one global linear chain.
 - v1 accepts migration-driven `CREATE INDEX` only through ADR 0059. Its production cross-canister
   driver is implemented; focused seal/drain E2E validation remains pending. Ordinary non-migration
   `CREATE INDEX` remains governed by ADR 0009 and is not a migration shortcut.
@@ -183,8 +193,8 @@ Costs and limits:
   lifecycle for `CREATE INDEX` migration backfill. Its breaking pre-release v1
   manifest/checksum/wire/stable replacement and the real Router driver are in place without
   compatibility paths; production enablement still requires focused seal/drain E2E validation.
-- Define a separate ADR before introducing destructive schema changes, multi-step transactions,
-  stable-memory migrations, federation changes, or a `down` workflow.
+- Define a separate ADR before introducing destructive schema changes, transaction control or
+  non-additive statement kinds, stable-memory migrations, federation changes, or a `down` workflow.
 
 ## References
 

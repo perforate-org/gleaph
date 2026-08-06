@@ -6,15 +6,17 @@ mod index;
 pub(crate) use driver::real_index_migration_driver;
 
 use candid::Principal;
-use gleaph_gql::ast::{GraphTypeSpec, Statement, StatementBlock};
+use gleaph_gql::ast::{GraphTypeDefinition, GraphTypeSpec, Statement, StatementBlock};
 use gleaph_gql::parser;
+use gleaph_gql::token::Span;
 use gleaph_gql::type_check::{GraphTypePropertySchema, collect_graph_type_vocabulary};
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
-    ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationChecksumAlgorithm,
-    SchemaMigrationGraphSelector, SchemaMigrationRecord, SchemaMigrationRecordState,
-    SchemaMigrationRecordV1, SchemaMigrationStatementProfile,
+    ApplySchemaMigrationResultV1, MAX_SCHEMA_MIGRATION_STATEMENTS, SchemaMigrationApplyStatus,
+    SchemaMigrationChecksumAlgorithm, SchemaMigrationGraphSelector, SchemaMigrationRecord,
+    SchemaMigrationRecordState, SchemaMigrationRecordV1, SchemaMigrationStatementProfile,
 };
+use std::collections::BTreeMap;
 
 use super::{RouterStore, validate_metadata_name};
 use crate::facade::auth;
@@ -266,21 +268,20 @@ fn validate_graph_selector(selector: &SchemaMigrationGraphSelector) -> Result<()
 
 fn validate_graph_selector_for_profile(
     selector: &SchemaMigrationGraphSelector,
-    profile: &SchemaMigrationStatementProfile,
+    profiles: &[SchemaMigrationStatementProfile],
 ) -> Result<(), RouterError> {
     validate_graph_selector(selector)?;
-    match (selector, profile) {
-        (SchemaMigrationGraphSelector::Named(_), SchemaMigrationStatementProfile::CreateGraphType)
-        | (SchemaMigrationGraphSelector::Named(_), SchemaMigrationStatementProfile::CreateTypedGraph) => {
-            Err(RouterError::InvalidArgument(
-                "named graph selectors are only supported for CREATE INDEX migrations".into(),
-            ))
-        }
-        (_, SchemaMigrationStatementProfile::CreateIndex) => Err(RouterError::InvalidArgument(
+    if profiles.contains(&SchemaMigrationStatementProfile::CreateIndex) {
+        return Err(RouterError::InvalidArgument(
             "CREATE INDEX migrations require the planned backfill lifecycle and are not supported yet".into(),
-        )),
-        _ => Ok(()),
+        ));
     }
+    if matches!(selector, SchemaMigrationGraphSelector::Named(_)) {
+        return Err(RouterError::InvalidArgument(
+            "named graph selectors are only supported for CREATE INDEX migrations".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_id(id: &str, field: &str) -> Result<(), RouterError> {
@@ -425,7 +426,9 @@ fn parse_and_validate_statement(source: &str) -> Result<StatementBlock, RouterEr
         ));
     }
     let transaction = program.transaction_activity.ok_or_else(|| {
-        RouterError::InvalidArgument("schema migration GQL must contain one statement".into())
+        RouterError::InvalidArgument(
+            "schema migration GQL must contain at least one statement".into(),
+        )
     })?;
     if transaction.start.is_some() || transaction.end.is_some() {
         return Err(RouterError::InvalidArgument(
@@ -433,71 +436,81 @@ fn parse_and_validate_statement(source: &str) -> Result<StatementBlock, RouterEr
         ));
     }
     let block = transaction.body.ok_or_else(|| {
-        RouterError::InvalidArgument("schema migration GQL must contain one statement".into())
+        RouterError::InvalidArgument(
+            "schema migration GQL must contain at least one statement".into(),
+        )
     })?;
-    if !block.next.is_empty() {
-        return Err(RouterError::InvalidArgument(
-            "schema migration GQL must contain exactly one statement".into(),
-        ));
-    }
-    match &block.first {
-        Statement::CreateGraphType(statement) => {
-            if statement.or_replace || statement.if_not_exists || statement.copy_of.is_some() {
-                return Err(RouterError::InvalidArgument(
-                    "schema migrations allow only additive CREATE GRAPH TYPE".into(),
-                ));
-            }
-            if !has_explicit_graph_type_body(source)? {
-                return Err(RouterError::InvalidArgument(
-                    "schema migration CREATE GRAPH TYPE requires an explicit body".into(),
-                ));
-            }
-            validate_simple_name(&statement.name, "graph type")?;
-            validate_graph_type_definition(&statement.definition)?;
+    let mut count = 0usize;
+    for statement in block.iter_statements() {
+        count += 1;
+        if count > MAX_SCHEMA_MIGRATION_STATEMENTS {
+            return Err(RouterError::InvalidArgument(format!(
+                "schema migration exceeds {MAX_SCHEMA_MIGRATION_STATEMENTS} additive statements"
+            )));
         }
-        Statement::CreateGraph(statement) => {
-            if statement.or_replace || statement.if_not_exists || statement.copy_of.is_some() {
-                return Err(RouterError::InvalidArgument(
-                    "schema migrations allow only additive CREATE GRAPH".into(),
-                ));
-            }
-            validate_simple_name(&statement.name, "graph")?;
-            match &statement.graph_type {
-                Some(GraphTypeSpec::Typed {
-                    name,
-                    typed_keyword: true,
-                }) => {
-                    validate_simple_name(name, "graph type reference")?;
-                }
-                Some(GraphTypeSpec::Typed {
-                    typed_keyword: false,
-                    ..
-                })
-                | Some(GraphTypeSpec::Inline(_))
-                | Some(GraphTypeSpec::Any { .. })
-                | Some(GraphTypeSpec::Like(_))
-                | None => {
+        match statement {
+            Statement::CreateGraphType(statement) => {
+                if statement.or_replace || statement.if_not_exists || statement.copy_of.is_some() {
                     return Err(RouterError::InvalidArgument(
-                        "schema migrations require literal TYPED graph schema".into(),
+                        "schema migrations allow only additive CREATE GRAPH TYPE".into(),
                     ));
                 }
+                if !has_explicit_graph_type_body(source, &statement.span)? {
+                    return Err(RouterError::InvalidArgument(
+                        "schema migration CREATE GRAPH TYPE requires an explicit body".into(),
+                    ));
+                }
+                validate_simple_name(&statement.name, "graph type")?;
+                validate_graph_type_definition(&statement.definition)?;
             }
-        }
-        _ => {
-            return Err(RouterError::InvalidArgument(
-                "schema migrations allow only one additive CREATE GRAPH TYPE or CREATE GRAPH"
-                    .into(),
-            ));
+            Statement::CreateGraph(statement) => {
+                if statement.or_replace || statement.if_not_exists || statement.copy_of.is_some() {
+                    return Err(RouterError::InvalidArgument(
+                        "schema migrations allow only additive CREATE GRAPH".into(),
+                    ));
+                }
+                validate_simple_name(&statement.name, "graph")?;
+                match &statement.graph_type {
+                    Some(GraphTypeSpec::Typed {
+                        name,
+                        typed_keyword: true,
+                    }) => {
+                        validate_simple_name(name, "graph type reference")?;
+                    }
+                    Some(GraphTypeSpec::Typed {
+                        typed_keyword: false,
+                        ..
+                    })
+                    | Some(GraphTypeSpec::Inline(_))
+                    | Some(GraphTypeSpec::Any { .. })
+                    | Some(GraphTypeSpec::Like(_))
+                    | None => {
+                        return Err(RouterError::InvalidArgument(
+                            "schema migrations require literal TYPED graph schema".into(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(RouterError::InvalidArgument(
+                    "schema migrations allow only additive CREATE GRAPH TYPE or CREATE GRAPH statements"
+                        .into(),
+                ));
+            }
         }
     }
     Ok(block)
 }
 
 /// The general GQL AST represents a bodyless `CREATE GRAPH TYPE name` and an explicit empty body
-/// with the same empty definition. Migration v1 requires the body to be present, so retain this
-/// migration-owned lexical distinction without changing the general-purpose GQL grammar or AST.
-fn has_explicit_graph_type_body(source: &str) -> Result<bool, RouterError> {
-    let lexical = gleaph_gql::lexer::tokenize_with_comments(source)
+/// with the same empty definition. Migration v1 requires the body to be present for every `CREATE
+/// GRAPH TYPE` statement, so retain this migration-owned lexical distinction per statement without
+/// changing the general-purpose GQL grammar or AST.
+fn has_explicit_graph_type_body(source: &str, span: &Span) -> Result<bool, RouterError> {
+    let statement_source = source.get(span.start..span.end).ok_or_else(|| {
+        RouterError::InvalidArgument("invalid migration GQL statement span".into())
+    })?;
+    let lexical = gleaph_gql::lexer::tokenize_with_comments(statement_source)
         .map_err(|error| RouterError::InvalidArgument(format!("invalid migration GQL: {error}")))?;
     Ok(lexical
         .tokens
@@ -507,22 +520,31 @@ fn has_explicit_graph_type_body(source: &str) -> Result<bool, RouterError> {
 
 fn statement_profile(
     block: &StatementBlock,
-) -> Result<SchemaMigrationStatementProfile, RouterError> {
-    match &block.first {
-        Statement::CreateGraphType(_) => Ok(SchemaMigrationStatementProfile::CreateGraphType),
-        Statement::CreateGraph(statement) => match &statement.graph_type {
-            Some(GraphTypeSpec::Typed {
-                typed_keyword: true,
-                ..
-            }) => Ok(SchemaMigrationStatementProfile::CreateTypedGraph),
-            _ => Err(RouterError::InvalidArgument(
-                "schema migration profile requires literal TYPED graph schema".into(),
-            )),
-        },
-        _ => Err(RouterError::InvalidArgument(
-            "schema migration profile is unsupported for this statement".into(),
-        )),
+) -> Result<Vec<SchemaMigrationStatementProfile>, RouterError> {
+    let mut profiles = Vec::new();
+    for statement in block.iter_statements() {
+        let profile = match statement {
+            Statement::CreateGraphType(_) => SchemaMigrationStatementProfile::CreateGraphType,
+            Statement::CreateGraph(statement) => match &statement.graph_type {
+                Some(GraphTypeSpec::Typed {
+                    typed_keyword: true,
+                    ..
+                }) => SchemaMigrationStatementProfile::CreateTypedGraph,
+                _ => {
+                    return Err(RouterError::InvalidArgument(
+                        "schema migration profile requires literal TYPED graph schema".into(),
+                    ));
+                }
+            },
+            _ => {
+                return Err(RouterError::InvalidArgument(
+                    "schema migration profile is unsupported for this statement".into(),
+                ));
+            }
+        };
+        profiles.push(profile);
     }
+    Ok(profiles)
 }
 
 fn validate_simple_name(name: &gleaph_gql::ast::ObjectName, what: &str) -> Result<(), RouterError> {
@@ -553,52 +575,69 @@ fn validate_graph_type_definition(
 }
 
 fn preflight_catalog_statement(block: &StatementBlock) -> Result<(), RouterError> {
-    match &block.first {
-        Statement::CreateGraphType(statement) => {
-            if ROUTER_GRAPH_TYPE_CATALOG
-                .with_borrow(|catalog| {
-                    catalog.get_id(&gleaph_graph_catalog::object_name_key(&statement.name))
-                })
-                .is_some()
-            {
-                return Err(RouterError::Conflict(format!(
-                    "graph type `{}` already exists",
-                    gleaph_graph_catalog::object_name_key(&statement.name)
-                )));
+    // Types created by an earlier statement in the same migration are visible to later
+    // statements. The durable catalog is only mutated after the whole block preflights, so shadow
+    // the in-block creations here instead of reading the persisted catalog.
+    let mut created_types: BTreeMap<String, GraphTypeDefinition> = BTreeMap::new();
+    for statement in block.iter_statements() {
+        match statement {
+            Statement::CreateGraphType(statement) => {
+                let name = gleaph_graph_catalog::object_name_key(&statement.name);
+                if ROUTER_GRAPH_TYPE_CATALOG
+                    .with_borrow(|catalog| catalog.get_id(&name))
+                    .is_some()
+                    || created_types.contains_key(&name)
+                {
+                    return Err(RouterError::Conflict(format!(
+                        "graph type `{name}` already exists"
+                    )));
+                }
+                created_types.insert(name, statement.definition.clone());
             }
-        }
-        Statement::CreateGraph(statement) => {
-            let graph_name = gleaph_graph_catalog::object_name_key(&statement.name);
-            let graph_id = crate::facade::stable::graph_catalog::lookup_graph_id(&graph_name)
-                .ok_or_else(|| {
+            Statement::CreateGraph(statement) => {
+                let graph_name = gleaph_graph_catalog::object_name_key(&statement.name);
+                let graph_id = crate::facade::stable::graph_catalog::lookup_graph_id(&graph_name)
+                    .ok_or_else(|| {
                     RouterError::NotFound(format!("graph `{graph_name}` is not registered"))
                 })?;
-            if graph_type_catalog::parsed_graph_type_definition_for_graph_id(graph_id)?.is_some() {
-                return Err(RouterError::Conflict(format!(
-                    "graph `{graph_name}` already has a schema binding"
-                )));
-            }
-            if let Some(GraphTypeSpec::Typed {
-                name,
-                typed_keyword: true,
-            }) = &statement.graph_type
-            {
+                if graph_type_catalog::parsed_graph_type_definition_for_graph_id(graph_id)?
+                    .is_some()
+                {
+                    return Err(RouterError::Conflict(format!(
+                        "graph `{graph_name}` already has a schema binding"
+                    )));
+                }
+                let Some(GraphTypeSpec::Typed {
+                    name,
+                    typed_keyword: true,
+                }) = &statement.graph_type
+                else {
+                    unreachable!("parse_and_validate_statement enforces the migration allowlist")
+                };
                 let type_name = gleaph_graph_catalog::object_name_key(name);
-                let type_id = ROUTER_GRAPH_TYPE_CATALOG
+                let definition = match ROUTER_GRAPH_TYPE_CATALOG
                     .with_borrow(|catalog| catalog.get_id(&type_name))
-                    .ok_or_else(|| RouterError::NotFound(format!("graph type `{type_name}`")))?;
-                let definition =
-                    graph_type_catalog::parsed_graph_type_definition_for_type_id(type_id)?
-                        .ok_or_else(|| {
-                            RouterError::Internal(format!(
-                                "graph type `{type_name}` has no definition"
-                            ))
-                        })?;
+                {
+                    Some(type_id) => {
+                        graph_type_catalog::parsed_graph_type_definition_for_type_id(type_id)?
+                            .ok_or_else(|| {
+                                RouterError::Internal(format!(
+                                    "graph type `{type_name}` has no definition"
+                                ))
+                            })?
+                    }
+                    None => match created_types.get(&type_name) {
+                        Some(definition) => definition.clone(),
+                        None => {
+                            return Err(RouterError::NotFound(format!("graph type `{type_name}`")));
+                        }
+                    },
+                };
                 validate_graph_type_definition(&definition)?;
                 RouterStore::preflight_graph_type_vocabulary(graph_id, &definition)?;
             }
+            _ => unreachable!("parse_and_validate_statement enforces the migration allowlist"),
         }
-        _ => unreachable!("parse_and_validate_statement enforces the migration allowlist"),
     }
     Ok(())
 }
@@ -844,7 +883,8 @@ mod tests {
             "CREATE GRAPH graph_name AS COPY OF other_graph",
             "CREATE SCHEMA schema_name",
             "INSERT INTO graph_name VALUES (1)",
-            "CREATE GRAPH TYPE root_type { NODE Person } NEXT CREATE GRAPH TYPE child_type { NODE Person }",
+            "CREATE GRAPH TYPE root_type { NODE Person } NEXT INSERT (n)",
+            "CREATE GRAPH TYPE root_type NEXT CREATE GRAPH TYPE child_type { NODE Person }",
             "SESSION SET GRAPH graph_name",
             "START TRANSACTION",
             "COMMIT",
@@ -861,7 +901,18 @@ mod tests {
             .expect("literal TYPED graph is accepted by the migration grammar");
         assert_eq!(
             statement_profile(&typed).expect("typed profile"),
-            SchemaMigrationStatementProfile::CreateTypedGraph
+            vec![SchemaMigrationStatementProfile::CreateTypedGraph]
+        );
+        let batch = parse_and_validate_statement(
+            "CREATE GRAPH TYPE root_type { NODE Person } NEXT CREATE GRAPH graph_name TYPED root_type",
+        )
+        .expect("additive NEXT chain is accepted by the migration grammar");
+        assert_eq!(
+            statement_profile(&batch).expect("batch profile"),
+            vec![
+                SchemaMigrationStatementProfile::CreateGraphType,
+                SchemaMigrationStatementProfile::CreateTypedGraph,
+            ]
         );
     }
 
@@ -983,10 +1034,10 @@ mod tests {
             ApplySchemaMigrationResult::V1(ApplySchemaMigrationResultV1 {
                 status: SchemaMigrationApplyStatus::Applied,
                 record: SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
-                    profile: SchemaMigrationStatementProfile::CreateTypedGraph,
+                    profile,
                     ..
                 }),
-            })
+            }) if profile == [SchemaMigrationStatementProfile::CreateTypedGraph]
         ));
 
         let graph_id = lookup_graph_id("typed_graph").expect("registered graph");
@@ -999,6 +1050,57 @@ mod tests {
         assert_eq!(
             ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.len()),
             2
+        );
+    }
+
+    #[test]
+    fn apply_multi_statement_migration_resolves_in_batch_type_and_binds_graph() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::self_authenticating([23; 32]);
+        auth::grant_admin(admin);
+        register_test_graph(&store, admin, "batch_graph");
+
+        let result = store
+            .admin_apply_schema_migration(
+                admin,
+                migration_args(
+                    "000001_batch",
+                    None,
+                    "CREATE GRAPH TYPE batch_type { NODE Person } NEXT CREATE GRAPH batch_graph TYPED batch_type",
+                ),
+            )
+            .expect("multi-statement migration applies atomically");
+        assert!(matches!(
+            result,
+            ApplySchemaMigrationResult::V1(ApplySchemaMigrationResultV1 {
+                status: SchemaMigrationApplyStatus::Applied,
+                record: SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
+                    profile,
+                    resolved_graph: None,
+                    ..
+                }),
+            }) if profile == [
+                SchemaMigrationStatementProfile::CreateGraphType,
+                SchemaMigrationStatementProfile::CreateTypedGraph,
+            ]
+        ));
+
+        assert!(
+            ROUTER_GRAPH_TYPE_CATALOG
+                .with_borrow(|catalog| catalog.get_id("batch_type"))
+                .is_some()
+        );
+        let graph_id = lookup_graph_id("batch_graph").expect("registered graph");
+        assert!(store.lookup_vertex_label_id(graph_id, "Person").is_ok());
+        assert!(
+            graph_type_catalog::parsed_graph_type_definition_for_graph_id(graph_id)
+                .expect("typed graph binding")
+                .is_some()
+        );
+        assert_eq!(
+            ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.len()),
+            1
         );
     }
 
@@ -1076,7 +1178,7 @@ mod tests {
             actor: admin,
             recorded_at: 1,
             statement: statement.into(),
-            profile: SchemaMigrationStatementProfile::CreateIndex,
+            profile: vec![SchemaMigrationStatementProfile::CreateIndex],
             state: SchemaMigrationRecordState::Applied { applied_at: 1 },
         });
         ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
@@ -1123,7 +1225,7 @@ mod tests {
             actor: admin,
             recorded_at: 1,
             statement: statement.into(),
-            profile: SchemaMigrationStatementProfile::CreateGraphType,
+            profile: vec![SchemaMigrationStatementProfile::CreateGraphType],
             state: SchemaMigrationRecordState::Applied { applied_at: 1 },
         });
         ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
@@ -1316,7 +1418,7 @@ mod tests {
             actor: Principal::from_slice(&[12; 29]),
             recorded_at: 42,
             statement: "CREATE GRAPH TYPE root_type { NODE Person }".into(),
-            profile: SchemaMigrationStatementProfile::CreateGraphType,
+            profile: vec![SchemaMigrationStatementProfile::CreateGraphType],
             state: SchemaMigrationRecordState::Applied { applied_at: 42 },
         });
         let stored = StableSchemaMigrationRecord(record.clone());
@@ -1375,7 +1477,10 @@ mod tests {
                 actor: Principal::from_slice(&[0xff; 29]),
                 recorded_at: u64::MAX,
                 statement,
-                profile: SchemaMigrationStatementProfile::CreateGraphType,
+                profile: vec![
+                    SchemaMigrationStatementProfile::CreateGraphType;
+                    gleaph_migration_api::MAX_SCHEMA_MIGRATION_STATEMENTS
+                ],
                 state: SchemaMigrationRecordState::Applied {
                     applied_at: u64::MAX,
                 },

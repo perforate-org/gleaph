@@ -18,8 +18,12 @@ pub const SCHEMA_MIGRATION_CHECKSUM_BYTES: usize = 32;
 pub const MAX_SCHEMA_MIGRATION_ID_BYTES: usize = 128;
 /// Maximum UTF-8 byte length accepted for a named graph selector.
 pub const MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES: usize = 256;
-/// Maximum UTF-8 byte length of one raw GQL statement.
+/// Maximum UTF-8 byte length of one migration payload. The payload may contain several additive
+/// GQL statements chained with `NEXT`; the whole payload travels as one immutable wire statement.
 pub const MAX_SCHEMA_MIGRATION_STATEMENT_BYTES: usize = 65_536;
+/// Maximum number of additive statements in one migration payload. This caps the per-record
+/// profile vector for the Router's stable record bound; the byte bound above is independent.
+pub const MAX_SCHEMA_MIGRATION_STATEMENTS: usize = 1_024;
 /// Maximum number of records retained by the Router ledger.
 pub const MAX_SCHEMA_MIGRATIONS: usize = 4_096;
 /// Maximum page size accepted by the Router list method.
@@ -209,8 +213,9 @@ pub struct SchemaMigrationRecordV1 {
     pub recorded_at: u64,
     /// Exact UTF-8 GQL execution payload sent to the Router.
     pub statement: String,
-    /// Narrow additive statement profile derived by the Router.
-    pub profile: SchemaMigrationStatementProfile,
+    /// One derived profile per payload statement, in execution order. `CREATE INDEX` migrations
+    /// are exactly one statement, so they yield a single-element vector.
+    pub profile: Vec<SchemaMigrationStatementProfile>,
     /// Pending or terminal lifecycle state. CREATE INDEX phase detail is derived from the Router
     /// physical-index catalog rather than duplicated here.
     pub state: SchemaMigrationRecordState,

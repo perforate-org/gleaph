@@ -14,10 +14,10 @@ use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ListSchemaMigrationsArgs, ListSchemaMigrationsArgsV1, ListSchemaMigrationsResult,
     MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES, MAX_SCHEMA_MIGRATION_ID_BYTES,
-    MAX_SCHEMA_MIGRATION_STATEMENT_BYTES, MAX_SCHEMA_MIGRATIONS, SchemaMigrationApplyStatus,
-    SchemaMigrationChecksum, SchemaMigrationGraphSelector, SchemaMigrationRecord,
-    SchemaMigrationRecordState, SchemaMigrationStatementProfile, parse_schema_migration_id,
-    schema_migration_checksum,
+    MAX_SCHEMA_MIGRATION_STATEMENT_BYTES, MAX_SCHEMA_MIGRATION_STATEMENTS, MAX_SCHEMA_MIGRATIONS,
+    SchemaMigrationApplyStatus, SchemaMigrationChecksum, SchemaMigrationGraphSelector,
+    SchemaMigrationRecord, SchemaMigrationRecordState, SchemaMigrationStatementProfile,
+    parse_schema_migration_id, schema_migration_checksum,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,6 +34,8 @@ use std::os::unix::fs::MetadataExt;
 
 const MANIFEST_FILE: &str = "migration.toml";
 const GQL_FILE: &str = "up.gql";
+const UP_DIRECTORY: &str = "up";
+const GQL_EXTENSION: &str = ".gql";
 /// Per-invocation safety bound. A pending index migration remains durable and can be resumed by
 /// rerunning the same command with the same immutable artifact.
 const MAX_INDEX_APPLY_ROUNDS_PER_MIGRATION: usize = 4_096;
@@ -139,8 +141,8 @@ pub struct MigrationArtifact {
     pub manifest: MigrationManifest,
     /// Exact UTF-8 payload read from `up.gql`.
     pub gql: String,
-    /// Validated typed execution profile.
-    pub profile: SchemaMigrationStatementProfile,
+    /// One validated typed execution profile per payload statement, in execution order.
+    pub profile: Vec<SchemaMigrationStatementProfile>,
     /// Canonical graph selector committed to the Router wire envelope.
     pub graph_selector: SchemaMigrationGraphSelector,
     /// Directory containing the two artifact files.
@@ -180,11 +182,14 @@ impl MigrationArtifact {
         })
     }
 
-    /// For a `CREATE INDEX` migration, the indexed property name. The Router requires the
-    /// property to already be interned in the target graph (ADR 0059 Preparing rejects
-    /// missing properties), so `apply` interns it first.
+    /// For a single-statement `CREATE INDEX` migration, the indexed property name. The Router
+    /// requires the property to already be interned in the target graph (ADR 0059 Preparing
+    /// rejects missing properties), so `apply` interns it first.
     pub fn index_property(&self) -> Result<Option<String>, MigrationError> {
-        if self.profile != SchemaMigrationStatementProfile::CreateIndex {
+        if !matches!(
+            self.profile.as_slice(),
+            [SchemaMigrationStatementProfile::CreateIndex]
+        ) {
             return Ok(None);
         }
         let statement = gleaph_index_ddl::try_parse(&self.gql)
@@ -441,7 +446,8 @@ fn load_artifact_named(
         });
     }
 
-    let mut names = BTreeSet::new();
+    let mut entries = BTreeSet::new();
+    let mut up_directory = None::<PathBuf>;
     let mut file_snapshots = BTreeMap::new();
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -452,32 +458,50 @@ fn load_artifact_named(
                 path: entry.path().display().to_string(),
                 reason: "entry name is not valid UTF-8".into(),
             })?;
-        let metadata = fs::symlink_metadata(entry.path())?;
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path)?;
         if metadata.file_type().is_symlink() {
             return Err(MigrationError::InvalidDirectory {
-                path: entry.path().display().to_string(),
+                path: entry_path.display().to_string(),
                 reason: "symlinks are not allowed".into(),
             });
         }
-        if !metadata.is_file() || !names.insert(name.to_owned()) {
-            return Err(MigrationError::InvalidDirectory {
-                path: entry.path().display().to_string(),
-                reason: "package must contain exactly two regular files".into(),
-            });
-        }
-        file_snapshots.insert(name.to_owned(), file_snapshot(&metadata)?);
-        if name != MANIFEST_FILE && name != GQL_FILE {
-            return Err(MigrationError::InvalidDirectory {
-                path: entry.path().display().to_string(),
-                reason: format!("unexpected file {name:?}"),
-            });
+        match name {
+            MANIFEST_FILE | GQL_FILE => {
+                if !metadata.is_file() || !entries.insert(name.to_owned()) {
+                    return Err(MigrationError::InvalidDirectory {
+                        path: entry_path.display().to_string(),
+                        reason: "package must contain exactly one migration.toml and one up.gql or up/ directory".into(),
+                    });
+                }
+                file_snapshots.insert(name.to_owned(), file_snapshot(&metadata)?);
+            }
+            UP_DIRECTORY => {
+                if !metadata.is_dir() || up_directory.is_some() {
+                    return Err(MigrationError::InvalidDirectory {
+                        path: entry_path.display().to_string(),
+                        reason: "package must contain exactly one up.gql or up/ directory".into(),
+                    });
+                }
+                up_directory = Some(entry_path);
+            }
+            _ => {
+                return Err(MigrationError::InvalidDirectory {
+                    path: entry_path.display().to_string(),
+                    reason: format!("unexpected entry {name:?}"),
+                });
+            }
         }
     }
-    let expected = BTreeSet::from([MANIFEST_FILE.to_owned(), GQL_FILE.to_owned()]);
-    if names != expected {
+    if !entries.contains(MANIFEST_FILE)
+        || (entries.contains(GQL_FILE) && up_directory.is_some())
+        || (!entries.contains(GQL_FILE) && up_directory.is_none())
+    {
         return Err(MigrationError::InvalidDirectory {
             path: path.display().to_string(),
-            reason: "package must contain exactly migration.toml and up.gql".into(),
+            reason:
+                "package must contain migration.toml and exactly one of up.gql or up/ directory"
+                    .into(),
         });
     }
 
@@ -511,12 +535,15 @@ fn load_artifact_named(
         }
     }
 
-    let gql = read_text_file_with_identity(
-        &path.join(GQL_FILE),
-        true,
-        file_snapshots.get(GQL_FILE).copied(),
-        Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES),
-    )?;
+    let gql = match up_directory {
+        Some(up) => load_up_directory(&up)?,
+        None => read_text_file_with_identity(
+            &path.join(GQL_FILE),
+            true,
+            file_snapshots.get(GQL_FILE).copied(),
+            Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES),
+        )?,
+    };
     let profile = validate_gql(&gql)?;
     let graph_selector = graph_selector_for_manifest(&manifest, &profile)?;
     let checksum = calculate_checksum(&manifest, &graph_selector, gql.as_bytes());
@@ -528,6 +555,72 @@ fn load_artifact_named(
         path: path.to_path_buf(),
         checksum,
     })
+}
+
+/// Load a `up/` fragment directory: regular `*.gql` files only, concatenated in sorted filename
+/// order into one migration payload. Every fragment must be LF-terminated so the concatenation is
+/// deterministic and satisfies the same LF and trailing-newline contract as a single `up.gql`.
+fn load_up_directory(up: &Path) -> Result<String, MigrationError> {
+    let mut fragments = BTreeMap::new();
+    for entry in fs::read_dir(up)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| MigrationError::InvalidDirectory {
+                path: entry.path().display().to_string(),
+                reason: "entry name is not valid UTF-8".into(),
+            })?;
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(MigrationError::InvalidDirectory {
+                path: entry_path.display().to_string(),
+                reason: "up/ must contain only regular .gql files".into(),
+            });
+        }
+        if !name.ends_with(GQL_EXTENSION) {
+            return Err(MigrationError::InvalidDirectory {
+                path: entry_path.display().to_string(),
+                reason: format!("up/ entry {name:?} must end in {GQL_EXTENSION:?}"),
+            });
+        }
+        if fragments
+            .insert(
+                name.to_owned(),
+                (entry_path.clone(), file_snapshot(&metadata)?),
+            )
+            .is_some()
+        {
+            return Err(MigrationError::InvalidDirectory {
+                path: entry_path.display().to_string(),
+                reason: "duplicate up/ fragment name".into(),
+            });
+        }
+    }
+    if fragments.is_empty() {
+        return Err(MigrationError::InvalidDirectory {
+            path: up.display().to_string(),
+            reason: "up/ must contain at least one .gql file".into(),
+        });
+    }
+    let mut payload = String::new();
+    for (_, (fragment_path, snapshot)) in fragments {
+        let fragment = read_text_file_with_identity(
+            &fragment_path,
+            true,
+            Some(snapshot),
+            Some(MAX_SCHEMA_MIGRATION_STATEMENT_BYTES),
+        )?;
+        if payload.len() + fragment.len() > MAX_SCHEMA_MIGRATION_STATEMENT_BYTES {
+            return Err(statement_too_large_error(
+                &fragment_path,
+                MAX_SCHEMA_MIGRATION_STATEMENT_BYTES,
+            ));
+        }
+        payload.push_str(&fragment);
+    }
+    Ok(payload)
 }
 
 /// Build a local plan without performing any Router calls or writes.
@@ -632,7 +725,10 @@ fn status_for_plan<T: MigrationTransport>(
             match &record.state {
                 SchemaMigrationRecordState::Applied { .. } => applied_count += 1,
                 SchemaMigrationRecordState::PendingIndex { .. } => {
-                    if record.profile != SchemaMigrationStatementProfile::CreateIndex {
+                    if !record
+                        .profile
+                        .contains(&SchemaMigrationStatementProfile::CreateIndex)
+                    {
                         return Err(MigrationError::Remote(format!(
                             "Router returned a pending non-index migration {:?}",
                             record.id
@@ -725,12 +821,13 @@ pub fn apply<T: MigrationTransport>(
                 )));
             }
             let SchemaMigrationRecord::V1(record) = &result.record;
-            let resolved_graph_matches_profile = match artifact.profile {
-                SchemaMigrationStatementProfile::CreateIndex => record.resolved_graph.is_some(),
-                SchemaMigrationStatementProfile::CreateGraphType
-                | SchemaMigrationStatementProfile::CreateTypedGraph => {
-                    record.resolved_graph.is_none()
-                }
+            let resolved_graph_matches_profile = if artifact
+                .profile
+                .contains(&SchemaMigrationStatementProfile::CreateIndex)
+            {
+                record.resolved_graph.is_some()
+            } else {
+                record.resolved_graph.is_none()
             };
             let state_matches_status = matches!(
                 (&result.status, &record.state),
@@ -1108,7 +1205,7 @@ fn read_text_file_with_identity(
     String::from_utf8(bytes).map_err(|error| MigrationError::Io(error.to_string()))
 }
 
-fn validate_gql(gql: &str) -> Result<SchemaMigrationStatementProfile, MigrationError> {
+fn validate_gql(gql: &str) -> Result<Vec<SchemaMigrationStatementProfile>, MigrationError> {
     if let Some(index_ddl) = gleaph_index_ddl::try_parse(gql) {
         let index_ddl = index_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
         return match index_ddl {
@@ -1121,7 +1218,7 @@ fn validate_gql(gql: &str) -> Result<SchemaMigrationStatementProfile, MigrationE
             gleaph_index_ddl::IndexDdlStatement::Create {
                 if_not_exists: false,
                 ..
-            } => Ok(SchemaMigrationStatementProfile::CreateIndex),
+            } => Ok(vec![SchemaMigrationStatementProfile::CreateIndex]),
             gleaph_index_ddl::IndexDdlStatement::Drop { .. } => Err(MigrationError::Gql(
                 "DROP INDEX is not an additive migration".into(),
             )),
@@ -1147,7 +1244,7 @@ fn validate_gql(gql: &str) -> Result<SchemaMigrationStatementProfile, MigrationE
         ));
     }
     let activity = program.transaction_activity.ok_or_else(|| {
-        MigrationError::Gql("migration must contain one catalog statement".into())
+        MigrationError::Gql("migration must contain one or more catalog statements".into())
     })?;
     if activity.start.is_some() || activity.end.is_some() {
         return Err(MigrationError::Gql(
@@ -1155,70 +1252,89 @@ fn validate_gql(gql: &str) -> Result<SchemaMigrationStatementProfile, MigrationE
         ));
     }
     let body = activity.body.ok_or_else(|| {
-        MigrationError::Gql("migration must contain one catalog statement".into())
+        MigrationError::Gql("migration must contain one or more catalog statements".into())
     })?;
-    if !body.next.is_empty() {
-        return Err(MigrationError::Gql(
-            "NEXT-chained statements are not allowed in migrations".into(),
-        ));
+    let mut profiles = Vec::new();
+    for statement in body.iter_statements() {
+        let profile = match statement {
+            Statement::CreateGraphType(create)
+                if !create.if_not_exists
+                    && !create.or_replace
+                    && create.copy_of.is_none()
+                    && create.name.parts.len() == 1
+                    && has_explicit_graph_type_body(gql, create.span) =>
+            {
+                SchemaMigrationStatementProfile::CreateGraphType
+            }
+            Statement::CreateGraph(create)
+                if !create.if_not_exists
+                    && !create.or_replace
+                    && create.copy_of.is_none()
+                    && create.name.parts.len() == 1
+                    && matches!(
+                        &create.graph_type,
+                        Some(GraphTypeSpec::Typed {
+                            name,
+                            typed_keyword: true,
+                        }) if name.parts.len() == 1
+                    ) =>
+            {
+                SchemaMigrationStatementProfile::CreateTypedGraph
+            }
+            Statement::CreateGraphType(_) => {
+                return Err(MigrationError::Gql(
+                    "CREATE GRAPH TYPE migrations require one explicit body and forbid IF NOT EXISTS, OR REPLACE, and COPY".into(),
+                ));
+            }
+            Statement::CreateGraph(_) => {
+                return Err(MigrationError::Gql(
+                    "CREATE GRAPH migrations require a simple literal name and TYPED literal type"
+                        .into(),
+                ));
+            }
+            _ => {
+                return Err(MigrationError::Gql(
+                    "only additive CREATE GRAPH TYPE or CREATE GRAPH ... TYPED ... is allowed"
+                        .into(),
+                ));
+            }
+        };
+        profiles.push(profile);
+        if profiles.len() > MAX_SCHEMA_MIGRATION_STATEMENTS {
+            return Err(MigrationError::Gql(format!(
+                "migration exceeds {MAX_SCHEMA_MIGRATION_STATEMENTS} additive statements"
+            )));
+        }
     }
-    let operation = match body.first {
-        Statement::CreateGraphType(create)
-            if !create.if_not_exists
-                && !create.or_replace
-                && create.copy_of.is_none()
-                && create.name.parts.len() == 1
-                && lexical
-                    .tokens
-                    .iter()
-                    .any(|token| matches!(token.token, Token::LBrace)) =>
-        {
-            SchemaMigrationStatementProfile::CreateGraphType
-        }
-        Statement::CreateGraph(create)
-            if !create.if_not_exists
-                && !create.or_replace
-                && create.copy_of.is_none()
-                && create.name.parts.len() == 1
-                && matches!(
-                    &create.graph_type,
-                    Some(GraphTypeSpec::Typed {
-                        name,
-                        typed_keyword: true,
-                    }) if name.parts.len() == 1
-                ) =>
-        {
-            let Some(GraphTypeSpec::Typed { .. }) = create.graph_type else {
-                unreachable!("guard proves typed graph type")
-            };
-            SchemaMigrationStatementProfile::CreateTypedGraph
-        }
-        Statement::CreateGraphType(_) => {
-            return Err(MigrationError::Gql(
-                "CREATE GRAPH TYPE migrations require one explicit body and forbid IF NOT EXISTS, OR REPLACE, and COPY".into(),
-            ));
-        }
-        Statement::CreateGraph(_) => {
-            return Err(MigrationError::Gql(
-                "CREATE GRAPH migrations require a simple literal name and TYPED literal type"
-                    .into(),
-            ));
-        }
-        _ => {
-            return Err(MigrationError::Gql(
-                "only additive CREATE GRAPH TYPE or CREATE GRAPH ... TYPED ... is allowed".into(),
-            ));
-        }
+    Ok(profiles)
+}
+
+/// The general GQL AST represents a bodyless `CREATE GRAPH TYPE name` and an explicit empty body
+/// with the same empty definition. Migrations require the body to be present for every `CREATE
+/// GRAPH TYPE` statement, so retain this migration-owned lexical distinction per statement without
+/// changing the general-purpose GQL grammar or AST.
+fn has_explicit_graph_type_body(source: &str, span: gleaph_gql::token::Span) -> bool {
+    let Some(statement_source) = source.get(span.start..span.end) else {
+        return false;
     };
-    Ok(operation)
+    gleaph_gql::lexer::tokenize_with_comments(statement_source)
+        .map(|lexical| {
+            lexical
+                .tokens
+                .iter()
+                .any(|token| matches!(token.token, Token::LBrace))
+        })
+        .unwrap_or(false)
 }
 
 fn graph_selector_for_manifest(
     manifest: &MigrationManifest,
-    profile: &SchemaMigrationStatementProfile,
+    profiles: &[SchemaMigrationStatementProfile],
 ) -> Result<SchemaMigrationGraphSelector, MigrationError> {
-    match profile {
-        SchemaMigrationStatementProfile::CreateIndex => match manifest.graph.as_deref() {
+    if profiles.contains(&SchemaMigrationStatementProfile::CreateIndex) {
+        // CREATE INDEX is always the only statement in its migration, so a manifest graph
+        // selector applies to the whole payload.
+        match manifest.graph.as_deref() {
             None => Ok(SchemaMigrationGraphSelector::Default),
             Some("") => Err(MigrationError::Manifest(
                 "graph selector must not be empty".into(),
@@ -1229,16 +1345,14 @@ fn graph_selector_for_manifest(
                 )))
             }
             Some(name) => Ok(SchemaMigrationGraphSelector::Named(name.to_owned())),
-        },
-        SchemaMigrationStatementProfile::CreateGraphType
-        | SchemaMigrationStatementProfile::CreateTypedGraph => {
-            if manifest.graph.is_some() {
-                return Err(MigrationError::Manifest(
-                    "graph selector is only allowed for CREATE INDEX migrations".into(),
-                ));
-            }
-            Ok(SchemaMigrationGraphSelector::Default)
         }
+    } else {
+        if manifest.graph.is_some() {
+            return Err(MigrationError::Manifest(
+                "graph selector is only allowed for CREATE INDEX migrations".into(),
+            ));
+        }
+        Ok(SchemaMigrationGraphSelector::Default)
     }
 }
 
@@ -1343,6 +1457,26 @@ mod tests {
         fs::write(dir.join(GQL_FILE), gql).expect("gql");
     }
 
+    fn write_up_package(
+        root: &Path,
+        id: &str,
+        parent: Option<&str>,
+        fragments: &[(&str, &str)],
+        description: &str,
+    ) {
+        let dir = root.join(id);
+        fs::create_dir_all(dir.join(UP_DIRECTORY)).expect("package directory");
+        let parent = parent.map(|parent| format!("parent = {parent:?}\n"));
+        let manifest = format!(
+            "format_version = 1\nid = {id:?}\n{}description = {description:?}\n",
+            parent.unwrap_or_default()
+        );
+        fs::write(dir.join(MANIFEST_FILE), manifest).expect("manifest");
+        for (name, body) in fragments {
+            fs::write(dir.join(UP_DIRECTORY).join(name), body).expect("fragment");
+        }
+    }
+
     struct FakeMigrationTransport {
         pages: VecDeque<Result<ListSchemaMigrationsResult, String>>,
         calls: Vec<ListSchemaMigrationsArgsV1>,
@@ -1420,7 +1554,7 @@ mod tests {
                 let gql = format!("CREATE GRAPH TYPE type{index} {{}}\n");
                 let graph_selector = SchemaMigrationGraphSelector::Default;
                 let artifact = MigrationArtifact {
-                    profile: SchemaMigrationStatementProfile::CreateGraphType,
+                    profile: vec![SchemaMigrationStatementProfile::CreateGraphType],
                     checksum: calculate_checksum(&manifest, &graph_selector, gql.as_bytes()),
                     graph_selector,
                     manifest,
@@ -1528,15 +1662,29 @@ mod tests {
         let accepted = [
             (
                 "CREATE GRAPH TYPE Social {}\n",
-                SchemaMigrationStatementProfile::CreateGraphType,
+                vec![SchemaMigrationStatementProfile::CreateGraphType],
             ),
             (
                 "CREATE GRAPH social TYPED Social\n",
-                SchemaMigrationStatementProfile::CreateTypedGraph,
+                vec![SchemaMigrationStatementProfile::CreateTypedGraph],
             ),
             (
                 "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
-                SchemaMigrationStatementProfile::CreateIndex,
+                vec![SchemaMigrationStatementProfile::CreateIndex],
+            ),
+            (
+                "CREATE GRAPH TYPE Social { NODE Person }\nNEXT CREATE GRAPH social TYPED Social\n",
+                vec![
+                    SchemaMigrationStatementProfile::CreateGraphType,
+                    SchemaMigrationStatementProfile::CreateTypedGraph,
+                ],
+            ),
+            (
+                "CREATE GRAPH TYPE A {}\nNEXT CREATE GRAPH TYPE B {}\n",
+                vec![
+                    SchemaMigrationStatementProfile::CreateGraphType,
+                    SchemaMigrationStatementProfile::CreateGraphType,
+                ],
             ),
         ];
         for (statement, expected) in accepted {
@@ -1551,10 +1699,12 @@ mod tests {
             "CREATE GRAPH TYPE Social {} NEXT INSERT (n)\n",
             "CREATE OR REPLACE GRAPH TYPE Social {}\n",
             "CREATE GRAPH TYPE IF NOT EXISTS Social {}\n",
+            "CREATE GRAPH TYPE Social NEXT CREATE GRAPH TYPE Other {}\n",
             "SESSION SET VALUE $x :: STRING = 'x'\n",
             "START TRANSACTION\nCREATE GRAPH TYPE Social {}\n",
             "CREATE INDEX person_age IF NOT EXISTS FOR (n:Person) ON (n.age)\n",
             "DROP INDEX person_age\n",
+            "CREATE GRAPH TYPE Social {} NEXT CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
         ];
         for statement in rejected {
             assert!(
@@ -1562,6 +1712,144 @@ mod tests {
                 "statement should be rejected: {statement:?}"
             );
         }
+    }
+
+    #[test]
+    fn discovers_multi_statement_migration_with_exact_payload() {
+        let root = temp_root();
+        let payload =
+            "CREATE GRAPH TYPE Social { NODE Person }\nNEXT CREATE GRAPH social TYPED Social\n";
+        write_package(&root, "000001_social", None, payload, "type and binding");
+        let plan = discover(&root).expect("multi-statement package");
+        let artifact = &plan.migrations[0];
+        assert_eq!(
+            artifact.profile,
+            vec![
+                SchemaMigrationStatementProfile::CreateGraphType,
+                SchemaMigrationStatementProfile::CreateTypedGraph,
+            ]
+        );
+        assert_eq!(artifact.gql, payload);
+        assert_eq!(
+            artifact.graph_selector,
+            SchemaMigrationGraphSelector::Default
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn discovers_up_directory_fragments_in_sorted_order() {
+        let root = temp_root();
+        // Fragments are authored out of order; discovery must concatenate them by sorted name.
+        write_up_package(
+            &root,
+            "000001_social",
+            None,
+            &[
+                ("02_bind.gql", "NEXT CREATE GRAPH social TYPED Social\n"),
+                ("01_type.gql", "CREATE GRAPH TYPE Social { NODE Person }\n"),
+            ],
+            "type and binding",
+        );
+        let plan = discover(&root).expect("up/ package");
+        let artifact = &plan.migrations[0];
+        assert_eq!(
+            artifact.gql,
+            "CREATE GRAPH TYPE Social { NODE Person }\nNEXT CREATE GRAPH social TYPED Social\n"
+        );
+        assert_eq!(
+            artifact.profile,
+            vec![
+                SchemaMigrationStatementProfile::CreateGraphType,
+                SchemaMigrationStatementProfile::CreateTypedGraph,
+            ]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn up_directory_rejects_invalid_fragment_layouts() {
+        // Non-.gql fragment.
+        let root = temp_root();
+        write_up_package(&root, "000001_social", None, &[("notes.txt", "x\n")], "bad");
+        let error = discover(&root).expect_err("non-gql fragment must be rejected");
+        assert!(error.to_string().contains("must end in \".gql\""));
+        fs::remove_dir_all(root).expect("cleanup");
+
+        // Nested directory inside up/.
+        let root = temp_root();
+        write_up_package(
+            &root,
+            "000001_social",
+            None,
+            &[("a.gql", "CREATE GRAPH TYPE A {}\n")],
+            "bad",
+        );
+        fs::create_dir_all(root.join("000001_social/up/nested")).expect("nested");
+        let error = discover(&root).expect_err("nested directory must be rejected");
+        assert!(error.to_string().contains("only regular .gql files"));
+        fs::remove_dir_all(root).expect("cleanup");
+
+        // Both up.gql and up/ present.
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_social",
+            None,
+            "CREATE GRAPH TYPE A {}\n",
+            "both",
+        );
+        fs::create_dir_all(root.join("000001_social/up")).expect("up directory");
+        let error = discover(&root).expect_err("both sources must be rejected");
+        assert!(error.to_string().contains("exactly one of up.gql or up/"));
+        fs::remove_dir_all(root).expect("cleanup");
+
+        // Empty up/.
+        let root = temp_root();
+        write_up_package(&root, "000001_social", None, &[], "empty");
+        let error = discover(&root).expect_err("empty up/ must be rejected");
+        assert!(error.to_string().contains("at least one"));
+        fs::remove_dir_all(root).expect("cleanup");
+
+        // Fragment without a trailing newline.
+        let root = temp_root();
+        write_up_package(
+            &root,
+            "000001_social",
+            None,
+            &[("a.gql", "CREATE GRAPH TYPE A {}")],
+            "no newline",
+        );
+        let error = discover(&root).expect_err("fragment must be LF-terminated");
+        assert!(error.to_string().contains("must end with a newline"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_dispatches_multi_statement_migration_as_one_envelope() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_social",
+            None,
+            "CREATE GRAPH TYPE Social { NODE Person }\nNEXT CREATE GRAPH social TYPED Social\n",
+            "type and binding",
+        );
+        let plan = discover(&root).expect("test chain");
+        let mut transport =
+            FakeMigrationTransport::new(vec![test_page(vec![], None)]).with_apply_results(vec![
+                test_apply_result(&plan.migrations[0], SchemaMigrationApplyStatus::Applied),
+            ]);
+
+        let outcomes = apply(&root, &mut transport).expect("pending migration applies");
+
+        assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied]);
+        assert_eq!(transport.apply_calls.len(), 1);
+        let call = &transport.apply_calls[0];
+        assert_eq!(call.id, "000001_social");
+        assert_eq!(call.statement, plan.migrations[0].gql);
+        assert_eq!(call.checksum, *plan.migrations[0].checksum());
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -1576,7 +1864,7 @@ mod tests {
         assert_eq!(
             graph_selector_for_manifest(
                 &index_manifest,
-                &SchemaMigrationStatementProfile::CreateIndex
+                &[SchemaMigrationStatementProfile::CreateIndex]
             ),
             Ok(SchemaMigrationGraphSelector::Named("social".into()))
         );
@@ -1588,14 +1876,14 @@ mod tests {
         assert_eq!(
             graph_selector_for_manifest(
                 &default_manifest,
-                &SchemaMigrationStatementProfile::CreateIndex
+                &[SchemaMigrationStatementProfile::CreateIndex]
             ),
             Ok(SchemaMigrationGraphSelector::Default)
         );
         assert!(matches!(
             graph_selector_for_manifest(
                 &index_manifest,
-                &SchemaMigrationStatementProfile::CreateTypedGraph
+                &[SchemaMigrationStatementProfile::CreateTypedGraph]
             ),
             Err(MigrationError::Manifest(message)) if message.contains("only allowed for CREATE INDEX")
         ));
@@ -1607,7 +1895,7 @@ mod tests {
         assert!(matches!(
             graph_selector_for_manifest(
                 &oversized_manifest,
-                &SchemaMigrationStatementProfile::CreateIndex
+                &[SchemaMigrationStatementProfile::CreateIndex]
             ),
             Err(MigrationError::Manifest(message)) if message.contains("exceeds")
         ));
@@ -1994,7 +2282,9 @@ mod tests {
                 "parent" => record.parent = Some("000000_wrong".into()),
                 "checksum" => record.checksum.digest[0] ^= 1,
                 "statement" => record.statement.push_str(" -- drift"),
-                "profile" => record.profile = SchemaMigrationStatementProfile::CreateTypedGraph,
+                "profile" => {
+                    record.profile = vec![SchemaMigrationStatementProfile::CreateTypedGraph]
+                }
                 _ => unreachable!(),
             }
             let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])

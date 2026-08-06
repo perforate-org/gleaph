@@ -208,7 +208,7 @@ mod tests {
                         actor: candid::Principal::anonymous(),
                         recorded_at: 1,
                         statement: "CREATE GRAPH TYPE Social {}".into(),
-                        profile: SchemaMigrationStatementProfile::CreateGraphType,
+                        profile: vec![SchemaMigrationStatementProfile::CreateGraphType],
                         state: SchemaMigrationRecordState::Applied { applied_at: 2 },
                     }),
                     SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
@@ -226,7 +226,7 @@ mod tests {
                         actor: candid::Principal::anonymous(),
                         recorded_at: 3,
                         statement: "CREATE GRAPH social TYPED Social".into(),
-                        profile: SchemaMigrationStatementProfile::CreateTypedGraph,
+                        profile: vec![SchemaMigrationStatementProfile::CreateTypedGraph],
                         state: SchemaMigrationRecordState::Applied { applied_at: 4 },
                     }),
                 ],
