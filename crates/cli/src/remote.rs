@@ -282,4 +282,18 @@ mod tests {
         let decoded = candid::decode_args::<(String, Vec<String>)>(&args_bytes).expect("decode");
         assert_eq!(decoded, ("social".to_string(), vec!["user_id".to_string()]));
     }
+
+    #[test]
+    fn property_id_vec_round_trips_through_candid() {
+        use gleaph_graph_kernel::entry::PropertyId;
+
+        // Regression: `PropertyId` derives a transparent candid type (nat32), but its serde
+        // derive used to emit a newtype-struct wrapper for values inside containers, so
+        // `ensure_properties`' `Result<Vec<PropertyId>, _>` response could not be decoded even
+        // though the wire carried a plain `vec nat32`.
+        let ids = vec![PropertyId::from_raw(1), PropertyId::from_raw(2)];
+        let encoded = Encode!(&ids).expect("encode");
+        let decoded = candid::Decode!(&encoded, Vec<PropertyId>).expect("decode");
+        assert_eq!(decoded, ids);
+    }
 }

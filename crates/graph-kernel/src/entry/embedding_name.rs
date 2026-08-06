@@ -24,6 +24,7 @@ use std::fmt;
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct EmbeddingNameId(u16);
 
 pub const EMBEDDING_NAME_CATALOG_MAX: u16 = u16::MAX - 1;

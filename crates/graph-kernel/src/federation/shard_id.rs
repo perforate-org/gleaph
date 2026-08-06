@@ -11,6 +11,7 @@ use std::fmt;
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
 )]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct ShardId(pub u32);
 
 impl ShardId {

@@ -1170,12 +1170,19 @@ mod tests {
     }
 
     #[test]
-    fn typed_shard_vector_candid_decode_is_not_self_roundtrippable() {
+    fn typed_shard_vector_candid_roundtrips_with_transparent_shard_id() {
+        // Regression: `ShardId` derives a transparent candid type (nat32), but its serde derive
+        // used to emit a newtype-struct wrapper for values inside containers, so a `Vec<ShardId>`
+        // could not be decoded from the wire. `#[serde(transparent)]` keeps the serde shape in
+        // sync with the candid type.
         let request = TypedShardVector {
             target_shard_ids: vec![ShardId::new(0), ShardId::new(7)],
         };
         let encoded = Encode!(&request).expect("encode typed shard vector");
-        assert!(Decode!(&encoded, TypedShardVector).is_err());
+        assert_eq!(
+            Decode!(&encoded, TypedShardVector).expect("decode typed shard vector"),
+            request
+        );
     }
 
     #[test]

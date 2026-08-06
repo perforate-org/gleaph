@@ -30,6 +30,7 @@ pub type TaggedEdgeLabelId = BucketLabelKey;
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct VertexLabelId(u16);
 
 /// Catalog edge label id: lower 15 bits only (MSB must stay clear).
@@ -51,6 +52,7 @@ pub struct VertexLabelId(u16);
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct EdgeLabelId(u16);
 
 /// Directed vs undirected interpretation for [`EdgeLabelId::pack`].

@@ -20,6 +20,7 @@ use std::fmt;
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct GraphId(u32);
 
 impl GraphId {

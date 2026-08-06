@@ -19,6 +19,7 @@ use std::fmt;
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct PropertyId(u32);
 
 impl PropertyId {

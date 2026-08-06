@@ -23,6 +23,7 @@ use std::fmt;
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct ConstraintNameId(u16);
 
 pub const CONSTRAINT_NAME_CATALOG_MAX: u16 = u16::MAX - 1;

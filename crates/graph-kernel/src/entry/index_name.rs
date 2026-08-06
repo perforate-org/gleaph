@@ -20,6 +20,7 @@ use std::fmt;
     Serialize,
     Deserialize,
 )]
+#[serde(transparent)]
 pub struct IndexNameId(u16);
 
 pub const INDEX_NAME_CATALOG_MAX: u16 = u16::MAX - 1;
