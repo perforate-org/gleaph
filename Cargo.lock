@@ -1733,6 +1733,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "clap",
+ "gleaph-graph-kernel",
  "gleaph-prepared-api",
  "ic-agent",
  "serde",
