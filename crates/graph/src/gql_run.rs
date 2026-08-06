@@ -3755,10 +3755,7 @@ mod wave_4_regression_tests {
         for demo_id in [284u64, 4284u64] {
             let mut p = BTreeMap::new();
             p.insert("demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
-            p.insert(
-                "body".to_string(),
-                gleaph_gql::Value::Text("x".to_string()),
-            );
+            p.insert("body".to_string(), gleaph_gql::Value::Text("x".to_string()));
             p.insert("is_public".to_string(), gleaph_gql::Value::Bool(true));
             pollster::block_on(run_adhoc_gql(
                 store,
@@ -3814,10 +3811,7 @@ mod wave_4_regression_tests {
         for demo_id in [284u64, 4284u64] {
             let mut p = BTreeMap::new();
             p.insert("demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
-            p.insert(
-                "body".to_string(),
-                gleaph_gql::Value::Text("x".to_string()),
-            );
+            p.insert("body".to_string(), gleaph_gql::Value::Text("x".to_string()));
             p.insert("is_public".to_string(), gleaph_gql::Value::Bool(true));
             pollster::block_on(run_adhoc_gql(
                 store,
