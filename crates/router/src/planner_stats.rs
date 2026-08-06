@@ -298,9 +298,9 @@ mod tests {
         crate::facade::auth::grant_admins(&[admin]);
         crate::facade::store::catalog_test_support::register_graph(&store, admin, TEST_GRAPH);
         let graph_id = store.resolve_graph_id(TEST_GRAPH).expect("test graph");
-        let property_id = store
-            .admin_intern_property(admin, TEST_GRAPH, "region")
-            .expect("intern region");
+        let property_id = crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, TEST_GRAPH, "region",
+        );
         let stats = RouterGraphStats::from_property_ids(
             graph_id,
             [property_id].into_iter().collect(),
@@ -325,9 +325,9 @@ mod tests {
         let _ = store
             .admin_intern_edge_label(admin, TEST_GRAPH, "KNOWS")
             .expect("label");
-        let property_id = store
-            .admin_intern_property(admin, TEST_GRAPH, "weight")
-            .expect("property");
+        let property_id = crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, TEST_GRAPH, "weight",
+        );
         let stats = RouterGraphStats::from_catalog(
             graph_id,
             BTreeSet::new(),
@@ -375,9 +375,9 @@ mod tests {
         let _knows_label_id = store
             .admin_intern_edge_label(admin, TEST_GRAPH, "KNOWS")
             .expect("intern KNOWS");
-        let property_id = store
-            .admin_intern_property(admin, TEST_GRAPH, "distance")
-            .expect("intern distance");
+        let property_id = crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, TEST_GRAPH, "distance",
+        );
 
         // KNOWS has a sidecar edge index on distance; ROAD has the same property id as inline.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
@@ -463,9 +463,9 @@ mod tests {
         store
             .admin_intern_edge_label(admin, TEST_GRAPH, "KNOWS")
             .expect("intern KNOWS");
-        let stats_property_id = store
-            .admin_intern_property(admin, TEST_GRAPH, "stats")
-            .expect("intern stats");
+        let stats_property_id = crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, TEST_GRAPH, "stats",
+        );
 
         // KNOWS has a sidecar edge index on stats; AFFINITY has the same property id as an
         // inline STRUCT slot.

@@ -387,9 +387,12 @@ fn unregister_graph_cascades_vocabulary_partitions() {
     let vertex = store
         .admin_intern_vertex_label(admin, "tenant.main", "Person")
         .expect("vertex label");
-    store
-        .admin_intern_property(admin, "tenant.main", "age")
-        .expect("property");
+    crate::facade::store::catalog_test_support::intern_property(
+        &store,
+        admin,
+        "tenant.main",
+        "age",
+    );
     store
         .admin_set_edge_label_inline_property_profile(
             admin,
@@ -432,10 +435,13 @@ fn unregister_graph_cascades_vocabulary_partitions() {
         1
     );
     assert_eq!(
-        store
-            .admin_intern_property(admin, "tenant.main", "age")
-            .expect("property re-intern")
-            .raw(),
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.main",
+            "age",
+        )
+        .raw(),
         1
     );
     assert_eq!(
@@ -1071,9 +1077,12 @@ fn ordered_catalog_resolution_is_read_only_and_deduplicates_names() {
     let edge_id = store
         .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
         .expect("edge label");
-    let property_id = store
-        .admin_intern_property(admin, "tenant.main", "weight")
-        .expect("property");
+    let property_id = crate::facade::store::catalog_test_support::intern_property(
+        &store,
+        admin,
+        "tenant.main",
+        "weight",
+    );
 
     let (labels, properties) = store
         .resolve_ordered_edge_catalogs(

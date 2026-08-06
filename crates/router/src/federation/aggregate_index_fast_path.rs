@@ -716,20 +716,18 @@ mod tests {
         let graph_id = store
             .resolve_graph_id(crate::facade::store::catalog_test_support::GRAPH)
             .expect("graph id");
-        store
-            .admin_intern_property(
-                admin,
-                crate::facade::store::catalog_test_support::GRAPH,
-                "country",
-            )
-            .expect("intern country");
-        store
-            .admin_intern_property(
-                admin,
-                crate::facade::store::catalog_test_support::GRAPH,
-                "region",
-            )
-            .expect("intern region");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "country",
+        );
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "region",
+        );
         // country is grouped under a Person label anchor in the labeled tests, so it carries the
         // Person label id (1); region is only resolved label-free.
         crate::facade::store::catalog_test_support::register_active_vertex_index(

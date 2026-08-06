@@ -179,6 +179,24 @@ impl MigrationArtifact {
             statement: self.gql.clone(),
         })
     }
+
+    /// For a `CREATE INDEX` migration, the indexed property name. The Router requires the
+    /// property to already be interned in the target graph (ADR 0059 Preparing rejects
+    /// missing properties), so `apply` interns it first.
+    pub fn index_property(&self) -> Result<Option<String>, MigrationError> {
+        if self.profile != SchemaMigrationStatementProfile::CreateIndex {
+            return Ok(None);
+        }
+        let statement = gleaph_index_ddl::try_parse(&self.gql)
+            .ok_or_else(|| MigrationError::Gql("CREATE INDEX migration is not parseable".into()))?
+            .map_err(|error| MigrationError::Gql(error.to_string()))?;
+        match statement {
+            gleaph_index_ddl::IndexDdlStatement::Create { target, .. } => Ok(Some(target.property)),
+            _ => Err(MigrationError::Gql(
+                "expected CREATE INDEX migration statement".into(),
+            )),
+        }
+    }
 }
 
 /// A validated linear migration plan.
@@ -215,6 +233,16 @@ pub trait MigrationTransport {
         &mut self,
         args: ApplySchemaMigrationArgs,
     ) -> Result<ApplySchemaMigrationResult, String>;
+
+    /// Intern one batch of property names in the target graph. A `CREATE INDEX` migration
+    /// references properties that the Router requires to already exist (ADR 0059 Preparing
+    /// rejects missing properties), so the CLI interns them before applying the migration. The
+    /// Router interns all names in one update and returns the ids in input order.
+    fn ensure_properties(
+        &mut self,
+        graph: &str,
+        properties: &[String],
+    ) -> Result<Vec<gleaph_graph_kernel::entry::PropertyId>, String>;
 }
 
 /// IC-agent transport for the Router schema-migration methods.
@@ -263,6 +291,22 @@ impl MigrationTransport for RouterMigrationTransport {
         {
             Ok(result) => Ok(result),
             Err(error) => Err(format!("Router rejected apply_schema_migration: {error:?}")),
+        }
+    }
+
+    fn ensure_properties(
+        &mut self,
+        graph: &str,
+        properties: &[String],
+    ) -> Result<Vec<gleaph_graph_kernel::entry::PropertyId>, String> {
+        match self
+            .remote
+            .update::<Vec<gleaph_graph_kernel::entry::PropertyId>, RouterError>(
+                "ensure_properties",
+                &(graph.to_string(), properties.to_vec()),
+            )? {
+            Ok(ids) => Ok(ids),
+            Err(error) => Err(format!("Router rejected ensure_properties: {error:?}")),
         }
     }
 }
@@ -625,6 +669,29 @@ pub fn apply<T: MigrationTransport>(
 ) -> Result<Vec<SchemaMigrationApplyStatus>, MigrationError> {
     let local = discover(root)?;
     let current = status_for_plan(&local, transport)?;
+    // The indexed properties across all pending CREATE INDEX migrations are interned once per
+    // graph in a single batch call before any migration is applied (Router rejects missing
+    // properties in Preparing, ADR 0059). This is one update per graph instead of one per
+    // (graph, property) — the demo's index migrations share `demo_id`. A missing property is
+    // an admin-only interning call.
+    let mut ensured_properties: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut seen_properties = BTreeSet::new();
+    for artifact in local.migrations.iter().skip(current.applied_count) {
+        if let Some(property) = artifact.index_property()?
+            && let SchemaMigrationGraphSelector::Named(graph) = &artifact.graph_selector
+            && seen_properties.insert((graph.clone(), property.clone()))
+        {
+            ensured_properties
+                .entry(graph.clone())
+                .or_default()
+                .push(property);
+        }
+    }
+    for (graph, properties) in &ensured_properties {
+        transport
+            .ensure_properties(graph, properties)
+            .map_err(MigrationError::Remote)?;
+    }
     let mut outcomes = Vec::new();
     for artifact in local.migrations.iter().skip(current.applied_count) {
         let exact_args = artifact.apply_args();
@@ -1281,6 +1348,7 @@ mod tests {
         calls: Vec<ListSchemaMigrationsArgsV1>,
         apply_results: VecDeque<Result<ApplySchemaMigrationResult, String>>,
         apply_calls: Vec<ApplySchemaMigrationArgsV1>,
+        ensured_properties: Vec<(String, Vec<String>)>,
     }
 
     impl FakeMigrationTransport {
@@ -1290,6 +1358,7 @@ mod tests {
                 calls: Vec::new(),
                 apply_results: VecDeque::new(),
                 apply_calls: Vec::new(),
+                ensured_properties: Vec::new(),
             }
         }
 
@@ -1323,6 +1392,16 @@ mod tests {
             self.apply_results
                 .pop_front()
                 .expect("fake transport has a response for every apply request")
+        }
+
+        fn ensure_properties(
+            &mut self,
+            graph: &str,
+            properties: &[String],
+        ) -> Result<Vec<gleaph_graph_kernel::entry::PropertyId>, String> {
+            self.ensured_properties
+                .push((graph.to_owned(), properties.to_vec()));
+            Ok(Vec::new())
         }
     }
 
@@ -1703,6 +1782,167 @@ mod tests {
                 .map(|args| args.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["000002_bind", "000003_more"]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_interns_create_index_property_before_apply() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_type",
+            None,
+            "CREATE GRAPH TYPE Social {}\n",
+            "",
+        );
+        write_package(
+            &root,
+            "000002_graph",
+            Some("000001_type"),
+            "CREATE GRAPH social TYPED Social\n",
+            "",
+        );
+        let index_dir = root.join("000003_index");
+        fs::create_dir_all(&index_dir).expect("package directory");
+        fs::write(
+            index_dir.join(MANIFEST_FILE),
+            "format_version = 1\nid = \"000003_index\"\nparent = \"000002_graph\"\ndescription = \"\"\ngraph = \"social\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            index_dir.join(GQL_FILE),
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+        )
+        .expect("gql");
+        // A second index migration on the same property must not re-intern it.
+        let second_index_dir = root.join("000004_index2");
+        fs::create_dir_all(&second_index_dir).expect("package directory");
+        fs::write(
+            second_index_dir.join(MANIFEST_FILE),
+            "format_version = 1\nid = \"000004_index2\"\nparent = \"000003_index\"\ndescription = \"\"\ngraph = \"social\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            second_index_dir.join(GQL_FILE),
+            "CREATE INDEX person_age2 FOR (n:Person) ON (n.age)\n",
+        )
+        .expect("gql");
+
+        let plan = discover(&root).expect("test chain");
+        assert_eq!(
+            plan.migrations[2]
+                .index_property()
+                .expect("parse index property")
+                .as_deref(),
+            Some("age")
+        );
+
+        let initial = test_page(vec![test_record(&plan.migrations[0])], None);
+        let mut transport = FakeMigrationTransport::new(vec![initial]).with_apply_results(vec![
+            test_apply_result(&plan.migrations[1], SchemaMigrationApplyStatus::Applied),
+            test_apply_result_with_record(
+                test_index_record(
+                    &plan.migrations[2],
+                    SchemaMigrationRecordState::Applied { applied_at: 0 },
+                ),
+                SchemaMigrationApplyStatus::Applied,
+            ),
+            test_apply_result_with_record(
+                test_index_record(
+                    &plan.migrations[3],
+                    SchemaMigrationRecordState::Applied { applied_at: 0 },
+                ),
+                SchemaMigrationApplyStatus::Applied,
+            ),
+        ]);
+
+        let outcomes = apply(&root, &mut transport).expect("pending migrations apply");
+
+        assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 3]);
+        // The property is interned once per graph in a single batch call, before the first
+        // migration.
+        assert_eq!(
+            transport.ensured_properties,
+            vec![("social".to_owned(), vec!["age".to_owned()])]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_batches_distinct_index_properties_per_graph() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_init",
+            None,
+            "CREATE GRAPH TYPE Social {}\n",
+            "first",
+        );
+        write_package(
+            &root,
+            "000002_graph",
+            Some("000001_init"),
+            "CREATE GRAPH social TYPED Social\n",
+            "second",
+        );
+        // Two index migrations on distinct properties of the same graph: one batch call must
+        // cover both properties.
+        let index_dir = root.join("000003_index");
+        fs::create_dir_all(&index_dir).expect("package directory");
+        fs::write(
+            index_dir.join(MANIFEST_FILE),
+            "format_version = 1\nid = \"000003_index\"\nparent = \"000002_graph\"\ndescription = \"\"\ngraph = \"social\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            index_dir.join(GQL_FILE),
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+        )
+        .expect("gql");
+        let second_index_dir = root.join("000004_index2");
+        fs::create_dir_all(&second_index_dir).expect("package directory");
+        fs::write(
+            second_index_dir.join(MANIFEST_FILE),
+            "format_version = 1\nid = \"000004_index2\"\nparent = \"000003_index\"\ndescription = \"\"\ngraph = \"social\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            second_index_dir.join(GQL_FILE),
+            "CREATE INDEX person_demo_id FOR (n:Person) ON (n.demo_id)\n",
+        )
+        .expect("gql");
+
+        let plan = discover(&root).expect("test chain");
+        let initial = test_page(vec![test_record(&plan.migrations[0])], None);
+        let mut transport = FakeMigrationTransport::new(vec![initial]).with_apply_results(vec![
+            test_apply_result(&plan.migrations[1], SchemaMigrationApplyStatus::Applied),
+            test_apply_result_with_record(
+                test_index_record(
+                    &plan.migrations[2],
+                    SchemaMigrationRecordState::Applied { applied_at: 0 },
+                ),
+                SchemaMigrationApplyStatus::Applied,
+            ),
+            test_apply_result_with_record(
+                test_index_record(
+                    &plan.migrations[3],
+                    SchemaMigrationRecordState::Applied { applied_at: 0 },
+                ),
+                SchemaMigrationApplyStatus::Applied,
+            ),
+        ]);
+
+        let outcomes = apply(&root, &mut transport).expect("pending migrations apply");
+
+        assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 3]);
+        // Distinct properties are interned in one batch call per graph, in first-seen order.
+        assert_eq!(
+            transport.ensured_properties,
+            vec![(
+                "social".to_owned(),
+                vec!["age".to_owned(), "demo_id".to_owned()]
+            )]
         );
         fs::remove_dir_all(root).expect("cleanup");
     }

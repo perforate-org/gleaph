@@ -1090,13 +1090,12 @@ mod tests {
 
     fn test_store_with_property(property: &str) -> (RouterStore, GraphId) {
         let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
-        store
-            .admin_intern_property(
-                admin,
-                crate::facade::store::catalog_test_support::GRAPH,
-                property,
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            property,
+        );
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store, graph_id, 0, property,
         );
@@ -1116,13 +1115,12 @@ mod tests {
     #[test]
     fn index_anchor_from_plans_finds_index_intersection() {
         let (store, graph_id) = test_store_with_property("uid");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.main",
-                "email",
-            )
-            .expect("intern email");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.main",
+            "email",
+        );
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store, graph_id, 0, "email",
         );
@@ -1257,13 +1255,12 @@ mod tests {
                 "Person",
             )
             .expect("intern Person");
-        store
-            .admin_intern_property(
-                admin,
-                crate::facade::store::catalog_test_support::GRAPH,
-                "region",
-            )
-            .expect("intern region");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "region",
+        );
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store, graph_id, 0, "region",
         );
@@ -1329,13 +1326,12 @@ mod tests {
                 "Topic",
             )
             .expect("intern Topic");
-        store
-            .admin_intern_property(
-                admin,
-                crate::facade::store::catalog_test_support::GRAPH,
-                "demo_id",
-            )
-            .expect("intern demo_id");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "demo_id",
+        );
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store, graph_id, 0, "demo_id",
         );
@@ -1442,13 +1438,12 @@ mod tests {
         use gleaph_gql_planner::plan::EdgeLabelRef;
 
         let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
-        store
-            .admin_intern_property(
-                admin,
-                crate::facade::store::catalog_test_support::GRAPH,
-                "weight",
-            )
-            .expect("intern weight");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "weight",
+        );
         store
             .admin_intern_edge_label(
                 admin,

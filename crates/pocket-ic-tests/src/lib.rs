@@ -1064,20 +1064,23 @@ pub fn ensure_property(env: &FederationEnv, name: &str) -> gleaph_graph_kernel::
         .update_call(
             env.router,
             env.admin,
-            "ensure_property",
-            Encode!(&GRAPH_NAME.to_string(), &name.to_string()).expect("encode ensure_property"),
+            "ensure_properties",
+            Encode!(&GRAPH_NAME.to_string(), &vec![name.to_string()])
+                .expect("encode ensure_properties"),
         )
-        .unwrap_or_else(|e| panic!("ensure_property on {}: {e:?}", env.router));
+        .unwrap_or_else(|e| panic!("ensure_properties on {}: {e:?}", env.router));
     match Decode!(
         &bytes,
         Result<
-            gleaph_graph_kernel::entry::PropertyId,
-            gleaph_graph_kernel::federation::RouterError
+            Vec<gleaph_graph_kernel::entry::PropertyId>,
+            gleaph_graph_kernel::federation::RouterError,
         >
     ) {
-        Ok(Ok(value)) => value,
-        Ok(Err(err)) => panic!("ensure_property rejected: {err:?}"),
-        Err(err) => panic!("decode ensure_property: {err}"),
+        Ok(Ok(mut ids)) => ids
+            .pop()
+            .unwrap_or_else(|| panic!("ensure_properties returned no ids for {name:?}")),
+        Ok(Err(err)) => panic!("ensure_properties rejected: {err:?}"),
+        Err(err) => panic!("decode ensure_properties: {err}"),
     }
 }
 

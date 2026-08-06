@@ -160,11 +160,11 @@ fn ensure_edge_label(
 }
 
 #[update]
-fn ensure_property(
+fn ensure_properties(
     logical_graph_name: String,
-    name: String,
-) -> Result<types::PropertyId, RouterError> {
-    RouterStore::new().admin_intern_property(msg_caller(), &logical_graph_name, &name)
+    names: Vec<String>,
+) -> Result<Vec<types::PropertyId>, RouterError> {
+    RouterStore::new().admin_intern_properties(msg_caller(), &logical_graph_name, &names)
 }
 
 #[update]

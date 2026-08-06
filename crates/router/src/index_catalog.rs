@@ -299,13 +299,12 @@ mod tests {
                 "Person",
             )
             .expect("intern label");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.main",
-                "age",
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.main",
+            "age",
+        );
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,
             IndexTarget {
@@ -336,13 +335,12 @@ mod tests {
                 "KNOWS",
             )
             .expect("intern edge");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.edge",
-                "weight",
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.edge",
+            "weight",
+        );
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,
             IndexTarget {
@@ -373,13 +371,12 @@ mod tests {
                 "ROAD",
             )
             .expect("intern edge label");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.inline_index_conflict",
-                "distance",
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.inline_index_conflict",
+            "distance",
+        );
         store
             .commit_set_edge_label_inline_scalar_schema(
                 graph_id,
@@ -417,13 +414,12 @@ mod tests {
                 "ROAD",
             )
             .expect("intern edge label");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.index_inline_conflict",
-                "distance",
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.index_inline_conflict",
+            "distance",
+        );
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,
             IndexTarget {
@@ -456,13 +452,12 @@ mod tests {
                 "AFFINITY",
             )
             .expect("intern edge label");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.inline_struct_index_conflict",
-                "stats",
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.inline_struct_index_conflict",
+            "stats",
+        );
         store
             .commit_set_edge_label_inline_struct_schema(
                 graph_id,
@@ -504,13 +499,12 @@ mod tests {
                 "AFFINITY",
             )
             .expect("intern edge label");
-        store
-            .admin_intern_property(
-                candid::Principal::from_slice(&[1; 29]),
-                "tenant.index_inline_struct_conflict",
-                "stats",
-            )
-            .expect("intern property");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            "tenant.index_inline_struct_conflict",
+            "stats",
+        );
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,
             IndexTarget {

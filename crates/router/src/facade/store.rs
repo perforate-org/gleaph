@@ -146,12 +146,25 @@ pub(crate) mod catalog_test_support {
     };
     use candid::Principal;
     use gleaph_gql::types::EdgeDirection;
-    use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::entry::{GraphId, PropertyId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{EdgeIndexDirection, IndexedPropertyKind};
     use std::collections::BTreeSet;
 
     pub const GRAPH: &str = "tenant.main";
+
+    /// Interns a single property name through the batch API so tests exercise the same
+    /// interning path the CLI uses, without the `&[name.to_owned()]` noise at every site.
+    pub fn intern_property(
+        store: &RouterStore,
+        admin: Principal,
+        graph: &str,
+        name: &str,
+    ) -> PropertyId {
+        store
+            .admin_intern_properties(admin, graph, &[name.to_owned()])
+            .expect("intern property")[0]
+    }
 
     pub fn register_graph(store: &RouterStore, admin: Principal, name: &str) {
         store

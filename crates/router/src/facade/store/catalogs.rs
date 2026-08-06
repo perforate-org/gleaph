@@ -709,17 +709,22 @@ impl RouterStore {
         Self::commit_intern_edge_label_name(graph_id, name)
     }
 
-    pub fn admin_intern_property(
+    pub fn admin_intern_properties(
         &self,
         caller: Principal,
         logical_graph_name: &str,
-        name: &str,
-    ) -> Result<PropertyId, RouterError> {
+        names: &[String],
+    ) -> Result<Vec<PropertyId>, RouterError> {
         auth::require_admin(&caller)?;
         validate_metadata_name(logical_graph_name)?;
-        validate_metadata_name(name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
-        Self::commit_intern_property_name(graph_id, name)
+        names
+            .iter()
+            .map(|name| {
+                validate_metadata_name(name)?;
+                Self::commit_intern_property_name(graph_id, name)
+            })
+            .collect()
     }
 
     pub fn admin_set_edge_label_inline_property_profile(

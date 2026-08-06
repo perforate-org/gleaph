@@ -130,7 +130,7 @@ appear where the current surface already has them (`atomic_insert`, `mutation_st
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Graph lifecycle | `register_graph(intent)`, `unregister_graph(graph)`, `list_graphs()`, `get_graph(name)`, `get_graph_health(name)`                                         |
 | RBAC            | `whoami()`, `my_role()`, `grant_role(args)`                                                                                                               |
-| Schema          | `ensure_vertex_label`, `ensure_edge_label`, `ensure_property`, `index_vertex_property`, `index_edge_property`                                             |
+| Schema          | `ensure_vertex_label`, `ensure_edge_label`, `ensure_properties`, `index_vertex_property`, `index_edge_property`                                           |
 | Vector semantic | `create_vector_index(name, spec)`, `drop_vector_index(name)`, `list_vector_indexes(graph)`, `rebuild_vector_index(name)`, `get_vector_index_health(name)` |
 | Maintenance     | `get_graph_sync_status(graph)`, `advance_backfill(graph, kind, max_work)`, `list_backfill_status(graph)`                                                  |
 | Ingestion       | `ingest_vertex_embeddings(graph, items)`                                                                                                                  |

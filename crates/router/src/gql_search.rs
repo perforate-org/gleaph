@@ -3999,12 +3999,8 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
             .expect("intern Author");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "rating")
-            .expect("intern rating");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "rating");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -4057,12 +4053,8 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
             .expect("intern Author");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "rating")
-            .expect("intern rating");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "rating");
         // Only "price" gets an active index; "rating" remains unindexed.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
@@ -4112,9 +4104,7 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
             .expect("intern Author");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -4219,9 +4209,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern property");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -4271,9 +4264,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern property");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
         // Property "category" is registered, but there is no active vertex equality index for
         // (Document, category).
         let plan = search_plan_with_filter(filter_eq_expr("category", Value::Text("doc".into())));
@@ -4636,9 +4632,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern property");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
         // Property "category" is registered but there is no active vertex equality index for
         // (Document, category).
         let plan = non_leading_search_plan_with_property_filter_proof(filter_eq_expr(
@@ -4675,9 +4674,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern property");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -4809,12 +4811,18 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "tenant_id")
-            .expect("intern tenant_id");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "tenant_id",
+        );
         // Only category has an active vertex equality index; tenant_id is covered but no index.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
@@ -5085,9 +5093,7 @@ mod tests {
         let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern property");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5130,9 +5136,7 @@ mod tests {
         let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern property");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5177,9 +5181,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .unwrap();
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .unwrap();
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5226,12 +5233,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         // Only the equality index exists; the range index is missing.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
@@ -5282,12 +5290,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         // Only the range index exists; the equality index is missing.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
@@ -5338,12 +5347,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .unwrap();
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .unwrap();
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .unwrap();
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5403,12 +5413,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5473,12 +5484,13 @@ mod tests {
         let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5535,12 +5547,13 @@ mod tests {
         let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5602,12 +5615,13 @@ mod tests {
         let label_id = store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5670,12 +5684,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -5743,12 +5758,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         // Only the range index exists; category equality index is missing.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
@@ -5801,12 +5817,13 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .expect("intern category");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
         // Only the equality index exists; price range index is missing.
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
@@ -5926,9 +5943,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .unwrap();
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
-            .unwrap();
+        catalog_test_support::intern_property(
+            &store,
+            admin,
+            catalog_test_support::GRAPH,
+            "category",
+        );
         (store, admin, graph_id)
     }
 
@@ -7118,12 +7138,8 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern Document");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
-            .expect("intern price");
-        store
-            .admin_intern_property(admin, catalog_test_support::GRAPH, "rating")
-            .expect("intern rating");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "price");
+        catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, "rating");
         futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
             graph_id,
             crate::index_ddl::IndexTarget {
@@ -7165,9 +7181,7 @@ mod tests {
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern Document");
         for prop in ["category", "price", "rating"] {
-            store
-                .admin_intern_property(admin, catalog_test_support::GRAPH, prop)
-                .expect("intern property");
+            catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, prop);
         }
         for prop in ["category", "price", "rating"] {
             futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
@@ -7240,9 +7254,7 @@ mod tests {
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern Document");
         for prop in ["category", "price"] {
-            store
-                .admin_intern_property(admin, catalog_test_support::GRAPH, prop)
-                .expect("intern property");
+            catalog_test_support::intern_property(&store, admin, catalog_test_support::GRAPH, prop);
             futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
                 graph_id,
                 crate::index_ddl::IndexTarget {

@@ -5517,9 +5517,12 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
-        store
-            .admin_intern_property(admin, "tenant.main", "region")
-            .expect("intern region");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.main",
+            "region",
+        );
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store,
             tenant_main_graph_id(),
@@ -5607,9 +5610,12 @@ mod tests {
     fn store_with_shards_and_property() -> RouterStore {
         let store = store_with_shards();
         let admin = Principal::from_slice(&[1; 29]);
-        store
-            .admin_intern_property(admin, "tenant.main", "uid")
-            .expect("intern uid");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.main",
+            "uid",
+        );
         crate::facade::store::catalog_test_support::register_active_vertex_index(
             &store,
             tenant_main_graph_id(),
@@ -6846,12 +6852,18 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Post")
             .expect("intern Post");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_id")
-            .expect("intern demo_id");
-        store
-            .admin_intern_property(admin, "tenant.main", "demo_graph")
-            .expect("intern demo_graph");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.main",
+            "demo_id",
+        );
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            "tenant.main",
+            "demo_graph",
+        );
 
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).expect("parse");
