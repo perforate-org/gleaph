@@ -289,7 +289,10 @@ pub fn merge_remote(
                     .map(|path| resolve_config_path(&loaded.path, path))
             })
         });
+    // `--fetch-root-key` is a SetTrue flag, so it can only express "true": clap yields
+    // `Some(false)` when the flag is absent, which must not shadow an env/config value.
     let fetch_root_key = fetch_root_key_flag
+        .filter(|value| *value)
         .or(env.fetch_root_key)
         .or_else(|| profile.and_then(|profile| profile.fetch_root_key))
         .unwrap_or(false);
@@ -592,6 +595,22 @@ canister = \"config-local\"
         assert_eq!(opts.network, "ic");
         assert_eq!(opts.identity, None);
         assert!(!opts.fetch_root_key);
+    }
+
+    #[test]
+    fn absent_settrue_flag_does_not_shadow_env_fetch_root_key() {
+        // clap's SetTrue yields Some(false) when the flag is absent; since the flag can
+        // only express "true", that must fall through to env instead of overriding it.
+        let env = ConfigEnv {
+            network: Some("https://example.com".into()),
+            fetch_root_key: Some(true),
+            ..ConfigEnv::default()
+        };
+        let opts = merge_remote(None, None, None, Some(false), &env, None).expect("merge");
+        assert!(
+            opts.fetch_root_key,
+            "env value must win over an absent SetTrue flag"
+        );
     }
 
     #[test]
