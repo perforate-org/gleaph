@@ -4,7 +4,7 @@
 //! the pure modules (`migration`, `load`); this module is the single place that touches the
 //! agent, so the same conventions apply to every Router-facing command.
 
-use candid::{CandidType, Decode, Encode, IDLArgs, IDLValue};
+use candid::{CandidType, Decode, Encode};
 use ic_agent::Agent;
 use std::path::Path;
 
@@ -121,22 +121,94 @@ where
     T: CandidType + for<'de> serde::Deserialize<'de>,
     E: CandidType + for<'de> serde::Deserialize<'de>,
 {
-    let args = IDLArgs::from_bytes(response)
-        .map_err(|error| format!("decode {method} response: {error}"))?;
-    let Some(IDLValue::Variant(result)) = args.args.first() else {
-        return Err(format!("decode {method} response: expected Result variant"));
+    // Decode the `Result` envelope directly. Round-tripping through `IDLArgs`/`IDLValue` is
+    // lossy: it re-encodes `None` options as `opt empty` and collapses variants to their single
+    // observed member, so `Decode!` can no longer match record types that contain options or
+    // multi-member variants (e.g. `list_schema_migrations`).
+    Decode!(response, Result<T, E>).map_err(|error| format!("decode {method} response: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_migration_api::{
+        ListSchemaMigrationsResult, ListSchemaMigrationsResultV1, ResolvedSchemaMigrationGraph,
+        SchemaMigrationChecksum, SchemaMigrationChecksumAlgorithm, SchemaMigrationGraphSelector,
+        SchemaMigrationRecord, SchemaMigrationRecordState, SchemaMigrationRecordV1,
+        SchemaMigrationStatementProfile,
     };
-    let value = &result.0.val;
-    let payload = IDLArgs::new(std::slice::from_ref(value))
-        .to_bytes()
-        .map_err(|error| format!("decode {method} payload: {error}"))?;
-    if result.0.id.get_id() == candid::idl_hash("Ok") {
-        Decode!(&payload, T)
-            .map(Ok)
-            .map_err(|error| format!("decode {method} Ok payload: {error}"))
-    } else {
-        Decode!(&payload, E)
-            .map(Err)
-            .map_err(|error| format!("decode {method} Err payload: {error}"))
+
+    fn sample_result() -> Result<ListSchemaMigrationsResult, RouterError> {
+        Ok(ListSchemaMigrationsResult::V1(
+            ListSchemaMigrationsResultV1 {
+                migrations: vec![
+                    SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
+                        id: "000001_init".into(),
+                        parent: None,
+                        graph_selector: SchemaMigrationGraphSelector::Default,
+                        resolved_graph: None,
+                        checksum: SchemaMigrationChecksum {
+                            algorithm: SchemaMigrationChecksumAlgorithm::Sha256,
+                            digest: vec![7; 32],
+                        },
+                        actor: candid::Principal::anonymous(),
+                        recorded_at: 1,
+                        statement: "CREATE GRAPH TYPE Social {}".into(),
+                        profile: SchemaMigrationStatementProfile::CreateGraphType,
+                        state: SchemaMigrationRecordState::Applied { applied_at: 2 },
+                    }),
+                    SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
+                        id: "000002_graph".into(),
+                        parent: Some("000001_init".into()),
+                        graph_selector: SchemaMigrationGraphSelector::Named("social".into()),
+                        resolved_graph: Some(ResolvedSchemaMigrationGraph {
+                            graph_id: GraphId::from_raw(1),
+                            graph_name: "social".into(),
+                        }),
+                        checksum: SchemaMigrationChecksum {
+                            algorithm: SchemaMigrationChecksumAlgorithm::Sha256,
+                            digest: vec![8; 32],
+                        },
+                        actor: candid::Principal::anonymous(),
+                        recorded_at: 3,
+                        statement: "CREATE GRAPH social TYPED Social".into(),
+                        profile: SchemaMigrationStatementProfile::CreateTypedGraph,
+                        state: SchemaMigrationRecordState::Applied { applied_at: 4 },
+                    }),
+                ],
+                next_start_after: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn decode_result_preserves_records_with_options_and_variants() {
+        // Regression: the previous IDLArgs/IDLValue round-trip re-encoded `None` options as
+        // `opt empty` and collapsed multi-member variants to their observed member, so any
+        // record containing options or variants (e.g. `list_schema_migrations`) failed to
+        // decode even when the payload was produced by the same candid version.
+        let bytes = Encode!(&sample_result()).expect("encode result");
+        let decoded = decode_result::<ListSchemaMigrationsResult, RouterError>(&bytes, "probe")
+            .expect("decode");
+        match decoded {
+            Ok(value) => assert_eq!(value, sample_result().expect("sample")),
+            Err(error) => panic!("decoded Err variant: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_result_preserves_typed_err_variant() {
+        let bytes = Encode!(&Err::<ListSchemaMigrationsResult, RouterError>(
+            RouterError::NotFound("social".into())
+        ))
+        .expect("encode err");
+        let decoded = decode_result::<ListSchemaMigrationsResult, RouterError>(&bytes, "probe")
+            .expect("decode");
+        assert!(matches!(
+            decoded,
+            Err(RouterError::NotFound(name)) if name == "social"
+        ));
     }
 }
