@@ -322,7 +322,10 @@ mod tests {
         let output = generate_typescript(&manifest()).unwrap();
         assert!(output.contains("export interface FindUsersParams"));
         assert!(output.contains("this.preparedQuery(\"find-users\""));
-        assert!(output.contains("fromApiValue(row[\"user_name\"])"));
+        assert!(output.contains(
+            "decodeRows(response.rows, FIND_USERS_COLUMNS) as unknown as FindUsersRow[]"
+        ));
+        assert!(output.contains("const FIND_USERS_COLUMNS: PreparedManifestColumn[] = ["));
         assert!(output.contains("export class PreparedGleaphClient extends GleaphClientWrapper"));
         assert!(output.contains(
             "export function withPreparedQueries(client: GleaphClient): PreparedGleaphClient"

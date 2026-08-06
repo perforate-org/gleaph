@@ -3,7 +3,9 @@
 //! Generated code delegates transport and common error handling to the JavaScript SDK and owns
 //! only profile-specific runtime wrappers and value projection.
 
-use crate::common::{append_jsdoc, camel_case, encode_expression, json_string, ts_property};
+use crate::common::{
+    append_jsdoc, camel_case, column_const_name, encode_expression, json_string, ts_column_specs,
+};
 use crate::ir::normalize_manifest;
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
@@ -44,7 +46,7 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
         value_imports.push("toApiValue".to_string());
     }
     if has_queries {
-        value_imports.push("fromApiValue".to_string());
+        value_imports.push("decodeRows".to_string());
     }
     out.push_str(&format!(
         "import {{ {} }} from \"@gleaph/sdk\";\n",
@@ -54,6 +56,16 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
     out.push_str("export const GLEAPH_GRAPH_ID = ");
     out.push_str(&json_string(&ir.graph_id));
     out.push_str(";\n\n");
+    for operation_ir in &ir.operations {
+        if operation_ir.operation.kind == OperationKind::Query {
+            out.push_str(&format!(
+                "const {} = {};\n",
+                column_const_name(&operation_ir.wire_name),
+                ts_column_specs(&operation_ir.operation.result.columns)
+            ));
+        }
+    }
+    out.push('\n');
     out.push_str("export class PreparedGleaphClient extends GleaphClientWrapper {\n");
     out.push_str("  constructor(client) {\n    super(client);\n  }\n\n");
     for (index, operation_ir) in ir.operations.iter().enumerate() {
@@ -122,15 +134,10 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
             "    const response = await this.{method}({call_args});\n"
         ));
         if operation.kind == OperationKind::Query {
-            out.push_str("    return { ...response, rows: response.rows.map((row) => ({\n");
-            for column in &operation.result.columns {
-                out.push_str(&format!(
-                    "      {}: fromApiValue(row[{}]),\n",
-                    ts_property(&column.name),
-                    json_string(&column.name)
-                ));
-            }
-            out.push_str("    })) };\n");
+            out.push_str(&format!(
+                "    return {{ ...response, rows: decodeRows(response.rows, {}) }};\n",
+                column_const_name(&operation_ir.wire_name)
+            ));
         } else {
             out.push_str("    return response;\n");
         }

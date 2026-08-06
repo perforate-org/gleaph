@@ -3,7 +3,10 @@
 //! Generated code delegates transport and common error handling to the TypeScript SDK while
 //! emitting operation-specific parameter and result declarations.
 
-use crate::common::{append_jsdoc, camel_case, encode_expression, json_string, ts_property};
+use crate::common::{
+    append_jsdoc, camel_case, column_const_name, encode_expression, json_string, ts_column_specs,
+    ts_property,
+};
 use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
@@ -51,6 +54,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
     }
     if has_queries {
         type_imports.push("GqlQueryResult".to_string());
+        type_imports.push("PreparedManifestColumn".to_string());
     }
     if has_sorts {
         type_imports.push("PreparedSortSpec".to_string());
@@ -93,7 +97,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
         value_imports.push("toApiValue".to_string());
     }
     if has_queries {
-        value_imports.push("fromApiValue".to_string());
+        value_imports.push("decodeRows".to_string());
     }
     out.push_str(&format!(
         "import {{ {} }} from \"@gleaph/sdk\";\n",
@@ -139,6 +143,13 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
             ));
         }
         out.push_str("}\n\n");
+        if operation.kind == OperationKind::Query {
+            out.push_str(&format!(
+                "const {}: PreparedManifestColumn[] = {};\n\n",
+                column_const_name(&operation_ir.wire_name),
+                ts_column_specs(&operation.result.columns)
+            ));
+        }
     }
 
     out.push_str("export interface PreparedQueries {\n");
@@ -235,16 +246,11 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
             "    const response = await this.{method}({call_args});\n"
         ));
         if operation.kind == OperationKind::Query {
-            out.push_str("    return { ...response, rows: response.rows.map((row) => ({\n");
-            for column in &operation.result.columns {
-                out.push_str(&format!(
-                    "      {}: fromApiValue(row[{}]) as {},\n",
-                    ts_property(&column.name),
-                    json_string(&column.name),
-                    ts_type(&column.semantic_type, column.nullable, true)
-                ));
-            }
-            out.push_str("    })) };\n");
+            out.push_str(&format!(
+                "    return {{ ...response, rows: decodeRows(response.rows, {}) as unknown as {}[] }};\n",
+                column_const_name(&operation_ir.wire_name),
+                row
+            ));
         } else {
             out.push_str("    return response;\n");
         }

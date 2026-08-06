@@ -3,7 +3,7 @@
 //! This module contains syntax-neutral mechanics used by multiple language profiles; profile
 //! policy and output structure remain in the language-specific modules.
 
-use crate::SemanticType;
+use crate::{Column, RecordField, SemanticType};
 
 /// The `ApiValueHint` name for a leaf semantic type (matches the SDK's wire hints).
 fn semantic_hint(semantic_type: &SemanticType) -> &'static str {
@@ -126,6 +126,76 @@ pub(crate) fn camel_case(name: &str) -> String {
         }
         None => String::new(),
     }
+}
+
+/// SCREAMING_SNAKE_CASE identifier from a wire name ("find-users" -> "FIND_USERS").
+pub(crate) fn screaming_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    let mut prev_lower_or_digit = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && prev_lower_or_digit {
+                result.push('_');
+            }
+            result.push(ch.to_ascii_uppercase());
+            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else {
+            result.push('_');
+            prev_lower_or_digit = false;
+        }
+    }
+    result
+}
+
+/// Module-level const name holding the column specs of one prepared operation.
+pub(crate) fn column_const_name(wire_name: &str) -> String {
+    format!("{}_COLUMNS", screaming_snake_case(wire_name))
+}
+
+/// Render one `SemanticType` as a TypeScript literal for a `PreparedManifestColumn`
+/// (`semantic_type` field of the SDK's discriminated union).
+pub(crate) fn ts_semantic_type_literal(semantic_type: &SemanticType) -> String {
+    match semantic_type {
+        SemanticType::List { element } => format!(
+            "{{ List: {{ element: {} }} }}",
+            ts_semantic_type_literal(element)
+        ),
+        SemanticType::Record { fields } => {
+            let fields = fields
+                .iter()
+                .map(ts_record_field_literal)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ Record: {{ fields: [{fields}] }} }}")
+        }
+        _ => format!("\"{}\"", semantic_hint(semantic_type)),
+    }
+}
+
+fn ts_record_field_literal(field: &RecordField) -> String {
+    format!(
+        "{{ name: {}, semantic_type: {}, nullable: {} }}",
+        json_string(&field.name),
+        ts_semantic_type_literal(&field.semantic_type),
+        field.nullable
+    )
+}
+
+/// Render a `PreparedManifestColumn[]` literal for a result schema.
+pub(crate) fn ts_column_specs(columns: &[Column]) -> String {
+    let columns = columns
+        .iter()
+        .map(|column| {
+            format!(
+                "{{ name: {}, semantic_type: {}, nullable: {} }}",
+                json_string(&column.name),
+                ts_semantic_type_literal(&column.semantic_type),
+                column.nullable
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{columns}]")
 }
 
 pub(crate) fn append_line_doc(out: &mut String, indent: &str, prefix: &str, text: &str) {
