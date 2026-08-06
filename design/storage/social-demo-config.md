@@ -187,7 +187,8 @@ to preserve the visible read contract and fail closed if the derivation rule eve
 
 Schema is applied as immutable migrations (`demo/social/migrations/`, applied by
 `gleaph migration apply`) before the load: `000001` declares the `SocialGraph` type with the
-full vertex-label vocabulary and `ORDER BY INSERTION` feed edges, `000002` binds the registered
+full vertex-label vocabulary and the complete edge model (FOLLOWS, POSTED, REPLY_TO, MEMBER_OF,
+HAS_TOPIC, plus the `ORDER BY INSERTION` feed edges), `000002` binds the registered
 `social` graph to the type, and `000003..000007` create the property indexes through the durable
 `CREATE INDEX` lifecycle. The CLI interns each indexed property in one batch per graph
 (`ensure_properties`) before
