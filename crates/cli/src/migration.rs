@@ -301,9 +301,9 @@ impl MigrationTransport for RouterMigrationTransport {
     ) -> Result<Vec<gleaph_graph_kernel::entry::PropertyId>, String> {
         match self
             .remote
-            .update::<Vec<gleaph_graph_kernel::entry::PropertyId>, RouterError>(
+            .update_args::<Vec<gleaph_graph_kernel::entry::PropertyId>, RouterError>(
                 "ensure_properties",
-                &(graph.to_string(), properties.to_vec()),
+                (&graph.to_string(), &properties.to_vec()),
             )? {
             Ok(ids) => Ok(ids),
             Err(error) => Err(format!("Router rejected ensure_properties: {error:?}")),

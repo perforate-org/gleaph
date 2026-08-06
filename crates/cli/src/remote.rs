@@ -61,13 +61,40 @@ impl RemoteTransport {
         self.runtime.block_on(future)
     }
 
-    /// Query one Router method and decode the candid `Result<T, E>` envelope.
+    /// Query one Router method whose arguments are a single Candid value, and decode the
+    /// candid `Result<T, E>` envelope.
     pub fn query<T, E>(&self, method: &str, args: &impl CandidType) -> Result<Result<T, E>, String>
     where
         T: CandidType + for<'de> serde::Deserialize<'de>,
         E: CandidType + for<'de> serde::Deserialize<'de>,
     {
         let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.query_raw(method, encoded)
+    }
+
+    /// Query one Router method whose arguments are multiple separate Candid values (one per
+    /// tuple element), e.g. `bulk_load_status(graph, key, cursor, max_receipts)`. A tuple
+    /// passed as a single `&impl CandidType` value would encode as one record argument, so
+    /// multi-argument methods must use this variant.
+    pub fn query_args<T, E>(
+        &self,
+        method: &str,
+        args: impl candid::utils::ArgumentEncoder,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let encoded =
+            candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.query_raw(method, encoded)
+    }
+
+    fn query_raw<T, E>(&self, method: &str, encoded: Vec<u8>) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
         let response = self
             .block_on(
                 self.agent
@@ -79,13 +106,38 @@ impl RemoteTransport {
         decode_result(&response, method)
     }
 
-    /// Update one Router method and decode the candid `Result<T, E>` envelope.
+    /// Update one Router method whose arguments are a single Candid value, and decode the
+    /// candid `Result<T, E>` envelope.
     pub fn update<T, E>(&self, method: &str, args: &impl CandidType) -> Result<Result<T, E>, String>
     where
         T: CandidType + for<'de> serde::Deserialize<'de>,
         E: CandidType + for<'de> serde::Deserialize<'de>,
     {
         let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.update_raw(method, encoded)
+    }
+
+    /// Update one Router method whose arguments are multiple separate Candid values (one per
+    /// tuple element), e.g. `ensure_properties(graph, names)`. See [`Self::query_args`].
+    pub fn update_args<T, E>(
+        &self,
+        method: &str,
+        args: impl candid::utils::ArgumentEncoder,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let encoded =
+            candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.update_raw(method, encoded)
+    }
+
+    fn update_raw<T, E>(&self, method: &str, encoded: Vec<u8>) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
         let response = self
             .block_on(
                 self.agent
@@ -210,5 +262,24 @@ mod tests {
             decoded,
             Err(RouterError::NotFound(name)) if name == "social"
         ));
+    }
+
+    #[test]
+    fn multi_arg_encoding_emits_one_argument_per_element() {
+        // Regression: `Encode!(&tuple)` encodes ONE record argument (a Rust tuple is a Candid
+        // record), so multi-argument Router methods (ensure_properties, bulk_load_status) must
+        // be called through `query_args`/`update_args`, which encode each tuple element as a
+        // separate Candid argument.
+        let tuple_bytes =
+            Encode!(&("social".to_string(), vec!["user_id".to_string()])).expect("encode tuple");
+        assert!(
+            candid::decode_args::<(String, Vec<String>)>(&tuple_bytes).is_err(),
+            "a tuple passed as one CandidType value must not decode as two arguments"
+        );
+
+        let args_bytes = candid::encode_args((&"social".to_string(), &vec!["user_id".to_string()]))
+            .expect("encode args");
+        let decoded = candid::decode_args::<(String, Vec<String>)>(&args_bytes).expect("decode");
+        assert_eq!(decoded, ("social".to_string(), vec!["user_id".to_string()]));
     }
 }

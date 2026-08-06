@@ -914,13 +914,15 @@ impl BulkLoadTransport for RemoteBulkLoadTransport {
         cursor: Option<u32>,
         max_receipts: u32,
     ) -> Result<Result<BulkLoadStatusPage, RouterError>, String> {
-        let args = (
-            graph.map(str::to_owned),
-            key.to_owned(),
-            cursor,
-            max_receipts,
-        );
-        self.remote.query("bulk_load_status", &args)
+        self.remote.query_args::<BulkLoadStatusPage, RouterError>(
+            "bulk_load_status",
+            (
+                &graph.map(str::to_owned),
+                &key.to_owned(),
+                &cursor,
+                &max_receipts,
+            ),
+        )
     }
 
     fn command(
