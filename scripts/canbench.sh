@@ -68,7 +68,7 @@ fi
 FIFO="/tmp/gleaph-canbench-$CRATE.fifo"
 WIN_ID_FILE="/tmp/gleaph-canbench-$CRATE.window-id"
 LOG="/tmp/gleaph-canbench-$CRATE.log"
-TMP=$(mktemp /tmp/gleaph_canbench_$CRATE.XXXXXX)
+TMP=$(mktemp /tmp/gleaph_canbench_"$CRATE".XXXXXX)
 
 cleanup() {
     rm -f "$TMP" "$FIFO" "$WIN_ID_FILE"

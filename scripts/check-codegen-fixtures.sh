@@ -27,7 +27,7 @@ check_generated() {
   cargo run -p gleaph-codegen -- \
     --manifest "$FIXTURE_ROOT/$manifest" \
     --target "$target" \
-    $format_args \
+    "$format_args" \
     --output "$output"
 
   comparison_expected="$FIXTURE_ROOT/$expected"

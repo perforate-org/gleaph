@@ -51,7 +51,7 @@ if [ "$INLINE" -eq 1 ]; then
                 ;;
         esac
     fi
-    exec env -u POCKET_IC_BIN cargo test -p gleaph-pocket-ic-tests ${TEST_ARGS} -- --nocapture
+    exec env -u POCKET_IC_BIN cargo test -p gleaph-pocket-ic-tests "${TEST_ARGS}" -- --nocapture
 fi
 
 # Default: run the full E2E suite.
