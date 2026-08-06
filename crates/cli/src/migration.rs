@@ -16,8 +16,8 @@ use gleaph_migration_api::{
     MAX_SCHEMA_MIGRATION_GRAPH_NAME_BYTES, MAX_SCHEMA_MIGRATION_ID_BYTES,
     MAX_SCHEMA_MIGRATION_STATEMENT_BYTES, MAX_SCHEMA_MIGRATION_STATEMENTS, MAX_SCHEMA_MIGRATIONS,
     SchemaMigrationApplyStatus, SchemaMigrationChecksum, SchemaMigrationGraphSelector,
-    SchemaMigrationRecord, SchemaMigrationRecordState, SchemaMigrationStatementProfile,
-    parse_schema_migration_id, schema_migration_checksum,
+    SchemaMigrationProgressPhase, SchemaMigrationRecord, SchemaMigrationRecordState,
+    SchemaMigrationStatementProfile, parse_schema_migration_id, schema_migration_checksum,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+use crate::progress::{ProgressLine, bar};
 use crate::remote::RemoteTransport;
 
 #[cfg(unix)]
@@ -780,10 +781,136 @@ fn status_for_plan<T: MigrationTransport>(
     })
 }
 
+/// One status reported by the Router while applying a migration, together with the artifact it
+/// belongs to. Passed to the [`apply`] reporter so the caller can render live progress.
+pub struct ApplyProgress<'a> {
+    pub artifact: &'a MigrationArtifact,
+    pub status: &'a SchemaMigrationApplyStatus,
+}
+
+/// Live progress renderer for `migration apply`, mirroring the load command's one-line output: a
+/// bar and status text per artifact, rewritten in place on a terminal and printed only when the
+/// fill advances when captured.
+pub struct MigrationProgressRenderer {
+    line: ProgressLine,
+    /// Artifact id currently being rendered.
+    current_id: Option<String>,
+    /// Index-build count of the artifact currently being rendered, captured from the last progress
+    /// status so the terminal line can report `n/n applied`.
+    total_indexes: u32,
+}
+
+impl MigrationProgressRenderer {
+    pub fn new(tty: bool) -> Self {
+        Self {
+            line: ProgressLine::new(tty),
+            current_id: None,
+            total_indexes: 0,
+        }
+    }
+
+    /// Render one apply status as reported by the Router.
+    pub fn render(&mut self, view: &ApplyProgress<'_>) {
+        let id = view.artifact.id();
+        if self.current_id.as_deref() != Some(id) {
+            self.line.close();
+            self.line.reset();
+            self.current_id = Some(id.to_owned());
+            self.total_indexes = 0;
+        }
+        if let SchemaMigrationApplyStatus::Progress(progress) = &view.status {
+            self.total_indexes = progress.total_indexes;
+        }
+        let (percent, text) = self.frame(view.status);
+        self.line.render(
+            percent,
+            &format!("applying {id:<24} [{}] {text}", bar(percent)),
+        );
+    }
+
+    /// Terminate the in-place terminal line after a completed run. Idempotent.
+    pub fn close(&mut self) {
+        self.line.close();
+    }
+
+    /// The bar fill percent and trailing text for one status. Exposed for tests: the fill is the
+    /// fraction of index builds advanced (full at a terminal outcome), and the text names the
+    /// active phase plus the current index ordinal, or the shard target counts when the graph has
+    /// more than one shard target.
+    fn frame(&self, status: &SchemaMigrationApplyStatus) -> (u8, String) {
+        match status {
+            SchemaMigrationApplyStatus::Applied => (100, self.terminal_text("applied")),
+            SchemaMigrationApplyStatus::Replay => (100, self.terminal_text("replay")),
+            SchemaMigrationApplyStatus::Failed(code) => (0, format!("failed: {code:?}")),
+            SchemaMigrationApplyStatus::Progress(progress) => {
+                let percent = progress
+                    .active_index
+                    .saturating_mul(100)
+                    .checked_div(progress.total_indexes)
+                    .map_or(0, |percent| percent.min(99)) as u8;
+                let phase = match progress.phase {
+                    SchemaMigrationProgressPhase::Preparing => "preparing",
+                    SchemaMigrationProgressPhase::Building => "building",
+                    SchemaMigrationProgressPhase::Sealing => "sealing",
+                    SchemaMigrationProgressPhase::Aborting => "aborting",
+                };
+                let text = if progress.total_targets > 1 {
+                    format!(
+                        "{phase} {}/{}",
+                        progress.completed_targets, progress.total_targets
+                    )
+                } else {
+                    format!(
+                        "{phase} {}/{}",
+                        progress.active_index.saturating_add(1),
+                        progress.total_indexes
+                    )
+                };
+                (percent, text)
+            }
+        }
+    }
+
+    fn terminal_text(&self, verb: &str) -> String {
+        if self.total_indexes > 0 {
+            format!("{}/{} {verb}", self.total_indexes, self.total_indexes)
+        } else {
+            verb.to_owned()
+        }
+    }
+}
+
+/// Terminal outcome counts of an `apply` run, for the completion summary line.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ApplySummary {
+    pub applied: usize,
+    pub replay: usize,
+}
+
+impl ApplySummary {
+    /// Count terminal outcomes; progress observations are not terminal and are ignored.
+    pub fn from_outcomes(outcomes: &[SchemaMigrationApplyStatus]) -> Self {
+        let mut summary = Self::default();
+        for status in outcomes {
+            match status {
+                SchemaMigrationApplyStatus::Applied => summary.applied += 1,
+                SchemaMigrationApplyStatus::Replay => summary.replay += 1,
+                SchemaMigrationApplyStatus::Progress(_) | SchemaMigrationApplyStatus::Failed(_) => {
+                }
+            }
+        }
+        summary
+    }
+}
+
 /// Apply every pending local migration after a complete local/remote preflight.
+///
+/// Every Router status is passed to `reporter` as it arrives so the caller can render live
+/// progress; the returned statuses are the same observations, in order.
 pub fn apply<T: MigrationTransport>(
     root: &Path,
     transport: &mut T,
+    reporter: &mut dyn FnMut(&ApplyProgress<'_>),
 ) -> Result<Vec<SchemaMigrationApplyStatus>, MigrationError> {
     let local = discover(root)?;
     let current = status_for_plan(&local, transport)?;
@@ -910,6 +1037,10 @@ pub fn apply<T: MigrationTransport>(
                     )));
                 }
             }
+            reporter(&ApplyProgress {
+                artifact,
+                status: &result.status,
+            });
             outcomes.push(result.status);
             if terminal {
                 break;
@@ -1933,7 +2064,8 @@ mod tests {
                 test_apply_result(&plan.migrations[0], SchemaMigrationApplyStatus::Applied),
             ]);
 
-        let outcomes = apply(&root, &mut transport).expect("pending migration applies");
+        let outcomes =
+            apply(&root, &mut transport, &mut |_| {}).expect("pending migration applies");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied]);
         assert_eq!(transport.apply_calls.len(), 1);
@@ -2239,7 +2371,7 @@ mod tests {
             test_apply_result(&plan.migrations[2], SchemaMigrationApplyStatus::Applied),
         ]);
 
-        let outcomes = apply(&root, &mut transport).expect("pending migrations apply");
+        let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("pending migrations apply");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 2]);
         assert_eq!(
@@ -2323,7 +2455,7 @@ mod tests {
             ),
         ]);
 
-        let outcomes = apply(&root, &mut transport).expect("pending migrations apply");
+        let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("pending migrations apply");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 3]);
         // The property is interned once per graph in a single batch call, before the first
@@ -2399,7 +2531,7 @@ mod tests {
             ),
         ]);
 
-        let outcomes = apply(&root, &mut transport).expect("pending migrations apply");
+        let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("pending migrations apply");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied; 3]);
         // Distinct properties are interned in one batch call per graph, in first-seen order.
@@ -2429,7 +2561,7 @@ mod tests {
         record.checksum.digest[0] ^= 1;
         let mut transport = FakeMigrationTransport::new(vec![test_page(vec![drifted], None)]);
 
-        let error = apply(&root, &mut transport).expect_err("drift must fail closed");
+        let error = apply(&root, &mut transport, &mut |_| {}).expect_err("drift must fail closed");
 
         assert!(
             matches!(error, MigrationError::Chain(message) if message.contains("checksum mismatch"))
@@ -2468,7 +2600,8 @@ mod tests {
             let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])
                 .with_apply_results(vec![Ok(response)]);
 
-            let error = apply(&root, &mut transport).expect_err("mismatched record must fail");
+            let error =
+                apply(&root, &mut transport, &mut |_| {}).expect_err("mismatched record must fail");
 
             assert!(matches!(error, MigrationError::Remote(_)), "field={field}");
             assert_eq!(transport.apply_calls.len(), 1, "field={field}");
@@ -2493,7 +2626,7 @@ mod tests {
                 test_apply_result(&plan.migrations[0], SchemaMigrationApplyStatus::Replay),
             ]);
 
-        let outcomes = apply(&root, &mut transport).expect("exact replay recovery");
+        let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("exact replay recovery");
 
         assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Replay]);
         assert_eq!(transport.apply_calls.len(), 2);
@@ -2518,7 +2651,7 @@ mod tests {
                 Err("retry timeout".into()),
             ]);
 
-        let error = apply(&root, &mut transport).expect_err("missing ledger evidence");
+        let error = apply(&root, &mut transport, &mut |_| {}).expect_err("missing ledger evidence");
 
         assert!(
             matches!(error, MigrationError::Remote(message) if message.contains("transport timeout") && message.contains("exact replay") && message.contains("retry timeout"))
@@ -2579,7 +2712,7 @@ mod tests {
             test_apply_result_with_record(applied_record, SchemaMigrationApplyStatus::Applied),
         ]);
 
-        let outcomes = apply(&root, &mut transport).expect("pending index resumes");
+        let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("pending index resumes");
 
         assert_eq!(
             outcomes,
@@ -2629,7 +2762,8 @@ mod tests {
         let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])
             .with_apply_results(vec![repeated; MAX_UNCHANGED_INDEX_PROGRESS_ROUNDS + 1]);
 
-        let error = apply(&root, &mut transport).expect_err("unchanged progress must be bounded");
+        let error = apply(&root, &mut transport, &mut |_| {})
+            .expect_err("unchanged progress must be bounded");
 
         assert!(
             matches!(error, MigrationError::Remote(message) if message.contains("unchanged progress") && message.contains("resumable"))
@@ -2674,7 +2808,8 @@ mod tests {
                 ),
             )]);
 
-        let error = apply(&root, &mut transport).expect_err("terminal failure surfaces");
+        let error =
+            apply(&root, &mut transport, &mut |_| {}).expect_err("terminal failure surfaces");
         assert!(matches!(
             error,
             MigrationError::Remote(message)
@@ -2682,6 +2817,149 @@ mod tests {
         ));
         assert_eq!(transport.apply_calls.len(), 1);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_reports_every_status_to_the_reporter_in_order() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_age_index",
+            None,
+            "CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
+            "index",
+        );
+        let plan = discover(&root).expect("test chain");
+        let artifact = &plan.migrations[0];
+        let pending = SchemaMigrationRecordState::PendingIndex {
+            pending: vec![gleaph_migration_api::PendingIndexBuild {
+                index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
+                physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11)
+                    .expect("physical id"),
+            }],
+        };
+        let building =
+            SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
+                phase: gleaph_migration_api::SchemaMigrationProgressPhase::Building,
+                completed_targets: 0,
+                total_targets: 1,
+                active_index: 0,
+                total_indexes: 1,
+            });
+        let mut transport = FakeMigrationTransport::new(vec![test_page(
+            vec![test_index_record(artifact, pending.clone())],
+            None,
+        )])
+        .with_apply_results(vec![
+            test_apply_result_with_record(test_index_record(artifact, pending), building.clone()),
+            test_apply_result_with_record(
+                test_index_record(
+                    artifact,
+                    SchemaMigrationRecordState::Applied { applied_at: 9 },
+                ),
+                SchemaMigrationApplyStatus::Applied,
+            ),
+        ]);
+
+        let mut reported = Vec::new();
+        let mut reported_ids = Vec::new();
+        let outcomes = apply(&root, &mut transport, &mut |view| {
+            reported.push(view.status.clone());
+            reported_ids.push(view.artifact.id().to_owned());
+        })
+        .expect("pending index applies");
+
+        assert_eq!(reported, outcomes);
+        assert_eq!(reported_ids, vec![artifact.id().to_owned(); outcomes.len()]);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn progress_renderer_frames_an_index_artifact() {
+        let mut renderer = MigrationProgressRenderer::new(false);
+        let progress = |phase, active_index, total_indexes| {
+            SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
+                phase,
+                completed_targets: 0,
+                total_targets: 1,
+                active_index,
+                total_indexes,
+            })
+        };
+        assert_eq!(
+            renderer.frame(&progress(
+                gleaph_migration_api::SchemaMigrationProgressPhase::Preparing,
+                0,
+                5,
+            )),
+            (0, "preparing 1/5".to_owned())
+        );
+        assert_eq!(
+            renderer.frame(&progress(
+                gleaph_migration_api::SchemaMigrationProgressPhase::Building,
+                2,
+                5,
+            )),
+            (40, "building 3/5".to_owned())
+        );
+        renderer.total_indexes = 5;
+        assert_eq!(
+            renderer.frame(&SchemaMigrationApplyStatus::Applied),
+            (100, "5/5 applied".to_owned())
+        );
+    }
+
+    #[test]
+    fn progress_renderer_frames_multi_shard_targets() {
+        let renderer = MigrationProgressRenderer::new(false);
+        assert_eq!(
+            renderer.frame(&SchemaMigrationApplyStatus::Progress(
+                gleaph_migration_api::SchemaMigrationProgress {
+                    phase: gleaph_migration_api::SchemaMigrationProgressPhase::Sealing,
+                    completed_targets: 12,
+                    total_targets: 32,
+                    active_index: 1,
+                    total_indexes: 2,
+                }
+            )),
+            (50, "sealing 12/32".to_owned())
+        );
+    }
+
+    #[test]
+    fn progress_renderer_frames_non_index_migration() {
+        let renderer = MigrationProgressRenderer::new(false);
+        assert_eq!(
+            renderer.frame(&SchemaMigrationApplyStatus::Applied),
+            (100, "applied".to_owned())
+        );
+        assert_eq!(
+            renderer.frame(&SchemaMigrationApplyStatus::Replay),
+            (100, "replay".to_owned())
+        );
+    }
+
+    #[test]
+    fn apply_summary_counts_terminal_outcomes() {
+        let outcomes = vec![
+            SchemaMigrationApplyStatus::Applied,
+            SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
+                phase: gleaph_migration_api::SchemaMigrationProgressPhase::Building,
+                completed_targets: 0,
+                total_targets: 1,
+                active_index: 0,
+                total_indexes: 1,
+            }),
+            SchemaMigrationApplyStatus::Replay,
+            SchemaMigrationApplyStatus::Applied,
+        ];
+        assert_eq!(
+            ApplySummary::from_outcomes(&outcomes),
+            ApplySummary {
+                applied: 2,
+                replay: 1
+            }
+        );
     }
 
     #[test]

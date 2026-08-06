@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::progress::ProgressLine;
 use crate::remote::RemoteTransport;
 
 const FORMAT_VERSION: u32 = 1;
@@ -1289,16 +1290,14 @@ fn chunk_accumulation_target(hint: Option<SizeHint>) -> usize {
 
 // ──── progress ────
 
-/// Live progress for one load phase (vertices or edges). On a terminal the line is rewritten in
-/// place with `\r`; when the output is captured, a new line is printed only when the percentage
-/// advances so logs stay readable.
+/// Live progress for one load phase (vertices or edges), rendered through the shared one-line
+/// progress renderer: rewritten in place on a terminal, printed only when the percentage
+/// advances when captured so logs stay readable.
 struct PhaseProgress {
     label: &'static str,
     total: usize,
     committed: usize,
-    tty: bool,
-    rendered_percent: Option<u8>,
-    finished: bool,
+    line: ProgressLine,
 }
 
 impl PhaseProgress {
@@ -1307,9 +1306,7 @@ impl PhaseProgress {
             label,
             total,
             committed,
-            tty,
-            rendered_percent: None,
-            finished: false,
+            line: ProgressLine::new(tty),
         };
         progress.render();
         progress
@@ -1323,10 +1320,7 @@ impl PhaseProgress {
 
     /// Terminate the in-place terminal line after the phase reached its final state.
     fn finish(&mut self) {
-        if self.tty {
-            println!();
-        }
-        self.finished = true;
+        self.line.close();
     }
 
     fn render(&mut self) {
@@ -1335,51 +1329,18 @@ impl PhaseProgress {
             .saturating_mul(100)
             .checked_div(self.total)
             .unwrap_or(100) as u8;
-        if self.rendered_percent == Some(percent) {
-            return;
-        }
-        let line = self.line(percent);
-        if self.tty {
-            print!("\r{line}");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-        } else {
-            println!("{line}");
-        }
-        self.rendered_percent = Some(percent);
+        self.line.render(percent, &self.line_text(percent));
     }
 
-    fn line(&self, percent: u8) -> String {
-        const BAR_WIDTH: usize = 20;
-        let filled = (percent as usize * BAR_WIDTH) / 100;
-        let bar = if percent >= 100 {
-            "=".repeat(BAR_WIDTH)
-        } else if filled == 0 {
-            " ".repeat(BAR_WIDTH)
-        } else {
-            format!(
-                "{}{}{}",
-                "=".repeat(filled - 1),
-                ">",
-                " ".repeat(BAR_WIDTH - filled)
-            )
-        };
+    fn line_text(&self, percent: u8) -> String {
         format!(
-            "loading {:<8} [{bar}] {} / {} ({:>3}%)",
+            "loading {:<8} [{}] {} / {} ({:>3}%)",
             self.label,
+            crate::progress::bar(percent),
             thousands(self.committed),
             thousands(self.total),
             percent
         )
-    }
-}
-
-impl Drop for PhaseProgress {
-    fn drop(&mut self) {
-        // An error path returns through `?` without `finish`; terminate the in-place line so the
-        // stderr message is not appended to the progress bar.
-        if self.tty && !self.finished {
-            println!();
-        }
     }
 }
 

@@ -2,6 +2,7 @@
 
 use clap::{CommandFactory, Parser, Subcommand};
 use config::{ConfigEnv, DirKey, LoadedConfig};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use thiserror::Error;
@@ -10,6 +11,7 @@ pub mod config;
 pub mod load;
 pub mod migration;
 pub mod prepared;
+pub mod progress;
 pub mod remote;
 
 use load::{LoadArgs, LoadError};
@@ -526,8 +528,16 @@ fn execute_migration(
                 remote.identity.as_deref(),
                 remote.fetch_root_key,
             )?;
-            for outcome in migration::apply(&dir, &mut transport)? {
-                println!("{outcome}");
+            let mut renderer =
+                migration::MigrationProgressRenderer::new(std::io::stdout().is_terminal());
+            let outcomes =
+                migration::apply(&dir, &mut transport, &mut |view| renderer.render(view))?;
+            renderer.close();
+            let summary = migration::ApplySummary::from_outcomes(&outcomes);
+            match (summary.applied, summary.replay) {
+                (0, 0) => println!("no migrations to apply"),
+                (applied, 0) => println!("applied {applied} migrations"),
+                (applied, replay) => println!("applied {applied} new, {replay} replay"),
             }
             Ok(())
         }
