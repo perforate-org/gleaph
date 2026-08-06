@@ -131,6 +131,9 @@ process.stdout.write(u.replace(/\/+$/, ""));
     exit 1
   fi
   log "Starting local IC network"
+  # `network start` alone refuses with "already running" when the cached descriptor is
+  # stale (container stopped/removed); stop first, tolerating an already-gone network.
+  icp_cmd network stop local >/dev/null 2>&1 || true
   icp_cmd network start local -d
 }
 

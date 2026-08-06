@@ -86,6 +86,14 @@ pnpm install
 pnpm dev                  # reads .env.local for the Router id and local host
 ```
 
+`deploy-local.sh` also verifies the demo's own managed local network (the one hosting the
+asset canister, per `demo/social/icp.yaml`) before deploying. `icp network status` trusts
+its cached descriptor, which can point at a stopped or removed container after a
+Docker/OrbStack restart or after macOS cleans the network's temp status dir; when the
+replica does not answer, the script recreates the network automatically (which also clears
+the stale canister mapping, so the asset canister is deployed from scratch). Set
+`GLEAPH_DEMO_SKIP_NETWORK_START=1` to fail with guidance instead of auto-starting.
+
 `pnpm install` links `@gleaph/sdk` from the workspace. Its `dist/` is gitignored,
 so run `pnpm sdk:build` (or the repository-wide `pnpm install:all`) once before the
 first build if `sdk/client/js/dist` is missing.

@@ -14,14 +14,15 @@ set -euo pipefail
 # too, so the platform canisters are (re)installed even when the platform looks ready.
 #
 # Steps:
-#   0. pnpm build:config       - regenerate seeds/ and src/data/*.generated.*
-#   1. gleaph migration apply   - schema: graph type, typed graph, property indexes
-#   2. gleaph load              - seed vertices and edges
-#   3. gleaph prepared apply    - register the six scenario prepared queries
-#   4. gleaph codegen           - regenerate src/generated.ts from the Router manifest
-#   5. writes .env.local        - so the frontend build bakes in the Router id
-#   6. vite build               - frontend bundle (SDK dist prebuilt if missing)
-#   7. icp deploy               - asset canister (demo/social/icp.yaml)
+#   0. ensure demo network     - recreate the demo's managed local network if stale
+#   1. pnpm build:config       - regenerate seeds/ and src/data/*.generated.*
+#   2. gleaph migration apply  - schema: graph type, typed graph, property indexes
+#   3. gleaph load             - seed vertices and edges
+#   4. gleaph prepared apply   - register the six scenario prepared queries
+#   5. gleaph codegen          - regenerate src/generated.ts from the Router manifest
+#   6. writes .env.local       - so the frontend build bakes in the Router id
+#   7. vite build              - frontend bundle (SDK dist prebuilt if missing)
+#   8. icp deploy              - asset canister (demo/social/icp.yaml)
 #
 # Env knobs:
 #   GLEAPH_DEMO_SKIP_VITE_ENV=1      - do not touch .env.local (CI)
@@ -30,6 +31,8 @@ set -euo pipefail
 #   GLEAPH_DEMO_INSTALL_MODE=<mode>  - delegate to the full bootstrap with this install
 #                                      mode (auto/reinstall/upgrade) for the platform
 #   GLEAPH_DEMO_SKIP_AUTO_BOOTSTRAP=1 - fail instead of running the full bootstrap
+#   GLEAPH_DEMO_SKIP_NETWORK_START=1 - fail instead of recreating the demo's managed
+#                                      local network when its cached descriptor is stale
 #   GLEAPH_DEMO_FROM_BOOTSTRAP=1     - internal: set by the full bootstrap to avoid
 #                                      re-delegating when the platform is still down
 
@@ -141,6 +144,52 @@ process.stdout.write(u.replace(/\/+$/, ""));
 ')
 }
 
+# Resolves the demo project's own managed local replica URL (http://localhost:<port>).
+# icp-cli runs one managed "local" instance per icp.yaml project, so this resolves the
+# demo's network, which hosts the asset canister (distinct from the platform network
+# resolved by local_api_url above).
+demo_api_url() {
+  (cd "$DEMO" && icp_cmd network status local --json 2>/dev/null | node -e '
+const fs = require("node:fs");
+const raw = fs.readFileSync(0, "utf8");
+const status = JSON.parse(raw);
+const u = status.api_url || status.gateway_url || "";
+process.stdout.write(u.replace(/\/+$/, ""));
+' || true)
+}
+
+# Ensures the demo project's managed local network is reachable before the asset-canister
+# deploy. `icp network status` trusts the cached descriptor, which can point at a stopped
+# or removed container after a Docker/OrbStack restart or after macOS cleans the network's
+# temp status dir (the same failure the bootstrap guards against for the platform network
+# in deploy-demo-local.sh). Liveness is verified over HTTP; a dead network is recreated
+# with stop+start, which also clears the stale canister mapping so the deploy below
+# re-creates the asset canister. GLEAPH_DEMO_SKIP_NETWORK_START=1 fails with guidance
+# instead of auto-starting.
+ensure_demo_network() {
+  local api_url
+  api_url="$(demo_api_url)"
+  if [[ -n "$api_url" ]] && curl -fsS --max-time 2 -o /dev/null "$api_url/api/v2/status" 2>/dev/null; then
+    return 0
+  fi
+  if [[ "${GLEAPH_DEMO_SKIP_NETWORK_START:-0}" == "1" ]]; then
+    log "ERROR: demo local network is not reachable at ${api_url:-<none>} and GLEAPH_DEMO_SKIP_NETWORK_START=1 was set"
+    log "       Start it first with: icp network start local -d"
+    exit 1
+  fi
+  log "WARN: demo local network is not reachable at ${api_url:-<none>}; recreating it"
+  # `network start` alone refuses with "already running" when a stale descriptor exists,
+  # so stop first; stopping an already-gone network is a tolerated no-op error.
+  icp_cmd network stop local >/dev/null 2>&1 || true
+  icp_cmd network start local -d
+  api_url="$(demo_api_url)"
+  if [[ -z "$api_url" ]] || ! curl -fsS --max-time 2 -o /dev/null "$api_url/api/v2/status" 2>/dev/null; then
+    log "ERROR: demo local network is still not reachable after recreation (${api_url:-<none>})"
+    exit 1
+  fi
+  log "Demo local network is running ($api_url)"
+}
+
 # Writes .env.local so the frontend build bakes in the Router id and the local
 # replica URL. GLEAPH_DEMO_SKIP_VITE_ENV=1 disables the write (CI);
 # GLEAPH_DEMO_FORCE_VITE_IC_HOST=1 also overwrites VITE_IC_HOST. Existing files
@@ -185,6 +234,16 @@ EOF
   local tmp_path
   tmp_path="$(mktemp "${TMPDIR:-/tmp}/gleaph-vite-env.XXXXXX")"
   local force_host="${GLEAPH_DEMO_FORCE_VITE_IC_HOST:-0}"
+  # A rebuilt platform network moves to a new port; when the baked VITE_IC_HOST points
+  # at a dead replica, refresh it even without GLEAPH_DEMO_FORCE_VITE_IC_HOST (the
+  # preserve-unless-forced default exists for hosts that must not be overwritten).
+  local baked_host
+  baked_host="$(awk -F= '/^[[:space:]]*VITE_IC_HOST[[:space:]]*=/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$env_path" 2>/dev/null || true)"
+  if [[ -n "$baked_host" && "$baked_host" != "$api_url" ]] \
+    && ! curl -fsS --max-time 1 -o /dev/null "$baked_host/api/v2/status" 2>/dev/null; then
+    log "WARN: baked VITE_IC_HOST $baked_host is not reachable; refreshing it to $api_url"
+    force_host=1
+  fi
   awk \
       -v new_id="$router_id" \
       -v new_host="$api_url" \
@@ -281,6 +340,11 @@ main() {
 
   cd "$DEMO"
 
+  # The asset canister lives on the demo project's own managed network, whose cached
+  # descriptor can be stale (container stopped/removed, macOS-cleaned status dir);
+  # recover it before the slow platform steps so a broken network fails fast.
+  ensure_demo_network
+
   log "Building seed artifacts and generated sources"
   pnpm run build:config
 
@@ -323,6 +387,9 @@ main() {
   log "Deploying asset canister"
   if ! icp_cmd canister status -e local -i social-demo >/dev/null 2>&1; then
     log "Creating asset canister social-demo"
+    # A recreated network has lost the previous asset canister and its mapping, so the
+    # lookup above fails and the canister is created from scratch (ensure_deployer_cycles
+    # re-funds the deployer on the fresh ledger).
     ensure_deployer_cycles
     icp_cmd canister create -e local --identity "$ICP_IDENTITY_NAME" --quiet social-demo >/dev/null
   fi
