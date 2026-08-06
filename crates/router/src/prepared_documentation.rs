@@ -713,6 +713,60 @@ mod tests {
     }
 
     #[test]
+    fn fills_result_columns_from_typed_graph_properties() {
+        // Regression for the social demo: the graph type must declare its property types,
+        // otherwise property accesses infer as Unknown and the manifest result schema stays
+        // empty (generated clients then cannot decode rows into typed values).
+        let definition = gleaph_gql::parser::parse(
+            "CREATE GRAPH TYPE SocialGraph { \
+             NODE User { user_id STRING, name STRING }, \
+             NODE Post { demo_id INT64, body STRING, created_at DATETIME, is_public BOOL } \
+             }",
+        )
+        .expect("graph type should parse");
+        let statement = definition
+            .transaction_activity
+            .as_ref()
+            .and_then(|activity| activity.body.as_ref())
+            .and_then(|body| body.next.last())
+            .map(|next| &next.statement)
+            .unwrap_or_else(|| {
+                definition
+                    .transaction_activity
+                    .as_ref()
+                    .and_then(|activity| activity.body.as_ref())
+                    .map(|body| &body.first)
+                    .expect("body")
+            });
+        let gleaph_gql::ast::Statement::CreateGraphType(create) = statement else {
+            panic!("expected CREATE GRAPH TYPE");
+        };
+        let schema = gleaph_gql::type_check::GraphTypePropertySchema::try_from_definition(
+            &create.definition,
+        )
+        .expect("graph type schema");
+        let program = gleaph_gql::parser::parse(
+            "MATCH (p:Post)<-[:POSTED]-(author:User) \
+             RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, \
+             p.created_at AS created_at ORDER BY INSERTION(e) DESC LIMIT 20 OFFSET $offset",
+        )
+        .expect("timeline query should parse");
+        let mut operation = operation();
+        complete_result_schema(&program, &schema, &mut operation)
+            .expect("typed schema should complete result columns");
+        let by_name: std::collections::BTreeMap<_, _> = operation
+            .result
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.semantic_type.clone()))
+            .collect();
+        assert_eq!(by_name.get("post_id"), Some(&SemanticType::Int64));
+        assert_eq!(by_name.get("author_name"), Some(&SemanticType::Text));
+        assert_eq!(by_name.get("body"), Some(&SemanticType::Text));
+        assert_eq!(by_name.get("created_at"), Some(&SemanticType::DateTime));
+    }
+
+    #[test]
     fn validates_explicit_result_column_type_fail_closed() {
         let program = gleaph_gql::parser::parse("MATCH (n) RETURN 'ok' AS tag")
             .expect("literal output should parse");
