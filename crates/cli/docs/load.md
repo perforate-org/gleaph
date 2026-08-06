@@ -26,8 +26,8 @@ vertices:
   - source_id: alice
     labels: [Person]
     properties:
-      name: {Text: Alice}
-      joined: {DateTime: {seconds: 1700000000, nanos: 5}}
+      name: { Text: Alice }
+      joined: { DateTime: { seconds: 1700000000, nanos: 5 } }
 edges:
   - source: alice
     target: bob
@@ -58,21 +58,21 @@ vertices in the same artifact.
 
 Vertex row:
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| `source_id` | string | Required; unique within the artifact |
-| `labels` | array of strings | Required; non-empty, no empty entries |
-| `properties` | object | Optional; duplicate property names rejected |
+| Field        | Type             | Notes                                       |
+| ------------ | ---------------- | ------------------------------------------- |
+| `source_id`  | string           | Required; unique within the artifact        |
+| `labels`     | array of strings | Required; non-empty, no empty entries       |
+| `properties` | object           | Optional; duplicate property names rejected |
 
 Edge row:
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| `source`, `target` | endpoint | See below |
-| `label` | string | Required; non-empty |
-| `directed` | bool | Optional; default `true` |
-| `inline_value` | value | Optional edge inline property |
-| `properties` | object | Optional; duplicate names rejected |
+| Field              | Type     | Notes                              |
+| ------------------ | -------- | ---------------------------------- |
+| `source`, `target` | endpoint | See below                          |
+| `label`            | string   | Required; non-empty                |
+| `directed`         | bool     | Optional; default `true`           |
+| `inline_value`     | value    | Optional edge inline property      |
+| `properties`       | object   | Optional; duplicate names rejected |
 
 An endpoint is either:
 
@@ -98,20 +98,20 @@ and `{"DateTime": {"seconds": 1700000000, "nanos": 5}}`.
 gleaph load [OPTIONS] [ARTIFACT]...
 ```
 
-| Argument / flag | Meaning |
-| --- | --- |
-| `ARTIFACT` | One YAML/JSON file, or two NDJSON files (vertices, then edges) |
-| `--canister <PRINCIPAL>` | Router canister principal (required) |
-| `--graph <NAME>` | Logical graph; omitted → the caller's default (HOME) graph |
-| `-k, --key <KEY>` | Durable bulk-load job key; default `initial-load-v1` |
-| `-n, --network <NETWORK>` | Network name (`ic`/`local`) or endpoint URL; default `ic` |
-| `--identity <PATH>` | PEM file containing a Secp256k1 identity |
-| `--fetch-root-key` | Fetch the network root key before a custom endpoint |
-| `--format <FORMAT>` | `yaml` / `json` / `jsonl`; inferred from the file extension when omitted |
-| `--vertices <FILE>` | NDJSON vertices file only (mutually exclusive with positional ARTIFACT) |
-| `--edges <FILE>` | NDJSON edges file only; requires property-based endpoints |
-| `--fresh` | Start a new job under a derived key `{key}.{nonce}` instead of resuming |
-| `--state-file <PATH>` | Record the effective key and artifact digest; skip-on-Completed requires a matching digest |
+| Argument / flag           | Meaning                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| `ARTIFACT`                | One YAML/JSON file, or two NDJSON files (vertices, then edges)                             |
+| `--canister <PRINCIPAL>`  | Router canister principal (required)                                                       |
+| `--graph <NAME>`          | Logical graph; omitted → the caller's default (HOME) graph                                 |
+| `-k, --key <KEY>`         | Durable bulk-load job key; default `initial-load-v1`                                       |
+| `-n, --network <NETWORK>` | Network name (`ic`/`local`) or endpoint URL; default `ic`                                  |
+| `--identity <PATH>`       | PEM file containing a Secp256k1 identity                                                   |
+| `--fetch-root-key`        | Fetch the network root key before a custom endpoint                                        |
+| `--format <FORMAT>`       | `yaml` / `json` / `jsonl`; inferred from the file extension when omitted                   |
+| `--vertices <FILE>`       | NDJSON vertices file only (mutually exclusive with positional ARTIFACT)                    |
+| `--edges <FILE>`          | NDJSON edges file only; requires property-based endpoints                                  |
+| `--fresh`                 | Start a new job under a derived key `{key}.{nonce}` instead of resuming                    |
+| `--state-file <PATH>`     | Record the effective key and artifact digest; skip-on-Completed requires a matching digest |
 
 `--key` and `--graph` are limited to 1..=256 UTF-8 bytes.
 
@@ -137,6 +137,11 @@ Each Append commits a budget-fitting prefix and returns `next_offset`
 `offset = next_offset` until the batch is consumed. Chunk boundaries are
 Router-owned, so a chunk never traps at the execution ceiling.
 
+During the vertex and edge phases the command prints a live progress bar with
+a row count and percentage (`loading vertices … 12,345 / 17,240 (72%)`). On a
+terminal the line is rewritten in place; when the output is captured, a line is
+printed only when the percentage advances.
+
 Because durable bulk-load keys are single-use after a terminal state,
 re-loading after a terminal job requires a new `--key` or `--fresh`.
 
@@ -154,12 +159,12 @@ The YAML/JSON single-file family is read in full but remains bounded by its
 
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Load completed, or skipped because the job was already `Completed` |
-| 1 | Operator action required (terminal `Failed`/`Aborted` job, artifact digest changed, finalize did not complete) |
-| 2 | Input validation (usage or artifact error); nothing was loaded |
-| 3 | Remote/auth failure (connection, Router rejection, unexpected response) |
+| Code | Meaning                                                                                                        |
+| ---- | -------------------------------------------------------------------------------------------------------------- |
+| 0    | Load completed, or skipped because the job was already `Completed`                                             |
+| 1    | Operator action required (terminal `Failed`/`Aborted` job, artifact digest changed, finalize did not complete) |
+| 2    | Input validation (usage or artifact error); nothing was loaded                                                 |
+| 3    | Remote/auth failure (connection, Router rejection, unexpected response)                                        |
 
 ## Examples
 

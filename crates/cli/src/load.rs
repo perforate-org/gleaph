@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, IsTerminal};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -258,6 +258,7 @@ enum PreparedLoad {
         edges: Option<PathBuf>,
         digest: String,
         vertex_count: usize,
+        edge_count: usize,
         property_names: BTreeSet<String>,
     },
 }
@@ -273,6 +274,13 @@ impl PreparedLoad {
         match self {
             PreparedLoad::SingleFile { artifact, .. } => artifact.vertices.len(),
             PreparedLoad::Njson { vertex_count, .. } => *vertex_count,
+        }
+    }
+
+    fn edge_count(&self) -> usize {
+        match self {
+            PreparedLoad::SingleFile { artifact, .. } => artifact.edges.len(),
+            PreparedLoad::Njson { edge_count, .. } => *edge_count,
         }
     }
 
@@ -577,6 +585,7 @@ impl<T: for<'de> Deserialize<'de>> NjsonRowReader<T> {
 struct NjsonScan {
     digest: String,
     vertex_count: usize,
+    edge_count: usize,
     property_names: BTreeSet<String>,
 }
 
@@ -617,6 +626,7 @@ fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan
     Ok(NjsonScan {
         digest: hex_digest(&hasher.finalize()),
         vertex_count,
+        edge_count,
         property_names,
     })
 }
@@ -687,6 +697,7 @@ fn prepare_artifact(
                 edges: Some(edges.clone()),
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
+                edge_count: scan.edge_count,
                 property_names: scan.property_names,
             })
         }
@@ -697,6 +708,7 @@ fn prepare_artifact(
                 edges: None,
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
+                edge_count: scan.edge_count,
                 property_names: scan.property_names,
             })
         }
@@ -707,6 +719,7 @@ fn prepare_artifact(
                 edges: Some(path.clone()),
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
+                edge_count: scan.edge_count,
                 property_names: scan.property_names,
             })
         }
@@ -1182,6 +1195,9 @@ fn run_load(
     // Vertex phase: stream rows into budget-fitted chunks; each Append commits a budget-fitting
     // prefix and the uncommitted tail stays buffered for the next chunk. Rows committed by a
     // prior run are matched to their recorded ids instead of being re-dispatched.
+    let tty = std::io::stdout().is_terminal();
+    let mut vertex_phase =
+        PhaseProgress::new("vertices", prepared.vertex_count(), committed_vertices, tty);
     let mut vertex_stream = prepared.vertex_stream()?;
     run_vertex_phase(
         &mut vertex_stream,
@@ -1194,10 +1210,13 @@ fn run_load(
         },
         &mut chunk_index,
         &mut id_by_source,
+        &mut vertex_phase,
     )?;
+    vertex_phase.finish();
 
     // Edge phase: stream edge rows and resolve each endpoint against the vertex ids allocated in
     // vertex order.
+    let mut edge_phase = PhaseProgress::new("edges", prepared.edge_count(), committed_edges, tty);
     let mut edge_stream = prepared.edge_stream()?;
     run_edge_phase(
         &mut edge_stream,
@@ -1207,7 +1226,9 @@ fn run_load(
         committed_edges,
         &mut chunk_index,
         &id_by_source,
+        &mut edge_phase,
     )?;
+    edge_phase.finish();
 
     let finalized = send_command(
         transport,
@@ -1266,9 +1287,121 @@ fn chunk_accumulation_target(hint: Option<SizeHint>) -> usize {
         .unwrap_or(INITIAL_CHUNK_ROWS)
 }
 
+// ──── progress ────
+
+/// Live progress for one load phase (vertices or edges). On a terminal the line is rewritten in
+/// place with `\r`; when the output is captured, a new line is printed only when the percentage
+/// advances so logs stay readable.
+struct PhaseProgress {
+    label: &'static str,
+    total: usize,
+    committed: usize,
+    tty: bool,
+    rendered_percent: Option<u8>,
+    finished: bool,
+}
+
+impl PhaseProgress {
+    fn new(label: &'static str, total: usize, committed: usize, tty: bool) -> Self {
+        let mut progress = Self {
+            label,
+            total,
+            committed,
+            tty,
+            rendered_percent: None,
+            finished: false,
+        };
+        progress.render();
+        progress
+    }
+
+    /// Record `committed` more rows and redraw.
+    fn advance(&mut self, committed: usize) {
+        self.committed += committed;
+        self.render();
+    }
+
+    /// Terminate the in-place terminal line after the phase reached its final state.
+    fn finish(&mut self) {
+        if self.tty {
+            println!();
+        }
+        self.finished = true;
+    }
+
+    fn render(&mut self) {
+        let percent = self
+            .committed
+            .saturating_mul(100)
+            .checked_div(self.total)
+            .unwrap_or(100) as u8;
+        if self.rendered_percent == Some(percent) {
+            return;
+        }
+        let line = self.line(percent);
+        if self.tty {
+            print!("\r{line}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        } else {
+            println!("{line}");
+        }
+        self.rendered_percent = Some(percent);
+    }
+
+    fn line(&self, percent: u8) -> String {
+        const BAR_WIDTH: usize = 20;
+        let filled = (percent as usize * BAR_WIDTH) / 100;
+        let bar = if percent >= 100 {
+            "=".repeat(BAR_WIDTH)
+        } else if filled == 0 {
+            " ".repeat(BAR_WIDTH)
+        } else {
+            format!(
+                "{}{}{}",
+                "=".repeat(filled - 1),
+                ">",
+                " ".repeat(BAR_WIDTH - filled)
+            )
+        };
+        format!(
+            "loading {:<8} [{bar}] {} / {} ({:>3}%)",
+            self.label,
+            thousands(self.committed),
+            thousands(self.total),
+            percent
+        )
+    }
+}
+
+impl Drop for PhaseProgress {
+    fn drop(&mut self) {
+        // An error path returns through `?` without `finish`; terminate the in-place line so the
+        // stderr message is not appended to the progress bar.
+        if self.tty && !self.finished {
+            println!();
+        }
+    }
+}
+
+fn thousands(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Stream vertices into budget-fitted chunks. Rows committed by a prior run are matched to their
 /// recorded ids without re-dispatch; the uncommitted tail of a budget-truncated chunk stays
 /// buffered for the next Append.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "phase context passed explicitly for testability"
+)]
 fn run_vertex_phase(
     source: &mut RowStream<'_, VertexRow>,
     transport: &mut impl BulkLoadTransport,
@@ -1277,6 +1410,7 @@ fn run_vertex_phase(
     committed: CommittedVertices,
     chunk_index: &mut u32,
     id_by_source: &mut HashMap<String, Vec<u8>>,
+    progress: &mut PhaseProgress,
 ) -> Result<(), LoadError> {
     let mut committed_ids = committed.ids.into_iter();
     let mut committed_remaining = committed.rows;
@@ -1348,6 +1482,7 @@ fn run_vertex_phase(
         }
         buffer.drain(..next_offset as usize);
         *chunk_index += 1;
+        progress.advance(next_offset as usize);
         hint = Some(SizeHint::new(candidate_count));
     }
     Ok(())
@@ -1355,6 +1490,10 @@ fn run_vertex_phase(
 
 /// Stream edges into budget-fitted chunks, resolving each endpoint against the vertex ids
 /// allocated during the vertex phase. Rows committed by a prior run are skipped without parsing.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "phase context passed explicitly for testability"
+)]
 fn run_edge_phase(
     source: &mut RowStream<'_, EdgeRow>,
     transport: &mut impl BulkLoadTransport,
@@ -1363,6 +1502,7 @@ fn run_edge_phase(
     committed_rows: usize,
     chunk_index: &mut u32,
     id_by_source: &HashMap<String, Vec<u8>>,
+    progress: &mut PhaseProgress,
 ) -> Result<(), LoadError> {
     source.skip(committed_rows)?;
     let mut buffer: Vec<EdgeRow> = Vec::new();
@@ -1411,6 +1551,7 @@ fn run_edge_phase(
         }
         buffer.drain(..next_offset as usize);
         *chunk_index += 1;
+        progress.advance(next_offset as usize);
         hint = Some(SizeHint::new(candidate_count));
     }
     Ok(())
