@@ -14,7 +14,7 @@
 //! budget-fitting prefix and returns `next_offset`); the CLI only fits each request to the
 //! ingress payload bound and loops.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
@@ -251,12 +251,14 @@ enum PreparedLoad {
     SingleFile {
         artifact: LoadArtifact,
         digest: String,
+        property_names: BTreeSet<String>,
     },
     Njson {
         vertices: Option<PathBuf>,
         edges: Option<PathBuf>,
         digest: String,
         vertex_count: usize,
+        property_names: BTreeSet<String>,
     },
 }
 
@@ -271,6 +273,15 @@ impl PreparedLoad {
         match self {
             PreparedLoad::SingleFile { artifact, .. } => artifact.vertices.len(),
             PreparedLoad::Njson { vertex_count, .. } => *vertex_count,
+        }
+    }
+
+    /// Distinct property names referenced by any vertex or edge row. Data-driven properties are
+    /// interned before the first chunk (ADR 0059: the Router rejects missing properties).
+    fn property_names(&self) -> &BTreeSet<String> {
+        match self {
+            PreparedLoad::SingleFile { property_names, .. }
+            | PreparedLoad::Njson { property_names, .. } => property_names,
         }
     }
 
@@ -566,6 +577,7 @@ impl<T: for<'de> Deserialize<'de>> NjsonRowReader<T> {
 struct NjsonScan {
     digest: String,
     vertex_count: usize,
+    property_names: BTreeSet<String>,
 }
 
 /// Stream-validate every NDJSON row and hash the raw file bytes (the state-file digest). No row
@@ -573,12 +585,16 @@ struct NjsonScan {
 fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan, LoadError> {
     let mut hasher = Sha256::new();
     let mut source_ids = HashSet::new();
+    let mut property_names = BTreeSet::new();
     let mut vertex_count = 0usize;
     if let Some(path) = vertices {
         for_each_njson_line(path, &mut hasher, |index, line| {
             let row: VertexRow = serde_json::from_str(line).map_err(|error| {
                 LoadError::Artifact(format!("parse {path:?} line {}: {error}", index + 1))
             })?;
+            for (name, _) in &row.properties.0 {
+                property_names.insert(name.clone());
+            }
             validate_vertex_row(vertex_count, &row, &mut source_ids)
         })?;
         vertex_count = source_ids.len();
@@ -590,6 +606,9 @@ fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan
             let row: EdgeRow = serde_json::from_str(line).map_err(|error| {
                 LoadError::Artifact(format!("parse {path:?} line {}: {error}", index + 1))
             })?;
+            for (name, _) in &row.properties.0 {
+                property_names.insert(name.clone());
+            }
             validate_edge_row(edge_count, &row, has_vertices, &source_ids)?;
             edge_count += 1;
             Ok(())
@@ -598,6 +617,7 @@ fn scan_njson(vertices: Option<&Path>, edges: Option<&Path>) -> Result<NjsonScan
     Ok(NjsonScan {
         digest: hex_digest(&hasher.finalize()),
         vertex_count,
+        property_names,
     })
 }
 
@@ -628,6 +648,19 @@ fn for_each_njson_line(
     }
 }
 
+/// Distinct property names across a loaded row set (vertex and edge properties).
+fn collect_property_names(vertices: &[VertexRow], edges: &[EdgeRow]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for (name, _) in vertices
+        .iter()
+        .flat_map(|row| row.properties.0.iter())
+        .chain(edges.iter().flat_map(|row| row.properties.0.iter()))
+    {
+        names.insert(name.clone());
+    }
+    names
+}
+
 /// Read, validate, and digest one artifact without any remote call. NDJSON is stream-validated
 /// (rows are not materialized); the YAML/JSON single file is bounded by `MAX_SINGLE_FILE_BYTES`.
 fn prepare_artifact(
@@ -640,7 +673,12 @@ fn prepare_artifact(
         ArtifactInput::SingleFile { path, format } => {
             let (artifact, digest) = read_single_file(path, *format)?;
             validate_artifact(&artifact)?;
-            Ok(PreparedLoad::SingleFile { artifact, digest })
+            let property_names = collect_property_names(&artifact.vertices, &artifact.edges);
+            Ok(PreparedLoad::SingleFile {
+                artifact,
+                digest,
+                property_names,
+            })
         }
         ArtifactInput::Both { vertices, edges } => {
             let scan = scan_njson(Some(vertices), Some(edges))?;
@@ -649,6 +687,7 @@ fn prepare_artifact(
                 edges: Some(edges.clone()),
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
+                property_names: scan.property_names,
             })
         }
         ArtifactInput::VerticesOnly { path } => {
@@ -658,6 +697,7 @@ fn prepare_artifact(
                 edges: None,
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
+                property_names: scan.property_names,
             })
         }
         ArtifactInput::EdgesOnly { path } => {
@@ -667,6 +707,7 @@ fn prepare_artifact(
                 edges: Some(path.clone()),
                 digest: scan.digest,
                 vertex_count: scan.vertex_count,
+                property_names: scan.property_names,
             })
         }
     }
@@ -887,6 +928,15 @@ trait BulkLoadTransport {
         &mut self,
         command: BulkLoadCommand,
     ) -> Result<Result<BulkLoadResponse, RouterError>, String>;
+
+    /// Intern the data-driven property vocabulary before the first chunk. `bulk_load` admission
+    /// resolves every property name against the Router catalog and rejects missing properties
+    /// (ADR 0059), so the CLI declares the artifact's property names up front in one batch call.
+    fn ensure_properties(
+        &mut self,
+        graph: &str,
+        names: &[String],
+    ) -> Result<Result<(), RouterError>, String>;
 }
 
 struct RemoteBulkLoadTransport {
@@ -931,6 +981,19 @@ impl BulkLoadTransport for RemoteBulkLoadTransport {
     ) -> Result<Result<BulkLoadResponse, RouterError>, String> {
         self.remote
             .update::<BulkLoadResponse, RouterError>("bulk_load", &command)
+    }
+
+    fn ensure_properties(
+        &mut self,
+        graph: &str,
+        names: &[String],
+    ) -> Result<Result<(), RouterError>, String> {
+        self.remote
+            .update_args::<Vec<gleaph_graph_kernel::entry::PropertyId>, RouterError>(
+                "ensure_properties",
+                (&graph.to_string(), &names.to_vec()),
+            )
+            .map(|result| result.map(|_| ()))
     }
 }
 
@@ -1053,6 +1116,39 @@ fn run_load(
     // its resume identity (the state file is the skip/resume pointer on later runs).
     if let Some(path) = state_file {
         write_state_file(path, digest, key, graph)?;
+    }
+
+    // The artifact's data-driven properties are interned in one batch call before the first chunk
+    // (ADR 0059: bulk_load admission rejects missing properties). Interning is idempotent, so a
+    // resumed job re-declares them safely. Without a graph name the CLI cannot declare properties,
+    // so a property-carrying artifact fails fast with guidance instead of a cryptic Router
+    // rejection mid-load.
+    let property_names = prepared.property_names();
+    if !property_names.is_empty() {
+        let Some(graph_name) = graph else {
+            return Err(LoadError::Operator(
+                "the artifact carries properties that must be interned, but no graph name is \
+                 available; pass --graph (or set [load] graph) before loading"
+                    .into(),
+            ));
+        };
+        let names: Vec<String> = property_names.iter().cloned().collect();
+        match transport
+            .ensure_properties(graph_name, &names)
+            .map_err(LoadError::Remote)?
+        {
+            Ok(()) => {}
+            Err(RouterError::InvalidArgument(message)) | Err(RouterError::NotFound(message)) => {
+                return Err(LoadError::Operator(format!(
+                    "Router rejected ensure_properties: {message}"
+                )));
+            }
+            Err(error) => {
+                return Err(LoadError::Remote(format!(
+                    "Router rejected ensure_properties: {error:?}"
+                )));
+            }
+        }
     }
 
     let started = send_command(
@@ -1771,6 +1867,14 @@ mod tests {
                     "no active vertex property index namespace for property 3".into(),
                 )))
             }
+
+            fn ensure_properties(
+                &mut self,
+                _graph: &str,
+                _names: &[String],
+            ) -> Result<Result<(), RouterError>, String> {
+                unreachable!("ensure_properties is not called")
+            }
         }
         let error = send_command(
             &mut RejectingTransport,
@@ -1850,6 +1954,8 @@ mod tests {
         job: Option<FakeJob>,
         /// Maximum operations committed by one Append (simulates the instruction budget).
         budget: usize,
+        /// `(graph, names)` recorded by every `ensure_properties` call, in call order.
+        interned: Vec<(String, Vec<String>)>,
     }
 
     impl BulkLoadTransport for FakeBulkLoadTransport {
@@ -1970,6 +2076,15 @@ mod tests {
                 }
             }
         }
+
+        fn ensure_properties(
+            &mut self,
+            graph: &str,
+            names: &[String],
+        ) -> Result<Result<(), RouterError>, String> {
+            self.interned.push((graph.to_owned(), names.to_vec()));
+            Ok(Ok(()))
+        }
     }
 
     fn sample_artifact(vertices: usize, edges: usize) -> LoadArtifact {
@@ -1985,6 +2100,7 @@ mod tests {
 
     fn prepared_single(artifact: LoadArtifact) -> PreparedLoad {
         PreparedLoad::SingleFile {
+            property_names: collect_property_names(&artifact.vertices, &artifact.edges),
             artifact,
             digest: "digest".into(),
         }
@@ -1996,6 +2112,7 @@ mod tests {
         let mut transport = FakeBulkLoadTransport {
             job: None,
             budget: 3, // forces multiple Append calls per phase
+            interned: Vec::new(),
         };
         let outcome =
             run_load(&mut transport, &prepared, None, "k", None).expect("load should complete");
@@ -2014,6 +2131,62 @@ mod tests {
             .count();
         assert_eq!(edge_chunks, 1);
         assert!(matches!(job.state, BulkLoadPublicStateV1::Completed));
+    }
+
+    #[test]
+    fn loader_interns_artifact_properties_before_start() {
+        // Data-driven properties must be declared (interned) before the first chunk (ADR 0059);
+        // run_load issues one batch ensure_properties call before Start.
+        let mut artifact = sample_artifact(2, 1);
+        artifact.vertices[0].properties = Properties(vec![
+            ("demo_graph".into(), Value::Text("social".into())),
+            ("name".into(), Value::Text("alice".into())),
+        ]);
+        artifact.edges[0].properties =
+            Properties(vec![("demo_kind".into(), Value::Text("follows".into()))]);
+        let prepared = prepared_single(artifact);
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: usize::MAX,
+            interned: Vec::new(),
+        };
+        run_load(&mut transport, &prepared, Some("social"), "k", None).expect("load completes");
+        assert_eq!(
+            transport.interned,
+            vec![(
+                "social".to_owned(),
+                vec![
+                    "demo_graph".to_owned(),
+                    "demo_kind".to_owned(),
+                    "name".to_owned()
+                ]
+            )]
+        );
+        assert!(
+            transport.job.is_some(),
+            "Start must follow the interning call"
+        );
+    }
+
+    #[test]
+    fn loader_requires_graph_name_to_intern_artifact_properties() {
+        let mut artifact = sample_artifact(1, 0);
+        artifact.vertices[0].properties =
+            Properties(vec![("demo_graph".into(), Value::Text("social".into()))]);
+        let prepared = prepared_single(artifact);
+        let mut transport = FakeBulkLoadTransport {
+            job: None,
+            budget: usize::MAX,
+            interned: Vec::new(),
+        };
+        let error = run_load(&mut transport, &prepared, None, "k", None)
+            .expect_err("interning requires a graph name");
+        assert!(error.to_string().contains("no graph name"));
+        assert!(transport.interned.is_empty());
+        assert!(
+            transport.job.is_none(),
+            "no Start before the interning check"
+        );
     }
 
     #[test]
@@ -2046,6 +2219,7 @@ mod tests {
                 next_vertex_ordinal: 4,
             }),
             budget: usize::MAX,
+            interned: Vec::new(),
         };
         let outcome =
             run_load(&mut transport, &prepared, None, "k", None).expect("resume should complete");
@@ -2073,6 +2247,7 @@ mod tests {
                 next_vertex_ordinal: 1,
             }),
             budget: usize::MAX,
+            interned: Vec::new(),
         };
         let state = temp_path("state.json");
         write_temp(
@@ -2088,6 +2263,7 @@ mod tests {
     #[test]
     fn loader_rejects_completed_job_when_the_artifact_changed() {
         let prepared = PreparedLoad::SingleFile {
+            property_names: BTreeSet::new(),
             artifact: sample_artifact(1, 0),
             digest: "new-digest".into(),
         };
@@ -2099,6 +2275,7 @@ mod tests {
                 next_vertex_ordinal: 1,
             }),
             budget: usize::MAX,
+            interned: Vec::new(),
         };
         let state = temp_path("state.json");
         write_temp(
@@ -2124,6 +2301,7 @@ mod tests {
                 next_vertex_ordinal: 3,
             }),
             budget: usize::MAX,
+            interned: Vec::new(),
         };
         let error = run_load(&mut transport, &prepared, None, "k", None)
             .expect_err("terminal failed job must be reported");
@@ -2167,6 +2345,7 @@ mod tests {
         let mut transport = FakeBulkLoadTransport {
             job: None,
             budget: 3, // forces multiple Append calls per phase
+            interned: Vec::new(),
         };
         let outcome = run_load(&mut transport, &prepared, None, "k", None)
             .expect("streaming load should complete");
@@ -2228,6 +2407,7 @@ mod tests {
                 next_vertex_ordinal: 4,
             }),
             budget: usize::MAX,
+            interned: Vec::new(),
         };
         let outcome = run_load(&mut transport, &prepared, None, "k", None)
             .expect("streaming resume should complete");

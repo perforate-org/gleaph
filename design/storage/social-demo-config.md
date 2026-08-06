@@ -185,14 +185,23 @@ declared insertion-ordered, the prepared queries must retain an ordinary propert
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.
 
-The loader creates and retires five catalog sentinels through `gql_mutate`, then uses one fixed-key
-durable `bulk_load` job. Every restart replays the exact ordered vertex chunks from index zero before
-using their receipts, reconstructs the `source_id -> encoded vertex ID` map by chunk/item ordinal,
-and only then builds and replays edge chunks. `bulk_load_status` is lifecycle evidence, not artifact
-identity. A permanent `SeedLoad` vertex stores the full artifact SHA-256 and remains `Prepared` until
-bulk completion and every receipt-ID-addressed embedding update succeed; only `Complete` permits a
-later deployment to skip the load after Router receipt retention expires. Missing, duplicate,
-malformed, or mismatched markers fail closed and require an explicit graph reset.
+Schema is applied as immutable migrations (`demo/social/migrations/`, applied by
+`gleaph migration apply`) before the load: `000001` declares the `SocialGraph` type with the
+full vertex-label vocabulary and `ORDER BY INSERTION` feed edges, `000002` binds the registered
+`social` graph to the type, and `000003..000007` create the property indexes through the durable
+`CREATE INDEX` lifecycle. The CLI interns each indexed property in one batch per graph
+(`ensure_properties`) before
+applying a `CREATE INDEX` migration, because the Router rejects missing properties in the
+migration `Preparing` phase (ADR 0059); the properties are data-driven, so they do not exist
+until the CLI declares them. The load flow interns the artifact's full property vocabulary the
+same way (one batch `ensure_properties` call per graph) before dispatching the first
+`bulk_load` chunk, so non-indexed data properties (`demo_graph`, `name`, ...) are declared too.
+The CLI's durable `bulk_load` job then loads the artifact:
+`gleaph load seeds/vertices.jsonl seeds/edges.jsonl` replays receipts on restart, resolves the
+`source_id -> encoded vertex ID` map by chunk/item ordinal, and appends edge chunks against
+those IDs. `bulk_load_status` is lifecycle evidence, not artifact identity; `--state-file`
+records the artifact SHA-256 for skip/resume. Missing, duplicate, or mismatched state fails
+closed and requires an explicit graph reset.
 
 The loader never resolves endpoint IDs through `Post.demo_id`, Property Index, or GQL element-ID
 queries. The existing Post index remains application query schema, not recovery authority.
