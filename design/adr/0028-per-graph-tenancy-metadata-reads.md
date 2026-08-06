@@ -61,9 +61,10 @@ authorizing resolver.
 
 - **Default/HOME selection is intentionally NOT changed.** `list_visible_graph_ids` and
   `resolve_home_graph_id` keep their membership-only check (no Admin bypass) because they answer
-  "which graph is *mine* / the default", and a superuser bypass there would make an Admin's HOME
-  resolution ambiguous across all graphs. The intentionally-public prepared prepared-query endpoints path is
-  unchanged; it already scopes via `list_visible_graph_ids`.
+  "which graph is _mine_ / the default", and a superuser bypass there would make an Admin's HOME
+  resolution ambiguous across all graphs. The prepared-query endpoints are intentionally public:
+  they resolve by Router-global operation name without graph visibility (ADR 0063, superseding
+  the former `list_visible_graph_ids` scoping).
 
 - **Registration hardening:** `validate_registration_principals` rejects the anonymous principal
   as `owner` or in `admins`, **before any state is mutated** (so a rejected register interns no
@@ -83,7 +84,7 @@ authorizing resolver.
 ## Alternatives considered
 
 - **Canister-global `Role::Read` gating** instead of per-graph tenancy. Rejected: it authenticates
-  but does not *isolate* — any `Read` principal would still see every tenant's metadata — and it
+  but does not _isolate_ — any `Read` principal would still see every tenant's metadata — and it
   would break the intentionally-public prepared-execute contract.
 - **Return `Forbidden` for non-tenants.** Rejected: it discloses graph existence, defeating the
   cross-tenant non-disclosure goal.

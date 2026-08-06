@@ -22,12 +22,6 @@ pub fn authorize_adhoc_gql(
     Ok(())
 }
 
-/// Prepared execution: any principal with effective role (default Executor) may run registered plans.
-pub fn authorize_prepared_execute(caller: &Principal) -> Result<(), RouterError> {
-    let _ = auth::caller_role(caller);
-    Ok(())
-}
-
 /// Index DDL (`CREATE INDEX` / `DROP INDEX`): Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_index_ddl(caller: &Principal) -> Result<(), RouterError> {
     if auth::is_admin(caller) || auth::can_prepare_register(caller) {
@@ -192,20 +186,5 @@ mod tests {
             authorize_stable_memory_diagnostics(&read),
             Err(RouterError::Forbidden)
         ));
-    }
-
-    #[test]
-    fn default_executor_may_execute_prepared() {
-        let p = principal(6);
-        authorize_prepared_execute(&p).expect("executor default");
-    }
-
-    #[test]
-    fn anonymous_may_execute_prepared() {
-        // Product contract: intentionally public prepared execution stays available to the
-        // anonymous (default Executor) caller.
-        let anon = Principal::anonymous();
-        assert_eq!(auth::caller_role(&anon), Role::Executor);
-        authorize_prepared_execute(&anon).expect("anonymous default executor may run prepared");
     }
 }

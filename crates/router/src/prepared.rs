@@ -23,14 +23,14 @@ use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
 use crate::facade::stable::graph_catalog;
 use crate::facade::stable::prepared_catalog::{
-    PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, contains_prepared_plan,
-    get_prepared_plan, insert_prepared_plan, remove_prepared_plan,
+    PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, get_prepared_plan,
+    insert_prepared_plan, remove_prepared_plan,
 };
 use crate::facade::store::RouterStore;
 use crate::gql::dispatch_plan_blob;
 use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
-use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
+use crate::rbac::authorize_prepared_catalog_change;
 use crate::state::RouterError;
 use crate::vector_sync;
 
@@ -216,8 +216,9 @@ pub(crate) fn prepare_batch_core(
         validate_prepared_metadata(&operation.name, cache.requires_write_path, &metadata)
             .map_err(|error| batch_op_error(&operation.name, error))?;
         committed.push((
-            prepared_key(graph_id, &operation.name),
+            PreparedPlanKey::new(&operation.name),
             PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                graph_id,
                 query: operation.query.clone(),
                 metadata,
             }),
@@ -347,11 +348,11 @@ pub(crate) fn rebuild_prepared_caches_after_upgrade() {
     });
 
     for (key, record) in records {
-        let caller = graph_catalog::graph_entry(key.graph_id)
+        let caller = graph_catalog::graph_entry(record.graph_id)
             .map(|entry| entry.owner)
             .unwrap_or_else(Principal::anonymous);
-        match build_prepared_cache(&record.query, caller, Some(key.graph_id)) {
-            Ok((cache, graph_id)) if graph_id == key.graph_id => {
+        match build_prepared_cache(&record.query, caller, Some(record.graph_id)) {
+            Ok((cache, graph_id)) if graph_id == record.graph_id => {
                 insert_prepared_cache(key, PreparedCacheEntry::Ready(Box::new(cache)));
             }
             Ok((_, graph_id)) => {
@@ -369,9 +370,8 @@ pub(crate) fn rebuild_prepared_caches_after_upgrade() {
     }
 }
 
-/// Return the metadata snapshot for one authorized logical graph.
+/// Return the metadata snapshot for one logical graph (operator / codegen surface).
 pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, RouterError> {
-    authorize_prepared_execute(&msg_caller())?;
     let caller = msg_caller();
     let store = RouterStore::new();
     let graph_id =
@@ -380,7 +380,7 @@ pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, Rou
     let mut operations = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
         plans
             .iter()
-            .filter(|entry| entry.key().graph_id == graph_id)
+            .filter(|entry| entry.value().as_v1().is_ok_and(|v| v.graph_id == graph_id))
             .filter_map(|entry| entry.value().as_v1().ok()?.metadata.clone())
             .collect::<Vec<_>>()
     });
@@ -402,30 +402,25 @@ pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, Rou
 
 pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
-    let store = RouterStore::new();
-    let graph_id = resolve_prepared_graph_id(&store, msg_caller(), name)?;
-    remove_prepared_plan(&prepared_key(graph_id, name));
+    let key = PreparedPlanKey::new(name);
+    if get_prepared_plan(&key).is_none() {
+        return Err(RouterError::NotFound(format!("prepared query {name:?}")));
+    }
+    remove_prepared_plan(&key);
     Ok(())
 }
 
 /// Return the stored source and metadata of one registered prepared operation.
 ///
-/// Resolution scans the caller's visible graphs for the name (the same rule `drop_prepared`
-/// uses): zero matches is `NotFound`, more than one is an ambiguity error (ADR 0061).
+/// Lookup is by the Router-global operation name (ADR 0063); the bound graph is an
+/// implementation detail of the record and is never exposed to the caller.
 pub fn get_prepared(name: &str) -> Result<PreparedOperationRecord, RouterError> {
-    authorize_prepared_execute(&msg_caller())?;
-    get_prepared_core(name, msg_caller())
+    get_prepared_core(name)
 }
 
-/// Resolution and read-back for [`get_prepared`], exposed without `msg_caller` so unit tests can
-/// drive it with an explicit principal.
-pub(crate) fn get_prepared_core(
-    name: &str,
-    caller: Principal,
-) -> Result<PreparedOperationRecord, RouterError> {
-    let store = RouterStore::new();
-    let graph_id = resolve_prepared_graph_id(&store, caller, name)?;
-    let record = get_prepared_plan(&prepared_key(graph_id, name))
+/// Read-back for [`get_prepared`], exposed separately so unit tests can drive it directly.
+pub(crate) fn get_prepared_core(name: &str) -> Result<PreparedOperationRecord, RouterError> {
+    let record = get_prepared_plan(&PreparedPlanKey::new(name))
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1()?;
     Ok(PreparedOperationRecord {
@@ -515,14 +510,13 @@ async fn prepared_run_unchecked(
     sort: Option<&[PreparedSortSpec]>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
-    authorize_prepared_execute(&msg_caller())?;
     let caller = msg_caller();
     let store = RouterStore::new();
-    let graph_id = resolve_prepared_graph_id(&store, caller, &name)?;
-    let key = prepared_key(graph_id, &name);
+    let key = PreparedPlanKey::new(&name);
     let record = get_prepared_plan(&key)
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1()?;
+    let graph_id = v1.graph_id;
     let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
     let cache = match sort {
         Some(sort) if !sort.is_empty() => {
@@ -702,38 +696,14 @@ fn prepare_sorted_cache(
     })
 }
 
-fn resolve_prepared_graph_id(
-    store: &RouterStore,
-    caller: Principal,
-    name: &str,
-) -> Result<GraphId, RouterError> {
-    let visible = store.list_visible_graph_ids(caller)?;
-    let mut matches = Vec::new();
-    for graph_id in visible {
-        if contains_prepared_plan(&prepared_key(graph_id, name)) {
-            matches.push(graph_id);
-        }
-    }
-    match matches.as_slice() {
-        [only] => Ok(*only),
-        [] => Err(RouterError::NotFound(format!("prepared query {name:?}"))),
-        _ => Err(RouterError::InvalidArgument(format!(
-            "prepared query {name:?} is ambiguous across visible graphs"
-        ))),
-    }
-}
-
-pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> PreparedPlanKey {
-    PreparedPlanKey::new(graph_id, name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         MAX_PREPARED_BATCH, PreparedPlanRecord, PreparedPlanRecordV1, cached_prepared_cache,
         get_prepared_core, get_prepared_plan, insert_prepared_plan, prepare_batch_core,
-        prepared_key, rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
+        rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
     };
+    use crate::facade::stable::prepared_catalog::PreparedPlanKey;
     use crate::state::RouterError;
     use gleaph_graph_kernel::entry::GraphId;
     use gleaph_prepared_api::{
@@ -741,15 +711,9 @@ mod tests {
     };
 
     #[test]
-    fn prepared_key_scopes_by_graph_and_name() {
-        let graph = GraphId::from_raw(7);
-        assert_eq!(prepared_key(graph, "q1").name, "q1");
-        assert_eq!(prepared_key(graph, "q1").graph_id, graph);
-        assert_ne!(prepared_key(graph, "q1"), prepared_key(graph, "q2"));
-        assert_ne!(
-            prepared_key(graph, "q1"),
-            prepared_key(GraphId::from_raw(8), "q1")
-        );
+    fn prepared_key_is_router_global_by_name() {
+        assert_eq!(PreparedPlanKey::new("q1").name, "q1");
+        assert_ne!(PreparedPlanKey::new("q1"), PreparedPlanKey::new("q2"));
     }
 
     use candid::Principal;
@@ -820,10 +784,11 @@ mod tests {
             )
             .expect("register graph");
 
-        let key = prepared_key(graph_id, "doc-query");
+        let key = PreparedPlanKey::new("doc-query");
         insert_prepared_plan(
             key.clone(),
             PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                graph_id,
                 query: "/// generated docs\nMATCH (n:PreparedRuntimeCache) RETURN n".into(),
                 metadata: None,
             }),
@@ -861,11 +826,12 @@ mod tests {
             )
             .expect("register graph");
 
-        let valid_key = prepared_key(graph_id, "valid-query");
-        let invalid_key = prepared_key(graph_id, "invalid-query");
+        let valid_key = PreparedPlanKey::new("valid-query");
+        let invalid_key = PreparedPlanKey::new("invalid-query");
         insert_prepared_plan(
             valid_key.clone(),
             PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                graph_id,
                 query: "MATCH (n:PreparedRuntimeValid) RETURN n".into(),
                 metadata: None,
             }),
@@ -873,6 +839,7 @@ mod tests {
         insert_prepared_plan(
             invalid_key.clone(),
             PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                graph_id,
                 query: "this is not a prepared query".into(),
                 metadata: None,
             }),
@@ -936,31 +903,31 @@ mod tests {
     #[test]
     fn batch_prepare_registers_all_operations() {
         let owner = Principal::from_slice(&[11; 29]);
-        let graph = home_graph(owner, "batch-register");
+        home_graph(owner, "batch-register");
         let operations = vec![
             registration("alpha", "MATCH (n) RETURN 'a' AS tag"),
             registration("beta", "MATCH (n) RETURN n"),
         ];
         prepare_batch_core(&operations, owner).expect("batch registers");
-        let alpha = get_prepared_plan(&prepared_key(graph, "alpha")).expect("alpha stored");
+        let alpha = get_prepared_plan(&PreparedPlanKey::new("alpha")).expect("alpha stored");
         let alpha = alpha.as_v1().expect("v1");
         assert_eq!(alpha.query, "MATCH (n) RETURN 'a' AS tag");
         assert!(alpha.metadata.is_none());
         assert!(
-            cached_prepared_cache(&prepared_key(graph, "alpha")).is_some(),
+            cached_prepared_cache(&PreparedPlanKey::new("alpha")).is_some(),
             "alpha heap cache must be inserted"
         );
-        let beta = get_prepared_plan(&prepared_key(graph, "beta")).expect("beta stored");
+        let beta = get_prepared_plan(&PreparedPlanKey::new("beta")).expect("beta stored");
         let beta = beta.as_v1().expect("v1");
         assert_eq!(beta.query, "MATCH (n) RETURN n");
-        remove_prepared_plan(&prepared_key(graph, "alpha"));
-        remove_prepared_plan(&prepared_key(graph, "beta"));
+        remove_prepared_plan(&PreparedPlanKey::new("alpha"));
+        remove_prepared_plan(&PreparedPlanKey::new("beta"));
     }
 
     #[test]
     fn batch_prepare_is_atomic_when_one_operation_fails() {
         let owner = Principal::from_slice(&[12; 29]);
-        let graph = home_graph(owner, "batch-atomic");
+        home_graph(owner, "batch-atomic");
         let operations = vec![
             registration("alpha", "MATCH (n) RETURN 'a' AS tag"),
             registration("broken", "this is not a prepared query"),
@@ -968,11 +935,11 @@ mod tests {
         let error = prepare_batch_core(&operations, owner).expect_err("batch must fail");
         assert!(error.to_string().contains("prepared op 'broken'"));
         assert!(
-            get_prepared_plan(&prepared_key(graph, "alpha")).is_none(),
+            get_prepared_plan(&PreparedPlanKey::new("alpha")).is_none(),
             "a failed batch must not commit the valid prefix"
         );
         assert!(
-            cached_prepared_cache(&prepared_key(graph, "alpha")).is_none(),
+            cached_prepared_cache(&PreparedPlanKey::new("alpha")).is_none(),
             "a failed batch must not cache the valid prefix"
         );
     }
@@ -1007,7 +974,7 @@ mod tests {
     #[test]
     fn batch_prepare_reports_the_first_failure_in_batch_order() {
         let owner = Principal::from_slice(&[19; 29]);
-        let graph = home_graph(owner, "batch-first-failure");
+        home_graph(owner, "batch-first-failure");
         let operations = vec![
             registration("first-ok", "MATCH (n) RETURN 'a' AS tag"),
             registration("second-bad", "this is not a prepared query"),
@@ -1020,7 +987,7 @@ mod tests {
             "iteration must stop at the first failure in batch order"
         );
         assert!(
-            get_prepared_plan(&prepared_key(graph, "first-ok")).is_none(),
+            get_prepared_plan(&PreparedPlanKey::new("first-ok")).is_none(),
             "the valid prefix must not commit"
         );
     }
@@ -1066,11 +1033,11 @@ mod tests {
     #[test]
     fn batch_prepare_completes_result_schema() {
         let owner = Principal::from_slice(&[16; 29]);
-        let graph = home_graph(owner, "batch-result");
+        home_graph(owner, "batch-result");
         let mut op = registration("scalar-op", "MATCH (n) RETURN 'ok' AS tag");
         op.metadata = Some(operation("scalar-op"));
         prepare_batch_core(&[op], owner).expect("batch registers");
-        let stored = get_prepared_plan(&prepared_key(graph, "scalar-op")).expect("stored");
+        let stored = get_prepared_plan(&PreparedPlanKey::new("scalar-op")).expect("stored");
         let record = stored.as_v1().expect("v1");
         let columns = record
             .metadata
@@ -1082,29 +1049,29 @@ mod tests {
         assert_eq!(columns.len(), 1);
         assert_eq!(columns[0].name, "tag");
         assert_eq!(columns[0].semantic_type, SemanticType::Text);
-        remove_prepared_plan(&prepared_key(graph, "scalar-op"));
+        remove_prepared_plan(&PreparedPlanKey::new("scalar-op"));
     }
 
     #[test]
     fn get_prepared_returns_stored_query_and_metadata() {
         let owner = Principal::from_slice(&[17; 29]);
-        let graph = home_graph(owner, "get-prepared");
+        home_graph(owner, "get-prepared");
         let mut op = registration("fetch-me", "MATCH (n) RETURN 'ok' AS tag");
         op.metadata = Some(operation("fetch-me"));
         prepare_batch_core(&[op], owner).expect("register");
-        let record = get_prepared_core("fetch-me", owner).expect("get_prepared");
+        let record = get_prepared_core("fetch-me").expect("get_prepared");
         assert_eq!(record.query, "MATCH (n) RETURN 'ok' AS tag");
         let metadata = record.metadata.expect("metadata");
         assert_eq!(metadata.name, "fetch-me");
         assert_eq!(metadata.result.columns.len(), 1);
-        remove_prepared_plan(&prepared_key(graph, "fetch-me"));
+        remove_prepared_plan(&PreparedPlanKey::new("fetch-me"));
     }
 
     #[test]
     fn get_prepared_returns_not_found_for_missing_name() {
         let owner = Principal::from_slice(&[18; 29]);
         home_graph(owner, "get-prepared-missing");
-        let error = get_prepared_core("nope", owner).expect_err("missing must fail");
+        let error = get_prepared_core("nope").expect_err("missing must fail");
         assert!(matches!(error, RouterError::NotFound(_)));
     }
 }
