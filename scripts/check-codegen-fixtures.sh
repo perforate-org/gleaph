@@ -2,10 +2,11 @@
 
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 FIXTURE_ROOT="$REPO_ROOT/crates/codegen/fixtures"
-OUTPUT_ROOT=$(mktemp -d /tmp/gleaph-codegen-fixtures.XXXXXX)
+
+OUTPUT_ROOT=$(CDPATH='' mktemp -d /tmp/gleaph-codegen-fixtures.XXXXXX)
 
 cleanup() {
   rm -rf "$OUTPUT_ROOT"
