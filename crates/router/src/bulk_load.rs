@@ -342,7 +342,7 @@ fn build_graph_request(
     encoding_key: &ElementIdEncodingKey,
 ) -> Result<(BulkLoadGraphRequestV1, [u8; 32]), RouterError> {
     let request = atomic_request_from_chunk(graph_name, client_bulk_key, chunk)?;
-    let (classified, _) = request.into_classified().map_err(invalid)?;
+    let classified = request.into_classified_bulk().map_err(invalid)?;
     match classified {
         crate::types::ClassifiedAtomicInsertRequest::Vertex(request) => {
             let crate::types::OrderedVertexBatchRequest::V1(request_v1) = &request;

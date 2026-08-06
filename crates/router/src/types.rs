@@ -349,6 +349,16 @@ pub(crate) enum ClassifiedAtomicInsertRequest {
 
 impl AtomicInsertRequest {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_operation_cap(Some(MAX_ATOMIC_INSERT_OPERATIONS))
+    }
+
+    /// Validate as a bulk-load candidate chunk: no fixed operation cap (ADR 0060 §3), but the
+    /// chunk must be non-empty and fit the payload bound.
+    pub(crate) fn validate_bulk_chunk(&self) -> Result<(), String> {
+        self.validate_with_operation_cap(None)
+    }
+
+    fn validate_with_operation_cap(&self, cap: Option<usize>) -> Result<(), String> {
         let Self::V1(request) = self;
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
             return Err("atomic insert client mutation key must be 1..=256 bytes".into());
@@ -358,8 +368,10 @@ impl AtomicInsertRequest {
         {
             return Err("atomic insert graph name must not be empty when present".into());
         }
-        if request.operations.is_empty() || request.operations.len() > MAX_ATOMIC_INSERT_OPERATIONS
-        {
+        if request.operations.is_empty() {
+            return Err("atomic insert operations must contain at least 1 entry".into());
+        }
+        if cap.is_some_and(|cap| request.operations.len() > cap) {
             return Err(format!(
                 "atomic insert operations must contain 1..={MAX_ATOMIC_INSERT_OPERATIONS} entries"
             ));
@@ -416,6 +428,21 @@ impl AtomicInsertRequest {
         self,
     ) -> Result<(ClassifiedAtomicInsertRequest, [u8; 32]), String> {
         let public_fingerprint = self.public_fingerprint()?;
+        let classified = self.classify()?;
+        Ok((classified, public_fingerprint))
+    }
+
+    /// Classify a bulk-load candidate chunk without the atomic-insert operation cap: `bulk_load`
+    /// has no fixed operation ceiling (ADR 0060 §3), the payload bound governs the candidate
+    /// size, and the runtime instruction budget decides the committed prefix. No atomic-insert
+    /// public fingerprint is computed (the durable chunk fingerprint derives from the chunk
+    /// envelope instead).
+    pub(crate) fn into_classified_bulk(self) -> Result<ClassifiedAtomicInsertRequest, String> {
+        self.validate_bulk_chunk()?;
+        self.classify()
+    }
+
+    fn classify(self) -> Result<ClassifiedAtomicInsertRequest, String> {
         let Self::V1(request) = self;
         let AtomicInsertRequestV1 {
             client_mutation_key,
@@ -491,7 +518,7 @@ impl AtomicInsertRequest {
             )),
             (false, false) => return Err("batch requires at least one operation".into()),
         };
-        Ok((classified, public_fingerprint))
+        Ok(classified)
     }
 }
 
@@ -2180,6 +2207,41 @@ mod tests {
         chunk
             .validate()
             .expect("chunk above the atomic-insert cap must pass bulk-load validation");
+    }
+
+    #[test]
+    fn bulk_load_chunk_above_atomic_insert_cap_classifies() {
+        // ADR 0060 §3: `bulk_load` has no fixed operation cap; the classification path used by
+        // `build_graph_request` must admit chunks above MAX_ATOMIC_INSERT_OPERATIONS even though
+        // the shared atomic-insert request validate still caps the public `atomic_insert` path.
+        let vertex = || AtomicInsertVertexV1 {
+            vertex_labels: vec!["Person".to_owned()],
+            initial_properties: Vec::new(),
+        };
+        let request = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
+            client_mutation_key: "bulk-key".into(),
+            graph_name: Some("tenant.main".into()),
+            operations: (0..MAX_ATOMIC_INSERT_OPERATIONS + 1)
+                .map(|_| AtomicInsertOperationV1::Vertex(vertex()))
+                .collect(),
+        });
+        let classified = request
+            .clone()
+            .into_classified_bulk()
+            .expect("bulk chunk above the atomic-insert cap must classify");
+        assert!(matches!(
+            classified,
+            ClassifiedAtomicInsertRequest::Vertex(_)
+        ));
+        // The public atomic-insert path still enforces the cap.
+        assert!(request.validate().is_err());
+        // An empty bulk chunk is still rejected.
+        let empty = AtomicInsertRequest::V1(AtomicInsertRequestV1 {
+            client_mutation_key: "bulk-key".into(),
+            graph_name: Some("tenant.main".into()),
+            operations: Vec::new(),
+        });
+        assert!(empty.into_classified_bulk().is_err());
     }
 
     #[test]
