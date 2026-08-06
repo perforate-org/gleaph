@@ -24,6 +24,14 @@ VECTOR_INDEX_ID="${GLEAPH_DEMO_VECTOR_INDEX_ID:-1}"
 EMBEDDING_NAME="${GLEAPH_DEMO_EMBEDDING_NAME:-post_vec}"
 EMBEDDING_DIMS="${GLEAPH_DEMO_EMBEDDING_DIMS:-8}"
 
+# icp-cli's --debug flag couples two behaviors: it hides the managed recipe's
+# progress renderer (which can terminate early in non-interactive shells) and
+# reports the full build output on failure, but it also enables DEBUG tracing
+# that dumps recipe template bodies. Keep the build-attach behavior by default
+# and filter the DEBUG/TRACE noise out of stderr; GLEAPH_DEMO_ICP_DEBUG=1
+# restores the raw debug output for troubleshooting.
+ICP_DEBUG="${GLEAPH_DEMO_ICP_DEBUG:-0}"
+
 # Six canisters are created and each is topped up with 100T below. Keep the
 # local deployer funded for the whole bootstrap rather than relying on the
 # currently selected icp identity's balance.
@@ -55,6 +63,26 @@ icp_cmd() {
     CARGO_HOME="$CARGO_HOME" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     icp "$@"
+}
+
+# Filters icp-cli debug-layer stderr: drops TRACE/DEBUG lines and any
+# continuation lines they span (a DEBUG event can carry a multi-line message,
+# e.g. the recipe template dump), keeping INFO/WARN/ERROR and unformatted
+# output such as panics. ANSI level colors are stripped before matching so the
+# filter also works when stderr is a terminal.
+icp_debug_filter() {
+  awk '
+    BEGIN { esc = sprintf("%c", 27) }
+    {
+      line = $0
+      clean = line
+      gsub(esc "\\[[0-9;]*m", "", clean)
+      if (clean ~ /^(TRACE|DEBUG) /) { skipping = 1; next }
+      if (clean ~ /^(INFO|WARN|ERROR) /) { skipping = 0; print line; next }
+      if (skipping) { next }
+      print line
+    }
+  ' >&2
 }
 
 build_instrumented_router_wasm() {
@@ -263,9 +291,16 @@ main() {
 
   log "Building all canisters"
   # The managed recipe's progress renderer can terminate early in non-interactive shells;
-  # debug mode keeps the build operation attached and reports the actual completion result.
-  icp_cmd build --debug \
-    gleaph-graph-index gleaph-graph-shard-0 gleaph-vector
+  # --debug keeps the build operation attached and reports the actual completion result.
+  # Its DEBUG-level tracing (recipe template dumps) is filtered out of stderr by default;
+  # set GLEAPH_DEMO_ICP_DEBUG=1 to see it.
+  if [[ "$ICP_DEBUG" == "1" ]]; then
+    icp_cmd build --debug \
+      gleaph-graph-index gleaph-graph-shard-0 gleaph-vector
+  else
+    icp_cmd build --debug \
+      gleaph-graph-index gleaph-graph-shard-0 gleaph-vector 2>&1 | icp_debug_filter
+  fi
   local router_wasm
   router_wasm="$(build_instrumented_router_wasm)"
 
