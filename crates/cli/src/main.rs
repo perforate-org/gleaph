@@ -283,7 +283,9 @@ fn resolve_codegen(
     if args.manifest.is_none() && args.canister.is_none() {
         args.canister = remote.canister;
     }
-    if args.graph.is_none() {
+    // The graph selects the Router-side manifest source, so `--manifest` suppresses it
+    // exactly like it suppresses the deployment canister (ADR 0062 §5).
+    if args.manifest.is_none() && args.graph.is_none() {
         args.graph = config
             .and_then(|config| config.codegen())
             .and_then(|codegen| codegen.graph.clone());
@@ -647,14 +649,14 @@ mod tests {
     }
 
     #[test]
-    fn codegen_target_and_output_merge_from_config_while_manifest_suppresses_config_canister() {
+    fn codegen_target_and_output_merge_from_config_while_manifest_suppresses_remote_source() {
         let fixture_dir =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../codegen/fixtures/typescript-basic");
         let root = temporary_root("codegen-config");
         let config_path = root.join("gleaph.toml");
         fs::write(
             &config_path,
-            "[deployment.ic]\ncanister = \"aaaaa-aa\"\n[codegen]\ntarget = \"typescript\"\n",
+            "[deployment.ic]\ncanister = \"aaaaa-aa\"\n[codegen]\ntarget = \"typescript\"\ngraph = \"some-graph\"\n",
         )
         .expect("config write");
         let output = temporary_output_path();
@@ -672,7 +674,9 @@ mod tests {
             ],
             env_with_config(&config_path),
         )
-        .expect("config target must supply --target; --manifest must suppress config canister");
+        .expect(
+            "config target must supply --target; --manifest must suppress config canister and graph",
+        );
 
         let generated = fs::read_to_string(&output).expect("CLI should write the output file");
         let expected = fs::read_to_string(fixture_dir.join("generated.ts"))
@@ -866,7 +870,7 @@ mod tests {
         let error = gleaph_codegen::run(args).expect_err("canister without graph must fail closed");
         assert_eq!(
             error.to_string(),
-            "--canister and --graph must be provided together"
+            "the Router manifest source needs --canister and --graph; missing graph (set --graph or [codegen] graph)"
         );
         fs::remove_dir_all(root).expect("temporary root cleanup");
     }
