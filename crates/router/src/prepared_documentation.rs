@@ -724,27 +724,7 @@ mod tests {
              }",
         )
         .expect("graph type should parse");
-        let statement = definition
-            .transaction_activity
-            .as_ref()
-            .and_then(|activity| activity.body.as_ref())
-            .and_then(|body| body.next.last())
-            .map(|next| &next.statement)
-            .unwrap_or_else(|| {
-                definition
-                    .transaction_activity
-                    .as_ref()
-                    .and_then(|activity| activity.body.as_ref())
-                    .map(|body| &body.first)
-                    .expect("body")
-            });
-        let gleaph_gql::ast::Statement::CreateGraphType(create) = statement else {
-            panic!("expected CREATE GRAPH TYPE");
-        };
-        let schema = gleaph_gql::type_check::GraphTypePropertySchema::try_from_definition(
-            &create.definition,
-        )
-        .expect("graph type schema");
+        let schema = graph_type_schema(&definition);
         let program = gleaph_gql::parser::parse(
             "MATCH (p:Post)<-[:POSTED]-(author:User) \
              RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, \
@@ -764,6 +744,76 @@ mod tests {
         assert_eq!(by_name.get("author_name"), Some(&SemanticType::Text));
         assert_eq!(by_name.get("body"), Some(&SemanticType::Text));
         assert_eq!(by_name.get("created_at"), Some(&SemanticType::DateTime));
+    }
+
+    #[test]
+    fn fills_result_columns_across_optional_match_anchor() {
+        // Regression for the social demo home feed: `p` is the OPTIONAL MATCH anchor and also
+        // carries RETURNed properties (p.demo_id, p.body, p.created_at). Property access on an
+        // optional anchor must still resolve through the schema (it only strips non-null).
+        let definition = gleaph_gql::parser::parse(
+            "CREATE GRAPH TYPE SocialGraph { \
+             NODE User { user_id STRING, name STRING }, \
+             NODE Post { demo_id INT64, body STRING, created_at DATETIME, is_public BOOL } \
+             }",
+        )
+        .expect("graph type should parse");
+        let schema = graph_type_schema(&definition);
+        let program = gleaph_gql::parser::parse(
+            "MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+             WHERE p.is_public = TRUE \
+             OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) \
+             RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, \
+             parent_author.name AS parent_author_name, parent.body AS parent_body, \
+             parent.created_at AS parent_created_at, author.name AS author_name, \
+             p.body AS body, p.created_at AS created_at ORDER BY INSERTION(e) DESC \
+             LIMIT 20 OFFSET $offset",
+        )
+        .expect("home feed query should parse");
+        let mut operation = operation();
+        complete_result_schema(&program, &schema, &mut operation)
+            .expect("typed schema should complete result columns");
+        let by_name: std::collections::BTreeMap<_, _> = operation
+            .result
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.semantic_type.clone()))
+            .collect();
+        assert_eq!(by_name.get("post_id"), Some(&SemanticType::Int64));
+        assert_eq!(by_name.get("parent_post_id"), Some(&SemanticType::Int64));
+        assert_eq!(by_name.get("author_name"), Some(&SemanticType::Text));
+        assert_eq!(by_name.get("parent_author_name"), Some(&SemanticType::Text));
+        assert_eq!(by_name.get("body"), Some(&SemanticType::Text));
+        assert_eq!(by_name.get("parent_body"), Some(&SemanticType::Text));
+        assert_eq!(by_name.get("created_at"), Some(&SemanticType::DateTime));
+        assert_eq!(
+            by_name.get("parent_created_at"),
+            Some(&SemanticType::DateTime)
+        );
+    }
+
+    fn graph_type_schema(
+        program: &gleaph_gql::ast::GqlProgram,
+    ) -> gleaph_gql::type_check::GraphTypePropertySchema {
+        let statement = program
+            .transaction_activity
+            .as_ref()
+            .and_then(|activity| activity.body.as_ref())
+            .and_then(|body| body.next.last())
+            .map(|next| &next.statement)
+            .unwrap_or_else(|| {
+                program
+                    .transaction_activity
+                    .as_ref()
+                    .and_then(|activity| activity.body.as_ref())
+                    .map(|body| &body.first)
+                    .expect("body")
+            });
+        let gleaph_gql::ast::Statement::CreateGraphType(create) = statement else {
+            panic!("expected CREATE GRAPH TYPE");
+        };
+        gleaph_gql::type_check::GraphTypePropertySchema::try_from_definition(&create.definition)
+            .expect("graph type schema")
     }
 
     #[test]

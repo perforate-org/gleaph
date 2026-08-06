@@ -91,6 +91,13 @@ fn bind_node(env: &mut TypeEnv<'_>, node: &NodePattern, optional: bool, group: b
         env.optional_vars.insert(var.clone());
     }
     let labels = extract_label_names(&node.label);
+    if labels.is_empty() && !matches!(env.get(var), Type::Unknown) {
+        // An unlabeled node reference to an already-bound variable (e.g. an OPTIONAL MATCH
+        // anchor like `(p)-[:REPLY_TO]->...`) must not overwrite the existing binding:
+        // rebinding with an empty label set would discard the label and property schema,
+        // making every later property access on the variable infer as Unknown.
+        return;
+    }
     let properties = if !labels.is_empty() {
         env.schema.node_property_types(&labels)
     } else {
