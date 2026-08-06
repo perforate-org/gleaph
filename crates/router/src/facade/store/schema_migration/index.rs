@@ -14,10 +14,10 @@ use gleaph_graph_kernel::index::{
 };
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationResult, ApplySchemaMigrationResultV1,
-    MigrationFailureCode, ResolvedSchemaMigrationGraph, SchemaMigrationApplyStatus,
-    SchemaMigrationChecksumAlgorithm, SchemaMigrationProgress, SchemaMigrationProgressPhase,
-    SchemaMigrationRecord, SchemaMigrationRecordState, SchemaMigrationRecordV1,
-    SchemaMigrationStatementProfile,
+    MigrationFailureCode, PendingIndexBuild, ResolvedSchemaMigrationGraph,
+    SchemaMigrationApplyStatus, SchemaMigrationChecksumAlgorithm, SchemaMigrationProgress,
+    SchemaMigrationProgressPhase, SchemaMigrationRecord, SchemaMigrationRecordState,
+    SchemaMigrationRecordV1, SchemaMigrationStatementProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -86,6 +86,18 @@ pub(crate) struct IndexMigrationStepResponse {
     pub result: IndexMigrationStepResult,
 }
 
+/// Outcome of advancing one migration-driven index build by one bounded step. The migration ledger
+/// is untouched here; the sequence driver maps these to migration-level status.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum SubBuildOutcome {
+    /// The build made one unit of progress and remains pending.
+    Progress(SchemaMigrationProgress),
+    /// The build reached `Active`; more builds may remain in the migration payload.
+    ReachedActive,
+    /// The build's cleanup completed and its catalog row was dropped.
+    Failed(MigrationFailureCode),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IndexMigrationDriveError {
     /// Ambiguous/unavailable transport. The exact pending envelope remains retryable.
@@ -113,25 +125,8 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
     let ApplySchemaMigrationArgs::V1(args) = args;
     super::validate_apply_args(&args)?;
 
-    let statement = match gleaph_index_ddl::try_parse(&args.statement) {
-        Some(Ok(gleaph_index_ddl::IndexDdlStatement::Create {
-            index_name,
-            if_not_exists: false,
-            target,
-        })) => (index_name, target),
-        Some(Ok(gleaph_index_ddl::IndexDdlStatement::Create {
-            if_not_exists: true,
-            ..
-        })) => {
-            return Err(RouterError::InvalidArgument(
-                "CREATE INDEX migrations forbid IF NOT EXISTS".into(),
-            ));
-        }
-        Some(Ok(gleaph_index_ddl::IndexDdlStatement::Drop { .. })) => {
-            return Err(RouterError::InvalidArgument(
-                "schema migrations do not support DROP INDEX".into(),
-            ));
-        }
+    let statements = match gleaph_index_ddl::try_parse(&args.statement) {
+        Some(Ok(statements)) => statements,
         Some(Err(error)) => {
             return Err(RouterError::InvalidArgument(format!(
                 "invalid migration CREATE INDEX syntax: {error}"
@@ -139,20 +134,43 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
         }
         None => {
             return Err(RouterError::InvalidArgument(
-                "expected one CREATE INDEX migration statement".into(),
+                "expected one or more CREATE INDEX migration statements".into(),
             ));
         }
     };
+    let mut builds = Vec::with_capacity(statements.len());
+    for statement in statements {
+        match statement {
+            gleaph_index_ddl::IndexDdlStatement::Create {
+                if_not_exists: true,
+                ..
+            } => {
+                return Err(RouterError::InvalidArgument(
+                    "CREATE INDEX migrations forbid IF NOT EXISTS".into(),
+                ));
+            }
+            gleaph_index_ddl::IndexDdlStatement::Create {
+                index_name,
+                if_not_exists: false,
+                target,
+            } => builds.push((index_name, target)),
+            gleaph_index_ddl::IndexDdlStatement::Drop { .. } => {
+                return Err(RouterError::InvalidArgument(
+                    "schema migrations do not support DROP INDEX".into(),
+                ));
+            }
+        }
+    }
     validate_checksum(&args)?;
 
     if let Some(existing) = ROUTER_SCHEMA_MIGRATIONS.with_borrow(|ledger| ledger.get(&args.id)) {
         let existing = existing.0;
         let existing_v1 = super::record_v1(&existing)?;
         if !super::record_matches_args(existing_v1, &args)
-            || !matches!(
-                existing_v1.profile.as_slice(),
-                [SchemaMigrationStatementProfile::CreateIndex]
-            )
+            || !existing_v1
+                .profile
+                .iter()
+                .all(|profile| *profile == SchemaMigrationStatementProfile::CreateIndex)
         {
             return Err(RouterError::Conflict(format!(
                 "schema migration id `{}` already exists with a different payload",
@@ -177,46 +195,66 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
         graph_id,
         graph_name,
     };
-    let (index_name, target) = statement;
-    crate::facade::store::validate_metadata_name(&index_name)?;
-    if lookup_index_name_id(graph_id, &index_name).is_some() {
-        return Err(RouterError::Conflict(format!(
-            "index `{index_name}` already exists"
-        )));
+
+    // Preflight every statement before the first fallible mutation: names, catalog conflicts,
+    // definitions, and inline projections are all validated for the whole payload first.
+    let mut definitions = Vec::with_capacity(builds.len());
+    for (index_name, target) in &builds {
+        crate::facade::store::validate_metadata_name(index_name)?;
+        if lookup_index_name_id(graph_id, index_name).is_some() {
+            return Err(RouterError::Conflict(format!(
+                "index `{index_name}` already exists"
+            )));
+        }
+        let definition = resolve_index_definition(graph_id, target)?;
+        resolve_inline_projection(
+            graph_id,
+            definition.entry.kind,
+            definition.label_id,
+            definition.property_id,
+        )?;
+        definitions.push(definition);
     }
-    let definition = resolve_index_definition(graph_id, &target)?;
-    resolve_inline_projection(
-        graph_id,
-        definition.entry.kind,
-        definition.label_id,
-        definition.property_id,
-    )?;
     let (targets, topology_epoch) = capture_targets(store, graph_id)?;
-    let prepare_args = PrepareIndexLifecycleArgs {
-        graph_selector: args.graph_selector.clone(),
-        resolved_graph: resolved_graph.clone(),
-        kind: definition.entry.kind,
-        property_id: definition.property_id,
-        label_id: definition.label_id,
-        edge_direction: definition.edge_direction,
-        migration_id: args.id.clone(),
-        topology_epoch,
-        targets,
-        prepared_at_ns: super::super::ic_time_ns(),
-    };
-    indexed_catalog::preflight_prepare_index_scope(graph_id, &prepare_args)?;
+    let prepared_at_ns = super::super::ic_time_ns();
+    let mut prepare_args_list = Vec::with_capacity(builds.len());
+    for ((index_name, _), definition) in builds.iter().zip(&definitions) {
+        let prepare_args = PrepareIndexLifecycleArgs {
+            graph_selector: args.graph_selector.clone(),
+            resolved_graph: resolved_graph.clone(),
+            kind: definition.entry.kind,
+            property_id: definition.property_id,
+            label_id: definition.label_id,
+            edge_direction: definition.edge_direction,
+            migration_id: args.id.clone(),
+            topology_epoch,
+            targets: targets.clone(),
+            prepared_at_ns,
+        };
+        indexed_catalog::preflight_prepare_index_scope(graph_id, &prepare_args)?;
+        prepare_args_list.push((index_name.clone(), prepare_args));
+    }
 
     // This is one synchronous message execution with no await. The no-write preflight above makes
     // name interning the first fallible mutation. Once it succeeds, every following failure is an
     // invariant violation and traps so IC rolls the complete co-write back.
-    let index_name_id = intern_index_name(graph_id, &index_name)?;
-    let prepared = indexed_catalog::prepare_named_index(graph_id, index_name_id, prepare_args)
-        .unwrap_or_else(|error| {
-            ic_cdk::trap(format!(
-                "schema migration Preparing co-write invariant failed: {error}"
-            ))
+    let mut pending = Vec::with_capacity(builds.len());
+    for (index_name, prepare_args) in prepare_args_list {
+        let index_name_id = intern_index_name(graph_id, &index_name)?;
+        let prepared = indexed_catalog::prepare_named_index(graph_id, index_name_id, prepare_args)
+            .unwrap_or_else(|error| {
+                ic_cdk::trap(format!(
+                    "schema migration Preparing co-write invariant failed: {error}"
+                ))
+            });
+        pending.push(PendingIndexBuild {
+            index_name_id,
+            physical_index_id: prepared.physical_index_id,
         });
+    }
     let recorded_at = super::super::ic_time_ns();
+    let pending_count = pending.len();
+    let first_index_name_id = pending[0].index_name_id;
     let record = SchemaMigrationRecord::V1(SchemaMigrationRecordV1 {
         id: args.id.clone(),
         parent: args.parent,
@@ -226,16 +264,18 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
         actor: caller,
         recorded_at,
         statement: args.statement,
-        profile: vec![SchemaMigrationStatementProfile::CreateIndex],
-        state: SchemaMigrationRecordState::PendingIndex {
-            index_name_id,
-            physical_index_id: prepared.physical_index_id,
-        },
+        profile: vec![SchemaMigrationStatementProfile::CreateIndex; pending.len()],
+        state: SchemaMigrationRecordState::PendingIndex { pending },
     });
     ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
         ledger.insert(args.id, StableSchemaMigrationRecord(record.clone()));
     });
-    Ok(apply_result(progress_for(&prepared), record))
+    let first = indexed_catalog::get_named_index(graph_id, first_index_name_id)
+        .ok_or_else(|| RouterError::InvalidState("pending index catalog row missing".into()))?;
+    Ok(apply_result(
+        migration_progress(progress_for(&first), 0, pending_count as u32),
+        record,
+    ))
 }
 
 fn validate_checksum(
@@ -473,21 +513,56 @@ async fn resume_existing<D: IndexMigrationDriver>(
             SchemaMigrationApplyStatus::Failed(code),
             migration_record,
         )),
-        SchemaMigrationRecordState::PendingIndex {
-            index_name_id,
-            physical_index_id,
-        } => {
-            let graph = record.resolved_graph.as_ref().ok_or_else(|| {
-                RouterError::InvalidState("pending index migration has no resolved graph".into())
-            })?;
-            let index = indexed_catalog::get_named_index(graph.graph_id, index_name_id)
-                .ok_or_else(|| {
-                    RouterError::InvalidState("pending index catalog row missing".into())
-                })?;
-            validate_pending_identity(&record, physical_index_id, &index)?;
-            advance_one(migration_record, index_name_id, index, driver).await
+        SchemaMigrationRecordState::PendingIndex { .. } => {
+            advance_sequence(migration_record, driver).await
         }
     }
+}
+
+/// Drive a pending index migration by one bounded step. Sub-builds advance sequentially in payload
+/// order: each apply round moves the first non-`Active` build forward; the migration is `Applied`
+/// only when every build is `Active`. A terminal failure of one build terminates the migration
+/// (`Failed`) and releases every not-yet-`Active` lifecycle row while earlier `Active` builds stay
+/// published (ADR 0059 multi-index migrations).
+async fn advance_sequence<D: IndexMigrationDriver>(
+    migration_record: SchemaMigrationRecord,
+    driver: &D,
+) -> Result<ApplySchemaMigrationResult, RouterError> {
+    let record = super::record_v1(&migration_record)?.clone();
+    let SchemaMigrationRecordState::PendingIndex { pending } = &record.state else {
+        return Err(RouterError::InvalidState(
+            "advance_sequence requires a pending index migration".into(),
+        ));
+    };
+    let Some(resolved) = &record.resolved_graph else {
+        return Err(RouterError::InvalidState(
+            "pending index migration has no resolved graph".into(),
+        ));
+    };
+    let total = pending.len() as u32;
+    for (active_index, build) in pending.iter().enumerate() {
+        let index = indexed_catalog::get_named_index(resolved.graph_id, build.index_name_id)
+            .ok_or_else(|| RouterError::InvalidState("pending index catalog row missing".into()))?;
+        validate_pending_identity(&record, build.physical_index_id, &index)?;
+        if matches!(index.lifecycle, IndexLifecycleState::Active { .. }) {
+            continue;
+        }
+        match advance_one_index(build.index_name_id, index, driver).await? {
+            SubBuildOutcome::Progress(progress) => {
+                return Ok(apply_result(
+                    migration_progress(progress, active_index as u32, total),
+                    migration_record,
+                ));
+            }
+            SubBuildOutcome::ReachedActive => {
+                // This build published; continue to the next pending build or terminate Applied.
+            }
+            SubBuildOutcome::Failed(code) => {
+                return finish_failed_migration(migration_record, code);
+            }
+        }
+    }
+    finish_applied_migration(migration_record)
 }
 
 fn validate_pending_identity(
@@ -515,17 +590,19 @@ fn validate_pending_identity(
     Ok(())
 }
 
-async fn advance_one<D: IndexMigrationDriver>(
-    migration_record: SchemaMigrationRecord,
+/// Advance one migration-driven index build by one bounded step without touching the migration
+/// ledger. `ReachedActive` publishes the catalog row as `Active`; `Failed` reports a fully cleaned
+/// failure whose lifecycle row was already dropped.
+async fn advance_one_index<D: IndexMigrationDriver>(
     index_name_id: IndexNameId,
     index: IndexDefRecord,
     driver: &D,
-) -> Result<ApplySchemaMigrationResult, RouterError> {
+) -> Result<SubBuildOutcome, RouterError> {
     if !matches!(index.lifecycle, IndexLifecycleState::Aborting { .. })
         && !topology_matches(&index)?
     {
         let aborting = enter_aborting(index, index_name_id, MigrationFailureCode::TopologyChanged)?;
-        return Ok(apply_result(progress_for(&aborting), migration_record));
+        return Ok(SubBuildOutcome::Progress(progress_for(&aborting)));
     }
 
     match &index.lifecycle {
@@ -547,10 +624,9 @@ async fn advance_one<D: IndexMigrationDriver>(
                     index_name_id,
                     IndexLifecycleState::Building { targets: building },
                 )?;
-                return Ok(apply_result(progress_for(&next), migration_record));
+                return Ok(SubBuildOutcome::Progress(progress_for(&next)));
             }
-            drive_target(
-                migration_record,
+            drive_target_index(
                 index_name_id,
                 index,
                 IndexMigrationStepAction::Register,
@@ -585,10 +661,9 @@ async fn advance_one<D: IndexMigrationDriver>(
                     ),
                     other => Err(other),
                 })?;
-                return Ok(apply_result(progress_for(&next), migration_record));
+                return Ok(SubBuildOutcome::Progress(progress_for(&next)));
             }
-            drive_target(
-                migration_record,
+            drive_target_index(
                 index_name_id,
                 index,
                 IndexMigrationStepAction::Build,
@@ -596,31 +671,45 @@ async fn advance_one<D: IndexMigrationDriver>(
             )
             .await
         }
-        IndexLifecycleState::Sealing { targets, .. } => {
+        IndexLifecycleState::Sealing {
+            targets,
+            catalog_epoch,
+            ..
+        } => {
             if targets
                 .iter()
                 .all(|target| matches!(target.state, IndexLifecycleTargetState::Converged { .. }))
             {
-                return finish_applied(migration_record, index_name_id, index);
+                // Publication precedes the migration ledger terminal write. If the message traps
+                // after this transition, IC rolls both writes back; the sequence driver's Active
+                // skip completes recovery on the next apply.
+                indexed_catalog::transition_index_lifecycle(
+                    index.resolved_graph.graph_id,
+                    index_name_id,
+                    IndexLifecycleState::Active {
+                        catalog_epoch: *catalog_epoch,
+                        activated_at_ns: super::super::ic_time_ns(),
+                    },
+                )?;
+                return Ok(SubBuildOutcome::ReachedActive);
             }
-            drive_target(
-                migration_record,
-                index_name_id,
-                index,
-                IndexMigrationStepAction::Seal,
-                driver,
-            )
-            .await
+            drive_target_index(index_name_id, index, IndexMigrationStepAction::Seal, driver).await
         }
-        IndexLifecycleState::Aborting { targets, .. } => {
+        IndexLifecycleState::Aborting {
+            targets, failure, ..
+        } => {
             if targets
                 .iter()
                 .all(|target| matches!(target.state, IndexLifecycleTargetState::Cleaned))
             {
-                return finish_failed(migration_record, index_name_id, index);
+                indexed_catalog::drop_named_index(
+                    index.resolved_graph.graph_id,
+                    index_name_id,
+                    false,
+                )?;
+                return Ok(SubBuildOutcome::Failed(*failure));
             }
-            drive_target(
-                migration_record,
+            drive_target_index(
                 index_name_id,
                 index,
                 IndexMigrationStepAction::Cleanup,
@@ -628,9 +717,7 @@ async fn advance_one<D: IndexMigrationDriver>(
             )
             .await
         }
-        IndexLifecycleState::Active { .. } => {
-            finish_applied(migration_record, index_name_id, index)
-        }
+        IndexLifecycleState::Active { .. } => Ok(SubBuildOutcome::ReachedActive),
     }
 }
 
@@ -643,13 +730,12 @@ fn topology_matches(index: &IndexDefRecord) -> Result<bool, RouterError> {
     Ok(expected == actual)
 }
 
-async fn drive_target<D: IndexMigrationDriver>(
-    migration_record: SchemaMigrationRecord,
+async fn drive_target_index<D: IndexMigrationDriver>(
     index_name_id: IndexNameId,
     index: IndexDefRecord,
     action: IndexMigrationStepAction,
     driver: &D,
-) -> Result<ApplySchemaMigrationResult, RouterError> {
+) -> Result<SubBuildOutcome, RouterError> {
     let target_index = target_for_action(&index, action)
         .ok_or_else(|| RouterError::InvalidState(format!("no target is ready for {action:?}")))?;
     let request = step_request(&index, index_name_id, target_index, action)?;
@@ -662,16 +748,11 @@ async fn drive_target<D: IndexMigrationDriver>(
         }
         Err(IndexMigrationDriveError::Terminal(code)) => {
             let aborting = enter_aborting(index, index_name_id, code)?;
-            return Ok(apply_result(progress_for(&aborting), migration_record));
+            return Ok(SubBuildOutcome::Progress(progress_for(&aborting)));
         }
     };
     if !response_matches_request(&request, &response) {
-        let aborting = enter_aborting(
-            index,
-            index_name_id,
-            MigrationFailureCode::StaleOrMismatchedResponse,
-        )?;
-        return Ok(apply_result(progress_for(&aborting), migration_record));
+        return mismatched_outcome(index_name_id, index);
     }
 
     let mut targets = lifecycle_targets(&index.lifecycle).to_vec();
@@ -682,7 +763,7 @@ async fn drive_target<D: IndexMigrationDriver>(
                 || status.registration != request.registration
                 || status.phase != gleaph_graph_kernel::index::IndexBuildPhase::Building
             {
-                return mismatched_response(migration_record, index_name_id, index);
+                return mismatched_outcome(index_name_id, index);
             }
             IndexLifecycleTargetState::Registered
         }
@@ -691,7 +772,7 @@ async fn drive_target<D: IndexMigrationDriver>(
                 || status.registration != request.registration
                 || status.phase != gleaph_graph_kernel::index::IndexBuildPhase::Building
             {
-                return mismatched_response(migration_record, index_name_id, index);
+                return mismatched_outcome(index_name_id, index);
             }
             if status.progress.done {
                 IndexLifecycleTargetState::Built {
@@ -711,7 +792,7 @@ async fn drive_target<D: IndexMigrationDriver>(
                 || !valid_watermark_ids(&target.shard_ids, &watermarks)
                 || (converged && !watermarks_converged(&watermarks))
             {
-                return mismatched_response(migration_record, index_name_id, index);
+                return mismatched_outcome(index_name_id, index);
             }
             if converged {
                 IndexLifecycleTargetState::Converged { watermarks }
@@ -721,7 +802,7 @@ async fn drive_target<D: IndexMigrationDriver>(
         }
         IndexMigrationStepResult::CleanupProgress { done } => {
             if action != IndexMigrationStepAction::Cleanup {
-                return mismatched_response(migration_record, index_name_id, index);
+                return mismatched_outcome(index_name_id, index);
             }
             if done {
                 IndexLifecycleTargetState::Cleaned
@@ -737,20 +818,19 @@ async fn drive_target<D: IndexMigrationDriver>(
         index_name_id,
         next_lifecycle,
     )?;
-    Ok(apply_result(progress_for(&next), migration_record))
+    Ok(SubBuildOutcome::Progress(progress_for(&next)))
 }
 
-fn mismatched_response(
-    migration_record: SchemaMigrationRecord,
+fn mismatched_outcome(
     index_name_id: IndexNameId,
     index: IndexDefRecord,
-) -> Result<ApplySchemaMigrationResult, RouterError> {
+) -> Result<SubBuildOutcome, RouterError> {
     let aborting = enter_aborting(
         index,
         index_name_id,
         MigrationFailureCode::StaleOrMismatchedResponse,
     )?;
-    Ok(apply_result(progress_for(&aborting), migration_record))
+    Ok(SubBuildOutcome::Progress(progress_for(&aborting)))
 }
 
 fn target_for_action(index: &IndexDefRecord, action: IndexMigrationStepAction) -> Option<usize> {
@@ -945,72 +1025,6 @@ fn enter_aborting(
     )
 }
 
-fn finish_applied(
-    migration_record: SchemaMigrationRecord,
-    index_name_id: IndexNameId,
-    index: IndexDefRecord,
-) -> Result<ApplySchemaMigrationResult, RouterError> {
-    match index.lifecycle {
-        IndexLifecycleState::Sealing { catalog_epoch, .. } => {
-            // Publication precedes the ledger terminal write. If the message traps after this
-            // transition, IC rolls both writes back; if a future persistence implementation can
-            // observe Active with a Pending ledger row, the Active arm below completes recovery.
-            indexed_catalog::transition_index_lifecycle(
-                index.resolved_graph.graph_id,
-                index_name_id,
-                IndexLifecycleState::Active {
-                    catalog_epoch,
-                    activated_at_ns: super::super::ic_time_ns(),
-                },
-            )?;
-        }
-        IndexLifecycleState::Active { .. } => {}
-        _ => {
-            return Err(RouterError::InvalidState(
-                "only a converged Sealing or already Active index can finish Applied".into(),
-            ));
-        }
-    }
-
-    let SchemaMigrationRecord::V1(mut record) = migration_record;
-    record.state = SchemaMigrationRecordState::Applied {
-        applied_at: super::super::ic_time_ns(),
-    };
-    let id = record.id.clone();
-    let terminal = SchemaMigrationRecord::V1(record);
-    ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
-        ledger.insert(id, StableSchemaMigrationRecord(terminal.clone()));
-    });
-    Ok(apply_result(SchemaMigrationApplyStatus::Applied, terminal))
-}
-
-fn finish_failed(
-    migration_record: SchemaMigrationRecord,
-    index_name_id: IndexNameId,
-    index: IndexDefRecord,
-) -> Result<ApplySchemaMigrationResult, RouterError> {
-    let IndexLifecycleState::Aborting { failure, .. } = index.lifecycle else {
-        return Err(RouterError::InvalidState(
-            "only cleaned Aborting state can terminate failed".into(),
-        ));
-    };
-    indexed_catalog::drop_named_index(index.resolved_graph.graph_id, index_name_id, false)?;
-    let SchemaMigrationRecord::V1(mut record) = migration_record;
-    record.state = SchemaMigrationRecordState::Failed {
-        failed_at: super::super::ic_time_ns(),
-        code: failure,
-    };
-    let id = record.id.clone();
-    let terminal = SchemaMigrationRecord::V1(record);
-    ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
-        ledger.insert(id, StableSchemaMigrationRecord(terminal.clone()));
-    });
-    Ok(apply_result(
-        SchemaMigrationApplyStatus::Failed(failure),
-        terminal,
-    ))
-}
-
 fn lifecycle_targets(state: &IndexLifecycleState) -> &[IndexLifecycleTarget] {
     match state {
         IndexLifecycleState::Preparing { targets }
@@ -1021,38 +1035,7 @@ fn lifecycle_targets(state: &IndexLifecycleState) -> &[IndexLifecycleTarget] {
     }
 }
 
-fn with_targets(
-    state: &IndexLifecycleState,
-    targets: Vec<IndexLifecycleTarget>,
-) -> IndexLifecycleState {
-    match state {
-        IndexLifecycleState::Preparing { .. } => IndexLifecycleState::Preparing { targets },
-        IndexLifecycleState::Building { .. } => IndexLifecycleState::Building { targets },
-        IndexLifecycleState::Sealing {
-            catalog_epoch,
-            started_at_ns,
-            ..
-        } => IndexLifecycleState::Sealing {
-            catalog_epoch: *catalog_epoch,
-            targets,
-            started_at_ns: *started_at_ns,
-        },
-        IndexLifecycleState::Aborting {
-            catalog_epoch,
-            failure,
-            started_at_ns,
-            ..
-        } => IndexLifecycleState::Aborting {
-            catalog_epoch: *catalog_epoch,
-            failure: *failure,
-            targets,
-            started_at_ns: *started_at_ns,
-        },
-        IndexLifecycleState::Active { .. } => unreachable!("Active has no targets to update"),
-    }
-}
-
-fn progress_for(index: &IndexDefRecord) -> SchemaMigrationApplyStatus {
+fn progress_for(index: &IndexDefRecord) -> SchemaMigrationProgress {
     let (phase, completed_targets, total_targets) = match &index.lifecycle {
         IndexLifecycleState::Preparing { targets } => (
             SchemaMigrationProgressPhase::Preparing,
@@ -1089,14 +1072,118 @@ fn progress_for(index: &IndexDefRecord) -> SchemaMigrationApplyStatus {
             targets.len(),
         ),
         IndexLifecycleState::Active { .. } => {
-            return SchemaMigrationApplyStatus::Applied;
+            unreachable!("Active indexes are skipped by the sequence driver")
         }
     };
-    SchemaMigrationApplyStatus::Progress(SchemaMigrationProgress {
+    SchemaMigrationProgress {
         phase,
         completed_targets: completed_targets as u32,
         total_targets: total_targets as u32,
-    })
+        active_index: 0,
+        total_indexes: 0,
+    }
+}
+
+/// Wrap one sub-build's progress with its migration-level ordinal so the CLI can reset its bounded
+/// round budget when the advancing build changes.
+fn migration_progress(
+    sub: SchemaMigrationProgress,
+    active_index: u32,
+    total_indexes: u32,
+) -> SchemaMigrationApplyStatus {
+    let mut sub = sub;
+    sub.active_index = active_index;
+    sub.total_indexes = total_indexes;
+    SchemaMigrationApplyStatus::Progress(sub)
+}
+
+/// Mark the migration ledger `Applied`. All pending sub-builds are already `Active`.
+fn finish_applied_migration(
+    migration_record: SchemaMigrationRecord,
+) -> Result<ApplySchemaMigrationResult, RouterError> {
+    let SchemaMigrationRecord::V1(mut record) = migration_record;
+    record.state = SchemaMigrationRecordState::Applied {
+        applied_at: super::super::ic_time_ns(),
+    };
+    let id = record.id.clone();
+    let terminal = SchemaMigrationRecord::V1(record);
+    ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
+        ledger.insert(id, StableSchemaMigrationRecord(terminal.clone()));
+    });
+    Ok(apply_result(SchemaMigrationApplyStatus::Applied, terminal))
+}
+
+/// Mark the migration ledger `Failed` and release every not-yet-`Active` sub-build lifecycle row so
+/// no orphaned catalog state remains. Earlier `Active` builds stay published (ADR 0059 multi-index
+/// migrations), and index names stay interned as in the single-index failure contract.
+fn finish_failed_migration(
+    migration_record: SchemaMigrationRecord,
+    code: MigrationFailureCode,
+) -> Result<ApplySchemaMigrationResult, RouterError> {
+    let record = super::record_v1(&migration_record)?.clone();
+    let SchemaMigrationRecordState::PendingIndex { pending } = &record.state else {
+        return Err(RouterError::InvalidState(
+            "finish_failed_migration requires a pending index migration".into(),
+        ));
+    };
+    let Some(resolved) = &record.resolved_graph else {
+        return Err(RouterError::InvalidState(
+            "pending index migration has no resolved graph".into(),
+        ));
+    };
+    for build in pending {
+        if let Some(index) =
+            indexed_catalog::get_named_index(resolved.graph_id, build.index_name_id)
+            && !matches!(index.lifecycle, IndexLifecycleState::Active { .. })
+        {
+            indexed_catalog::drop_named_index(resolved.graph_id, build.index_name_id, false)?;
+        }
+    }
+    let SchemaMigrationRecord::V1(mut record) = migration_record;
+    record.state = SchemaMigrationRecordState::Failed {
+        failed_at: super::super::ic_time_ns(),
+        code,
+    };
+    let id = record.id.clone();
+    let terminal = SchemaMigrationRecord::V1(record);
+    ROUTER_SCHEMA_MIGRATIONS.with_borrow_mut(|ledger| {
+        ledger.insert(id, StableSchemaMigrationRecord(terminal.clone()));
+    });
+    Ok(apply_result(
+        SchemaMigrationApplyStatus::Failed(code),
+        terminal,
+    ))
+}
+
+fn with_targets(
+    state: &IndexLifecycleState,
+    targets: Vec<IndexLifecycleTarget>,
+) -> IndexLifecycleState {
+    match state {
+        IndexLifecycleState::Preparing { .. } => IndexLifecycleState::Preparing { targets },
+        IndexLifecycleState::Building { .. } => IndexLifecycleState::Building { targets },
+        IndexLifecycleState::Sealing {
+            catalog_epoch,
+            started_at_ns,
+            ..
+        } => IndexLifecycleState::Sealing {
+            catalog_epoch: *catalog_epoch,
+            targets,
+            started_at_ns: *started_at_ns,
+        },
+        IndexLifecycleState::Aborting {
+            catalog_epoch,
+            failure,
+            started_at_ns,
+            ..
+        } => IndexLifecycleState::Aborting {
+            catalog_epoch: *catalog_epoch,
+            failure: *failure,
+            targets,
+            started_at_ns: *started_at_ns,
+        },
+        IndexLifecycleState::Active { .. } => unreachable!("Active has no targets to update"),
+    }
 }
 
 fn apply_result(
@@ -1415,6 +1502,8 @@ mod tests {
                 phase: SchemaMigrationProgressPhase::Preparing,
                 completed_targets: 0,
                 total_targets: 1,
+                active_index: 0,
+                total_indexes: 1,
             })
         );
         assert!(driver.requests.borrow().is_empty());
@@ -1450,6 +1539,8 @@ mod tests {
                     phase,
                     completed_targets,
                     total_targets,
+                    active_index: 0,
+                    total_indexes: 1,
                 })
             );
         }
@@ -1488,6 +1579,95 @@ mod tests {
             futures::executor::block_on(apply_index_migration(&store, admin, args, &driver))
                 .expect("exact replay");
         assert_eq!(result_status(&replay), &SchemaMigrationApplyStatus::Replay);
+    }
+
+    #[test]
+    fn multi_statement_migration_drives_subbuilds_sequentially_to_applied() {
+        let (store, admin, graph_id) = setup_index_fixture(true);
+        RouterStore::commit_intern_property_name(graph_id, "demo_id").expect("second property");
+        RouterStore::commit_intern_vertex_label_name(graph_id, "Post").expect("vertex label");
+        let statement = "CREATE INDEX person_age FOR (n:Person) ON (n.age)\nNEXT CREATE INDEX post_demo_id FOR (n:Post) ON (n.demo_id)";
+        let graph_selector =
+            gleaph_migration_api::SchemaMigrationGraphSelector::Named(GRAPH.into());
+        let args = ApplySchemaMigrationArgs::V1(gleaph_migration_api::ApplySchemaMigrationArgsV1 {
+            id: "000001_two_indexes".into(),
+            parent: None,
+            graph_selector: graph_selector.clone(),
+            checksum: gleaph_migration_api::schema_migration_checksum(
+                "000001_two_indexes",
+                None,
+                &graph_selector,
+                statement.as_bytes(),
+            ),
+            statement: statement.into(),
+        });
+        let driver = FakeDriver::new(FakeBehavior::Happy);
+
+        let fresh = futures::executor::block_on(apply_index_migration(
+            &store,
+            admin,
+            args.clone(),
+            &driver,
+        ))
+        .expect("fresh prepare");
+        assert_eq!(
+            result_status(&fresh),
+            &SchemaMigrationApplyStatus::Progress(SchemaMigrationProgress {
+                phase: SchemaMigrationProgressPhase::Preparing,
+                completed_targets: 0,
+                total_targets: 1,
+                active_index: 0,
+                total_indexes: 2,
+            })
+        );
+
+        // Drive until Applied; the advancing sub-build ordinal must move from 0 to 1.
+        let mut seen_active_indexes = std::collections::BTreeSet::new();
+        let mut status = result_status(&fresh).clone();
+        let mut applied = fresh;
+        let mut rounds = 0;
+        while !matches!(status, SchemaMigrationApplyStatus::Applied) {
+            rounds += 1;
+            assert!(
+                rounds < 30,
+                "multi-index drive did not terminate; last status {status:?}"
+            );
+            if let SchemaMigrationApplyStatus::Progress(progress) = &status {
+                seen_active_indexes.insert(progress.active_index);
+            }
+            applied = futures::executor::block_on(apply_index_migration(
+                &store,
+                admin,
+                args.clone(),
+                &driver,
+            ))
+            .expect("bounded lifecycle step");
+            status = result_status(&applied).clone();
+        }
+        assert_eq!(
+            seen_active_indexes,
+            std::collections::BTreeSet::from([0, 1])
+        );
+        assert!(matches!(
+            result_record(&applied).state,
+            SchemaMigrationRecordState::Applied { .. }
+        ));
+
+        // Both catalog lifecycle rows are Active.
+        let age_name_id = lookup_index_name_id(graph_id, "person_age").expect("age name");
+        let demo_name_id = lookup_index_name_id(graph_id, "post_demo_id").expect("demo name");
+        assert!(matches!(
+            indexed_catalog::get_named_index(graph_id, age_name_id)
+                .expect("age row")
+                .lifecycle,
+            IndexLifecycleState::Active { .. }
+        ));
+        assert!(matches!(
+            indexed_catalog::get_named_index(graph_id, demo_name_id)
+                .expect("demo row")
+                .lifecycle,
+            IndexLifecycleState::Active { .. }
+        ));
     }
 
     #[test]
@@ -1540,6 +1720,8 @@ mod tests {
                 phase: SchemaMigrationProgressPhase::Aborting,
                 completed_targets: 0,
                 total_targets: 1,
+                active_index: 0,
+                total_indexes: 1,
             })
         ));
         assert!(matches!(
@@ -1561,6 +1743,8 @@ mod tests {
                 phase: SchemaMigrationProgressPhase::Aborting,
                 completed_targets: 1,
                 total_targets: 1,
+                active_index: 0,
+                total_indexes: 1,
             })
         ));
         let failed =

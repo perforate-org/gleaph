@@ -2027,7 +2027,17 @@ async fn run_gql_unchecked(
                 remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
             });
         }
-        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        let statements = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        if statements.len() != 1 {
+            return Err(RouterError::InvalidArgument(
+                "ordinary CREATE INDEX GQL accepts exactly one statement; use a schema migration for multiple indexes"
+                    .into(),
+            ));
+        }
+        let stmt = statements
+            .into_iter()
+            .next()
+            .expect("single-statement guard");
         let store = RouterStore::new();
         let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
         crate::index_catalog::execute_index_ddl_for_graph(graph_id, stmt).await?;

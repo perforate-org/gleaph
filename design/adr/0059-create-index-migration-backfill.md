@@ -3,7 +3,7 @@
 Date: 2026-08-03
 Status: accepted
 Last revised: 2026-08-06
-Anchor timestamp: 2026-08-06 10:57:52 UTC +0000
+Anchor timestamp: 2026-08-06 11:37:25 UTC +0000
 Implementation status: Partially implemented. The versioned artifact/wire, Router durable
 lifecycle and migration ledger, Active-only planner gate, Graph canonical export scope,
 graph-index build worker/state, and the production Router cross-canister driver with seal/drain
@@ -18,6 +18,11 @@ historical posting backfill are separate operations. Registering an index before
 canonical values have converged can expose false-negative index reads. The current backfill
 endpoints also do not provide one lifecycle that covers vertex values, edge sidecar values, and
 edge `INLINE` values together.
+
+Multi-index consolidation keeps `CREATE INDEX` outside the GQL statement grammar: the vendor
+index DDL (`gleaph_index_ddl`) gains `NEXT` chaining so one migration payload may carry several
+`CREATE INDEX` statements that share one graph selector and one migration record. Each statement
+builds through the same per-index lifecycle, driven sequentially in payload order.
 
 The ownership boundaries are already clear: Router owns the index catalog, graph shards own
 canonical vertex/edge/property storage, and graph-index owns posting storage and posting reads.
@@ -63,7 +68,8 @@ an existing catalog entry is a `Preparing` preflight rejection before effects.
 ### Migration target and execution identity
 
 The planned index-migration artifact is a breaking pre-release extension of the migration package.
-It contains exactly one literal `CREATE INDEX` statement and an optional top-level `graph` selector:
+It contains one or more literal `CREATE INDEX` statements chained with `NEXT` and an optional
+top-level `graph` selector that applies to the whole payload:
 
 ```toml
 format_version = 1
@@ -83,10 +89,17 @@ Router resolves the selector exactly once in `Preparing` and persists the select
 or otherwise unresolvable `Default` selector fails before any catalog, `PhysicalIndexId`, cursor, outbox,
 or posting effect. Retries use the persisted `GraphId`; they do not resolve a mutable name again.
 
+Every statement in the payload resolves against that single graph and the same topology snapshot.
+The pending ledger state addresses one build pointer per statement in payload order:
+`PendingIndex { pending: Vec<PendingIndexBuild> }` with each `PendingIndexBuild` carrying the
+`index_name_id` and `PhysicalIndexId` of one catalog lifecycle row. The per-index lifecycle rows
+remain the durable owners of each build; the migration record only addresses them.
+
 The index migration lane is one parent-ordered linear child at a time. Router rejects a second
-pending index migration (including a fork or a different `PhysicalIndexId`) until the existing
-one is `Active` or its `Aborting` cleanup is complete. Index migration identity is the artifact id,
-parent, checksum, selector, target `GraphId`, logical index identity, and `PhysicalIndexId`.
+pending index migration (including a fork or a different payload) until the existing one is fully
+`Active` or its `Aborting` cleanup is complete. Index migration identity is the artifact id,
+parent, checksum, selector, target `GraphId`, and every logical index identity and `PhysicalIndexId`
+in the payload.
 
 ### Target and build generation
 
@@ -155,11 +168,30 @@ namespace without changing stable state. A worker that receives a stale error mu
 lifecycle; it may resume the recorded `PhysicalIndexId` or enter `Aborting`, but it may not allocate
 a replacement `PhysicalIndexId` implicitly.
 
+### Multi-index migrations
+
+A payload with several `CREATE INDEX` statements is driven as a sequence of independent sub-builds
+in statement order. `Preparing` parses and preflights every statement (name conflicts, definitions,
+inline projections) before the first write, then co-writes one catalog lifecycle row per statement
+plus one pending ledger record in a single synchronous message. Each apply round advances the
+first non-`Active` sub-build by one bounded step; the response progress carries the advancing
+sub-build's phase and target counts plus its ordinal (`active_index`) and the payload's total
+(`total_indexes`). The migration reaches `Applied` only when every sub-build is `Active`.
+
+Failure is partial by construction: `Active` is deliberately non-abortable and non-removable, so a
+terminal failure of sub-build `k` leaves sub-builds `1..k-1` `Active`, drops the failed build's
+catalog row, and removes the not-yet-started `Preparing` rows so no orphaned lifecycle state
+remains. The migration record becomes `Failed`. As in the single-index contract, index names stay
+interned after a failure, so a follow-up migration must use fresh index names; the failed migration
+remains the linear chain parent.
+
 ### Failure, retry, upgrade, and new-shard rules
 
 - Selector, authorization, checksum, parser, catalog-conflict, target-shard, and pending-lock
   failures are preflight failures. In particular, an unresolved `Default` selector has no partial
   effect.
+- A failed multi-index migration leaves earlier `Active` sub-builds in place and releases the
+  remaining lifecycle rows; see [Multi-index migrations](#multi-index-migrations).
 - A lost response or transient inter-canister error replays the same page, outbox batch, or state
   transition. The durable cursor advances only after the `PhysicalIndexId` write and touched-set
   update; namespace-scoped upsert/removal is idempotent. An ambiguous failure is not treated as a

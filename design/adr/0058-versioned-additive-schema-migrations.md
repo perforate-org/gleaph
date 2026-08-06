@@ -73,8 +73,9 @@ payload travels as one immutable wire statement:
 - `CREATE GRAPH <name> TYPED <type>` with literal names and a literal typed schema; or
 - migration-driven `CREATE INDEX` under ADR 0059's separate resumable lifecycle.
 
-A `CREATE INDEX` artifact remains exactly one statement, because index backfill dispatches through
-ADR 0059's separate non-atomic lifecycle. Parameters, `SESSION`, transaction control, `IF NOT
+A `CREATE INDEX` artifact may contain one or more `NEXT`-chained statements sharing one graph
+selector; ADR 0059 drives them as sequential sub-builds under its separate non-atomic lifecycle.
+Parameters, `SESSION`, transaction control, `IF NOT
 EXISTS`, `OR REPLACE`, `DROP INDEX`, and `COPY` are rejected. `NEXT` chains are permitted only
 between additive catalog statements from the allowlist; any other statement kind, DML, stable-memory
 operations, and federation operations are not migration statements.
@@ -176,7 +177,7 @@ Positive:
 Costs and limits:
 
 - v1 supports one or more additive catalog statements per artifact (a `CREATE INDEX` artifact
-  remains exactly one statement) and one global linear chain.
+  may chain several statements as sequential ADR 0059 sub-builds) and one global linear chain.
 - v1 accepts migration-driven `CREATE INDEX` only through ADR 0059. Its production cross-canister
   driver is implemented; focused seal/drain E2E validation remains pending. Ordinary non-migration
   `CREATE INDEX` remains governed by ADR 0009 and is not a migration shortcut.

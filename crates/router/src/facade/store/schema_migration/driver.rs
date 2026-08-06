@@ -2562,6 +2562,8 @@ mod tests {
             phase,
             completed_targets: completed,
             total_targets: total,
+            active_index: 0,
+            total_indexes: 1,
         })
     }
 

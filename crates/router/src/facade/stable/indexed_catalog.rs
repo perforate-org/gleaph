@@ -668,7 +668,7 @@ pub(crate) fn preflight_prepare_index_scope(
         args.property_id,
         args.edge_direction,
     )?;
-    if pending_index_migration_exists() {
+    if pending_index_migration_exists_for_other_migration(&args.migration_id) {
         return Err(RouterError::Conflict(
             "another physical index migration is still pending".into(),
         ));
@@ -738,11 +738,14 @@ pub(crate) fn begin_index_sealing(
         RouterError::InvalidState("immediate-active index cannot enter Sealing".into())
     })?;
     let current = current_index_catalog_epoch();
-    if current != prepared {
+    if current < prepared {
         return Err(RouterError::Conflict(format!(
-            "index catalog epoch changed from prepared {prepared} to {current}"
+            "index catalog epoch regressed from prepared {prepared} to {current}"
         )));
     }
+    // Sequential sub-builds of one migration prepare together and seal one after another, so a
+    // later sub-build legitimately sees a global epoch ahead of its own prepared epoch; the seal
+    // fence below is always derived from the newest epoch.
     let next_epoch = current
         .checked_add(1)
         .ok_or_else(|| RouterError::IdExhausted("index catalog epoch".into()))?;
@@ -1141,11 +1144,17 @@ fn reject_duplicate_edge_identity(
     Ok(())
 }
 
-fn pending_index_migration_exists() -> bool {
+fn pending_index_migration_exists_for_other_migration(migration_id: &str) -> bool {
     ROUTER_NAMED_INDEXES.with_borrow(|map| {
-        map.iter().any(|entry| {
-            matches!(entry.value().build, IndexBuildMetadata::Migration { .. })
-                && !entry.value().lifecycle.is_active()
+        map.iter().any(|entry| match &entry.value().build {
+            // Lifecycle rows of the same migration are prepared together; only a non-Active row
+            // owned by a different migration blocks this prepare (the migration ledger gate keeps
+            // one pending index migration at a time).
+            IndexBuildMetadata::Migration {
+                migration_id: other,
+                ..
+            } if other != migration_id => !entry.value().lifecycle.is_active(),
+            IndexBuildMetadata::Migration { .. } | IndexBuildMetadata::ImmediateActive => false,
         })
     })
 }
@@ -1495,6 +1504,8 @@ mod tests {
 
         let mut second_args = prepare_args(graph, graph_name);
         second_args.property_id = PropertyId::from_raw(8);
+        // A different pending migration is rejected; same-migration rows are prepared together.
+        second_args.migration_id = "000002_other_index".into();
         assert!(matches!(
             prepare_named_index(graph, second_name, second_args),
             Err(RouterError::Conflict(message)) if message.contains("still pending")
@@ -1503,6 +1514,7 @@ mod tests {
         drop_named_index(graph, first_name, false).expect("remove first pending record");
         let mut retry_args = prepare_args(graph, graph_name);
         retry_args.property_id = PropertyId::from_raw(8);
+        retry_args.migration_id = "000002_other_index".into();
         let retry = prepare_named_index(graph, second_name, retry_args)
             .expect("prepare after pending record is removed");
         assert_eq!(

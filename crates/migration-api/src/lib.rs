@@ -170,15 +170,24 @@ pub enum MigrationFailureCode {
 }
 
 /// Durable terminal/pending state of one migration ledger record.
+/// One pending migration-driven index build. A multi-statement `CREATE INDEX` migration holds one
+/// pointer per statement, in payload order; the durable per-index lifecycle row is the state owner.
+#[derive(CandidType, Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct PendingIndexBuild {
+    /// Graph-scoped logical index name id.
+    pub index_name_id: IndexNameId,
+    /// Never-reused physical posting namespace and build generation.
+    pub physical_index_id: PhysicalIndexId,
+}
+
+/// Pending or terminal lifecycle state of one schema migration.
 #[derive(CandidType, Clone, Debug, Deserialize, Eq, PartialEq)]
 pub enum SchemaMigrationRecordState {
-    /// A migration-driven index build is pending. Detailed phase/progress remains owned by the
-    /// Router physical-index lifecycle record addressed by this immutable pointer.
+    /// One or more migration-driven index builds are pending, driven in payload order. Detailed
+    /// phase/progress remains owned by each Router physical-index lifecycle record.
     PendingIndex {
-        /// Graph-scoped logical index name id.
-        index_name_id: IndexNameId,
-        /// Never-reused physical posting namespace and build generation.
-        physical_index_id: PhysicalIndexId,
+        /// Pending build pointers in migration statement order.
+        pending: Vec<PendingIndexBuild>,
     },
     /// The migration completed successfully.
     Applied {
@@ -272,12 +281,16 @@ pub enum SchemaMigrationProgressPhase {
     Aborting,
 }
 
-/// Compact progress returned by one bounded apply call.
+/// One bounded unit of progress for a migration-driven index build.
 #[derive(CandidType, Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 pub struct SchemaMigrationProgress {
     pub phase: SchemaMigrationProgressPhase,
     pub completed_targets: u32,
     pub total_targets: u32,
+    /// Ordinal of the currently advancing sub-build within the migration payload.
+    pub active_index: u32,
+    /// Number of index builds in the migration payload.
+    pub total_indexes: u32,
 }
 
 impl std::fmt::Display for SchemaMigrationApplyStatus {

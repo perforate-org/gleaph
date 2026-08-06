@@ -182,25 +182,34 @@ impl MigrationArtifact {
         })
     }
 
-    /// For a single-statement `CREATE INDEX` migration, the indexed property name. The Router
-    /// requires the property to already be interned in the target graph (ADR 0059 Preparing
-    /// rejects missing properties), so `apply` interns it first.
-    pub fn index_property(&self) -> Result<Option<String>, MigrationError> {
-        if !matches!(
-            self.profile.as_slice(),
-            [SchemaMigrationStatementProfile::CreateIndex]
-        ) {
-            return Ok(None);
+    /// Indexed property names across the whole payload, in statement order. Catalog migrations
+    /// return an empty list. The Router requires every property to already be interned in the
+    /// target graph (ADR 0059 Preparing rejects missing properties), so `apply` interns them first.
+    pub fn index_properties(&self) -> Result<Vec<String>, MigrationError> {
+        if !self
+            .profile
+            .iter()
+            .all(|profile| *profile == SchemaMigrationStatementProfile::CreateIndex)
+        {
+            return Ok(Vec::new());
         }
-        let statement = gleaph_index_ddl::try_parse(&self.gql)
+        let statements = gleaph_index_ddl::try_parse(&self.gql)
             .ok_or_else(|| MigrationError::Gql("CREATE INDEX migration is not parseable".into()))?
             .map_err(|error| MigrationError::Gql(error.to_string()))?;
-        match statement {
-            gleaph_index_ddl::IndexDdlStatement::Create { target, .. } => Ok(Some(target.property)),
-            _ => Err(MigrationError::Gql(
-                "expected CREATE INDEX migration statement".into(),
-            )),
+        let mut properties = Vec::with_capacity(statements.len());
+        for statement in statements {
+            match statement {
+                gleaph_index_ddl::IndexDdlStatement::Create { target, .. } => {
+                    properties.push(target.property);
+                }
+                _ => {
+                    return Err(MigrationError::Gql(
+                        "expected CREATE INDEX migration statement".into(),
+                    ));
+                }
+            }
         }
+        Ok(properties)
     }
 }
 
@@ -786,14 +795,15 @@ pub fn apply<T: MigrationTransport>(
     let mut ensured_properties: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut seen_properties = BTreeSet::new();
     for artifact in local.migrations.iter().skip(current.applied_count) {
-        if let Some(property) = artifact.index_property()?
-            && let SchemaMigrationGraphSelector::Named(graph) = &artifact.graph_selector
-            && seen_properties.insert((graph.clone(), property.clone()))
-        {
-            ensured_properties
-                .entry(graph.clone())
-                .or_default()
-                .push(property);
+        for property in artifact.index_properties()? {
+            if let SchemaMigrationGraphSelector::Named(graph) = &artifact.graph_selector
+                && seen_properties.insert((graph.clone(), property.clone()))
+            {
+                ensured_properties
+                    .entry(graph.clone())
+                    .or_default()
+                    .push(property);
+            }
         }
     }
     for (graph, properties) in &ensured_properties {
@@ -805,6 +815,7 @@ pub fn apply<T: MigrationTransport>(
     for artifact in local.migrations.iter().skip(current.applied_count) {
         let exact_args = artifact.apply_args();
         let mut rounds = 0usize;
+        let mut active_index = 0u32;
         let mut prior_progress = None;
         let mut unchanged_progress_rounds = 0usize;
         loop {
@@ -879,6 +890,13 @@ pub fn apply<T: MigrationTransport>(
                 )));
             }
             if let SchemaMigrationApplyStatus::Progress(progress) = &result.status {
+                if progress.active_index != active_index {
+                    // A new sub-build started; its round budget and progress baseline reset.
+                    active_index = progress.active_index;
+                    rounds = 1;
+                    prior_progress = None;
+                    unchanged_progress_rounds = 0;
+                }
                 if prior_progress == Some(*progress) {
                     unchanged_progress_rounds += 1;
                 } else {
@@ -1240,22 +1258,30 @@ fn read_text_file_with_identity(
 
 fn validate_gql(gql: &str) -> Result<Vec<SchemaMigrationStatementProfile>, MigrationError> {
     if let Some(index_ddl) = gleaph_index_ddl::try_parse(gql) {
-        let index_ddl = index_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
-        return match index_ddl {
-            gleaph_index_ddl::IndexDdlStatement::Create {
-                if_not_exists: true,
-                ..
-            } => Err(MigrationError::Gql(
-                "CREATE INDEX migrations forbid IF NOT EXISTS".into(),
-            )),
-            gleaph_index_ddl::IndexDdlStatement::Create {
-                if_not_exists: false,
-                ..
-            } => Ok(vec![SchemaMigrationStatementProfile::CreateIndex]),
-            gleaph_index_ddl::IndexDdlStatement::Drop { .. } => Err(MigrationError::Gql(
-                "DROP INDEX is not an additive migration".into(),
-            )),
-        };
+        let statements = index_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
+        let mut profiles = Vec::with_capacity(statements.len());
+        for statement in statements {
+            match statement {
+                gleaph_index_ddl::IndexDdlStatement::Create {
+                    if_not_exists: true,
+                    ..
+                } => {
+                    return Err(MigrationError::Gql(
+                        "CREATE INDEX migrations forbid IF NOT EXISTS".into(),
+                    ));
+                }
+                gleaph_index_ddl::IndexDdlStatement::Create {
+                    if_not_exists: false,
+                    ..
+                } => profiles.push(SchemaMigrationStatementProfile::CreateIndex),
+                gleaph_index_ddl::IndexDdlStatement::Drop { .. } => {
+                    return Err(MigrationError::Gql(
+                        "DROP INDEX is not an additive migration".into(),
+                    ));
+                }
+            }
+        }
+        return Ok(profiles);
     }
     let lexical = gleaph_gql::lexer::tokenize_with_comments(gql)
         .map_err(|error| MigrationError::Gql(error.to_string()))?;
@@ -1719,6 +1745,13 @@ mod tests {
                     SchemaMigrationStatementProfile::CreateGraphType,
                 ],
             ),
+            (
+                "CREATE INDEX a FOR (n:Person) ON (n.age)\nNEXT CREATE INDEX b FOR (n:Post) ON (n.demo_id)\n",
+                vec![
+                    SchemaMigrationStatementProfile::CreateIndex,
+                    SchemaMigrationStatementProfile::CreateIndex,
+                ],
+            ),
         ];
         for (statement, expected) in accepted {
             assert_eq!(
@@ -1796,6 +1829,32 @@ mod tests {
                 SchemaMigrationStatementProfile::CreateGraphType,
                 SchemaMigrationStatementProfile::CreateTypedGraph,
             ]
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn discovers_multi_index_migration_with_all_properties() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_indexes",
+            None,
+            "CREATE INDEX user_user_id FOR (n:User) ON (n.user_id)\nNEXT CREATE INDEX post_demo_id FOR (n:Post) ON (n.demo_id)\n",
+            "indexes",
+        );
+        let plan = discover(&root).expect("multi-index package");
+        let artifact = &plan.migrations[0];
+        assert_eq!(
+            artifact.profile,
+            vec![
+                SchemaMigrationStatementProfile::CreateIndex,
+                SchemaMigrationStatementProfile::CreateIndex,
+            ]
+        );
+        assert_eq!(
+            artifact.index_properties().expect("properties"),
+            vec!["user_id".to_owned(), "demo_id".to_owned()]
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -2240,10 +2299,9 @@ mod tests {
         let plan = discover(&root).expect("test chain");
         assert_eq!(
             plan.migrations[2]
-                .index_property()
-                .expect("parse index property")
-                .as_deref(),
-            Some("age")
+                .index_properties()
+                .expect("parse index properties"),
+            vec!["age".to_owned()]
         );
 
         let initial = test_page(vec![test_record(&plan.migrations[0])], None);
@@ -2484,8 +2542,11 @@ mod tests {
         let plan = discover(&root).expect("test chain");
         let artifact = &plan.migrations[0];
         let pending = SchemaMigrationRecordState::PendingIndex {
-            index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
-            physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11).expect("physical id"),
+            pending: vec![gleaph_migration_api::PendingIndexBuild {
+                index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
+                physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11)
+                    .expect("physical id"),
+            }],
         };
         let progress_record = test_index_record(artifact, pending.clone());
         let applied_record = test_index_record(
@@ -2497,12 +2558,16 @@ mod tests {
                 phase: gleaph_migration_api::SchemaMigrationProgressPhase::Building,
                 completed_targets: 0,
                 total_targets: 2,
+                active_index: 0,
+                total_indexes: 1,
             });
         let sealing =
             SchemaMigrationApplyStatus::Progress(gleaph_migration_api::SchemaMigrationProgress {
                 phase: gleaph_migration_api::SchemaMigrationProgressPhase::Sealing,
                 completed_targets: 2,
                 total_targets: 2,
+                active_index: 0,
+                total_indexes: 1,
             });
         let mut transport = FakeMigrationTransport::new(vec![test_page(
             vec![test_index_record(artifact, pending)],
@@ -2545,9 +2610,11 @@ mod tests {
         let record = test_index_record(
             artifact,
             SchemaMigrationRecordState::PendingIndex {
-                index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
-                physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11)
-                    .expect("physical id"),
+                pending: vec![gleaph_migration_api::PendingIndexBuild {
+                    index_name_id: gleaph_migration_api::IndexNameId::from_raw(3),
+                    physical_index_id: gleaph_migration_api::PhysicalIndexId::new(11)
+                        .expect("physical id"),
+                }],
             },
         );
         let progress =
@@ -2555,6 +2622,8 @@ mod tests {
                 phase: gleaph_migration_api::SchemaMigrationProgressPhase::Building,
                 completed_targets: 0,
                 total_targets: 1,
+                active_index: 0,
+                total_indexes: 1,
             });
         let repeated = test_apply_result_with_record(record, progress);
         let mut transport = FakeMigrationTransport::new(vec![test_page(vec![], None)])

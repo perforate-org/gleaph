@@ -41,7 +41,10 @@ pub enum IndexDdlParseError {
 }
 
 /// Returns `None` when the query is not index DDL (caller should use standard GQL parsing).
-pub fn try_parse(query: &str) -> Option<Result<IndexDdlStatement, IndexDdlParseError>> {
+///
+/// A query may chain several statements with `NEXT`, mirroring the migration payload convention;
+/// each statement keeps its optional trailing semicolon and `NEXT` is the only chain operator.
+pub fn try_parse(query: &str) -> Option<Result<Vec<IndexDdlStatement>, IndexDdlParseError>> {
     let raw_trimmed = query.trim();
     let raw_upper = raw_trimmed.to_ascii_uppercase();
     if raw_upper.starts_with("CREATE INDEX") || raw_upper.starts_with("DROP INDEX") {
@@ -82,8 +85,23 @@ fn first_two_idents_are(tokens: &[gleaph_gql::token::Spanned], first: &str, seco
             .is_some_and(|token| ident_is(&token.token, second))
 }
 
-fn parse(query: &str) -> Result<IndexDdlStatement, IndexDdlParseError> {
+fn parse(query: &str) -> Result<Vec<IndexDdlStatement>, IndexDdlParseError> {
     let mut cur = Cursor::new(query);
+    let mut statements = Vec::new();
+    loop {
+        statements.push(parse_statement(&mut cur)?);
+        if !cur.try_consume_ascii_ci("NEXT") {
+            break;
+        }
+    }
+    cur.skip_ws();
+    if !cur.is_eof() {
+        return Err(IndexDdlParseError::TrailingInput);
+    }
+    Ok(statements)
+}
+
+fn parse_statement(cur: &mut Cursor<'_>) -> Result<IndexDdlStatement, IndexDdlParseError> {
     cur.skip_ws();
     if cur.consume_ascii_ci("CREATE") {
         cur.expect_ascii_ci("INDEX")?;
@@ -94,16 +112,12 @@ fn parse(query: &str) -> Result<IndexDdlStatement, IndexDdlParseError> {
             cur.skip_ws();
         }
         cur.expect_ascii_ci("FOR")?;
-        let (kind, label, edge_direction) = parse_for_pattern(&mut cur)?;
+        let (kind, label, edge_direction) = parse_for_pattern(cur)?;
         cur.skip_ws();
         cur.expect_ascii_ci("ON")?;
-        let property = parse_on_property(&mut cur)?;
+        let property = parse_on_property(cur)?;
         cur.skip_ws();
         cur.try_consume(';');
-        cur.skip_ws();
-        if !cur.is_eof() {
-            return Err(IndexDdlParseError::TrailingInput);
-        }
         Ok(IndexDdlStatement::Create {
             index_name,
             if_not_exists,
@@ -121,10 +135,6 @@ fn parse(query: &str) -> Result<IndexDdlStatement, IndexDdlParseError> {
         let if_exists = cur.try_consume_ascii_ci("IF EXISTS");
         cur.skip_ws();
         cur.try_consume(';');
-        cur.skip_ws();
-        if !cur.is_eof() {
-            return Err(IndexDdlParseError::TrailingInput);
-        }
         Ok(IndexDdlStatement::Drop {
             index_name,
             if_exists,
@@ -390,13 +400,19 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
 
+    fn parse_one(query: &str) -> IndexDdlStatement {
+        let statements = try_parse(query).expect("index DDL").expect("parse");
+        assert_eq!(statements.len(), 1, "expected one statement: {query}");
+        statements.into_iter().next().expect("one statement")
+    }
+
     #[test]
     fn parses_vertex_and_edge_create_index() {
-        let Some(Ok(IndexDdlStatement::Create {
+        let IndexDdlStatement::Create {
             index_name,
             if_not_exists,
             target,
-        })) = try_parse("CREATE INDEX person_age FOR (n:Person) ON (n.age)")
+        } = parse_one("CREATE INDEX person_age FOR (n:Person) ON (n.age)")
         else {
             panic!("expected vertex index");
         };
@@ -406,13 +422,58 @@ mod tests {
         assert_eq!(target.label, "Person");
         assert_eq!(target.property, "age");
 
-        let Some(Ok(IndexDdlStatement::Create { target, .. })) =
-            try_parse("CREATE INDEX knows_weight FOR ()-[e:KNOWS]->() ON (e.weight)")
+        let IndexDdlStatement::Create { target, .. } =
+            parse_one("CREATE INDEX knows_weight FOR ()-[e:KNOWS]->() ON (e.weight)")
         else {
             panic!("expected edge index");
         };
         assert_eq!(target.kind, IndexedPropertyKind::Edge);
         assert_eq!(target.edge_direction, Some(EdgeDirection::PointingRight));
+    }
+
+    #[test]
+    fn parses_next_chained_create_index_sequence_in_order() {
+        let statements = try_parse(
+            "CREATE INDEX a FOR (n:Person) ON (n.age)\nNEXT CREATE INDEX b FOR (n:Post) ON (n.demo_id);\nNEXT CREATE INDEX c FOR ()-[e:KNOWS]-() ON (e.weight)",
+        )
+        .expect("index DDL")
+        .expect("parse");
+        assert_eq!(statements.len(), 3);
+        let names: Vec<_> = statements
+            .iter()
+            .map(|statement| match statement {
+                IndexDdlStatement::Create { index_name, .. } => index_name.as_str(),
+                _ => panic!("expected creates"),
+            })
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+        let IndexDdlStatement::Create { target, .. } = &statements[1] else {
+            panic!("expected create");
+        };
+        assert_eq!(target.property, "demo_id");
+
+        // A trailing semicolon after the final statement is tolerated, as in single-statement DDL.
+        let statements = try_parse("CREATE INDEX a FOR (n:Person) ON (n.age);")
+            .expect("index DDL")
+            .expect("parse");
+        assert_eq!(statements.len(), 1);
+    }
+
+    #[test]
+    fn rejects_semicolon_without_next_and_malformed_chains() {
+        // `;` is only a trailing terminator; NEXT is the only chain operator.
+        assert_eq!(
+            try_parse("CREATE INDEX a FOR (n:Person) ON (n.age); CREATE INDEX b FOR (n:Post) ON (n.demo_id)")
+                .expect("index DDL")
+                .expect_err("semicolon-only chain"),
+            IndexDdlParseError::TrailingInput
+        );
+        // A dangling NEXT has no following statement.
+        assert!(
+            try_parse("CREATE INDEX a FOR (n:Person) ON (n.age) NEXT")
+                .expect("index DDL")
+                .is_err()
+        );
     }
 
     #[test]
@@ -444,13 +505,13 @@ mod tests {
             ),
         ];
         for (ddl, direction) in cases {
-            let Some(Ok(IndexDdlStatement::Create { target, .. })) = try_parse(ddl) else {
+            let IndexDdlStatement::Create { target, .. } = parse_one(ddl) else {
                 panic!("expected edge index: {ddl}");
             };
             assert_eq!(target.edge_direction, Some(direction), "ddl: {ddl}");
         }
-        let Some(Ok(IndexDdlStatement::Create { if_not_exists, .. })) =
-            try_parse("CREATE INDEX w IF NOT EXISTS FOR (n:Person) ON (n.age)")
+        let IndexDdlStatement::Create { if_not_exists, .. } =
+            parse_one("CREATE INDEX w IF NOT EXISTS FOR (n:Person) ON (n.age)")
         else {
             panic!("expected IF NOT EXISTS");
         };
@@ -459,8 +520,8 @@ mod tests {
 
     #[test]
     fn preserves_nested_edge_property_and_rejects_slash_syntax() {
-        let Some(Ok(IndexDdlStatement::Create { target, .. })) =
-            try_parse("CREATE INDEX affinity FOR ()-[e:AFFINITY]-() ON (e.stats.score)")
+        let IndexDdlStatement::Create { target, .. } =
+            parse_one("CREATE INDEX affinity FOR ()-[e:AFFINITY]-() ON (e.stats.score)")
         else {
             panic!("expected edge index");
         };
@@ -476,10 +537,10 @@ mod tests {
 
     #[test]
     fn parses_drop_and_ignores_non_index_queries() {
-        let Some(Ok(IndexDdlStatement::Drop {
+        let IndexDdlStatement::Drop {
             index_name,
             if_exists,
-        })) = try_parse("DROP INDEX person_age IF EXISTS;")
+        } = parse_one("DROP INDEX person_age IF EXISTS;")
         else {
             panic!("expected drop index");
         };
@@ -490,7 +551,7 @@ mod tests {
 
     #[test]
     fn accepts_leading_and_trailing_comments_without_changing_statement_shape() {
-        let Some(Ok(IndexDdlStatement::Create { target, .. })) = try_parse(
+        let IndexDdlStatement::Create { target, .. } = parse_one(
             "// leading\n/* between */ CREATE INDEX person_age FOR (n:Person) ON (n.age) // trailing",
         ) else {
             panic!("expected commented index");
@@ -499,8 +560,8 @@ mod tests {
         assert_eq!(target.label, "Person");
         assert_eq!(target.property, "age");
 
-        let Some(Ok(IndexDdlStatement::Create { index_name, .. })) =
-            try_parse("CREATE /* between */ INDEX person_age FOR (n:Person) ON (n.age)")
+        let IndexDdlStatement::Create { index_name, .. } =
+            parse_one("CREATE /* between */ INDEX person_age FOR (n:Person) ON (n.age)")
         else {
             panic!("expected comment between CREATE and INDEX");
         };
