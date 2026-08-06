@@ -364,7 +364,7 @@ impl QueryExprEvaluator<'_> {
             ExprKind::ElementId(expr) => self.eval_element_id(row, expr),
             ExprKind::Parameter(name) => self
                 .parameters
-                .get(name)
+                .get(crate::plan::query::param_map_key(name))
                 .cloned()
                 .ok_or_else(|| PlanQueryError::MissingParameter { name: name.clone() }),
             ExprKind::PropertyAccess { expr, property } => self.eval_property(row, expr, property),
@@ -2353,6 +2353,40 @@ mod tests {
             .expect("execute topk");
 
         assert_eq!(text_column(&result, "name"), vec!["TopK B", "TopK C"]);
+    }
+
+    #[test]
+    fn resolves_parameterized_offset_with_bare_map_key() {
+        // The parser stores parameter names with the `$` sigil, while the wire params map is
+        // keyed by the bare name; graph-side resolution must strip the sigil (regression for the
+        // social demo's `RETURN ... LIMIT 20 OFFSET $offset` prepared queries, which failed with
+        // "missing parameter '$offset'").
+        let store = GraphStore::new();
+        for name in ["Param D", "Param A", "Param C", "Param B"] {
+            store
+                .insert_vertex_named(["QueryParamOffset"], [("name", Value::Text(name.into()))])
+                .expect("insert vertex");
+        }
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("QueryParamOffset".into()),
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("n", "name"), "name")],
+                distinct: false,
+            },
+            PlanOp::Limit {
+                count: Some(Expr::new(ExprKind::Literal(Value::Int64(2)))),
+                offset: Some(Expr::new(ExprKind::Parameter("$offset".into()))),
+            },
+        ]);
+        let parameters = std::collections::BTreeMap::from([("offset".to_owned(), Value::Int64(1))]);
+        let result = store
+            .execute_plan_query(&plan, &parameters, GqlExecutionContext::default())
+            .expect("execute parameterized limit");
+        assert_eq!(text_column(&result, "name"), vec!["Param A", "Param C"]);
     }
 
     #[test]

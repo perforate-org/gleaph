@@ -20,6 +20,14 @@ pub use path::PathBinding;
 pub(crate) use path::path_binding_to_value;
 pub(crate) use scan::resolve_scan_payload_bytes;
 
+/// The parser stores parameter names with the `$` sigil (`Parameter("$e")`), while the wire
+/// params map is keyed by the bare name — the Router convention shared by `seed.rs` /
+/// `aggregate_index_fast_path.rs` / `uniqueness.rs` (which strip the sigil before lookup). Strip
+/// it here so graph-side parameter resolution agrees with the Router.
+pub(crate) fn param_map_key(name: &str) -> &str {
+    name.strip_prefix('$').unwrap_or(name)
+}
+
 #[cfg(test)]
 pub(crate) use expand::edge_binding_for_expand;
 

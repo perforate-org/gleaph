@@ -32,11 +32,12 @@ pub(crate) fn resolve_scan_payload_bytes(
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
     let v = match sv {
         ScanValue::Literal(val) => val.clone(),
-        ScanValue::Parameter(name) => parameters.get(name.as_ref()).cloned().ok_or_else(|| {
-            PlanQueryError::MissingParameter {
+        ScanValue::Parameter(name) => parameters
+            .get(crate::plan::query::param_map_key(name.as_ref()))
+            .cloned()
+            .ok_or_else(|| PlanQueryError::MissingParameter {
                 name: name.to_string(),
-            }
-        })?,
+            })?,
     };
     value_to_index_key_bytes(&v)
         .map_err(|_| PlanQueryError::InvalidExpressionValue {

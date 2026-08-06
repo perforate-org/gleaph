@@ -2218,7 +2218,7 @@ fn gql_gleaph_vector_l2_uses_edge_inline_vector_predicate_expand() {
 
     let mut parameters = params();
     parameters.insert(
-        "$q".into(),
+        "q".into(),
         Value::List(vec![
             Value::Float32(1.0),
             Value::Float32(1.0),
@@ -2273,7 +2273,7 @@ fn gql_gleaph_vector_dot_uses_edge_inline_vector_predicate_expand() {
 
     let mut parameters = params();
     parameters.insert(
-        "$q".into(),
+        "q".into(),
         Value::List(vec![
             Value::Float32(1.0),
             Value::Float32(1.0),

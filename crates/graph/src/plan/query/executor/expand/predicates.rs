@@ -162,13 +162,11 @@ fn scan_value_to_edge_inline_property_bytes(
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
     let value = match scan_value {
         ScanValue::Literal(value) => value,
-        ScanValue::Parameter(name) => {
-            parameters
-                .get(name.as_ref())
-                .ok_or_else(|| PlanQueryError::MissingParameter {
-                    name: name.to_string(),
-                })?
-        }
+        ScanValue::Parameter(name) => parameters
+            .get(crate::plan::query::param_map_key(name.as_ref()))
+            .ok_or_else(|| PlanQueryError::MissingParameter {
+                name: name.to_string(),
+            })?,
     };
     if matches!(value, Value::Null) {
         return Ok(None);
@@ -205,13 +203,11 @@ fn scan_value_to_value<'a>(
 ) -> Result<&'a Value, PlanQueryError> {
     match scan_value {
         ScanValue::Literal(value) => Ok(value),
-        ScanValue::Parameter(name) => {
-            parameters
-                .get(name.as_ref())
-                .ok_or_else(|| PlanQueryError::MissingParameter {
-                    name: name.to_string(),
-                })
-        }
+        ScanValue::Parameter(name) => parameters
+            .get(crate::plan::query::param_map_key(name.as_ref()))
+            .ok_or_else(|| PlanQueryError::MissingParameter {
+                name: name.to_string(),
+            }),
     }
 }
 

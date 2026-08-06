@@ -62,7 +62,7 @@ impl<'a> MutationPropertyExprEvaluator<'a> {
             ExprKind::Paren(inner) => self.eval(property, inner),
             ExprKind::Parameter(name) => self
                 .parameters
-                .get(name)
+                .get(crate::plan::query::param_map_key(name))
                 .cloned()
                 .ok_or_else(|| PlanMutationError::MissingParameter { name: name.clone() }),
             ExprKind::UnaryOp { op, expr } => eval_unary_expr(*op, self.eval(property, expr)?)

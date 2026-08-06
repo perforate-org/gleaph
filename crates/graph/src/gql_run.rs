@@ -393,12 +393,15 @@ fn resolve_scan_value_to_value(
 ) -> Result<Value, GqlRunError> {
     match value {
         ScanValue::Literal(v) => Ok(v.clone()),
-        ScanValue::Parameter(name) => parameters.get(name.as_ref()).cloned().ok_or_else(|| {
-            GqlRunError::Plan(format!(
-                "missing parameter {} in complete-prefix seed validation",
-                name.as_ref()
-            ))
-        }),
+        ScanValue::Parameter(name) => parameters
+            .get(crate::plan::query::param_map_key(name.as_ref()))
+            .cloned()
+            .ok_or_else(|| {
+                GqlRunError::Plan(format!(
+                    "missing parameter {} in complete-prefix seed validation",
+                    name.as_ref()
+                ))
+            }),
     }
 }
 
@@ -3751,12 +3754,12 @@ mod wave_4_regression_tests {
         .unwrap();
         for demo_id in [284u64, 4284u64] {
             let mut p = BTreeMap::new();
-            p.insert("$demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
+            p.insert("demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
             p.insert(
-                "$body".to_string(),
+                "body".to_string(),
                 gleaph_gql::Value::Text("x".to_string()),
             );
-            p.insert("$is_public".to_string(), gleaph_gql::Value::Bool(true));
+            p.insert("is_public".to_string(), gleaph_gql::Value::Bool(true));
             pollster::block_on(run_adhoc_gql(
                 store,
                 "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'e', demo_kind: 'posted'}]->(b:Post {demo_id: $demo_id, demo_graph: 'social', body: $body, created_at: CURRENT_TIMESTAMP, is_public: $is_public})",
@@ -3768,8 +3771,8 @@ mod wave_4_regression_tests {
             .unwrap();
         }
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -3810,12 +3813,12 @@ mod wave_4_regression_tests {
         .unwrap();
         for demo_id in [284u64, 4284u64] {
             let mut p = BTreeMap::new();
-            p.insert("$demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
+            p.insert("demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
             p.insert(
-                "$body".to_string(),
+                "body".to_string(),
                 gleaph_gql::Value::Text("x".to_string()),
             );
-            p.insert("$is_public".to_string(), gleaph_gql::Value::Bool(true));
+            p.insert("is_public".to_string(), gleaph_gql::Value::Bool(true));
             pollster::block_on(run_adhoc_gql(
                 store,
                 "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'e', demo_kind: 'posted'}]->(b:Post {demo_id: $demo_id, demo_graph: 'social', body: $body, created_at: CURRENT_TIMESTAMP, is_public: $is_public})",
@@ -3827,8 +3830,8 @@ mod wave_4_regression_tests {
             .unwrap();
         }
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -3884,8 +3887,8 @@ mod wave_4_regression_tests {
             .expect("insert post b");
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -3966,8 +3969,8 @@ mod wave_4_regression_tests {
             .expect("insert post b");
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -4067,8 +4070,8 @@ mod wave_4_regression_tests {
             .expect("stale demo_id");
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -4157,8 +4160,8 @@ mod wave_4_regression_tests {
         store.remove_vertex_label(a_id, a_vertex, post_label_id);
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -4239,8 +4242,8 @@ mod wave_4_regression_tests {
         store.detach_delete_vertex(a_id).expect("delete a");
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -4327,9 +4330,9 @@ mod wave_4_regression_tests {
             .expect("stale topic");
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
-        p.insert("$a_topic".to_string(), gleaph_gql::Value::Text("ic".into()));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("a_topic".to_string(), gleaph_gql::Value::Text("ic".into()));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, topic: $a_topic, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
@@ -4428,8 +4431,8 @@ mod wave_4_regression_tests {
             .expect("insert b2");
 
         let mut p = BTreeMap::new();
-        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
-        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(3));
+        p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
+        p.insert("b_demo_id".to_string(), gleaph_gql::Value::Uint64(3));
         let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
         let program = parser::parse(gql).unwrap();
         let block = program
