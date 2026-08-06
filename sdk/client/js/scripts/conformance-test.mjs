@@ -254,6 +254,7 @@ import {
   f16BitsToNumber,
   f16NumberToBits,
   fromApiValue,
+  toApiParams,
   toApiValue,
 } from "../src/values.ts";
 import { GqlFloat128, GqlFloat256 } from "../src/float-values.ts";
@@ -474,10 +475,16 @@ function bytesEqual(a, b) {
 {
   const inferred = toApiValue(7n);
   if (!("Int64" in inferred) || inferred.Int64 !== 7n) throw new Error("bigint inference failed");
+  if (!("Text" in toApiValue("grace"))) throw new Error("string inference failed");
+  if (!("Bool" in toApiValue(true))) throw new Error("boolean inference failed");
   const decimal = toApiValue(new GqlDecimal("1.5"));
   if (!("Decimal" in decimal)) throw new Error("decimal inference failed");
   const instant = toApiValue(Temporal.Instant.from("2024-01-01T00:00:00Z"));
   if (!("DateTime" in instant)) throw new Error("instant inference failed");
+  const params = toApiParams({ name: "grace", ok: true });
+  if (!("Text" in params["name"]) || params["name"].Text !== "grace")
+    throw new Error("params string inference failed");
+  if (!("Bool" in params["ok"])) throw new Error("params boolean inference failed");
 }
 
 console.log("value-layer conformance OK");

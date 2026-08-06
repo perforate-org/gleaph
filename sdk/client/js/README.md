@@ -58,6 +58,45 @@ const mutated = await client.gqlMutate(
 Generated prepared-operation bindings (from `gleaph-codegen`) wrap `preparedQuery`/`preparedMutate`
 and expose typed `*Params` / `*Row` shapes backed by the value types above.
 
+## Dynamic GQL parameters
+
+`gqlQuery` / `gqlMutate` (and the `makeQueryRequest` / `makeMutationRequest` builders) accept
+plain JavaScript values or explicit `ApiValue` wire values per parameter. Plain values are
+converted through the SDK's inference rules:
+
+| JS value                                 | Inferred wire type                     |
+| ---------------------------------------- | -------------------------------------- |
+| `string`                                 | `Text`                                 |
+| `boolean`                                | `Bool`                                 |
+| `number` (integer)                       | `Int64`                                |
+| `number` (non-integer)                   | `Float64`                              |
+| `bigint`                                 | `Int64`                                |
+| `Uint8Array`                             | `Bytes`                                |
+| `null` / `undefined`                     | `Null`                                 |
+| `Array`                                  | `List` (elements inferred recursively) |
+| plain object                             | `Record` (values inferred recursively) |
+| `Date` / `Temporal.*`                    | their respective date/time wire type   |
+| `GqlDecimal` / `GqlFloat*` / `Principal` | their respective wire type             |
+
+Inference only sees the JavaScript type, not the GQL parameter's declared type. When the
+inferred wire type would differ from what the query expects — most notably `bigint` always
+infers `Int64`, so `Uint64` / `Int128` / `Decimal` parameters need an explicit tag — pass an
+`ApiValue` literal (or `toApiValue(value, hint)`):
+
+```ts
+await client.gqlQuery({
+  query: "MATCH (n:Person {user_id: $user_id}) RETURN n.name AS user_name",
+  params: {
+    user_id: { Uint64: 42n }, // bigint would infer Int64; pin the wire type
+    name: "grace", // string infers Text — no tag needed
+  },
+});
+```
+
+Values that cannot be converted throw a `GleaphSdkError` at runtime instead of silently
+corrupting the wire form. Generated prepared-operation bindings never need this: they know
+each parameter's type from the manifest and encode it exactly.
+
 ## Development
 
 - `pnpm check` — format, lint, and type checks

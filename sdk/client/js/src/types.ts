@@ -90,12 +90,14 @@ export type ApiValueHint =
 
 export interface ApiQueryRequest {
   query: string;
-  params: Record<string, ApiValue>;
+  /** Wire-typed params: plain values are auto-encoded (string → Text, bigint → Int64, ...);
+   * pass an explicit [`ApiValue`] when inference would pick a different wire type. */
+  params: Record<string, unknown | ApiValue>;
 }
 
 export interface ApiMutationRequest {
   query: string;
-  params: Record<string, ApiValue>;
+  params: Record<string, unknown | ApiValue>;
   client_mutation_key: string;
 }
 

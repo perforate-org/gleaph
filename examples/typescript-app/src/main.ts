@@ -5,7 +5,7 @@
 
 import { Temporal } from "@js-temporal/polyfill";
 import { AuthClient } from "@icp-sdk/auth/client";
-import { GqlDecimal, GqlFloat128, toApiValue } from "@gleaph/sdk";
+import { GqlDecimal, GqlFloat128 } from "@gleaph/sdk";
 import { createPreparedGleaphClient } from "../generated.ts";
 
 // `AuthClient` persists a delegation in IndexedDB; the caller principal seen by the Router is
@@ -48,11 +48,13 @@ if (profile !== undefined) {
   console.log(profile.tags);
 }
 
-// Dynamic GQL for ad-hoc reads that are not prepared. The dynamic path takes wire-encoded
-// params, so wrap user values with `toApiValue` (generated adapters do this automatically).
+// Dynamic GQL for ad-hoc reads that are not prepared. Dynamic params auto-encode plain values
+// through the SDK's inference (string → Text, bigint → Int64, ...), matching the prepared
+// adapters; pass an explicit `ApiValue` literal only when inference would pick a different wire
+// type — `user_id` is Uint64 in this graph, hence the `{ Uint64: 42n }` tag.
 const dynamic = await client.gqlQuery({
   query: "MATCH (n:Person {user_id: $user_id}) RETURN n.name AS user_name",
-  params: { user_id: toApiValue(42n, "Uint64") },
+  params: { user_id: { Uint64: 42n } },
 });
 
 // Idempotent mutation. Reuse `clientMutationKey` only when retrying the same mutation; a new
@@ -73,8 +75,8 @@ const created = await client.createUser(
 const dynamicCreated = await client.gqlMutate({
   query: "MATCH (n:Person {user_id: $user_id}) SET n.name = $name",
   params: {
-    user_id: toApiValue(43n, "Uint64"),
-    name: toApiValue("grace", "Text"),
+    user_id: { Uint64: 43n },
+    name: "grace",
   },
   client_mutation_key: "rename-user-43-1",
 });
