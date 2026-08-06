@@ -8,8 +8,8 @@ vocabulary remain owned by ADR 0053 and ADR 0055 respectively.
 
 Date: 2026-08-05
 Status: accepted (execution-side prepared graph resolution superseded by ADR 0063; registration rule unchanged)
-Last revised: 2026-08-05
-Anchor timestamp: 2026-08-05 13:10:38 UTC +0000
+Last revised: 2026-08-06
+Anchor timestamp: 2026-08-06 07:02:35 UTC +0000
 
 ## Context
 
@@ -164,6 +164,14 @@ get_prepared : (name : text) -> (Result<PreparedOperationRecord, RouterError>);
   `supports_consistency`, `supports_idempotency`).
 - **Router completes:** parameter types/nullability (existing `complete_parameter_metadata`), doc
   descriptions (existing `apply_to_operation`), and — new — the result schema.
+- **Parameter completion** merges three sources: `VALUE <name> TYPED ... = $<name>` declarations,
+  schema-constrained expression inference (`WHERE x = $p` against typed properties), and
+  **structural positions** where the language fixes the type — `LIMIT`/`OFFSET` counts (Int64,
+  whether standalone parts or `RETURN`/`SELECT` body clauses) and a vector `SEARCH ... FOR $p`
+  probe (Bytes). Structural parameters were previously omitted from the manifest even though plan
+  execution requires them, which produced generated clients that could not supply `$offset`/
+  `$query`. Conflicting structural types (or a conflict with a declaration/inference) fail
+  registration fail-closed.
 - **Result-schema completion:** after `validate_with_seed`, typed output columns are derived from
   `gleaph_gql::type_check::infer_statement_block_output_types_with_schema(block, schema)`, mapped
   to `SemanticType` by reusing the existing `semantic_type_from_type` helper in

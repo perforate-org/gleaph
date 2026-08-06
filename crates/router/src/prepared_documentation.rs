@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 
 use gleaph_gql::ast::ValueType;
 use gleaph_gql::ast::{
-    BindingTypeAnnotation, ExprKind, GqlProgram, ProcedureBindingInitializer, ProcedureBindingKind,
-    Statement,
+    BindingTypeAnnotation, Expr, ExprKind, GqlProgram, LimitClause, OffsetClause,
+    ProcedureBindingInitializer, ProcedureBindingKind, ResultStatement, ReturnBody, SearchProvider,
+    SelectBody, SimpleQueryStatement, Statement,
 };
 use gleaph_gql::token::DocComment;
 use gleaph_gql::type_check::{PropertySchema, Type};
@@ -36,6 +37,7 @@ pub(crate) fn complete_parameter_metadata(
 ) -> Result<(), String> {
     let declarations = collect_typed_parameters(program)?;
     let inferred = gleaph_gql::type_check::infer_parameter_types_with_schema(program, schema);
+    let structural = collect_structural_parameters(program)?;
     let mut parameters = declarations;
     for (name, ty) in inferred {
         let Some(inferred) = semantic_type_from_type(&ty) else {
@@ -44,6 +46,20 @@ pub(crate) fn complete_parameter_metadata(
             ));
         };
         parameters.entry(name).or_insert(inferred);
+    }
+    for (name, (semantic_type, not_null)) in structural {
+        match parameters.get(&name) {
+            Some((existing, _)) if *existing != semantic_type => {
+                return Err(format!(
+                    "GQL parameter {name:?} has conflicting types: structural usage requires \
+                     {semantic_type:?}, program declares {existing:?}"
+                ));
+            }
+            None => {
+                parameters.insert(name, (semantic_type, not_null));
+            }
+            _ => {}
+        }
     }
     for (name, (semantic_type, not_null)) in parameters {
         let Some(parameter) = operation
@@ -196,6 +212,116 @@ fn collect_statement_bindings(
         }
     }
     Ok(())
+}
+
+/// Collect parameters that appear only in structural (non-expression) positions, where the
+/// language fixes their type: `LIMIT`/`OFFSET` counts are integers and a vector `SEARCH ... FOR`
+/// probe is bytes. Schema-based constraint inference only sees expression positions, so these
+/// parameters would otherwise be omitted from the manifest even though plan execution requires
+/// the caller to supply them.
+fn collect_structural_parameters(
+    program: &GqlProgram,
+) -> Result<BTreeMap<String, (SemanticType, bool)>, String> {
+    let body = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|activity| activity.body.as_ref())
+        .ok_or_else(|| "missing transaction body".to_owned())?;
+    let mut parameters = BTreeMap::new();
+    for statement in body.iter_statements() {
+        collect_statement_structural_parameters(statement, &mut parameters)?;
+    }
+    Ok(parameters)
+}
+
+fn collect_statement_structural_parameters(
+    statement: &Statement,
+    parameters: &mut BTreeMap<String, (SemanticType, bool)>,
+) -> Result<(), String> {
+    let Statement::Query(query) = statement else {
+        return Ok(());
+    };
+    for linear in std::iter::once(&query.left).chain(query.rest.iter().map(|(_, query)| query)) {
+        for part in &linear.parts {
+            match part {
+                SimpleQueryStatement::Limit(clause) => {
+                    collect_structural_parameter(&clause.count, SemanticType::Int64, parameters)?;
+                }
+                SimpleQueryStatement::Offset(clause) => {
+                    collect_structural_parameter(&clause.count, SemanticType::Int64, parameters)?;
+                }
+                SimpleQueryStatement::Search(search) => {
+                    let SearchProvider::VectorIndex(spec) = &search.provider;
+                    collect_structural_parameter(&spec.query, SemanticType::Bytes, parameters)?;
+                    collect_structural_parameter(&spec.limit, SemanticType::Int64, parameters)?;
+                }
+                _ => {}
+            }
+        }
+        // RETURN/SELECT bodies carry their own LIMIT/OFFSET clauses (the common position for
+        // `... LIMIT n OFFSET $p` tails), distinct from standalone LIMIT/OFFSET parts.
+        let Some(result) = &linear.result else {
+            continue;
+        };
+        match result {
+            ResultStatement::Return(statement) => {
+                let ReturnBody::Items { limit, offset, .. } = &statement.body else {
+                    continue;
+                };
+                collect_result_limit_offset(limit.as_ref(), offset.as_ref(), parameters)?;
+            }
+            ResultStatement::Select(statement) => match &statement.body {
+                SelectBody::Star { limit, offset, .. }
+                | SelectBody::Items { limit, offset, .. } => {
+                    collect_result_limit_offset(limit.as_ref(), offset.as_ref(), parameters)?;
+                }
+            },
+            ResultStatement::Finish => {}
+        }
+    }
+    Ok(())
+}
+
+fn collect_result_limit_offset(
+    limit: Option<&LimitClause>,
+    offset: Option<&OffsetClause>,
+    parameters: &mut BTreeMap<String, (SemanticType, bool)>,
+) -> Result<(), String> {
+    if let Some(clause) = limit {
+        collect_structural_parameter(&clause.count, SemanticType::Int64, parameters)?;
+    }
+    if let Some(clause) = offset {
+        collect_structural_parameter(&clause.count, SemanticType::Int64, parameters)?;
+    }
+    Ok(())
+}
+
+/// Record one structural parameter reference with its language-fixed type, rejecting a reference
+/// that is bound to a different type by another structural position.
+fn collect_structural_parameter(
+    expr: &Expr,
+    semantic_type: SemanticType,
+    parameters: &mut BTreeMap<String, (SemanticType, bool)>,
+) -> Result<(), String> {
+    let ExprKind::Parameter(parameter) = &expr.kind else {
+        return Ok(());
+    };
+    let name = parameter.trim_start_matches('$');
+    if name.is_empty() {
+        return Err(format!("empty GQL parameter reference {parameter:?}"));
+    }
+    match parameters.get(name) {
+        Some((existing, _)) if *existing != semantic_type => Err(format!(
+            "GQL parameter {name:?} is used with conflicting structural types {existing:?} and \
+             {semantic_type:?}"
+        )),
+        _ => {
+            parameters
+                .entry(name.to_owned())
+                .or_insert((semantic_type, true));
+            Ok(())
+        }
+    }
 }
 
 fn semantic_type_from_value_type(value_type: &ValueType) -> Option<(SemanticType, bool)> {
@@ -476,6 +602,89 @@ mod tests {
         assert_eq!(operation.parameters[0].semantic_type, SemanticType::Int32);
         assert!(operation.parameters[0].required);
         assert!(!operation.parameters[0].nullable);
+    }
+
+    #[test]
+    fn adds_offset_parameter_from_structural_position() {
+        let program = gleaph_gql::parser::parse(
+            "MATCH (p:Post) RETURN p.body AS body LIMIT 20 OFFSET $offset",
+        )
+        .expect("query should parse");
+        let mut operation = operation();
+        operation.parameters.clear();
+        complete_parameter_metadata(&program, &NoSchema, &mut operation)
+            .expect("structural completion should succeed");
+        assert_eq!(operation.parameters.len(), 1);
+        assert_eq!(operation.parameters[0].name, "offset");
+        assert_eq!(operation.parameters[0].semantic_type, SemanticType::Int64);
+        assert!(operation.parameters[0].required);
+        assert!(!operation.parameters[0].nullable);
+    }
+
+    #[test]
+    fn adds_search_vector_and_offset_parameters() {
+        let program = gleaph_gql::parser::parse(
+            "MATCH (p:Post) SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) \
+             DISTANCE AS distance RETURN p.body AS body ORDER BY distance ASC LIMIT 20 OFFSET $offset",
+        )
+        .expect("search query should parse");
+        let mut operation = operation();
+        operation.parameters.clear();
+        complete_parameter_metadata(&program, &NoSchema, &mut operation)
+            .expect("structural completion should succeed");
+        let query = operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "query")
+            .expect("query parameter");
+        assert_eq!(query.semantic_type, SemanticType::Bytes);
+        assert!(query.required);
+        let offset = operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "offset")
+            .expect("offset parameter");
+        assert_eq!(offset.semantic_type, SemanticType::Int64);
+    }
+
+    #[test]
+    fn rejects_conflicting_structural_parameter_type() {
+        let program = gleaph_gql::parser::parse(
+            "VALUE offset TYPED STRING = $offset MATCH (n) RETURN n LIMIT 20 OFFSET $offset",
+        )
+        .expect("query should parse");
+        let mut operation = operation();
+        operation.parameters.clear();
+        let error = complete_parameter_metadata(&program, &NoSchema, &mut operation)
+            .expect_err("conflicting structural types must fail");
+        assert!(error.contains("conflicting"));
+    }
+
+    #[test]
+    fn completes_offset_for_realistic_fan_out_query() {
+        // The social-demo home-feed shape: `OPTIONAL MATCH` chain with the LIMIT/OFFSET clauses on
+        // the final RETURN body. The structural collection must see through both.
+        let program = gleaph_gql::parser::parse(
+            "MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+             WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) \
+             RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, \
+             parent_author.name AS parent_author_name, parent.body AS parent_body, \
+             parent.created_at AS parent_created_at, author.name AS author_name, \
+             p.body AS body, p.created_at AS created_at ORDER BY INSERTION(e) DESC \
+             LIMIT 20 OFFSET $offset",
+        )
+        .expect("query should parse");
+        let mut operation = operation();
+        operation.parameters.clear();
+        complete_parameter_metadata(&program, &NoSchema, &mut operation)
+            .expect("structural completion should succeed");
+        let offset = operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "offset")
+            .expect("offset parameter");
+        assert_eq!(offset.semantic_type, SemanticType::Int64);
+        assert!(offset.required);
     }
 
     #[test]
