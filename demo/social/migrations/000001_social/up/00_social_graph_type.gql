@@ -1,0 +1,36 @@
+CREATE GRAPH TYPE SocialGraph {
+  NODE User {
+    user_id STRING NOT NULL,
+    name STRING NOT NULL,
+    demo_graph STRING NOT NULL
+  },
+  NODE Post {
+    demo_id INT64 NOT NULL,
+    body STRING NOT NULL,
+    created_at DATETIME NOT NULL,
+    is_public BOOL NOT NULL,
+    demo_graph STRING NOT NULL
+  },
+  NODE Feed {
+    demo_id INT64 NOT NULL,
+    name STRING NOT NULL,
+    demo_graph STRING NOT NULL
+  },
+  NODE Topic {
+    demo_id INT64 NOT NULL,
+    name STRING NOT NULL,
+    demo_graph STRING NOT NULL
+  },
+  NODE Community {
+    demo_id INT64 NOT NULL,
+    name STRING NOT NULL,
+    demo_graph STRING NOT NULL
+  },
+  DIRECTED EDGE Follows LABEL FOLLOWS CONNECTING (User -> User),
+  DIRECTED EDGE Posted LABEL POSTED CONNECTING (User -> Post),
+  DIRECTED EDGE ReplyTo LABEL REPLY_TO CONNECTING (Post -> Post),
+  DIRECTED EDGE MemberOf LABEL MEMBER_OF CONNECTING (User -> Community),
+  DIRECTED EDGE HasTopic LABEL HAS_TOPIC CONNECTING (Post -> Topic),
+  DIRECTED EDGE FeedMembership LABEL IN_PUBLIC_FEED ORDER BY INSERTION CONNECTING (Post -> Feed),
+  DIRECTED EDGE HomeFeedMembership LABEL IN_HOME_FEED ORDER BY INSERTION CONNECTING (Post -> User)
+}

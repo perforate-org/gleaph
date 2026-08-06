@@ -1,0 +1,26 @@
+dist/
+node_modules/
+.env
+.env.local
+
+# Generated artifacts are produced at build time and never committed. This
+# covers the GQL formatter WASM bindings (src/generated/gql_formatter/).
+src/generated/*
+
+# Gleaph CLI state (icp-cli project state and load resume state)
+.icp/
+.load-state.json
+
+# Seed artifacts and generated sources are produced by `pnpm build:config`
+# and are never committed; run it before the CLI user flow:
+#
+#   pnpm build:config          # regenerates seeds/ and src/data/*.generated.*
+#   gleaph migration apply
+#   gleaph load seeds/social-load.json
+#   gleaph prepared apply
+seeds/
+src/data/*.generated.*
+
+# Avatar SVGs for the 140 authored/scaled demo users are committed under
+# public/avatars/. `pnpm generate:avatars` regenerates them from DiceBear when
+# the user set (SOCIAL_DEMO_USER_SCALE / SOCIAL_DEMO_POST_SCALE) changes.

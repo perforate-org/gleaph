@@ -1,0 +1,5 @@
+format_version = 1
+id = "000002_social_indexes"
+parent = "000001_social"
+description = "Build the five demo property indexes on the social graph"
+graph = "social"

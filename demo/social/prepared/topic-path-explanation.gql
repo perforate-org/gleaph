@@ -1,0 +1,3 @@
+/// Topic path: four-edge relationship trail with edge identities.
+/// @param offset Page offset (Int64, encoded by the Gateway).
+MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE u.user_id = 'alice' AND t.name = 'Graph databases' RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows1) AS follows_edge_id, ELEMENT_ID(follows2) AS second_follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, ELEMENT_ID(has_topic) AS topic_edge_id LIMIT 20 OFFSET $offset

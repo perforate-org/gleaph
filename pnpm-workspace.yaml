@@ -1,6 +1,7 @@
 packages:
   - "sdk/client/js"
   - "frontend/apps/*"
+  - "demo/social"
   - "examples/typescript-app"
 
 allowBuilds:

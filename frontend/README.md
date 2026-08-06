@@ -4,34 +4,34 @@ Solid CSR apps for Gleaph operator UIs. Legacy UI lives in `frontend-old/` (igno
 
 ## Stack
 
-| Layer | Choice |
-|-------|--------|
-| Workspace | pnpm (`frontend/apps/*`) |
-| Build | Vite |
-| UI | Solid + [solid-ui](https://www.solid-ui.com/) (Tailwind 3) |
-| Routing | [@tanstack/solid-router](https://tanstack.com/router) file-based + `@tanstack/router-plugin` |
-| SDK | Optional `@gleaph/sdk` in apps; primary consumer is user dapps |
+| Layer     | Choice                                                                                       |
+| --------- | -------------------------------------------------------------------------------------------- |
+| Workspace | pnpm (`frontend/apps/*`)                                                                     |
+| Build     | Vite                                                                                         |
+| UI        | Solid + [solid-ui](https://www.solid-ui.com/) (Tailwind 3)                                   |
+| Routing   | [@tanstack/solid-router](https://tanstack.com/router) file-based + `@tanstack/router-plugin` |
+| SDK       | Optional `@gleaph/sdk` in apps; primary consumer is user dapps                               |
 
 ## Apps
 
-| Package | Path | Audience |
-|---------|------|----------|
-| `@gleaph/dashboard` | `apps/dashboard` | Tenant admins (Manager/Admin) |
-| `@gleaph/social-demo` | `apps/social-demo` | Public graph comparison demo viewers |
-| `@gleaph/ops` | `apps/ops` (planned) | Internal operators |
+| Package               | Path                 | Audience                             |
+| --------------------- | -------------------- | ------------------------------------ |
+| `@gleaph/dashboard`   | `apps/dashboard`     | Tenant admins (Manager/Admin)        |
+| `@gleaph/social-demo` | `../../demo/social`  | Public graph comparison demo viewers |
+| `@gleaph/ops`         | `apps/ops` (planned) | Internal operators                   |
 
 ## `apps/dashboard` route map
 
 Directory routes + pathless `_app` (authenticated shell). Public routes sit beside `_app`.
 
-| URL | File | Notes |
-|-----|------|-------|
-| `/` | `src/routes/_app/index.tsx` | Overview (auth required) |
-| `/login` | `src/routes/login.tsx` | II stub; redirects if already signed in |
-| `/prepared` | `src/routes/_app/prepared/index.tsx` | Prepared query list |
-| `/prepared/:id` | `src/routes/_app/prepared/$id.tsx` | Detail / edit |
-| `/settings/roles` | `src/routes/_app/settings/roles.tsx` | RBAC |
-| `/query` | `src/routes/_app/query.tsx` | Read-only GQL (Read+) |
+| URL               | File                                 | Notes                                   |
+| ----------------- | ------------------------------------ | --------------------------------------- |
+| `/`               | `src/routes/_app/index.tsx`          | Overview (auth required)                |
+| `/login`          | `src/routes/login.tsx`               | II stub; redirects if already signed in |
+| `/prepared`       | `src/routes/_app/prepared/index.tsx` | Prepared query list                     |
+| `/prepared/:id`   | `src/routes/_app/prepared/$id.tsx`   | Detail / edit                           |
+| `/settings/roles` | `src/routes/_app/settings/roles.tsx` | RBAC                                    |
+| `/query`          | `src/routes/_app/query.tsx`          | Read-only GQL (Read+)                   |
 
 Layout:
 
@@ -56,13 +56,22 @@ pnpm social-demo:check
 pnpm social-demo:build
 ```
 
-`@gleaph/social-demo` reads the deployed Gateway canister id from `PUBLIC_CANISTER_ID:gleaph-social-demo-gateway` (asset-canister cookie) or, in `pnpm --filter @gleaph/social-demo dev`, from `frontend/apps/social-demo/.env.local`. `scripts/deploy-social-demo-local.sh` writes that file automatically after deploying the Gateway; set `GLEAPH_DEMO_SKIP_VITE_ENV=1` to opt out (the file is gitignored, so this only matters for shared checkouts that want to keep `.env.local` untouched across runs).
+`@gleaph/social-demo` talks to the Router canister directly through `@gleaph/sdk` (prepared
+queries by global name). It reads the Router principal from `VITE_GLEAPH_ROUTER_CANISTER_ID`;
+in `pnpm --filter @gleaph/social-demo dev` that comes from `demo/social/.env.local`, and the
+deploy scripts write the file before the frontend build so the baked bundle carries the Router id.
+`demo/social/scripts/deploy-local.sh` writes that file automatically; set
+`GLEAPH_DEMO_SKIP_VITE_ENV=1` to opt out (the file is gitignored, so this only matters for shared
+checkouts that want to keep `.env.local` untouched across runs).
 
 `GLEAPH_DEMO_FORCE_VITE_IC_HOST=1` additionally overwrites the cached `VITE_IC_HOST` to the current local replica URL (useful when the docker `0:4943` host port drifts between sessions; default keeps a hand-pinned host stable for CI). If the local replica is not reachable at deploy time, the script logs a warning and leaves the existing `.env.local` alone.
 
-The repository root `icp.yaml` builds the social-demo asset canister and the Gleaph
-Router/Index/Graph canisters. `scripts/deploy-social-demo-local.sh` deploys that stack and seeds the
-social graph through Router GQL.
+The repository root `icp.yaml` builds the Gleaph platform canisters (Router/Index/Graph/Vector).
+The social-demo application canisters live in `demo/social/icp.yaml`. `scripts/deploy-demo-local.sh`
+deploys the platform bootstrap and then runs the demo's own flow
+(`demo/social/scripts/deploy-local.sh`: `gleaph migration apply` + `gleaph load` +
+`gleaph prepared apply` + `gleaph codegen`); set `GLEAPH_DEMO_DIR` to point the same
+bootstrap at another demo directory.
 
 The local deploy script uses the named `gleaph-demo-deployer` identity for canister creation and
 calls. Before creating the stack it transfers `1_000T` of fabricated local cycles from the seeded

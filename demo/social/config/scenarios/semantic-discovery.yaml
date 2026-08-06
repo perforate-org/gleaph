@@ -1,0 +1,18 @@
+id: SemanticDiscovery
+preparedQueryId: semantic-discovery
+label: Semantic discovery
+shortLabel: Semantic
+feedTitle: Vector-only semantic discovery
+rdbSummary: |-
+  An RDB with a vector extension can also run this query: search the Post embedding index, filter public posts, and return the nearest neighbors. The key capability here is vector indexing, not a relational join; a separate vector service is another common implementation.
+graphSummary: |-
+  Gleaph keeps the canonical Post embeddings with the graph data and routes `SEARCH` through its derived vector index. This scenario intentionally has no relationship constraint, so Dave's note appears because it is the nearest public Post—not because the graph has inferred a social connection.
+semanticVector:
+  - 8
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0

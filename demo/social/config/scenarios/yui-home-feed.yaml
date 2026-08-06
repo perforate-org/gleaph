@@ -1,0 +1,10 @@
+id: YuiHomeFeed
+preparedQueryId: yui-home-feed
+label: Yui home feed
+shortLabel: Yui's home
+feedTitle: Yui's home feed
+rdbSummary: |-
+  This is the same home-feed problem as Alice's, but the follow graph is intentionally centered on Japanese users. An RDB can join Yui's followees to their public posts on read, or use fan-out on write to maintain her feed inbox. The result makes the cluster visible without changing the feed model.
+graphSummary: |-
+  Gleaph reads Yui's pre-materialized `IN_HOME_FEED` edges with one bounded expansion. Most results come from the Japanese cluster Yui follows, while occasional cross-cluster posts appear when the seed includes a bridge connection. The query and storage shape are identical to Alice's feed; only the viewer and seeded social neighborhood differ.
+semanticVector: null

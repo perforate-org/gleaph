@@ -1,0 +1,18 @@
+id: AliceSemanticFeed
+preparedQueryId: alice-semantic-feed
+label: Alice semantic feed
+shortLabel: Semantic+Graph
+feedTitle: Alice's graph-constrained semantic feed
+rdbSummary: |-
+  A relational implementation must combine two concerns: find posts by vector distance and restrict them to Alice's followees. It can join or pre-filter in the database, but if vector search returns only a small top-k candidate set, filtering afterward can miss eligible posts; over-fetching or filter-aware vector search is needed.
+graphSummary: |-
+  Gleaph expresses eligibility and ranking in one query: `Alice → FOLLOWS → author → POSTED → Post` plus vector `SEARCH`. Dave's nearer post is excluded because he is not a followee, while eligible posts are ranked by semantic distance. The point is composable relationship filtering, not that graphs replace vector indexes.
+semanticVector:
+  - 8
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0

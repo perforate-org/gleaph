@@ -1,0 +1,4 @@
+/// Alice semantic feed: graph-constrained SEARCH over Alice's followees.
+/// @param offset Page offset (Int64, encoded by the Gateway).
+/// @param query Query vector (Bytes, encoded by the Gateway).
+MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset

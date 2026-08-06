@@ -1,0 +1,23 @@
+# Social-demo application canisters (frontend asset canister).
+#
+# The Gleaph platform canisters (Router, graph index, graph shard, vector) are
+# deployed separately from the repository-root icp.yaml; see README.md for the
+# end-to-end flow. The frontend talks to the Router canister directly through
+# @gleaph/sdk.
+#
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/icp-yaml-schema.json
+
+canisters:
+  - name: social-demo
+    recipe:
+      type: "@dfinity/asset-canister@v2.2.1"
+      configuration:
+        shrink: true
+        dir: dist
+
+networks:
+  - name: local
+    mode: managed
+    image: ghcr.io/dfinity/icp-cli-network-launcher
+    port-mapping:
+      - 0:4943

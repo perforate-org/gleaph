@@ -1,0 +1,5 @@
+CREATE INDEX user_user_id FOR (n:User) ON (n.user_id)
+NEXT CREATE INDEX post_demo_id FOR (n:Post) ON (n.demo_id)
+NEXT CREATE INDEX feed_demo_id FOR (n:Feed) ON (n.demo_id)
+NEXT CREATE INDEX topic_demo_id FOR (n:Topic) ON (n.demo_id)
+NEXT CREATE INDEX user_demo_id FOR (n:User) ON (n.demo_id)

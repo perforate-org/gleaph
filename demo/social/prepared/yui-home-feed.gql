@@ -1,0 +1,3 @@
+/// Yui home feed: fan-out IN_HOME_FEED edges for Yui's (Japanese-clustered) followees.
+/// @param offset Page offset (Int64, encoded by the Gateway).
+MATCH (u:User {user_id: 'yui'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY INSERTION(e) DESC LIMIT 20 OFFSET $offset
