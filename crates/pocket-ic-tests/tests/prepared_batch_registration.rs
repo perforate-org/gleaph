@@ -5,6 +5,8 @@
 //! omission), and `get_prepared` read-back.
 
 use candid::{Decode, Encode};
+use gleaph_gql::Value;
+use gleaph_gql_ic::wire::encode_gql_params_blob;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, install_single_shard_federation, list_prepared_as_admin,
@@ -77,6 +79,26 @@ fn batch_registers_multiple_operations_and_executes_them() {
     assert_eq!(alpha.row_count, 0);
     let beta = prepared_query_with_params_as(&env, env.admin, "batch-beta", Vec::new());
     assert_eq!(beta.row_count, 0);
+}
+
+#[test]
+fn executes_prepared_query_with_return_offset_parameter() {
+    // Regression: `OFFSET $offset` in a RETURN body is evaluated by the Graph shard, which must
+    // resolve the parameter against the bare-keyed wire params map (the parser stores the `$`
+    // sigil in the plan). Previously the Graph looked up the sigil itself and rejected every
+    // call with "missing parameter '$offset'".
+    let env = install_single_shard_federation();
+    let mut op = registration(
+        "paginated",
+        "MATCH (n) RETURN 'x' AS tag LIMIT 20 OFFSET $offset",
+    );
+    op.metadata = Some(operation("paginated"));
+    prepare_batch_as_admin(&env, &[op]).expect("batch registers");
+
+    let params = encode_gql_params_blob(vec![("offset".to_string(), Value::Int64(0))])
+        .expect("encode params");
+    let result = prepared_query_with_params_as(&env, env.admin, "paginated", params);
+    assert_eq!(result.row_count, 0);
 }
 
 #[test]
