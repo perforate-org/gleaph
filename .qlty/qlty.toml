@@ -76,3 +76,9 @@ name = "shellcheck"
 
 [[plugin]]
 name = "trufflehog"
+
+[[plugin]]
+name = "trivy"
+
+[[plugin]]
+name = "oxc"
