@@ -160,7 +160,7 @@ fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore
 }
 
 macro_rules! partitioned_bench {
-    ($name:ident, $dims:expr, $nlist:expr, $nprobe:expr) => {
+    ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr) => {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
             let store = setup_partitioned_store($dims, SCAN_N, $nlist);
@@ -168,7 +168,12 @@ macro_rules! partitioned_bench {
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
                 let result = store
-                    .vector_search_tuned(black_box(&req), SearchTuning { nprobe: $nprobe })
+                    .vector_search_tuned(
+                        black_box(&req),
+                        SearchTuning {
+                            eps_query: $eps_query,
+                        },
+                    )
                     .expect("vector_search_tuned");
                 black_box(result);
             })
@@ -176,23 +181,23 @@ macro_rules! partitioned_bench {
     };
 }
 
-// nprobe sweep at fixed (dims, nlist) — demonstrates that lower nprobe reduces cost, and that
-// nprobe = nlist is the exact-parity upper bound.
-partitioned_bench!(bench_ivf_d128_nlist16_nprobe1, 128, 16, 1);
-partitioned_bench!(bench_ivf_d128_nlist16_nprobe4, 128, 16, 4);
-partitioned_bench!(bench_ivf_d128_nlist16_nprobe8, 128, 16, 8);
-partitioned_bench!(bench_ivf_d128_nlist16_nprobe16, 128, 16, 16);
-partitioned_bench!(bench_ivf_d128_nlist64_nprobe1, 128, 64, 1);
-partitioned_bench!(bench_ivf_d128_nlist64_nprobe4, 128, 64, 4);
-partitioned_bench!(bench_ivf_d128_nlist64_nprobe8, 128, 64, 8);
+// ε₂ sweep at fixed (dims, nlist) — demonstrates that a smaller eps_query reduces cost, and that
+// eps_query = INF is the exact-parity upper bound.
+partitioned_bench!(bench_ivf_d128_nlist16_eps0, 128, 16, 0.0);
+partitioned_bench!(bench_ivf_d128_nlist16_eps05, 128, 16, 0.5);
+partitioned_bench!(bench_ivf_d128_nlist16_eps1, 128, 16, 1.0);
+partitioned_bench!(bench_ivf_d128_nlist16_epsinf, 128, 16, f32::INFINITY);
+partitioned_bench!(bench_ivf_d128_nlist64_eps0, 128, 64, 0.0);
+partitioned_bench!(bench_ivf_d128_nlist64_eps05, 128, 64, 0.5);
+partitioned_bench!(bench_ivf_d128_nlist64_eps1, 128, 64, 1.0);
 
-// Dimensional coverage at representative nprobe values.
-partitioned_bench!(bench_ivf_d384_nlist16_nprobe1, 384, 16, 1);
-partitioned_bench!(bench_ivf_d384_nlist16_nprobe4, 384, 16, 4);
-partitioned_bench!(bench_ivf_d384_nlist64_nprobe8, 384, 64, 8);
-partitioned_bench!(bench_ivf_d768_nlist16_nprobe1, 768, 16, 1);
-partitioned_bench!(bench_ivf_d768_nlist16_nprobe4, 768, 16, 4);
-partitioned_bench!(bench_ivf_d768_nlist64_nprobe8, 768, 64, 8);
+// Dimensional coverage at representative eps_query values.
+partitioned_bench!(bench_ivf_d384_nlist16_eps0, 384, 16, 0.0);
+partitioned_bench!(bench_ivf_d384_nlist16_eps05, 384, 16, 0.5);
+partitioned_bench!(bench_ivf_d384_nlist64_eps1, 384, 64, 1.0);
+partitioned_bench!(bench_ivf_d768_nlist16_eps0, 768, 16, 0.0);
+partitioned_bench!(bench_ivf_d768_nlist16_eps05, 768, 16, 0.5);
+partitioned_bench!(bench_ivf_d768_nlist64_eps1, 768, 64, 1.0);
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
 
@@ -456,7 +461,7 @@ fn bench_partition_health_scan_tombstoned_d128() -> canbench_rs::BenchResult {
 }
 
 macro_rules! cache_search_bench {
-    ($name:ident, $dims:expr, $nlist:expr, $nprobe:expr, $warm:expr) => {
+    ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr, $warm:expr) => {
         /// Partition-page search with the heap centroid cache cold vs warm (ADR 0031 Slice 9). The
         /// warm variant first runs `admin_vector_centroid_cache_warmup` (an update path) so the
         /// `#[query]` search reads decoded centroids from the heap instead of `IVF_CENTROIDS`.
@@ -472,7 +477,12 @@ macro_rules! cache_search_bench {
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
                 let result = store
-                    .vector_search_tuned(black_box(&req), SearchTuning { nprobe: $nprobe })
+                    .vector_search_tuned(
+                        black_box(&req),
+                        SearchTuning {
+                            eps_query: $eps_query,
+                        },
+                    )
                     .expect("vector_search_tuned");
                 black_box(result);
             })
@@ -480,10 +490,10 @@ macro_rules! cache_search_bench {
     };
 }
 
-cache_search_bench!(bench_ivf_cache_cold_d128_nlist64_nprobe8, 128, 64, 8, false);
-cache_search_bench!(bench_ivf_cache_warm_d128_nlist64_nprobe8, 128, 64, 8, true);
-cache_search_bench!(bench_ivf_cache_cold_d768_nlist64_nprobe8, 768, 64, 8, false);
-cache_search_bench!(bench_ivf_cache_warm_d768_nlist64_nprobe8, 768, 64, 8, true);
+cache_search_bench!(bench_ivf_cache_cold_d128_nlist64_eps1, 128, 64, 1.0, false);
+cache_search_bench!(bench_ivf_cache_warm_d128_nlist64_eps1, 128, 64, 1.0, true);
+cache_search_bench!(bench_ivf_cache_cold_d768_nlist64_eps1, 768, 64, 1.0, false);
+cache_search_bench!(bench_ivf_cache_warm_d768_nlist64_eps1, 768, 64, 1.0, true);
 
 /// Cost of a single centroid-cache warmup (`IVF_CENTROIDS` read + decode + heap insert) for an
 /// `nlist`-partition index — the bounded update-path work an operator pays once per generation.

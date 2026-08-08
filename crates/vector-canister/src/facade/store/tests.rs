@@ -1226,12 +1226,12 @@ fn clustered_vectors() -> Vec<(VectorSubject, Vec<f32>)> {
     ]
 }
 
-fn tuned(nprobe: u32) -> SearchTuning {
-    SearchTuning { nprobe }
+fn tuned(eps_query: f32) -> SearchTuning {
+    SearchTuning { eps_query }
 }
 
 #[test]
-fn partition_scan_parity_with_exact_at_nprobe_equals_nlist() {
+fn partition_scan_parity_with_exact_at_eps_infinity() {
     let store = fresh_store();
     // Index 1: partitioned (nlist = 2).
     store.seed_ivf_for_test(
@@ -1253,7 +1253,7 @@ fn partition_scan_parity_with_exact_at_nprobe_equals_nlist() {
     );
 
     let partitioned = store
-        .vector_search_tuned(&search_value(0.5, 10), tuned(2))
+        .vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     let mut exact_req = search_value(0.5, 10);
     exact_req.index_id = exact_index;
@@ -1265,12 +1265,12 @@ fn partition_scan_parity_with_exact_at_nprobe_equals_nlist() {
         .map(|h| (h.subject, h.distance))
         .collect();
     let e: Vec<_> = exact.hits.iter().map(|h| (h.subject, h.distance)).collect();
-    assert_eq!(p, e, "nprobe = nlist partition scan equals exact scan");
+    assert_eq!(p, e, "eps_query = INF partition scan equals exact scan");
     assert_eq!(p.len(), 4, "all seeded vectors returned");
 }
 
 #[test]
-fn partition_scan_nprobe_one_selects_single_partition() {
+fn partition_scan_eps_zero_selects_single_partition() {
     let store = fresh_store();
     store.seed_ivf_for_test(
         INDEX_ID,
@@ -1279,9 +1279,9 @@ fn partition_scan_nprobe_one_selects_single_partition() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    // Query near centroid 0: nprobe = 1 selects partition 0 only.
+    // Query near centroid 0: eps_query = 0 selects partition 0 only.
     let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(1))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(0.0))
         .expect("partition scan");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
@@ -1303,9 +1303,9 @@ fn partition_scan_isolation_other_partition_not_scored() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    // Query near centroid 1: nprobe = 1 selects partition 1 only.
+    // Query near centroid 1: eps_query = 0 selects partition 1 only.
     let result = store
-        .vector_search_tuned(&search_value(10.0, 10), tuned(1))
+        .vector_search_tuned(&search_value(10.0, 10), tuned(0.0))
         .expect("partition scan");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
@@ -1316,7 +1316,7 @@ fn partition_scan_isolation_other_partition_not_scored() {
 }
 
 #[test]
-fn partition_scan_default_nprobe_used_by_vector_search() {
+fn partition_scan_default_eps_zero_used_by_vector_search() {
     let store = fresh_store();
     store.seed_ivf_for_test(
         INDEX_ID,
@@ -1325,11 +1325,21 @@ fn partition_scan_default_nprobe_used_by_vector_search() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    // Default nprobe = min(4, nlist) = 2 = nlist, so the default path scans both partitions.
+    // Default eps_query = 0.0 scans only the nearest partition (query 0.5 is nearest centroid 0).
     let result = store
         .vector_search(&search_value(0.5, 10))
         .expect("default search");
-    assert_eq!(result.hits.len(), 4);
+    assert_eq!(
+        result.hits.len(),
+        2,
+        "default scans only partition 0 (subjects 1,2)"
+    );
+    assert!(
+        result
+            .hits
+            .iter()
+            .all(|h| h.subject == subject(1) || h.subject == subject(2))
+    );
 }
 
 #[test]
@@ -1358,7 +1368,7 @@ fn partition_scan_skips_deleted_subject_entry() {
         )
     });
     let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1382,7 +1392,7 @@ fn partition_scan_skips_missing_subject_entry() {
     // Drop the subject-map entry for subject 1: its slab row now has no freshness backing.
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&SubjectKey::new(INDEX_ID, subject(1))));
     let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1422,7 +1432,7 @@ fn partition_scan_skips_slot_drift() {
         )
     });
     let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1452,10 +1462,10 @@ fn stale_centroids_fall_back_to_exact_scan() {
             },
         )
     });
-    // nprobe = 1 would restrict to one partition if the partition scan ran; the exact fallback
+    // eps_query = 0 would restrict to one partition if the partition scan ran; the exact fallback
     // returns all four regardless.
     let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(1))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(0.0))
         .expect("exact fallback");
     assert_eq!(
         result.hits.len(),
@@ -1465,8 +1475,8 @@ fn stale_centroids_fall_back_to_exact_scan() {
 }
 
 #[test]
-#[should_panic(expected = "out of range")]
-fn tuned_nprobe_zero_panics() {
+#[should_panic(expected = "must be >= 0")]
+fn tuned_negative_eps_query_panics() {
     let store = fresh_store();
     store.seed_ivf_for_test(
         INDEX_ID,
@@ -1475,21 +1485,7 @@ fn tuned_nprobe_zero_panics() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    let _ = store.vector_search_tuned(&search_nonzero(0.0, 10), tuned(0));
-}
-
-#[test]
-#[should_panic(expected = "out of range")]
-fn tuned_nprobe_above_nlist_panics() {
-    let store = fresh_store();
-    store.seed_ivf_for_test(
-        INDEX_ID,
-        VectorEncoding::F32,
-        DIMS,
-        &two_clusters(),
-        &clustered_vectors(),
-    );
-    let _ = store.vector_search_tuned(&search_nonzero(0.0, 10), tuned(3));
+    let _ = store.vector_search_tuned(&search_nonzero(0.0, 10), tuned(-1.0));
 }
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
@@ -1886,7 +1882,7 @@ fn publish_switches_to_partition_search_with_exact_parity() {
     assert_eq!(after.hits, before.hits);
     // nprobe = nlist parity is explicit too.
     let tuned_after = store
-        .vector_search_tuned(&search_value(1.5, 10), tuned(2))
+        .vector_search_tuned(&search_value(1.5, 10), tuned(f32::INFINITY))
         .expect("tuned");
     assert_eq!(tuned_after.hits, before.hits);
 }
@@ -2075,7 +2071,9 @@ fn cleanup_is_bounded_and_resumable_to_idle() {
     // Old-version page meta is gone; the index is fully on the target version.
     let old_pages = PAGE_STORE.with_borrow(|s| s.version_page_count(INDEX_ID, 1));
     assert_eq!(old_pages, 0, "old-version page meta dropped");
-    let after = store.vector_search(&search_value(2.0, 10)).expect("search");
+    let after = store
+        .vector_search_tuned(&search_value(2.0, 10), tuned(f32::INFINITY))
+        .expect("search");
     assert_eq!(after.hits.len(), 6);
 }
 
@@ -2197,7 +2195,7 @@ fn second_rebuild_from_partitioned_active() {
 
     // Parity to the pre-second-rebuild result at nprobe = nlist (full scan).
     let after = store
-        .vector_search_tuned(&search_value(2.5, 10), tuned(3))
+        .vector_search_tuned(&search_value(2.5, 10), tuned(f32::INFINITY))
         .expect("tuned");
     assert_eq!(after.hits, before.hits);
 }
@@ -2249,7 +2247,7 @@ fn publish_succeeds_with_an_empty_partition() {
         .expect("publish tolerates empty partition");
     // Full-scan search returns the four remaining live subjects.
     let after = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(3))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("search");
     assert_eq!(after.hits.len(), 4);
 }
@@ -2828,13 +2826,13 @@ fn centroid_cache_search_parity_cold_vs_warm() {
         &clustered_vectors(),
     );
     let cold = store
-        .vector_search_tuned(&search_value(0.5, 10), tuned(2))
+        .vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY))
         .expect("cold scan");
     store
         .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
         .expect("warmup");
     let warm = store
-        .vector_search_tuned(&search_value(0.5, 10), tuned(2))
+        .vector_search_tuned(&search_value(0.5, 10), tuned(f32::INFINITY))
         .expect("warm scan");
     let cold_hits: Vec<_> = cold.hits.iter().map(|h| (h.subject, h.distance)).collect();
     let warm_hits: Vec<_> = warm.hits.iter().map(|h| (h.subject, h.distance)).collect();

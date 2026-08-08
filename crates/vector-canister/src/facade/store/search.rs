@@ -30,19 +30,22 @@ use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
     VectorSubject,
 };
+use ic_stable_vector_page_store::kernel::{dot_and_norm2_f32, l2_squared_f32_early_exit};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::ops::Bound;
 
-/// Default number of partitions to probe when none is supplied. Clamped to `1..=nlist`.
-const DEFAULT_NPROBE: u32 = 4;
+/// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
+/// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`. Tunable in slice 6.
+const DEFAULT_EPS_QUERY: f32 = 0.0;
 
 /// Internal, algorithm-specific search tuning. Never crosses the Router/kernel wire (the public
 /// request stays algorithm-neutral); built in-canister or supplied by tests/bench.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SearchTuning {
-    /// Number of nearest centroid partitions to scan. Valid range is `1..=nlist`.
-    pub nprobe: u32,
+    /// ε₂ query-aware pruning factor: scan every partition with `dist(q, c_p) <= (1 + eps_query) *
+    /// dist(q, c_best)`. `0.0` scans only the nearest; `f32::INFINITY` scans all.
+    pub eps_query: f32,
 }
 
 /// Squared Euclidean distance between two equal-length `f32` vectors. Isolated so a SIMD variant can
@@ -56,39 +59,6 @@ pub(super) fn l2_squared_f32(query: &[f32], vector: &[f32]) -> f32 {
             d * d
         })
         .sum()
-}
-
-/// Returns `(dot, query_norm_sq, vector_norm_sq)` for cosine scoring. Used by `cosine_distance_f32`
-/// so the caller can validate non-zero norms.
-pub(super) fn cosine_dot_and_norms_f32(query: &[f32], vector: &[f32]) -> (f32, f32, f32) {
-    let mut dot = 0.0f32;
-    let mut q_norm_sq = 0.0f32;
-    let mut v_norm_sq = 0.0f32;
-    for (q, v) in query.iter().zip(vector.iter()) {
-        dot += q * v;
-        q_norm_sq += q * q;
-        v_norm_sq += v * v;
-    }
-    (dot, q_norm_sq, v_norm_sq)
-}
-
-/// Cosine "distance" used internally by the top-k heap: `1 - cosine_similarity`.
-///
-/// Both vectors must be finite and have non-zero norm. The public entry points (`search_impl` and
-/// `raw_distance_f32`) enforce this before calling this helper, but the assertions below keep the
-/// invariant explicit and prevent silent NaN from propagating if a future caller bypasses them.
-pub(super) fn cosine_distance_f32(query: &[f32], vector: &[f32]) -> f32 {
-    assert!(
-        vector_is_finite(query) && vector_has_nonzero_norm(query),
-        "cosine_distance_f32 called with non-finite or zero-norm query"
-    );
-    assert!(
-        vector_is_finite(vector) && vector_has_nonzero_norm(vector),
-        "cosine_distance_f32 called with non-finite or zero-norm indexed vector"
-    );
-    let (dot, q_norm_sq, v_norm_sq) = cosine_dot_and_norms_f32(query, vector);
-    let similarity = dot / (q_norm_sq.sqrt() * v_norm_sq.sqrt());
-    1.0 - similarity
 }
 
 /// Decodes contiguous little-endian `f32` components (`VectorEncoding::F32`).
@@ -113,22 +83,42 @@ fn vector_has_nonzero_norm(v: &[f32]) -> bool {
     norm_sq > 0.0
 }
 
-/// Computes the internal raw distance for a metric. Returns `None` for indexed vectors that should
-/// be skipped (non-finite components or zero norm where required); never returns `NaN`/`Inf`.
-fn raw_distance_f32(metric: VectorMetric, query: &[f32], vector: &[f32]) -> Option<f32> {
-    // Both metrics require finite components to keep the top-k heap ordered and the Router seed
-    // conversion contract honest. Zero norm only matters for cosine, but skipping NaN/Inf is
-    // unconditional for all metrics in this slice.
-    if !vector_is_finite(vector) {
+/// Returns `true` when the first `dims` f32 components of `bytes` are all finite. The stored row is
+/// `pad_stride_bytes` wide with the trailing pad zeroed (ADR 0064 §7), so only the `dims` bytes need
+/// checking.
+fn row_is_finite(bytes: &[u8], dims: usize) -> bool {
+    bytes[..dims * 4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|c| f32::from_le_bytes(*c).is_finite())
+}
+
+/// Scores one stored row for `metric`, returning `None` when the row should be skipped: non-finite
+/// components, zero norm for cosine, or — for L2 — a partial distance that already exceeds
+/// `threshold` (the current k-th best). Uses the crate's SIMD kernels over the stored byte span.
+///
+/// `q_norm` is the precomputed query norm (only meaningful for cosine). The L2 early exit is exact:
+/// partial sums are monotone, so a partial sum exceeding `threshold` means the full distance also
+/// does and the row cannot be in the top-k.
+fn score_row(
+    metric: VectorMetric,
+    bytes: &[u8],
+    query: &[f32],
+    q_norm: f32,
+    threshold: f32,
+) -> Option<f32> {
+    if !row_is_finite(bytes, query.len()) {
         return None;
     }
     match metric {
-        VectorMetric::L2Squared => Some(l2_squared_f32(query, vector)),
+        VectorMetric::L2Squared => l2_squared_f32_early_exit(bytes, query, threshold),
         VectorMetric::Cosine => {
-            if !vector_has_nonzero_norm(vector) {
+            let (dot, v_norm2) = dot_and_norm2_f32(bytes, query);
+            if v_norm2 == 0.0 {
                 return None;
             }
-            Some(cosine_distance_f32(query, vector))
+            Some(1.0 - dot / (q_norm * v_norm2.sqrt()))
         }
     }
 }
@@ -263,19 +253,21 @@ fn centroids_ready(def: &VectorIndexDef, index_id: u32) -> bool {
         && read_centroids(def, index_id).is_some()
 }
 
-/// Selects the `nprobe` nearest centroid partitions to `query` (distance asc, partition id asc).
-fn select_partitions(centroids: &[Vec<f32>], query: &[f32], nprobe: u32) -> Vec<u32> {
+/// Selects the partitions to scan under ε₂ query-aware pruning (ADR 0064 §9): every partition whose
+/// centroid distance to `query` is within `(1 + eps_query) * dist(q, c_best)` of the nearest
+/// centroid. Deterministic `(distance asc, partition id asc)` order. `eps_query = 0` selects only the
+/// nearest partition(s); a large value (e.g. `f32::INFINITY`) selects all.
+fn select_partitions(centroids: &[Vec<f32>], query: &[f32], eps_query: f32) -> Vec<u32> {
     let mut scored: Vec<(f32, u32)> = centroids
         .iter()
         .enumerate()
         .map(|(p, c)| (l2_squared_f32(query, c), p as u32))
         .collect();
+    let best = scored.iter().map(|(d, _)| *d).fold(f32::INFINITY, f32::min);
+    let threshold = (1.0 + eps_query) * best;
+    scored.retain(|(d, _)| *d <= threshold);
     scored.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    scored
-        .into_iter()
-        .take(nprobe as usize)
-        .map(|(_, p)| p)
-        .collect()
+    scored.into_iter().map(|(_, p)| p).collect()
 }
 
 impl VectorCanisterStore {
@@ -344,6 +336,12 @@ impl VectorCanisterStore {
         {
             return Err(VectorCanisterError::InvalidQueryVector);
         }
+        // Precompute the query norm once for cosine scoring (the query is validated non-zero-norm).
+        let q_norm = if req.metric == VectorMetric::Cosine {
+            query.iter().map(|x| x * x).sum::<f32>().sqrt()
+        } else {
+            0.0
+        };
 
         // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
         // over current live vector slots. The receiving boundary validates count, vertex-only
@@ -356,23 +354,23 @@ impl VectorCanisterStore {
                 def.metric,
                 candidates,
                 req.top_k,
+                q_norm,
             );
         }
 
-        // Resolve tuning. The default path clamps defensively to `1..=nlist`; the tuned path rejects
-        // out-of-range values (see `vector_search_tuned`).
-        let nlist = def.nlist.max(1);
+        // Resolve tuning. The default path uses `DEFAULT_EPS_QUERY`; the tuned path rejects a
+        // negative `eps_query` (see `vector_search_tuned`).
         let tuning = match tuning_override {
             Some(t) => {
                 assert!(
-                    t.nprobe >= 1 && t.nprobe <= nlist,
-                    "tuned nprobe {} out of range 1..={nlist}",
-                    t.nprobe
+                    t.eps_query >= 0.0,
+                    "tuned eps_query {} must be >= 0",
+                    t.eps_query
                 );
                 t
             }
             None => SearchTuning {
-                nprobe: DEFAULT_NPROBE.clamp(1, nlist),
+                eps_query: DEFAULT_EPS_QUERY,
             },
         };
 
@@ -380,11 +378,11 @@ impl VectorCanisterStore {
         // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
         // Cosine only supports the exact-scan path in this slice.
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
-            Ok(self.exact_subject_scan(req, def.active_index_version, &query, def.metric))
+            Ok(self.exact_subject_scan(req, def.active_index_version, &query, def.metric, q_norm))
         } else if def.metric == VectorMetric::Cosine {
             Err(VectorCanisterError::MetricNotSupportedForPartitionScan)
         } else {
-            Ok(self.partition_page_scan(req, &def, &query, tuning))
+            Ok(self.partition_page_scan(req, &def, &query, tuning, q_norm))
         }
     }
 
@@ -421,6 +419,7 @@ impl VectorCanisterStore {
         metric: VectorMetric,
         candidates: &[VectorSubject],
         top_k: u32,
+        q_norm: f32,
     ) -> Result<VectorSearchResult, VectorCanisterError> {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
@@ -449,8 +448,14 @@ impl VectorCanisterStore {
                     if vertex_id != subject_vertex {
                         continue;
                     }
-                    let Some(distance) = raw_distance_f32(metric, query, &decode_f32(&bytes))
-                    else {
+                    // The L2 early-exit threshold is the current k-th best, applied only once the
+                    // heap is full (a partial max before then would wrongly skip top-k candidates).
+                    let threshold = if heap.len() as u32 == top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
                         continue;
                     };
                     push_bounded(
@@ -479,6 +484,7 @@ impl VectorCanisterStore {
         active_index_version: u64,
         query: &[f32],
         metric: VectorMetric,
+        q_norm: f32,
     ) -> VectorSearchResult {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
@@ -509,11 +515,14 @@ impl VectorCanisterStore {
                     if vertex_id != subject_vertex {
                         continue;
                     }
-                    // Skip indexed vectors that are non-finite or zero-norm for cosine; for L2Squared
-                    // the raw value is always finite unless the bytes are non-finite, which is also
-                    // skipped by this helper for consistency.
-                    let Some(distance) = raw_distance_f32(metric, query, &decode_f32(&bytes))
-                    else {
+                    // The L2 early-exit threshold is the current k-th best, applied only once the
+                    // heap is full.
+                    let threshold = if heap.len() as u32 == req.top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
                         continue;
                     };
                     push_bounded(
@@ -533,7 +542,7 @@ impl VectorCanisterStore {
         finalize(heap)
     }
 
-    /// Slice 6 partition-page scan: select `nprobe` nearest centroid partitions and scan their page
+    /// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
     /// chains in full, re-validating each row against the subject map before scoring.
     fn partition_page_scan(
         &self,
@@ -541,14 +550,21 @@ impl VectorCanisterStore {
         def: &VectorIndexDef,
         query: &[f32],
         tuning: SearchTuning,
+        q_norm: f32,
     ) -> VectorSearchResult {
         // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
         // if it somehow vanished between the gate and here.
         let Some(centroids) = read_centroids(def, req.index_id) else {
-            return self.exact_subject_scan(req, def.active_index_version, query, def.metric);
+            return self.exact_subject_scan(
+                req,
+                def.active_index_version,
+                query,
+                def.metric,
+                q_norm,
+            );
         };
         let active = def.active_index_version;
-        let selected = select_partitions(&centroids, query, tuning.nprobe);
+        let selected = select_partitions(&centroids, query, tuning.eps_query);
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut scratch = PageScratch::new();
 
@@ -560,6 +576,13 @@ impl VectorCanisterStore {
                     partition_id,
                     &mut scratch,
                     |slot, info, bytes| {
+                        // The L2 early-exit threshold is the current k-th best, applied only once
+                        // the heap is full.
+                        let threshold = if heap.len() as u32 == req.top_k {
+                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                        } else {
+                            f32::INFINITY
+                        };
                         if let Some(candidate) = self.fresh_row_candidate(
                             req.index_id,
                             slot,
@@ -567,6 +590,8 @@ impl VectorCanisterStore {
                             query,
                             bytes,
                             def.metric,
+                            q_norm,
+                            threshold,
                         ) {
                             push_bounded(&mut heap, req.top_k, candidate);
                         }
@@ -591,6 +616,8 @@ impl VectorCanisterStore {
         query: &[f32],
         bytes: &[u8],
         metric: VectorMetric,
+        q_norm: f32,
+        threshold: f32,
     ) -> Option<Candidate> {
         let subject = VectorSubject::Vertex {
             shard_id: ShardId::new(info.shard_id),
@@ -607,12 +634,97 @@ impl VectorCanisterStore {
         if entry.current_slot_for(slot.index_version) != Some(slot) {
             return None;
         }
-        let distance = raw_distance_f32(metric, query, &decode_f32(bytes))?;
+        let distance = score_row(metric, bytes, query, q_norm, threshold)?;
         Some(Candidate {
             distance,
             subject,
             embedding_incarnation: entry.embedding_incarnation,
             embedding_version: entry.stored_embedding_version,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(values: &[f32]) -> Vec<u8> {
+        encode_f32(values)
+    }
+
+    #[test]
+    fn select_partitions_eps_zero_selects_nearest() {
+        let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
+        let query = vec![0.5f32; 4];
+        assert_eq!(select_partitions(&centroids, &query, 0.0), vec![0]);
+        assert_eq!(
+            select_partitions(&centroids, &query, f32::INFINITY),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn select_partitions_eps_threshold_boundary() {
+        // Query exactly at centroid 0: threshold = 0, so only partition 0 is selected even with a
+        // large eps_query.
+        let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
+        let query = vec![0.0f32; 4];
+        assert_eq!(select_partitions(&centroids, &query, 1.0), vec![0]);
+    }
+
+    #[test]
+    fn score_row_l2_early_exit_skips_beyond_threshold() {
+        let q = vec![0.0f32; 4];
+        // Row at distance 4.0 (all components 1.0).
+        let bytes = row(&[1.0f32; 4]);
+        // Threshold 1.0: the partial sum exceeds it -> None.
+        assert_eq!(
+            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, 1.0),
+            None
+        );
+        // Threshold 4.0: exact tie -> Some(4.0).
+        assert_eq!(
+            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, 4.0),
+            Some(4.0)
+        );
+        // Threshold INF: full sum.
+        assert_eq!(
+            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, f32::INFINITY),
+            Some(4.0)
+        );
+    }
+
+    #[test]
+    fn score_row_skips_non_finite_row() {
+        let q = vec![0.0f32; 4];
+        let bytes = row(&[f32::NAN, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, f32::INFINITY),
+            None
+        );
+    }
+
+    #[test]
+    fn score_row_cosine_matches_scalar() {
+        let q = vec![1.0f32, 2.0, 3.0, 4.0];
+        let v = vec![2.0f32, 0.0, 3.0, 1.0];
+        let bytes = row(&v);
+        let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let v_norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let dot: f32 = q.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+        let expected = 1.0 - dot / (q_norm * v_norm);
+        let got =
+            score_row(VectorMetric::Cosine, &bytes, &q, q_norm, f32::INFINITY).expect("cosine");
+        assert!((got - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn row_is_finite_checks_dims_only() {
+        let mut bytes = row(&[1.0f32; 4]);
+        bytes.extend_from_slice(&[0u8; 16]); // pad
+        assert!(row_is_finite(&bytes, 4));
+        let mut bad = row(&[f32::NAN, 1.0, 1.0, 1.0]);
+        bad.extend_from_slice(&[0u8; 16]);
+        assert!(!row_is_finite(&bad, 4));
     }
 }
