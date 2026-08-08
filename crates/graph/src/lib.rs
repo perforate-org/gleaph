@@ -354,6 +354,15 @@ async fn admin_ingest_vertex_embedding_batch(
     canister::handlers::admin_ingest_vertex_embedding_batch(args).await
 }
 
+/// Router → graph (ADR 0064 §6): validate an embedding ingestion and consume a `mutation_id` without
+/// a DML mutation or canonical write. The Router then sends the bytes + stamp to the vector canister.
+#[update(guard = "guard_router_canister")]
+async fn stamp_embedding(
+    args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
+) -> Result<u64, String> {
+    canister::handlers::stamp_embedding(args).await
+}
+
 /// Router → graph: operator-only physical stable-memory inventory.
 #[query(guard = "guard_control_plane_admin")]
 fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {

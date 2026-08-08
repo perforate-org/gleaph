@@ -1873,6 +1873,45 @@ pub async fn admin_ingest_vertex_embedding(
     admin_ingest_vertex_embedding_with_vector(args, None).await
 }
 
+/// Router → graph (ADR 0064 §6): validate an embedding ingestion and consume a `mutation_id` without
+/// a DML mutation or canonical write. The Router then sends the bytes + stamp to the vector canister.
+/// This is the stamp-separated ingest path: the graph holds no bytes transiently, and the phantom
+/// stamp (a `mutation_id` with no accompanying DML) must not disturb the graph's existing
+/// `mutation_id` consumers (idempotency records, mutation journal, outbox/derived-index watermarks).
+pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, String> {
+    let store = GraphStore::new();
+    let vertex_id = ic_stable_lara::VertexId::from(args.local_vertex_id);
+
+    let Some(vertex) = store.vertex(vertex_id) else {
+        return Err(format!("vertex {} not found", args.local_vertex_id));
+    };
+    if vertex.is_tombstone() {
+        return Err(format!("vertex {} is tombstoned", args.local_vertex_id));
+    }
+    if args.values.len() != args.spec.dims as usize {
+        return Err(format!(
+            "vector length {} does not match dims {}",
+            args.values.len(),
+            args.spec.dims
+        ));
+    }
+    if args.values.iter().copied().any(|v| !v.is_finite()) {
+        return Err("vector values must be finite".to_string());
+    }
+    if args.spec.embedding_name_id == 0 {
+        return Err("embedding name id 0 is reserved".to_string());
+    }
+    if args.spec.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
+        return Err(format!(
+            "encoding {:?} is not supported for ingestion; only F32 is accepted",
+            args.spec.encoding
+        ));
+    }
+    // Consume the mutation_id as a phantom stamp: no DML mutation, no canonical write, no journal
+    // entry, no outbox/derived-index watermark advance. The vector canister orders by this stamp.
+    Ok(args.mutation_id)
+}
+
 /// Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
 ///
 /// Each item is validated and written independently. A single derived vector-index flush is
@@ -4271,6 +4310,32 @@ mod vertex_embedding_ingestion_tests {
 
     fn insert_vertex() -> ic_stable_lara::VertexId {
         GraphStore::new().insert_vertex().expect("insert vertex")
+    }
+
+    #[test]
+    fn stamp_embedding_consumes_mutation_id_without_disturbing_consumers() {
+        setup_routing();
+        let vid = insert_vertex();
+        clear_journals();
+        let store = GraphStore::new();
+        let stamp = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
+            local_vertex_id: local_vertex_id_raw(vid),
+            spec: spec(1, 2),
+            values: vec![1.0, 2.0],
+            mutation_id: 42,
+        }))
+        .expect("stamp");
+        assert_eq!(stamp, 42);
+        // Phantom stamp: no DML mutation, so no journal entry and no outbox/derived-index watermark
+        // advance.
+        assert!(
+            store.repair_journal_peek(usize::MAX).is_empty(),
+            "stamp_embedding must not create a mutation-journal entry"
+        );
+        assert!(
+            crate::index::vector_pending::pending_snapshot().is_empty(),
+            "stamp_embedding must not dispatch a derived vector op"
+        );
     }
 
     #[test]
