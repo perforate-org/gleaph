@@ -49,6 +49,12 @@ pub async fn backfill_vertex_embeddings(
             let Some(record) = store.vertex_embedding(vertex_id, embedding_name_id) else {
                 continue;
             };
+            // The backfill is a graph-internal repair path with no Router-issued mutation_id, so it
+            // uses the canonical `record.version` as a stamp proxy. This is monotonic within an
+            // incarnation but resets on reinsert; the repair drain's `reconcile_vector_op` preserves
+            // the op's stamp and re-derives the canonical state, so a stale replay cannot regress the
+            // vector clock. The authoritative Router-issued sequence arrives with the Router-initiated
+            // flow (0211c).
             let operation = VectorEmbeddingSyncOp {
                 index_id: spec.index_id,
                 embedding_name_id: embedding_name_id.raw(),
