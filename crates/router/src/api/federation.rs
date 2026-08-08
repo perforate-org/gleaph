@@ -242,60 +242,6 @@ fn get_vector_index_status(
     })
 }
 
-/// Request a derived vector-index backfill step (ADR 0031; `authorize_index_ddl`). Fails closed with
-/// `VectorDispatchActivationBlocked` until the global flag is on and the graph's shards are
-/// vector-attached; the bounded production driver itself lands in Slice 5.
-#[update]
-async fn advance_vector_index_backfill(
-    args: types::AdminVectorIndexBackfillStepArgs,
-) -> Result<types::AdminVectorIndexBackfillStepResult, RouterError> {
-    use crate::facade::stable::vector_index_catalog;
-
-    crate::rbac::authorize_index_ddl(&msg_caller())?;
-    if args.max_vertices == 0 {
-        return Err(RouterError::InvalidArgument(
-            "max_vertices must be > 0".to_owned(),
-        ));
-    }
-    let store = RouterStore::new();
-    let graph_id = store.resolve_graph_id(&args.logical_graph_name)?;
-    let def = vector_index_catalog::get_vector_index(graph_id, args.index_id)
-        .ok_or_else(|| RouterError::NotFound(format!("vector index {}", args.index_id)))?;
-    // The *requested* definition itself must be dispatch-enabled — not merely some sibling def of a
-    // ready graph. A def with no target can never dispatch, so backfilling it would otherwise
-    // populate other indexes via the graph-wide catalog. Fail closed before touching the shard.
-    if def.target.is_none() {
-        return Err(RouterError::Conflict(format!(
-            "vector index {} has no target set",
-            args.index_id
-        )));
-    }
-    // Fail-closed on the dynamic gate (global flag + per-graph shard vector-attach to this target).
-    vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, &store, &def)?;
-    // Scope the worker to the requested index's embedding spec only, so a per-index backfill cannot
-    // populate sibling indexes that share this (ready) graph.
-    let catalog =
-        vector_index_catalog::to_indexed_embedding_catalog_for_index(graph_id, args.index_id, true);
-    let shard = store.resolve_shard(graph_id, args.shard_id)?;
-    let result = crate::graph_client::backfill_vertex_embeddings(
-        shard.graph_canister,
-        gleaph_graph_kernel::federation::EmbeddingBackfillArgs {
-            start_vertex_id: args.start_vertex_id,
-            max_vertices: args.max_vertices,
-        },
-        catalog,
-    )
-    .await
-    .map_err(RouterError::Internal)?;
-    Ok(types::AdminVectorIndexBackfillStepResult {
-        shard_id: args.shard_id,
-        next_vertex_id: result.next_vertex_id,
-        vertices_processed: result.vertices_processed,
-        embeddings_synced: result.embeddings_synced,
-        done: result.done,
-    })
-}
-
 /// Flip the global vector-dispatch activation flag (ADR 0031 Slice 4; Admin only). `false` keeps
 /// production dispatch/backfill fail-closed across all graphs. Reversible.
 #[update]

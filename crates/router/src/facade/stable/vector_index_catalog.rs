@@ -526,35 +526,6 @@ pub(crate) fn to_indexed_embedding_catalog(
     IndexedEmbeddingCatalog { embeddings }
 }
 
-/// Build a **single-definition** indexed-embedding catalog for the requested `index_id` (ADR 0031
-/// Slice 5 backfill). Unlike [`to_indexed_embedding_catalog`], this restricts the shard worker to
-/// the requested definition's embedding so a per-index backfill cannot populate sibling indexes that
-/// happen to share a ready graph. Empty unless the definition exists, is targeted, and
-/// `dispatch_ready`.
-pub(crate) fn to_indexed_embedding_catalog_for_index(
-    graph_id: GraphId,
-    index_id: u32,
-    dispatch_ready: bool,
-) -> IndexedEmbeddingCatalog {
-    let embeddings = if dispatch_ready {
-        get_vector_index(graph_id, index_id)
-            .filter(|def| def.target.is_some())
-            .map(|def| IndexedEmbeddingSpec {
-                embedding_name_id: def.embedding_name_id.raw(),
-                index_id: def.index_id,
-                kind: def.kind,
-                metric: def.metric,
-                encoding: def.encoding,
-                dims: def.dims,
-            })
-            .into_iter()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    IndexedEmbeddingCatalog { embeddings }
-}
-
 pub(crate) fn purge_graph_vector_indexes(graph_id: GraphId) {
     ROUTER_VECTOR_INDEXES.with_borrow_mut(|map| {
         let start = VectorIndexKey::new(graph_id, 0);
@@ -982,29 +953,6 @@ mod tests {
         // Setting index 2 to the shared target succeeds.
         set_vector_index_target(graph, 2, target_a).expect("shared target");
         assert_eq!(graph_single_target(graph), Some(target_a.canister));
-    }
-
-    #[test]
-    fn backfill_catalog_scopes_to_requested_index() {
-        let graph = GraphId::from_raw(920_052);
-        let target = VectorIndexTarget {
-            canister: Principal::management_canister(),
-        };
-        assert!(sample_def(graph, 1, Some(target)));
-        assert!(sample_def(graph, 2, Some(target)));
-        // Not ready ⇒ empty regardless of index.
-        assert!(to_indexed_embedding_catalog_for_index(graph, 1, false).is_empty());
-        // Ready ⇒ exactly the requested index's single spec (not the sibling def).
-        let catalog = to_indexed_embedding_catalog_for_index(graph, 1, true);
-        assert_eq!(catalog.embeddings.len(), 1);
-        assert_eq!(catalog.embeddings[0].index_id, 1);
-        let catalog2 = to_indexed_embedding_catalog_for_index(graph, 2, true);
-        assert_eq!(catalog2.embeddings.len(), 1);
-        assert_eq!(catalog2.embeddings[0].index_id, 2);
-        // A targetless / missing index yields an empty catalog even when ready.
-        assert!(sample_def(graph, 3, None));
-        assert!(to_indexed_embedding_catalog_for_index(graph, 3, true).is_empty());
-        assert!(to_indexed_embedding_catalog_for_index(graph, 99, true).is_empty());
     }
 
     #[test]

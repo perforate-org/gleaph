@@ -1,9 +1,9 @@
 //! Federated derived vector canister (`gleaph-vector-canister`).
 //!
-//! Owns the derived `ivf_flat` search structures rebuildable from the graph canonical
-//! `VertexEmbeddingStore` (ADR 0031). Slice 2 is mutation-only: `vector_upsert` / `vector_remove`
-//! over a degenerate `ivf_flat` page store (`nlist = 1`, `partition_id = 0`, no centroids, no
-//! search). Shard/canister attachments are configured by the router via `admin_attach_shard_canister`.
+//! Owns the derived `ivf_flat` search structures and is the **sole owner of embedding bytes** (ADR
+//! 0064 §1). Slice 2 is mutation-only: `vector_upsert` / `vector_remove` over a degenerate `ivf_flat`
+//! page store (`nlist = 1`, `partition_id = 0`, no centroids, no search). Shard/canister attachments
+//! are configured by the router via `admin_attach_shard_canister`.
 //!
 //! ## API visibility
 //!

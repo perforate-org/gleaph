@@ -7,9 +7,9 @@
 //!
 //! # Version naming
 //!
-//! `index_version` is the physical index generation (defs/page keys). `embedding_version` is the
-//! canonical [`StoredEmbedding`](gleaph_graph_kernel) version carried on sync ops and the subject
-//! clock. `generation` is the slot incarnation for append-and-tombstone. These are never conflated.
+//! `index_version` is the physical index generation (defs/page keys). `mutation_id` is the graph
+//! per-shard ordering stamp carried on sync ops and the subject clock (ADR 0064 §5). `generation` is
+//! the slot incarnation for append-and-tombstone. These are never conflated.
 
 use candid::{CandidType, Decode, Encode};
 use gleaph_graph_kernel::federation::ShardId;

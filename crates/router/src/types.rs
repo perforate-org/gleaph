@@ -1639,21 +1639,6 @@ pub struct GraphBatchInstrLogPage {
     pub lines: Vec<String>,
 }
 
-/// Admin: drive one bounded derived vector-index backfill step on a graph shard (ADR 0031 Slice 5).
-/// The caller supplies an explicit resume cursor (`start_vertex_id`) and budget (`max_vertices`) and
-/// loops, feeding [`AdminVectorIndexBackfillStepResult::next_vertex_id`] until `done`. Fails closed
-/// (`VectorDispatchActivationBlocked`) while dispatch is not ready (global flag off or shards not
-/// vector-attached).
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AdminVectorIndexBackfillStepArgs {
-    pub logical_graph_name: String,
-    pub index_id: u32,
-    pub shard_id: ShardId,
-    pub start_vertex_id: LocalVertexId,
-    /// Maximum local vertices to scan on the shard in this step (clamped to ≥ 1 by the worker).
-    pub max_vertices: u32,
-}
-
 /// Public exact vector-search request (ADR 0031 Slice 5). The Router resolves the
 /// `logical_graph_name` and `index_id` to the single activated target and forwards an exact
 /// `ivf_flat` scan. The `F32` encoding and metric are supplied from the stored definition.
@@ -1688,24 +1673,13 @@ pub struct AdminIngestVertexEmbeddingBatchItem {
 }
 
 /// Admin: ingest many finite F32 vertex embeddings through Router into the owning Graph shard(s)
-/// in as few inter-canister calls as possible. Items are grouped by target graph canister and sent
-/// in message-size-bounded chunks so one social-demo seed needs one Router→Graph call and one
-/// Graph→Vector call.
+/// via the Router-initiated two-call flow (ADR 0064 §6): Router → Graph `stamp_embedding` (validate
+/// + consume a `mutation_id`, no byte storage), then Router → Vector (bytes + stamp).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AdminIngestVertexEmbeddingBatchArgs {
     pub logical_graph_name: String,
     pub embedding_name: String,
     pub items: Vec<AdminIngestVertexEmbeddingBatchItem>,
-}
-
-/// Progress from one derived vector-index backfill step (ADR 0031 Slice 5).
-#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AdminVectorIndexBackfillStepResult {
-    pub shard_id: ShardId,
-    pub next_vertex_id: LocalVertexId,
-    pub vertices_processed: u32,
-    pub embeddings_synced: u32,
-    pub done: bool,
 }
 
 /// Admin: create or replace a vector maintenance policy (ADR 0031 Slice 10). Router-owned SSOT for
