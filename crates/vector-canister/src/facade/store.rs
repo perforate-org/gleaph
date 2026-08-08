@@ -26,12 +26,9 @@ mod tests;
 
 /// Default page byte budget when an index def is created lazily on first upsert.
 ///
-/// Chosen for one StableMemory-friendly read plus a heap scoring buffer once search lands (Slice
-/// 4+). `slots_per_page` is derived from this and the index `stride_bytes` (see [`mutation`]).
+/// `slots_per_page` is derived from this and the index geometry (pad stride, meta stride, run
+/// capacity) via the page-store budget solver (see [`mutation`]).
 pub(crate) const DEFAULT_MAX_PAGE_BYTES: u32 = 64 * 1024;
-
-/// Fixed per-page overhead reserved for the page header when computing `slots_per_page`.
-pub(crate) const PAGE_HEADER_BYTES: u32 = 64;
 
 /// Degenerate `ivf_flat` partition: a single partition `0` in Slice 2.
 pub(crate) const DEGENERATE_PARTITION_ID: u32 = 0;

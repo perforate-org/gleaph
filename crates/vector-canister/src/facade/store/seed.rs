@@ -14,10 +14,7 @@
 //! seeded partitioned index.
 
 use super::search::{encode_f32, l2_squared_f32};
-use super::{
-    DEFAULT_MAX_PAGE_BYTES, FIRST_ALLOCATION, INITIAL_INDEX_VERSION, PAGE_HEADER_BYTES,
-    VectorCanisterStore,
-};
+use super::{DEFAULT_MAX_PAGE_BYTES, FIRST_ALLOCATION, INITIAL_INDEX_VERSION, VectorCanisterStore};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS,
     VECTOR_SUBJECT_TO_ID,
@@ -29,6 +26,7 @@ use crate::records::{
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
+use ic_stable_vector_page_store::PageLayout;
 
 /// Index of the centroid nearest to `vector` (the assigned partition id).
 fn nearest_partition(centroids: &[Vec<f32>], vector: &[f32]) -> u32 {
@@ -87,9 +85,17 @@ impl VectorCanisterStore {
         let nlist = centroids.len() as u32;
         let stride_bytes = encoding.stride_bytes(dims);
         assert!(stride_bytes > 0, "zero stride");
-        let usable = DEFAULT_MAX_PAGE_BYTES.saturating_sub(PAGE_HEADER_BYTES);
-        let slots_per_page = usable / stride_bytes;
-        assert!(slots_per_page >= 1, "page capacity below one slot");
+        // Seeded fixtures are F32 on a single shard: pad stride = ceil(dims/4)*16, meta 4, one run.
+        let pad_stride_bytes = u32::from(dims).div_ceil(4) * 16;
+        let meta_stride_bytes = 4u32;
+        let run_capacity = 1u32;
+        let slots_per_page = PageLayout::max_capacity_for(
+            DEFAULT_MAX_PAGE_BYTES as usize,
+            pad_stride_bytes,
+            meta_stride_bytes,
+            run_capacity,
+        )
+        .expect("seed page capacity below one slot");
         for c in centroids {
             assert_eq!(c.len(), dims as usize, "centroid dims mismatch");
         }
@@ -127,6 +133,9 @@ impl VectorCanisterStore {
             nlist,
             active_index_version: active,
             stride_bytes,
+            pad_stride_bytes,
+            meta_stride_bytes,
+            run_capacity,
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
             next_vector_id: FIRST_ALLOCATION + vectors.len() as u64,
@@ -144,8 +153,6 @@ impl VectorCanisterStore {
                     active,
                     partition_id,
                     &def,
-                    vector_id,
-                    FIRST_ALLOCATION,
                     *subject,
                     &encode_f32(vector),
                 )

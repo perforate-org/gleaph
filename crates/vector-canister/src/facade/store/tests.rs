@@ -114,7 +114,6 @@ fn upsert_new_creates_def_slot_and_clock() {
     assert_eq!(entry.stored_embedding_version, 1);
     assert_eq!(entry.vector_id, Some(1));
     let slot = entry.slot.expect("live slot");
-    assert_eq!(slot.generation, 1);
     assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), Some(slot));
 }
 
@@ -177,7 +176,6 @@ fn upsert_newer_version_live_appends_and_tombstones_reusing_id() {
     assert_eq!(entry.stored_embedding_version, 2);
     assert_eq!(entry.vector_id, Some(1), "same live vector_id reused");
     let new_slot = entry.slot.unwrap();
-    assert_eq!(new_slot.generation, 2, "generation bumped on new slot");
     assert_ne!(new_slot.slot, old_slot.slot);
     // id→slot points at the new slot.
     assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), Some(new_slot));
@@ -383,9 +381,9 @@ fn newer_incarnation_remove_on_live_tombstones() {
 #[test]
 fn page_capacity_rolls_to_new_page_at_slots_per_page() {
     let store = fresh_store();
-    // header(64) + 2 slots * stride(16) = 96 bytes budget yields slots_per_page = 2.
+    // d = 4 F32: pad stride 16, meta 4, single shard. A 80-byte budget fits exactly 2 rows.
     store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 64 + 2 * STRIDE as u32)
+        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80)
         .expect("create");
     assert_eq!(store.def_for_test(INDEX_ID).unwrap().slots_per_page, 2);
 
@@ -403,9 +401,9 @@ fn page_capacity_rolls_to_new_page_at_slots_per_page() {
 #[test]
 fn create_index_rejects_capacity_below_one_slot() {
     let store = fresh_store();
-    // budget below header + one stride yields slots_per_page < 1.
+    // d = 4 F32 needs 64 bytes for a single row; a 40-byte budget fits no row.
     let err = store
-        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 64 + 8)
+        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 40)
         .expect_err("reject");
     assert_eq!(err, VectorCanisterError::InvalidPageCapacity);
 }
@@ -863,7 +861,7 @@ fn search_does_not_read_rows_of_a_different_index() {
 }
 
 #[test]
-fn search_skips_live_entry_with_missing_vector_id() {
+fn search_skips_live_entry_without_resolvable_slot() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::{SubjectKey, SubjectMapEntry};
 
@@ -875,12 +873,13 @@ fn search_skips_live_entry_with_missing_vector_id() {
     let entry = store
         .subject_entry_for_test(INDEX_ID, subject(7))
         .expect("live entry");
-    assert!(entry.slot.is_some() && entry.vector_id.is_some());
+    assert!(entry.slot.is_some());
 
-    // Corrupt the entry into inconsistent drift: still live (slot Some, not deleted) but with no
-    // vector_id. The freshness guard must skip it rather than score a row it cannot verify.
+    // Corrupt the entry into inconsistent drift: still live (not deleted) but with no resolvable
+    // current slot. Search resolves the live slot via `current_slot_for` and must skip it.
     let drifted = SubjectMapEntry {
-        vector_id: None,
+        slot: None,
+        shadow_slot: None,
         ..entry
     };
     VECTOR_SUBJECT_TO_ID
@@ -889,7 +888,7 @@ fn search_skips_live_entry_with_missing_vector_id() {
     let result = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert!(
         result.hits.is_empty(),
-        "inconsistent slot Some / vector_id None row must not be scored"
+        "live entry with no resolvable slot must not be scored"
     );
 }
 
@@ -1458,9 +1457,9 @@ fn partition_scan_skips_deleted_subject_entry() {
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
 
-/// ADR 0032: the partition scan resolves the subject from the row-local `subject_locator`, so
-/// dropping `VECTOR_ID_TO_SUBJECT` (retired from this hot path) no longer hides the row. Freshness is
-/// instead re-validated against `VECTOR_SUBJECT_TO_ID`.
+/// ADR 0064 §7: the partition scan rebuilds the subject from the run-table shard and the packed
+/// `VertexPayload` vertex id, so the `VECTOR_ID_TO_SUBJECT` reverse map is no longer a search input.
+/// Freshness is re-validated positionally against `VECTOR_SUBJECT_TO_ID`.
 #[test]
 fn partition_scan_ignores_reverse_map_after_locator_retirement() {
     use crate::facade::stable::VECTOR_ID_TO_SUBJECT;
@@ -1508,7 +1507,7 @@ fn partition_scan_skips_missing_subject_entry() {
 }
 
 #[test]
-fn partition_scan_skips_vector_id_mismatch() {
+fn partition_scan_ignores_stale_vector_id_bookkeeping() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::{SubjectKey, SubjectMapEntry};
 
@@ -1523,7 +1522,8 @@ fn partition_scan_skips_vector_id_mismatch() {
     let entry = store
         .subject_entry_for_test(INDEX_ID, subject(1))
         .expect("seeded entry");
-    // Subject entry points at a different vector_id than the page row references.
+    // `vector_id` is write-maintained bookkeeping (retirement deferred); it is no longer a search
+    // freshness input. A stale value must not cause a live, positionally-valid row to be dropped.
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
         m.insert(
             SubjectKey::new(INDEX_ID, subject(1)),
@@ -1536,7 +1536,10 @@ fn partition_scan_skips_vector_id_mismatch() {
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
         .expect("partition scan");
-    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+    assert!(
+        result.hits.iter().any(|h| h.subject == subject(1)),
+        "a positionally-valid row is scored regardless of stale vector_id bookkeeping"
+    );
 }
 
 #[test]
@@ -1555,9 +1558,13 @@ fn partition_scan_skips_slot_drift() {
     let entry = store
         .subject_entry_for_test(INDEX_ID, subject(1))
         .expect("seeded entry");
+    let live_slot = entry.slot.expect("live slot");
+    // Point the subject map at an out-of-range slot (positional drift): the row physically present at
+    // the seeded position is scanned, but `current_slot_for` no longer matches it, so it is never
+    // scored.
     let drifted = SlotRef {
-        generation: entry.slot.unwrap().generation + 1,
-        ..entry.slot.unwrap()
+        slot: live_slot.slot + 10_000,
+        ..live_slot
     };
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
         m.insert(

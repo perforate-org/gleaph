@@ -2098,6 +2098,7 @@ dependencies = [
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-structures",
+ "ic-stable-vector-page-store",
  "rapidhash",
  "serde",
 ]

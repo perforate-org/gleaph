@@ -301,7 +301,14 @@ pub struct VectorIndexDef {
     pub metric: VectorMetric,
     pub nlist: u32,
     pub active_index_version: u64,
+    /// Logical stored width per component: `component_bytes × dims` (the wire `bytes` length).
     pub stride_bytes: u32,
+    /// Page row width: 16-byte-aligned `pad_stride_bytes` (the stored `vector_bytes` stride).
+    pub pad_stride_bytes: u32,
+    /// Row-meta stride: `4 + aux_bytes` (4 | 8 | 12).
+    pub meta_stride_bytes: u32,
+    /// Run-table width: `min(owned_shards, MAX_RUNS)`, frozen at def creation.
+    pub run_capacity: u32,
     pub max_page_bytes: u32,
     pub slots_per_page: u32,
     pub next_vector_id: u64,
@@ -349,13 +356,17 @@ impl Storable for IvfCentroidMeta {
 }
 
 /// Location of one vector slot within a physical index generation.
+///
+/// Positions are write-once (a slot's payload never changes; superseded rows are tombstoned), so
+/// `SlotRef` carries no per-row generation: freshness is validated positionally by the caller
+/// against `VECTOR_SUBJECT_TO_ID`, and the slot must be in range and non-tombstoned to read (ADR 0064
+/// §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SlotRef {
     pub index_version: u64,
     pub partition_id: u32,
     pub page_id: u64,
     pub slot: u32,
-    pub generation: u64,
 }
 
 impl Storable for SlotRef {
@@ -675,6 +686,9 @@ mod tests {
             nlist: 1,
             active_index_version: 1,
             stride_bytes: 16,
+            pad_stride_bytes: 16,
+            meta_stride_bytes: 4,
+            run_capacity: 1,
             max_page_bytes: 65536,
             slots_per_page: 4000,
             next_vector_id: 1,
@@ -702,14 +716,12 @@ mod tests {
                 partition_id: 0,
                 page_id: 0,
                 slot: 2,
-                generation: 1,
             }),
             shadow_slot: Some(SlotRef {
                 index_version: 2,
                 partition_id: 3,
                 page_id: 0,
                 slot: 2,
-                generation: 1,
             }),
             vector_id: Some(5),
         };
@@ -737,7 +749,6 @@ mod tests {
                 partition_id: 0,
                 page_id: 0,
                 slot: 4,
-                generation: 1,
             }),
             vector_id: Some(9),
         };
@@ -810,14 +821,12 @@ mod tests {
             partition_id: 0,
             page_id: 0,
             slot: 0,
-            generation: 1,
         };
         let shadow = SlotRef {
             index_version: 2,
             partition_id: 5,
             page_id: 0,
             slot: 0,
-            generation: 1,
         };
         let entry = SubjectMapEntry {
             embedding_incarnation: 1,

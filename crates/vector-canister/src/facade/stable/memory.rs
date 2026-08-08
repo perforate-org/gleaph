@@ -123,6 +123,11 @@ impl ShardCanisterCatalog {
         self.by_canister.get(&canister)
     }
 
+    /// Number of owned shards (the def-time source of `run_capacity`, ADR 0064 §7).
+    pub(crate) fn owned_shard_count(&self) -> usize {
+        self.by_shard.len() as usize
+    }
+
     pub(crate) fn insert(
         &mut self,
         shard_id: ShardId,

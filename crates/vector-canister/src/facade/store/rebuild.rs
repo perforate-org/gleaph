@@ -764,8 +764,8 @@ impl VectorCanisterStore {
         let mut last_key: Option<SubjectKey> = None;
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
-        // (subject key, vector_id, generation, active bytes) for subjects still needing a shadow.
-        let mut pending: Vec<(SubjectKey, u64, u64, Vec<u8>)> = Vec::new();
+        // (subject key, vector_id, active bytes) for subjects still needing a shadow.
+        let mut pending: Vec<(SubjectKey, u64, Vec<u8>)> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_scan");
@@ -801,7 +801,7 @@ impl VectorCanisterStore {
                         continue;
                     };
                     bytes_buffered += bytes.len() as u64;
-                    pending.push((*key, vector_id, active_slot.generation, bytes));
+                    pending.push((*key, vector_id, bytes));
                     // Bound transient heap bytes: break after buffering at least one vector once the
                     // per-step byte budget is reached (cursor resumes from `last_key`).
                     if bytes_buffered >= max_vector_bytes {
@@ -815,15 +815,13 @@ impl VectorCanisterStore {
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_append");
-            for (key, vector_id, generation, bytes) in pending {
+            for (key, vector_id, bytes) in pending {
                 let partition = assign_partition(&centroids, &bytes);
                 let shadow_slot = self.append_slot(
                     index_id,
                     target_index_version,
                     partition,
                     &def,
-                    vector_id,
-                    generation,
                     key.subject,
                     &bytes,
                 )?;

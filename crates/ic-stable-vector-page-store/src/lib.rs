@@ -36,7 +36,8 @@ pub mod run;
 pub mod slab;
 
 pub use header::{
-    FORMAT_VERSION, HeaderError, MAGIC_PAGE, MAGIC_SLAB, MAX_RUNS, PageHeader, SlabHeader,
+    FORMAT_VERSION, HeaderError, MAGIC_PAGE, MAGIC_SLAB, MAX_RUNS, PAGE_HEADER_SIZE, PageHeader,
+    SLAB_HEADER_SIZE, SlabHeader,
 };
 pub use layout::PageLayout;
 pub use payload::{MAX_VERTEX_ID, PayloadError, RowMeta, VertexPayload};

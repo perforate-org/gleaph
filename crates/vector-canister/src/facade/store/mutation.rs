@@ -8,14 +8,14 @@ use super::rebuild::rebuild_state_of;
 use super::search::{assign_partition, read_centroids_at};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, FIRST_ALLOCATION, INITIAL_INDEX_VERSION,
-    PAGE_HEADER_BYTES, VectorCanisterStore,
+    VectorCanisterStore,
 };
 use crate::encoding::EncodingRecord;
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::facade::stable::{
-    IVF_CENTROID_META, PAGE_STORE, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS,
-    VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT,
+    VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
 #[cfg(test)]
 use crate::records::PartitionKey;
@@ -28,6 +28,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
     VectorSubject,
 };
+use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
 
 /// How a mutation must mirror its live effect across index versions during a rebuild (ADR 0031
 /// Slice 7). Derived per-op from the durable rebuild state of `op.index_id`.
@@ -72,16 +73,30 @@ fn rebuild_mutation_mode(index_id: u32) -> RebuildMutationMode {
 }
 
 /// Computes `slots_per_page` from a page byte budget and stride, rejecting a `< 1` capacity.
-fn slots_per_page_for(max_page_bytes: u32, stride_bytes: u32) -> Result<u32, VectorCanisterError> {
-    if stride_bytes == 0 {
-        return Err(VectorCanisterError::DimensionMismatch);
-    }
-    let usable = max_page_bytes.saturating_sub(PAGE_HEADER_BYTES);
-    let slots = usable / stride_bytes;
-    if slots < 1 {
-        return Err(VectorCanisterError::InvalidPageCapacity);
-    }
-    Ok(slots)
+/// Largest `slots_per_page` (capacity) whose page fits `max_page_bytes` under the new two-table page
+/// geometry (ADR 0064 §7). Fails closed with [`VectorCanisterError::InvalidPageCapacity`] when even a
+/// single-row page does not fit.
+fn slots_per_page_for(
+    max_page_bytes: u32,
+    pad_stride_bytes: u32,
+    meta_stride_bytes: u32,
+    run_capacity: u32,
+) -> Result<u32, VectorCanisterError> {
+    let capacity = PageLayout::max_capacity_for(
+        max_page_bytes as usize,
+        pad_stride_bytes,
+        meta_stride_bytes,
+        run_capacity,
+    )
+    .ok_or(VectorCanisterError::InvalidPageCapacity)?;
+    Ok(capacity)
+}
+
+/// Run-table width for a def: `min(owned_shards, MAX_RUNS)`, floored at 1. Owned shards come from the
+/// shard↔canister catalog at def creation; the value is frozen into the def (ADR 0064 §7).
+fn owned_run_capacity() -> u32 {
+    let owned = SHARD_CANISTER_CATALOG.with_borrow(|c| c.owned_shard_count());
+    (owned as u32).clamp(1, MAX_RUNS)
 }
 
 impl VectorCanisterStore {
@@ -126,7 +141,15 @@ impl VectorCanisterStore {
         let record = EncodingRecord::from_parts(encoding, dims)
             .map_err(|_| VectorCanisterError::DimensionMismatch)?;
         let stride_bytes = record.stride_bytes;
-        let slots_per_page = slots_per_page_for(DEFAULT_MAX_PAGE_BYTES, stride_bytes)?;
+        let pad_stride_bytes = record.pad_stride_bytes;
+        let meta_stride_bytes = record.meta_stride();
+        let run_capacity = owned_run_capacity();
+        let slots_per_page = slots_per_page_for(
+            DEFAULT_MAX_PAGE_BYTES,
+            pad_stride_bytes,
+            meta_stride_bytes,
+            run_capacity,
+        )?;
         let def = VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
             encoding,
@@ -135,6 +158,9 @@ impl VectorCanisterStore {
             nlist: 1,
             active_index_version: INITIAL_INDEX_VERSION,
             stride_bytes,
+            pad_stride_bytes,
+            meta_stride_bytes,
+            run_capacity,
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
             next_vector_id: FIRST_ALLOCATION,
@@ -161,36 +187,25 @@ impl VectorCanisterStore {
     }
 
     /// Appends a vector row into the given partition's page chain via the slab page store
-    /// ([`crate::facade::stable::page_store`], ADR 0032), rolling a new page when the mutable page is
-    /// full. Fallible because the slab can fail to `grow`; the store commits write-then-commit so a
-    /// failed grow leaves no head/meta pointing at unwritten bytes.
+    /// ([`crate::facade::stable::page_store`], ADR 0064 §7), rolling a new page when the mutable page
+    /// is full or its run table would overflow. Fallible because the slab can fail to `grow`; the
+    /// store commits write-then-commit so a failed grow leaves no head/meta pointing at unwritten
+    /// bytes.
     ///
-    /// Production callers pass `DEGENERATE_PARTITION_ID` (every production def is `nlist == 1`);
-    /// the `partition_id` parameter is what lets the Slice 6 seed helpers populate `nlist > 1`
-    /// partition chains and is forward-useful for the Slice 7 rebuild.
-    #[allow(clippy::too_many_arguments)]
+    /// Production callers pass `DEGENERATE_PARTITION_ID` (every production def is `nlist == 1`); the
+    /// `partition_id` parameter is what lets the Slice 6 seed helpers populate `nlist > 1` partition
+    /// chains and is forward-useful for the Slice 7 rebuild.
     pub(super) fn append_slot(
         &self,
         index_id: u32,
         index_version: u64,
         partition_id: u32,
         def: &VectorIndexDef,
-        vector_id: u64,
-        generation: u64,
         subject: VectorSubject,
         bytes: &[u8],
     ) -> Result<SlotRef, VectorCanisterError> {
         PAGE_STORE.with_borrow_mut(|store| {
-            store.append_row(
-                index_id,
-                index_version,
-                partition_id,
-                def,
-                vector_id,
-                generation,
-                subject,
-                bytes,
-            )
+            store.append_row(index_id, index_version, partition_id, def, subject, bytes)
         })
     }
 
@@ -330,15 +345,12 @@ impl VectorCanisterStore {
                     .current_slot_for(active)
                     .expect("live entry has a slot");
                 let vector_id = entry.vector_id.expect("live entry has a vector_id");
-                let generation = old_slot.generation + 1;
                 let active_partition = self.active_partition(&def, op.index_id, &op.bytes);
                 let new_slot = self.append_slot(
                     op.index_id,
                     active,
                     active_partition,
                     &def,
-                    vector_id,
-                    generation,
                     op.subject,
                     &op.bytes,
                 )?;
@@ -367,8 +379,6 @@ impl VectorCanisterStore {
                             target,
                             partition,
                             &def,
-                            vector_id,
-                            generation,
                             op.subject,
                             &op.bytes,
                         ) {
@@ -429,8 +439,6 @@ impl VectorCanisterStore {
             active,
             active_partition,
             def,
-            vector_id,
-            FIRST_ALLOCATION,
             op.subject,
             &op.bytes,
         )?;
@@ -446,16 +454,7 @@ impl VectorCanisterStore {
             } => {
                 let partition =
                     self.shadow_partition(op.index_id, target, target_nlist, def.dims, &op.bytes);
-                match self.append_slot(
-                    op.index_id,
-                    target,
-                    partition,
-                    def,
-                    vector_id,
-                    FIRST_ALLOCATION,
-                    op.subject,
-                    &op.bytes,
-                ) {
+                match self.append_slot(op.index_id, target, partition, def, op.subject, &op.bytes) {
                     Ok(shadow) => Some(shadow),
                     Err(err) => {
                         self.tombstone_slot(op.index_id, slot);
@@ -634,8 +633,18 @@ impl VectorCanisterStore {
         dims: u16,
         max_page_bytes: u32,
     ) -> Result<(), VectorCanisterError> {
-        let stride_bytes = encoding.stride_bytes(dims);
-        let slots_per_page = slots_per_page_for(max_page_bytes, stride_bytes)?;
+        let record = EncodingRecord::from_parts(encoding, dims)
+            .map_err(|_| VectorCanisterError::DimensionMismatch)?;
+        let stride_bytes = record.stride_bytes;
+        let pad_stride_bytes = record.pad_stride_bytes;
+        let meta_stride_bytes = record.meta_stride();
+        let run_capacity = 1; // isolated single-shard tests
+        let slots_per_page = slots_per_page_for(
+            max_page_bytes,
+            pad_stride_bytes,
+            meta_stride_bytes,
+            run_capacity,
+        )?;
         let def = VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
             encoding,
@@ -644,6 +653,9 @@ impl VectorCanisterStore {
             nlist: 1,
             active_index_version: INITIAL_INDEX_VERSION,
             stride_bytes,
+            pad_stride_bytes,
+            meta_stride_bytes,
+            run_capacity,
             max_page_bytes,
             slots_per_page,
             next_vector_id: FIRST_ALLOCATION,

@@ -8,9 +8,9 @@
 //!   current slot. Used when the index is degenerate (`nlist <= 1`) or its centroids are not ready.
 //! - **Partition-page scan** (Slice 6): score `query` against the index's centroids, select the
 //!   `nprobe` nearest partitions, and scan only those partitions' page chains via the slab page
-//!   store (ADR 0032). Each candidate row's subject is rebuilt from the row-local `subject_locator`
-//!   (retiring `VECTOR_ID_TO_SUBJECT` from this hot path) and re-validated against the subject map so
-//!   tombstoned / superseded / inconsistent rows are never scored.
+//!   store (ADR 0064 §7). Each candidate row's subject is rebuilt from the run-table shard plus the
+//!   packed `VertexPayload` vertex id (positional + payload validation) and re-validated against the
+//!   subject map so tombstoned / superseded / inconsistent rows are never scored.
 //!
 //! `nprobe` is the only recall knob: the selected partitions are scanned **in full**, so the result
 //! is the exact top-k over those partitions. There is no mid-scan page/candidate budget that could
@@ -19,11 +19,12 @@
 //! [`SubjectMapEntry`]: crate::records::SubjectMapEntry
 
 use super::VectorCanisterStore;
-use crate::facade::stable::page_store::{PageScratch, RowHeader};
+use crate::facade::stable::page_store::{PageScratch, RowInfo};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
     VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
@@ -436,13 +437,16 @@ impl VectorCanisterStore {
                     let Some(slot) = value.current_slot_for(active_index_version) else {
                         continue;
                     };
-                    let Some(expected_vector_id) = value.vector_id else {
+                    let Some((vertex_id, bytes)) = store.read_row_bytes(index_id, slot) else {
                         continue;
                     };
-                    let Some((header, bytes)) = store.read_row_bytes(index_id, slot) else {
-                        continue;
-                    };
-                    if header.vector_id != expected_vector_id {
+                    // Positional + payload validation: the row's packed vertex id must match the
+                    // allowlisted subject (the shard is known from the allowlist).
+                    let VectorSubject::Vertex {
+                        shard_id: _,
+                        vertex_id: subject_vertex,
+                    } = *subject;
+                    if vertex_id != subject_vertex {
                         continue;
                     }
                     let Some(distance) = raw_distance_f32(metric, query, &decode_f32(&bytes))
@@ -493,17 +497,16 @@ impl VectorCanisterStore {
                     let Some(slot) = value.current_slot_for(active_index_version) else {
                         continue;
                     };
-                    // A live entry always carries a `vector_id`; a `slot: Some / vector_id: None` row
-                    // is inconsistent drift and must be skipped, not scored.
-                    let Some(expected_vector_id) = value.vector_id else {
+                    let Some((vertex_id, bytes)) = store.read_row_bytes(req.index_id, slot) else {
                         continue;
                     };
-                    // `read_row_bytes` already rejects tombstoned / stale-generation / out-of-range
-                    // slots; the `vector_id` check closes the remaining drift case.
-                    let Some((header, bytes)) = store.read_row_bytes(req.index_id, slot) else {
-                        continue;
-                    };
-                    if header.vector_id != expected_vector_id {
+                    // Positional + payload validation: the row's packed vertex id must match the
+                    // subject-map key's vertex id.
+                    let VectorSubject::Vertex {
+                        shard_id: _,
+                        vertex_id: subject_vertex,
+                    } = key.subject;
+                    if vertex_id != subject_vertex {
                         continue;
                     }
                     // Skip indexed vectors that are non-finite or zero-norm for cosine; for L2Squared
@@ -556,11 +559,11 @@ impl VectorCanisterStore {
                     active,
                     partition_id,
                     &mut scratch,
-                    |slot, header, bytes| {
+                    |slot, info, bytes| {
                         if let Some(candidate) = self.fresh_row_candidate(
                             req.index_id,
                             slot,
-                            header,
+                            info,
                             query,
                             bytes,
                             def.metric,
@@ -576,28 +579,31 @@ impl VectorCanisterStore {
     }
 
     /// Re-validates a visited page row against the subject map and, if it is the subject's current
-    /// live slot, returns a scored candidate. The subject is rebuilt from the row-local
-    /// `subject_locator` (no `VECTOR_ID_TO_SUBJECT` read); `VECTOR_SUBJECT_TO_ID` remains the
-    /// freshness source of truth. Returns `None` for any missing/deleted/mismatched subject entry or
-    /// slot drift — the freshness contract shared with the exact scan.
+    /// live slot, returns a scored candidate. The subject is rebuilt from the run-table shard and the
+    /// packed `VertexPayload` vertex id; `VECTOR_SUBJECT_TO_ID` remains the freshness source of truth.
+    /// Returns `None` for any missing/deleted subject entry or slot drift — the freshness contract
+    /// shared with the exact scan.
     fn fresh_row_candidate(
         &self,
         index_id: u32,
         slot: SlotRef,
-        header: &RowHeader,
+        info: &RowInfo,
         query: &[f32],
         bytes: &[u8],
         metric: VectorMetric,
     ) -> Option<Candidate> {
-        let subject = header.subject();
+        let subject = VectorSubject::Vertex {
+            shard_id: ShardId::new(info.shard_id),
+            vertex_id: info.vertex_id,
+        };
         let entry =
             VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(index_id, subject)))?;
-        if entry.deleted || entry.vector_id != Some(header.vector_id) {
+        if entry.deleted {
             return None;
         }
         // Pages are scanned at the active version, so the subject's live slot for that version
         // (active `slot`, or `shadow_slot` once an atomic publish flips active onto the rebuilt one)
-        // must point at exactly this row (ADR 0031 Slice 7).
+        // must point at exactly this row (ADR 0064 §7 positional validation).
         if entry.current_slot_for(slot.index_version) != Some(slot) {
             return None;
         }

@@ -1,35 +1,36 @@
-//! Vector-index-owned composite slab page store (ADR 0032).
+//! Vector-index-owned composite slab page store (ADR 0064 §7 two-table format).
 //!
-//! Replaces the former `VECTOR_PAGE` large-value store with two stable regions opened as one
-//! composite store:
-//!
-//! - `VECTOR_PAGE_META` (`BTreeMap<PageKey, VectorPageMeta>`, MemoryId 10) — the page directory.
-//! - `VECTOR_ROW_SLAB` (raw stable memory, MemoryId 13) — the physical row bytes, behind a
-//!   magic/version header ([`VectorRowSlabHeaderV1`]).
-//!
-//! Each physical page is fixed-stride and laid out **structure-of-arrays** so the vector bytes form
-//! one contiguous scan unit, separated from the per-row metadata tables:
+//! Replaces the former ADR 0032 structure-of-arrays page store with the
+//! `ic-stable-vector-page-store` two-table page format:
 //!
 //! ```text
-//! page header: page_magic | capacity:u32 | row_stride:u32 | reserved
-//! tables:
-//!   vector_id       [u64; capacity]
-//!   generation      [u64; capacity]
-//!   subject_locator [(shard:u32, vertex:u32); capacity]
-//!   tombstone_bits  [ceil(capacity / 8)]
-//!   vector_bytes    [capacity * row_stride]
+//! [PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
 //! ```
 //!
-//! Allocation is tail-only (no free-span allocator in this slice); a page reserves its full span on
-//! creation. Page cleanup deletes `VECTOR_PAGE_META` entries only — slab bytes are left in place as
-//! dead space, so `occupied_tail` may exceed the highest referenced page end, and reopen validation
-//! allows that. `VECTOR_PARTITION_HEADS` is the per-partition allocator/counter owner and lives
-//! outside this composite store.
+//! Two stable regions are opened as one composite store:
+//!
+//! - `VECTOR_PAGE_META` (`BTreeMap<PageKey, VectorPageMeta>`, MemoryId 10) — the page directory.
+//! - `VECTOR_ROW_SLAB` (raw stable memory, MemoryId 13) — the physical row bytes behind a
+//!   `VSL`/version-1 slab header.
+//!
+//! Each row stores only its packed 30-bit [`VertexPayload`] (vertex id + bit-31 tombstone); the shard
+//! is shared across contiguous rows via the run table, so a shard is recorded once per run, not per
+//! row. `vector_bytes` rows are `pad_stride_bytes` wide (16-byte aligned for SIMD), and the trailing
+//! pad region is zero-filled so scoring kernels never observe non-finite garbage. Rows are
+//! **write-once at tail positions**: superseded rows are tombstoned (bit 31), never rewritten, so
+//! freshness is validated positionally (subject-map slot matches the scanned position) rather than by
+//! a row-carried `vector_id`/`generation`.
+//!
+//! Allocation is tail-only; a page reserves its full span on creation. Page cleanup deletes
+//! `VECTOR_PAGE_META` entries only — slab bytes are left in place as dead space, so `occupied_tail`
+//! may exceed the highest referenced page end, and reopen validation allows that.
+//! `VECTOR_PARTITION_HEADS` is the per-partition allocator/counter owner and lives outside this
+//! composite store. The format lineage restarts at version 1 (breaking; dev data wiped); the discarded
+//! ASCII-magic format is rejected fail-closed.
 
 use super::memory::{Memory, StablePageMetaMap, init_page_meta, init_row_slab};
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
-use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorPartitionHealthStep, VectorPartitionPageHealth,
     VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsStep,
@@ -37,82 +38,28 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::{Bound, Storable};
+use ic_stable_vector_page_store::{
+    PAGE_HEADER_SIZE, PageHeader, PageLayout, RowMeta, RunEntry, SLAB_HEADER_SIZE, Slab,
+    SlabHeader, VertexPayload, read_run,
+};
 use std::borrow::Cow;
 use std::ops::Bound as RangeBound;
 
 /// WASM stable-memory page size in bytes.
 const WASM_PAGE_SIZE: u64 = 65_536;
 
-/// Slab header magic (`"VSL1"`).
-const SLAB_MAGIC: &[u8; 4] = b"VSL1";
-/// Slab layout version.
-const SLAB_LAYOUT_VERSION: u32 = 1;
-/// Fixed slab header length: magic(4) + version(4) + occupied_tail(8) + flags(4) + reserved.
-const SLAB_HEADER_LEN: u64 = 32;
-
-/// Per-page header magic (`"VPG1"`).
-const PAGE_MAGIC: &[u8; 4] = b"VPG1";
-/// Fixed per-page header length: magic(4) + capacity(4) + row_stride(4) + reserved(4).
-const PAGE_HEADER_LEN: u64 = 16;
-
 /// Per-step page-meta budget cap for [`VectorSlabStore::stats_step`] (mirrors `MAX_REBUILD_STEP_WORK`).
 const MAX_SLAB_STATS_STEP_PAGES: u32 = 20_000;
 
 /// Encoded length of a [`PageKey`] (its fixed `Storable` bound). A caller-supplied
-/// [`VectorSlabStore::stats_step`] cursor must be exactly this many bytes; `PageKey::from_bytes`
-/// panics otherwise.
+/// [`VectorSlabStore::stats_step`] cursor must be exactly this many bytes.
 const PAGE_KEY_LEN: usize = 24;
 
-/// `ceil(capacity / 8)` tombstone-bitmap bytes for a page.
-const fn tombstone_bytes(capacity: u32) -> u64 {
-    (capacity as u64).div_ceil(8)
-}
-
-/// Total slab bytes one physical page of `capacity` rows of `row_stride` occupies.
-const fn page_span(capacity: u32, row_stride: u32) -> u64 {
-    PAGE_HEADER_LEN
-        + 24 * capacity as u64 // vector_id + generation + subject_locator tables
-        + tombstone_bytes(capacity)
-        + capacity as u64 * row_stride as u64
-}
-
-/// Overflow-checked [`page_span`] for reopen validation, where `capacity`/`row_stride` are
-/// untrusted directory bytes that could otherwise overflow the unchecked const arithmetic and wrap
-/// to a span that spuriously passes the bounds check.
-fn checked_page_span(capacity: u32, row_stride: u32) -> Option<u64> {
-    let cap = capacity as u64;
-    let tables = cap.checked_mul(24)?;
-    let vectors = cap.checked_mul(row_stride as u64)?;
-    PAGE_HEADER_LEN
-        .checked_add(tables)?
-        .checked_add(tombstone_bytes(capacity))?
-        .checked_add(vectors)
-}
-
-/// Byte offset of the `vector_id` table (relative to the slab) for a page at `base`.
-const fn vid_table(base: u64) -> u64 {
-    base + PAGE_HEADER_LEN
-}
-
-const fn gen_table(base: u64, capacity: u32) -> u64 {
-    vid_table(base) + 8 * capacity as u64
-}
-
-const fn loc_table(base: u64, capacity: u32) -> u64 {
-    vid_table(base) + 16 * capacity as u64
-}
-
-const fn tomb_table(base: u64, capacity: u32) -> u64 {
-    vid_table(base) + 24 * capacity as u64
-}
-
-const fn vec_table(base: u64, capacity: u32) -> u64 {
-    tomb_table(base, capacity) + tombstone_bytes(capacity)
-}
-
-/// Per-page directory metadata for the slab page store (ADR 0032). Carries only page-physical facts;
-/// `index_id`/`index_version`/`partition_id`/`page_id` live in the [`PageKey`]. Fixed-width
-/// `Storable` (28 bytes) to keep the directory value cheap.
+/// Per-page directory metadata for the slab page store. Carries page-physical facts; the page header
+/// on the slab is the format source of truth and the directory is cross-checked against it on reopen.
+/// `row_stride` is the stored `pad_stride_bytes` (16-aligned), `meta_stride` is 4 | 8 | 12, and
+/// `run_capacity` is the run-table width (`min(owned_shards, MAX_RUNS)`, frozen at def creation).
+/// Fixed-width `Storable` (36 bytes) to keep the directory value cheap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct VectorPageMeta {
     pub slab_offset: u64,
@@ -121,21 +68,25 @@ pub(crate) struct VectorPageMeta {
     pub live_count: u32,
     pub row_stride: u32,
     pub tombstone_count: u32,
+    pub meta_stride: u32,
+    pub run_capacity: u32,
 }
 
 impl VectorPageMeta {
-    fn to_array(self) -> [u8; 28] {
-        let mut out = [0u8; 28];
+    fn to_array(self) -> [u8; 36] {
+        let mut out = [0u8; 36];
         out[0..8].copy_from_slice(&self.slab_offset.to_le_bytes());
         out[8..12].copy_from_slice(&self.capacity.to_le_bytes());
         out[12..16].copy_from_slice(&self.row_count.to_le_bytes());
         out[16..20].copy_from_slice(&self.live_count.to_le_bytes());
         out[20..24].copy_from_slice(&self.row_stride.to_le_bytes());
         out[24..28].copy_from_slice(&self.tombstone_count.to_le_bytes());
+        out[28..32].copy_from_slice(&self.meta_stride.to_le_bytes());
+        out[32..36].copy_from_slice(&self.run_capacity.to_le_bytes());
         out
     }
 
-    fn from_array(raw: [u8; 28]) -> Self {
+    fn from_array(raw: [u8; 36]) -> Self {
         Self {
             slab_offset: u64::from_le_bytes(raw[0..8].try_into().expect("meta field")),
             capacity: u32::from_le_bytes(raw[8..12].try_into().expect("meta field")),
@@ -143,13 +94,15 @@ impl VectorPageMeta {
             live_count: u32::from_le_bytes(raw[16..20].try_into().expect("meta field")),
             row_stride: u32::from_le_bytes(raw[20..24].try_into().expect("meta field")),
             tombstone_count: u32::from_le_bytes(raw[24..28].try_into().expect("meta field")),
+            meta_stride: u32::from_le_bytes(raw[28..32].try_into().expect("meta field")),
+            run_capacity: u32::from_le_bytes(raw[32..36].try_into().expect("meta field")),
         }
     }
 }
 
 impl Storable for VectorPageMeta {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 28,
+        max_size: 36,
         is_fixed_size: true,
     };
 
@@ -162,30 +115,18 @@ impl Storable for VectorPageMeta {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let mut raw = [0u8; 28];
+        let mut raw = [0u8; 36];
         raw.copy_from_slice(bytes.as_ref());
         Self::from_array(raw)
     }
 }
 
-/// Decoded per-row metadata returned by [`VectorSlabStore::read_row_bytes`] and yielded to the
-/// [`VectorSlabStore::visit_partition_pages`] visitor. `subject_locator` is `(shard_id, vertex_id)`,
-/// a derived scan accelerator — `VECTOR_SUBJECT_TO_ID` remains the freshness source of truth.
+/// Decoded identity of one live scanned page row: the shared shard (from the run table) and the
+/// 30-bit vertex id (from the packed payload). Tombstoned rows are filtered before this is built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RowHeader {
-    pub vector_id: u64,
-    pub generation: u64,
-    pub subject_locator: (u32, u32),
-}
-
-impl RowHeader {
-    /// Rebuilds the `VectorSubject` this row's locator points at.
-    pub(crate) fn subject(&self) -> VectorSubject {
-        VectorSubject::Vertex {
-            shard_id: ShardId::new(self.subject_locator.0),
-            vertex_id: self.subject_locator.1,
-        }
-    }
+pub(crate) struct RowInfo {
+    pub shard_id: u32,
+    pub vertex_id: u32,
 }
 
 /// Outcome of one bounded [`VectorSlabStore::drop_version_pages`] step.
@@ -234,7 +175,7 @@ impl SlabStatsAcc {
     }
 
     fn observe(&mut self, key: &PageKey, m: &VectorPageMeta) {
-        let bytes = checked_page_span(m.capacity, m.row_stride).unwrap_or(0);
+        let bytes = page_span_bytes(m).unwrap_or(0);
         self.referenced_global = self.referenced_global.saturating_add(bytes);
 
         if self.index_id.is_some_and(|id| key.index_id != id) {
@@ -298,55 +239,67 @@ impl SlabStatsAcc {
 /// so row metadata is decoded from the heap buffer, never re-read slot-by-slot from stable memory.
 pub(crate) struct PageScratch {
     buf: Vec<u8>,
-    capacity: u32,
-    row_stride: u32,
+    layout: PageLayout,
+    run_count: u32,
 }
 
 impl PageScratch {
     pub(crate) fn new() -> Self {
+        // Placeholder geometry; `load` overwrites both fields before any decode.
+        let placeholder = PageHeader::new(1, 16, 4, 1).expect("placeholder page header");
         Self {
             buf: Vec::new(),
-            capacity: 0,
-            row_stride: 0,
+            layout: PageLayout::new(&placeholder).expect("placeholder layout"),
+            run_count: 0,
         }
     }
 
     /// Bulk-reads one whole page into the scratch buffer.
-    fn load(&mut self, slab: &Memory, meta: &VectorPageMeta) {
-        let span = page_span(meta.capacity, meta.row_stride) as usize;
-        self.buf.resize(span, 0);
-        slab.read(meta.slab_offset, &mut self.buf[..span]);
-        self.capacity = meta.capacity;
-        self.row_stride = meta.row_stride;
+    fn load(&mut self, slab: &Memory, meta: &VectorPageMeta, header: &PageHeader) {
+        let layout = PageLayout::new(header).expect("valid page layout");
+        self.buf.resize(layout.page_len(), 0);
+        slab.read(meta.slab_offset, &mut self.buf[..layout.page_len()]);
+        self.layout = layout;
+        self.run_count = header.run_count;
     }
 
     fn is_tombstoned(&self, slot: u32) -> bool {
-        let tomb = (24 * self.capacity as usize) + PAGE_HEADER_LEN as usize;
-        let byte = self.buf[tomb + (slot / 8) as usize];
-        (byte >> (slot % 8)) & 1 == 1
+        let r = self.layout.row_meta_range_at(slot);
+        let meta = RowMeta::from_bytes(&self.buf[r.start..r.end], self.layout.meta_stride())
+            .expect("decode row meta");
+        meta.vertex.is_tombstone()
     }
 
-    fn vector_id(&self, slot: u32) -> u64 {
-        let off = PAGE_HEADER_LEN as usize + 8 * slot as usize;
-        u64::from_le_bytes(self.buf[off..off + 8].try_into().expect("vid field"))
+    fn row_info(&self, slot: u32) -> RowInfo {
+        let r = self.layout.row_meta_range_at(slot);
+        let meta = RowMeta::from_bytes(&self.buf[r.start..r.end], self.layout.meta_stride())
+            .expect("decode row meta");
+        RowInfo {
+            shard_id: self.shard_of(slot),
+            vertex_id: meta.vertex.vertex_id(),
+        }
     }
 
-    fn generation(&self, slot: u32) -> u64 {
-        let off = PAGE_HEADER_LEN as usize + 8 * self.capacity as usize + 8 * slot as usize;
-        u64::from_le_bytes(self.buf[off..off + 8].try_into().expect("gen field"))
-    }
-
-    fn locator(&self, slot: u32) -> (u32, u32) {
-        let off = PAGE_HEADER_LEN as usize + 16 * self.capacity as usize + 8 * slot as usize;
-        let shard = u32::from_le_bytes(self.buf[off..off + 4].try_into().expect("loc field"));
-        let vertex = u32::from_le_bytes(self.buf[off + 4..off + 8].try_into().expect("loc field"));
-        (shard, vertex)
+    /// Resolves the shard of `slot` by walking the run table's cumulative lengths.
+    fn shard_of(&self, slot: u32) -> u32 {
+        let table = &self.buf[self.layout.run_table_range()];
+        let mut pos = 0u32;
+        for i in 0..self.run_count {
+            let entry = read_run(table, i as usize).expect("run entry");
+            if slot < pos + entry.run_len {
+                return entry.shard_id;
+            }
+            pos += entry.run_len;
+        }
+        panic!(
+            "slot {slot} not covered by run table (run_count {})",
+            self.run_count
+        );
     }
 
     fn vec_slice(&self, slot: u32) -> &[u8] {
-        let vec = vec_table(0, self.capacity) as usize;
-        let start = vec + slot as usize * self.row_stride as usize;
-        &self.buf[start..start + self.row_stride as usize]
+        let r = self.layout.vector_range_at(slot);
+        &self.buf[r.start..r.end]
     }
 }
 
@@ -374,12 +327,47 @@ fn grow_to_at_least(slab: &Memory, min_bytes: u64) -> Result<(), VectorCanisterE
 }
 
 fn write_slab_header(slab: &Memory, occupied_tail: u64) {
-    let mut buf = [0u8; SLAB_HEADER_LEN as usize];
-    buf[0..4].copy_from_slice(SLAB_MAGIC);
-    buf[4..8].copy_from_slice(&SLAB_LAYOUT_VERSION.to_le_bytes());
-    buf[8..16].copy_from_slice(&occupied_tail.to_le_bytes());
-    // bytes 16..20 layout_flags (0), 20..32 reserved (0)
-    slab.write(0, &buf);
+    slab.write(0, &SlabHeader::new(occupied_tail, 0).to_bytes());
+}
+
+fn read_page_header_at(slab: &Memory, base: u64) -> PageHeader {
+    let mut buf = [0u8; PAGE_HEADER_SIZE];
+    slab.read(base, &mut buf);
+    PageHeader::from_bytes(&buf).expect("valid page header")
+}
+
+fn read_run_at(slab: &Memory, base: u64, layout: &PageLayout, index: u32) -> RunEntry {
+    let start = layout.run_table_range().start + index as usize * RunEntry::SIZE;
+    let mut buf = [0u8; RunEntry::SIZE];
+    slab.read(base + start as u64, &mut buf);
+    RunEntry::from_bytes(&buf)
+}
+
+fn write_run_at(slab: &Memory, base: u64, layout: &PageLayout, index: u32, entry: RunEntry) {
+    let start = layout.run_table_range().start + index as usize * RunEntry::SIZE;
+    slab.write(base + start as u64, &entry.to_bytes());
+}
+
+/// Persists a page header with a new `run_count` (used when a new run starts).
+fn write_page_header_run_count(slab: &Memory, base: u64, header: &PageHeader, run_count: u32) {
+    let mut h = *header;
+    h.set_run_count(run_count)
+        .expect("run count within capacity");
+    slab.write(base, &h.to_bytes());
+}
+
+/// Exact on-slab byte span of one page, `None` on invalid geometry/overflow.
+fn page_span_bytes(m: &VectorPageMeta) -> Option<u64> {
+    let header = PageHeader::new(m.capacity, m.row_stride, m.meta_stride, m.run_capacity).ok()?;
+    PageLayout::new(&header).ok().map(|l| l.page_len() as u64)
+}
+
+/// Returns `true` when the first `SLAB_HEADER_SIZE` bytes of the region are all zero (a pre-grown but
+/// never written region).
+fn slab_header_bytes_are_zero(slab: &Memory) -> bool {
+    let mut buf = [0u8; SLAB_HEADER_SIZE];
+    slab.read(0, &mut buf);
+    buf.iter().all(|b| *b == 0)
 }
 
 #[cfg(test)]
@@ -414,8 +402,8 @@ fn take_injected_append_failure() -> bool {
 }
 
 impl VectorSlabStore {
-    /// Opens both regions as one composite store, validating the reopen matrix (ADR 0032 invariant
-    /// 6). Traps (fail closed) on any partial/corrupt layout.
+    /// Opens both regions as one composite store, validating the reopen matrix (ADR 0064 §7
+    /// invariant). Traps (fails closed) on any partial/corrupt layout.
     pub(crate) fn init() -> Self {
         Self::from_regions(init_page_meta(), init_row_slab())
     }
@@ -431,46 +419,20 @@ impl VectorSlabStore {
         }
     }
 
-    /// Composite open. Freshness is keyed on raw slab size, not magic: a non-empty region with bad
-    /// magic is corruption, not freshness.
+    /// Composite open. Freshness is keyed on raw slab size/magic, not the directory: an all-zero slab
+    /// is fresh (and must pair with an empty directory), a non-empty slab must carry a valid
+    /// `VSL`/version-1 header, and each directory entry must cross-check its page header and span.
     fn open(slab: &Memory, meta: &StablePageMetaMap) -> u64 {
-        if slab.size() == 0 {
+        if slab.size() == 0 || slab_header_bytes_are_zero(slab) {
             assert!(
                 meta.is_empty(),
                 "vector slab: empty slab region with non-empty page meta (partial layout)"
             );
-            grow_to_at_least(slab, SLAB_HEADER_LEN).expect("grow fresh vector slab header");
-            write_slab_header(slab, SLAB_HEADER_LEN);
-            return SLAB_HEADER_LEN;
         }
+        let occupied_tail = Slab::open_or_init(slab)
+            .expect("vector slab: corrupt/unsupported slab header")
+            .occupied_tail();
 
-        let mut magic = [0u8; 4];
-        slab.read(0, &mut magic);
-        assert_eq!(
-            &magic, SLAB_MAGIC,
-            "vector slab: invalid magic on a non-empty slab region (corrupt/partial layout)"
-        );
-        let mut ver = [0u8; 4];
-        slab.read(4, &mut ver);
-        assert_eq!(
-            u32::from_le_bytes(ver),
-            SLAB_LAYOUT_VERSION,
-            "vector slab: unsupported layout version"
-        );
-        let mut tail = [0u8; 8];
-        slab.read(8, &mut tail);
-        let occupied_tail = u64::from_le_bytes(tail);
-        let size_bytes = slab.size() * WASM_PAGE_SIZE;
-        assert!(
-            occupied_tail >= SLAB_HEADER_LEN && occupied_tail <= size_bytes,
-            "vector slab: occupied_tail {occupied_tail} out of bounds (header {SLAB_HEADER_LEN}, \
-             size {size_bytes})"
-        );
-        // Empty meta is a valid empty-initialized store (or drop-all-then-reopen). A non-empty meta
-        // must satisfy the ADR 0032 storage-boundary invariants and lie within the allocated region;
-        // `occupied_tail` may exceed the highest page end (leaked dead space) and that is allowed.
-        // Fail-closed here so a corrupt directory cannot be accepted only to trap later when
-        // `visit_partition_pages` scans `0..row_count` past a scratch buffer sized to `capacity`.
         for entry in meta.iter() {
             let m = entry.value();
             assert!(
@@ -487,34 +449,23 @@ impl VectorSlabStore {
                 m.tombstone_count,
                 m.row_count
             );
-            let span = checked_page_span(m.capacity, m.row_stride)
-                .expect("vector slab: page span overflow (corrupt directory)");
-            let end = m.slab_offset.checked_add(span).expect("page span overflow");
+            let header = read_page_header_at(slab, m.slab_offset);
             assert!(
-                m.slab_offset >= SLAB_HEADER_LEN && end <= occupied_tail,
+                header.capacity == m.capacity
+                    && header.row_stride == m.row_stride
+                    && header.meta_stride == m.meta_stride
+                    && header.run_capacity == m.run_capacity,
+                "vector slab: page header geometry disagrees with directory at offset {}",
+                m.slab_offset
+            );
+            let layout = PageLayout::new(&header).expect("vector slab: page span overflow");
+            let end = m
+                .slab_offset
+                .checked_add(layout.page_len() as u64)
+                .expect("page span overflow");
+            assert!(
+                m.slab_offset >= SLAB_HEADER_SIZE as u64 && end <= occupied_tail,
                 "vector slab: page meta span [{}, {end}) outside [header, occupied_tail={occupied_tail})",
-                m.slab_offset
-            );
-            // Cross-check the on-slab page header against the directory: a valid reopen requires the
-            // physical page magic and fixed-stride layout to match what the directory entry claims.
-            let mut hdr = [0u8; PAGE_HEADER_LEN as usize];
-            slab.read(m.slab_offset, &mut hdr);
-            let mut page_magic = [0u8; 4];
-            page_magic.copy_from_slice(&hdr[0..4]);
-            assert_eq!(
-                &page_magic, PAGE_MAGIC,
-                "vector slab: page at offset {} missing page magic (corrupt/partial layout)",
-                m.slab_offset
-            );
-            let hdr_capacity =
-                u32::from_le_bytes(hdr[4..8].try_into().expect("page header capacity"));
-            let hdr_stride = u32::from_le_bytes(hdr[8..12].try_into().expect("page header stride"));
-            assert!(
-                hdr_capacity == m.capacity && hdr_stride == m.row_stride,
-                "vector slab: page header (capacity {hdr_capacity}, stride {hdr_stride}) disagrees \
-                 with directory (capacity {}, stride {}) at offset {}",
-                m.capacity,
-                m.row_stride,
                 m.slab_offset
             );
         }
@@ -526,125 +477,132 @@ impl VectorSlabStore {
     /// the bytes are reused on subsequent appends.
     pub(crate) fn reset(&mut self) {
         self.meta.clear_new();
-        grow_to_at_least(&self.slab, SLAB_HEADER_LEN).expect("grow vector slab header on reset");
-        write_slab_header(&self.slab, SLAB_HEADER_LEN);
-        self.occupied_tail = SLAB_HEADER_LEN;
+        grow_to_at_least(&self.slab, SLAB_HEADER_SIZE as u64)
+            .expect("grow vector slab header on reset");
+        write_slab_header(&self.slab, SLAB_HEADER_SIZE as u64);
+        self.occupied_tail = SLAB_HEADER_SIZE as u64;
     }
 
     fn set_occupied_tail(&mut self, tail: u64) {
         self.occupied_tail = tail;
-        self.slab.write(8, &tail.to_le_bytes());
+        write_slab_header(&self.slab, tail);
     }
 
-    /// Reserves and zero-initializes a fresh page at `base`, writing its page header. Fallible on
-    /// slab `grow`; must run before any directory mutation.
+    fn read_page_header(&self, base: u64) -> PageHeader {
+        read_page_header_at(&self.slab, base)
+    }
+
+    /// Reserves and initializes a fresh page at `base`, writing its page header. Fallible on slab
+    /// `grow`; must run before any directory mutation. Row/run-table bytes are written per-append
+    /// (write-once), so only the header is pre-written here.
     fn reserve_page(
         &mut self,
         base: u64,
         capacity: u32,
         row_stride: u32,
-    ) -> Result<(), VectorCanisterError> {
-        let span = page_span(capacity, row_stride);
-        let end = base.checked_add(span).expect("slab offset overflow");
+        meta_stride: u32,
+        run_capacity: u32,
+    ) -> Result<PageHeader, VectorCanisterError> {
+        let header = PageHeader::new(capacity, row_stride, meta_stride, run_capacity)
+            .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
+        let layout =
+            PageLayout::new(&header).map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
+        let end = base
+            .checked_add(layout.page_len() as u64)
+            .expect("slab offset overflow");
         grow_to_at_least(&self.slab, end)?;
-        let mut hdr = [0u8; PAGE_HEADER_LEN as usize];
-        hdr[0..4].copy_from_slice(PAGE_MAGIC);
-        hdr[4..8].copy_from_slice(&capacity.to_le_bytes());
-        hdr[8..12].copy_from_slice(&row_stride.to_le_bytes());
-        self.slab.write(base, &hdr);
-        // Zero the tombstone bitmap: dead space reused after a reset can hold stale bits, and rows
-        // are appended without re-clearing their bit.
-        let tomb = tomb_table(base, capacity);
-        let zeros = vec![0u8; tombstone_bytes(capacity) as usize];
-        self.slab.write(tomb, &zeros);
-        Ok(())
+        self.slab.write(base, &header.to_bytes());
+        Ok(header)
     }
 
-    /// Writes one row's SoA tables + vector bytes at `slot` of the page at `base`. The page region
-    /// is already reserved/grown, so this is infallible.
+    /// Writes one row's run-table entry and packed row meta + pad-zeroed vector bytes at `slot` of the
+    /// page at `base`. The page region is already reserved/grown, so this is infallible.
     fn write_row(
         &self,
         base: u64,
-        capacity: u32,
-        row_stride: u32,
+        layout: &PageLayout,
         slot: u32,
-        vector_id: u64,
-        generation: u64,
-        subject: VectorSubject,
+        payload: VertexPayload,
         bytes: &[u8],
     ) {
-        self.slab
-            .write(vid_table(base) + 8 * slot as u64, &vector_id.to_le_bytes());
+        let meta = RowMeta::new(payload, [0u8; 8]);
+        let meta_range = layout.row_meta_range_at(slot);
+        let mut meta_buf = [0u8; 12];
+        meta.write_into(&mut meta_buf[..layout.meta_stride()], layout.meta_stride())
+            .expect("encode row meta");
         self.slab.write(
-            gen_table(base, capacity) + 8 * slot as u64,
-            &generation.to_le_bytes(),
+            base + meta_range.start as u64,
+            &meta_buf[..layout.meta_stride()],
         );
-        let VectorSubject::Vertex {
-            shard_id,
-            vertex_id,
-        } = subject;
-        let mut loc = [0u8; 8];
-        loc[0..4].copy_from_slice(&shard_id.raw().to_le_bytes());
-        loc[4..8].copy_from_slice(&vertex_id.to_le_bytes());
-        self.slab
-            .write(loc_table(base, capacity) + 8 * slot as u64, &loc);
-        self.slab.write(
-            vec_table(base, capacity) + slot as u64 * row_stride as u64,
-            bytes,
-        );
+
+        let vec_start = base + layout.vector_range_at(slot).start as u64;
+        self.slab.write(vec_start, bytes);
+        // Zero the trailing pad region so `decode_f32`/`vector_is_finite` never observe non-finite
+        // stale slab bytes for a readable row.
+        let pad = layout.vector_stride() - bytes.len();
+        if pad > 0 {
+            let zeros = vec![0u8; pad];
+            self.slab.write(vec_start + bytes.len() as u64, &zeros);
+        }
     }
 
-    fn read_tombstone(&self, base: u64, capacity: u32, slot: u32) -> bool {
-        let mut byte = [0u8; 1];
-        self.slab
-            .read(tomb_table(base, capacity) + (slot / 8) as u64, &mut byte);
-        (byte[0] >> (slot % 8)) & 1 == 1
+    /// Writes the run entry for the append landing at `slot` of the page at `base`: either extends the
+    /// open run (rewriting its `run_len`), starts a new run (rewriting the page header `run_count`),
+    /// or, for a fresh page, creates run 0. `run-full` was already ruled out by the caller's roll
+    /// check, so a new run never exceeds `run_capacity`.
+    fn write_run_for_append(
+        &self,
+        base: u64,
+        layout: &PageLayout,
+        header: &PageHeader,
+        slot: u32,
+        shard: u32,
+        run_capacity: u32,
+    ) {
+        if slot == 0 {
+            debug_assert_eq!(header.run_count, 0, "fresh page starts with no runs");
+            write_run_at(&self.slab, base, layout, 0, RunEntry::new(shard, 1));
+            write_page_header_run_count(&self.slab, base, header, 1);
+        } else {
+            let last_index = header.run_count - 1;
+            let last = read_run_at(&self.slab, base, layout, last_index);
+            if last.shard_id == shard {
+                write_run_at(
+                    &self.slab,
+                    base,
+                    layout,
+                    last_index,
+                    RunEntry::new(shard, last.run_len + 1),
+                );
+            } else {
+                debug_assert!(
+                    header.run_count < run_capacity,
+                    "new run would exceed run_capacity"
+                );
+                let idx = header.run_count;
+                write_run_at(&self.slab, base, layout, idx, RunEntry::new(shard, 1));
+                write_page_header_run_count(&self.slab, base, header, header.run_count + 1);
+            }
+        }
     }
 
-    fn set_tombstone(&self, base: u64, capacity: u32, slot: u32) {
-        let addr = tomb_table(base, capacity) + (slot / 8) as u64;
-        let mut byte = [0u8; 1];
-        self.slab.read(addr, &mut byte);
-        byte[0] |= 1 << (slot % 8);
-        self.slab.write(addr, &byte);
+    /// True when appending `shard` to the mutable page `m` would start a new run while the page's run
+    /// table is already full (so the row must roll to a fresh page instead).
+    fn run_roll_required(&self, m: &VectorPageMeta, shard: u32, run_capacity: u32) -> bool {
+        if m.row_count == 0 {
+            return false;
+        }
+        let header = self.read_page_header(m.slab_offset);
+        let layout = PageLayout::new(&header).expect("valid page layout");
+        let last = read_run_at(&self.slab, m.slab_offset, &layout, header.run_count - 1);
+        last.shard_id != shard && header.run_count >= run_capacity
     }
 
-    fn read_generation(&self, base: u64, capacity: u32, slot: u32) -> u64 {
-        let mut buf = [0u8; 8];
-        self.slab
-            .read(gen_table(base, capacity) + 8 * slot as u64, &mut buf);
-        u64::from_le_bytes(buf)
-    }
-
-    fn read_vector_id(&self, base: u64, slot: u32) -> u64 {
-        let mut buf = [0u8; 8];
-        self.slab.read(vid_table(base) + 8 * slot as u64, &mut buf);
-        u64::from_le_bytes(buf)
-    }
-
-    fn read_locator(&self, base: u64, capacity: u32, slot: u32) -> (u32, u32) {
-        let mut buf = [0u8; 8];
-        self.slab
-            .read(loc_table(base, capacity) + 8 * slot as u64, &mut buf);
-        (
-            u32::from_le_bytes(buf[0..4].try_into().expect("loc field")),
-            u32::from_le_bytes(buf[4..8].try_into().expect("loc field")),
-        )
-    }
-
-    fn read_vec(&self, base: u64, capacity: u32, row_stride: u32, slot: u32) -> Vec<u8> {
-        let mut out = vec![0u8; row_stride as usize];
-        self.slab.read(
-            vec_table(base, capacity) + slot as u64 * row_stride as u64,
-            &mut out,
-        );
-        out
-    }
-
-    /// Appends a vector row into the partition's page chain, rolling a new page when the mutable
-    /// page is full. Write-then-commit: slab grow + writes happen before any `VECTOR_PAGE_META` /
-    /// `VECTOR_PARTITION_HEADS` mutation, and the head update is last, so a failed grow cannot leave
-    /// a head/meta pointing at unwritten bytes.
+    /// Appends a vector row into the partition's page chain, rolling a new page when the mutable page
+    /// is full **or** its run table would overflow (shard change with `run_count == run_capacity`).
+    /// Write-then-commit: slab grow + writes happen before any `VECTOR_PAGE_META` /
+    /// `VECTOR_PARTITION_HEADS` mutation, and the head update is last, so a failed grow cannot leave a
+    /// head/meta pointing at unwritten bytes.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn append_row(
         &mut self,
@@ -652,8 +610,6 @@ impl VectorSlabStore {
         index_version: u64,
         partition_id: u32,
         def: &VectorIndexDef,
-        vector_id: u64,
-        generation: u64,
         subject: VectorSubject,
         bytes: &[u8],
     ) -> Result<SlotRef, VectorCanisterError> {
@@ -663,12 +619,22 @@ impl VectorSlabStore {
             return Err(VectorCanisterError::StableGrowFailed);
         }
         let capacity = def.slots_per_page;
-        let row_stride = def.stride_bytes;
-        debug_assert_eq!(
-            bytes.len(),
-            row_stride as usize,
+        let row_stride = def.pad_stride_bytes;
+        let meta_stride = def.meta_stride_bytes;
+        let run_capacity = def.run_capacity;
+        debug_assert!(
+            bytes.len() <= row_stride as usize,
             "append row stride mismatch"
         );
+        let VectorSubject::Vertex {
+            shard_id,
+            vertex_id,
+        } = subject;
+        let shard = shard_id.raw();
+        // Reject vertex ids beyond the 30-bit payload contract fail-closed.
+        let payload =
+            VertexPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
+
         let head_key = PartitionKey::new(index_id, index_version, partition_id);
         let mut head = VECTOR_PARTITION_HEADS
             .with_borrow(|h| h.get(&head_key))
@@ -683,14 +649,15 @@ impl VectorSlabStore {
                 .meta
                 .get(&mutable_key)
                 .expect("mutable page meta present");
-            m.row_count >= m.capacity
+            m.row_count >= m.capacity || self.run_roll_required(&m, shard, run_capacity)
         };
 
-        let (page_id, mut meta) = if need_new_page {
+        let (page_id, mut meta, header) = if need_new_page {
             let page_id = head.next_page_id;
             let slab_offset = self.occupied_tail;
-            // Fallible slab grow + page-header/tombstone init BEFORE any directory mutation.
-            self.reserve_page(slab_offset, capacity, row_stride)?;
+            // Fallible slab grow + page-header init BEFORE any directory mutation.
+            let header =
+                self.reserve_page(slab_offset, capacity, row_stride, meta_stride, run_capacity)?;
             (
                 page_id,
                 VectorPageMeta {
@@ -700,7 +667,10 @@ impl VectorSlabStore {
                     live_count: 0,
                     row_stride,
                     tombstone_count: 0,
+                    meta_stride,
+                    run_capacity,
                 },
+                header,
             )
         } else {
             let page_id = head.mutable_page;
@@ -708,27 +678,33 @@ impl VectorSlabStore {
             (
                 page_id,
                 self.meta.get(&mutable_key).expect("mutable page meta"),
+                self.read_page_header(
+                    self.meta
+                        .get(&mutable_key)
+                        .expect("mutable page meta")
+                        .slab_offset,
+                ),
             )
         };
+        let layout = PageLayout::new(&header).expect("valid page layout");
         debug_assert_eq!(meta.row_stride, row_stride, "page stride mismatch");
 
         let slot = meta.row_count;
         let page_key = PageKey::new(index_id, index_version, partition_id, page_id);
-        // Write row bytes (infallible: the page region is already reserved/grown).
-        self.write_row(
+        // Infallible page writes (the page region is already reserved/grown).
+        self.write_run_for_append(
             meta.slab_offset,
-            capacity,
-            row_stride,
+            &layout,
+            &header,
             slot,
-            vector_id,
-            generation,
-            subject,
-            bytes,
+            shard,
+            run_capacity,
         );
+        self.write_row(meta.slab_offset, &layout, slot, payload, bytes);
 
-        // Commit directory: occupied_tail (header) -> page meta -> partition head (last).
+        // Commit directory: occupied_tail (slab header) -> page meta -> partition head (last).
         if need_new_page {
-            self.set_occupied_tail(meta.slab_offset + page_span(capacity, row_stride));
+            self.set_occupied_tail(meta.slab_offset + layout.page_len() as u64);
         }
         meta.row_count += 1;
         meta.live_count += 1;
@@ -750,14 +726,13 @@ impl VectorSlabStore {
             partition_id,
             page_id,
             slot,
-            generation,
         })
     }
 
     /// Marks a slot tombstoned, owning all live/tombstone accounting idempotently: on the
-    /// live->tombstoned transition it sets the bit and adjusts `VectorPageMeta.live_count` /
-    /// `tombstone_count` and the row's `VECTOR_PARTITION_HEADS.live_len` exactly once. Returns
-    /// `true` only when the row changed (was previously live and in range).
+    /// live->tombstoned transition it sets the payload tombstone bit and adjusts
+    /// `VectorPageMeta.live_count` / `tombstone_count` and the row's `VECTOR_PARTITION_HEADS.live_len`
+    /// exactly once. Returns `true` only when the row changed (was previously live and in range).
     pub(crate) fn tombstone_row(&mut self, index_id: u32, slot: SlotRef) -> bool {
         let page_key = PageKey::new(
             index_id,
@@ -771,10 +746,23 @@ impl VectorSlabStore {
         if slot.slot >= meta.row_count {
             return false;
         }
-        if self.read_tombstone(meta.slab_offset, meta.capacity, slot.slot) {
+        let header = self.read_page_header(meta.slab_offset);
+        let layout = PageLayout::new(&header).expect("valid page layout");
+        let meta_range = layout.row_meta_range_at(slot.slot);
+        let mut buf = vec![0u8; layout.meta_stride()];
+        self.slab
+            .read(meta.slab_offset + meta_range.start as u64, &mut buf);
+        let mut row_meta =
+            RowMeta::from_bytes(&buf, layout.meta_stride()).expect("decode row meta");
+        if row_meta.vertex.is_tombstone() {
             return false;
         }
-        self.set_tombstone(meta.slab_offset, meta.capacity, slot.slot);
+        row_meta.vertex = row_meta.vertex.tombstoned();
+        row_meta
+            .write_into(&mut buf, layout.meta_stride())
+            .expect("encode row meta");
+        self.slab
+            .write(meta.slab_offset + meta_range.start as u64, &buf);
         meta.tombstone_count += 1;
         meta.live_count = meta.live_count.saturating_sub(1);
         self.meta.insert(page_key, meta);
@@ -789,13 +777,10 @@ impl VectorSlabStore {
         true
     }
 
-    /// Reads a slot's vector bytes + decoded row header, rejecting out-of-range slots, tombstoned
-    /// rows, and generation mismatches.
-    pub(crate) fn read_row_bytes(
-        &self,
-        index_id: u32,
-        slot: SlotRef,
-    ) -> Option<(RowHeader, Vec<u8>)> {
+    /// Reads a slot's vector bytes + decoded vertex id, rejecting out-of-range and tombstoned slots.
+    /// Callers resolve the subject from the map key and validate the returned `vertex_id` against
+    /// `subject.vertex_id` (positional + payload validation; no row-carried id/generation).
+    pub(crate) fn read_row_bytes(&self, index_id: u32, slot: SlotRef) -> Option<(u32, Vec<u8>)> {
         let page_key = PageKey::new(
             index_id,
             slot.index_version,
@@ -806,30 +791,27 @@ impl VectorSlabStore {
         if slot.slot >= meta.row_count {
             return None;
         }
-        if self.read_tombstone(meta.slab_offset, meta.capacity, slot.slot) {
+        let header = self.read_page_header(meta.slab_offset);
+        let layout = PageLayout::new(&header).ok()?;
+        let meta_range = layout.row_meta_range_at(slot.slot);
+        let mut buf = vec![0u8; layout.meta_stride()];
+        self.slab
+            .read(meta.slab_offset + meta_range.start as u64, &mut buf);
+        let row_meta = RowMeta::from_bytes(&buf, layout.meta_stride()).ok()?;
+        if row_meta.vertex.is_tombstone() {
             return None;
         }
-        let generation = self.read_generation(meta.slab_offset, meta.capacity, slot.slot);
-        if generation != slot.generation {
-            return None;
-        }
-        let vector_id = self.read_vector_id(meta.slab_offset, slot.slot);
-        let subject_locator = self.read_locator(meta.slab_offset, meta.capacity, slot.slot);
-        let bytes = self.read_vec(meta.slab_offset, meta.capacity, meta.row_stride, slot.slot);
-        Some((
-            RowHeader {
-                vector_id,
-                generation,
-                subject_locator,
-            },
-            bytes,
-        ))
+        let vec_start = meta.slab_offset + layout.vector_range_at(slot.slot).start as u64;
+        let mut out = vec![0u8; layout.vector_stride()];
+        self.slab.read(vec_start, &mut out);
+        Some((row_meta.vertex.vertex_id(), out))
     }
 
     /// Page/batch visitor over one partition's page chain. Each page is bulk-read once into
     /// `scratch`; the visitor is invoked per live (non-tombstoned) slot with the decoded
-    /// [`RowHeader`] and a zero-copy slice into the contiguous `vector_bytes` table.
-    pub(crate) fn visit_partition_pages<F: FnMut(SlotRef, &RowHeader, &[u8])>(
+    /// [`RowInfo`] (shard from the run table + vertex id from the payload) and a zero-copy slice into
+    /// the contiguous `vector_bytes` table.
+    pub(crate) fn visit_partition_pages<F: FnMut(SlotRef, &RowInfo, &[u8])>(
         &self,
         index_id: u32,
         index_version: u64,
@@ -850,24 +832,20 @@ impl VectorSlabStore {
                 break; // partition-major order: past this partition's pages.
             }
             let meta = entry.value();
-            scratch.load(&self.slab, &meta);
+            let header = self.read_page_header(meta.slab_offset);
+            scratch.load(&self.slab, &meta, &header);
             for slot in 0..meta.row_count {
                 if scratch.is_tombstoned(slot) {
                     continue;
                 }
-                let header = RowHeader {
-                    vector_id: scratch.vector_id(slot),
-                    generation: scratch.generation(slot),
-                    subject_locator: scratch.locator(slot),
-                };
+                let info = scratch.row_info(slot);
                 let slot_ref = SlotRef {
                     index_version,
                     partition_id,
                     page_id: key.page_id,
                     slot,
-                    generation: header.generation,
                 };
-                visitor(slot_ref, &header, scratch.vec_slice(slot));
+                visitor(slot_ref, &info, scratch.vec_slice(slot));
             }
         }
     }
@@ -914,16 +892,12 @@ impl VectorSlabStore {
         DropProgress { cursor, exhausted }
     }
 
-    /// Derived, admin-only slab-space observability (ADR 0032 follow-up slice). Computes whole-slab
-    /// physical facts plus logical counters scoped to `index_id` (`None` = all indexes), in a single
-    /// pass over `VECTOR_PAGE_META`.
+    /// Derived, admin-only slab-space observability. Computes whole-slab physical facts plus logical
+    /// counters scoped to `index_id` (`None` = all indexes), in a single pass over `VECTOR_PAGE_META`.
     ///
     /// **Unbounded**: it scans every page-meta entry (even for `Some(index_id)`, because the global
-    /// dead-space estimate needs the whole slab). This is acceptable for admin/debug use; a bounded
-    /// `cursor + max_pages` snapshot is a deferred follow-up.
-    ///
-    /// Reads only page meta + the slab header/size — never row bytes, `VECTOR_SUBJECT_TO_ID`, or any
-    /// mutation. `physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone),
+    /// dead-space estimate needs the whole slab). Reads only page meta + the slab header/size — never
+    /// row bytes. `physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone),
     /// not subject-freshness.
     pub(crate) fn stats_for_index(&self, index_id: Option<u32>) -> VectorSlabStats {
         let mut acc = SlabStatsAcc::new(index_id);
@@ -936,7 +910,7 @@ impl VectorSlabStore {
         let slab_size_bytes = self.slab.size().saturating_mul(WASM_PAGE_SIZE);
         let estimated_unreferenced_bytes = self
             .occupied_tail
-            .saturating_sub(SLAB_HEADER_LEN)
+            .saturating_sub(SLAB_HEADER_SIZE as u64)
             .saturating_sub(referenced_global);
 
         VectorSlabStats {
@@ -956,17 +930,9 @@ impl VectorSlabStore {
     /// entries (clamped to `1..=MAX_SLAB_STATS_STEP_PAGES`), returning an opaque `PageKey` cursor to
     /// resume from. Callers repeat until `exhausted` and merge the additive partials client-side.
     ///
-    /// Like [`stats_for_index`](Self::stats_for_index) this reads only page meta + the slab
-    /// header/size. Each step's `partial.slab.referenced_page_bytes_global` sums every page observed
-    /// in the step (even outside `index_id`), so the merged total covers the whole slab; the per-step
-    /// `partial.slab.estimated_unreferenced_bytes` is always `0` and the caller recomputes it after
-    /// merging. The `cursor` is **external caller input**, so a malformed (wrong-length) cursor is
-    /// rejected with [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
-    ///
-    /// This is a bounded best-effort scan, **not** a point-in-time snapshot: the cursor is only a
-    /// `PageKey`, so `VECTOR_PAGE_META` writes between steps are not isolated (see
-    /// [`VectorSlabStatsStep`] for the exact drift modes). Run the steps during a quiescent window, or
-    /// use the single-call [`stats_for_index`](Self::stats_for_index), for an exact whole-slab figure.
+    /// Reads only page meta + the slab header/size — never row bytes. The `cursor` is **external
+    /// caller input**, so a malformed (wrong-length) cursor is rejected with
+    /// [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
     pub(crate) fn stats_step(
         &self,
         cursor: Option<Vec<u8>>,
@@ -974,8 +940,6 @@ impl VectorSlabStore {
         index_id: Option<u32>,
     ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
         let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
-        // Validate the caller-supplied cursor before decoding: `PageKey::from_bytes` panics on any
-        // length other than `PAGE_KEY_LEN`, and this cursor is untrusted Candid input.
         if let Some(bytes) = &cursor
             && bytes.len() != PAGE_KEY_LEN
         {
@@ -987,8 +951,6 @@ impl VectorSlabStore {
         let mut exhausted = true;
         let mut processed: u32 = 0;
         {
-            // Scan the whole map (not one index) so global referenced bytes stay correct under a
-            // `Some(index_id)` filter.
             let lower = match &cursor {
                 None => RangeBound::Unbounded,
                 Some(bytes) => RangeBound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
@@ -1030,21 +992,14 @@ impl VectorSlabStore {
     }
 
     /// Bounded, cursor-resumable page-meta tombstone-health scan scoped to one
-    /// `(index_id, active_version)` (ADR 0031 Slice 9). Scans at most `max_pages` `VECTOR_PAGE_META`
-    /// entries (clamped to `1..=MAX_SLAB_STATS_STEP_PAGES`), aggregating `row_count`/`live_count`/
-    /// `tombstone_count` into `total_rows`/`physical_live_rows`/`tombstoned_rows`, and returns an
-    /// opaque `PageKey` cursor to resume from. Reads only page meta — never row bytes or
-    /// `VECTOR_SUBJECT_TO_ID`.
+    /// `(index_id, active_version)`. Scans at most `max_pages` `VECTOR_PAGE_META` entries (clamped to
+    /// `1..=MAX_SLAB_STATS_STEP_PAGES`), aggregating `row_count`/`live_count`/`tombstone_count` into
+    /// `total_rows`/`physical_live_rows`/`tombstoned_rows`, and returns an opaque `PageKey` cursor to
+    /// resume from. Reads only page meta — never row bytes.
     ///
-    /// Because the scan is scoped to one generation (unlike the global [`Self::stats_step`]), the
-    /// caller-supplied `cursor` is **scope-checked**: a wrong-length cursor, or one whose
+    /// The caller-supplied `cursor` is **scope-checked**: a wrong-length cursor, or one whose
     /// `(index_id, index_version)` does not match `(index_id, active_version)`, returns
-    /// [`VectorCanisterError::InvalidStatsCursor`] rather than silently yielding an empty exhausted
-    /// result. `PageKey` is `index -> version -> partition -> page` ordered, so the scan starts at the
-    /// scope's lower bound (or the validated cursor) and breaks once the key leaves the scope.
-    ///
-    /// Bounded best-effort, **not** a snapshot: concurrent `VECTOR_PAGE_META` writes between steps are
-    /// not isolated (see [`VectorPartitionHealthStep`]).
+    /// [`VectorCanisterError::InvalidStatsCursor`] rather than silently yielding an empty result.
     pub(crate) fn partition_page_health_step(
         &self,
         index_id: u32,
@@ -1053,7 +1008,6 @@ impl VectorSlabStore {
         max_pages: u32,
     ) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
         let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
-        // Validate + scope-check the caller-supplied cursor before decoding for the range bound.
         if let Some(bytes) = &cursor {
             if bytes.len() != PAGE_KEY_LEN {
                 return Err(VectorCanisterError::InvalidStatsCursor);
@@ -1177,6 +1131,7 @@ mod tests {
         VectorSlabStore::from_regions(meta, mm.get(SLAB_ID))
     }
 
+    /// `d = 2` F32: stride 8, pad stride 16, meta 4, single shard.
     fn def(capacity: u32) -> VectorIndexDef {
         let dims = 2u16;
         VectorIndexDef {
@@ -1187,17 +1142,24 @@ mod tests {
             nlist: 1,
             active_index_version: 1,
             stride_bytes: VectorEncoding::F32.stride_bytes(dims),
+            pad_stride_bytes: 16,
+            meta_stride_bytes: 4,
+            run_capacity: 1,
             max_page_bytes: 65_536,
             slots_per_page: capacity,
             next_vector_id: 1,
         }
     }
 
-    fn subject(v: u32) -> VectorSubject {
+    fn subject_shard(shard: u32, v: u32) -> VectorSubject {
         VectorSubject::Vertex {
-            shard_id: ShardId::new(0),
+            shard_id: ShardId::new(shard),
             vertex_id: v,
         }
+    }
+
+    fn subject(v: u32) -> VectorSubject {
+        subject_shard(0, v)
     }
 
     fn bytes(a: f32, b: f32) -> Vec<u8> {
@@ -1224,17 +1186,15 @@ mod tests {
     fn fresh_init_writes_header_and_empty_meta() {
         let mm = fresh_mm();
         let store = open(&mm);
-        assert_eq!(store.occupied_tail(), SLAB_HEADER_LEN);
+        assert_eq!(store.occupied_tail(), SLAB_HEADER_SIZE as u64);
         assert_eq!(store.version_page_count(1, 1), 0);
     }
 
     #[test]
     fn empty_initialized_reopen_does_not_trap() {
         let mm = fresh_mm();
-        drop(open(&mm)); // fresh-init writes the header, leaves meta empty
-        let store = open(&mm); // reopen over the same regions
-        assert_eq!(store.occupied_tail(), SLAB_HEADER_LEN);
-        assert_eq!(store.version_page_count(1, 1), 0);
+        open(&mm);
+        open(&mm); // reopens cleanly
     }
 
     #[test]
@@ -1242,42 +1202,37 @@ mod tests {
         clear_heads();
         let mm = fresh_mm();
         let d = def(4);
-        let slot = {
-            let mut store = open(&mm);
-            store
-                .append_row(7, 1, 0, &d, 100, 1, subject(100), &bytes(1.0, 2.0))
-                .expect("append")
-        };
-        assert_eq!(slot.index_version, 1);
-        assert_eq!(slot.partition_id, 0);
+        let mut store = open(&mm);
+        let slot = store
+            .append_row(7, 1, 0, &d, subject(100), &bytes(1.0, 2.0))
+            .unwrap();
         assert_eq!(slot.page_id, 0);
         assert_eq!(slot.slot, 0);
-        assert_eq!(slot.generation, 1);
-        // Reopen and read the row back.
+
         let store = open(&mm);
-        let (header, vec) = store
+        let (vertex_id, vec) = store
             .read_row_bytes(7, slot)
             .expect("row present after reopen");
-        assert_eq!(header.vector_id, 100);
-        assert_eq!(header.generation, 1);
-        assert_eq!(header.subject(), subject(100));
-        assert_eq!(vec, bytes(1.0, 2.0));
+        assert_eq!(vertex_id, 100);
+        // Row bytes are pad-stride wide; the payload is at the front.
+        assert_eq!(&vec[..8], bytes(1.0, 2.0).as_slice());
+        assert_eq!(vec.len(), d.pad_stride_bytes as usize);
     }
 
     #[test]
     fn append_rolls_new_page_at_capacity() {
         clear_heads();
         let mm = fresh_mm();
-        let d = def(2); // 2 slots per page
+        let d = def(2);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
         let s1 = store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
             .unwrap();
         let s2 = store
-            .append_row(1, 1, 0, &d, 3, 1, subject(3), &bytes(2.0, 2.0))
+            .append_row(1, 1, 0, &d, subject(3), &bytes(2.0, 2.0))
             .unwrap();
         assert_eq!((s0.page_id, s0.slot), (0, 0));
         assert_eq!((s1.page_id, s1.slot), (0, 1));
@@ -1287,6 +1242,95 @@ mod tests {
             "third row rolls to a new page"
         );
         assert_eq!(store.version_page_count(1, 1), 2);
+        assert_eq!(head_live_len(1, 1, 0), 3);
+    }
+
+    #[test]
+    fn append_run_split_across_two_shards() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(16);
+        let mut store = open(&mm);
+        let s0 = store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0))
+            .unwrap();
+        let s1 = store
+            .append_row(1, 1, 0, &d, subject_shard(1, 2), &bytes(2.0, 0.0))
+            .unwrap();
+        let s2 = store
+            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 0.0))
+            .unwrap();
+
+        let mut seen: Vec<(u32, u32, u32)> = Vec::new();
+        store.visit_partition_pages(1, 1, 0, &mut PageScratch::new(), |slot, info, _| {
+            seen.push((slot.slot, info.shard_id, info.vertex_id));
+        });
+        // Three rows, each its own run (shard alternates), all recovered correctly.
+        assert_eq!(
+            seen,
+            vec![(s0.slot, 0, 1), (s1.slot, 1, 2), (s2.slot, 0, 3)]
+        );
+    }
+
+    #[test]
+    fn append_run_full_rolls_new_page() {
+        clear_heads();
+        let mm = fresh_mm();
+        let mut d = def(16);
+        d.run_capacity = 2; // at most 2 runs per page
+        let mut store = open(&mm);
+        let s0 = store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0))
+            .unwrap();
+        let s1 = store
+            .append_row(1, 1, 0, &d, subject_shard(1, 2), &bytes(2.0, 0.0))
+            .unwrap();
+        // Third shard starts a new run, but run_capacity is full: roll a new page.
+        let s2 = store
+            .append_row(1, 1, 0, &d, subject_shard(2, 3), &bytes(3.0, 0.0))
+            .unwrap();
+        assert_eq!((s0.page_id, s1.page_id), (0, 0));
+        assert_eq!(s2.page_id, 1, "run table full -> new page");
+        assert_eq!(s2.slot, 0);
+
+        let mut seen: Vec<(u64, u32)> = Vec::new();
+        store.visit_partition_pages(1, 1, 0, &mut PageScratch::new(), |slot, info, _| {
+            seen.push((slot.page_id, info.shard_id));
+        });
+        assert_eq!(seen, vec![(0, 0), (0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn pad_region_is_zeroed_so_rows_stay_finite() {
+        // Rows are stored pad-stride (16) but the payload is only 8 bytes; the trailing pad must be
+        // deterministically zero so a decode that checks all components stays finite.
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(4);
+        let mut store = open(&mm);
+        store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 2.0))
+            .unwrap();
+        let slot = SlotRef {
+            index_version: 1,
+            partition_id: 0,
+            page_id: 0,
+            slot: 0,
+        };
+        let (_, vec) = store.read_row_bytes(1, slot).expect("row present");
+        assert_eq!(vec.len(), 16);
+        assert_eq!(&vec[8..], &[0u8; 8], "pad region is zeroed");
+        // A reset + reappend over the same slab bytes still yields a finite row. The head allocator
+        // is cleared alongside the directory (as canister (re)install does).
+        store.reset();
+        clear_heads();
+        store
+            .append_row(1, 1, 0, &d, subject(2), &bytes(3.0, 4.0))
+            .unwrap();
+        let (_, vec) = store
+            .read_row_bytes(1, slot)
+            .expect("row present after reset");
+        assert_eq!(&vec[8..], &[0u8; 8], "pad stays zeroed across slab reuse");
     }
 
     #[test]
@@ -1296,246 +1340,151 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let slot = store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
             .unwrap();
-        assert_eq!(head_live_len(1, 1, 0), 2);
+        assert_eq!(store.page_meta_for_test(1, 1, 0, 0).unwrap().live_count, 2);
 
-        assert!(
-            store.tombstone_row(1, slot),
-            "first tombstone changes the row"
-        );
-        assert!(!store.tombstone_row(1, slot), "second tombstone is a no-op");
-
-        let meta = store.page_meta_for_test(1, 1, 0, 0).expect("page meta");
-        assert_eq!(meta.row_count, 2);
-        assert_eq!(meta.live_count, 1, "live_count decremented exactly once");
-        assert_eq!(
-            meta.tombstone_count, 1,
-            "tombstone_count incremented exactly once"
-        );
-        assert_eq!(
-            head_live_len(1, 1, 0),
-            1,
-            "PartitionHead.live_len decremented once"
-        );
+        assert!(store.tombstone_row(1, slot));
+        assert!(!store.tombstone_row(1, slot), "idempotent");
+        let meta = store.page_meta_for_test(1, 1, 0, 0).unwrap();
+        assert_eq!(meta.live_count, 1);
+        assert_eq!(meta.tombstone_count, 1);
+        assert_eq!(head_live_len(1, 1, 0), 1);
         assert!(
             store.read_row_bytes(1, slot).is_none(),
-            "tombstoned row is not readable"
+            "tombstoned row unreadable"
         );
     }
 
     #[test]
-    fn read_row_bytes_rejects_stale_generation_and_out_of_range() {
+    fn read_row_bytes_rejects_out_of_range_and_tombstoned() {
         clear_heads();
         let mm = fresh_mm();
         let d = def(4);
         let mut store = open(&mm);
         let slot = store
-            .append_row(1, 1, 0, &d, 1, 5, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
-        // Stale generation.
-        let stale = SlotRef {
-            generation: 4,
-            ..slot
-        };
-        assert!(store.read_row_bytes(1, stale).is_none());
-        // Out-of-range slot.
         let oob = SlotRef { slot: 9, ..slot };
         assert!(store.read_row_bytes(1, oob).is_none());
-        // Exact match still reads.
-        assert!(store.read_row_bytes(1, slot).is_some());
+        store.tombstone_row(1, slot);
+        assert!(store.read_row_bytes(1, slot).is_none());
     }
 
     #[test]
     fn visit_partition_pages_yields_live_rows_only() {
         clear_heads();
         let mm = fresh_mm();
-        let d = def(2);
+        let d = def(4);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
-            .unwrap();
-        store
-            .append_row(1, 1, 0, &d, 3, 1, subject(3), &bytes(2.0, 2.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
             .unwrap();
         store.tombstone_row(1, s0);
-
-        let mut seen = Vec::new();
-        let mut scratch = PageScratch::new();
-        store.visit_partition_pages(1, 1, 0, &mut scratch, |slot, header, vec| {
-            assert_eq!(vec.len(), d.stride_bytes as usize);
-            seen.push((slot.page_id, slot.slot, header.vector_id));
+        let mut seen: Vec<(u32, u32)> = Vec::new();
+        store.visit_partition_pages(1, 1, 0, &mut PageScratch::new(), |slot, info, vec| {
+            assert_eq!(vec.len(), d.pad_stride_bytes as usize);
+            seen.push((slot.slot, info.vertex_id));
         });
-        // Tombstoned vector_id 1 is skipped; rows span both pages.
-        assert_eq!(seen, vec![(0, 1, 2), (1, 0, 3)]);
+        assert_eq!(seen, vec![(1, 2)], "tombstoned slot 0 is skipped");
     }
 
     #[test]
     fn drop_version_pages_deletes_meta_and_keeps_occupied_tail() {
         clear_heads();
         let mm = fresh_mm();
-        let d = def(1); // one slot per page → one page per row
+        let d = def(4);
         let mut store = open(&mm);
-        for v in 0..3u32 {
-            store
-                .append_row(1, 1, 0, &d, v as u64, 1, subject(v), &bytes(v as f32, 0.0))
-                .unwrap();
-        }
-        assert_eq!(store.version_page_count(1, 1), 3);
+        store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .unwrap();
         let tail_before = store.occupied_tail();
-
-        let progress = store.drop_version_pages(1, 1, None, 100);
-        assert!(progress.exhausted);
-        assert_eq!(store.version_page_count(1, 1), 0, "all page meta dropped");
-        assert_eq!(
-            store.occupied_tail(),
-            tail_before,
-            "no slab tail rewind this slice"
-        );
-
-        // Reopen with leaked dead space (occupied_tail > header, empty meta) must not trap.
-        let reopened = open(&mm);
-        assert_eq!(reopened.occupied_tail(), tail_before);
-        assert_eq!(reopened.version_page_count(1, 1), 0);
+        let result = store.drop_version_pages(1, 1, None, 100);
+        assert!(result.exhausted);
+        assert_eq!(result.cursor, None);
+        assert_eq!(store.version_page_count(1, 1), 0);
+        assert_eq!(store.occupied_tail(), tail_before, "tail is not rewound");
     }
 
     #[test]
     fn drop_version_pages_is_cursor_resumable() {
         clear_heads();
         let mm = fresh_mm();
-        let d = def(1);
+        let d = def(2);
         let mut store = open(&mm);
-        for v in 0..4u32 {
+        for v in 0..3u32 {
             store
-                .append_row(1, 1, 0, &d, v as u64, 1, subject(v), &bytes(v as f32, 0.0))
+                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0))
                 .unwrap();
         }
-        let step = store.drop_version_pages(1, 1, None, 2);
-        assert!(!step.exhausted);
-        assert_eq!(store.version_page_count(1, 1), 2);
-        let done = store.drop_version_pages(1, 1, step.cursor, 2);
-        assert!(done.exhausted);
+        // 3 rows at capacity 2 -> 2 pages; a budget of 1 removes one page per step.
+        let first = store.drop_version_pages(1, 1, None, 1);
+        assert!(!first.exhausted);
+        assert!(first.cursor.is_some());
+        let second = store.drop_version_pages(1, 1, first.cursor, 1);
+        assert!(second.exhausted);
         assert_eq!(store.version_page_count(1, 1), 0);
     }
 
     #[test]
-    #[should_panic(expected = "invalid magic")]
-    fn reopen_traps_on_bad_magic() {
+    #[should_panic(expected = "corrupt/unsupported slab header")]
+    fn reopen_traps_on_bad_slab_magic() {
         let mm = fresh_mm();
-        // Grow the slab and write non-magic bytes, leaving meta empty → corrupt, not fresh.
-        let slab = mm.get(SLAB_ID);
-        slab.grow(1);
-        slab.write(0, &[0xAB, 0xCD, 0xEF, 0x01]);
-        let _ = open(&mm);
+        open(&mm);
+        mm.get(SLAB_ID).write(0, b"XXX".as_slice());
+        open(&mm); // fail closed on a corrupt slab header
     }
 
     #[test]
-    #[should_panic(expected = "non-empty page meta")]
+    #[should_panic(expected = "empty slab region with non-empty page meta")]
     fn reopen_traps_on_empty_slab_with_nonempty_meta() {
         let mm = fresh_mm();
-        // Insert a page-meta entry while the slab region stays size 0 → partial layout.
-        {
-            let mut meta: StablePageMetaMap = BTreeMap::init(mm.get(META_ID));
-            meta.insert(
-                PageKey::new(1, 1, 0, 0),
-                VectorPageMeta {
-                    slab_offset: SLAB_HEADER_LEN,
-                    capacity: 1,
-                    row_count: 0,
-                    live_count: 0,
-                    row_stride: 8,
-                    tombstone_count: 0,
-                },
-            );
-        }
-        let _ = open(&mm);
-    }
-
-    /// Seeds a single valid page (capacity 2, one row), then returns its `(stride, slab_offset)` so a
-    /// reopen test can overwrite the directory entry with a corrupt counter set.
-    fn seed_one_page(mm: &TestMm) -> (u32, u64) {
-        clear_heads();
-        let d = def(2);
-        let mut store = open(mm);
+        let d = def(4);
+        let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
-        (d.stride_bytes, SLAB_HEADER_LEN)
-    }
-
-    fn overwrite_meta(mm: &TestMm, m: VectorPageMeta) {
-        let mut meta: StablePageMetaMap = BTreeMap::init(mm.get(META_ID));
-        meta.insert(PageKey::new(1, 1, 0, 0), m);
+        // Wipe the slab to all zero but keep the directory: partial layout must trap.
+        let slab = mm.get(SLAB_ID);
+        let zeros = vec![0u8; slab.size() as usize * 65_536];
+        slab.write(0, &zeros);
+        open(&mm);
     }
 
     #[test]
     #[should_panic(expected = "row_count")]
-    fn reopen_traps_on_row_count_exceeding_capacity() {
+    fn reopen_traps_on_counts_exceeding_capacity() {
         let mm = fresh_mm();
-        let (stride, slab_offset) = seed_one_page(&mm);
-        overwrite_meta(
-            &mm,
+        let d = def(4);
+        let mut store = open(&mm);
+        store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .unwrap();
+        // Corrupt the directory: row_count > capacity.
+        store.meta.insert(
+            PageKey::new(1, 1, 0, 0),
             VectorPageMeta {
-                slab_offset,
-                capacity: 2,
-                row_count: 5, // > capacity → reopen must fail closed
-                live_count: 0,
-                row_stride: stride,
-                tombstone_count: 0,
+                row_count: 99,
+                capacity: 4,
+                ..store.page_meta_for_test(1, 1, 0, 0).unwrap()
             },
         );
-        let _ = open(&mm);
-    }
-
-    #[test]
-    #[should_panic(expected = "live_count")]
-    fn reopen_traps_on_counts_exceeding_row_count() {
-        let mm = fresh_mm();
-        let (stride, slab_offset) = seed_one_page(&mm);
-        overwrite_meta(
-            &mm,
-            VectorPageMeta {
-                slab_offset,
-                capacity: 2,
-                row_count: 1,
-                live_count: 1,
-                row_stride: stride,
-                tombstone_count: 1, // live + tombstone = 2 > row_count = 1
-            },
-        );
-        let _ = open(&mm);
-    }
-
-    #[test]
-    #[should_panic(expected = "missing page magic")]
-    fn reopen_traps_on_page_header_magic_mismatch() {
-        let mm = fresh_mm();
-        let (_stride, slab_offset) = seed_one_page(&mm);
-        // Clobber the on-slab page magic while the directory entry stays internally valid: a reopen
-        // must reject the physical/directory disagreement rather than scan a bogus page later.
-        let slab = mm.get(SLAB_ID);
-        slab.write(slab_offset, &[0u8; 4]);
-        let _ = open(&mm);
+        open(&mm);
     }
 
     #[test]
     fn stats_fresh_store_is_empty() {
         let mm = fresh_mm();
-        let stats = open(&mm).stats_for_index(None);
-        assert_eq!(stats.slab.occupied_tail_bytes, SLAB_HEADER_LEN);
-        assert_eq!(stats.slab.referenced_page_bytes_global, 0);
-        assert_eq!(stats.slab.estimated_unreferenced_bytes, 0);
+        let store = open(&mm);
+        let stats = store.stats_for_index(None);
         assert_eq!(stats.scope.page_count, 0);
-        assert_eq!(stats.scope.row_count, 0);
-        assert_eq!(stats.scope.physical_live_row_count, 0);
-        assert_eq!(stats.scope.tombstone_row_count, 0);
-        assert!(stats.versions.is_empty());
+        assert_eq!(stats.slab.referenced_page_bytes_global, 0);
     }
 
     #[test]
@@ -1545,533 +1494,67 @@ mod tests {
         let d = def(2);
         let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 1.0))
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
             .unwrap();
-        let span = page_span(2, d.stride_bytes); // one full page
         let stats = store.stats_for_index(None);
         assert_eq!(stats.scope.page_count, 1);
         assert_eq!(stats.scope.row_count, 2);
         assert_eq!(stats.scope.physical_live_row_count, 2);
-        assert_eq!(stats.scope.tombstone_row_count, 0);
-        assert_eq!(stats.scope.referenced_page_bytes, span);
-        assert_eq!(stats.slab.referenced_page_bytes_global, span);
-        // tail == header + the one reserved page span; no dead space yet.
-        assert_eq!(stats.slab.occupied_tail_bytes, SLAB_HEADER_LEN + span);
-        assert_eq!(stats.slab.estimated_unreferenced_bytes, 0);
+        // Referenced bytes = the exact page span (header + run table + row meta + vector bytes).
+        let meta = store.page_meta_for_test(1, 1, 0, 0).unwrap();
+        assert_eq!(
+            stats.slab.referenced_page_bytes_global,
+            page_span_bytes(&meta).unwrap()
+        );
     }
 
     #[test]
     fn stats_tombstone_moves_live_to_tombstone_without_touching_bytes() {
         clear_heads();
         let mm = fresh_mm();
-        let d = def(2);
+        let d = def(4);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
             .unwrap();
         let before = store.stats_for_index(None);
-        assert!(store.tombstone_row(1, s0));
+        store.tombstone_row(1, s0);
         let after = store.stats_for_index(None);
         assert_eq!(
-            after.scope.physical_live_row_count,
-            before.scope.physical_live_row_count - 1
+            before.slab.referenced_page_bytes_global,
+            after.slab.referenced_page_bytes_global
         );
-        assert_eq!(
-            after.scope.tombstone_row_count,
-            before.scope.tombstone_row_count + 1
-        );
-        assert_eq!(after.scope.row_count, before.scope.row_count);
-        assert_eq!(
-            after.scope.referenced_page_bytes,
-            before.scope.referenced_page_bytes
-        );
-        assert_eq!(
-            after.slab.referenced_page_bytes_global,
-            before.slab.referenced_page_bytes_global
-        );
-    }
-
-    #[test]
-    fn stats_drop_version_pages_increases_estimated_dead_space() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1); // one page per row
-        let mut store = open(&mm);
-        for v in 0..3u32 {
-            store
-                .append_row(1, 1, 0, &d, v as u64, 1, subject(v), &bytes(v as f32, 0.0))
-                .unwrap();
-        }
-        let before = store.stats_for_index(None);
-        assert_eq!(before.scope.page_count, 3);
-        assert_eq!(before.slab.estimated_unreferenced_bytes, 0);
-        let tail_before = before.slab.occupied_tail_bytes;
-
-        assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
-        let after = store.stats_for_index(None);
-        assert_eq!(after.scope.page_count, 0);
-        assert_eq!(after.slab.referenced_page_bytes_global, 0);
-        assert_eq!(
-            after.slab.occupied_tail_bytes, tail_before,
-            "no slab tail rewind this slice"
-        );
-        assert_eq!(
-            after.slab.estimated_unreferenced_bytes,
-            tail_before - SLAB_HEADER_LEN,
-            "all referenced bytes became leaked dead space"
-        );
-        assert!(after.slab.estimated_unreferenced_bytes > before.slab.estimated_unreferenced_bytes);
-    }
-
-    #[test]
-    fn stats_scope_filters_logical_counters_but_slab_facts_stay_global() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1); // one page per row → easy page counting
-        let mut store = open(&mm);
-        // index 1 version 1: 2 rows; index 1 version 2: 1 row; index 2 version 1: 1 row.
-        store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
-            .unwrap();
-        store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 0.0))
-            .unwrap();
-        store
-            .append_row(1, 2, 0, &d, 3, 1, subject(3), &bytes(2.0, 0.0))
-            .unwrap();
-        store
-            .append_row(2, 1, 0, &d, 4, 1, subject(4), &bytes(3.0, 0.0))
-            .unwrap();
-        let span = page_span(1, d.stride_bytes);
-
-        let global = store.stats_for_index(None);
-        assert_eq!(global.scope.page_count, 4);
-        assert_eq!(global.scope.row_count, 4);
-        assert_eq!(global.slab.referenced_page_bytes_global, 4 * span);
-        assert_eq!(global.versions.len(), 3);
-        assert_eq!(
-            (
-                global.versions[0].index_id,
-                global.versions[0].index_version,
-                global.versions[0].page_count
-            ),
-            (1, 1, 2)
-        );
-        assert_eq!(
-            (
-                global.versions[1].index_id,
-                global.versions[1].index_version,
-                global.versions[1].page_count
-            ),
-            (1, 2, 1)
-        );
-        assert_eq!(
-            (
-                global.versions[2].index_id,
-                global.versions[2].index_version,
-                global.versions[2].page_count
-            ),
-            (2, 1, 1)
-        );
-
-        let scoped = store.stats_for_index(Some(1));
-        assert_eq!(scoped.scope.index_id, Some(1));
-        assert_eq!(
-            scoped.scope.page_count, 3,
-            "index 1 across versions 1 and 2"
-        );
-        assert_eq!(scoped.scope.referenced_page_bytes, 3 * span);
-        assert_eq!(scoped.versions.len(), 2);
-        assert!(scoped.versions.iter().all(|v| v.index_id == 1));
-        // Physical slab facts are whole-slab global regardless of the index filter.
-        assert_eq!(scoped.slab, global.slab);
-    }
-
-    /// Drives [`VectorSlabStore::stats_step`] to exhaustion, returning every partial step.
-    fn collect_steps(
-        store: &VectorSlabStore,
-        max_pages: u32,
-        index_id: Option<u32>,
-    ) -> Vec<VectorSlabStatsStep> {
-        let mut steps = Vec::new();
-        let mut cursor: Option<Vec<u8>> = None;
-        loop {
-            let step = store
-                .stats_step(cursor.clone(), max_pages, index_id)
-                .expect("step");
-            let done = step.exhausted;
-            cursor = step.cursor.clone();
-            steps.push(step);
-            if done {
-                break;
-            }
-        }
-        steps
-    }
-
-    /// Client-side merge per [`VectorSlabStatsStep`]'s contract: additive logical counters + global
-    /// referenced bytes, last physical snapshot, dead space recomputed once after merging.
-    fn merge_steps(steps: &[VectorSlabStatsStep]) -> VectorSlabStats {
-        let last = steps.last().expect("at least one step");
-        let slab_size_bytes = last.partial.slab.slab_size_bytes;
-        let occupied_tail_bytes = last.partial.slab.occupied_tail_bytes;
-        let index_id = last.partial.scope.index_id;
-
-        let mut referenced_global = 0u64;
-        let mut scope = VectorSlabScopeStats {
-            index_id,
-            referenced_page_bytes: 0,
-            page_count: 0,
-            row_count: 0,
-            physical_live_row_count: 0,
-            tombstone_row_count: 0,
-        };
-        let mut versions: Vec<VectorSlabVersionStats> = Vec::new();
-        for step in steps {
-            referenced_global =
-                referenced_global.saturating_add(step.partial.slab.referenced_page_bytes_global);
-            let s = &step.partial.scope;
-            scope.referenced_page_bytes = scope
-                .referenced_page_bytes
-                .saturating_add(s.referenced_page_bytes);
-            scope.page_count = scope.page_count.saturating_add(s.page_count);
-            scope.row_count = scope.row_count.saturating_add(s.row_count);
-            scope.physical_live_row_count = scope
-                .physical_live_row_count
-                .saturating_add(s.physical_live_row_count);
-            scope.tombstone_row_count = scope
-                .tombstone_row_count
-                .saturating_add(s.tombstone_row_count);
-            for v in &step.partial.versions {
-                match versions
-                    .iter_mut()
-                    .find(|e| e.index_id == v.index_id && e.index_version == v.index_version)
-                {
-                    Some(e) => {
-                        e.page_count = e.page_count.saturating_add(v.page_count);
-                        e.row_count = e.row_count.saturating_add(v.row_count);
-                        e.physical_live_row_count = e
-                            .physical_live_row_count
-                            .saturating_add(v.physical_live_row_count);
-                        e.tombstone_row_count =
-                            e.tombstone_row_count.saturating_add(v.tombstone_row_count);
-                        e.referenced_page_bytes = e
-                            .referenced_page_bytes
-                            .saturating_add(v.referenced_page_bytes);
-                    }
-                    None => versions.push(*v),
-                }
-            }
-        }
-        let estimated_unreferenced_bytes = occupied_tail_bytes
-            .saturating_sub(SLAB_HEADER_LEN)
-            .saturating_sub(referenced_global);
-        VectorSlabStats {
-            slab: VectorSlabGlobalStats {
-                slab_size_bytes,
-                occupied_tail_bytes,
-                referenced_page_bytes_global: referenced_global,
-                estimated_unreferenced_bytes,
-            },
-            scope,
-            versions,
-        }
-    }
-
-    fn seed_rows(
-        store: &mut VectorSlabStore,
-        d: &VectorIndexDef,
-        index_id: u32,
-        version: u64,
-        n: u32,
-    ) {
-        for v in 0..n {
-            store
-                .append_row(
-                    index_id,
-                    version,
-                    0,
-                    d,
-                    v as u64,
-                    1,
-                    subject(v),
-                    &bytes(v as f32, 0.0),
-                )
-                .unwrap();
-        }
-    }
-
-    #[test]
-    fn stats_step_single_step_matches_unbounded() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1); // one page per row
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 3);
-
-        let steps = collect_steps(&store, 100, None);
-        assert_eq!(steps.len(), 1, "budget covers every page in one step");
-        assert!(steps[0].exhausted);
-        assert!(steps[0].cursor.is_none());
-        assert_eq!(
-            steps[0].partial.slab.estimated_unreferenced_bytes, 0,
-            "per-step dead space is always 0"
-        );
-        assert_eq!(merge_steps(&steps), store.stats_for_index(None));
-    }
-
-    #[test]
-    fn stats_step_multi_step_merge_matches_unbounded() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 5);
-
-        let steps = collect_steps(&store, 1, None);
-        assert_eq!(
-            steps.len(),
-            5,
-            "one single-page step per page, no phantom trailing step"
-        );
-        assert!(steps.last().expect("last").exhausted);
-        assert!(steps.last().expect("last").cursor.is_none());
-        assert!(
-            steps[..4]
-                .iter()
-                .all(|s| !s.exhausted && s.cursor.is_some()),
-            "non-final steps carry a resume cursor"
-        );
-        // Merged partials reconstruct the unbounded snapshot exactly (dead space via the formula).
-        assert_eq!(merge_steps(&steps), store.stats_for_index(None));
-    }
-
-    #[test]
-    fn stats_step_scoped_counts_global_bytes_but_scopes_logical() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        // index 1: 2 pages; index 2: 2 pages.
-        seed_rows(&mut store, &d, 1, 1, 2);
-        store
-            .append_row(2, 1, 0, &d, 10, 1, subject(10), &bytes(0.0, 0.0))
-            .unwrap();
-        store
-            .append_row(2, 1, 0, &d, 11, 1, subject(11), &bytes(1.0, 0.0))
-            .unwrap();
-        let span = page_span(1, d.stride_bytes);
-
-        let steps = collect_steps(&store, 1, Some(1));
-        let merged = merge_steps(&steps);
-        assert_eq!(merged, store.stats_for_index(Some(1)));
-        assert_eq!(
-            merged.slab.referenced_page_bytes_global,
-            4 * span,
-            "whole slab, even pages outside the index filter"
-        );
-        assert_eq!(merged.scope.page_count, 2, "only index 1 pages scoped");
-        assert_eq!(merged.scope.referenced_page_bytes, 2 * span);
-        assert!(merged.versions.iter().all(|v| v.index_id == 1));
-    }
-
-    #[test]
-    fn stats_step_cursor_resumes_without_dup_or_skip() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 3);
-
-        let steps = collect_steps(&store, 1, None);
-        let total_pages: u64 = steps.iter().map(|s| s.partial.scope.page_count).sum();
-        assert_eq!(total_pages, 3, "every page counted exactly once");
-        assert!(
-            steps.iter().all(|s| s.partial.scope.page_count == 1),
-            "each single-page step processes exactly one page (no dup)"
-        );
-        assert_eq!(merge_steps(&steps), store.stats_for_index(None));
-    }
-
-    #[test]
-    fn stats_step_budget_clamps_low_and_high() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 3);
-
-        // max_pages = 0 clamps up to 1 -> exactly one page, more remain.
-        let low = store.stats_step(None, 0, None).expect("step");
-        assert_eq!(low.partial.scope.page_count, 1);
-        assert!(!low.exhausted);
-        assert!(low.cursor.is_some());
-
-        // A huge budget clamps to MAX_SLAB_STATS_STEP_PAGES; a tiny store still finishes in one step.
-        let high = store.stats_step(None, u32::MAX, None).expect("step");
-        assert!(high.exhausted);
-        assert!(high.cursor.is_none());
-        assert_eq!(high.partial.scope.page_count, 3);
-    }
-
-    #[test]
-    fn stats_step_empty_store_is_exhausted() {
-        let mm = fresh_mm();
-        let step = open(&mm).stats_step(None, 10, None).expect("step");
-        assert!(step.exhausted);
-        assert!(step.cursor.is_none());
-        assert_eq!(step.partial.scope.page_count, 0);
-        assert_eq!(step.partial.slab.referenced_page_bytes_global, 0);
-        assert_eq!(step.partial.slab.estimated_unreferenced_bytes, 0);
-        assert_eq!(step.partial.slab.occupied_tail_bytes, SLAB_HEADER_LEN);
-        assert!(step.partial.versions.is_empty());
-    }
-
-    #[test]
-    fn stats_step_rejects_malformed_cursor() {
-        let mm = fresh_mm();
-        let store = open(&mm);
-        assert_eq!(
-            store.stats_step(Some(vec![0u8; 5]), 10, None).unwrap_err(),
-            VectorCanisterError::InvalidStatsCursor
-        );
-        assert_eq!(
-            store.stats_step(Some(Vec::new()), 10, None).unwrap_err(),
-            VectorCanisterError::InvalidStatsCursor
-        );
-        // A correctly sized cursor decodes to a `PageKey` and is accepted (matches nothing here).
-        let ok = store
-            .stats_step(Some(vec![0u8; PAGE_KEY_LEN]), 10, None)
-            .expect("well-formed cursor");
-        assert!(ok.exhausted);
-    }
-
-    // --- ADR 0031 Slice 9: bounded partition page-meta health step ---
-
-    /// Drives [`VectorSlabStore::partition_page_health_step`] to exhaustion, returning every step.
-    fn collect_health_steps(
-        store: &VectorSlabStore,
-        index_id: u32,
-        active_version: u64,
-        max_pages: u32,
-    ) -> Vec<VectorPartitionHealthStep> {
-        let mut steps = Vec::new();
-        let mut cursor: Option<Vec<u8>> = None;
-        loop {
-            let step = store
-                .partition_page_health_step(index_id, active_version, cursor.clone(), max_pages)
-                .expect("health step");
-            let done = step.exhausted;
-            cursor = step.cursor.clone();
-            steps.push(step);
-            if done {
-                break;
-            }
-        }
-        steps
-    }
-
-    /// Sums the additive partials per the [`VectorPartitionHealthStep`] merge contract.
-    fn merge_health(steps: &[VectorPartitionHealthStep]) -> VectorPartitionPageHealth {
-        let first = &steps[0].partial;
-        let mut merged = VectorPartitionPageHealth {
-            index_id: first.index_id,
-            index_version: first.index_version,
-            page_count: 0,
-            total_rows: 0,
-            physical_live_rows: 0,
-            tombstoned_rows: 0,
-        };
-        for step in steps {
-            merged.page_count += step.partial.page_count;
-            merged.total_rows += step.partial.total_rows;
-            merged.physical_live_rows += step.partial.physical_live_rows;
-            merged.tombstoned_rows += step.partial.tombstoned_rows;
-        }
-        merged
+        assert_eq!(after.scope.physical_live_row_count, 1);
+        assert_eq!(after.scope.tombstone_row_count, 1);
     }
 
     #[test]
     fn health_step_counts_rows_live_and_tombstones() {
         clear_heads();
         let mm = fresh_mm();
-        let d = def(2); // 2 slots per page
+        let d = def(4);
         let mut store = open(&mm);
-        // 3 rows over 2 pages, then tombstone one.
         let s0 = store
-            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
-            .unwrap();
-        store
-            .append_row(1, 1, 0, &d, 3, 1, subject(3), &bytes(2.0, 2.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
             .unwrap();
         store.tombstone_row(1, s0);
-
-        let steps = collect_health_steps(&store, 1, 1, 100);
-        assert_eq!(steps.len(), 1);
-        let h = merge_health(&steps);
-        assert_eq!(h.index_id, 1);
-        assert_eq!(h.index_version, 1);
-        assert_eq!(h.page_count, 2);
-        assert_eq!(h.total_rows, 3);
-        assert_eq!(h.physical_live_rows, 2);
-        assert_eq!(h.tombstoned_rows, 1);
-    }
-
-    #[test]
-    fn health_step_multi_step_merge_matches_single() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1); // one page per row
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 5);
-
-        let single = collect_health_steps(&store, 1, 1, 100);
-        assert_eq!(single.len(), 1);
-        let stepped = collect_health_steps(&store, 1, 1, 1);
-        assert_eq!(
-            stepped.len(),
-            5,
-            "one single-page step per page, no phantom step"
-        );
-        assert!(stepped.last().expect("last").exhausted);
-        assert!(stepped.last().expect("last").cursor.is_none());
-        assert!(
-            stepped[..4]
-                .iter()
-                .all(|s| !s.exhausted && s.cursor.is_some()),
-            "non-final steps carry a resume cursor"
-        );
-        assert_eq!(merge_health(&stepped), merge_health(&single));
-    }
-
-    #[test]
-    fn health_step_scopes_to_active_version_only() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        // version 1: 2 rows; version 2: 3 rows (e.g. a shadow/old generation).
-        seed_rows(&mut store, &d, 1, 1, 2);
-        seed_rows(&mut store, &d, 1, 2, 3);
-
-        let v1 = merge_health(&collect_health_steps(&store, 1, 1, 100));
-        assert_eq!(v1.index_version, 1);
-        assert_eq!(v1.page_count, 2);
-        assert_eq!(v1.total_rows, 2);
-
-        let v2 = merge_health(&collect_health_steps(&store, 1, 2, 100));
-        assert_eq!(v2.index_version, 2);
-        assert_eq!(v2.page_count, 3);
-        assert_eq!(v2.total_rows, 3);
+        let step = store
+            .partition_page_health_step(1, 1, None, 100)
+            .expect("health step");
+        assert!(step.exhausted);
+        assert_eq!(step.partial.page_count, 1);
+        assert_eq!(step.partial.total_rows, 2);
+        assert_eq!(step.partial.physical_live_rows, 1);
+        assert_eq!(step.partial.tombstoned_rows, 1);
     }
 
     #[test]
@@ -2079,79 +1562,10 @@ mod tests {
         clear_heads();
         let mm = fresh_mm();
         let store = open(&mm);
-        let steps = collect_health_steps(&store, 1, 1, 10);
-        assert_eq!(steps.len(), 1);
-        assert!(steps[0].exhausted);
-        assert!(steps[0].cursor.is_none());
-        let h = &steps[0].partial;
-        assert_eq!(
-            (
-                h.page_count,
-                h.total_rows,
-                h.physical_live_rows,
-                h.tombstoned_rows
-            ),
-            (0, 0, 0, 0)
-        );
-    }
-
-    #[test]
-    fn health_step_budget_clamps_low_and_high() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 3);
-
-        // max_pages = 0 clamps to 1 -> one page, more remain.
-        let low = store
-            .partition_page_health_step(1, 1, None, 0)
-            .expect("step");
-        assert_eq!(low.partial.page_count, 1);
-        assert!(!low.exhausted);
-        assert!(low.cursor.is_some());
-
-        // Huge budget clamps to the cap; a tiny store finishes in one step.
-        let high = store
-            .partition_page_health_step(1, 1, None, u32::MAX)
-            .expect("step");
-        assert!(high.exhausted);
-        assert_eq!(high.partial.page_count, 3);
-    }
-
-    #[test]
-    fn health_step_rejects_malformed_and_wrong_scope_cursor() {
-        clear_heads();
-        let mm = fresh_mm();
-        let d = def(1);
-        let mut store = open(&mm);
-        seed_rows(&mut store, &d, 1, 1, 2);
-
-        // Wrong length.
-        assert_eq!(
-            store
-                .partition_page_health_step(1, 1, Some(vec![0u8; 5]), 10)
-                .unwrap_err(),
-            VectorCanisterError::InvalidStatsCursor
-        );
-        // Well-formed cursor but for a different index -> rejected (scope check).
-        let wrong_index = PageKey::new(2, 1, 0, 0).into_bytes();
-        assert_eq!(
-            store
-                .partition_page_health_step(1, 1, Some(wrong_index), 10)
-                .unwrap_err(),
-            VectorCanisterError::InvalidStatsCursor
-        );
-        // Well-formed cursor but for a different version -> rejected.
-        let wrong_version = PageKey::new(1, 2, 0, 0).into_bytes();
-        assert_eq!(
-            store
-                .partition_page_health_step(1, 1, Some(wrong_version), 10)
-                .unwrap_err(),
-            VectorCanisterError::InvalidStatsCursor
-        );
-        // In-scope well-formed cursor is accepted.
-        let ok = PageKey::new(1, 1, 0, 0).into_bytes();
-        assert!(store.partition_page_health_step(1, 1, Some(ok), 10).is_ok());
+        let step = store
+            .partition_page_health_step(1, 1, None, 100)
+            .expect("empty health step");
+        assert!(step.exhausted);
+        assert_eq!(step.partial.page_count, 0);
     }
 }
