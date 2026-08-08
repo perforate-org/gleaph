@@ -20,7 +20,7 @@ members = [
     "crates/message-sizing",
     "crates/migration-api",
     "crates/prepared-runtime",
-    "crates/graph-vector-index",
+    "crates/vector-canister",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-variable-memory-manager",
@@ -64,7 +64,7 @@ gleaph-instruction-budget = { path = "crates/instruction-budget", default-featur
 gleaph-message-sizing = { path = "crates/message-sizing" }
 gleaph-migration-api = { path = "crates/migration-api" }
 gleaph-prepared-runtime = { path = "crates/prepared-runtime" }
-gleaph-graph-vector-index = { path = "crates/graph-vector-index" }
+gleaph-vector-canister = { path = "crates/vector-canister" }
 gleaph-router = { path = "crates/router" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }

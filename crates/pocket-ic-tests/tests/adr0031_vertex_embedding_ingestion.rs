@@ -75,7 +75,7 @@ fn set_graph_vector_routing(env: &FederationEnv, vector: Principal) {
         .update_call(
             env.graph_source,
             env.router,
-            "admin_set_vector_index_canister",
+            "admin_set_vector_canister",
             Encode!(&vector).expect("encode"),
         )
         .expect("set graph vector routing");
@@ -103,7 +103,7 @@ fn attach_shard(env: &FederationEnv, vector: Principal) {
     let args = AdminAttachVectorIndexShardArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         shard_id: ShardId::new(0),
-        vector_index_canister: vector,
+        vector_canister: vector,
     };
     let bytes = env
         .pic
@@ -279,7 +279,7 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
             Encode!(&()).expect("encode vector upgrade args"),
             None,
         )
-        .expect("upgrade vector-index canister");
+        .expect("upgrade vector canister");
 
     let search = router_vector_search(&env, 6.0, 10);
     assert!(

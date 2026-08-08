@@ -97,10 +97,10 @@ fn set_graph_vector_routing(env: &FederationEnv, graph: Principal, vector: Princ
         .update_call(
             graph,
             env.router,
-            "admin_set_vector_index_canister",
+            "admin_set_vector_canister",
             Encode!(&vector).expect("encode set vector routing"),
         )
-        .expect("admin_set_vector_index_canister call");
+        .expect("admin_set_vector_canister call");
     let _: () = Decode!(&bytes, Result<(), String>)
         .expect("decode set vector routing")
         .expect("graph accepts vector routing");
@@ -131,7 +131,7 @@ fn attach_shard(env: &FederationEnv, shard_id: ShardId, vector: Principal) {
     let args = AdminAttachVectorIndexShardArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         shard_id,
-        vector_index_canister: vector,
+        vector_canister: vector,
     };
     let bytes = env
         .pic

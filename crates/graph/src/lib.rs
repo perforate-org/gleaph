@@ -237,8 +237,8 @@ fn purge_local_unique_constraint(
 /// Router → graph (ADR 0031 Slice 4): set this shard's local derived vector-index target as the
 /// first step of the Router-driven vector attach handshake.
 #[update(guard = "guard_router_canister")]
-fn admin_set_vector_index_canister(vector_index_canister: candid::Principal) -> Result<(), String> {
-    canister::handlers::admin_set_vector_index_canister(vector_index_canister)
+fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), String> {
+    canister::handlers::admin_set_vector_canister(vector_canister)
 }
 
 /// Router → graph: freeze one immutable canonical export scope for a physical index namespace.

@@ -3,7 +3,7 @@
 //! Per [ADR 0031](design/adr/0031-vertex-embedding-store-and-derived-vector-index.md), this module
 //! is the home for vector-index wire types. Slice 1 carried only the canonical embedding encoding.
 //! Slice 2 adds the derived sync/mutation wire surface (`VectorIndexKind`, `VectorMetric`,
-//! `VectorSubject`, `VectorEmbeddingSyncOp`, `IndexedEmbeddingCatalog`, `VectorIndexError`).
+//! `VectorSubject`, `VectorEmbeddingSyncOp`, `IndexedEmbeddingCatalog`, `VectorCanisterError`).
 //! Search/cursor types are deliberately deferred to Slice 5+ (Router catalog + target resolution
 //! is Slice 3; incarnation-fenced production activation is Slice 4; search/centroids are Slice 5+).
 //!
@@ -18,8 +18,8 @@
 //! - `embedding_version` (graph canonical store): `StoredEmbedding.version`; the per-incarnation
 //!   update counter (resets to `1` on each fresh incarnation), carried on sync ops and the repair
 //!   journal and consulted only within an incarnation for sync/repair idempotence.
-//! - `index_version` (vector-index canister): physical index generation; page/partition head keys.
-//! - `generation` (vector-index canister): slot/entity handle incarnation for append-and-tombstone.
+//! - `index_version` (vector canister): physical index generation; page/partition head keys.
+//! - `generation` (vector canister): slot/entity handle incarnation for append-and-tombstone.
 
 use crate::federation::ShardId;
 use candid::CandidType;
@@ -143,7 +143,7 @@ impl VectorSubject {
     }
 }
 
-/// Graph shard → vector-index canister: one derived embedding mutation.
+/// Graph shard → vector canister: one derived embedding mutation.
 ///
 /// `bytes` is REQUIRED for an upsert (`remove = false`) and EMPTY for a remove (`remove = true`);
 /// idempotence is decided by the ordered pair `(embedding_incarnation, embedding_version)` against
@@ -495,7 +495,7 @@ pub enum VectorMaintenanceRecommendation {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VectorMaintenanceFailure {
     /// The canister error that aborted the maintenance step.
-    pub code: VectorIndexError,
+    pub code: VectorCanisterError,
     /// Human-readable detail, truncated to a bounded length.
     pub message: String,
 }
@@ -736,7 +736,7 @@ pub struct VectorSlabVersionStats {
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
 )]
-pub enum VectorIndexError {
+pub enum VectorCanisterError {
     /// Caller is not the authorized router (admin endpoints).
     Unauthorized,
     /// The configured router principal is the anonymous principal.
@@ -809,7 +809,7 @@ pub enum VectorIndexError {
     StaleMaintenanceHealth,
 }
 
-impl std::fmt::Display for VectorIndexError {
+impl std::fmt::Display for VectorCanisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self {
             Self::Unauthorized => "caller is not the authorized router",
@@ -862,7 +862,7 @@ impl std::fmt::Display for VectorIndexError {
     }
 }
 
-impl std::error::Error for VectorIndexError {}
+impl std::error::Error for VectorCanisterError {}
 
 #[cfg(test)]
 mod tests {
@@ -946,15 +946,15 @@ mod tests {
     #[test]
     fn error_candid_roundtrip() {
         for err in [
-            VectorIndexError::EmbeddingVersionConflict,
-            VectorIndexError::InvalidSearchTopK,
-            VectorIndexError::StableGrowFailed,
-            VectorIndexError::InvalidStatsCursor,
-            VectorIndexError::InvalidMaintenancePolicy,
-            VectorIndexError::StaleMaintenanceHealth,
+            VectorCanisterError::EmbeddingVersionConflict,
+            VectorCanisterError::InvalidSearchTopK,
+            VectorCanisterError::StableGrowFailed,
+            VectorCanisterError::InvalidStatsCursor,
+            VectorCanisterError::InvalidMaintenancePolicy,
+            VectorCanisterError::StaleMaintenanceHealth,
         ] {
             let bytes = Encode!(&err).expect("encode");
-            assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
+            assert_eq!(Decode!(&bytes, VectorCanisterError).expect("decode"), err);
         }
     }
 
@@ -1123,13 +1123,13 @@ mod tests {
     #[test]
     fn new_vector_index_errors_candid_roundtrip() {
         for err in [
-            VectorIndexError::MetricNotSupportedForPartitionScan,
-            VectorIndexError::MetricMismatch,
-            VectorIndexError::InvalidQueryVector,
-            VectorIndexError::InvalidSearchCandidates,
+            VectorCanisterError::MetricNotSupportedForPartitionScan,
+            VectorCanisterError::MetricMismatch,
+            VectorCanisterError::InvalidQueryVector,
+            VectorCanisterError::InvalidSearchCandidates,
         ] {
             let bytes = Encode!(&err).expect("encode");
-            assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
+            assert_eq!(Decode!(&bytes, VectorCanisterError).expect("decode"), err);
         }
     }
 
@@ -1269,7 +1269,7 @@ mod tests {
                 merged: page,
             },
             VectorMaintenanceState::Failed(VectorMaintenanceFailure {
-                code: VectorIndexError::RebuildAlreadyActive,
+                code: VectorCanisterError::RebuildAlreadyActive,
                 message: "boom".to_string(),
             }),
         ];
@@ -1299,7 +1299,7 @@ mod tests {
             VectorMaintenanceStepResult::AwaitingPublish(status.clone()),
             VectorMaintenanceStepResult::CleanupAdvanced(status),
             VectorMaintenanceStepResult::Failed(VectorMaintenanceFailure {
-                code: VectorIndexError::InvalidRebuildParams,
+                code: VectorCanisterError::InvalidRebuildParams,
                 message: "nope".to_string(),
             }),
         ];

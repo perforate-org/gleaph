@@ -240,7 +240,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("routing");
         store

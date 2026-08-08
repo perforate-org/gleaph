@@ -154,7 +154,7 @@ mod tests {
             graph_id,
             registered_at_ns: 0,
             index_attached: true,
-            vector_index_canister: None,
+            vector_canister: None,
             vector_index_attached: false,
         });
         native_test_register_shard(ShardRegistryEntry {
@@ -164,7 +164,7 @@ mod tests {
             graph_id,
             registered_at_ns: 0,
             index_attached: true,
-            vector_index_canister: None,
+            vector_canister: None,
             vector_index_attached: false,
         });
 

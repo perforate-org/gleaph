@@ -2,7 +2,7 @@
 //!
 //! The Router owns the maintenance *policy* and forwards a [`VectorMaintenanceStepRequest`] snapshot
 //! (thresholds + per-step budgets); this module owns the *execution* state. One
-//! [`VectorIndexStore::admin_vector_maintenance_step`] call advances **at most one bounded unit** of
+//! [`VectorCanisterStore::admin_vector_maintenance_step`] call advances **at most one bounded unit** of
 //! work and returns a [`VectorMaintenanceStepResult`], then stops — there is no internal loop.
 //!
 //! Only the page-health **scan** phase is persisted here (`VECTOR_MAINTENANCE_STATE`); once a rebuild
@@ -11,16 +11,16 @@
 //!
 //! **Persistence.** `VECTOR_MAINTENANCE_STATE` is stable execution state and survives upgrade (it
 //! holds the mid-orchestration scan cursor + merged counters); it is cleared only on canister
-//! init/reset, or set back to `Idle` by the explicit [`VectorIndexStore::admin_vector_maintenance_reset`].
+//! init/reset, or set back to `Idle` by the explicit [`VectorCanisterStore::admin_vector_maintenance_reset`].
 
-use super::VectorIndexStore;
+use super::VectorCanisterStore;
 use super::rebuild::{partition_health_summary, rebuild_state_of};
 use super::recommend_partition_maintenance;
 use crate::facade::stable::{VECTOR_INDEX_DEFS, VECTOR_MAINTENANCE_STATE};
 use crate::records::{RawMaintenanceState, VectorRebuildStateRecord};
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::vector_index::{
-    VectorIndexError, VectorMaintenanceFailure, VectorMaintenanceRecommendation,
+    VectorCanisterError, VectorMaintenanceFailure, VectorMaintenanceRecommendation,
     VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
     VectorPartitionPageHealth,
 };
@@ -78,7 +78,7 @@ fn merge_health(merged: &mut VectorPartitionPageHealth, partial: &VectorPartitio
         .saturating_add(partial.tombstoned_rows);
 }
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Advances one bounded unit of vector-index maintenance (ADR 0031 Slice 10). Router-guarded
     /// `#[update]`. The Router snapshots its policy + budgets into `req`; this performs at most one
     /// scan step, rebuild step, or cleanup step and returns the outcome, stopping at `ReadyToPublish`.
@@ -91,11 +91,11 @@ impl VectorIndexStore {
         caller: Principal,
         index_id: u32,
         req: VectorMaintenanceStepRequest,
-    ) -> Result<VectorMaintenanceStepResult, VectorIndexError> {
+    ) -> Result<VectorMaintenanceStepResult, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
 
         // 0. A prior step failed: no-op until an explicit reset.
         if let VectorMaintenanceState::Failed(failure) = maintenance_state_of(index_id) {
@@ -226,7 +226,7 @@ impl VectorIndexStore {
                 }
             }
             // The active version changed mid-scan (cursor scope no longer matches): restart cleanly.
-            Err(VectorIndexError::InvalidStatsCursor) => {
+            Err(VectorCanisterError::InvalidStatsCursor) => {
                 let restart = VectorMaintenanceState::Scanning {
                     cursor: None,
                     exhausted: false,
@@ -240,7 +240,11 @@ impl VectorIndexStore {
     }
 
     /// Records a bounded `Failed` maintenance state and returns the matching step result.
-    fn fail_maintenance(&self, index_id: u32, e: VectorIndexError) -> VectorMaintenanceStepResult {
+    fn fail_maintenance(
+        &self,
+        index_id: u32,
+        e: VectorCanisterError,
+    ) -> VectorMaintenanceStepResult {
         let failure = VectorMaintenanceFailure {
             code: e,
             message: bounded_message(e.to_string()),
@@ -255,7 +259,7 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<VectorMaintenanceState, VectorIndexError> {
+    ) -> Result<VectorMaintenanceState, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         Ok(maintenance_state_of(index_id))
     }
@@ -268,7 +272,7 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
         put_maintenance_state(index_id, &VectorMaintenanceState::Idle);
         Ok(())

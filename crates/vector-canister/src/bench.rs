@@ -10,10 +10,10 @@
 //! `l2_squared_f32` is kept isolated in the store so a future SIMD variant can be benchmarked against
 //! these baselines.
 //!
-//! Run from `crates/graph-vector-index`: `canbench` (see `canbench.yml`).
+//! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 
-use crate::facade::{SearchTuning, VectorIndexStore};
-use crate::init::VectorIndexInitArgs;
+use crate::facade::{SearchTuning, VectorCanisterStore};
+use crate::init::VectorCanisterInitArgs;
 use canbench_rs::bench;
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -50,10 +50,10 @@ fn vec_bytes(dims: u16, value: f32) -> Vec<u8> {
 
 /// Fresh store with `n` width-`dims` vectors on shard 0; vector `i` is filled with the value `i` so
 /// the scored set is fully distinct.
-fn setup_search_store(dims: u16, n: u32) -> VectorIndexStore {
-    let store = VectorIndexStore::new();
+fn setup_search_store(dims: u16, n: u32) -> VectorCanisterStore {
+    let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorIndexInitArgs {
+        .init_from_args(&VectorCanisterInitArgs {
             router_canister: router(),
         })
         .expect("init");
@@ -131,10 +131,10 @@ fn cvec(dims: u16, value: f32) -> Vec<f32> {
 /// `CLUSTER_SPACING`, with `n` vectors round-robin assigned to clusters and a tiny in-cluster jitter
 /// so every vector is distinct yet nearest to its own centroid. Lower `nprobe` therefore skips whole
 /// populated clusters.
-fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorIndexStore {
-    let store = VectorIndexStore::new();
+fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
+    let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorIndexInitArgs {
+        .init_from_args(&VectorCanisterInitArgs {
             router_canister: router(),
         })
         .expect("init");
@@ -200,7 +200,7 @@ const REBUILD_N: u32 = 1024;
 
 /// Drives a full rebuild (start -> bounded steps -> publish) of a degenerate index of `n` distinct
 /// vectors into `nlist` partitions. Steps run in `n`-sized batches.
-fn run_full_rebuild(store: &VectorIndexStore, n: u32, nlist: u32) {
+fn run_full_rebuild(store: &VectorCanisterStore, n: u32, nlist: u32) {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
         .expect("start");
@@ -221,7 +221,7 @@ fn run_full_rebuild(store: &VectorIndexStore, n: u32, nlist: u32) {
 
 /// Advances a freshly-started rebuild into `Building` (centroids written) without shadowing any
 /// subject yet, so a follow-up `Building` step measures shadow-append cost in isolation.
-fn start_into_building(store: &VectorIndexStore, n: u32, nlist: u32) {
+fn start_into_building(store: &VectorCanisterStore, n: u32, nlist: u32) {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
         .expect("start");
@@ -246,7 +246,7 @@ fn start_into_building(store: &VectorIndexStore, n: u32, nlist: u32) {
 /// Advances a freshly-started rebuild into `Training` (iteration 0, candidate pool collected, no
 /// centroids written yet), so a follow-up `Training` step measures one k-means-lite iteration over
 /// the full pool in isolation (ADR 0031 Slice 8).
-fn start_into_training(store: &VectorIndexStore, n: u32, nlist: u32) {
+fn start_into_training(store: &VectorCanisterStore, n: u32, nlist: u32) {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
         .expect("start");
@@ -394,7 +394,7 @@ fn bench_upsert_dualwrite_d128_nlist16() -> canbench_rs::BenchResult {
 /// Re-upserts vectors `0..tombstoned` of a degenerate store at a newer `embedding_version`, which
 /// tombstones each subject's prior row (a new live row is appended). Produces a page store with a
 /// known live/tombstone mix for the health-scan benchmark.
-fn tombstone_first(store: &VectorIndexStore, dims: u16, tombstoned: u32) {
+fn tombstone_first(store: &VectorCanisterStore, dims: u16, tombstoned: u32) {
     for vid in 0..tombstoned {
         let op = VectorEmbeddingSyncOp {
             index_id: INDEX_ID,
@@ -417,7 +417,7 @@ fn tombstone_first(store: &VectorIndexStore, dims: u16, tombstoned: u32) {
 
 /// Drives the bounded page-meta health scan over the active version to exhaustion, summing the
 /// additive partials (the operator-side merge contract).
-fn drive_health_scan(store: &VectorIndexStore, max_pages: u32) -> u64 {
+fn drive_health_scan(store: &VectorCanisterStore, max_pages: u32) -> u64 {
     let mut cursor: Option<Vec<u8>> = None;
     let mut total = 0u64;
     loop {
@@ -523,7 +523,7 @@ fn maint_req(target_nlist: u32) -> VectorMaintenanceStepRequest {
 
 /// Drives a freshly-started rebuild to `ReadyToPublish` without publishing, so a follow-up
 /// maintenance step measures the bounded `AwaitingPublish` no-op (publish stays explicit).
-fn start_into_ready_to_publish(store: &VectorIndexStore, n: u32, nlist: u32) {
+fn start_into_ready_to_publish(store: &VectorCanisterStore, n: u32, nlist: u32) {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
         .expect("start");
@@ -647,7 +647,7 @@ filtered_search_bench!(bench_filtered_search_d768_c4096_k10, 768, 4096, 10);
 
 // --- `vector_sync_batch` loop acceptance (GAP-2026-07-17-001) ---
 //
-// The canister `vector_sync_batch` loop (graph-vector-index/src/canister.rs) applies each
+// The canister `vector_sync_batch` loop (vector-canister/src/canister.rs) applies each
 // operation with an instruction-budget exhausted check that reserves
 // `VECTOR_BATCH_RESERVE_INSTRUCTIONS` (100M) below `VECTOR_BATCH_MAX_INSTRUCTIONS` (32B). These
 // benches mirror that loop with the authorized attached-shard caller (a canbench query caller is
@@ -686,7 +686,7 @@ fn sync_ops(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
 }
 
 fn sync_batch_round(
-    store: &VectorIndexStore,
+    store: &VectorCanisterStore,
     caller: Principal,
     ops: &[VectorEmbeddingSyncOp],
 ) -> u32 {

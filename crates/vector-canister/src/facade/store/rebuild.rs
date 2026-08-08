@@ -23,7 +23,7 @@ use super::search::{assign_partition, decode_f32, encode_f32, l2_squared_f32, re
 use super::{
     MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES,
     MAX_REBUILD_STEP_VECTOR_BYTES, MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS,
-    MAX_REBUILD_TRAINING_ITERATIONS, VectorIndexStore,
+    MAX_REBUILD_TRAINING_ITERATIONS, VectorCanisterStore,
 };
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_ID_TO_SLOT, VECTOR_INDEX_DEFS,
@@ -35,7 +35,7 @@ use crate::records::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    VectorEncoding, VectorIndexError, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorCanisterError, VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
     VectorMetric, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
     VectorSlabStatsStep,
@@ -59,7 +59,7 @@ fn clamp_step_work(requested: u32) -> u32 {
 
 /// Recomputes the head-only partition-health skew summary for `(index_id, active)` directly from the
 /// authoritative `PartitionHead` rows. **O(`nlist`)** (bounded by [`MAX_NLIST`]), never scans pages.
-/// Used both by [`VectorIndexStore::admin_vector_partition_health`] and the rebuild trigger so the
+/// Used both by [`VectorCanisterStore::admin_vector_partition_health`] and the rebuild trigger so the
 /// skew signal is always derived from current state rather than caller-attested input.
 pub(super) fn partition_health_summary(
     index_id: u32,
@@ -301,7 +301,7 @@ fn drop_version_heads_and_centroids(index_id: u32, version: u64, nlist: u32) {
     });
 }
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Begins a rebuild (ADR 0031 Slice 7/8). **O(1)**: validates parameters — including the Slice 8
     /// `Training` feasibility checks (combined-state byte budget and per-iteration distance-op
     /// budget) — and enters `Sampling` without scanning subjects or writing centroids.
@@ -312,33 +312,33 @@ impl VectorIndexStore {
         index_id: u32,
         nlist: u32,
         sample_limit: u32,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         if def.encoding != VectorEncoding::F32 || def.metric != VectorMetric::L2Squared {
-            return Err(VectorIndexError::InvalidRebuildParams);
+            return Err(VectorCanisterError::InvalidRebuildParams);
         }
         if !(2..=MAX_NLIST).contains(&nlist) {
-            return Err(VectorIndexError::InvalidRebuildParams);
+            return Err(VectorCanisterError::InvalidRebuildParams);
         }
         if sample_limit < nlist || sample_limit > MAX_REBUILD_SAMPLE_LIMIT {
-            return Err(VectorIndexError::InvalidRebuildParams);
+            return Err(VectorCanisterError::InvalidRebuildParams);
         }
         // Bound the combined durable rebuild state (candidate pool + trained centroids) and the
         // per-iteration `Training` work; both scale with `dims` via `stride_bytes` (ADR 0031 Slice
         // 8). `MAX_NLIST` alone bounds neither.
         if !training_start_feasible(nlist, def.stride_bytes, def.dims) {
-            return Err(VectorIndexError::InvalidRebuildParams);
+            return Err(VectorCanisterError::InvalidRebuildParams);
         }
         if !matches!(rebuild_state_of(index_id), VectorRebuildStateRecord::Idle) {
-            return Err(VectorIndexError::RebuildAlreadyActive);
+            return Err(VectorCanisterError::RebuildAlreadyActive);
         }
         let target = def
             .active_index_version
             .checked_add(1)
-            .ok_or(VectorIndexError::AllocatorOverflow)?;
+            .ok_or(VectorCanisterError::AllocatorOverflow)?;
         put_rebuild_state(
             index_id,
             VectorRebuildStateRecord::Sampling {
@@ -368,11 +368,11 @@ impl VectorIndexStore {
     /// completeness would require an unbounded scan (mirroring the no-snapshot-isolation contract of
     /// [`VectorPartitionHealthStep`]). The freshness guard rejects page health attested against a
     /// different generation: `attested_page_health.index_id`/`index_version` must equal the index's
-    /// current `active_index_version`, else [`VectorIndexError::StaleMaintenanceHealth`].
+    /// current `active_index_version`, else [`VectorCanisterError::StaleMaintenanceHealth`].
     ///
     /// **nlist resolution.** `target_nlist = Some(n)` rebuilds at `n`; `None` defaults to the current
     /// `def.nlist` only when it is `>= 2`. A degenerate `def.nlist == 1` with no `target_nlist`
-    /// returns [`VectorIndexError::InvalidRebuildParams`] (the underlying rebuild requires
+    /// returns [`VectorCanisterError::InvalidRebuildParams`] (the underlying rebuild requires
     /// `nlist >= 2`). All other parameter/feasibility validation and the active-rebuild guard are
     /// delegated to [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild).
     pub fn admin_start_vector_rebuild_if_recommended(
@@ -383,17 +383,17 @@ impl VectorIndexStore {
         policy: VectorMaintenancePolicy,
         target_nlist: Option<u32>,
         sample_limit: u32,
-    ) -> Result<VectorMaintenanceRecommendation, VectorIndexError> {
+    ) -> Result<VectorMaintenanceRecommendation, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         // Freshness guard: reject page health attested against a different generation. The skew
         // summary needs no such guard because it is recomputed below from current heads.
         if attested_page_health.index_id != index_id
             || attested_page_health.index_version != def.active_index_version
         {
-            return Err(VectorIndexError::StaleMaintenanceHealth);
+            return Err(VectorCanisterError::StaleMaintenanceHealth);
         }
         let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
         let recommendation =
@@ -404,7 +404,7 @@ impl VectorIndexStore {
         let effective_nlist = match target_nlist {
             Some(n) => n,
             None if def.nlist >= 2 => def.nlist,
-            None => return Err(VectorIndexError::InvalidRebuildParams),
+            None => return Err(VectorCanisterError::InvalidRebuildParams),
         };
         self.admin_start_vector_rebuild(caller, index_id, effective_nlist, sample_limit)?;
         Ok(recommendation)
@@ -417,7 +417,7 @@ impl VectorIndexStore {
         caller: Principal,
         index_id: u32,
         max_subjects: u32,
-    ) -> Result<VectorRebuildStatus, VectorIndexError> {
+    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         self.rebuild_step_inner(
             index_id,
@@ -434,14 +434,14 @@ impl VectorIndexStore {
         index_id: u32,
         max_subjects: u32,
         max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStatus, VectorIndexError> {
+    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
         let state = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_read_state");
             rebuild_state_of(index_id)
         };
         let next = match state {
-            VectorRebuildStateRecord::Idle => return Err(VectorIndexError::NoActiveRebuild),
+            VectorRebuildStateRecord::Idle => return Err(VectorCanisterError::NoActiveRebuild),
             VectorRebuildStateRecord::Sampling { .. } => {
                 self.sampling_step(index_id, state, max_subjects, max_vector_bytes)?
             }
@@ -472,7 +472,7 @@ impl VectorIndexStore {
                     let is_training = matches!(next, VectorRebuildStateRecord::Training { .. });
                     let bytes = next.into_bytes();
                     if is_training && bytes.len() as u64 > MAX_REBUILD_STATE_BYTES {
-                        return Err(VectorIndexError::InvalidRebuildParams);
+                        return Err(VectorCanisterError::InvalidRebuildParams);
                     }
                     VECTOR_REBUILD_STATE
                         .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(bytes)));
@@ -491,7 +491,7 @@ impl VectorIndexStore {
         index_id: u32,
         max_subjects: u32,
         max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStatus, VectorIndexError> {
+    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
         self.rebuild_step_inner(index_id, max_subjects, max_vector_bytes)
     }
 
@@ -506,7 +506,7 @@ impl VectorIndexStore {
         state: VectorRebuildStateRecord,
         max_subjects: u32,
         max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStateRecord, VectorIndexError> {
+    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
         let VectorRebuildStateRecord::Sampling {
             target_index_version,
             nlist,
@@ -522,7 +522,7 @@ impl VectorIndexStore {
         let _scope = bench_scope("rebuild_sampling");
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
         let pool_cap = candidate_pool_cap(nlist, def.stride_bytes, def.dims);
 
@@ -642,7 +642,7 @@ impl VectorIndexStore {
         &self,
         index_id: u32,
         state: VectorRebuildStateRecord,
-    ) -> Result<VectorRebuildStateRecord, VectorIndexError> {
+    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
         let VectorRebuildStateRecord::Training {
             target_index_version,
             nlist,
@@ -658,7 +658,7 @@ impl VectorIndexStore {
         let _scope = bench_scope("rebuild_training");
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         let dims = def.dims as usize;
         let nlist_usize = nlist as usize;
 
@@ -741,7 +741,7 @@ impl VectorIndexStore {
         state: VectorRebuildStateRecord,
         max_subjects: u32,
         max_vector_bytes: u64,
-    ) -> Result<VectorRebuildStateRecord, VectorIndexError> {
+    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
         let VectorRebuildStateRecord::Building {
             target_index_version,
             nlist,
@@ -755,10 +755,10 @@ impl VectorIndexStore {
         let _scope = bench_scope("rebuild_building");
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
         let centroids = read_centroids_at(index_id, target_index_version, nlist, def.dims)
-            .ok_or(VectorIndexError::RebuildIncomplete)?;
+            .ok_or(VectorCanisterError::RebuildIncomplete)?;
 
         let mut examined = 0u32;
         let mut last_key: Option<SubjectKey> = None;
@@ -860,7 +860,7 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<VectorRebuildStatus, VectorIndexError> {
+    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         Ok(status_of(&rebuild_state_of(index_id)))
     }
@@ -873,11 +873,11 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<VectorPartitionHealthSummary, VectorIndexError> {
+    ) -> Result<VectorPartitionHealthSummary, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         Ok(partition_health_summary(
             index_id,
             def.nlist,
@@ -897,7 +897,7 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: Option<u32>,
-    ) -> Result<VectorSlabStats, VectorIndexError> {
+    ) -> Result<VectorSlabStats, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id)))
     }
@@ -905,14 +905,14 @@ impl VectorIndexStore {
     /// IC-safe, cursor/budgeted variant of [`admin_vector_slab_stats`](Self::admin_vector_slab_stats)
     /// for large stores: one bounded page-meta scan step (see [`VectorSlabStatsStep`] for the
     /// client-side merge contract). Router-guarded `#[query]`. The cursor is external caller input,
-    /// so a malformed cursor returns [`VectorIndexError::InvalidStatsCursor`] rather than trapping.
+    /// so a malformed cursor returns [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
     pub fn admin_vector_slab_stats_step(
         &self,
         caller: Principal,
         cursor: Option<Vec<u8>>,
         max_pages: u32,
         index_id: Option<u32>,
-    ) -> Result<VectorSlabStatsStep, VectorIndexError> {
+    ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id))
     }
@@ -922,7 +922,7 @@ impl VectorIndexStore {
     /// summary with the tombstone signal (`total_rows`/`physical_live_rows`/`tombstoned_rows`) that
     /// requires a page-meta scan. Resolves the active version from `VECTOR_INDEX_DEFS` and forwards to
     /// the slab store; the cursor is scope-checked against `(index_id, active_version)` and a
-    /// malformed/wrong-scope cursor returns [`VectorIndexError::InvalidStatsCursor`] rather than
+    /// malformed/wrong-scope cursor returns [`VectorCanisterError::InvalidStatsCursor`] rather than
     /// trapping. See [`VectorPartitionHealthStep`] for the additive client-side merge contract.
     ///
     /// [`admin_vector_partition_health`]: Self::admin_vector_partition_health
@@ -932,11 +932,11 @@ impl VectorIndexStore {
         index_id: u32,
         cursor: Option<Vec<u8>>,
         max_pages: u32,
-    ) -> Result<VectorPartitionHealthStep, VectorIndexError> {
+    ) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         PAGE_STORE.with_borrow(|store| {
             store.partition_page_health_step(index_id, def.active_index_version, cursor, max_pages)
         })
@@ -950,7 +950,7 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let state = rebuild_state_of(index_id);
         let VectorRebuildStateRecord::ReadyToPublish {
@@ -958,14 +958,14 @@ impl VectorIndexStore {
             nlist,
         } = state
         else {
-            return Err(VectorIndexError::RebuildNotReadyToPublish);
+            return Err(VectorCanisterError::RebuildNotReadyToPublish);
         };
         let mut def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         // O(`nlist`) centroid presence check (bounded by MAX_NLIST); not a subject scan.
         if read_centroids_at(index_id, target_index_version, nlist, def.dims).is_none() {
-            return Err(VectorIndexError::RebuildIncomplete);
+            return Err(VectorCanisterError::RebuildIncomplete);
         }
         let old_version = def.active_index_version;
         let old_nlist = def.nlist;
@@ -1006,7 +1006,7 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let state = rebuild_state_of(index_id);
         let next = match state {
@@ -1035,7 +1035,7 @@ impl VectorIndexStore {
             VectorRebuildStateRecord::Idle
             | VectorRebuildStateRecord::Cleaning { .. }
             | VectorRebuildStateRecord::Aborting { .. } => {
-                return Err(VectorIndexError::NoActiveRebuild);
+                return Err(VectorCanisterError::NoActiveRebuild);
             }
         };
         put_rebuild_state(index_id, next);
@@ -1050,7 +1050,7 @@ impl VectorIndexStore {
         caller: Principal,
         index_id: u32,
         max_work: u32,
-    ) -> Result<VectorRebuildStatus, VectorIndexError> {
+    ) -> Result<VectorRebuildStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let max_work = clamp_step_work(max_work);
         let state = rebuild_state_of(index_id);
@@ -1061,7 +1061,7 @@ impl VectorIndexStore {
             VectorRebuildStateRecord::Aborting { .. } => {
                 self.aborting_step(index_id, state, max_work)
             }
-            _ => return Err(VectorIndexError::NoActiveRebuild),
+            _ => return Err(VectorCanisterError::NoActiveRebuild),
         };
         put_rebuild_state(index_id, next.clone());
         Ok(status_of(&next))

@@ -452,7 +452,7 @@ mod tests {
             AdminAttachVectorIndexShardArgs {
                 logical_graph_name: "tenant.main".into(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: graph_principal(7),
+                vector_canister: graph_principal(7),
             },
         ))
         .expect("attach vector index shard");

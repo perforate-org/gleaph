@@ -8,7 +8,7 @@ use super::rebuild::rebuild_state_of;
 use super::search::{assign_partition, read_centroids_at};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, FIRST_ALLOCATION, INITIAL_INDEX_VERSION,
-    PAGE_HEADER_BYTES, VectorIndexStore,
+    PAGE_HEADER_BYTES, VectorCanisterStore,
 };
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
@@ -24,7 +24,7 @@ use crate::records::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorIndexKind, VectorMetric,
+    VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
     VectorSubject,
 };
 
@@ -71,32 +71,32 @@ fn rebuild_mutation_mode(index_id: u32) -> RebuildMutationMode {
 }
 
 /// Computes `slots_per_page` from a page byte budget and stride, rejecting a `< 1` capacity.
-fn slots_per_page_for(max_page_bytes: u32, stride_bytes: u32) -> Result<u32, VectorIndexError> {
+fn slots_per_page_for(max_page_bytes: u32, stride_bytes: u32) -> Result<u32, VectorCanisterError> {
     if stride_bytes == 0 {
-        return Err(VectorIndexError::DimensionMismatch);
+        return Err(VectorCanisterError::DimensionMismatch);
     }
     let usable = max_page_bytes.saturating_sub(PAGE_HEADER_BYTES);
     let slots = usable / stride_bytes;
     if slots < 1 {
-        return Err(VectorIndexError::InvalidPageCapacity);
+        return Err(VectorCanisterError::InvalidPageCapacity);
     }
     Ok(slots)
 }
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Asserts the caller is the attached canister for some shard, and that shard owns the subject.
     fn assert_caller_owns_subject(
         &self,
         caller: Principal,
         subject_shard: gleaph_graph_kernel::federation::ShardId,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         let attached = crate::facade::stable::SHARD_CANISTER_CATALOG
             .with_borrow(|c| c.shard_for_canister(caller));
         let Some(shard) = attached else {
-            return Err(VectorIndexError::ShardNotAttached);
+            return Err(VectorCanisterError::ShardNotAttached);
         };
         if shard != subject_shard {
-            return Err(VectorIndexError::ShardMismatch);
+            return Err(VectorCanisterError::ShardMismatch);
         }
         Ok(())
     }
@@ -112,10 +112,10 @@ impl VectorIndexStore {
         encoding: VectorEncoding,
         dims: u16,
         metric: VectorMetric,
-    ) -> Result<VectorIndexDef, VectorIndexError> {
+    ) -> Result<VectorIndexDef, VectorCanisterError> {
         if let Some(def) = VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&index_id)) {
             if def.metric != metric {
-                return Err(VectorIndexError::MetricMismatch);
+                return Err(VectorCanisterError::MetricMismatch);
             }
             return Ok(def);
         }
@@ -139,14 +139,16 @@ impl VectorIndexStore {
     }
 
     /// Allocates a fresh, never-reused `VectorId` from the durable defs allocator.
-    fn alloc_vector_id(&self, index_id: u32) -> Result<u64, VectorIndexError> {
+    fn alloc_vector_id(&self, index_id: u32) -> Result<u64, VectorCanisterError> {
         VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
-            let mut def = defs.get(&index_id).ok_or(VectorIndexError::UnknownIndex)?;
+            let mut def = defs
+                .get(&index_id)
+                .ok_or(VectorCanisterError::UnknownIndex)?;
             let id = def.next_vector_id;
             def.next_vector_id = def
                 .next_vector_id
                 .checked_add(1)
-                .ok_or(VectorIndexError::AllocatorOverflow)?;
+                .ok_or(VectorCanisterError::AllocatorOverflow)?;
             defs.insert(index_id, def);
             Ok(id)
         })
@@ -171,7 +173,7 @@ impl VectorIndexStore {
         generation: u64,
         subject: VectorSubject,
         bytes: &[u8],
-    ) -> Result<SlotRef, VectorIndexError> {
+    ) -> Result<SlotRef, VectorCanisterError> {
         PAGE_STORE.with_borrow_mut(|store| {
             store.append_row(
                 index_id,
@@ -246,17 +248,17 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         op: &VectorEmbeddingSyncOp,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         if op.remove {
-            return Err(VectorIndexError::MutationKindMismatch);
+            return Err(VectorCanisterError::MutationKindMismatch);
         }
         self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
         let def = self.ensure_def_for_upsert(op.index_id, op.encoding, op.dims, op.metric)?;
         if op.encoding != def.encoding || op.dims != def.dims {
-            return Err(VectorIndexError::DimensionMismatch);
+            return Err(VectorCanisterError::DimensionMismatch);
         }
         if op.bytes.len() != def.stride_bytes as usize {
-            return Err(VectorIndexError::ByteWidthMismatch);
+            return Err(VectorCanisterError::ByteWidthMismatch);
         }
         let active = def.active_index_version;
         let mode = rebuild_mutation_mode(op.index_id);
@@ -315,7 +317,7 @@ impl VectorIndexStore {
                         // the subject is collapsed later by `cleanup_step`.
                         return Ok(());
                     }
-                    return Err(VectorIndexError::EmbeddingVersionConflict);
+                    return Err(VectorCanisterError::EmbeddingVersionConflict);
                 }
                 // newer version within the live incarnation: append a new slot, reuse the live id.
                 let old_slot = entry
@@ -412,7 +414,7 @@ impl VectorIndexStore {
         def: &VectorIndexDef,
         mode: RebuildMutationMode,
         key: SubjectKey,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         let active = def.active_index_version;
         let vector_id = self.alloc_vector_id(op.index_id)?;
         let active_partition = self.active_partition(def, op.index_id, &op.bytes);
@@ -497,9 +499,9 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         op: &VectorEmbeddingSyncOp,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         if !op.remove {
-            return Err(VectorIndexError::MutationKindMismatch);
+            return Err(VectorCanisterError::MutationKindMismatch);
         }
         self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
         let mode = rebuild_mutation_mode(op.index_id);
@@ -625,7 +627,7 @@ impl VectorIndexStore {
         encoding: VectorEncoding,
         dims: u16,
         max_page_bytes: u32,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         let stride_bytes = encoding.stride_bytes(dims);
         let slots_per_page = slots_per_page_for(max_page_bytes, stride_bytes)?;
         let def = VectorIndexDef {

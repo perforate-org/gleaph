@@ -16,7 +16,7 @@
 use super::search::{encode_f32, l2_squared_f32};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, FIRST_ALLOCATION, INITIAL_INDEX_VERSION, PAGE_HEADER_BYTES,
-    VectorIndexStore,
+    VectorCanisterStore,
 };
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS,
@@ -44,7 +44,7 @@ fn nearest_partition(centroids: &[Vec<f32>], vector: &[f32]) -> u32 {
     best
 }
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Seeds a trained, partitioned `ivf_flat` index for tests and benchmarks.
     ///
     /// Writes the def (`nlist == centroids.len()`), the centroids, ready centroid metadata, and one

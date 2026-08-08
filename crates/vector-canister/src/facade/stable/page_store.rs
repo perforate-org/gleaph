@@ -31,9 +31,9 @@ use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorIndexError, VectorPartitionHealthStep, VectorPartitionPageHealth, VectorSlabGlobalStats,
-    VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsStep, VectorSlabVersionStats,
-    VectorSubject,
+    VectorCanisterError, VectorPartitionHealthStep, VectorPartitionPageHealth,
+    VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsStep,
+    VectorSlabVersionStats, VectorSubject,
 };
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::{Bound, Storable};
@@ -358,7 +358,7 @@ pub(crate) struct VectorSlabStore {
 }
 
 /// Grows `slab` so its byte size is at least `min_bytes`, returning `Err` on `grow` failure.
-fn grow_to_at_least(slab: &Memory, min_bytes: u64) -> Result<(), VectorIndexError> {
+fn grow_to_at_least(slab: &Memory, min_bytes: u64) -> Result<(), VectorCanisterError> {
     let size_bytes = slab
         .size()
         .checked_mul(WASM_PAGE_SIZE)
@@ -368,7 +368,7 @@ fn grow_to_at_least(slab: &Memory, min_bytes: u64) -> Result<(), VectorIndexErro
     }
     let delta_pages = (min_bytes - size_bytes).div_ceil(WASM_PAGE_SIZE);
     if slab.grow(delta_pages) == -1 {
-        return Err(VectorIndexError::StableGrowFailed);
+        return Err(VectorCanisterError::StableGrowFailed);
     }
     Ok(())
 }
@@ -386,13 +386,13 @@ fn write_slab_header(slab: &Memory, occupied_tail: u64) {
 thread_local! {
     /// Test-only fault-injection seam for [`VectorSlabStore::append_row`]. `None` disables injection;
     /// `Some(k)` lets the next `k` appends succeed and forces the `(k+1)`-th to fail with
-    /// [`VectorIndexError::StableGrowFailed`] (then disarms). This exercises the dual-write rollback
+    /// [`VectorCanisterError::StableGrowFailed`] (then disarms). This exercises the dual-write rollback
     /// path — the scariest branch, otherwise only reachable by exhausting stable memory.
     static FAIL_APPEND_AFTER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 /// Arms the [`append_row`](VectorSlabStore::append_row) failure seam: `skip` subsequent appends
-/// succeed, then the next one fails once with [`VectorIndexError::StableGrowFailed`].
+/// succeed, then the next one fails once with [`VectorCanisterError::StableGrowFailed`].
 #[cfg(test)]
 pub(crate) fn arm_append_failure(skip: u32) {
     FAIL_APPEND_AFTER.with(|c| c.set(Some(skip)));
@@ -543,7 +543,7 @@ impl VectorSlabStore {
         base: u64,
         capacity: u32,
         row_stride: u32,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         let span = page_span(capacity, row_stride);
         let end = base.checked_add(span).expect("slab offset overflow");
         grow_to_at_least(&self.slab, end)?;
@@ -656,11 +656,11 @@ impl VectorSlabStore {
         generation: u64,
         subject: VectorSubject,
         bytes: &[u8],
-    ) -> Result<SlotRef, VectorIndexError> {
+    ) -> Result<SlotRef, VectorCanisterError> {
         // Test-only: simulate a slab `grow` failure before any state mutation (see seam above).
         #[cfg(test)]
         if take_injected_append_failure() {
-            return Err(VectorIndexError::StableGrowFailed);
+            return Err(VectorCanisterError::StableGrowFailed);
         }
         let capacity = def.slots_per_page;
         let row_stride = def.stride_bytes;
@@ -961,7 +961,7 @@ impl VectorSlabStore {
     /// in the step (even outside `index_id`), so the merged total covers the whole slab; the per-step
     /// `partial.slab.estimated_unreferenced_bytes` is always `0` and the caller recomputes it after
     /// merging. The `cursor` is **external caller input**, so a malformed (wrong-length) cursor is
-    /// rejected with [`VectorIndexError::InvalidStatsCursor`] rather than trapping.
+    /// rejected with [`VectorCanisterError::InvalidStatsCursor`] rather than trapping.
     ///
     /// This is a bounded best-effort scan, **not** a point-in-time snapshot: the cursor is only a
     /// `PageKey`, so `VECTOR_PAGE_META` writes between steps are not isolated (see
@@ -972,14 +972,14 @@ impl VectorSlabStore {
         cursor: Option<Vec<u8>>,
         max_pages: u32,
         index_id: Option<u32>,
-    ) -> Result<VectorSlabStatsStep, VectorIndexError> {
+    ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
         let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
         // Validate the caller-supplied cursor before decoding: `PageKey::from_bytes` panics on any
         // length other than `PAGE_KEY_LEN`, and this cursor is untrusted Candid input.
         if let Some(bytes) = &cursor
             && bytes.len() != PAGE_KEY_LEN
         {
-            return Err(VectorIndexError::InvalidStatsCursor);
+            return Err(VectorCanisterError::InvalidStatsCursor);
         }
 
         let mut acc = SlabStatsAcc::new(index_id);
@@ -1039,7 +1039,7 @@ impl VectorSlabStore {
     /// Because the scan is scoped to one generation (unlike the global [`Self::stats_step`]), the
     /// caller-supplied `cursor` is **scope-checked**: a wrong-length cursor, or one whose
     /// `(index_id, index_version)` does not match `(index_id, active_version)`, returns
-    /// [`VectorIndexError::InvalidStatsCursor`] rather than silently yielding an empty exhausted
+    /// [`VectorCanisterError::InvalidStatsCursor`] rather than silently yielding an empty exhausted
     /// result. `PageKey` is `index -> version -> partition -> page` ordered, so the scan starts at the
     /// scope's lower bound (or the validated cursor) and breaks once the key leaves the scope.
     ///
@@ -1051,16 +1051,16 @@ impl VectorSlabStore {
         active_version: u64,
         cursor: Option<Vec<u8>>,
         max_pages: u32,
-    ) -> Result<VectorPartitionHealthStep, VectorIndexError> {
+    ) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
         let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
         // Validate + scope-check the caller-supplied cursor before decoding for the range bound.
         if let Some(bytes) = &cursor {
             if bytes.len() != PAGE_KEY_LEN {
-                return Err(VectorIndexError::InvalidStatsCursor);
+                return Err(VectorCanisterError::InvalidStatsCursor);
             }
             let key = PageKey::from_bytes(Cow::Borrowed(bytes));
             if key.index_id != index_id || key.index_version != active_version {
-                return Err(VectorIndexError::InvalidStatsCursor);
+                return Err(VectorCanisterError::InvalidStatsCursor);
             }
         }
 
@@ -1939,11 +1939,11 @@ mod tests {
         let store = open(&mm);
         assert_eq!(
             store.stats_step(Some(vec![0u8; 5]), 10, None).unwrap_err(),
-            VectorIndexError::InvalidStatsCursor
+            VectorCanisterError::InvalidStatsCursor
         );
         assert_eq!(
             store.stats_step(Some(Vec::new()), 10, None).unwrap_err(),
-            VectorIndexError::InvalidStatsCursor
+            VectorCanisterError::InvalidStatsCursor
         );
         // A correctly sized cursor decodes to a `PageKey` and is accepted (matches nothing here).
         let ok = store
@@ -2132,7 +2132,7 @@ mod tests {
             store
                 .partition_page_health_step(1, 1, Some(vec![0u8; 5]), 10)
                 .unwrap_err(),
-            VectorIndexError::InvalidStatsCursor
+            VectorCanisterError::InvalidStatsCursor
         );
         // Well-formed cursor but for a different index -> rejected (scope check).
         let wrong_index = PageKey::new(2, 1, 0, 0).into_bytes();
@@ -2140,7 +2140,7 @@ mod tests {
             store
                 .partition_page_health_step(1, 1, Some(wrong_index), 10)
                 .unwrap_err(),
-            VectorIndexError::InvalidStatsCursor
+            VectorCanisterError::InvalidStatsCursor
         );
         // Well-formed cursor but for a different version -> rejected.
         let wrong_version = PageKey::new(1, 2, 0, 0).into_bytes();
@@ -2148,7 +2148,7 @@ mod tests {
             store
                 .partition_page_health_step(1, 1, Some(wrong_version), 10)
                 .unwrap_err(),
-            VectorIndexError::InvalidStatsCursor
+            VectorCanisterError::InvalidStatsCursor
         );
         // In-scope well-formed cursor is accepted.
         let ok = PageKey::new(1, 1, 0, 0).into_bytes();

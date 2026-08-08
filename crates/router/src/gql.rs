@@ -4887,7 +4887,7 @@ mod tests {
             graph_id,
             registered_at_ns: 0,
             index_attached: true,
-            vector_index_canister: None,
+            vector_canister: None,
             vector_index_attached: false,
         };
         let claim = |shard_id: ShardId, canister: Principal| LocalUniqueClaim {

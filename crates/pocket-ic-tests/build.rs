@@ -205,7 +205,7 @@ fn build_wasm(manifest_dir: &Path) {
         "-p",
         "gleaph-graph",
         "-p",
-        "gleaph-graph-vector-index",
+        "gleaph-vector-canister",
         "-p",
         "gleaph-provision",
         "--target",
@@ -269,7 +269,7 @@ fn build_wasm(manifest_dir: &Path) {
     set_wasm_env(
         "VECTOR_INDEX_WASM",
         wasm_dir
-            .join("gleaph_graph_vector_index.wasm")
+            .join("gleaph_vector_canister.wasm")
             .into_std_path_buf(),
     );
     set_wasm_env(

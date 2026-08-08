@@ -1,20 +1,20 @@
 //! Router authorization and shard/canister attachment registry for the vector index.
 
-use super::VectorIndexStore;
+use super::VectorCanisterStore;
 use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, PAGE_STORE, SHARD_CANISTER_CATALOG,
     VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER,
     VECTOR_MAINTENANCE_STATE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
-use crate::init::VectorIndexInitArgs;
+use crate::init::VectorCanisterInitArgs;
 use crate::records::SubjectKey;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{
     ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult, ShardId,
 };
-use gleaph_graph_kernel::vector_index::VectorIndexError;
+use gleaph_graph_kernel::vector_index::VectorCanisterError;
 use ic_stable_structures::Storable;
 use std::borrow::Cow;
 use std::ops::Bound;
@@ -23,13 +23,13 @@ use std::ops::Bound;
 /// instruction / stable read budget regardless of total index size.
 const MAX_DETACH_EXAMINE_PER_STEP: u32 = 20_000;
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Clears all derived state and seeds the router principal from init args.
     ///
     /// Rejects an anonymous router before mutating any stable state.
-    pub fn init_from_args(&self, args: &VectorIndexInitArgs) -> Result<(), VectorIndexError> {
+    pub fn init_from_args(&self, args: &VectorCanisterInitArgs) -> Result<(), VectorCanisterError> {
         if args.router_canister == Principal::anonymous() {
-            return Err(VectorIndexError::AnonymousRouter);
+            return Err(VectorCanisterError::AnonymousRouter);
         }
         SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
         VECTOR_INDEX_DEFS.with_borrow_mut(|m| m.clear_new());
@@ -58,9 +58,9 @@ impl VectorIndexStore {
         graph_id: GraphId,
         shard_id: ShardId,
         shard_canister_principal: Principal,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         if shard_canister_principal == Principal::anonymous() {
-            return Err(VectorIndexError::InvalidPrincipalInRegistry);
+            return Err(VectorCanisterError::InvalidPrincipalInRegistry);
         }
         // One vector target per graph (ADR 0031 Slice 4): this canister owns *every* shard of a
         // single graph, so ownership is fixed by `graph_id` alone. The first attach pins the graph;
@@ -75,7 +75,7 @@ impl VectorIndexStore {
                 return Ok(());
             }
             if cfg.graph_id != graph_id {
-                return Err(VectorIndexError::GraphOwnershipMismatch);
+                return Err(VectorCanisterError::GraphOwnershipMismatch);
             }
             Ok(())
         })?;
@@ -84,7 +84,7 @@ impl VectorIndexStore {
             .map_err(|e| match e {
                 ShardCanisterCatalogInsertError::ShardAlreadyAttached
                 | ShardCanisterCatalogInsertError::CanisterAlreadyAttached => {
-                    VectorIndexError::ShardCanisterAlreadyAttached
+                    VectorCanisterError::ShardCanisterAlreadyAttached
                 }
             })
     }
@@ -194,7 +194,7 @@ impl VectorIndexStore {
         graph_id: GraphId,
         shard_id: ShardId,
         shard_canister_principal: Principal,
-    ) -> Result<(), VectorIndexError> {
+    ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
         self.commit_attach_shard_canister(graph_id, shard_id, shard_canister_principal)
     }
@@ -206,7 +206,7 @@ impl VectorIndexStore {
         caller: Principal,
         shard_id: ShardId,
         resume: Option<ShardDetachCursor>,
-    ) -> Result<ShardDetachStepResult, VectorIndexError> {
+    ) -> Result<ShardDetachStepResult, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         Ok(
             self.commit_detach_shard_step_with_budget(
@@ -227,13 +227,16 @@ impl VectorIndexStore {
         self.commit_detach_shard_step_with_budget(shard_id, resume, budget)
     }
 
-    pub(super) fn assert_router_caller(&self, caller: Principal) -> Result<(), VectorIndexError> {
+    pub(super) fn assert_router_caller(
+        &self,
+        caller: Principal,
+    ) -> Result<(), VectorCanisterError> {
         if caller == Principal::anonymous() {
-            return Err(VectorIndexError::Unauthorized);
+            return Err(VectorCanisterError::Unauthorized);
         }
         let router = VECTOR_INDEX_ROUTER.with_borrow(|r| *r.get());
         if caller != router {
-            return Err(VectorIndexError::Unauthorized);
+            return Err(VectorCanisterError::Unauthorized);
         }
         Ok(())
     }
@@ -248,7 +251,7 @@ struct SubjectPurgeStep {
 
 /// Convenience for test setup: attach a shard of graph 1 to this single vector target.
 #[cfg(test)]
-impl VectorIndexStore {
+impl VectorCanisterStore {
     pub(crate) fn attach_single_shard_for_test(
         &self,
         router: Principal,

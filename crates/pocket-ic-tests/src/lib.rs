@@ -249,18 +249,18 @@ fn create_funded_canister(pic: &PocketIc) -> Principal {
 }
 
 #[derive(CandidType)]
-struct VectorIndexInitArgs {
+struct VectorCanisterInitArgs {
     router_canister: Principal,
 }
 
-/// Install a derived vector-index canister (`gleaph-graph-vector-index`) authorized for `router`.
+/// Install a derived vector canister (`gleaph-vector-canister`) authorized for `router`.
 /// Used by ADR 0031 Slice 4/5 activation + attach coverage.
 pub fn install_vector_canister(pic: &PocketIc, router: Principal) -> Principal {
     let vector = create_funded_canister(pic);
     pic.install_canister(
         vector,
         wasm_bytes("VECTOR_INDEX_WASM"),
-        Encode!(&VectorIndexInitArgs {
+        Encode!(&VectorCanisterInitArgs {
             router_canister: router,
         })
         .expect("encode vector init"),
@@ -2526,12 +2526,12 @@ pub fn fully_activate_social_vector_index(
         .update_call(
             env.graph_source,
             env.router,
-            "admin_set_vector_index_canister",
-            Encode!(&vector).expect("encode admin_set_vector_index_canister"),
+            "admin_set_vector_canister",
+            Encode!(&vector).expect("encode admin_set_vector_canister"),
         )
-        .expect("admin_set_vector_index_canister");
+        .expect("admin_set_vector_canister");
     let _: () = Decode!(&bytes, Result<(), String>)
-        .expect("decode admin_set_vector_index_canister")
+        .expect("decode admin_set_vector_canister")
         .expect("graph accepts vector routing");
 
     let bytes = env
@@ -2550,7 +2550,7 @@ pub fn fully_activate_social_vector_index(
     let attach_args = AdminAttachVectorIndexShardArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         shard_id: ShardId::new(0),
-        vector_index_canister: vector,
+        vector_canister: vector,
     };
     let bytes = env
         .pic

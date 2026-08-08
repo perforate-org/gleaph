@@ -1867,7 +1867,7 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
             router_canister: candid::Principal::management_canister(),
             index_canister: candid::Principal::management_canister(),
             shard_id: ShardId::new(0),
-            vector_index_canister: None,
+            vector_canister: None,
         }))
         .expect("configure index routing");
     crate::index::edge_pending::clear_pending();

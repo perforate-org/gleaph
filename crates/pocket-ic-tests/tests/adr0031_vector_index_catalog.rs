@@ -24,8 +24,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMetric,
-    VectorSearchResult, VectorSubject,
+    MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding,
+    VectorMetric, VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_as_admin,
@@ -354,12 +354,12 @@ fn dispatch_activation_enabled(env: &FederationEnv) -> bool {
 fn attach_shard(
     env: &FederationEnv,
     shard_id: ShardId,
-    vector_index_canister: Principal,
+    vector_canister: Principal,
 ) -> Result<(), RouterError> {
     let args = AdminAttachVectorIndexShardArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         shard_id,
-        vector_index_canister,
+        vector_canister,
     };
     let bytes = env
         .pic
@@ -413,10 +413,10 @@ fn set_graph_vector_routing(env: &FederationEnv, graph: Principal, vector: Princ
         .update_call(
             graph,
             env.router,
-            "admin_set_vector_index_canister",
+            "admin_set_vector_canister",
             Encode!(&vector).expect("encode set vector routing"),
         )
-        .expect("admin_set_vector_index_canister call");
+        .expect("admin_set_vector_canister call");
     Decode!(&bytes, Result<(), String>)
         .expect("decode set vector routing")
         .expect("graph accepts router-set vector routing");
@@ -585,7 +585,7 @@ fn seed_embedding(
     shard_canister: Principal,
     vertex_id: u32,
     value: f32,
-) -> Result<(), VectorIndexError> {
+) -> Result<(), VectorCanisterError> {
     let op = VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
@@ -610,7 +610,7 @@ fn seed_embedding(
             Encode!(&op).expect("encode upsert op"),
         )
         .expect("vector_upsert call");
-    Decode!(&bytes, Result<(), VectorIndexError>).expect("decode upsert result")
+    Decode!(&bytes, Result<(), VectorCanisterError>).expect("decode upsert result")
 }
 
 fn seed_embedding_with_metric(
@@ -620,7 +620,7 @@ fn seed_embedding_with_metric(
     vertex_id: u32,
     value: f32,
     metric: VectorMetric,
-) -> Result<(), VectorIndexError> {
+) -> Result<(), VectorCanisterError> {
     let op = VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
@@ -645,7 +645,7 @@ fn seed_embedding_with_metric(
             Encode!(&op).expect("encode upsert op"),
         )
         .expect("vector_upsert call");
-    Decode!(&bytes, Result<(), VectorIndexError>).expect("decode upsert result")
+    Decode!(&bytes, Result<(), VectorCanisterError>).expect("decode upsert result")
 }
 
 fn router_vector_search(

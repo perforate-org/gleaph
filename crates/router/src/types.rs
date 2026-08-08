@@ -1406,7 +1406,7 @@ pub struct AdminRegisterShardArgs {
 
 /// Admin: wire (or retrofit) a derived vector-index target onto an already-registered shard and
 /// drive the attach handshake (ADR 0031 Slice 4). The Router records the target in the shard
-/// registry, calls the graph shard's router-guarded `admin_set_vector_index_canister` so its
+/// registry, calls the graph shard's router-guarded `admin_set_vector_canister` so its
 /// **local** `FederationRouting` carries the target, attaches the shard to the vector canister, and
 /// only then flips the durable `vector_index_attached` readiness bit. Idempotent; serves both fresh
 /// and existing (upgraded) shards. Rejects an anonymous target.
@@ -1414,7 +1414,7 @@ pub struct AdminRegisterShardArgs {
 pub struct AdminAttachVectorIndexShardArgs {
     pub logical_graph_name: String,
     pub shard_id: ShardId,
-    pub vector_index_canister: Principal,
+    pub vector_canister: Principal,
 }
 
 /// One router-orchestrated batch of label posting backfill on a graph shard.

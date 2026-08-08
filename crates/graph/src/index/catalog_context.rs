@@ -440,7 +440,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("configure index routing");
         crate::index::edge_pending::clear_pending();
@@ -551,7 +551,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("configure index routing");
         crate::index::edge_pending::clear_pending();
@@ -675,7 +675,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("configure index routing");
         crate::index::pending::clear_pending();

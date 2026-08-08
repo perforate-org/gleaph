@@ -24,7 +24,7 @@
 use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
 use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
-use crate::index::vector_lookup::VectorIndexLookup;
+use crate::index::vector_lookup::VectorCanisterLookup;
 use crate::plan::PlanQueryError;
 use candid::Encode;
 use gleaph_graph_kernel::entry::EmbeddingNameId;
@@ -63,7 +63,7 @@ enum ApplyOutcome {
 /// do not stop the drain.
 pub(crate) async fn drain_once(
     ix: &dyn PropertyIndexLookup,
-    vector: Option<&dyn VectorIndexLookup>,
+    vector: Option<&dyn VectorCanisterLookup>,
 ) -> Result<(), PlanQueryError> {
     drain_queue(DurableQueue::RepairJournal, ix, vector).await
 }
@@ -73,7 +73,7 @@ pub(crate) async fn drain_once(
 /// reconciliation have one implementation.
 pub(crate) async fn drain_outbox_once(
     ix: &dyn PropertyIndexLookup,
-    vector: Option<&dyn VectorIndexLookup>,
+    vector: Option<&dyn VectorCanisterLookup>,
 ) -> Result<(), PlanQueryError> {
     drain_queue(DurableQueue::DerivedIndexOutbox, ix, vector).await
 }
@@ -178,7 +178,7 @@ fn vector_batch_prefix(entries: &[VectorEmbeddingSyncOp]) -> Result<usize, PlanQ
 async fn drain_queue(
     queue: DurableQueue,
     ix: &dyn PropertyIndexLookup,
-    vector: Option<&dyn VectorIndexLookup>,
+    vector: Option<&dyn VectorCanisterLookup>,
 ) -> Result<(), PlanQueryError> {
     let store = GraphStore::new();
     if !store.federation_configured() {
@@ -390,7 +390,7 @@ fn to_index_mutation(op: &RepairPostingOp) -> Result<IndexPostingMutation, PlanQ
 
 async fn apply(
     ix: &dyn PropertyIndexLookup,
-    vector: Option<&dyn VectorIndexLookup>,
+    vector: Option<&dyn VectorCanisterLookup>,
     shard_id: ShardId,
     op: &RepairPostingOp,
 ) -> Result<ApplyOutcome, PlanQueryError> {
@@ -738,7 +738,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("set routing");
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
@@ -875,7 +875,7 @@ mod tests {
         });
     }
 
-    struct RecordingVectorIndex {
+    struct RecordingVectorCanister {
         upserts: AtomicUsize,
         removes: AtomicUsize,
         last_remove_version: AtomicU64,
@@ -884,7 +884,7 @@ mod tests {
         last_upsert_metric: std::sync::Mutex<VectorMetric>,
     }
 
-    impl RecordingVectorIndex {
+    impl RecordingVectorCanister {
         fn new() -> Self {
             Self {
                 upserts: AtomicUsize::new(0),
@@ -898,7 +898,7 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl VectorIndexLookup for RecordingVectorIndex {
+    impl VectorCanisterLookup for RecordingVectorCanister {
         async fn vector_upsert(
             &self,
             op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
@@ -923,13 +923,13 @@ mod tests {
         }
     }
 
-    struct PartialVectorIndex {
+    struct PartialVectorCanister {
         batch_calls: AtomicUsize,
         batch_limit: usize,
     }
 
     #[async_trait(?Send)]
-    impl VectorIndexLookup for PartialVectorIndex {
+    impl VectorCanisterLookup for PartialVectorCanister {
         fn supports_sync_batch(&self) -> bool {
             true
         }
@@ -1027,7 +1027,7 @@ mod tests {
                 graph.derived_index_outbox_append(17, [vector_upsert_op(vertex_id)]);
             }
             let index = CountingIndex::batch();
-            let vector = PartialVectorIndex {
+            let vector = PartialVectorCanister {
                 batch_calls: AtomicUsize::new(0),
                 batch_limit: 2,
             };
@@ -1058,7 +1058,7 @@ mod tests {
             }
             graph.repair_journal_append(0, [vector_upsert_op(1), vector_upsert_op(2)]);
             let index = CountingIndex::new(0);
-            let vector = RecordingVectorIndex::new();
+            let vector = RecordingVectorCanister::new();
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 2);
             assert_eq!(vector.removes.load(Ordering::SeqCst), 0);
@@ -1078,7 +1078,7 @@ mod tests {
             // remove, so it can never resurrect a tombstoned vector.
             graph.repair_journal_append(0, [vector_upsert_op(5)]);
             let index = CountingIndex::new(0);
-            let vector = RecordingVectorIndex::new();
+            let vector = RecordingVectorCanister::new();
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 0);
             assert_eq!(
@@ -1118,7 +1118,7 @@ mod tests {
             graph.repair_journal_append(0, [vector_upsert_op(1)]);
 
             let index = CountingIndex::new(0);
-            let vector = RecordingVectorIndex::new();
+            let vector = RecordingVectorCanister::new();
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 1);
             assert_eq!(
@@ -1192,7 +1192,7 @@ mod tests {
             graph.repair_journal_append(0, [vector_cosine_upsert_op(1)]);
 
             let index = CountingIndex::new(0);
-            let vector = RecordingVectorIndex::new();
+            let vector = RecordingVectorCanister::new();
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 1);
             assert_eq!(

@@ -438,13 +438,13 @@ impl RouterStore {
     fn commit_set_shard_vector_attached(
         graph_id: GraphId,
         shard_id: ShardId,
-        vector_index_canister: Principal,
+        vector_canister: Principal,
         vector_index_attached: bool,
     ) -> Result<(), RouterError> {
         let key = GraphShardKey::new(graph_id, shard_id);
         ROUTER_SHARDS.with_borrow_mut(|shards| {
             let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
-            entry.vector_index_canister = Some(vector_index_canister);
+            entry.vector_canister = Some(vector_canister);
             entry.vector_index_attached = vector_index_attached;
             shards.insert(key, entry);
             Ok::<(), RouterError>(())
@@ -457,12 +457,12 @@ impl RouterStore {
         &self,
         graph_id: GraphId,
         shard_id: ShardId,
-        vector_index_canister: Principal,
+        vector_canister: Principal,
         graph_canister: Principal,
     ) -> Result<(), RouterError> {
         // Step 1: make the shard's *local* routing carry the target before anything observes it as
         // ready. If this fails we never recorded readiness, so there is nothing to roll back.
-        vector_sync::admin_set_graph_vector_index_canister(graph_canister, vector_index_canister)
+        vector_sync::admin_set_graph_vector_canister(graph_canister, vector_canister)
             .await
             .map_err(RouterError::Internal)?;
         // Step 2: attach the shard to the vector canister so it accepts the shard's subject sync.
@@ -471,7 +471,7 @@ impl RouterStore {
         // property `index_group_size` would split a multi-shard graph into per-shard groups the
         // single target rejects).
         vector_sync::admin_attach_shard_to_vector(
-            vector_index_canister,
+            vector_canister,
             graph_id,
             shard_id,
             graph_canister,
@@ -479,31 +479,26 @@ impl RouterStore {
         .await
         .map_err(RouterError::Internal)?;
         // Step 3: only now flip the durable readiness bit; the predicate gates dispatch on it.
-        Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_index_canister, true)
+        Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister, true)
     }
 
     async fn complete_shard_vector_attach(
         &self,
         graph_id: GraphId,
         shard_id: ShardId,
-        vector_index_canister: Principal,
+        vector_canister: Principal,
         graph_canister: Principal,
     ) -> Result<(), RouterError> {
         #[cfg(feature = "pocket-ic-e2e")]
         {
             let _ = graph_canister;
-            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_index_canister, true)
+            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister, true)
         }
 
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
-            self.finish_shard_vector_attach(
-                graph_id,
-                shard_id,
-                vector_index_canister,
-                graph_canister,
-            )
-            .await
+            self.finish_shard_vector_attach(graph_id, shard_id, vector_canister, graph_canister)
+                .await
         }
     }
 
@@ -517,9 +512,9 @@ impl RouterStore {
         args: AdminAttachVectorIndexShardArgs,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
-        if args.vector_index_canister == Principal::anonymous() {
+        if args.vector_canister == Principal::anonymous() {
             return Err(RouterError::InvalidArgument(
-                "vector_index_canister must not be the anonymous principal".into(),
+                "vector_canister must not be the anonymous principal".into(),
             ));
         }
         validate_metadata_name(&args.logical_graph_name)?;
@@ -539,24 +534,22 @@ impl RouterStore {
             .into_iter()
             .find(|other| {
                 other.shard_id != args.shard_id
-                    && other.vector_index_canister.is_some()
-                    && other.vector_index_canister != Some(args.vector_index_canister)
+                    && other.vector_canister.is_some()
+                    && other.vector_canister != Some(args.vector_canister)
             })
         {
             return Err(RouterError::Conflict(format!(
                 "graph already targets vector canister {:?}; one vector-index target per graph",
-                conflict.vector_index_canister,
+                conflict.vector_canister,
             )));
         }
-        if entry.vector_index_attached
-            && entry.vector_index_canister == Some(args.vector_index_canister)
-        {
+        if entry.vector_index_attached && entry.vector_canister == Some(args.vector_canister) {
             return Ok(());
         }
         self.complete_shard_vector_attach(
             graph_id,
             args.shard_id,
-            args.vector_index_canister,
+            args.vector_canister,
             entry.graph_canister,
         )
         .await
@@ -565,7 +558,7 @@ impl RouterStore {
     /// Predicate gating production vector dispatch/backfill for a graph (ADR 0031 Slice 4). True
     /// only when the global activation flag is on, the graph has a single resolved vector-index
     /// target, **and** every live (index-attached) shard of the graph is attached to *that exact
-    /// target* (`vector_index_canister == target && vector_index_attached`). Requiring the target
+    /// target* (`vector_canister == target && vector_index_attached`). Requiring the target
     /// match (not merely a non-anonymous canister) closes the silent-misrouting hole where a shard
     /// attached to one canister could mark a graph ready for a def pointing at another. Fail-closed:
     /// no def target, an empty shard set, or any mismatched/unattached shard yields `false`.
@@ -582,9 +575,9 @@ impl RouterStore {
             return false;
         };
         !shards.is_empty()
-            && shards.iter().all(|shard| {
-                shard.vector_index_attached && shard.vector_index_canister == Some(target)
-            })
+            && shards
+                .iter()
+                .all(|shard| shard.vector_index_attached && shard.vector_canister == Some(target))
     }
 
     #[cfg(test)]
@@ -1063,7 +1056,7 @@ impl RouterStore {
             index_attached: false,
             // Vector wiring is a separate, optional handshake (ADR 0031 Slice 4); a freshly
             // registered shard starts with no vector target and unattached.
-            vector_index_canister: None,
+            vector_canister: None,
             vector_index_attached: false,
         };
 

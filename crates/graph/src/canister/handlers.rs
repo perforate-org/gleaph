@@ -18,8 +18,8 @@ use crate::index::repair_journal::drain_outbox_once;
 #[cfg(not(target_family = "wasm"))]
 use crate::index::router::verify_shard_attachment;
 #[cfg(target_family = "wasm")]
-use crate::index::vector_ic::IcVectorIndexClient;
-use crate::index::vector_lookup::VectorIndexLookup;
+use crate::index::vector_ic::IcVectorCanisterClient;
+use crate::index::vector_lookup::VectorCanisterLookup;
 #[cfg(target_family = "wasm")]
 use crate::plan::PlanQueryError;
 use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
@@ -79,7 +79,7 @@ fn test_corrupt_ordered_mixed_result_after_commit() -> TestCorruptOrderedMixedRe
 pub async fn init(args: GraphInitArgs) {
     // ADR 0031 Slice 3 (setter deferral C, A-compatible): the Router resolves vector-index targets
     // in its catalog but does **not** push them into graph shards or enable production dispatch in
-    // this slice, so `vector_index_canister` is initialized to `None` here. Wiring it is an
+    // this slice, so `vector_canister` is initialized to `None` here. Wiring it is an
     // activation-phase concern that should follow the existing `index_canister` init/registration
     // precedent (carried in `GraphInitArgs` / shard attachment) unless a later operational
     // requirement justifies a router-guarded runtime setter.
@@ -88,7 +88,7 @@ pub async fn init(args: GraphInitArgs) {
             router_canister,
             shard_id,
             index_canister,
-            vector_index_canister: None,
+            vector_canister: None,
         }),
         #[cfg(target_family = "wasm")]
         (Some(_), Some(_), None) => ic_cdk::trap(
@@ -106,7 +106,7 @@ pub async fn init(args: GraphInitArgs) {
                 router_canister,
                 shard_id,
                 index_canister: entry.index_canister,
-                vector_index_canister: None,
+                vector_canister: None,
             })
         }
         (None, None, None) => None,
@@ -162,11 +162,11 @@ fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
 }
 
 #[cfg(target_family = "wasm")]
-fn wasm_vector_index_client() -> Option<IcVectorIndexClient> {
+fn wasm_vector_index_client() -> Option<IcVectorCanisterClient> {
     GraphStore::new()
         .federation_routing()
-        .and_then(|r| r.vector_index_canister)
-        .map(|vector_principal| IcVectorIndexClient { vector_principal })
+        .and_then(|r| r.vector_canister)
+        .map(|vector_principal| IcVectorCanisterClient { vector_principal })
 }
 
 async fn sync_drain_derived_index_outbox() -> Result<(), String> {
@@ -177,7 +177,7 @@ async fn sync_drain_derived_index_outbox() -> Result<(), String> {
         };
         let vector = wasm_vector_index_client();
         let ix = &index as &dyn PropertyIndexLookup;
-        let vx = vector.as_ref().map(|c| c as &dyn VectorIndexLookup);
+        let vx = vector.as_ref().map(|c| c as &dyn VectorCanisterLookup);
         match drain_outbox_once(ix, vx).await {
             Ok(()) => Ok(()),
             Err(PlanQueryError::IndexFlushDeferred { .. }) => Ok(()),
@@ -1754,14 +1754,12 @@ pub fn purge_local_unique_constraint(
 /// so the shard's local `FederationRouting` carries the target before the Router attaches the shard
 /// to the vector canister and flips the durable `vector_index_attached` readiness bit. Rejects an
 /// anonymous target and a graph with no federation routing.
-pub fn admin_set_vector_index_canister(
-    vector_index_canister: candid::Principal,
-) -> Result<(), String> {
-    if vector_index_canister == candid::Principal::anonymous() {
-        return Err("vector_index_canister must not be the anonymous principal".to_string());
+pub fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), String> {
+    if vector_canister == candid::Principal::anonymous() {
+        return Err("vector_canister must not be the anonymous principal".to_string());
     }
     GraphStore::new()
-        .set_vector_index_canister(Some(vector_index_canister))
+        .set_vector_canister(Some(vector_canister))
         .map_err(|e| e.to_string())
 }
 
@@ -1889,7 +1887,7 @@ pub async fn admin_ingest_vertex_embedding_batch(
 
 async fn admin_ingest_vertex_embedding_batch_with_vector(
     args: Vec<VertexEmbeddingIngestionArgs>,
-    vector_override: Option<&dyn VectorIndexLookup>,
+    vector_override: Option<&dyn VectorCanisterLookup>,
 ) -> Vec<Result<VertexEmbeddingIngestionResult, String>> {
     if args.is_empty() {
         return Vec::new();
@@ -1922,13 +1920,13 @@ async fn admin_ingest_vertex_embedding_batch_with_vector(
             {
                 let client = crate::facade::GraphStore::new()
                     .federation_routing()
-                    .and_then(|r| r.vector_index_canister)
+                    .and_then(|r| r.vector_canister)
                     .map(
-                        |vector_principal| crate::index::vector_ic::IcVectorIndexClient {
+                        |vector_principal| crate::index::vector_ic::IcVectorCanisterClient {
                             vector_principal,
                         },
                     );
-                let vx = client.as_ref().map(|c| c as &dyn VectorIndexLookup);
+                let vx = client.as_ref().map(|c| c as &dyn VectorCanisterLookup);
                 flush_single_vector_pending(vx).await
             }
             #[cfg(not(target_family = "wasm"))]
@@ -1997,7 +1995,7 @@ async fn admin_ingest_vertex_embedding_item(
 
 async fn admin_ingest_vertex_embedding_with_vector(
     args: VertexEmbeddingIngestionArgs,
-    vector_override: Option<&dyn VectorIndexLookup>,
+    vector_override: Option<&dyn VectorCanisterLookup>,
 ) -> Result<VertexEmbeddingIngestionResult, String> {
     let catalog = IndexedEmbeddingCatalog {
         embeddings: vec![args.spec],
@@ -2012,13 +2010,13 @@ async fn admin_ingest_vertex_embedding_with_vector(
             {
                 let client = crate::facade::GraphStore::new()
                     .federation_routing()
-                    .and_then(|r| r.vector_index_canister)
+                    .and_then(|r| r.vector_canister)
                     .map(
-                        |vector_principal| crate::index::vector_ic::IcVectorIndexClient {
+                        |vector_principal| crate::index::vector_ic::IcVectorCanisterClient {
                             vector_principal,
                         },
                     );
-                let vx = client.as_ref().map(|c| c as &dyn VectorIndexLookup);
+                let vx = client.as_ref().map(|c| c as &dyn VectorCanisterLookup);
                 flush_single_vector_pending(vx).await
             }
             #[cfg(not(target_family = "wasm"))]
@@ -2035,7 +2033,7 @@ async fn admin_ingest_vertex_embedding_with_vector(
 }
 
 async fn flush_single_vector_pending(
-    vector: Option<&dyn VectorIndexLookup>,
+    vector: Option<&dyn VectorCanisterLookup>,
 ) -> VertexEmbeddingProjectionOutcome {
     match crate::index::vector_pending::flush_pending(vector, None).await {
         Ok(()) => VertexEmbeddingProjectionOutcome::Applied,
@@ -2850,12 +2848,14 @@ pub async fn backfill_edge_property_postings(
 }
 
 /// Resolve the shard's derived vector-index client from its local routing (ADR 0031 Slice 4). `None`
-/// until the vector attach handshake has set `vector_index_canister`.
-fn wasm_vector_client_holder() -> Option<crate::index::vector_ic::IcVectorIndexClient> {
+/// until the vector attach handshake has set `vector_canister`.
+fn wasm_vector_client_holder() -> Option<crate::index::vector_ic::IcVectorCanisterClient> {
     GraphStore::new()
         .federation_routing()
-        .and_then(|r| r.vector_index_canister)
-        .map(|vector_principal| crate::index::vector_ic::IcVectorIndexClient { vector_principal })
+        .and_then(|r| r.vector_canister)
+        .map(
+            |vector_principal| crate::index::vector_ic::IcVectorCanisterClient { vector_principal },
+        )
 }
 
 /// Router → graph (ADR 0031 Slice 4/5): run one bounded vertex-embedding backfill step against the
@@ -3010,7 +3010,7 @@ mod tests {
             router_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
             shard_id,
-            vector_index_canister: None,
+            vector_canister: None,
         }));
         GraphStore::new()
             .set_metadata(metadata)
@@ -4200,7 +4200,7 @@ mod vertex_embedding_ingestion_tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: Some(Principal::management_canister()),
+                vector_canister: Some(Principal::management_canister()),
             }))
             .expect("set routing");
     }
@@ -4218,7 +4218,7 @@ mod vertex_embedding_ingestion_tests {
         upserts: std::cell::RefCell<Vec<VectorEmbeddingSyncOp>>,
     }
     #[async_trait(?Send)]
-    impl VectorIndexLookup for RecordingVector {
+    impl VectorCanisterLookup for RecordingVector {
         async fn vector_upsert(
             &self,
             op: VectorEmbeddingSyncOp,
@@ -4247,7 +4247,7 @@ mod vertex_embedding_ingestion_tests {
         }
     }
     #[async_trait(?Send)]
-    impl VectorIndexLookup for FlakyVector {
+    impl VectorCanisterLookup for FlakyVector {
         async fn vector_upsert(
             &self,
             _op: VectorEmbeddingSyncOp,
@@ -4284,7 +4284,7 @@ mod vertex_embedding_ingestion_tests {
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
             },
-            Some(&vector as &dyn VectorIndexLookup),
+            Some(&vector as &dyn VectorCanisterLookup),
         ))
         .expect("valid ingestion");
         assert_eq!(result.embedding_version, 1);
@@ -4316,7 +4316,7 @@ mod vertex_embedding_ingestion_tests {
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
             },
-            Some(&RecordingVector::default() as &dyn VectorIndexLookup),
+            Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
         ))
         .expect_err("missing vertex rejected");
         assert!(err.contains("not found"), "unexpected error: {err}");
@@ -4334,7 +4334,7 @@ mod vertex_embedding_ingestion_tests {
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0, 3.0],
             },
-            Some(&RecordingVector::default() as &dyn VectorIndexLookup),
+            Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
         ))
         .expect_err("dimension mismatch rejected");
         assert!(err.contains("vector length"), "unexpected error: {err}");
@@ -4357,7 +4357,7 @@ mod vertex_embedding_ingestion_tests {
                 spec: spec(1, 2),
                 values: vec![1.0, f32::NAN],
             },
-            Some(&RecordingVector::default() as &dyn VectorIndexLookup),
+            Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
         ))
         .expect_err("non-finite rejected");
         assert!(err.contains("finite"), "unexpected error: {err}");
@@ -4376,7 +4376,7 @@ mod vertex_embedding_ingestion_tests {
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
             },
-            Some(&flaky as &dyn VectorIndexLookup),
+            Some(&flaky as &dyn VectorCanisterLookup),
         ))
         .expect("canonical commit succeeds even when projection fails");
         assert_eq!(result.embedding_version, 1);
@@ -4431,7 +4431,7 @@ mod vertex_embedding_ingestion_tests {
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
             },
-            Some(&vector as &dyn VectorIndexLookup),
+            Some(&vector as &dyn VectorCanisterLookup),
         ))
         .expect("valid ingestion");
         assert_eq!(result.embedding_version, 1);

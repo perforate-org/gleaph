@@ -18,15 +18,16 @@
 //!
 //! [`SubjectMapEntry`]: crate::records::SubjectMapEntry
 
-use super::VectorIndexStore;
+use super::VectorCanisterStore;
 use crate::facade::stable::page_store::{PageScratch, RowHeader};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorEncoding, VectorIndexError,
-    VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult, VectorSubject,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
+    VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
+    VectorSubject,
 };
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -276,7 +277,7 @@ fn select_partitions(centroids: &[Vec<f32>], query: &[f32], nprobe: u32) -> Vec<
         .collect()
 }
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Exact top-k vector search over the `ivf_flat` index (ADR 0031 Slice 5/6).
     ///
     /// Read-only: validates the request against the stored definition, selects the read path (exact
@@ -286,7 +287,7 @@ impl VectorIndexStore {
     pub fn vector_search(
         &self,
         req: &VectorSearchRequest,
-    ) -> Result<VectorSearchResult, VectorIndexError> {
+    ) -> Result<VectorSearchResult, VectorCanisterError> {
         self.search_impl(req, None)
     }
 
@@ -299,7 +300,7 @@ impl VectorIndexStore {
         &self,
         req: &VectorSearchRequest,
         tuning: SearchTuning,
-    ) -> Result<VectorSearchResult, VectorIndexError> {
+    ) -> Result<VectorSearchResult, VectorCanisterError> {
         self.search_impl(req, Some(tuning))
     }
 
@@ -307,9 +308,9 @@ impl VectorIndexStore {
         &self,
         req: &VectorSearchRequest,
         tuning_override: Option<SearchTuning>,
-    ) -> Result<VectorSearchResult, VectorIndexError> {
+    ) -> Result<VectorSearchResult, VectorCanisterError> {
         if req.top_k == 0 || req.top_k > MAX_VECTOR_SEARCH_TOP_K {
-            return Err(VectorIndexError::InvalidSearchTopK);
+            return Err(VectorCanisterError::InvalidSearchTopK);
         }
         // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
         // over current live vector slots. Validate the allowlist shape before the physical def check
@@ -330,17 +331,17 @@ impl VectorIndexStore {
             || req.metric != def.metric
             || req.dims != def.dims
         {
-            return Err(VectorIndexError::DimensionMismatch);
+            return Err(VectorCanisterError::DimensionMismatch);
         }
         if req.query.len() != def.stride_bytes as usize {
-            return Err(VectorIndexError::ByteWidthMismatch);
+            return Err(VectorCanisterError::ByteWidthMismatch);
         }
 
         let query = decode_f32(&req.query);
         if !vector_is_finite(&query)
             || (req.metric == VectorMetric::Cosine && !vector_has_nonzero_norm(&query))
         {
-            return Err(VectorIndexError::InvalidQueryVector);
+            return Err(VectorCanisterError::InvalidQueryVector);
         }
 
         // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
@@ -380,7 +381,7 @@ impl VectorIndexStore {
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
             Ok(self.exact_subject_scan(req, def.active_index_version, &query, def.metric))
         } else if def.metric == VectorMetric::Cosine {
-            Err(VectorIndexError::MetricNotSupportedForPartitionScan)
+            Err(VectorCanisterError::MetricNotSupportedForPartitionScan)
         } else {
             Ok(self.partition_page_scan(req, &def, &query, tuning))
         }
@@ -390,14 +391,16 @@ impl VectorIndexStore {
     ///
     /// Fails closed for oversized, duplicate, or non-vertex candidates. The receiving canister must
     /// not depend on the Router to police the wire contract.
-    fn validate_candidate_allowlist(candidates: &[VectorSubject]) -> Result<(), VectorIndexError> {
+    fn validate_candidate_allowlist(
+        candidates: &[VectorSubject],
+    ) -> Result<(), VectorCanisterError> {
         if candidates.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
-            return Err(VectorIndexError::InvalidSearchCandidates);
+            return Err(VectorCanisterError::InvalidSearchCandidates);
         }
         let mut seen = std::collections::HashSet::with_capacity(candidates.len());
         for subject in candidates {
             if !matches!(subject, VectorSubject::Vertex { .. }) || !seen.insert(*subject) {
-                return Err(VectorIndexError::InvalidSearchCandidates);
+                return Err(VectorCanisterError::InvalidSearchCandidates);
             }
         }
         Ok(())
@@ -417,7 +420,7 @@ impl VectorIndexStore {
         metric: VectorMetric,
         candidates: &[VectorSubject],
         top_k: u32,
-    ) -> Result<VectorSearchResult, VectorIndexError> {
+    ) -> Result<VectorSearchResult, VectorCanisterError> {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
         PAGE_STORE.with_borrow(|store| {

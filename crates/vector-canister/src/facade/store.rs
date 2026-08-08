@@ -94,9 +94,9 @@ pub(crate) const MAX_REBUILD_TRAINING_DISTANCE_OPS: u64 = 1_100_000_000;
 
 /// Stateless facade over vector-index stable structures initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]
-pub struct VectorIndexStore;
+pub struct VectorCanisterStore;
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     pub const fn new() -> Self {
         Self
     }

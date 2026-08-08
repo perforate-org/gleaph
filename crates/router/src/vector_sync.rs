@@ -1,9 +1,9 @@
-//! Inter-canister calls from the router to a derived vector-index canister and to graph shards for
+//! Inter-canister calls from the router to a derived vector canister and to graph shards for
 //! the vector attach handshake (ADR 0031 Slice 4).
 //!
 //! The vector attach handshake is ordered so the graph shard's **local** routing is the source of
-//! truth: the router first sets the shard's `FederationRouting.vector_index_canister`
-//! ([`admin_set_graph_vector_index_canister`]), then attaches the shard to the vector canister
+//! truth: the router first sets the shard's `FederationRouting.vector_canister`
+//! ([`admin_set_graph_vector_canister`]), then attaches the shard to the vector canister
 //! ([`admin_attach_shard_to_vector`]), and only then flips its durable `vector_index_attached`
 //! registry bit. This mirrors the property-index attach in [`crate::index_sync`].
 
@@ -25,24 +25,24 @@ use gleaph_graph_kernel::vector_index::{
 
 /// Router → graph shard: set the shard's local derived vector-index target (handshake step 1).
 #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
-pub async fn admin_set_graph_vector_index_canister(
+pub async fn admin_set_graph_vector_canister(
     graph_canister: Principal,
-    vector_index_canister: Principal,
+    vector_canister: Principal,
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    Call::unbounded_wait(graph_canister, "admin_set_vector_index_canister")
-        .with_args(&(vector_index_canister,))
+    Call::unbounded_wait(graph_canister, "admin_set_vector_canister")
+        .with_args(&(vector_canister,))
         .await
-        .map_err(|e| format!("graph admin_set_vector_index_canister call failed: {e}"))?
+        .map_err(|e| format!("graph admin_set_vector_canister call failed: {e}"))?
         .candid::<Result<(), String>>()
-        .map_err(|e| format!("graph admin_set_vector_index_canister decode failed: {e}"))?
+        .map_err(|e| format!("graph admin_set_vector_canister decode failed: {e}"))?
 }
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
-pub async fn admin_set_graph_vector_index_canister(
+pub async fn admin_set_graph_vector_canister(
     _graph_canister: Principal,
-    _vector_index_canister: Principal,
+    _vector_canister: Principal,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -52,14 +52,14 @@ pub async fn admin_set_graph_vector_index_canister(
 /// target model B), so ownership is keyed by `graph_id` alone — no property-index group descriptor.
 #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
 pub async fn admin_attach_shard_to_vector(
-    vector_index_canister: Principal,
+    vector_canister: Principal,
     graph_id: GraphId,
     shard_id: ShardId,
     shard_canister_principal: Principal,
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    Call::unbounded_wait(vector_index_canister, "admin_attach_shard_canister")
+    Call::unbounded_wait(vector_canister, "admin_attach_shard_canister")
         .with_args(&(graph_id, shard_id, shard_canister_principal))
         .await
         .map_err(|e| format!("vector admin_attach_shard_canister call failed: {e}"))?
@@ -69,7 +69,7 @@ pub async fn admin_attach_shard_to_vector(
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
 pub async fn admin_attach_shard_to_vector(
-    _vector_index_canister: Principal,
+    _vector_canister: Principal,
     _graph_id: GraphId,
     _shard_id: ShardId,
     _shard_canister_principal: Principal,
@@ -81,23 +81,23 @@ pub async fn admin_attach_shard_to_vector(
 /// Router composite query as a query call, mirroring [`crate::index_client::RouterIndexClient`].
 #[cfg(target_family = "wasm")]
 pub async fn vector_search(
-    vector_index_canister: Principal,
+    vector_canister: Principal,
     req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, String> {
     use ic_cdk::call::Call;
 
-    Call::bounded_wait(vector_index_canister, "vector_search")
+    Call::bounded_wait(vector_canister, "vector_search")
         .with_args(&(req,))
         .await
         .map_err(|e| format!("vector vector_search call failed: {e}"))?
-        .candid::<Result<VectorSearchResult, gleaph_graph_kernel::vector_index::VectorIndexError>>()
+        .candid::<Result<VectorSearchResult, gleaph_graph_kernel::vector_index::VectorCanisterError>>()
         .map_err(|e| format!("vector vector_search decode failed: {e}"))?
         .map_err(|e| format!("vector vector_search rejected: {e}"))
 }
 
 #[cfg(not(target_family = "wasm"))]
 pub async fn vector_search(
-    _vector_index_canister: Principal,
+    _vector_canister: Principal,
     _req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, String> {
     Ok(VectorSearchResult { hits: Vec::new() })

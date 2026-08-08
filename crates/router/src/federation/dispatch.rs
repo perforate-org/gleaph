@@ -184,7 +184,7 @@ mod tests {
             graph_id: GraphId::from_raw(7),
             registered_at_ns: 0,
             index_attached: true,
-            vector_index_canister: None,
+            vector_canister: None,
             vector_index_attached: false,
         }
     }

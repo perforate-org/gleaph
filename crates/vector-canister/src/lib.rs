@@ -1,4 +1,4 @@
-//! Federated derived vector-index canister (`gleaph-graph-vector-index`).
+//! Federated derived vector canister (`gleaph-vector-canister`).
 //!
 //! Owns the derived `ivf_flat` search structures rebuildable from the graph canonical
 //! `VertexEmbeddingStore` (ADR 0031). Slice 2 is mutation-only: `vector_upsert` / `vector_remove`
@@ -8,7 +8,7 @@
 //! ## API visibility
 //!
 //! Admin APIs are router-only (`guard_router_canister`). Mutation updates authorize the caller
-//! against the shard catalog inside the store and return [`VectorIndexError`] over the wire.
+//! against the shard catalog inside the store and return [`VectorCanisterError`] over the wire.
 
 mod facade;
 mod records;
@@ -22,9 +22,9 @@ pub mod state;
 mod canister;
 mod guards;
 
-pub use facade::VectorIndexStore;
-pub use init::VectorIndexInitArgs;
-pub use state::VectorIndexError;
+pub use facade::VectorCanisterStore;
+pub use init::VectorCanisterInitArgs;
+pub use state::VectorCanisterError;
 
 use crate::guards::guard_router_canister;
 use candid::{Encode, Principal};
@@ -40,7 +40,7 @@ use gleaph_graph_kernel::vector_index::{
 use ic_cdk_macros::{init, query, update};
 
 #[init]
-fn init(args: VectorIndexInitArgs) {
+fn init(args: VectorCanisterInitArgs) {
     canister::init(args);
 }
 
@@ -62,12 +62,12 @@ fn admin_detach_shard_canister(
 }
 
 #[update]
-fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
+fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {
     canister::vector_upsert(op)
 }
 
 #[update]
-fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
+fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorCanisterError> {
     canister::vector_remove(op)
 }
 
@@ -87,7 +87,7 @@ fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchP
 /// property-index reads so derived vectors cannot be queried directly, bypassing the Slice 4
 /// activation/readiness gate; the Router is the activation-gated public surface.
 #[query(guard = "guard_router_canister")]
-fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorIndexError> {
+fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorCanisterError> {
     canister::vector_search(req)
 }
 

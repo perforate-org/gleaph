@@ -8,7 +8,7 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMaintenancePolicy,
+    VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy,
     VectorMaintenanceRecommendation, VectorMetric, VectorPartitionHealthStep,
     VectorPartitionHealthSummary, VectorPartitionPageHealth, VectorRebuildPhase,
     VectorRebuildStatus, VectorSubject,
@@ -100,7 +100,7 @@ fn seed_embedding(
             Encode!(&op).expect("encode upsert op"),
         )
         .expect("vector_upsert call");
-    Decode!(&bytes, Result<(), VectorIndexError>)
+    Decode!(&bytes, Result<(), VectorCanisterError>)
         .expect("decode upsert result")
         .expect("upsert ok");
 }

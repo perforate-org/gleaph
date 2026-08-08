@@ -244,7 +244,7 @@ fn with_routing<R>(body: impl FnOnce(&GraphStore) -> R) -> R {
             router_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
-            vector_index_canister: None,
+            vector_canister: None,
         }))
         .expect("set routing");
     drain_journal(&graph);

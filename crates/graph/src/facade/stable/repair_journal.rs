@@ -46,7 +46,7 @@ pub enum RepairPostingOp {
         label_id: u32,
         vertex_id: u32,
     },
-    /// A derived vector-index embedding mutation awaiting re-delivery to `graph-vector-index`
+    /// A derived vector-index embedding mutation awaiting re-delivery to `vector-canister`
     /// (ADR 0031). The whole self-describing wire op is journaled; re-application is idempotent
     /// (version-guarded upsert / tombstone), so no compensation is needed on the drain path.
     VectorEmbedding { op: VectorEmbeddingSyncOp },

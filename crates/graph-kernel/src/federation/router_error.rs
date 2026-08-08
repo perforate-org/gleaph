@@ -139,7 +139,7 @@ pub enum VectorActivationBlockReason {
     #[error("vector dispatch is not globally activated")]
     DispatchNotActivated,
     /// The global flag is on, but not every live shard of the graph has been vector-attached yet
-    /// (ADR 0031 Slice 4): a shard is missing its local `vector_index_canister` routing or its
+    /// (ADR 0031 Slice 4): a shard is missing its local `vector_canister` routing or its
     /// durable `vector_index_attached` bit.
     #[error("graph shards are not fully vector-attached")]
     ShardsNotVectorAttached,

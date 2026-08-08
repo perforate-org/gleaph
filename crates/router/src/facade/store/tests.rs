@@ -4039,7 +4039,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
             AdminAttachVectorIndexShardArgs {
                 logical_graph_name: "tenant.main".into(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: graph_principal(7),
+                vector_canister: graph_principal(7),
             },
         ))
         .expect("attach vector index shard");
@@ -4076,7 +4076,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
                 AdminAttachVectorIndexShardArgs {
                     logical_graph_name: "tenant.main".into(),
                     shard_id: ShardId::new(0),
-                    vector_index_canister: target,
+                    vector_canister: target,
                 },
             ))
         };
@@ -4101,7 +4101,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
             AdminAttachVectorIndexShardArgs {
                 logical_graph_name: "tenant.main".into(),
                 shard_id: ShardId::new(1),
-                vector_index_canister: graph_principal(9),
+                vector_canister: graph_principal(9),
             },
         ))
         .expect_err("conflicting target must be rejected");
@@ -4122,7 +4122,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
             AdminAttachVectorIndexShardArgs {
                 logical_graph_name: "tenant.main".into(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: Principal::anonymous(),
+                vector_canister: Principal::anonymous(),
             },
         ))
         .expect_err("anonymous target rejected");

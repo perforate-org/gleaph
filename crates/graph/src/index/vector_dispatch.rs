@@ -1,4 +1,4 @@
-//! Derives `graph-vector-index` mutations from canonical embedding writes (ADR 0031).
+//! Derives `vector-canister` mutations from canonical embedding writes (ADR 0031).
 //!
 //! Hooked from the [`crate::facade::store`] embedding write/delete paths. Dispatch is gated by the
 //! ephemeral router-sourced catalog ([`crate::index::vector_catalog_context`]): if the embedding
@@ -122,7 +122,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: Some(Principal::management_canister()),
+                vector_canister: Some(Principal::management_canister()),
             }))
             .expect("set routing");
         vector_pending::clear_pending();

@@ -1,4 +1,4 @@
-//! Caller guards for graph-vector-index canister entrypoints.
+//! Caller guards for vector-canister canister entrypoints.
 
 /// Native unit tests call handlers directly without canister caller context.
 #[cfg(not(target_family = "wasm"))]
@@ -6,7 +6,7 @@ pub fn guard_router_canister() -> Result<(), String> {
     Ok(())
 }
 
-/// Production graph-vector-index accepts guarded admin/reads from the configured router only.
+/// Production vector-canister accepts guarded admin/reads from the configured router only.
 #[cfg(target_family = "wasm")]
 pub fn guard_router_canister() -> Result<(), String> {
     use crate::facade::stable::VECTOR_INDEX_ROUTER;

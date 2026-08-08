@@ -1,14 +1,15 @@
 //! Unit tests for the degenerate `ivf_flat` mutation store (ADR 0031 Slice 2).
 
-use super::VectorIndexStore;
-use crate::init::VectorIndexInitArgs;
+use super::VectorCanisterStore;
+use crate::init::VectorCanisterInitArgs;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp,
-    VectorEncoding, VectorIndexError, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
-    VectorMetric, VectorPartitionPageHealth, VectorSearchRequest, VectorSubject,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
+    VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy,
+    VectorMaintenanceRecommendation, VectorMetric, VectorPartitionPageHealth, VectorSearchRequest,
+    VectorSubject,
 };
 
 const INDEX_ID: u32 = 1;
@@ -24,10 +25,10 @@ fn shard_canister() -> Principal {
 }
 
 /// Initializes a fresh store (clears all per-thread stable state) and attaches shard 0.
-fn fresh_store() -> VectorIndexStore {
-    let store = VectorIndexStore::new();
+fn fresh_store() -> VectorCanisterStore {
+    let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorIndexInitArgs {
+        .init_from_args(&VectorCanisterInitArgs {
             router_canister: router(),
         })
         .expect("init");
@@ -141,7 +142,7 @@ fn upsert_same_version_different_payload_conflicts() {
     let err = store
         .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xBB))
         .expect_err("conflict");
-    assert_eq!(err, VectorIndexError::EmbeddingVersionConflict);
+    assert_eq!(err, VectorCanisterError::EmbeddingVersionConflict);
 }
 
 #[test]
@@ -406,7 +407,7 @@ fn create_index_rejects_capacity_below_one_slot() {
     let err = store
         .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 64 + 8)
         .expect_err("reject");
-    assert_eq!(err, VectorIndexError::InvalidPageCapacity);
+    assert_eq!(err, VectorCanisterError::InvalidPageCapacity);
 }
 
 #[test]
@@ -422,7 +423,7 @@ fn upsert_dimension_and_byte_width_mismatch() {
         store
             .vector_upsert(shard_canister(), &wrong_dims)
             .unwrap_err(),
-        VectorIndexError::DimensionMismatch
+        VectorCanisterError::DimensionMismatch
     );
 
     let mut wrong_bytes = upsert_op(9, 1, 0xAA);
@@ -431,7 +432,7 @@ fn upsert_dimension_and_byte_width_mismatch() {
         store
             .vector_upsert(shard_canister(), &wrong_bytes)
             .unwrap_err(),
-        VectorIndexError::ByteWidthMismatch
+        VectorCanisterError::ByteWidthMismatch
     );
 }
 
@@ -442,7 +443,7 @@ fn vector_upsert_rejects_remove_flag() {
     op.remove = true;
     assert_eq!(
         store.vector_upsert(shard_canister(), &op).unwrap_err(),
-        VectorIndexError::MutationKindMismatch
+        VectorCanisterError::MutationKindMismatch
     );
     // The contradictory op must not have mutated any state.
     assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
@@ -455,7 +456,7 @@ fn vector_remove_rejects_insert_flag() {
     op.remove = false;
     assert_eq!(
         store.vector_remove(shard_canister(), &op).unwrap_err(),
-        VectorIndexError::MutationKindMismatch
+        VectorCanisterError::MutationKindMismatch
     );
     assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
 }
@@ -468,7 +469,7 @@ fn mutation_auth_rejects_unattached_and_cross_shard() {
         store
             .vector_upsert(stranger, &upsert_op(7, 1, 0xAA))
             .unwrap_err(),
-        VectorIndexError::ShardNotAttached
+        VectorCanisterError::ShardNotAttached
     );
 
     // Caller attached to shard 0 but op targets shard 1.
@@ -479,19 +480,19 @@ fn mutation_auth_rejects_unattached_and_cross_shard() {
     };
     assert_eq!(
         store.vector_upsert(shard_canister(), &cross).unwrap_err(),
-        VectorIndexError::ShardMismatch
+        VectorCanisterError::ShardMismatch
     );
 }
 
 #[test]
 fn init_rejects_anonymous_router() {
-    let store = VectorIndexStore::new();
+    let store = VectorCanisterStore::new();
     let err = store
-        .init_from_args(&VectorIndexInitArgs {
+        .init_from_args(&VectorCanisterInitArgs {
             router_canister: Principal::anonymous(),
         })
         .expect_err("anonymous router rejected");
-    assert_eq!(err, VectorIndexError::AnonymousRouter);
+    assert_eq!(err, VectorCanisterError::AnonymousRouter);
 }
 
 #[test]
@@ -506,15 +507,15 @@ fn attach_rejects_anonymous_principal() {
                 Principal::anonymous(),
             )
             .unwrap_err(),
-        VectorIndexError::InvalidPrincipalInRegistry
+        VectorCanisterError::InvalidPrincipalInRegistry
     );
 }
 
 #[test]
 fn single_target_owns_all_shards_of_one_graph() {
-    let store = VectorIndexStore::new();
+    let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorIndexInitArgs {
+        .init_from_args(&VectorCanisterInitArgs {
             router_canister: router(),
         })
         .expect("init");
@@ -548,7 +549,7 @@ fn single_target_owns_all_shards_of_one_graph() {
                 Principal::from_slice(&[12]),
             )
             .unwrap_err(),
-        VectorIndexError::GraphOwnershipMismatch
+        VectorCanisterError::GraphOwnershipMismatch
     );
 }
 
@@ -565,7 +566,7 @@ fn attach_rejects_non_router_caller() {
                 shard_canister(),
             )
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
 }
 
@@ -604,7 +605,7 @@ fn durable_allocators_persist_across_store_handles() {
         .unwrap();
 
     // A fresh stateless handle reads the same durable stable state ("reopen").
-    let reopened = VectorIndexStore::new();
+    let reopened = VectorCanisterStore::new();
     let def = reopened.def_for_test(INDEX_ID).unwrap();
     assert_eq!(
         def.next_vector_id, 3,
@@ -909,7 +910,7 @@ fn search_rejects_dimension_mismatch() {
     };
     assert_eq!(
         store.vector_search(&req).unwrap_err(),
-        VectorIndexError::DimensionMismatch
+        VectorCanisterError::DimensionMismatch
     );
 }
 
@@ -930,7 +931,7 @@ fn search_rejects_byte_width_mismatch() {
     };
     assert_eq!(
         store.vector_search(&req).unwrap_err(),
-        VectorIndexError::ByteWidthMismatch
+        VectorCanisterError::ByteWidthMismatch
     );
 }
 
@@ -942,13 +943,13 @@ fn search_rejects_invalid_top_k() {
         .unwrap();
     assert_eq!(
         store.vector_search(&search_value(1.0, 0)).unwrap_err(),
-        VectorIndexError::InvalidSearchTopK
+        VectorCanisterError::InvalidSearchTopK
     );
     assert_eq!(
         store
             .vector_search(&search_value(1.0, MAX_VECTOR_SEARCH_TOP_K + 1))
             .unwrap_err(),
-        VectorIndexError::InvalidSearchTopK
+        VectorCanisterError::InvalidSearchTopK
     );
 }
 
@@ -1115,7 +1116,7 @@ fn cosine_zero_norm_query_fails_closed() {
             VectorMetric::Cosine,
         ))
         .expect_err("zero-norm cosine query must fail");
-    assert!(matches!(err, VectorIndexError::InvalidQueryVector));
+    assert!(matches!(err, VectorCanisterError::InvalidQueryVector));
 }
 
 #[test]
@@ -1134,7 +1135,7 @@ fn cosine_nonfinite_query_fails_closed() {
             VectorMetric::Cosine,
         ))
         .expect_err("non-finite cosine query must fail");
-    assert!(matches!(err, VectorIndexError::InvalidQueryVector));
+    assert!(matches!(err, VectorCanisterError::InvalidQueryVector));
 }
 
 #[test]
@@ -1227,7 +1228,7 @@ fn cosine_metric_mismatch_on_later_upsert_fails_closed() {
             },
         )
         .expect_err("metric mismatch must fail");
-    assert!(matches!(err, VectorIndexError::MetricMismatch));
+    assert!(matches!(err, VectorCanisterError::MetricMismatch));
 }
 
 #[test]
@@ -1242,7 +1243,7 @@ fn l2_metric_mismatch_on_later_upsert_fails_closed() {
     let err = store
         .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
         .expect_err("metric mismatch must fail");
-    assert!(matches!(err, VectorIndexError::MetricMismatch));
+    assert!(matches!(err, VectorCanisterError::MetricMismatch));
 }
 
 #[test]
@@ -1267,7 +1268,7 @@ fn cosine_partition_page_scan_is_not_supported() {
         .expect_err("partition-page cosine must fail closed");
     assert!(matches!(
         err,
-        VectorIndexError::MetricNotSupportedForPartitionScan
+        VectorCanisterError::MetricNotSupportedForPartitionScan
     ));
 }
 
@@ -1283,7 +1284,7 @@ fn cosine_rebuild_is_rejected() {
     let err = store
         .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
         .expect_err("cosine rebuild must fail closed");
-    assert!(matches!(err, VectorIndexError::InvalidRebuildParams));
+    assert!(matches!(err, VectorCanisterError::InvalidRebuildParams));
 }
 
 #[test]
@@ -1649,7 +1650,7 @@ const TARGET_V: u64 = 2;
 
 /// Seeds `count` live subjects via production upserts with distinct values `0.0..count` so a rebuild
 /// can sample distinct centroids. Returns nothing; subjects are `subject(1..=count)`.
-fn seed_distinct(store: &VectorIndexStore, count: u32) {
+fn seed_distinct(store: &VectorCanisterStore, count: u32) {
     for v in 1..=count {
         store
             .vector_upsert(shard_canister(), &upsert_vec(v, 1, (v - 1) as f32))
@@ -1660,7 +1661,7 @@ fn seed_distinct(store: &VectorIndexStore, count: u32) {
 /// Drives `admin_vector_rebuild_step` (small batch to exercise cursor resumption) until the phase
 /// leaves `Sampling`/`Building`, returning the terminal status.
 fn drive_steps(
-    store: &VectorIndexStore,
+    store: &VectorCanisterStore,
     index_id: u32,
 ) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
     for _ in 0..100_000 {
@@ -1681,7 +1682,7 @@ fn drive_steps(
 /// written, no subjects shadowed yet), returning that status. Panics if it terminates earlier (e.g.
 /// `Failed`).
 fn drive_into_building(
-    store: &VectorIndexStore,
+    store: &VectorCanisterStore,
     index_id: u32,
 ) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
     for _ in 0..100_000 {
@@ -1699,7 +1700,7 @@ fn drive_into_building(
 
 /// Drives `admin_vector_rebuild_cleanup_step` (one unit at a time) until `Idle`, returning the step
 /// count so a test can assert teardown was bounded across multiple messages.
-fn drive_cleanup(store: &VectorIndexStore, index_id: u32) -> u32 {
+fn drive_cleanup(store: &VectorCanisterStore, index_id: u32) -> u32 {
     for steps in 1..=100_000u32 {
         let status = store
             .admin_vector_rebuild_cleanup_step(router(), index_id, 1)
@@ -1773,14 +1774,14 @@ fn rebuild_start_rejects_invalid_params() {
         store
             .admin_start_vector_rebuild(router(), INDEX_ID, 1, 100)
             .unwrap_err(),
-        VectorIndexError::InvalidRebuildParams
+        VectorCanisterError::InvalidRebuildParams
     );
     // sample_limit < nlist
     assert_eq!(
         store
             .admin_start_vector_rebuild(router(), INDEX_ID, 4, 3)
             .unwrap_err(),
-        VectorIndexError::InvalidRebuildParams
+        VectorCanisterError::InvalidRebuildParams
     );
     // nlist > MAX_NLIST
     assert_eq!(
@@ -1792,7 +1793,7 @@ fn rebuild_start_rejects_invalid_params() {
                 super::MAX_NLIST + 1
             )
             .unwrap_err(),
-        VectorIndexError::InvalidRebuildParams
+        VectorCanisterError::InvalidRebuildParams
     );
 }
 
@@ -1828,7 +1829,7 @@ fn rebuild_start_rejects_oversized_combined_state() {
         store
             .admin_start_vector_rebuild(router(), INDEX_ID, super::MAX_NLIST, super::MAX_NLIST)
             .unwrap_err(),
-        VectorIndexError::InvalidRebuildParams
+        VectorCanisterError::InvalidRebuildParams
     );
 }
 
@@ -1938,7 +1939,7 @@ fn rebuild_already_active_is_rejected() {
         store
             .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
             .unwrap_err(),
-        VectorIndexError::RebuildAlreadyActive
+        VectorCanisterError::RebuildAlreadyActive
     );
 }
 
@@ -2000,7 +2001,7 @@ fn publish_rejected_before_ready() {
         store
             .admin_publish_vector_rebuild(router(), INDEX_ID)
             .unwrap_err(),
-        VectorIndexError::RebuildNotReadyToPublish
+        VectorCanisterError::RebuildNotReadyToPublish
     );
 }
 
@@ -2087,7 +2088,7 @@ fn dual_write_shadow_append_failure_rolls_back_insert() {
     let err = store
         .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
         .expect_err("shadow grow failure propagates");
-    assert_eq!(err, VectorIndexError::StableGrowFailed);
+    assert_eq!(err, VectorCanisterError::StableGrowFailed);
 
     // Insert path commits the id/subject maps only after both appends succeed, so a new subject must
     // leave no map entry behind.
@@ -2125,7 +2126,7 @@ fn dual_write_shadow_append_failure_rolls_back_update() {
     let err = store
         .vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
         .expect_err("shadow grow failure propagates");
-    assert_eq!(err, VectorIndexError::StableGrowFailed);
+    assert_eq!(err, VectorCanisterError::StableGrowFailed);
 
     // The subject clock and id map still point at the original live slot — no partial commit to a
     // tombstoned/new slot.
@@ -2614,7 +2615,7 @@ fn partition_health_unknown_index_errors() {
         store
             .admin_vector_partition_health(router(), 999)
             .unwrap_err(),
-        VectorIndexError::UnknownIndex
+        VectorCanisterError::UnknownIndex
     );
 }
 
@@ -2636,7 +2637,7 @@ fn slab_stats_dual_write_rollback_keeps_live_and_counts_tombstone() {
     let err = store
         .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
         .expect_err("shadow grow failure propagates");
-    assert_eq!(err, VectorIndexError::StableGrowFailed);
+    assert_eq!(err, VectorCanisterError::StableGrowFailed);
     let after = store
         .admin_vector_slab_stats(router(), Some(INDEX_ID))
         .expect("stats");
@@ -2659,7 +2660,7 @@ fn slab_stats_rejects_non_router_caller() {
         store
             .admin_vector_slab_stats(shard_canister(), None)
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
 }
 
@@ -2670,7 +2671,7 @@ fn slab_stats_step_rejects_non_router_caller() {
         store
             .admin_vector_slab_stats_step(shard_canister(), None, 10, None)
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
 }
 
@@ -2690,7 +2691,7 @@ fn trigger_policy() -> VectorMaintenancePolicy {
 
 /// Page-meta health scoped to the active version with the given tombstone load.
 fn attested_page(
-    store: &VectorIndexStore,
+    store: &VectorCanisterStore,
     total_rows: u64,
     tombstoned_rows: u64,
 ) -> VectorPartitionPageHealth {
@@ -2750,13 +2751,13 @@ fn partition_health_step_facade_rejects_non_router_and_unknown_index() {
         store
             .admin_vector_partition_health_step(shard_canister(), INDEX_ID, None, 10)
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
     assert_eq!(
         store
             .admin_vector_partition_health_step(router(), 999, None, 10)
             .unwrap_err(),
-        VectorIndexError::UnknownIndex
+        VectorCanisterError::UnknownIndex
     );
 }
 
@@ -2846,7 +2847,7 @@ fn trigger_degenerate_nlist_without_target_is_rejected() {
                 100,
             )
             .unwrap_err(),
-        VectorIndexError::InvalidRebuildParams
+        VectorCanisterError::InvalidRebuildParams
     );
 }
 
@@ -2869,7 +2870,7 @@ fn trigger_rejects_stale_page_health() {
                 100,
             )
             .unwrap_err(),
-        VectorIndexError::StaleMaintenanceHealth
+        VectorCanisterError::StaleMaintenanceHealth
     );
     // Wrong index_id on the page health is likewise rejected.
     let mut foreign_page = attested_page(&store, 1_000, 600);
@@ -2885,7 +2886,7 @@ fn trigger_rejects_stale_page_health() {
                 100,
             )
             .unwrap_err(),
-        VectorIndexError::StaleMaintenanceHealth
+        VectorCanisterError::StaleMaintenanceHealth
     );
 }
 
@@ -2907,7 +2908,7 @@ fn trigger_rejects_invalid_policy() {
                 100,
             )
             .unwrap_err(),
-        VectorIndexError::InvalidMaintenancePolicy
+        VectorCanisterError::InvalidMaintenancePolicy
     );
 }
 
@@ -2926,7 +2927,7 @@ fn trigger_rejects_non_router_and_unknown_index() {
                 100,
             )
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
     let empty = fresh_store();
     assert_eq!(
@@ -2940,7 +2941,7 @@ fn trigger_rejects_non_router_and_unknown_index() {
                 100,
             )
             .unwrap_err(),
-        VectorIndexError::UnknownIndex
+        VectorCanisterError::UnknownIndex
     );
 }
 
@@ -3034,7 +3035,7 @@ fn centroid_cache_warmup_unknown_index_errors() {
         store
             .admin_vector_centroid_cache_warmup(router(), 999)
             .unwrap_err(),
-        VectorIndexError::UnknownIndex
+        VectorCanisterError::UnknownIndex
     );
 }
 
@@ -3045,19 +3046,19 @@ fn centroid_cache_endpoints_reject_non_router() {
         store
             .admin_vector_centroid_cache_warmup(shard_canister(), INDEX_ID)
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
     assert_eq!(
         store
             .admin_vector_centroid_cache_clear(shard_canister())
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
     assert_eq!(
         store
             .admin_vector_centroid_cache_status(shard_canister())
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
 }
 
@@ -3138,7 +3139,7 @@ fn maint_req() -> VectorMaintenanceStepRequest {
 
 /// Seeds `live` distinct live rows then creates `tombstones` extra tombstoned rows by re-upserting
 /// subject 1 at increasing embedding_versions (each re-upsert tombstones the prior row).
-fn seed_live_and_tombstones(store: &VectorIndexStore, live: u32, tombstones: u32) {
+fn seed_live_and_tombstones(store: &VectorCanisterStore, live: u32, tombstones: u32) {
     seed_distinct(store, live);
     for k in 0..tombstones {
         store
@@ -3304,7 +3305,7 @@ fn maintenance_step_fails_closed_then_recovers_via_reset() {
         .expect("failing recommend")
     {
         VectorMaintenanceStepResult::Failed(failure) => {
-            assert_eq!(failure.code, VectorIndexError::InvalidRebuildParams);
+            assert_eq!(failure.code, VectorCanisterError::InvalidRebuildParams);
             assert!(!failure.message.is_empty());
         }
         other => panic!("expected Failed, got {other:?}"),
@@ -3448,25 +3449,25 @@ fn maintenance_endpoints_reject_non_router_and_unknown_index() {
         store
             .admin_vector_maintenance_step(shard_canister(), INDEX_ID, maint_req())
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
     assert_eq!(
         store
             .admin_vector_maintenance_step(router(), 999, maint_req())
             .unwrap_err(),
-        VectorIndexError::UnknownIndex
+        VectorCanisterError::UnknownIndex
     );
     assert_eq!(
         store
             .admin_vector_maintenance_status(shard_canister(), INDEX_ID)
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
     assert_eq!(
         store
             .admin_vector_maintenance_reset(shard_canister(), INDEX_ID)
             .unwrap_err(),
-        VectorIndexError::Unauthorized
+        VectorCanisterError::Unauthorized
     );
 }
 
@@ -3500,7 +3501,7 @@ fn candidate_search_validates_shape_before_physical_def() {
     let err = store
         .vector_search(&req)
         .expect_err("oversized on empty index");
-    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+    assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 
     // Duplicate candidates on an empty index also fail.
     let mut req = search_value(0.0, 10);
@@ -3508,7 +3509,7 @@ fn candidate_search_validates_shape_before_physical_def() {
     let err = store
         .vector_search(&req)
         .expect_err("duplicate on empty index");
-    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+    assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 }
 
 #[test]
@@ -3600,7 +3601,7 @@ fn candidate_search_rejects_oversized_allowlist() {
         .collect();
     req.candidate_subjects = Some(too_many);
     let err = store.vector_search(&req).expect_err("oversized allowlist");
-    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+    assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 }
 
 #[test]
@@ -3612,5 +3613,5 @@ fn candidate_search_rejects_duplicate_subjects() {
     let mut req = search_value(0.0, 10);
     req.candidate_subjects = Some(vec![subject(7), subject(7)]);
     let err = store.vector_search(&req).expect_err("duplicate candidates");
-    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+    assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
 }

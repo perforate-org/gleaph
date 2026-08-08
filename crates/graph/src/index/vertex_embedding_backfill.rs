@@ -7,14 +7,14 @@
 //! mock client and a test-installed catalog.
 
 use crate::facade::GraphStore;
-use crate::index::vector_lookup::{VectorIndexLookup, dispatch_vector_sync_batch};
+use crate::index::vector_lookup::{VectorCanisterLookup, dispatch_vector_sync_batch};
 use gleaph_graph_kernel::federation::{EmbeddingBackfillArgs, EmbeddingBackfillResult};
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
 use ic_stable_lara::VertexId;
 
 pub async fn backfill_vertex_embeddings(
     store: &GraphStore,
-    vector: &dyn VectorIndexLookup,
+    vector: &dyn VectorCanisterLookup,
     args: EmbeddingBackfillArgs,
 ) -> Result<EmbeddingBackfillResult, String> {
     let Some(routing) = store.federation_routing() else {
@@ -109,14 +109,14 @@ mod tests {
     };
     use std::sync::Mutex;
 
-    struct RecordingVectorIndex {
+    struct RecordingVectorCanister {
         upserts: Mutex<Vec<VectorEmbeddingSyncOp>>,
         batches: Mutex<Vec<Vec<VectorEmbeddingSyncOp>>>,
         batch_mode: bool,
         batch_limit: Option<usize>,
     }
 
-    impl RecordingVectorIndex {
+    impl RecordingVectorCanister {
         fn new() -> Self {
             Self {
                 upserts: Mutex::new(Vec::new()),
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl VectorIndexLookup for RecordingVectorIndex {
+    impl VectorCanisterLookup for RecordingVectorCanister {
         fn supports_sync_batch(&self) -> bool {
             self.batch_mode
         }
@@ -211,7 +211,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: Some(Principal::management_canister()),
+                vector_canister: Some(Principal::management_canister()),
             }))
             .expect("routing");
         store
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn backfill_replays_indexed_embeddings_only() {
         let store = federated_store();
-        let vector = RecordingVectorIndex::new();
+        let vector = RecordingVectorCanister::new();
         let vid = store.insert_vertex().expect("vertex");
         let indexed = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
         let other = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(2);
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn backfill_carries_cosine_metric_from_catalog() {
         let store = federated_store();
-        let vector = RecordingVectorIndex::new();
+        let vector = RecordingVectorCanister::new();
         let vid = store.insert_vertex().expect("vertex");
         let indexed = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
         store
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn backfill_is_bounded_by_max_vertices() {
         let store = federated_store();
-        let vector = RecordingVectorIndex::new();
+        let vector = RecordingVectorCanister::new();
         let v0 = store.insert_vertex().expect("v0");
         let v1 = store.insert_vertex().expect("v1");
         let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn backfill_batches_multiple_embeddings() {
         let store = federated_store();
-        let vector = RecordingVectorIndex::batch();
+        let vector = RecordingVectorCanister::batch();
         let v0 = store.insert_vertex().expect("v0");
         let v1 = store.insert_vertex().expect("v1");
         let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn backfill_continues_after_partial_vector_batch_progress() {
         let store = federated_store();
-        let vector = RecordingVectorIndex::batch_with_limit(1);
+        let vector = RecordingVectorCanister::batch_with_limit(1);
         let v0 = store.insert_vertex().expect("v0");
         let v1 = store.insert_vertex().expect("v1");
         let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);

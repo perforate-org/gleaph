@@ -257,7 +257,7 @@ setup_vector_index() {
 
   log "Attaching vector index shard"
   icp_call_expect_ok "Attach vector index shard" "" -e local gleaph-router attach_vector_shard \
-    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; shard_id = '"$SHARD_ID"' : nat32; vector_index_canister = principal "'"$vector_id"'" })'
+    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; shard_id = '"$SHARD_ID"' : nat32; vector_canister = principal "'"$vector_id"'" })'
 }
 
 main() {

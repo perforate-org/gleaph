@@ -179,12 +179,12 @@ async fn flush_and_repair(store: &GraphStore) {
         shard_id: routing.shard_id,
     };
     let ix = &client as &dyn crate::index::lookup::PropertyIndexLookup;
-    let vector_client = routing
-        .vector_index_canister
-        .map(|vector_principal| crate::index::vector_ic::IcVectorIndexClient { vector_principal });
+    let vector_client = routing.vector_canister.map(|vector_principal| {
+        crate::index::vector_ic::IcVectorCanisterClient { vector_principal }
+    });
     let vx = vector_client
         .as_ref()
-        .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
+        .map(|c| c as &dyn crate::index::vector_lookup::VectorCanisterLookup);
     if !store.repair_journal_is_empty() {
         // Durable repair entries are older than the volatile queues. Append pending work to the
         // journal before draining so it cannot overtake an older entry; contiguous compatible

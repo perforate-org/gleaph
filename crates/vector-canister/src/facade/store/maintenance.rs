@@ -8,7 +8,7 @@
 //! this decides the three-state [`VectorMaintenanceRecommendation`].
 
 use gleaph_graph_kernel::vector_index::{
-    VectorIndexError, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorCanisterError, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
     VectorPartitionHealthSummary, VectorPartitionPageHealth,
 };
 
@@ -54,18 +54,18 @@ fn classify(num: u128, den: u128, recommended_bps: u32, required_bps: u32) -> Se
 ///   (the tombstone-specific `min_tombstoned_rows` gate does **not** apply to skew).
 ///
 /// Both ratios are compared in basis points with `u128` cross-multiplication (no floats, no
-/// overflow). Returns [`VectorIndexError::InvalidMaintenancePolicy`] if a `recommended_*_bps`
+/// overflow). Returns [`VectorCanisterError::InvalidMaintenancePolicy`] if a `recommended_*_bps`
 /// exceeds its paired `required_*_bps` (a nonsensical policy where "recommended" would be stricter
 /// than "required").
 pub(crate) fn recommend_partition_maintenance(
     summary: &VectorPartitionHealthSummary,
     page_health: &VectorPartitionPageHealth,
     policy: &VectorMaintenancePolicy,
-) -> Result<VectorMaintenanceRecommendation, VectorIndexError> {
+) -> Result<VectorMaintenanceRecommendation, VectorCanisterError> {
     if policy.recommended_tombstone_ratio_bps > policy.required_tombstone_ratio_bps
         || policy.recommended_skew_ratio_bps > policy.required_skew_ratio_bps
     {
-        return Err(VectorIndexError::InvalidMaintenancePolicy);
+        return Err(VectorCanisterError::InvalidMaintenancePolicy);
     }
 
     // Tombstone signal: gated on physical total + absolute tombstone floor.
@@ -161,7 +161,7 @@ mod tests {
         p.required_tombstone_ratio_bps = 5_000;
         assert_eq!(
             recommend_partition_maintenance(&summary(1, 0, 0), &page(0, 0), &p).unwrap_err(),
-            VectorIndexError::InvalidMaintenancePolicy
+            VectorCanisterError::InvalidMaintenancePolicy
         );
 
         let mut p = skew_policy();
@@ -169,7 +169,7 @@ mod tests {
         p.required_skew_ratio_bps = 40_000;
         assert_eq!(
             recommend_partition_maintenance(&summary(1, 0, 0), &page(0, 0), &p).unwrap_err(),
-            VectorIndexError::InvalidMaintenancePolicy
+            VectorCanisterError::InvalidMaintenancePolicy
         );
     }
 

@@ -145,11 +145,11 @@ pub struct ShardRegistryEntry {
     pub registered_at_ns: u64,
     /// `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
     pub index_attached: bool,
-    /// Derived vector-index canister wired to this shard (ADR 0031 Slice 4). `None` until the
+    /// Derived vector canister wired to this shard (ADR 0031 Slice 4). `None` until the
     /// vector attach handshake sets the graph shard's local routing. The Router owns target
     /// selection (one target per graph). Decodes as `None` for pre-Slice-4 (V1) records.
     #[serde(default)]
-    pub vector_index_canister: Option<Principal>,
+    pub vector_canister: Option<Principal>,
     /// `true` once the vector attach handshake has set the shard's **local** `FederationRouting`
     /// target *and* attached the shard to the vector canister (ADR 0031 Slice 4). Mirrors
     /// `index_attached`; a faithful proxy for graph-local vector readiness. Decodes as `false` for
@@ -171,7 +171,7 @@ struct ShardRegistryEntryV1 {
 }
 
 /// Stable-memory wire envelope for [`ShardRegistryEntry`]. `V2` adds the vector-index fields; old
-/// `V1` bytes decode with `vector_index_canister = None` / `vector_index_attached = false`.
+/// `V1` bytes decode with `vector_canister = None` / `vector_index_attached = false`.
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum ShardRegistryStableRecord {
     V1(ShardRegistryEntryV1),
@@ -200,7 +200,7 @@ impl Storable for ShardRegistryEntry {
                 graph_id: v1.graph_id,
                 registered_at_ns: v1.registered_at_ns,
                 index_attached: v1.index_attached,
-                vector_index_canister: None,
+                vector_canister: None,
                 vector_index_attached: false,
             },
             ShardRegistryStableRecord::V2(v2) => v2,
@@ -239,7 +239,7 @@ mod tests {
             graph_id: GraphId::from_raw(1),
             registered_at_ns: 123,
             index_attached: true,
-            vector_index_canister: Some(Principal::management_canister()),
+            vector_canister: Some(Principal::management_canister()),
             vector_index_attached: true,
         };
         let bytes = entry.to_bytes();
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(decoded.shard_id, ShardId::new(2));
         assert_eq!(decoded.graph_id, GraphId::from_raw(7));
         assert!(decoded.index_attached);
-        assert_eq!(decoded.vector_index_canister, None);
+        assert_eq!(decoded.vector_canister, None);
         assert!(!decoded.vector_index_attached);
     }
 }

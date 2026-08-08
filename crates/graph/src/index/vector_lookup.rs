@@ -1,4 +1,4 @@
-//! Mutation interface to the derived `graph-vector-index` canister (ADR 0031).
+//! Mutation interface to the derived `vector-canister` canister (ADR 0031).
 //!
 //! Reads (vector search) are deferred to a later slice; Slice 2 only delivers derived embedding
 //! mutations. Each [`gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp`] is self-describing
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSyncBatchProgress};
 
 #[async_trait(?Send)]
-pub trait VectorIndexLookup {
+pub trait VectorCanisterLookup {
     fn supports_sync_batch(&self) -> bool {
         false
     }
@@ -43,7 +43,7 @@ pub trait VectorIndexLookup {
 /// non-terminal prefix. Incarnation/version fencing remains part of each operation and is never
 /// reconstructed at this boundary.
 pub(crate) async fn dispatch_vector_sync_batch(
-    vector: &dyn VectorIndexLookup,
+    vector: &dyn VectorCanisterLookup,
     operations: Vec<VectorEmbeddingSyncOp>,
 ) -> Result<(), PlanQueryError> {
     let mut offset = 0usize;

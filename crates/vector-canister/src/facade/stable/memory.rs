@@ -1,4 +1,4 @@
-//! Graph-vector-index canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
+//! Graph-vector canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
 //! and `facade/stable/layout.rs` (ADR 0007 registry, ADR 0031 Slice 2).
 //!
 //! MemoryIds: router auth → shard catalog → ownership config → index defs → centroid meta →

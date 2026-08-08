@@ -505,7 +505,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("routing");
         let n = store.insert_vertex().expect("source");
@@ -666,7 +666,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("routing");
         let v = store.insert_vertex().expect("v");
@@ -766,7 +766,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("routing");
         let v = store.insert_vertex().expect("v");

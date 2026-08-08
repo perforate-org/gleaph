@@ -35,7 +35,7 @@ canisters:
       type: "@dfinity/rust@v3.3.0"
       configuration:
         shrink: true
-        package: gleaph-graph-vector-index
+        package: gleaph-vector-canister
 
 networks:
   # Override the local network with a docker network

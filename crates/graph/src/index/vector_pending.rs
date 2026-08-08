@@ -1,4 +1,4 @@
-//! Record derived vertex-embedding mutations for the `graph-vector-index` canister (ADR 0031).
+//! Record derived vertex-embedding mutations for the `vector-canister` canister (ADR 0031).
 //!
 //! ## Sync failure semantics
 //!
@@ -11,7 +11,7 @@
 //! index converges by idempotent re-application (ADR 0024).
 
 use crate::facade::{GraphStore, RepairPostingOp};
-use crate::index::vector_lookup::VectorIndexLookup;
+use crate::index::vector_lookup::VectorCanisterLookup;
 use crate::plan::PlanQueryError;
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use std::cell::RefCell;
@@ -74,7 +74,7 @@ fn journal_and_defer(
 }
 
 pub(crate) async fn flush_pending(
-    vector: Option<&dyn VectorIndexLookup>,
+    vector: Option<&dyn VectorCanisterLookup>,
     mutation_id: Option<u64>,
 ) -> Result<(), PlanQueryError> {
     let mutation_id = mutation_id.unwrap_or(0);
@@ -157,13 +157,13 @@ mod tests {
     use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric, VectorSubject};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct FlakyVectorIndex {
+    struct FlakyVectorCanister {
         fail_after: usize,
         upserts: AtomicUsize,
         removes: AtomicUsize,
     }
 
-    impl FlakyVectorIndex {
+    impl FlakyVectorCanister {
         fn new(fail_after: usize) -> Self {
             Self {
                 fail_after,
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl VectorIndexLookup for FlakyVectorIndex {
+    impl VectorCanisterLookup for FlakyVectorCanister {
         async fn vector_upsert(&self, _op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
             let n = self.upserts.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.fail_after {
@@ -214,7 +214,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
-                vector_index_canister: Some(Principal::management_canister()),
+                vector_canister: Some(Principal::management_canister()),
             }))
             .expect("set routing");
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn flush_delivers_all_ops_in_order() {
         with_routing(|graph| {
-            let vx = FlakyVectorIndex::new(0);
+            let vx = FlakyVectorCanister::new(0);
             PENDING.with(|p| p.borrow_mut().extend([upsert_op(1, 1), upsert_op(2, 1)]));
             pollster::block_on(flush_pending(Some(&vx), None)).expect("flush succeeds");
             assert_eq!(vx.upserts.load(Ordering::SeqCst), 2);
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn partial_failure_journals_whole_batch_without_compensation() {
         with_routing(|graph| {
-            let vx = FlakyVectorIndex::new(2);
+            let vx = FlakyVectorCanister::new(2);
             PENDING.with(|p| p.borrow_mut().extend([upsert_op(1, 1), upsert_op(2, 1)]));
             let err = pollster::block_on(flush_pending(Some(&vx), Some(42)))
                 .expect_err("second upsert fails");

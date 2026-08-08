@@ -12,8 +12,8 @@
 //! - [`lookup`] is the only path a query touches. It *reads* an already-warmed entry and never
 //!   writes. A miss simply returns `None`; the caller then performs a one-call stable read (it does
 //!   **not** populate the cache, since that write would be rolled back anyway).
-//! - Population ([`VectorIndexStore::admin_vector_centroid_cache_warmup`]) and eviction
-//!   ([`VectorIndexStore::admin_vector_centroid_cache_clear`], [`invalidate`]) happen only on
+//! - Population ([`VectorCanisterStore::admin_vector_centroid_cache_warmup`]) and eviction
+//!   ([`VectorCanisterStore::admin_vector_centroid_cache_clear`], [`invalidate`]) happen only on
 //!   `#[update]` paths, whose heap writes are committed.
 //!
 //! **Freshness.** Each entry is keyed by `(index_id -> {version, nlist, dims})`. The active centroid
@@ -22,11 +22,11 @@
 //! calls [`invalidate`] to free the heap promptly. The cache is purely derived, so it is dropped on
 //! init/upgrade.
 
-use super::VectorIndexStore;
+use super::VectorCanisterStore;
 use super::search::read_centroids_at;
 use crate::facade::stable::VECTOR_INDEX_DEFS;
 use candid::Principal;
-use gleaph_graph_kernel::vector_index::{VectorCentroidCacheStatus, VectorIndexError};
+use gleaph_graph_kernel::vector_index::{VectorCanisterError, VectorCentroidCacheStatus};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -126,7 +126,7 @@ fn status() -> VectorCentroidCacheStatus {
     })
 }
 
-impl VectorIndexStore {
+impl VectorCanisterStore {
     /// Warms the heap centroid cache for `index_id` from its active centroid set (ADR 0031 Slice 9).
     /// Router-guarded `#[update]` (a query cannot persist the warmed entry). Only indexes with a ready
     /// `nlist > 1` centroid set are cached; a degenerate (`nlist <= 1`) or untrained index instead
@@ -135,11 +135,11 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         index_id: u32,
-    ) -> Result<VectorCentroidCacheStatus, VectorIndexError> {
+    ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
-            .ok_or(VectorIndexError::UnknownIndex)?;
+            .ok_or(VectorCanisterError::UnknownIndex)?;
         match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
             Some(centroids) if def.nlist > 1 => {
                 let bytes = centroid_bytes(&centroids);
@@ -164,7 +164,7 @@ impl VectorIndexStore {
     pub fn admin_vector_centroid_cache_clear(
         &self,
         caller: Principal,
-    ) -> Result<VectorCentroidCacheStatus, VectorIndexError> {
+    ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         clear_all();
         Ok(status())
@@ -174,7 +174,7 @@ impl VectorIndexStore {
     pub fn admin_vector_centroid_cache_status(
         &self,
         caller: Principal,
-    ) -> Result<VectorCentroidCacheStatus, VectorIndexError> {
+    ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
         Ok(status())
     }

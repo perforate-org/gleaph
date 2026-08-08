@@ -816,7 +816,7 @@ where
 }
 
 /// Delivers any queued derived vector-index mutations (ADR 0031), constructing the wasm client from
-/// `vector_index_canister` routing. The vector client is not threaded through the execution path
+/// `vector_canister` routing. The vector client is not threaded through the execution path
 /// (Slice 2 has no vector reads); on native builds this is a no-op unless a test queued ops, in
 /// which case [`crate::index::vector_pending::flush_pending`] journals them for repair.
 async fn flush_vector_pending(mutation_id: Option<u64>) -> Result<(), crate::plan::PlanQueryError> {
@@ -824,15 +824,15 @@ async fn flush_vector_pending(mutation_id: Option<u64>) -> Result<(), crate::pla
     {
         let client = crate::facade::GraphStore::new()
             .federation_routing()
-            .and_then(|r| r.vector_index_canister)
+            .and_then(|r| r.vector_canister)
             .map(
-                |vector_principal| crate::index::vector_ic::IcVectorIndexClient {
+                |vector_principal| crate::index::vector_ic::IcVectorCanisterClient {
                     vector_principal,
                 },
             );
         let vx = client
             .as_ref()
-            .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
+            .map(|c| c as &dyn crate::index::vector_lookup::VectorCanisterLookup);
         crate::index::vector_pending::flush_pending(vx, mutation_id).await
     }
     #[cfg(not(target_family = "wasm"))]
@@ -2070,7 +2070,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
-                vector_index_canister: None,
+                vector_canister: None,
             }))
             .expect("set routing");
     }
