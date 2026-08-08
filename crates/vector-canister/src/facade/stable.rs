@@ -29,9 +29,6 @@ thread_local! {
     pub(crate) static VECTOR_SUBJECT_TO_ID: RefCell<memory::StableSubjectMap> =
         RefCell::new(memory::init_subject_map());
 
-    pub(crate) static VECTOR_ID_TO_SLOT: RefCell<memory::StableIdToSlotMap> =
-        RefCell::new(memory::init_id_to_slot());
-
     pub(crate) static VECTOR_PARTITION_HEADS: RefCell<memory::StablePartitionHeadsMap> =
         RefCell::new(memory::init_partition_heads());
 
@@ -39,9 +36,6 @@ thread_local! {
     // opened together with reopen validation.
     pub(crate) static PAGE_STORE: RefCell<page_store::VectorSlabStore> =
         RefCell::new(page_store::VectorSlabStore::init());
-
-    pub(crate) static VECTOR_ID_TO_SUBJECT: RefCell<memory::StableIdToSubjectMap> =
-        RefCell::new(memory::init_id_to_subject());
 
     pub(crate) static VECTOR_REBUILD_STATE: RefCell<memory::StableRebuildStateMap> =
         RefCell::new(memory::init_rebuild_state());

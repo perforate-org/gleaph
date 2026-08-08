@@ -129,6 +129,14 @@ pub enum StableMemoryClass {
     /// **Gleaph:** No stable region currently uses this class (P1 `EDGE_WEIGHT_PROFILES` retired
     /// 2026-06-12; edge profiles are `EDGE_INLINE_PROPERTY_PROFILES` only).
     Compatibility,
+
+    /// A numbered registry slot that intentionally backs no stable collection (a retired MemoryId
+    /// kept as an explicit hole so the registry stays consecutive and `validate_layout` passes).
+    ///
+    /// **Meaning:** Not a store. It has no stable-memory class, no rebuild path, and is excluded
+    /// from allocated-store counts (`allocated_region_count`). Kept so MemoryIds 9/10/12/13/14 stay
+    /// stable without a repack.
+    Unallocated,
 }
 
 impl StableMemoryClass {
@@ -141,6 +149,7 @@ impl StableMemoryClass {
             Self::Catalog => "catalog",
             Self::Telemetry => "telemetry",
             Self::Compatibility => "compatibility",
+            Self::Unallocated => "unallocated",
         }
     }
 }
@@ -205,6 +214,19 @@ pub struct StableCanisterLayout {
 impl StableCanisterLayout {
     pub const fn region_count(&self) -> usize {
         self.regions.len()
+    }
+
+    /// Number of regions that back an allocated stable collection (excludes `Unallocated` holes).
+    pub const fn allocated_region_count(&self) -> usize {
+        let mut count = 0usize;
+        let mut i = 0usize;
+        while i < self.regions.len() {
+            if !matches!(self.regions[i].class, StableMemoryClass::Unallocated) {
+                count += 1;
+            }
+            i += 1;
+        }
+        count
     }
 
     pub const fn max_memory_id(&self) -> Option<u8> {
@@ -1394,7 +1416,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             StableMemoryClass::Derived,
             "subject map",
             "(index_id, subject) → SubjectMapEntry { embedding_incarnation, \
-             stored_embedding_version, deleted, slot, vector_id }: retained as a durable clock \
+             stored_embedding_version, deleted, slot, shadow_slot }: retained as a durable clock \
              after delete; ordered by (embedding_incarnation, stored_embedding_version) so a stale \
              remove cannot tombstone a newer reinsert and a stale upsert cannot resurrect a removed \
              vector (ADR 0031 Slice 4)",
@@ -1403,11 +1425,12 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
         region(
             "VECTOR_ID_TO_SLOT",
             8,
-            StableMemoryClass::Derived,
-            "vector id index",
-            "(index_id, vector_id) → SlotRef { index_version, partition_id, page_id, slot, \
-             generation }",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            StableMemoryClass::Unallocated,
+            "retired vector id index",
+            "Unallocated: the retired VECTOR_ID_TO_SLOT reverse map (no production reader after \
+             ADR 0064 §7 positional validation). Kept as an explicit hole so MemoryIds 9/10/12/13/14 \
+             stay stable without a repack",
+            RebuildPath::None,
         ),
         region(
             "VECTOR_PARTITION_HEADS",
@@ -1433,12 +1456,12 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
         region(
             "VECTOR_ID_TO_SUBJECT",
             11,
-            StableMemoryClass::Derived,
-            "vector id reverse map",
-            "(index_id, vector_id) → VectorSubject: reverse locator; write-maintained only, no \
-             production reader (retirement deferred). VECTOR_SUBJECT_TO_ID remains the freshness \
-             source of truth",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            StableMemoryClass::Unallocated,
+            "retired vector id reverse map",
+            "Unallocated: the retired VECTOR_ID_TO_SUBJECT reverse map (no production reader after \
+             ADR 0064 §7 positional validation). Kept as an explicit hole so MemoryIds 9/10/12/13/14 \
+             stay stable without a repack",
+            RebuildPath::None,
         ),
         region(
             "VECTOR_REBUILD_STATE",
@@ -1580,6 +1603,16 @@ pub fn validate_class_invariants(layout: &StableCanisterLayout) -> Result<(), Cl
                 // Specialized derived state: aggregates name a projection step; event source logs
                 // and cursors carry `None`. Telemetry is never a sync co-update mirror.
                 if matches!(region.rebuild, RebuildPath::SyncCoUpdate) {
+                    return Err(ClassInvariantError::UnexpectedRebuild {
+                        canister: layout.canister,
+                        symbol: region.symbol,
+                        class: region.class,
+                    });
+                }
+            }
+            StableMemoryClass::Unallocated => {
+                // Not a store: it must not carry a rebuild path.
+                if !matches!(region.rebuild, RebuildPath::None) {
                     return Err(ClassInvariantError::UnexpectedRebuild {
                         canister: layout.canister,
                         symbol: region.symbol,
@@ -1834,6 +1867,7 @@ mod tests {
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 15);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 13);
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(14));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
@@ -1866,14 +1900,23 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[10].class,
             StableMemoryClass::Derived
         );
-        // ADR 0031 Slice 6: reverse locator for partition-page search, derived/rebuildable.
+        // ADR 0064 §7: MemoryId 8 is an explicit unallocated hole (retired VECTOR_ID_TO_SLOT).
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[8].symbol,
+            "VECTOR_ID_TO_SLOT"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[8].class,
+            StableMemoryClass::Unallocated
+        );
+        // ADR 0064 §7: MemoryId 11 is an explicit unallocated hole (retired VECTOR_ID_TO_SUBJECT).
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[11].symbol,
             "VECTOR_ID_TO_SUBJECT"
         );
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[11].class,
-            StableMemoryClass::Derived
+            StableMemoryClass::Unallocated
         );
         // ADR 0031 Slice 7: bounded shadow-version rebuild state machine, derived/rebuildable.
         assert_eq!(

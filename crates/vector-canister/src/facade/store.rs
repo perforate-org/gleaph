@@ -36,9 +36,6 @@ pub(crate) const DEGENERATE_PARTITION_ID: u32 = 0;
 /// First physical index generation, assigned on index creation.
 pub(crate) const INITIAL_INDEX_VERSION: u64 = 1;
 
-/// First `VectorId` / `generation`; `0` is reserved as "none".
-pub(crate) const FIRST_ALLOCATION: u64 = 1;
-
 /// Upper bound on a production rebuild's `nlist` (ADR 0031 Slice 7). Bounds the centroid/head counts
 /// and the durable `Sampling.candidates` vector so worst-case rebuild-state bytes
 /// (`MAX_NLIST * stride_bytes`) and the O(`nlist`) teardown reads/deletes stay within budget.

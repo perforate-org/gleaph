@@ -3,8 +3,7 @@
 //! Production cannot yet create `nlist > 1` indexes (centroid training / shadow rebuild is deferred
 //! to Slice 7), so these helpers write a trained, partitioned layout directly: the def with
 //! `nlist`, the centroids, ready centroid metadata, and one live slot per seeded vector assigned to
-//! its nearest centroid partition, together with `VECTOR_SUBJECT_TO_ID`, `VECTOR_ID_TO_SLOT`, and
-//! `VECTOR_ID_TO_SUBJECT`.
+//! its nearest centroid partition, together with `VECTOR_SUBJECT_TO_ID`.
 //!
 //! **Seeded multi-partition indexes are immutable after seeding in Slice 6.** The production
 //! mutation path still appends to `DEGENERATE_PARTITION_ID`, which is correct only while
@@ -14,15 +13,11 @@
 //! seeded partitioned index.
 
 use super::search::{encode_f32, l2_squared_f32};
-use super::{DEFAULT_MAX_PAGE_BYTES, FIRST_ALLOCATION, INITIAL_INDEX_VERSION, VectorCanisterStore};
+use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION, VectorCanisterStore};
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS,
-    VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
-use crate::records::{
-    IvfCentroidMeta, PartitionKey, SubjectKey, SubjectMapEntry, VectorIdKey, VectorIndexDef,
-    VectorSubjectRecord,
-};
+use crate::records::{IvfCentroidMeta, PartitionKey, SubjectKey, SubjectMapEntry, VectorIndexDef};
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
@@ -101,7 +96,6 @@ impl VectorCanisterStore {
         }
 
         let active = INITIAL_INDEX_VERSION;
-        let mut next_vector_id = FIRST_ALLOCATION;
 
         // Centroids + ready metadata.
         IVF_CENTROIDS.with_borrow_mut(|m| {
@@ -123,8 +117,8 @@ impl VectorCanisterStore {
             )
         });
 
-        // The def is persisted last (so its allocator reflects the seeded ids), but the slab
-        // `append_row` needs `slots_per_page`/`stride_bytes`, so build it up front and reuse it.
+        // The def is persisted last, but the slab `append_row` needs `slots_per_page`/`stride_bytes`,
+        // so build it up front and reuse it.
         let def = VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
             encoding,
@@ -138,15 +132,12 @@ impl VectorCanisterStore {
             run_capacity,
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
-            next_vector_id: FIRST_ALLOCATION + vectors.len() as u64,
         };
 
         // Live slots, assigned to the nearest centroid partition.
         for (subject, vector) in vectors {
             assert_eq!(vector.len(), dims as usize, "vector dims mismatch");
             let partition_id = nearest_partition(centroids, vector);
-            let vector_id = next_vector_id;
-            next_vector_id += 1;
             let slot = self
                 .append_slot(
                     index_id,
@@ -157,10 +148,6 @@ impl VectorCanisterStore {
                     &encode_f32(vector),
                 )
                 .expect("seed append");
-            let id_key = VectorIdKey::new(index_id, vector_id);
-            VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
-            VECTOR_ID_TO_SUBJECT
-                .with_borrow_mut(|m| m.insert(id_key, VectorSubjectRecord(*subject)));
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                 m.insert(
                     SubjectKey::new(index_id, *subject),
@@ -170,14 +157,12 @@ impl VectorCanisterStore {
                         deleted: false,
                         slot: Some(slot),
                         shadow_slot: None,
-                        vector_id: Some(vector_id),
                     },
                 )
             });
         }
 
-        debug_assert_eq!(next_vector_id, def.next_vector_id, "seed allocator drift");
-        // Persist the def last so its allocator reflects the seeded ids.
+        // Persist the def last.
         VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
     }
 }

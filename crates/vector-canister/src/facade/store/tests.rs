@@ -105,16 +105,14 @@ fn upsert_new_creates_def_slot_and_clock() {
     assert_eq!(def.active_index_version, 1);
     assert_eq!(def.dims, DIMS);
     assert_eq!(def.stride_bytes, STRIDE as u32);
-    assert_eq!(def.next_vector_id, 2, "one id allocated, next is 2");
 
     let entry = store
         .subject_entry_for_test(INDEX_ID, subject(7))
         .expect("clock");
     assert!(!entry.deleted);
     assert_eq!(entry.stored_embedding_version, 1);
-    assert_eq!(entry.vector_id, Some(1));
     let slot = entry.slot.expect("live slot");
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), Some(slot));
+    assert_eq!(slot.slot, 0, "first row lands at slot 0");
 }
 
 #[test]
@@ -126,10 +124,8 @@ fn upsert_same_version_identical_payload_is_noop() {
     store
         .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .expect("idempotent no-op");
-    let def = store.def_for_test(INDEX_ID).unwrap();
-    assert_eq!(def.next_vector_id, 2, "no new id allocated");
     let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
-    assert_eq!(head.live_len, 1);
+    assert_eq!(head.live_len, 1, "no new slot appended");
 }
 
 #[test]
@@ -158,7 +154,7 @@ fn upsert_older_version_is_noop() {
 }
 
 #[test]
-fn upsert_newer_version_live_appends_and_tombstones_reusing_id() {
+fn upsert_newer_version_live_appends_and_tombstones_old_slot() {
     let store = fresh_store();
     store
         .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
@@ -174,13 +170,11 @@ fn upsert_newer_version_live_appends_and_tombstones_reusing_id() {
         .unwrap();
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert_eq!(entry.stored_embedding_version, 2);
-    assert_eq!(entry.vector_id, Some(1), "same live vector_id reused");
     let new_slot = entry.slot.unwrap();
-    assert_ne!(new_slot.slot, old_slot.slot);
-    // id→slot points at the new slot.
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), Some(new_slot));
-    // No new VectorId allocated (next stays 2).
-    assert_eq!(store.def_for_test(INDEX_ID).unwrap().next_vector_id, 2);
+    assert_ne!(
+        new_slot.slot, old_slot.slot,
+        "newer version appends a fresh slot"
+    );
     let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 1, "append +1, tombstone -1");
 }
@@ -199,8 +193,6 @@ fn remove_live_tombstones_and_advances_clock() {
     assert!(entry.deleted);
     assert_eq!(entry.stored_embedding_version, 2);
     assert_eq!(entry.slot, None);
-    assert_eq!(entry.vector_id, None);
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), None);
     let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 0);
 }
@@ -217,7 +209,6 @@ fn remove_missing_subject_writes_tombstone_clock() {
         .expect("clock written");
     assert!(entry.deleted);
     assert_eq!(entry.stored_embedding_version, 1);
-    assert_eq!(entry.vector_id, None);
 }
 
 #[test]
@@ -238,16 +229,20 @@ fn same_incarnation_upsert_to_deleted_subject_is_noop() {
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(entry.deleted, "same-incarnation upsert cannot resurrect");
-    assert_eq!(entry.vector_id, None);
 }
 
 #[test]
-fn newer_incarnation_upsert_resurrects_with_fresh_id() {
+fn newer_incarnation_upsert_resurrects_with_fresh_slot() {
     // Resurrection requires a strictly greater incarnation, mirroring the canonical store bumping
-    // the incarnation on each delete/reinsert. The fresh incarnation lands a brand-new VectorId.
+    // the incarnation on each delete/reinsert. The fresh incarnation lands a brand-new slot.
     let store = fresh_store();
     store
         .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .unwrap();
+    let old_slot = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .unwrap()
+        .slot
         .unwrap();
     store
         .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
@@ -261,10 +256,11 @@ fn newer_incarnation_upsert_resurrects_with_fresh_id() {
     assert!(!entry.deleted, "newer-incarnation upsert resurrects");
     assert_eq!(entry.embedding_incarnation, 2);
     assert_eq!(entry.stored_embedding_version, 1);
-    let new_id = entry.vector_id.expect("resurrected entry has a vector_id");
-    assert_eq!(new_id, 2, "fresh VectorId allocated; old id retired");
-    assert!(store.id_to_slot_for_test(INDEX_ID, new_id).is_some());
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), None);
+    let new_slot = entry.slot.expect("resurrected live slot");
+    assert_ne!(
+        new_slot.slot, old_slot.slot,
+        "resurrection appends a fresh slot"
+    );
 }
 
 #[test]
@@ -290,21 +286,19 @@ fn newer_incarnation_upsert_after_missing_remove_clock_resurrects() {
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted, "newer incarnation resurrects after a clock");
     assert_eq!(entry.embedding_incarnation, 2);
-    assert!(entry.vector_id.is_some());
 }
 
 #[test]
-fn reinsert_after_delete_allocates_fresh_vector_id() {
+fn reinsert_after_delete_appends_fresh_slot() {
     let store = fresh_store();
     store
         .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
         .unwrap();
-    let first_id = store
+    let first_slot = store
         .subject_entry_for_test(INDEX_ID, subject(7))
         .unwrap()
-        .vector_id
+        .slot
         .unwrap();
-    assert_eq!(first_id, 1);
 
     store
         .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
@@ -316,11 +310,11 @@ fn reinsert_after_delete_allocates_fresh_vector_id() {
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted);
-    let new_id = entry.vector_id.unwrap();
-    assert_ne!(new_id, first_id, "old VectorId is retired, not reused");
-    assert_eq!(new_id, 2);
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, first_id), None);
-    assert!(store.id_to_slot_for_test(INDEX_ID, new_id).is_some());
+    let new_slot = entry.slot.unwrap();
+    assert_ne!(
+        new_slot.slot, first_slot.slot,
+        "reinsert appends a fresh slot"
+    );
 }
 
 #[test]
@@ -334,14 +328,9 @@ fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
     store
         .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
         .unwrap();
-    // Reinsert at incarnation 2 (live again, fresh id).
+    // Reinsert at incarnation 2 (live again, fresh slot).
     store
         .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xBB))
-        .unwrap();
-    let live_id = store
-        .subject_entry_for_test(INDEX_ID, subject(7))
-        .unwrap()
-        .vector_id
         .unwrap();
 
     // Late blind remove for the OLD incarnation with the authoritative max version: must no-op.
@@ -355,8 +344,7 @@ fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
         "newer live incarnation survives a stale remove"
     );
     assert_eq!(entry.embedding_incarnation, 2);
-    assert_eq!(entry.vector_id, Some(live_id));
-    assert!(store.id_to_slot_for_test(INDEX_ID, live_id).is_some());
+    assert!(entry.slot.is_some(), "newer live slot survives");
 }
 
 #[test]
@@ -374,8 +362,6 @@ fn newer_incarnation_remove_on_live_tombstones() {
     assert!(entry.deleted);
     assert_eq!(entry.embedding_incarnation, 2);
     assert_eq!(entry.slot, None);
-    assert_eq!(entry.vector_id, None);
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), None);
 }
 
 #[test]
@@ -588,12 +574,10 @@ fn detach_purges_shard_subjects_and_slots() {
     assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
     assert!(store.subject_entry_for_test(INDEX_ID, subject(8)).is_none());
     assert!(store.subject_entry_for_test(INDEX_ID, subject(9)).is_none());
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), None);
-    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 2), None);
 }
 
 #[test]
-fn durable_allocators_persist_across_store_handles() {
+fn def_and_heads_persist_across_store_handles() {
     let store = fresh_store();
     store
         .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
@@ -605,10 +589,7 @@ fn durable_allocators_persist_across_store_handles() {
     // A fresh stateless handle reads the same durable stable state ("reopen").
     let reopened = VectorCanisterStore::new();
     let def = reopened.def_for_test(INDEX_ID).unwrap();
-    assert_eq!(
-        def.next_vector_id, 3,
-        "two ids allocated, monotonic across handles"
-    );
+    assert_eq!(def.dims, DIMS);
     let head = reopened.partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 2);
 }
@@ -969,81 +950,6 @@ fn search_empty_index_returns_no_hits() {
         .expect("create index");
     let result = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert!(result.hits.is_empty());
-}
-
-// --- ADR 0031 Slice 6: reverse map maintenance (VECTOR_ID_TO_SUBJECT) ---
-
-#[test]
-fn reverse_map_inserted_on_upsert() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    assert_eq!(
-        store.id_to_subject_for_test(INDEX_ID, 1),
-        Some(subject(7)),
-        "new subject inserts its reverse-map entry"
-    );
-}
-
-#[test]
-fn reverse_map_removed_on_remove() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op(7, 2))
-        .unwrap();
-    assert_eq!(
-        store.id_to_subject_for_test(INDEX_ID, 1),
-        None,
-        "remove drops the reverse-map entry alongside the id→slot entry"
-    );
-}
-
-#[test]
-fn reverse_map_resurrect_drops_old_id_and_adds_fresh() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 1, 1, 1.0))
-        .unwrap();
-    store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
-        .unwrap();
-    // Fresh incarnation resurrects with a brand-new vector_id (2).
-    store
-        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 2, 1, 9.0))
-        .unwrap();
-    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), None);
-    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 2), Some(subject(7)));
-}
-
-#[test]
-fn reverse_map_unchanged_on_same_incarnation_newer_version() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    // Same incarnation, newer version reuses the live vector_id (1); the reverse map is untouched.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0))
-        .unwrap();
-    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), Some(subject(7)));
-    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 2), None);
-}
-
-#[test]
-fn reverse_map_unchanged_on_stale_replay() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0))
-        .unwrap();
-    // Stale replay within the live incarnation (version < clock) is a no-op.
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
-        .unwrap();
-    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), Some(subject(7)));
 }
 
 // --- ADR 0034 Slice 4: cosine metric-specific scoring and fail-closed paths ---
@@ -1457,31 +1363,6 @@ fn partition_scan_skips_deleted_subject_entry() {
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
 
-/// ADR 0064 §7: the partition scan rebuilds the subject from the run-table shard and the packed
-/// `VertexPayload` vertex id, so the `VECTOR_ID_TO_SUBJECT` reverse map is no longer a search input.
-/// Freshness is re-validated positionally against `VECTOR_SUBJECT_TO_ID`.
-#[test]
-fn partition_scan_ignores_reverse_map_after_locator_retirement() {
-    use crate::facade::stable::VECTOR_ID_TO_SUBJECT;
-    use crate::records::VectorIdKey;
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
-        INDEX_ID,
-        VectorEncoding::F32,
-        DIMS,
-        &two_clusters(),
-        &clustered_vectors(),
-    );
-    // Drop the reverse-map entry for vector_id 1 (subject 1): the hot path no longer reads it, so the
-    // row is still resolved via its locator and remains scoreable.
-    VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&VectorIdKey::new(INDEX_ID, 1)));
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
-        .expect("partition scan");
-    assert!(result.hits.iter().any(|h| h.subject == subject(1)));
-}
-
 /// ADR 0032 meta/head drift: a row present in `VECTOR_PAGE_META`/slab but with no live
 /// `VECTOR_SUBJECT_TO_ID` entry (e.g. an append that committed slab+meta but not subject state) is
 /// skipped by the partition scan via the `current_slot_for` freshness check, never scored.
@@ -1506,42 +1387,7 @@ fn partition_scan_skips_missing_subject_entry() {
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
 
-#[test]
-fn partition_scan_ignores_stale_vector_id_bookkeeping() {
-    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
-    use crate::records::{SubjectKey, SubjectMapEntry};
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
-        INDEX_ID,
-        VectorEncoding::F32,
-        DIMS,
-        &two_clusters(),
-        &clustered_vectors(),
-    );
-    let entry = store
-        .subject_entry_for_test(INDEX_ID, subject(1))
-        .expect("seeded entry");
-    // `vector_id` is write-maintained bookkeeping (retirement deferred); it is no longer a search
-    // freshness input. A stale value must not cause a live, positionally-valid row to be dropped.
-    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-        m.insert(
-            SubjectKey::new(INDEX_ID, subject(1)),
-            SubjectMapEntry {
-                vector_id: Some(9999),
-                ..entry
-            },
-        )
-    });
-    let result = store
-        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
-        .expect("partition scan");
-    assert!(
-        result.hits.iter().any(|h| h.subject == subject(1)),
-        "a positionally-valid row is scored regardless of stale vector_id bookkeeping"
-    );
-}
-
+// --- ADR 0034 Slice 6: candidate allowlist ---
 #[test]
 fn partition_scan_skips_slot_drift() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
@@ -2125,7 +1971,6 @@ fn dual_write_shadow_append_failure_rolls_back_update() {
 
     let before = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
     let old_slot = before.slot.expect("seeded subject is live");
-    let vector_id = before.vector_id.expect("seeded subject has a vector id");
     let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
 
     // Inject a slab `grow` failure for the shadow append (active append succeeds first).
@@ -2135,17 +1980,11 @@ fn dual_write_shadow_append_failure_rolls_back_update() {
         .expect_err("shadow grow failure propagates");
     assert_eq!(err, VectorCanisterError::StableGrowFailed);
 
-    // The subject clock and id map still point at the original live slot — no partial commit to a
+    // The subject clock still points at the original live slot — no partial commit to a
     // tombstoned/new slot.
     let after = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
     assert_eq!(after.slot, Some(old_slot), "old slot stays live");
     assert_eq!(after.shadow_slot, None, "no shadow recorded");
-    assert_eq!(after.vector_id, Some(vector_id));
-    assert_eq!(
-        store.id_to_slot_for_test(INDEX_ID, vector_id),
-        Some(old_slot),
-        "id map unchanged"
-    );
     // The new active row was appended then tombstoned: net live_len unchanged.
     assert_eq!(
         store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,

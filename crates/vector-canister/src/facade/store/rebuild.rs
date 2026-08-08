@@ -26,12 +26,11 @@ use super::{
     MAX_REBUILD_TRAINING_ITERATIONS, VectorCanisterStore,
 };
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_ID_TO_SLOT, VECTOR_INDEX_DEFS,
-    VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_PARTITION_HEADS,
+    VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
-    IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey, VectorIdKey,
-    VectorRebuildStateRecord,
+    IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -764,8 +763,8 @@ impl VectorCanisterStore {
         let mut last_key: Option<SubjectKey> = None;
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
-        // (subject key, vector_id, active bytes) for subjects still needing a shadow.
-        let mut pending: Vec<(SubjectKey, u64, Vec<u8>)> = Vec::new();
+        // (subject key, active slot, active bytes) for subjects still needing a shadow.
+        let mut pending: Vec<(SubjectKey, SlotRef, Vec<u8>)> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_scan");
@@ -794,14 +793,11 @@ impl VectorCanisterStore {
                     let Some(active_slot) = value.current_slot_for(active) else {
                         continue;
                     };
-                    let Some(vector_id) = value.vector_id else {
-                        continue;
-                    };
                     let Some(bytes) = self.read_slot_bytes(index_id, active_slot) else {
                         continue;
                     };
                     bytes_buffered += bytes.len() as u64;
-                    pending.push((*key, vector_id, bytes));
+                    pending.push((*key, active_slot, bytes));
                     // Bound transient heap bytes: break after buffering at least one vector once the
                     // per-step byte budget is reached (cursor resumes from `last_key`).
                     if bytes_buffered >= max_vector_bytes {
@@ -815,7 +811,7 @@ impl VectorCanisterStore {
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_append");
-            for (key, vector_id, bytes) in pending {
+            for (key, active_slot, bytes) in pending {
                 let partition = assign_partition(&centroids, &bytes);
                 let shadow_slot = self.append_slot(
                     index_id,
@@ -826,9 +822,11 @@ impl VectorCanisterStore {
                     &bytes,
                 )?;
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+                    // Positional stale-read guard: the subject's current live slot must still be the
+                    // one we read bytes from (replaces the retired `vector_id` equality check).
                     if let Some(mut entry) = m.get(&key)
                         && !entry.deleted
-                        && entry.vector_id == Some(vector_id)
+                        && entry.current_slot_for(active) == Some(active_slot)
                     {
                         entry.shadow_slot = Some(shadow_slot);
                         m.insert(key, entry);
@@ -1164,8 +1162,8 @@ impl VectorCanisterStore {
         }
     }
 
-    /// Stage 1 of `Cleaning`: collapse `shadow_slot@target -> slot` for up to `max_work` subjects,
-    /// repointing the `VECTOR_ID_TO_SLOT` locator. Returns `(next_cursor, exhausted)`.
+    /// Stage 1 of `Cleaning`: collapse `shadow_slot@target -> slot` for up to `max_work` subjects.
+    /// Returns `(next_cursor, exhausted)`.
     fn collapse_subjects(
         &self,
         index_id: u32,
@@ -1176,7 +1174,7 @@ impl VectorCanisterStore {
         let mut examined = 0u32;
         let mut last_key: Option<SubjectKey> = None;
         let mut exhausted = true;
-        let mut updates: Vec<(SubjectKey, SlotRef, Option<u64>)> = Vec::new();
+        let mut updates: Vec<(SubjectKey, SlotRef)> = Vec::new();
         VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
             for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
                 let key = entry.key();
@@ -1193,12 +1191,12 @@ impl VectorCanisterStore {
                 if let Some(shadow) = value.shadow_slot
                     && shadow.index_version == target
                 {
-                    updates.push((*key, shadow, value.vector_id));
+                    updates.push((*key, shadow));
                 }
             }
         });
 
-        for (key, shadow, vector_id) in updates {
+        for (key, shadow) in updates {
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                 if let Some(mut entry) = m.get(&key) {
                     entry.slot = Some(shadow);
@@ -1206,10 +1204,6 @@ impl VectorCanisterStore {
                     m.insert(key, entry);
                 }
             });
-            if let Some(vector_id) = vector_id {
-                VECTOR_ID_TO_SLOT
-                    .with_borrow_mut(|m| m.insert(VectorIdKey::new(index_id, vector_id), shadow));
-            }
         }
 
         (last_key.map(Storable::into_bytes), exhausted)

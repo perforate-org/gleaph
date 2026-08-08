@@ -1147,7 +1147,6 @@ mod tests {
             run_capacity: 1,
             max_page_bytes: 65_536,
             slots_per_page: capacity,
-            next_vector_id: 1,
         }
     }
 

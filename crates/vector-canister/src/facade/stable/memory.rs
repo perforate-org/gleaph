@@ -2,8 +2,8 @@
 //! and `facade/stable/layout.rs` (ADR 0007 registry, ADR 0031 Slice 2).
 //!
 //! MemoryIds: router auth → shard catalog → ownership config → index defs → centroid meta →
-//! reserved centroids → subject clock → id→slot → partition heads → pages → rebuild state →
-//! row slab → maintenance state.
+//! reserved centroids → subject clock → partition heads → pages → rebuild state → row slab →
+//! maintenance state. MemoryIds 8 and 11 are unallocated (retired id reverse maps).
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -16,7 +16,7 @@ use std::cell::RefCell;
 
 use crate::records::{
     IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawMaintenanceState, RawRebuildState,
-    SlotRef, SubjectKey, SubjectMapEntry, VectorIdKey, VectorIndexDef, VectorSubjectRecord,
+    SubjectKey, SubjectMapEntry, VectorIndexDef,
 };
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -31,12 +31,10 @@ const IVF_CENTROID_META: MemoryId = MemoryId::new(5);
 // BTreeMap now binds the id so Slice 4 can populate centroid bytes without a MemoryId repack.
 const IVF_CENTROIDS: MemoryId = MemoryId::new(6);
 const VECTOR_SUBJECT_TO_ID: MemoryId = MemoryId::new(7);
-const VECTOR_ID_TO_SLOT: MemoryId = MemoryId::new(8);
 const VECTOR_PARTITION_HEADS: MemoryId = MemoryId::new(9);
 // ADR 0032: the former `VECTOR_PAGE` large-value store is replaced by a composite slab page store.
 // MemoryId 10 is reused for the page-metadata directory; MemoryId 13 is the raw row slab.
 pub(crate) const VECTOR_PAGE_META: MemoryId = MemoryId::new(10);
-const VECTOR_ID_TO_SUBJECT: MemoryId = MemoryId::new(11);
 const VECTOR_REBUILD_STATE: MemoryId = MemoryId::new(12);
 pub(crate) const VECTOR_ROW_SLAB: MemoryId = MemoryId::new(13);
 // ADR 0031 Slice 10: Router-forwarded maintenance orchestration. Holds the vector-canister-owned
@@ -52,10 +50,8 @@ pub(crate) type StableDefsMap = BTreeMap<u32, VectorIndexDef, Memory>;
 pub(crate) type StableCentroidMetaMap = BTreeMap<u32, IvfCentroidMeta, Memory>;
 pub(crate) type StableCentroidsMap = BTreeMap<PartitionKey, Vec<u8>, Memory>;
 pub(crate) type StableSubjectMap = BTreeMap<SubjectKey, SubjectMapEntry, Memory>;
-pub(crate) type StableIdToSlotMap = BTreeMap<VectorIdKey, SlotRef, Memory>;
 pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, Memory>;
 pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
-pub(crate) type StableIdToSubjectMap = BTreeMap<VectorIdKey, VectorSubjectRecord, Memory>;
 pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
 
@@ -202,10 +198,6 @@ pub(crate) fn init_subject_map() -> StableSubjectMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SUBJECT_TO_ID)))
 }
 
-pub(crate) fn init_id_to_slot() -> StableIdToSlotMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_ID_TO_SLOT)))
-}
-
 pub(crate) fn init_partition_heads() -> StablePartitionHeadsMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_PARTITION_HEADS)))
 }
@@ -216,10 +208,6 @@ pub(crate) fn init_page_meta() -> StablePageMetaMap {
 
 pub(crate) fn init_row_slab() -> Memory {
     MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_ROW_SLAB))
-}
-
-pub(crate) fn init_id_to_subject() -> StableIdToSubjectMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_ID_TO_SUBJECT)))
 }
 
 pub(crate) fn init_rebuild_state() -> StableRebuildStateMap {

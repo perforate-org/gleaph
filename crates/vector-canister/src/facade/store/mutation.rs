@@ -7,21 +7,18 @@
 use super::rebuild::rebuild_state_of;
 use super::search::{assign_partition, read_centroids_at};
 use super::{
-    DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, FIRST_ALLOCATION, INITIAL_INDEX_VERSION,
-    VectorCanisterStore,
+    DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, INITIAL_INDEX_VERSION, VectorCanisterStore,
 };
 use crate::encoding::EncodingRecord;
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::facade::stable::{
-    IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT,
-    VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
 #[cfg(test)]
 use crate::records::PartitionKey;
 use crate::records::{
-    IvfCentroidMeta, SlotRef, SubjectKey, SubjectMapEntry, VectorIdKey, VectorIndexDef,
-    VectorRebuildStateRecord, VectorSubjectRecord,
+    IvfCentroidMeta, SlotRef, SubjectKey, SubjectMapEntry, VectorIndexDef, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -163,27 +160,10 @@ impl VectorCanisterStore {
             run_capacity,
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
-            next_vector_id: FIRST_ALLOCATION,
         };
         VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(def)
-    }
-
-    /// Allocates a fresh, never-reused `VectorId` from the durable defs allocator.
-    fn alloc_vector_id(&self, index_id: u32) -> Result<u64, VectorCanisterError> {
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
-            let mut def = defs
-                .get(&index_id)
-                .ok_or(VectorCanisterError::UnknownIndex)?;
-            let id = def.next_vector_id;
-            def.next_vector_id = def
-                .next_vector_id
-                .checked_add(1)
-                .ok_or(VectorCanisterError::AllocatorOverflow)?;
-            defs.insert(index_id, def);
-            Ok(id)
-        })
     }
 
     /// Appends a vector row into the given partition's page chain via the slab page store
@@ -295,7 +275,7 @@ impl VectorCanisterStore {
         match op.embedding_incarnation.cmp(&entry.embedding_incarnation) {
             std::cmp::Ordering::Less => Ok(()), // stale older-incarnation replay: no-op
             std::cmp::Ordering::Greater => {
-                // Fresh incarnation: resurrect with a brand-new VectorId. Tombstone any live slot of
+                // Fresh incarnation: resurrect with a fresh slot. Tombstone any live slot of
                 // the older incarnation (active, and the shadow while dual-writing) so it does not
                 // orphan.
                 if !entry.deleted {
@@ -306,11 +286,6 @@ impl VectorCanisterStore {
                         && let Some(shadow_slot) = entry.shadow_slot
                     {
                         self.tombstone_slot(op.index_id, shadow_slot);
-                    }
-                    if let Some(vector_id) = entry.vector_id {
-                        let id_key = VectorIdKey::new(op.index_id, vector_id);
-                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
-                        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
                     }
                 }
                 self.insert_new_subject(op, &def, mode, key)?;
@@ -340,11 +315,10 @@ impl VectorCanisterStore {
                     }
                     return Err(VectorCanisterError::EmbeddingVersionConflict);
                 }
-                // newer version within the live incarnation: append a new slot, reuse the live id.
+                // newer version within the live incarnation: append a new slot.
                 let old_slot = entry
                     .current_slot_for(active)
                     .expect("live entry has a slot");
-                let vector_id = entry.vector_id.expect("live entry has a vector_id");
                 let active_partition = self.active_partition(&def, op.index_id, &op.bytes);
                 let new_slot = self.append_slot(
                     op.index_id,
@@ -400,9 +374,6 @@ impl VectorCanisterStore {
                 {
                     self.tombstone_slot(op.index_id, old_shadow);
                 }
-                VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
-                    m.insert(VectorIdKey::new(op.index_id, vector_id), new_slot)
-                });
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
@@ -412,7 +383,6 @@ impl VectorCanisterStore {
                             deleted: false,
                             slot: Some(new_slot),
                             shadow_slot,
-                            vector_id: Some(vector_id),
                         },
                     )
                 });
@@ -432,7 +402,6 @@ impl VectorCanisterStore {
         key: SubjectKey,
     ) -> Result<(), VectorCanisterError> {
         let active = def.active_index_version;
-        let vector_id = self.alloc_vector_id(op.index_id)?;
         let active_partition = self.active_partition(def, op.index_id, &op.bytes);
         let slot = self.append_slot(
             op.index_id,
@@ -442,11 +411,11 @@ impl VectorCanisterStore {
             op.subject,
             &op.bytes,
         )?;
-        // Append the shadow mirror (while dual-writing) BEFORE committing the id/subject maps so a
-        // fallible slab grow cannot orphan those maps against a missing shadow row. On shadow failure
+        // Append the shadow mirror (while dual-writing) BEFORE committing the subject map so a
+        // fallible slab grow cannot orphan it against a missing shadow row. On shadow failure
         // we tombstone the just-appended active row before returning, so the residual is a tombstoned
-        // dead row (live counters restored) rather than a live-counted orphan; the id/subject maps
-        // stay untouched.
+        // dead row (live counters restored) rather than a live-counted orphan; the subject map
+        // stays untouched.
         let shadow_slot = match mode {
             RebuildMutationMode::DualWrite {
                 target,
@@ -464,9 +433,6 @@ impl VectorCanisterStore {
             }
             RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
         };
-        let id_key = VectorIdKey::new(op.index_id, vector_id);
-        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
-        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.insert(id_key, VectorSubjectRecord(op.subject)));
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
             m.insert(
                 key,
@@ -476,7 +442,6 @@ impl VectorCanisterStore {
                     deleted: false,
                     slot: Some(slot),
                     shadow_slot,
-                    vector_id: Some(vector_id),
                 },
             )
         });
@@ -526,7 +491,6 @@ impl VectorCanisterStore {
                         deleted: true,
                         slot: None,
                         shadow_slot: None,
-                        vector_id: None,
                     },
                 )
             });
@@ -554,11 +518,6 @@ impl VectorCanisterStore {
                     {
                         self.tombstone_slot(op.index_id, shadow_slot);
                     }
-                    if let Some(vector_id) = entry.vector_id {
-                        let id_key = VectorIdKey::new(op.index_id, vector_id);
-                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
-                        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
-                    }
                 }
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
@@ -569,7 +528,6 @@ impl VectorCanisterStore {
                             deleted: true,
                             slot: None,
                             shadow_slot: None,
-                            vector_id: None,
                         },
                     )
                 });
@@ -593,16 +551,12 @@ impl VectorCanisterStore {
                 // live, op.embedding_version >= clock: tombstone the active slot (and shadow while
                 // dual-writing).
                 let slot = active_live_slot.expect("live entry has a slot");
-                let vector_id = entry.vector_id.expect("live entry has a vector_id");
                 self.tombstone_slot(op.index_id, slot);
                 if let RebuildMutationMode::DualWrite { .. } = mode
                     && let Some(shadow_slot) = entry.shadow_slot
                 {
                     self.tombstone_slot(op.index_id, shadow_slot);
                 }
-                let id_key = VectorIdKey::new(op.index_id, vector_id);
-                VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
-                VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
@@ -612,7 +566,6 @@ impl VectorCanisterStore {
                             deleted: true,
                             slot: None,
                             shadow_slot: None,
-                            vector_id: None,
                         },
                     )
                 });
@@ -658,7 +611,6 @@ impl VectorCanisterStore {
             run_capacity,
             max_page_bytes,
             slots_per_page,
-            next_vector_id: FIRST_ALLOCATION,
         };
         VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
@@ -692,21 +644,5 @@ impl VectorCanisterStore {
                 DEGENERATE_PARTITION_ID,
             ))
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn id_to_slot_for_test(&self, index_id: u32, vector_id: u64) -> Option<SlotRef> {
-        VECTOR_ID_TO_SLOT.with_borrow(|m| m.get(&VectorIdKey::new(index_id, vector_id)))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn id_to_subject_for_test(
-        &self,
-        index_id: u32,
-        vector_id: u64,
-    ) -> Option<gleaph_graph_kernel::vector_index::VectorSubject> {
-        VECTOR_ID_TO_SUBJECT
-            .with_borrow(|m| m.get(&VectorIdKey::new(index_id, vector_id)))
-            .map(|r| r.0)
     }
 }

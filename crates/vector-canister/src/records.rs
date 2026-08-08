@@ -104,79 +104,6 @@ impl Storable for SubjectKey {
     }
 }
 
-/// `(index_id, vector_id)` key for `VECTOR_ID_TO_SLOT`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VectorIdKey {
-    pub index_id: u32,
-    pub vector_id: u64,
-}
-
-impl VectorIdKey {
-    pub const fn new(index_id: u32, vector_id: u64) -> Self {
-        Self {
-            index_id,
-            vector_id,
-        }
-    }
-
-    fn to_array(self) -> [u8; 12] {
-        let mut out = [0u8; 12];
-        out[0..4].copy_from_slice(&self.index_id.to_be_bytes());
-        out[4..12].copy_from_slice(&self.vector_id.to_be_bytes());
-        out
-    }
-}
-
-impl Storable for VectorIdKey {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 12,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Vec::from(self.to_array()))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Vec::from(self.to_array())
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let mut raw = [0u8; 12];
-        raw.copy_from_slice(bytes.as_ref());
-        Self {
-            index_id: u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]),
-            vector_id: u64::from_be_bytes([
-                raw[4], raw[5], raw[6], raw[7], raw[8], raw[9], raw[10], raw[11],
-            ]),
-        }
-    }
-}
-
-/// Storable wrapper for a `VectorSubject` value in `VECTOR_ID_TO_SUBJECT` (ADR 0031 Slice 6).
-///
-/// `ic_stable_structures::BTreeMap` values must implement `Storable`; the kernel `VectorSubject`
-/// only derives Candid/Serde. Wrapping it here keeps the ICP `Storable` impl a vector-index concern
-/// (the reverse-map locator) rather than leaking into `graph-kernel`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct VectorSubjectRecord(pub VectorSubject);
-
-impl Storable for VectorSubjectRecord {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode VectorSubjectRecord"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode VectorSubjectRecord")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), VectorSubjectRecord).expect("decode VectorSubjectRecord")
-    }
-}
-
 /// `(index_id, index_version, partition_id)` key for `VECTOR_PARTITION_HEADS` and `IVF_CENTROIDS`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionKey {
@@ -311,7 +238,6 @@ pub struct VectorIndexDef {
     pub run_capacity: u32,
     pub max_page_bytes: u32,
     pub slots_per_page: u32,
-    pub next_vector_id: u64,
 }
 
 impl Storable for VectorIndexDef {
@@ -409,8 +335,6 @@ pub struct SubjectMapEntry {
     /// predating the field decodes as `None`. Collapsed into `slot` by post-publish cleanup.
     #[serde(default)]
     pub shadow_slot: Option<SlotRef>,
-    /// `Some` when live; `None` once deleted — `VectorId` is never reused.
-    pub vector_id: Option<u64>,
 }
 
 impl SubjectMapEntry {
@@ -691,18 +615,8 @@ mod tests {
             run_capacity: 1,
             max_page_bytes: 65536,
             slots_per_page: 4000,
-            next_vector_id: 1,
         };
         assert_eq!(VectorIndexDef::from_bytes(def.to_bytes()), def);
-    }
-
-    #[test]
-    fn vector_subject_record_storable_roundtrip() {
-        let record = VectorSubjectRecord(VectorSubject::Vertex {
-            shard_id: ShardId::new(3),
-            vertex_id: 77,
-        });
-        assert_eq!(VectorSubjectRecord::from_bytes(record.to_bytes()), record);
     }
 
     #[test]
@@ -723,7 +637,6 @@ mod tests {
                 page_id: 0,
                 slot: 2,
             }),
-            vector_id: Some(5),
         };
         assert_eq!(SubjectMapEntry::from_bytes(entry.to_bytes()), entry);
     }
@@ -755,7 +668,6 @@ mod tests {
         let bytes = Encode!(&legacy).expect("encode legacy entry");
         let decoded = SubjectMapEntry::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded.embedding_incarnation, 7);
-        assert_eq!(decoded.vector_id, Some(9));
         assert_eq!(decoded.shadow_slot, None, "missing field defaults to None");
     }
 
@@ -834,7 +746,6 @@ mod tests {
             deleted: false,
             slot: Some(active),
             shadow_slot: Some(shadow),
-            vector_id: Some(1),
         };
         assert_eq!(entry.current_slot_for(1), Some(active));
         assert_eq!(entry.current_slot_for(2), Some(shadow));

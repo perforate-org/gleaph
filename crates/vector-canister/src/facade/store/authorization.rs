@@ -4,8 +4,8 @@ use super::VectorCanisterStore;
 use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, PAGE_STORE, SHARD_CANISTER_CATALOG,
-    VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER,
-    VECTOR_MAINTENANCE_STATE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
+    VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_MAINTENANCE_STATE, VECTOR_PARTITION_HEADS,
+    VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::init::VectorCanisterInitArgs;
 use crate::records::SubjectKey;
@@ -36,8 +36,6 @@ impl VectorCanisterStore {
         IVF_CENTROID_META.with_borrow_mut(|m| m.clear_new());
         IVF_CENTROIDS.with_borrow_mut(|m| m.clear_new());
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.clear_new());
-        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.clear_new());
-        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.clear_new());
         VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.clear_new());
         // Stable execution state: persists across upgrade, cleared only on this init/reset path.
         VECTOR_MAINTENANCE_STATE.with_borrow_mut(|m| m.clear_new());
@@ -163,15 +161,9 @@ impl VectorCanisterStore {
             let entry = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(key));
             if let Some(entry) = entry
                 && !entry.deleted
+                && let Some(slot) = entry.slot
             {
-                if let Some(slot) = entry.slot {
-                    self.tombstone_slot(key.index_id, slot);
-                }
-                if let Some(vector_id) = entry.vector_id {
-                    let id_key = crate::records::VectorIdKey::new(key.index_id, vector_id);
-                    VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
-                    VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
-                }
+                self.tombstone_slot(key.index_id, slot);
             }
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key));
         }
