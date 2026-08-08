@@ -1,5 +1,22 @@
 //! SIMD kernels for fixed-width f32 edge vectors.
 
+#[cfg(all(
+    target_family = "wasm",
+    target_arch = "wasm32",
+    target_feature = "simd128"
+))]
+use core::arch::wasm32::{
+    f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
+};
+#[cfg(all(
+    target_family = "wasm",
+    target_arch = "wasm64",
+    target_feature = "simd128"
+))]
+use core::arch::wasm64::{
+    f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EdgeVectorMetric {
     Dot,
@@ -134,8 +151,6 @@ fn dot_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
 
 #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
 fn dot_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
-    use core::arch::wasm32::{f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, v128_load};
-
     let mut acc = f32x4_splat(0.0);
     let chunks = query.len() / 4;
     for i in 0..chunks {
@@ -196,10 +211,6 @@ fn l2_squared_f32_bytes_with_upper_bound(
 
 #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
 fn l2_squared_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
-    use core::arch::wasm32::{
-        f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
-    };
-
     let mut acc = f32x4_splat(0.0);
     let chunks = query.len() / 4;
     for i in 0..chunks {
@@ -235,8 +246,6 @@ fn l2_squared_f32_bytes_with_upper_bound(
     threshold: f32,
     inclusive: bool,
 ) -> Option<f32> {
-    use core::arch::wasm32::{f32x4_extract_lane, f32x4_mul, f32x4_sub, v128_load};
-
     let mut sum = 0.0;
     let chunks = query.len() / 4;
     for i in 0..chunks {
@@ -305,8 +314,6 @@ fn dot_and_edge_norm2_f32_bytes(bytes: &[u8], query: &[f32]) -> (f32, f32) {
 
 #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
 fn dot_and_edge_norm2_f32_bytes(bytes: &[u8], query: &[f32]) -> (f32, f32) {
-    use core::arch::wasm32::{f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, v128_load};
-
     let mut dot_acc = f32x4_splat(0.0);
     let mut norm_acc = f32x4_splat(0.0);
     let chunks = query.len() / 4;

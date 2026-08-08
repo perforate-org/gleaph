@@ -188,12 +188,15 @@ fn build_wasm(manifest_dir: &Path) {
         .expect("cargo metadata");
     let root = meta.workspace_root;
     // Keep PocketIC wasm builds in their own target directory so a manual
-    // `cargo build -p gleaph-router --target wasm32-unknown-unknown` (without
+    // `cargo build -p gleaph-router --target wasm64-unknown-unknown` (without
     // the pocket-ic-e2e feature) cannot pollute the artifacts the E2E suite
     // loads. The outer cargo invocation also uses the workspace target/ dir;
     // isolation prevents feature-resolution and incremental-cache conflicts.
     let target_dir = root.join("target").join("pocket-ic-wasm");
-    let wasm_target = "wasm32-unknown-unknown";
+    // The IC runs 64-bit wasm; wasm64 has no prebuilt std, so std is built from source (nightly
+    // `-Z build-std`), and SIMD is enabled via the workspace-root `.cargo/config.toml` target
+    // rustflags (`[target.wasm64-unknown-unknown]`).
+    let wasm_target = "wasm64-unknown-unknown";
 
     let build_args = vec![
         "build",
@@ -210,6 +213,8 @@ fn build_wasm(manifest_dir: &Path) {
         "gleaph-provision",
         "--target",
         wasm_target,
+        "-Z",
+        "build-std=core,alloc,std,panic_abort",
         "--features",
         "gleaph-router/pocket-ic-e2e,gleaph-graph/pocket-ic-e2e",
     ];

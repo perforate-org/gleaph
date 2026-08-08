@@ -21,7 +21,7 @@ dq.push_front(&0).unwrap();
 assert_eq!(dq.to_vec(), vec![0, 1]);
 ```
 
-`DefaultMemoryImpl` is `ic-stable-structures`’s alias: **wasm32** canisters use real stable memory; other targets use an in-memory vector so tests and doctests run on the host.
+`DefaultMemoryImpl` is `ic-stable-structures`’s alias: **wasm** canisters use real stable memory; other targets use an in-memory vector so tests and doctests run on the host.
 
 Re-open with `VecDeque::init(memory)` after `into_memory()`.
 

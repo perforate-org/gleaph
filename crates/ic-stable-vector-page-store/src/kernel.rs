@@ -4,12 +4,24 @@
 //! `query.len() * 4` bytes as `f32` values. Binary kernels operate on bit-packed bytes
 //! (`dims` bits → `ceil(dims / 8)` bytes).
 //!
-//! Kernels are SIMD-accelerated on wasm32 with `simd128` and fall back to scalar otherwise. The
-//! 16-byte row alignment contract (`PageHeader::row_stride` multiple of 16, `vector_bytes` offset
-//! aligned to 16) makes `v128` loads safe.
+//! Kernels are SIMD-accelerated on wasm32/wasm64 with `simd128` and fall back to scalar
+//! otherwise. The 16-byte row alignment contract (`PageHeader::row_stride` multiple of 16,
+//! `vector_bytes` offset aligned to 16) makes `v128` loads safe.
 
-#[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+#[cfg(all(
+    target_family = "wasm",
+    target_arch = "wasm32",
+    target_feature = "simd128"
+))]
 use core::arch::wasm32::{
+    f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
+};
+#[cfg(all(
+    target_family = "wasm",
+    target_arch = "wasm64",
+    target_feature = "simd128"
+))]
+use core::arch::wasm64::{
     f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
 };
 

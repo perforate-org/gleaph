@@ -102,10 +102,9 @@ impl PageLayout {
 
 /// Checked vector-bytes span: `capacity × row_stride + offset`, `None` on overflow.
 ///
-/// On 64-bit hosts valid `u32` geometry can never overflow `usize`, but the canister runs on
-/// wasm32 where `usize` is 32 bits and `capacity × row_stride` (up to ~2^64) can wrap; this guard
-/// is the fail-closed boundary for that target. Kept as a pure helper so it is unit-testable on
-/// any host.
+/// Valid `u32` geometry cannot overflow 64-bit `usize` (host or wasm64 canister), but the guard
+/// is retained as the fail-closed boundary for any future 32-bit target and as defense-in-depth.
+/// Kept as a pure helper so it is unit-testable on any host.
 fn checked_page_len(
     vector_bytes_offset: usize,
     capacity: usize,
@@ -167,8 +166,8 @@ mod tests {
     }
 
     #[test]
-    fn checked_page_len_guards_32_bit_overflow() {
-        // Overflow path (the wasm32 32-bit `usize` case): capacity × row_stride wraps.
+    fn checked_page_len_guards_overflow() {
+        // Overflow path: capacity × row_stride wraps 64-bit `usize`.
         assert_eq!(checked_page_len(usize::MAX, 2, 2), None);
         assert_eq!(checked_page_len(100, usize::MAX, 2), None);
         // Non-overflow path.

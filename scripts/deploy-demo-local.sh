@@ -94,8 +94,8 @@ build_instrumented_router_wasm() {
     RUSTUP_HOME="$RUSTUP_HOME" \
     CARGO_HOME="$CARGO_HOME" \
     cargo build -p gleaph-router --features batch-instr-log \
-      --target wasm32-unknown-unknown --release >&2
-  local raw_wasm="$ROOT/target/wasm32-unknown-unknown/release/gleaph_router.wasm"
+      --target wasm64-unknown-unknown -Z build-std=core,alloc,std,panic_abort --release >&2
+  local raw_wasm="$ROOT/target/wasm64-unknown-unknown/release/gleaph_router.wasm"
   # The composite `admin_graph_batch_instr_log` query is cfg-gated on the feature, so
   # its name string is only embedded in the wasm when batch-instr-log was compiled in.
   if ! grep -a -F -q 'admin_graph_batch_instr_log' "$raw_wasm"; then

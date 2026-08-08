@@ -98,9 +98,9 @@ main() {
   fi
   icp_cmd build
   local router_wasm index_wasm graph_wasm
-  router_wasm="$ROOT/target/wasm32-unknown-unknown/release/gleaph_router.wasm"
-  index_wasm="$ROOT/target/wasm32-unknown-unknown/release/gleaph_graph_index.wasm"
-  graph_wasm="$ROOT/target/wasm32-unknown-unknown/release/gleaph_graph.wasm"
+  router_wasm="$ROOT/target/wasm64-unknown-unknown/release/gleaph_router.wasm"
+  index_wasm="$ROOT/target/wasm64-unknown-unknown/release/gleaph_graph_index.wasm"
+  graph_wasm="$ROOT/target/wasm64-unknown-unknown/release/gleaph_graph.wasm"
   for wasm in "$router_wasm" "$index_wasm" "$graph_wasm"; do
     [[ -f "$wasm" ]] || { echo "missing wasm artifact: $wasm" >&2; exit 1; }
   done

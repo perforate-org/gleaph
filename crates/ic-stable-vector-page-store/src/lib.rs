@@ -19,6 +19,11 @@
 //! 4th byte `0x31`) is rejected because its version byte no longer matches.
 
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
+// wasm64 exposes the wasm SIMD intrinsics behind this nightly feature gate (rust-lang #90599).
+#![cfg_attr(
+    all(target_family = "wasm", target_arch = "wasm64"),
+    feature(simd_wasm64)
+)]
 #![warn(missing_docs)]
 
 #[cfg(feature = "canbench")]

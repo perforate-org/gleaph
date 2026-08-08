@@ -385,9 +385,9 @@ mod tests {
 
     #[test]
     fn page_header_rejects_oversized_row_stride_before_span_math() {
-        // `u32::MAX` fails the 16-byte alignment contract before any span math runs. On 64-bit
-        // hosts, valid `u32` geometry can never overflow `usize`; the wasm32 (32-bit) overflow
-        // guard lives in `PageLayout::checked_page_len` and is tested there.
+        // `u32::MAX` fails the 16-byte alignment contract before any span math runs. Valid `u32`
+        // geometry cannot overflow 64-bit `usize` (host or wasm64); the overflow guard in
+        // `PageLayout::checked_page_len` is retained defensively and tested there.
         assert_eq!(
             PageHeader::new(u32::MAX, u32::MAX, 4, 4).expect_err("alignment violation"),
             HeaderError::InvalidRowStride(u32::MAX)
