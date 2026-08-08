@@ -58,7 +58,7 @@ impl GraphStore {
         // may be returned past this point: the IC would keep the reserved outbox admission while
         // skipping the canonical delete. The vertex was validated writable above; a trap rolls
         // the whole message back instead of exposing canonical state without its build-DML.
-        self.commit_prepare_vertex_sidecars_for_delete(vertex_id)
+        self.commit_prepare_vertex_sidecars_for_delete(vertex_id, mutation_id)
             .unwrap_or_else(trap_post_fence_commit);
         self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))
             .map_err(GraphStoreError::from)
@@ -119,7 +119,7 @@ impl GraphStore {
         // keep the reserved outbox admissions while skipping the tombstone purge. The vertex
         // and its incident edges were validated live above; a trap rolls the whole message back
         // instead of exposing canonical state without its build-DML.
-        self.commit_prepare_vertex_sidecars_for_delete(vertex_id)
+        self.commit_prepare_vertex_sidecars_for_delete(vertex_id, mutation_id)
             .unwrap_or_else(trap_post_fence_commit);
         // Gate before tombstone: if marking fails we must not tombstone, or the
         // vertex's surviving incident edges would be visible as ghost edges
@@ -189,9 +189,10 @@ impl GraphStore {
     pub(super) fn commit_prepare_vertex_sidecars_for_delete(
         &self,
         vertex_id: VertexId,
+        mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         self.commit_clear_vertex_properties(vertex_id);
-        self.commit_clear_vertex_embeddings(vertex_id);
+        self.commit_clear_vertex_embeddings(vertex_id, mutation_id);
 
         let vertex = self.vertex(vertex_id).ok_or_else(|| {
             GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
@@ -418,7 +419,7 @@ mod tests {
 
         // Tombstone-first start without draining the purge to completion.
         store
-            .commit_prepare_vertex_sidecars_for_delete(hub)
+            .commit_prepare_vertex_sidecars_for_delete(hub, 1)
             .expect("prepare hub sidecars");
         store
             .mark_vertex_pending_purge(hub)

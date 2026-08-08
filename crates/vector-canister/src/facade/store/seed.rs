@@ -152,8 +152,7 @@ impl VectorCanisterStore {
                 m.insert(
                     SubjectKey::new(index_id, *subject),
                     SubjectMapEntry {
-                        embedding_incarnation: 1,
-                        stored_embedding_version: 1,
+                        stamp: 1,
                         deleted: false,
                         slot: Some(slot),
                         shadow_slot: None,

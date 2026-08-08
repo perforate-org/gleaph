@@ -146,27 +146,20 @@ impl VectorSubject {
 /// Graph shard → vector canister: one derived embedding mutation.
 ///
 /// `bytes` is REQUIRED for an upsert (`remove = false`) and EMPTY for a remove (`remove = true`);
-/// idempotence is decided by the ordered pair `(embedding_incarnation, embedding_version)` against
-/// the retained subject clock and never reads `bytes`. `encoding`/`dims` on a remove op are ignored
-/// by the canister.
+/// idempotence is decided by the single `mutation_id` stamp against the retained subject clock and
+/// never reads `bytes`. `encoding`/`dims` on a remove op are ignored by the canister.
 ///
-/// Contract (ADR 0031 Slice 4): `embedding_incarnation > 0`; an upsert carries `embedding_version >
-/// 0`; a remove carries the deleted record's incarnation and an empty `bytes`. No in-flight ops
-/// predate this field in production (dispatch was inert before activation), so it is a required
-/// field rather than an `Option`.
+/// Contract (ADR 0064 §5): `mutation_id` is the graph's per-shard mutation sequence (Router-allocated);
+/// `stamp <= clock` is a no-op; a remove on a missing row is a no-op.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VectorEmbeddingSyncOp {
     pub index_id: u32,
     /// Routing filter; resolved against the Router catalog at activation (Slice 3+).
     pub embedding_name_id: u16,
     pub subject: VectorSubject,
-    /// Graph-owned delete-spanning ordering fence (ADR 0031 Slice 4). Strictly increases across each
-    /// delete/reinsert of the identity; the canister orders by `(embedding_incarnation,
-    /// embedding_version)`.
-    pub embedding_incarnation: u64,
-    /// Canonical `StoredEmbedding.version` from the graph `VertexEmbeddingStore`; the per-incarnation
-    /// update counter.
-    pub embedding_version: u64,
+    /// Graph per-shard mutation sequence (Router-allocated). Orders ingest and DML-driven removes by
+    /// a single comparable stamp (ADR 0064 §5).
+    pub mutation_id: u64,
     pub encoding: VectorEncoding,
     pub dims: u16,
     /// Metric of the target index definition.
@@ -229,12 +222,15 @@ impl IndexedEmbeddingCatalog {
 /// The Router resolves the opaque graph-scoped vertex id and the embedding definition before
 /// dispatching; the graph shard only sees the local vertex id and the authoritative
 /// [`IndexedEmbeddingSpec`]. The canonical byte encoding happens inside the graph-owned write
-/// boundary.
+/// boundary. `mutation_id` is the Router-issued per-shard mutation sequence (ADR 0064 §5/§6): the
+/// graph consumes it for the vector dispatch stamp without a DML mutation.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct VertexEmbeddingIngestionArgs {
     pub local_vertex_id: crate::federation::LocalVertexId,
     pub spec: IndexedEmbeddingSpec,
     pub values: Vec<f32>,
+    /// Router-issued per-shard mutation sequence; the graph uses it as the vector dispatch stamp.
+    pub mutation_id: u64,
 }
 
 /// Outcome of the derived vector-index projection after a canonical embedding commit.
@@ -291,15 +287,13 @@ pub struct VectorSearchRequest {
 /// One scored search result. `distance` is the metric-specific internal raw value (smaller is
 /// nearer), not necessarily a public distance. For `L2Squared` it is the squared Euclidean distance;
 /// for `Cosine` it is `1 - cosine_similarity`. The Router converts this raw value to the
-/// user-facing scalar requested by `SCORE AS` or `DISTANCE AS`. `embedding_incarnation` /
-/// `embedding_version` are the live subject clock so a caller can reason about freshness
-/// (ADR 0031 Slice 4).
+/// user-facing scalar requested by `SCORE AS` or `DISTANCE AS`. `mutation_id` is the live subject
+/// clock so a caller can reason about freshness (ADR 0064 §5).
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct VectorSearchHit {
     pub subject: VectorSubject,
     pub distance: f32,
-    pub embedding_incarnation: u64,
-    pub embedding_version: u64,
+    pub mutation_id: u64,
 }
 
 /// Top-k search result, ordered by `(distance ascending, subject ascending)` as a deterministic
@@ -766,8 +760,8 @@ pub enum VectorCanisterError {
     DimensionMismatch,
     /// `bytes.len()` does not equal `dims * stride` for an upsert.
     ByteWidthMismatch,
-    /// A same-`embedding_version` upsert arrived with a different payload on a live subject.
-    EmbeddingVersionConflict,
+    /// A same-`mutation_id` upsert arrived with a different payload on a live subject.
+    MutationStampConflict,
     /// The op's `remove` flag disagrees with the invoked mutation endpoint (e.g. `vector_upsert`
     /// received `remove = true`).
     MutationKindMismatch,
@@ -829,9 +823,7 @@ impl std::fmt::Display for VectorCanisterError {
             Self::UnknownIndex => "unknown vector index id",
             Self::DimensionMismatch => "embedding encoding/dims disagree with the index definition",
             Self::ByteWidthMismatch => "embedding byte width does not match dims * stride",
-            Self::EmbeddingVersionConflict => {
-                "same embedding_version upsert with a different payload"
-            }
+            Self::MutationStampConflict => "same mutation_id upsert with a different payload",
             Self::MutationKindMismatch => {
                 "sync op remove flag disagrees with the mutation endpoint"
             }
@@ -884,8 +876,7 @@ mod tests {
                 shard_id: ShardId::new(2),
                 vertex_id: 42,
             },
-            embedding_incarnation: 5,
-            embedding_version: 9,
+            mutation_id: 5,
             encoding: VectorEncoding::F32,
             dims: 4,
             metric: VectorMetric::L2Squared,
@@ -905,8 +896,7 @@ mod tests {
                 shard_id: ShardId::new(0),
                 vertex_id: 1,
             },
-            embedding_incarnation: 1,
-            embedding_version: 2,
+            mutation_id: 1,
             encoding: VectorEncoding::F32,
             dims: 4,
             metric: VectorMetric::Cosine,
@@ -917,7 +907,7 @@ mod tests {
         let decoded = Decode!(&bytes, VectorEmbeddingSyncOp).expect("decode");
         assert!(decoded.remove);
         assert!(decoded.bytes.is_empty());
-        assert_eq!(decoded.embedding_incarnation, 1);
+        assert_eq!(decoded.mutation_id, 1);
     }
 
     #[test]
@@ -946,7 +936,7 @@ mod tests {
     #[test]
     fn error_candid_roundtrip() {
         for err in [
-            VectorCanisterError::EmbeddingVersionConflict,
+            VectorCanisterError::MutationStampConflict,
             VectorCanisterError::InvalidSearchTopK,
             VectorCanisterError::StableGrowFailed,
             VectorCanisterError::InvalidStatsCursor,
@@ -1012,8 +1002,7 @@ mod tests {
                     vertex_id: 42,
                 },
                 distance: 1.5,
-                embedding_incarnation: 3,
-                embedding_version: 9,
+                mutation_id: 3,
             }],
         };
         let bytes = Encode!(&result).expect("encode result");
@@ -1074,8 +1063,7 @@ mod tests {
                     vertex_id: 42,
                 },
                 distance: 0.25,
-                embedding_incarnation: 3,
-                embedding_version: 9,
+                mutation_id: 3,
             }],
         };
         let bytes = Encode!(&result).expect("encode result");

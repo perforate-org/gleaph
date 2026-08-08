@@ -49,11 +49,6 @@ pub async fn backfill_vertex_embeddings(
             let Some(record) = store.vertex_embedding(vertex_id, embedding_name_id) else {
                 continue;
             };
-            // A record written before Slice 4 has no incarnation entry; treat it as the implicit
-            // first incarnation (1).
-            let embedding_incarnation = store
-                .vertex_embedding_incarnation(vertex_id, embedding_name_id)
-                .unwrap_or(1);
             let operation = VectorEmbeddingSyncOp {
                 index_id: spec.index_id,
                 embedding_name_id: embedding_name_id.raw(),
@@ -61,8 +56,7 @@ pub async fn backfill_vertex_embeddings(
                     shard_id,
                     vertex_id: local_raw,
                 },
-                embedding_incarnation,
-                embedding_version: record.version,
+                mutation_id: record.version,
                 encoding: record.encoding,
                 dims: record.dims,
                 metric: spec.metric,
@@ -226,10 +220,24 @@ mod tests {
         let other = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(2);
         // Writes happen with no catalog installed → no dispatch side effects pollute the queue.
         store
-            .set_vertex_embedding(vid, indexed, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .set_vertex_embedding(
+                vid,
+                indexed,
+                VectorEncoding::F32,
+                2,
+                vec_bytes(&[1.0, 2.0]),
+                1,
+            )
             .expect("indexed embedding");
         store
-            .set_vertex_embedding(vid, other, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]))
+            .set_vertex_embedding(
+                vid,
+                other,
+                VectorEncoding::F32,
+                2,
+                vec_bytes(&[3.0, 4.0]),
+                1,
+            )
             .expect("other embedding");
 
         let _catalog = vector_catalog_context::enter_indexed(&[spec(1)]);
@@ -269,7 +277,14 @@ mod tests {
         let vid = store.insert_vertex().expect("vertex");
         let indexed = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
         store
-            .set_vertex_embedding(vid, indexed, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .set_vertex_embedding(
+                vid,
+                indexed,
+                VectorEncoding::F32,
+                2,
+                vec_bytes(&[1.0, 2.0]),
+                1,
+            )
             .expect("indexed embedding");
 
         let _catalog =
@@ -300,10 +315,10 @@ mod tests {
         let v1 = store.insert_vertex().expect("v1");
         let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
         store
-            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
             .expect("v0 embedding");
         store
-            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]))
+            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]), 1)
             .expect("v1 embedding");
 
         let _catalog = vector_catalog_context::enter_indexed(&[spec(1)]);
@@ -343,10 +358,10 @@ mod tests {
         let v1 = store.insert_vertex().expect("v1");
         let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
         store
-            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
             .expect("v0 embedding");
         store
-            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]))
+            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]), 1)
             .expect("v1 embedding");
         let _catalog = vector_catalog_context::enter_indexed(&[spec(1)]);
 
@@ -375,10 +390,10 @@ mod tests {
         let v1 = store.insert_vertex().expect("v1");
         let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
         store
-            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
             .expect("v0 embedding");
         store
-            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]))
+            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]), 1)
             .expect("v1 embedding");
         let _catalog = vector_catalog_context::enter_indexed(&[spec(1)]);
 

@@ -1989,6 +1989,7 @@ async fn admin_ingest_vertex_embedding_item(
             args.spec.encoding,
             dims,
             bytes,
+            args.mutation_id,
         )
         .map_err(|e| e.to_string())
 }
@@ -4283,6 +4284,7 @@ mod vertex_embedding_ingestion_tests {
                 local_vertex_id: local_vertex_id_raw(vid),
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
+                mutation_id: 1,
             },
             Some(&vector as &dyn VectorCanisterLookup),
         ))
@@ -4315,6 +4317,7 @@ mod vertex_embedding_ingestion_tests {
                 local_vertex_id: 9999,
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
+                mutation_id: 1,
             },
             Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
         ))
@@ -4333,6 +4336,7 @@ mod vertex_embedding_ingestion_tests {
                 local_vertex_id: local_vertex_id_raw(vid),
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0, 3.0],
+                mutation_id: 1,
             },
             Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
         ))
@@ -4356,6 +4360,7 @@ mod vertex_embedding_ingestion_tests {
                 local_vertex_id: local_vertex_id_raw(vid),
                 spec: spec(1, 2),
                 values: vec![1.0, f32::NAN],
+                mutation_id: 1,
             },
             Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
         ))
@@ -4375,6 +4380,7 @@ mod vertex_embedding_ingestion_tests {
                 local_vertex_id: local_vertex_id_raw(vid),
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
+                mutation_id: 1,
             },
             Some(&flaky as &dyn VectorCanisterLookup),
         ))
@@ -4414,8 +4420,7 @@ mod vertex_embedding_ingestion_tests {
                 shard_id: ShardId::new(0),
                 vertex_id: local_vertex_id_raw(vid),
             },
-            embedding_incarnation: 1,
-            embedding_version: 1,
+            mutation_id: 1,
             encoding: VectorEncoding::F32,
             dims: 2,
             metric: VectorMetric::L2Squared,
@@ -4430,6 +4435,7 @@ mod vertex_embedding_ingestion_tests {
                 local_vertex_id: local_vertex_id_raw(vid),
                 spec: spec(1, 2),
                 values: vec![1.0, 2.0],
+                mutation_id: 1,
             },
             Some(&vector as &dyn VectorCanisterLookup),
         ))

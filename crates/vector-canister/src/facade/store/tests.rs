@@ -43,19 +43,13 @@ fn subject(vertex_id: u32) -> VectorSubject {
     }
 }
 
-/// Upsert at an explicit `(incarnation, version)` clock (ADR 0031 Slice 4).
-fn upsert_op_inc(
-    vertex_id: u32,
-    embedding_incarnation: u64,
-    embedding_version: u64,
-    fill: u8,
-) -> VectorEmbeddingSyncOp {
+/// Upsert at an explicit `mutation_id` stamp (ADR 0064 §5).
+fn upsert_op(vertex_id: u32, mutation_id: u64, fill: u8) -> VectorEmbeddingSyncOp {
     VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(vertex_id),
-        embedding_incarnation,
-        embedding_version,
+        mutation_id,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric: VectorMetric::L2Squared,
@@ -64,34 +58,19 @@ fn upsert_op_inc(
     }
 }
 
-/// Remove at an explicit `(incarnation, version)` clock (ADR 0031 Slice 4).
-fn remove_op_inc(
-    vertex_id: u32,
-    embedding_incarnation: u64,
-    embedding_version: u64,
-) -> VectorEmbeddingSyncOp {
+/// Remove at an explicit `mutation_id` stamp (ADR 0064 §5).
+fn remove_op(vertex_id: u32, mutation_id: u64) -> VectorEmbeddingSyncOp {
     VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(vertex_id),
-        embedding_incarnation,
-        embedding_version,
+        mutation_id,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric: VectorMetric::L2Squared,
         bytes: Vec::new(),
         remove: true,
     }
-}
-
-/// First-incarnation upsert (the common single-incarnation case).
-fn upsert_op(vertex_id: u32, embedding_version: u64, fill: u8) -> VectorEmbeddingSyncOp {
-    upsert_op_inc(vertex_id, 1, embedding_version, fill)
-}
-
-/// First-incarnation remove (the common single-incarnation case).
-fn remove_op(vertex_id: u32, embedding_version: u64) -> VectorEmbeddingSyncOp {
-    remove_op_inc(vertex_id, 1, embedding_version)
 }
 
 #[test]
@@ -110,7 +89,7 @@ fn upsert_new_creates_def_slot_and_clock() {
         .subject_entry_for_test(INDEX_ID, subject(7))
         .expect("clock");
     assert!(!entry.deleted);
-    assert_eq!(entry.stored_embedding_version, 1);
+    assert_eq!(entry.stamp, 1);
     let slot = entry.slot.expect("live slot");
     assert_eq!(slot.slot, 0, "first row lands at slot 0");
 }
@@ -137,7 +116,7 @@ fn upsert_same_version_different_payload_conflicts() {
     let err = store
         .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xBB))
         .expect_err("conflict");
-    assert_eq!(err, VectorCanisterError::EmbeddingVersionConflict);
+    assert_eq!(err, VectorCanisterError::MutationStampConflict);
 }
 
 #[test]
@@ -150,7 +129,7 @@ fn upsert_older_version_is_noop() {
         .vector_upsert(shard_canister(), &upsert_op(7, 3, 0xBB))
         .expect("stale no-op");
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
-    assert_eq!(entry.stored_embedding_version, 5);
+    assert_eq!(entry.stamp, 5);
 }
 
 #[test]
@@ -169,7 +148,7 @@ fn upsert_newer_version_live_appends_and_tombstones_old_slot() {
         .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
         .unwrap();
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
-    assert_eq!(entry.stored_embedding_version, 2);
+    assert_eq!(entry.stamp, 2);
     let new_slot = entry.slot.unwrap();
     assert_ne!(
         new_slot.slot, old_slot.slot,
@@ -191,7 +170,7 @@ fn remove_live_tombstones_and_advances_clock() {
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(entry.deleted);
-    assert_eq!(entry.stored_embedding_version, 2);
+    assert_eq!(entry.stamp, 2);
     assert_eq!(entry.slot, None);
     let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 0);
@@ -208,7 +187,7 @@ fn remove_missing_subject_writes_tombstone_clock() {
         .subject_entry_for_test(INDEX_ID, subject(7))
         .expect("clock written");
     assert!(entry.deleted);
-    assert_eq!(entry.stored_embedding_version, 1);
+    assert_eq!(entry.stamp, 1);
 }
 
 #[test]
@@ -217,14 +196,14 @@ fn same_incarnation_upsert_to_deleted_subject_is_noop() {
     // replay: a genuine reinsert carries a strictly greater incarnation. So it must NOT resurrect.
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .unwrap();
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .unwrap();
     // Stale same-incarnation upsert (e.g. a journaled replay) lands behind the tombstone clock.
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .expect("stale replay no-op");
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
@@ -237,7 +216,7 @@ fn newer_incarnation_upsert_resurrects_with_fresh_slot() {
     // the incarnation on each delete/reinsert. The fresh incarnation lands a brand-new slot.
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .unwrap();
     let old_slot = store
         .subject_entry_for_test(INDEX_ID, subject(7))
@@ -245,17 +224,16 @@ fn newer_incarnation_upsert_resurrects_with_fresh_slot() {
         .slot
         .unwrap();
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .unwrap();
     // Reinsert at incarnation 2, version 1 (canonical version reset): resurrects.
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xBB))
+        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
         .unwrap();
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted, "newer-incarnation upsert resurrects");
-    assert_eq!(entry.embedding_incarnation, 2);
-    assert_eq!(entry.stored_embedding_version, 1);
+    assert_eq!(entry.stamp, 2);
     let new_slot = entry.slot.expect("resurrected live slot");
     assert_ne!(
         new_slot.slot, old_slot.slot,
@@ -269,10 +247,10 @@ fn newer_incarnation_upsert_after_missing_remove_clock_resurrects() {
     // strictly newer incarnation resurrects (a same-incarnation replay stays a no-op).
     let store = fresh_store();
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 5))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .unwrap();
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .expect("same-incarnation replay no-op");
     assert!(
         store
@@ -281,18 +259,18 @@ fn newer_incarnation_upsert_after_missing_remove_clock_resurrects() {
             .deleted
     );
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xAA))
         .unwrap();
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(!entry.deleted, "newer incarnation resurrects after a clock");
-    assert_eq!(entry.embedding_incarnation, 2);
+    assert_eq!(entry.stamp, 2);
 }
 
 #[test]
 fn reinsert_after_delete_appends_fresh_slot() {
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .unwrap();
     let first_slot = store
         .subject_entry_for_test(INDEX_ID, subject(7))
@@ -301,11 +279,11 @@ fn reinsert_after_delete_appends_fresh_slot() {
         .unwrap();
 
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .unwrap();
     // The canonical reinsert bumps the incarnation to 2.
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xCC))
+        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xCC))
         .unwrap();
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
@@ -323,19 +301,19 @@ fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
     // after a newer reinsert already advanced the clock. The incarnation fence makes it a no-op.
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .unwrap();
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .unwrap();
     // Reinsert at incarnation 2 (live again, fresh slot).
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xBB))
+        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
         .unwrap();
 
     // Late blind remove for the OLD incarnation with the authoritative max version: must no-op.
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .expect("stale older-incarnation remove is fenced");
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
@@ -343,7 +321,7 @@ fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
         !entry.deleted,
         "newer live incarnation survives a stale remove"
     );
-    assert_eq!(entry.embedding_incarnation, 2);
+    assert_eq!(entry.stamp, 2);
     assert!(entry.slot.is_some(), "newer live slot survives");
 }
 
@@ -353,14 +331,14 @@ fn newer_incarnation_remove_on_live_tombstones() {
     // live slot (e.g. the upsert for that incarnation never arrived).
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
         .unwrap();
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 2, u64::MAX))
+        .vector_remove(shard_canister(), &remove_op(7, 2))
         .unwrap();
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
     assert!(entry.deleted);
-    assert_eq!(entry.embedding_incarnation, 2);
+    assert_eq!(entry.stamp, 2);
     assert_eq!(entry.slot, None);
 }
 
@@ -606,28 +584,18 @@ fn vec_bytes(value: f32) -> Vec<u8> {
     bytes
 }
 
-fn upsert_vec_inc(
-    vertex_id: u32,
-    incarnation: u64,
-    version: u64,
-    value: f32,
-) -> VectorEmbeddingSyncOp {
+fn upsert_vec(vertex_id: u32, mutation_id: u64, value: f32) -> VectorEmbeddingSyncOp {
     VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(vertex_id),
-        embedding_incarnation: incarnation,
-        embedding_version: version,
+        mutation_id,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric: VectorMetric::L2Squared,
         bytes: vec_bytes(value),
         remove: false,
     }
-}
-
-fn upsert_vec(vertex_id: u32, version: u64, value: f32) -> VectorEmbeddingSyncOp {
-    upsert_vec_inc(vertex_id, 1, version, value)
 }
 
 fn search_value(value: f32, top_k: u32) -> VectorSearchRequest {
@@ -661,10 +629,9 @@ fn vec_bytes_from(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-fn upsert_vec_from_inc(
+fn upsert_vec_from(
     vertex_id: u32,
-    incarnation: u64,
-    version: u64,
+    mutation_id: u64,
     values: &[f32],
     metric: VectorMetric,
 ) -> VectorEmbeddingSyncOp {
@@ -672,23 +639,13 @@ fn upsert_vec_from_inc(
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(vertex_id),
-        embedding_incarnation: incarnation,
-        embedding_version: version,
+        mutation_id,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric,
         bytes: vec_bytes_from(values),
         remove: false,
     }
-}
-
-fn upsert_vec_from(
-    vertex_id: u32,
-    version: u64,
-    values: &[f32],
-    metric: VectorMetric,
-) -> VectorEmbeddingSyncOp {
-    upsert_vec_from_inc(vertex_id, 1, version, values, metric)
 }
 
 fn search_metric_from(values: &[f32], top_k: u32, metric: VectorMetric) -> VectorSearchRequest {
@@ -714,8 +671,7 @@ fn search_returns_inserted_vector() {
     let hit = &result.hits[0];
     assert_eq!(hit.subject, subject(7));
     assert_eq!(hit.distance, 0.0);
-    assert_eq!(hit.embedding_incarnation, 1);
-    assert_eq!(hit.embedding_version, 1);
+    assert_eq!(hit.mutation_id, 1);
 }
 
 #[test]
@@ -785,7 +741,7 @@ fn search_returns_newest_slot_only() {
     let result = store.vector_search(&search_value(5.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].distance, 0.0);
-    assert_eq!(result.hits[0].embedding_version, 2);
+    assert_eq!(result.hits[0].mutation_id, 2);
     // The superseded (tombstoned) generation's value 1.0 is never scored.
     let stale = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(stale.hits.len(), 1);
@@ -796,19 +752,18 @@ fn search_returns_newest_slot_only() {
 fn search_reinsert_after_delete_returns_newer_incarnation_only() {
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 1, 1, 1.0))
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
         .unwrap();
     store
-        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
+        .vector_remove(shard_canister(), &remove_op(7, 1))
         .unwrap();
     store
-        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 2, 1, 9.0))
+        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 9.0))
         .unwrap();
     let result = store.vector_search(&search_value(9.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].distance, 0.0);
-    assert_eq!(result.hits[0].embedding_incarnation, 2);
-    assert_eq!(result.hits[0].embedding_version, 1);
+    assert_eq!(result.hits[0].mutation_id, 2);
 }
 
 #[test]
@@ -826,8 +781,7 @@ fn search_does_not_read_rows_of_a_different_index() {
                 index_id: other_index,
                 embedding_name_id: 0,
                 subject: subject(8),
-                embedding_incarnation: 1,
-                embedding_version: 1,
+                mutation_id: 1,
                 encoding: VectorEncoding::F32,
                 dims: DIMS,
                 metric: VectorMetric::L2Squared,
@@ -1658,8 +1612,7 @@ fn rebuild_start_rejects_oversized_combined_state() {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(1),
-        embedding_incarnation: 1,
-        embedding_version: 1,
+        mutation_id: 1,
         encoding: VectorEncoding::F32,
         dims: big_dims,
         metric: VectorMetric::L2Squared,

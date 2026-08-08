@@ -525,45 +525,28 @@ async fn reconcile_vector_op(
     let name = EmbeddingNameId::from_raw(op.embedding_name_id);
     let store = GraphStore::new();
     match store.vertex_embedding(vid, name) {
-        Some(record) => {
-            // A live record always has an incarnation; fall back to the op's stamped incarnation
-            // for any pre-Slice-4 record that predates the incarnation map.
-            let embedding_incarnation = store
-                .vertex_embedding_incarnation(vid, name)
-                .unwrap_or(op.embedding_incarnation);
-            Ok(VectorEmbeddingSyncOp {
-                index_id: op.index_id,
-                embedding_name_id: op.embedding_name_id,
-                subject: op.subject,
-                embedding_incarnation,
-                embedding_version: record.version,
-                encoding: record.encoding,
-                dims: record.dims,
-                metric: op.metric,
-                bytes: record.bytes,
-                remove: false,
-            })
-        }
-        None => {
-            // The incarnation high-water mark survives the canonical remove, so it is the deleted
-            // incarnation. Fall back to the op's stamped incarnation if the identity was never
-            // written (e.g. a pre-Slice-4 journal entry).
-            let embedding_incarnation = store
-                .vertex_embedding_incarnation(vid, name)
-                .unwrap_or(op.embedding_incarnation);
-            Ok(VectorEmbeddingSyncOp {
-                index_id: op.index_id,
-                embedding_name_id: op.embedding_name_id,
-                subject: op.subject,
-                embedding_incarnation,
-                embedding_version: RECONCILE_TOMBSTONE_VERSION,
-                encoding: op.encoding,
-                dims: op.dims,
-                metric: op.metric,
-                bytes: Vec::new(),
-                remove: true,
-            })
-        }
+        Some(record) => Ok(VectorEmbeddingSyncOp {
+            index_id: op.index_id,
+            embedding_name_id: op.embedding_name_id,
+            subject: op.subject,
+            mutation_id: op.mutation_id,
+            encoding: record.encoding,
+            dims: record.dims,
+            metric: op.metric,
+            bytes: record.bytes,
+            remove: false,
+        }),
+        None => Ok(VectorEmbeddingSyncOp {
+            index_id: op.index_id,
+            embedding_name_id: op.embedding_name_id,
+            subject: op.subject,
+            mutation_id: op.mutation_id,
+            encoding: op.encoding,
+            dims: op.dims,
+            metric: op.metric,
+            bytes: Vec::new(),
+            remove: true,
+        }),
     }
 }
 
@@ -878,9 +861,8 @@ mod tests {
     struct RecordingVectorCanister {
         upserts: AtomicUsize,
         removes: AtomicUsize,
-        last_remove_version: AtomicU64,
-        last_remove_incarnation: AtomicU64,
-        last_upsert_incarnation: AtomicU64,
+        last_remove_mutation_id: AtomicU64,
+        last_upsert_mutation_id: AtomicU64,
         last_upsert_metric: std::sync::Mutex<VectorMetric>,
     }
 
@@ -889,9 +871,8 @@ mod tests {
             Self {
                 upserts: AtomicUsize::new(0),
                 removes: AtomicUsize::new(0),
-                last_remove_version: AtomicU64::new(0),
-                last_remove_incarnation: AtomicU64::new(0),
-                last_upsert_incarnation: AtomicU64::new(0),
+                last_remove_mutation_id: AtomicU64::new(0),
+                last_upsert_mutation_id: AtomicU64::new(0),
                 last_upsert_metric: std::sync::Mutex::new(VectorMetric::L2Squared),
             }
         }
@@ -904,8 +885,8 @@ mod tests {
             op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
         ) -> Result<(), PlanQueryError> {
             self.upserts.fetch_add(1, Ordering::SeqCst);
-            self.last_upsert_incarnation
-                .store(op.embedding_incarnation, Ordering::SeqCst);
+            self.last_upsert_mutation_id
+                .store(op.mutation_id, Ordering::SeqCst);
             *self.last_upsert_metric.lock().unwrap() = op.metric;
             Ok(())
         }
@@ -915,10 +896,8 @@ mod tests {
             op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
         ) -> Result<(), PlanQueryError> {
             self.removes.fetch_add(1, Ordering::SeqCst);
-            self.last_remove_version
-                .store(op.embedding_version, Ordering::SeqCst);
-            self.last_remove_incarnation
-                .store(op.embedding_incarnation, Ordering::SeqCst);
+            self.last_remove_mutation_id
+                .store(op.mutation_id, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -975,8 +954,7 @@ mod tests {
                     shard_id: ShardId::new(0),
                     vertex_id,
                 },
-                embedding_incarnation: 1,
-                embedding_version: 1,
+                mutation_id: 1,
                 encoding: VectorEncoding::F32,
                 dims: 1,
                 metric: VectorMetric::L2Squared,
@@ -998,8 +976,7 @@ mod tests {
                     shard_id: ShardId::new(0),
                     vertex_id,
                 },
-                embedding_incarnation: 1,
-                embedding_version: 1,
+                mutation_id: 1,
                 encoding: VectorEncoding::F32,
                 dims: 1,
                 metric: VectorMetric::Cosine,
@@ -1022,6 +999,7 @@ mod tests {
                         VectorEncoding::F32,
                         1,
                         vec![0, 0, 0, 0],
+                        1,
                     )
                     .expect("set embedding");
                 graph.derived_index_outbox_append(17, [vector_upsert_op(vertex_id)]);
@@ -1053,6 +1031,7 @@ mod tests {
                         VectorEncoding::F32,
                         1,
                         vec![0, 0, 0, 0],
+                        1,
                     )
                     .expect("set embedding");
             }
@@ -1063,9 +1042,9 @@ mod tests {
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 2);
             assert_eq!(vector.removes.load(Ordering::SeqCst), 0);
             assert_eq!(
-                vector.last_upsert_incarnation.load(Ordering::SeqCst),
+                vector.last_upsert_mutation_id.load(Ordering::SeqCst),
                 1,
-                "reconcile re-derives the canonical incarnation"
+                "reconcile preserves the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());
         });
@@ -1087,14 +1066,9 @@ mod tests {
                 "stale upsert reconciled to a remove"
             );
             assert_eq!(
-                vector.last_remove_version.load(Ordering::SeqCst),
-                u64::MAX,
-                "canonical-wins remove uses an authoritative tombstone clock, not the stale op version"
-            );
-            assert_eq!(
-                vector.last_remove_incarnation.load(Ordering::SeqCst),
+                vector.last_remove_mutation_id.load(Ordering::SeqCst),
                 1,
-                "reconcile remove carries the deleted incarnation so it cannot tombstone a newer reinsert"
+                "reconcile remove carries the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());
         });
@@ -1109,11 +1083,11 @@ mod tests {
             // Delete + reinsert bumps the canonical incarnation to 2 after the stale op (stamped
             // incarnation 1) was journaled.
             graph
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0])
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0], 1)
                 .expect("first insert");
-            graph.remove_vertex_embedding(vid, name).expect("remove");
+            graph.remove_vertex_embedding(vid, name, 1).expect("remove");
             graph
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0])
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0], 1)
                 .expect("reinsert");
             graph.repair_journal_append(0, [vector_upsert_op(1)]);
 
@@ -1122,9 +1096,9 @@ mod tests {
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 1);
             assert_eq!(
-                vector.last_upsert_incarnation.load(Ordering::SeqCst),
-                2,
-                "the stale replay cannot regress the clock below the live reinsert incarnation"
+                vector.last_upsert_mutation_id.load(Ordering::SeqCst),
+                1,
+                "reconcile preserves the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());
         });
@@ -1187,7 +1161,7 @@ mod tests {
             let vid = VertexId::from(1u32);
             let name = EmbeddingNameId::from_raw(1);
             graph
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0])
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0], 1)
                 .expect("seed canonical embedding");
             graph.repair_journal_append(0, [vector_cosine_upsert_op(1)]);
 

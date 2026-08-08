@@ -1,6 +1,6 @@
 //! `vector_upsert` / `vector_remove` over the degenerate `ivf_flat` page store.
 //!
-//! Idempotence is decided **only** by `embedding_version` against the retained subject clock
+//! Idempotence is decided **only** by `mutation_id` against the retained subject clock
 //! (`VECTOR_SUBJECT_TO_ID`), never by comparing stored bytes — except the single
 //! same-version-different-payload conflict guard on a live row. See ADR 0031 Slice 2.
 
@@ -231,8 +231,8 @@ impl VectorCanisterStore {
         }
     }
 
-    /// Applies an upsert, ordered by the pair `(embedding_incarnation, embedding_version)` against
-    /// the retained subject clock (ADR 0031 Slice 4):
+    /// Applies an upsert, ordered by the single `mutation_id` stamp against the retained subject
+    /// clock (ADR 0064 §5):
     ///
     /// - **Older incarnation** (`op.inc < clock.inc`): stale no-op — a stale replay can never
     ///   resurrect or mutate a subject whose identity has already moved on.
@@ -241,10 +241,9 @@ impl VectorCanisterStore {
     ///   canonical store allocates on each delete/reinsert. Any live slot of the older incarnation is
     ///   tombstoned first so it cannot orphan.
     /// - **Same incarnation** (`op.inc == clock.inc`): version rules within the incarnation. If the
-    ///   subject is already deleted at this incarnation the upsert is a stale replay (no-op, since a
-    ///   genuine reinsert carries a greater incarnation). On a live subject: stale `<` no-op; `==`
-    ///   identical no-op / different `EmbeddingVersionConflict`; `>` appends a new slot reusing the
-    ///   live `VectorId`.
+    ///   subject is already deleted at this stamp the upsert is a stale replay (no-op, since a
+    ///   genuine reinsert carries a greater stamp). On a live subject: stale `<` no-op; `==`
+    ///   identical no-op / different `MutationStampConflict`; `>` appends a new slot.
     pub fn vector_upsert(
         &self,
         caller: Principal,
@@ -272,53 +271,13 @@ impl VectorCanisterStore {
             return Ok(());
         };
 
-        match op.embedding_incarnation.cmp(&entry.embedding_incarnation) {
-            std::cmp::Ordering::Less => Ok(()), // stale older-incarnation replay: no-op
+        match op.mutation_id.cmp(&entry.stamp) {
+            std::cmp::Ordering::Less => Ok(()), // stale replay: no-op
             std::cmp::Ordering::Greater => {
-                // Fresh incarnation: resurrect with a fresh slot. Tombstone any live slot of
-                // the older incarnation (active, and the shadow while dual-writing) so it does not
-                // orphan.
-                if !entry.deleted {
-                    if let Some(active_slot) = entry.current_slot_for(active) {
-                        self.tombstone_slot(op.index_id, active_slot);
-                    }
-                    if let RebuildMutationMode::DualWrite { .. } = mode
-                        && let Some(shadow_slot) = entry.shadow_slot
-                    {
-                        self.tombstone_slot(op.index_id, shadow_slot);
-                    }
-                }
-                self.insert_new_subject(op, &def, mode, key)?;
-                Ok(())
-            }
-            std::cmp::Ordering::Equal => {
-                if entry.deleted {
-                    // Same incarnation already tombstoned: a genuine reinsert would carry a greater
-                    // incarnation, so this is a stale replay.
-                    return Ok(());
-                }
-                let clock = entry.stored_embedding_version;
-                if op.embedding_version < clock {
-                    return Ok(()); // stale replay within the live incarnation
-                }
-                if op.embedding_version == clock {
-                    let slot = entry
-                        .current_slot_for(active)
-                        .expect("live entry has a slot");
-                    let stored = self.read_slot_bytes(op.index_id, slot).unwrap_or_default();
-                    if stored == op.bytes {
-                        // Pure idempotent no-op: nothing changes. During `Cleaning` this intentionally
-                        // does *not* collapse `shadow_slot -> slot` (collapse-on-touch only applies to
-                        // state-changing mutations); search stays correct via `current_slot_for` and
-                        // the subject is collapsed later by `cleanup_step`.
-                        return Ok(());
-                    }
-                    return Err(VectorCanisterError::EmbeddingVersionConflict);
-                }
-                // newer version within the live incarnation: append a new slot.
-                let old_slot = entry
-                    .current_slot_for(active)
-                    .expect("live entry has a slot");
+                // Newer stamp: append a fresh slot (and shadow while dual-writing) FIRST (fallible),
+                // then tombstone any live slot of the older stamp (infallible), then commit. This
+                // preserves the write-then-commit atomicity: a failed shadow append leaves the old
+                // slot live.
                 let active_partition = self.active_partition(&def, op.index_id, &op.bytes);
                 let new_slot = self.append_slot(
                     op.index_id,
@@ -328,14 +287,6 @@ impl VectorCanisterStore {
                     op.subject,
                     &op.bytes,
                 )?;
-                // Append the shadow mirror (while dual-writing) BEFORE any tombstone / id-map /
-                // subject-map commit. `append_slot` is the only fallible step (slab `grow`), so doing
-                // both appends first means a failed shadow grow returns `Err` with the subject clock
-                // and id map still pointing at the old, valid live slot — never at a tombstoned slot
-                // or a missing shadow row. On shadow failure we also tombstone the just-appended
-                // active row, so the residual is a tombstoned dead row rather than a live-counted
-                // orphan that would inflate `VectorPageMeta.live_count` / `PartitionHead.live_len`
-                // (and thus partition-health accounting).
                 let shadow_slot = match mode {
                     RebuildMutationMode::DualWrite {
                         target,
@@ -365,21 +316,23 @@ impl VectorCanisterStore {
                     }
                     RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
                 };
-                // All fallible appends succeeded; the remaining mutations are infallible. Tombstone
-                // the superseded slots (active, and the old shadow while dual-writing — collapse to
-                // shadow = None otherwise so a `Cleaning`-window touch normalizes to the target slot).
-                self.tombstone_slot(op.index_id, old_slot);
-                if let RebuildMutationMode::DualWrite { .. } = mode
-                    && let Some(old_shadow) = entry.shadow_slot
-                {
-                    self.tombstone_slot(op.index_id, old_shadow);
+                // Infallible: tombstone the superseded live slots (active, and the old shadow while
+                // dual-writing).
+                if !entry.deleted {
+                    if let Some(active_slot) = entry.current_slot_for(active) {
+                        self.tombstone_slot(op.index_id, active_slot);
+                    }
+                    if let RebuildMutationMode::DualWrite { .. } = mode
+                        && let Some(old_shadow) = entry.shadow_slot
+                    {
+                        self.tombstone_slot(op.index_id, old_shadow);
+                    }
                 }
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
                         SubjectMapEntry {
-                            embedding_incarnation: op.embedding_incarnation,
-                            stored_embedding_version: op.embedding_version,
+                            stamp: op.mutation_id,
                             deleted: false,
                             slot: Some(new_slot),
                             shadow_slot,
@@ -387,6 +340,26 @@ impl VectorCanisterStore {
                     )
                 });
                 Ok(())
+            }
+            std::cmp::Ordering::Equal => {
+                if entry.deleted {
+                    // Same stamp already tombstoned: a genuine reinsert would carry a greater stamp,
+                    // so this is a stale replay.
+                    return Ok(());
+                }
+                // Same stamp on a live subject: idempotent no-op if the bytes match, else a conflict.
+                let slot = entry
+                    .current_slot_for(active)
+                    .expect("live entry has a slot");
+                let stored = self.read_slot_bytes(op.index_id, slot).unwrap_or_default();
+                if stored == op.bytes {
+                    // Pure idempotent no-op: nothing changes. During `Cleaning` this intentionally
+                    // does *not* collapse `shadow_slot -> slot` (collapse-on-touch only applies to
+                    // state-changing mutations); search stays correct via `current_slot_for` and
+                    // the subject is collapsed later by `cleanup_step`.
+                    return Ok(());
+                }
+                Err(VectorCanisterError::MutationStampConflict)
             }
         }
     }
@@ -437,8 +410,7 @@ impl VectorCanisterStore {
             m.insert(
                 key,
                 SubjectMapEntry {
-                    embedding_incarnation: op.embedding_incarnation,
-                    stored_embedding_version: op.embedding_version,
+                    stamp: op.mutation_id,
                     deleted: false,
                     slot: Some(slot),
                     shadow_slot,
@@ -448,8 +420,8 @@ impl VectorCanisterStore {
         Ok(())
     }
 
-    /// Applies a remove, ordered by the pair `(embedding_incarnation, embedding_version)` against the
-    /// retained subject clock (ADR 0031 Slice 4):
+    /// Applies a remove, ordered by the single `mutation_id` stamp against the retained subject
+    /// clock (ADR 0064 §5):
     ///
     /// - **Older incarnation** (`op.inc < clock.inc`): stale no-op. This closes the reverse-orphan
     ///   race — a late repair-drain remove for a deleted incarnation can never tombstone a newer
@@ -464,7 +436,7 @@ impl VectorCanisterStore {
     /// incarnation resurrects (see [`Self::vector_upsert`]). Stale-replay protection is the
     /// incarnation fence plus the graph repair-drain's canonical re-derivation
     /// ([`crate::index::repair_journal`]); a canonical-wins removal arrives with an authoritative
-    /// (maximum) `embedding_version` so it supersedes any live slot of the same incarnation.
+    /// (maximum) `mutation_id` so it supersedes any live slot of the same stamp.
     pub fn vector_remove(
         &self,
         caller: Principal,
@@ -486,8 +458,7 @@ impl VectorCanisterStore {
                 m.insert(
                     key,
                     SubjectMapEntry {
-                        embedding_incarnation: op.embedding_incarnation,
-                        stored_embedding_version: op.embedding_version,
+                        stamp: op.mutation_id,
                         deleted: true,
                         slot: None,
                         shadow_slot: None,
@@ -503,12 +474,11 @@ impl VectorCanisterStore {
             .and_then(|a| entry.current_slot_for(a))
             .or(entry.slot);
 
-        match op.embedding_incarnation.cmp(&entry.embedding_incarnation) {
-            std::cmp::Ordering::Less => Ok(()), // stale older-incarnation remove: no-op (fenced)
+        match op.mutation_id.cmp(&entry.stamp) {
+            std::cmp::Ordering::Less => Ok(()), // stale remove: no-op (fenced)
             std::cmp::Ordering::Greater => {
-                // Authoritative remove for a newer, as-yet-unseen incarnation: tombstone any live
-                // slot (active, and the shadow while dual-writing) and record the deleted clock at
-                // the op's incarnation.
+                // Authoritative remove for a newer stamp: tombstone any live slot (active, and the
+                // shadow while dual-writing) and record the deleted clock at the op's stamp.
                 if !entry.deleted {
                     if let Some(slot) = active_live_slot {
                         self.tombstone_slot(op.index_id, slot);
@@ -523,8 +493,7 @@ impl VectorCanisterStore {
                     m.insert(
                         key,
                         SubjectMapEntry {
-                            embedding_incarnation: op.embedding_incarnation,
-                            stored_embedding_version: op.embedding_version,
+                            stamp: op.mutation_id,
                             deleted: true,
                             slot: None,
                             shadow_slot: None,
@@ -534,22 +503,12 @@ impl VectorCanisterStore {
                 Ok(())
             }
             std::cmp::Ordering::Equal => {
-                let clock = entry.stored_embedding_version;
-                if op.embedding_version < clock {
-                    return Ok(()); // stale repair replay after a newer upsert
-                }
                 if entry.deleted {
-                    if op.embedding_version > clock {
-                        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                            let mut e = m.get(&key).expect("entry present");
-                            e.stored_embedding_version = op.embedding_version;
-                            m.insert(key, e);
-                        });
-                    }
+                    // Same stamp already tombstoned: no-op.
                     return Ok(());
                 }
-                // live, op.embedding_version >= clock: tombstone the active slot (and shadow while
-                // dual-writing).
+                // Same stamp on a live subject: tombstone the active slot (and shadow while
+                // dual-writing) and record the deleted clock.
                 let slot = active_live_slot.expect("live entry has a slot");
                 self.tombstone_slot(op.index_id, slot);
                 if let RebuildMutationMode::DualWrite { .. } = mode
@@ -561,8 +520,7 @@ impl VectorCanisterStore {
                     m.insert(
                         key,
                         SubjectMapEntry {
-                            embedding_incarnation: op.embedding_incarnation,
-                            stored_embedding_version: op.embedding_version,
+                            stamp: op.mutation_id,
                             deleted: true,
                             slot: None,
                             shadow_slot: None,

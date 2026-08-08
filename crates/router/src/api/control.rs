@@ -378,12 +378,16 @@ async fn ingest_vertex_embeddings(
             .iter()
             .find(|s| s.shard_id == global_id.shard_id)
             .ok_or(RouterError::ShardNotRegistered)?;
+        // The Router issues the per-shard mutation sequence and passes it to the graph (ADR 0064
+        // §5/§6); the graph uses it as the vector dispatch stamp.
+        let mutation_id = store.allocate_mutation_id()?;
 
         by_canister.entry(shard.graph_canister).or_default().push((
             VertexEmbeddingIngestionArgs {
                 local_vertex_id: global_id.local_vertex_id,
                 spec,
                 values: item.values,
+                mutation_id,
             },
             item_index,
         ));

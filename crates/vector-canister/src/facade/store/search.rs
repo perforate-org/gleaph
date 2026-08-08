@@ -1,8 +1,7 @@
 //! Read-only `ivf_flat` top-k search (ADR 0031 Slice 5 exact scan + Slice 6 partition-page scan).
 //!
 //! Two read paths share one freshness contract — `VECTOR_SUBJECT_TO_ID` is the source of truth for
-//! which subjects are live, at which slot, and at which `(embedding_incarnation,
-//! stored_embedding_version)` clock:
+//! which subjects are live, at which slot, and at which `mutation_id` stamp:
 //!
 //! - **Exact subject-map scan** (Slice 5): walk every live subject of the index and score its
 //!   current slot. Used when the index is degenerate (`nlist <= 1`) or its centroids are not ready.
@@ -137,8 +136,7 @@ pub(super) fn encode_f32(vector: &[f32]) -> Vec<u8> {
 struct Candidate {
     distance: f32,
     subject: VectorSubject,
-    embedding_incarnation: u64,
-    embedding_version: u64,
+    mutation_id: u64,
 }
 
 impl Ord for Candidate {
@@ -179,8 +177,7 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
         .map(|c| VectorSearchHit {
             subject: c.subject,
             distance: c.distance,
-            embedding_incarnation: c.embedding_incarnation,
-            embedding_version: c.embedding_version,
+            mutation_id: c.mutation_id,
         })
         .collect();
     VectorSearchResult { hits }
@@ -464,8 +461,7 @@ impl VectorCanisterStore {
                         Candidate {
                             distance,
                             subject: *subject,
-                            embedding_incarnation: value.embedding_incarnation,
-                            embedding_version: value.stored_embedding_version,
+                            mutation_id: value.stamp,
                         },
                     );
                 }
@@ -531,8 +527,7 @@ impl VectorCanisterStore {
                         Candidate {
                             distance,
                             subject: key.subject,
-                            embedding_incarnation: value.embedding_incarnation,
-                            embedding_version: value.stored_embedding_version,
+                            mutation_id: value.stamp,
                         },
                     );
                 }
@@ -638,8 +633,7 @@ impl VectorCanisterStore {
         Some(Candidate {
             distance,
             subject,
-            embedding_incarnation: entry.embedding_incarnation,
-            embedding_version: entry.stored_embedding_version,
+            mutation_id: entry.stamp,
         })
     }
 }

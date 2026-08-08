@@ -313,18 +313,13 @@ impl Storable for SlotRef {
 
 /// Subject map row — a durable clock that survives deletion (`VECTOR_SUBJECT_TO_ID`).
 ///
-/// A removed subject keeps `(embedding_incarnation, stored_embedding_version)` so a stale replay
-/// cannot resurrect it and a stale remove cannot tombstone a newer reinsert (ADR 0031 Slice 4). The
-/// clock is the ordered pair: incarnation dominates, version breaks ties within an incarnation.
+/// A removed subject keeps `stamp` (the graph's per-shard `mutation_id`) so a stale replay cannot
+/// resurrect it and a stale remove cannot tombstone a newer reinsert (ADR 0064 §5). The clock is a
+/// single monotonic stamp: `stamp <= clock` is a no-op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SubjectMapEntry {
-    /// Last applied delete-spanning incarnation (ADR 0031 Slice 4). `#[serde(default)]` so any row
-    /// predating the field decodes as `0` (= unset); no such rows exist in production because vector
-    /// dispatch was inert before activation.
-    #[serde(default)]
-    pub embedding_incarnation: u64,
-    /// Last applied canonical version within `embedding_incarnation` (live OR tombstoned).
-    pub stored_embedding_version: u64,
+    /// Last applied graph `mutation_id` (live OR tombstoned).
+    pub stamp: u64,
     /// True once removed; the row is retained as a tombstone clock.
     pub deleted: bool,
     /// `Some` when live; `None` once deleted. Points at the live slot in the **active** index
@@ -622,8 +617,7 @@ mod tests {
     #[test]
     fn subject_entry_storable_roundtrip() {
         let entry = SubjectMapEntry {
-            embedding_incarnation: 4,
-            stored_embedding_version: 3,
+            stamp: 4,
             deleted: false,
             slot: Some(SlotRef {
                 index_version: 1,
@@ -639,36 +633,6 @@ mod tests {
             }),
         };
         assert_eq!(SubjectMapEntry::from_bytes(entry.to_bytes()), entry);
-    }
-
-    /// Pre-Slice-7 `SubjectMapEntry` (no `shadow_slot`) must still decode, defaulting to `None`.
-    /// Encodes the legacy 5-field Candid record shape and asserts forward-compatible decode.
-    #[test]
-    fn subject_entry_pre_slice7_bytes_decode_with_no_shadow_slot() {
-        #[derive(CandidType)]
-        struct LegacySubjectMapEntry {
-            embedding_incarnation: u64,
-            stored_embedding_version: u64,
-            deleted: bool,
-            slot: Option<SlotRef>,
-            vector_id: Option<u64>,
-        }
-        let legacy = LegacySubjectMapEntry {
-            embedding_incarnation: 7,
-            stored_embedding_version: 2,
-            deleted: false,
-            slot: Some(SlotRef {
-                index_version: 1,
-                partition_id: 0,
-                page_id: 0,
-                slot: 4,
-            }),
-            vector_id: Some(9),
-        };
-        let bytes = Encode!(&legacy).expect("encode legacy entry");
-        let decoded = SubjectMapEntry::from_bytes(Cow::Owned(bytes));
-        assert_eq!(decoded.embedding_incarnation, 7);
-        assert_eq!(decoded.shadow_slot, None, "missing field defaults to None");
     }
 
     #[test]
@@ -741,8 +705,7 @@ mod tests {
             slot: 0,
         };
         let entry = SubjectMapEntry {
-            embedding_incarnation: 1,
-            stored_embedding_version: 1,
+            stamp: 1,
             deleted: false,
             slot: Some(active),
             shadow_slot: Some(shadow),

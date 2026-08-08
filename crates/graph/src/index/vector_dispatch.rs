@@ -17,9 +17,13 @@ fn vertex_id_raw(vertex_id: VertexId) -> u32 {
 }
 
 /// Queues an upsert for a just-written canonical vertex embedding, if its name is indexed. Reads the
-/// canonical record back to source the authoritative `embedding_incarnation`, `embedding_version`,
-/// `encoding`, `dims`, and bytes for the op.
-pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: EmbeddingNameId) {
+/// canonical record back to source the authoritative `encoding`, `dims`, and bytes for the op. The
+/// `mutation_id` is the Router-issued per-shard mutation sequence (ADR 0064 §5/§6).
+pub(crate) fn dispatch_vertex_upsert(
+    vertex_id: VertexId,
+    embedding_name_id: EmbeddingNameId,
+    mutation_id: u64,
+) {
     let Some(spec) = crate::index::vector_catalog_context::spec_for(embedding_name_id.raw()) else {
         return;
     };
@@ -30,11 +34,6 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
     let Some(record) = store.vertex_embedding(vertex_id, embedding_name_id) else {
         return;
     };
-    // A live record always has an incarnation; a record written before Slice 4 has none, so treat it
-    // as the implicit first incarnation (1).
-    let embedding_incarnation = store
-        .vertex_embedding_incarnation(vertex_id, embedding_name_id)
-        .unwrap_or(1);
     vector_pending::push_vector_op(VectorEmbeddingSyncOp {
         index_id: spec.index_id,
         embedding_name_id: embedding_name_id.raw(),
@@ -42,8 +41,7 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
             shard_id: routing.shard_id,
             vertex_id: vertex_id_raw(vertex_id),
         },
-        embedding_incarnation,
-        embedding_version: record.version,
+        mutation_id,
         encoding: record.encoding,
         dims: record.dims,
         metric: spec.metric,
@@ -53,14 +51,12 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
 }
 
 /// Queues a remove for a just-deleted canonical vertex embedding, if its name is indexed. The op
-/// carries the deleted record's `(embedding_incarnation, embedding_version)` so the canister's
-/// incarnation-fenced clock supersedes a stale same-incarnation replay without tombstoning a newer
-/// reinsert (`bytes` is empty on remove).
+/// carries the `mutation_id` so the canister's stamp-fenced clock supersedes a stale same-stamp
+/// replay without tombstoning a newer reinsert (`bytes` is empty on remove).
 pub(crate) fn dispatch_vertex_remove(
     vertex_id: VertexId,
     embedding_name_id: EmbeddingNameId,
-    embedding_incarnation: u64,
-    embedding_version: u64,
+    mutation_id: u64,
     encoding: VectorEncoding,
     dims: u16,
 ) {
@@ -77,8 +73,7 @@ pub(crate) fn dispatch_vertex_remove(
             shard_id: routing.shard_id,
             vertex_id: vertex_id_raw(vertex_id),
         },
-        embedding_incarnation,
-        embedding_version,
+        mutation_id,
         encoding,
         dims,
         metric: spec.metric,
@@ -139,13 +134,13 @@ mod tests {
             let name = EmbeddingNameId::from_raw(1);
             let _guard = vector_catalog_context::enter_indexed(&[spec(1)]);
             store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
                 .expect("set embedding");
             let ops = vector_pending::pending_snapshot();
             assert_eq!(ops.len(), 1);
             assert_eq!(ops[0].index_id, 7);
             assert_eq!(ops[0].embedding_name_id, 1);
-            assert_eq!(ops[0].embedding_version, 1);
+            assert_eq!(ops[0].mutation_id, 1);
             assert!(!ops[0].remove);
             assert_eq!(ops[0].bytes, vec_bytes(&[1.0, 2.0]));
         });
@@ -159,7 +154,7 @@ mod tests {
             let _guard =
                 vector_catalog_context::enter_indexed(&[spec_with_metric(1, VectorMetric::Cosine)]);
             store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
                 .expect("set embedding");
             let ops = vector_pending::pending_snapshot();
             assert_eq!(ops.len(), 1);
@@ -175,7 +170,7 @@ mod tests {
             // Catalog registers a different name → this write is not indexed.
             let _guard = vector_catalog_context::enter_indexed(&[spec(1)]);
             store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
                 .expect("set embedding");
             assert!(vector_pending::pending_snapshot().is_empty());
         });
@@ -187,7 +182,7 @@ mod tests {
             let vid = store.insert_vertex().expect("vertex");
             let name = EmbeddingNameId::from_raw(1);
             store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
                 .expect("set embedding");
             assert!(vector_pending::pending_snapshot().is_empty());
         });
@@ -200,15 +195,17 @@ mod tests {
             let name = EmbeddingNameId::from_raw(1);
             let _guard = vector_catalog_context::enter_indexed(&[spec(1)]);
             store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
                 .expect("set embedding");
             vector_pending::clear_pending();
-            store.remove_vertex_embedding(vid, name).expect("removed");
+            store
+                .remove_vertex_embedding(vid, name, 1)
+                .expect("removed");
             let ops = vector_pending::pending_snapshot();
             assert_eq!(ops.len(), 1);
             assert!(ops[0].remove);
             assert!(ops[0].bytes.is_empty());
-            assert_eq!(ops[0].embedding_version, 1);
+            assert_eq!(ops[0].mutation_id, 1);
         });
     }
 }

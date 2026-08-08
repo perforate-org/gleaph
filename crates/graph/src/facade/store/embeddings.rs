@@ -25,11 +25,16 @@ impl GraphStore {
         encoding: VectorEncoding,
         dims: u16,
         bytes: Vec<u8>,
+        mutation_id: u64,
     ) -> Result<u64, GraphStoreError> {
         let write = VERTEX_EMBEDDINGS
             .with_borrow_mut(|store| store.set(vertex_id, embedding_name_id, encoding, dims, bytes))
             .map_err(GraphStoreError::from)?;
-        crate::index::vector_dispatch::dispatch_vertex_upsert(vertex_id, embedding_name_id);
+        crate::index::vector_dispatch::dispatch_vertex_upsert(
+            vertex_id,
+            embedding_name_id,
+            mutation_id,
+        );
         Ok(write.version)
     }
 
@@ -61,15 +66,15 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         embedding_name_id: EmbeddingNameId,
+        mutation_id: u64,
     ) -> Option<StoredEmbedding> {
         let removed =
             VERTEX_EMBEDDINGS.with_borrow_mut(|store| store.remove(vertex_id, embedding_name_id));
-        if let Some((record, incarnation)) = &removed {
+        if let Some((record, _incarnation)) = &removed {
             crate::index::vector_dispatch::dispatch_vertex_remove(
                 vertex_id,
                 embedding_name_id,
-                *incarnation,
-                record.version,
+                mutation_id,
                 record.encoding,
                 record.dims,
             );
@@ -78,18 +83,17 @@ impl GraphStore {
     }
 
     /// Removes every embedding owned by `vertex_id` (vertex-delete sidecar clear).
-    pub(super) fn commit_clear_vertex_embeddings(&self, vertex_id: VertexId) {
+    pub(super) fn commit_clear_vertex_embeddings(&self, vertex_id: VertexId, mutation_id: u64) {
         let names: Vec<EmbeddingNameId> =
             VERTEX_EMBEDDINGS.with_borrow(|store| store.names_for(vertex_id));
         for embedding_name_id in names {
             let removed = VERTEX_EMBEDDINGS
                 .with_borrow_mut(|store| store.remove(vertex_id, embedding_name_id));
-            if let Some((record, incarnation)) = removed {
+            if let Some((record, _incarnation)) = removed {
                 crate::index::vector_dispatch::dispatch_vertex_remove(
                     vertex_id,
                     embedding_name_id,
-                    incarnation,
-                    record.version,
+                    mutation_id,
                     record.encoding,
                     record.dims,
                 );
@@ -114,7 +118,7 @@ mod tests {
 
         assert_eq!(
             store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
                 .expect("set embedding"),
             1
         );
@@ -122,7 +126,7 @@ mod tests {
             store.vertex_embedding(vid, name).expect("present").version,
             1
         );
-        assert!(store.remove_vertex_embedding(vid, name).is_some());
+        assert!(store.remove_vertex_embedding(vid, name, 1).is_some());
         assert!(store.vertex_embedding(vid, name).is_none());
     }
 
@@ -137,6 +141,7 @@ mod tests {
                 VectorEncoding::F32,
                 1,
                 vec_bytes(&[1.0]),
+                1,
             )
             .expect_err("reserved name rejected");
         assert!(matches!(err, GraphStoreError::Embedding(_)));
@@ -150,10 +155,10 @@ mod tests {
         let two = EmbeddingNameId::from_raw(2);
 
         store
-            .set_vertex_embedding(vid, one, VectorEncoding::F32, 1, vec_bytes(&[1.0]))
+            .set_vertex_embedding(vid, one, VectorEncoding::F32, 1, vec_bytes(&[1.0]), 1)
             .expect("set embedding one");
         store
-            .set_vertex_embedding(vid, two, VectorEncoding::F32, 2, vec_bytes(&[2.0, 3.0]))
+            .set_vertex_embedding(vid, two, VectorEncoding::F32, 2, vec_bytes(&[2.0, 3.0]), 1)
             .expect("set embedding two");
 
         store.delete_vertex(vid).expect("delete detached vertex");
