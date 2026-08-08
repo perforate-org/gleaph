@@ -1893,6 +1893,20 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
             args.spec.encoding
         ));
     }
+    // ADR 0064 §Router catalog: label membership is the graph-side upper bound for vector presence.
+    // The vertex must carry at least one of the index's creation-fixed labels; the vector canister's
+    // subject map is the exact authority.
+    if !args
+        .spec
+        .labels
+        .iter()
+        .any(|label| store.vertex_has_label(vertex_id, vertex, *label))
+    {
+        return Err(format!(
+            "vertex {} has none of the labels required by embedding name {}",
+            args.local_vertex_id, args.spec.embedding_name_id
+        ));
+    }
     // Consume the mutation_id as a phantom stamp: no DML mutation, no canonical write, no journal
     // entry, no outbox/derived-index watermark advance. The vector canister orders by this stamp.
     Ok(args.mutation_id)
@@ -4015,6 +4029,7 @@ mod vertex_embedding_ingestion_tests {
             metric: VectorMetric::L2Squared,
             encoding: VectorEncoding::F32,
             dims,
+            labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
         }
     }
 
@@ -4047,6 +4062,14 @@ mod vertex_embedding_ingestion_tests {
         let vid = insert_vertex();
         clear_journals();
         let store = GraphStore::new();
+        // The spec's label set requires the vertex to carry the label (ADR 0064 §Router catalog).
+        store
+            .set_vertex_labels(
+                vid,
+                store.vertex(vid).expect("vertex"),
+                [gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+            )
+            .expect("set label");
         let stamp = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(1, 2),
@@ -4065,6 +4088,27 @@ mod vertex_embedding_ingestion_tests {
             crate::index::vector_pending::pending_snapshot().is_empty(),
             "stamp_embedding must not dispatch a derived vector op"
         );
+    }
+
+    #[test]
+    fn stamp_embedding_rejects_vertex_without_required_label() {
+        setup_routing();
+        let vid = insert_vertex();
+        clear_journals();
+        // The vertex has no labels, but the spec's label set requires one (ADR 0064 §Router catalog:
+        // label membership is the graph-side upper bound for vector presence).
+        let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
+            local_vertex_id: local_vertex_id_raw(vid),
+            spec: spec(1, 2),
+            values: vec![1.0, 2.0],
+            mutation_id: 42,
+        }))
+        .expect_err("vertex without the required label rejected");
+        assert!(
+            err.contains("none of the labels"),
+            "unexpected error: {err}"
+        );
+        assert!(GraphStore::new().repair_journal_is_empty());
     }
 
     #[test]

@@ -22,7 +22,7 @@ use std::borrow::Cow;
 use std::ops::Bound;
 
 use candid::{CandidType, Decode, Encode, Principal};
-use gleaph_graph_kernel::entry::{EmbeddingNameId, GraphId};
+use gleaph_graph_kernel::entry::{EmbeddingNameId, GraphId, VertexLabelId};
 use gleaph_graph_kernel::vector_index::{
     IndexedEmbeddingCatalog, IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
 };
@@ -122,10 +122,13 @@ pub(crate) fn activation_block_reason(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) struct VectorIndexDefRecord {
     pub index_id: u32,
     pub embedding_name_id: EmbeddingNameId,
+    /// Creation-fixed label set the index is scoped to (ADR 0064 §Router catalog); change = drop +
+    /// recreate. The graph uses it as the label-membership upper bound for vector presence.
+    pub labels: Vec<VertexLabelId>,
     pub kind: VectorIndexKind,
     pub metric: VectorMetric,
     pub encoding: VectorEncoding,
@@ -176,7 +179,8 @@ impl Storable for VectorIndexDefRecord {
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Owned(
-            Encode!(&VectorIndexDefStableRecord::V1(*self)).expect("encode vector index def"),
+            Encode!(&VectorIndexDefStableRecord::V1(self.clone()))
+                .expect("encode vector index def"),
         )
     }
 
@@ -244,6 +248,27 @@ pub(crate) fn preflight_register(
     Ok(RegisterPreflight::Proceed)
 }
 
+/// Resolve a registration's label strings to `VertexLabelId`s (ADR 0064 §Router catalog).
+///
+/// Rejects an empty label set and fails closed on an unknown label, so a rejected registration never
+/// allocates an embedding name or a def. `admin_register_vector_index` calls this after preflight so a
+/// conflict/no-op reports its own error instead of a label-resolution error.
+pub(crate) fn resolve_vector_index_labels(
+    store: &crate::facade::store::RouterStore,
+    graph_id: GraphId,
+    labels: &[String],
+) -> Result<Vec<VertexLabelId>, RouterError> {
+    if labels.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "labels must not be empty".to_owned(),
+        ));
+    }
+    labels
+        .iter()
+        .map(|name| store.lookup_vertex_label_id(graph_id, name))
+        .collect()
+}
+
 /// Register a new vector-index definition. The embedding is identified by an already-interned
 /// [`EmbeddingNameId`] (resolved by name via [`super::embedding_name_catalog`]). Validation goes
 /// through [`preflight_register`] (anonymous target rejected, conflicts/no-ops handled); the
@@ -252,6 +277,7 @@ pub(crate) fn register_vector_index(
     graph_id: GraphId,
     index_id: u32,
     embedding_name_id: EmbeddingNameId,
+    labels: Vec<VertexLabelId>,
     kind: VectorIndexKind,
     metric: VectorMetric,
     encoding: VectorEncoding,
@@ -288,6 +314,7 @@ pub(crate) fn register_vector_index(
     let def = VectorIndexDefRecord {
         index_id,
         embedding_name_id,
+        labels,
         kind,
         metric,
         encoding,
@@ -520,6 +547,7 @@ pub(crate) fn to_indexed_embedding_catalog(
                 metric: def.metric,
                 encoding: def.encoding,
                 dims: def.dims,
+                labels: def.labels.clone(),
             })
             .collect()
     });
@@ -561,6 +589,7 @@ mod tests {
             graph,
             index_id,
             EmbeddingNameId::from_raw(index_id as u16),
+            vec![VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             VectorMetric::L2Squared,
             VectorEncoding::F32,
@@ -585,6 +614,7 @@ mod tests {
         let record = VectorIndexDefRecord {
             index_id: 9,
             embedding_name_id: EmbeddingNameId::from_raw(3),
+            labels: vec![VertexLabelId::from_raw(1), VertexLabelId::from_raw(2)],
             kind: VectorIndexKind::IvfFlat,
             metric: VectorMetric::L2Squared,
             encoding: VectorEncoding::F32,
@@ -595,7 +625,7 @@ mod tests {
             activation_state: VectorIndexActivationState::DispatchBlocked,
         };
         assert_eq!(
-            VectorIndexDefRecord::from_bytes(Cow::Owned(record.into_bytes())),
+            VectorIndexDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes())),
             record
         );
     }
@@ -663,6 +693,7 @@ mod tests {
                 graph,
                 1,
                 EmbeddingNameId::from_raw(1),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,
@@ -732,6 +763,7 @@ mod tests {
                 graph,
                 1,
                 EmbeddingNameId::from_raw(1),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,
@@ -747,6 +779,7 @@ mod tests {
                 graph,
                 1,
                 EmbeddingNameId::from_raw(1),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,
@@ -766,6 +799,7 @@ mod tests {
                 graph,
                 1,
                 EmbeddingNameId::from_raw(5),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,
@@ -781,6 +815,7 @@ mod tests {
                 graph,
                 2,
                 EmbeddingNameId::from_raw(5),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,
@@ -797,6 +832,7 @@ mod tests {
                 other,
                 2,
                 EmbeddingNameId::from_raw(5),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,
@@ -842,10 +878,15 @@ mod tests {
             to_indexed_embedding_catalog(graph, false).is_empty(),
             "fail-closed: no specs exported while dispatch is not ready"
         );
-        // Ready ⇒ the targeted definition is exported.
+        // Ready ⇒ the targeted definition is exported with its creation-fixed label set.
         let catalog = to_indexed_embedding_catalog(graph, true);
         assert_eq!(catalog.embeddings.len(), 1);
         assert_eq!(catalog.embeddings[0].index_id, 1);
+        assert_eq!(
+            catalog.embeddings[0].labels,
+            vec![VertexLabelId::from_raw(1)],
+            "the spec carries the def's creation-fixed label set"
+        );
     }
 
     #[test]
@@ -914,6 +955,7 @@ mod tests {
                 graph,
                 2,
                 EmbeddingNameId::from_raw(2),
+                vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
                 VectorEncoding::F32,

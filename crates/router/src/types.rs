@@ -1585,6 +1585,8 @@ pub struct RegisterVectorIndexArgs {
     pub embedding_name: String,
     pub index_id: u32,
     pub dims: u16,
+    /// Creation-fixed label set the index is scoped to (ADR 0064 §Router catalog); must be non-empty.
+    pub labels: Vec<String>,
     /// Optional metric; defaults to `L2Squared` if omitted for wire stability.
     pub metric: Option<VectorMetric>,
     /// Optional single dispatch target; rejected if anonymous. Slice 3 stores it as inspect-only

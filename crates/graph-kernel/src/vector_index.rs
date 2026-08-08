@@ -14,6 +14,7 @@
 //! - `index_version` (vector canister): physical index generation; page/partition head keys.
 //! - `generation` (vector canister): slot/entity handle incarnation for append-and-tombstone.
 
+use crate::entry::VertexLabelId;
 use crate::federation::ShardId;
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
@@ -177,9 +178,13 @@ pub struct VectorSyncBatchProgress {
 ///
 /// Slice 2 defines the type only; the graph never persists an indexed-embedding registry. A
 /// dispatch with no installed catalog skips vector sync entirely (production), while tests inject
-/// a catalog via the embedding catalog context.
+/// One indexed embedding name resolved against the Router catalog (ADR 0064 §Router catalog).
+///
+/// `labels` is the creation-fixed label set the index is scoped to; the graph uses it as the
+/// label-membership upper bound for vector presence (the vector canister's subject map is the exact
+/// authority).
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
 )]
 pub struct IndexedEmbeddingSpec {
     pub embedding_name_id: u16,
@@ -188,6 +193,8 @@ pub struct IndexedEmbeddingSpec {
     pub metric: VectorMetric,
     pub encoding: VectorEncoding,
     pub dims: u16,
+    /// Creation-fixed label set the index is scoped to (ADR 0064 §Router catalog).
+    pub labels: Vec<VertexLabelId>,
 }
 
 /// Router-sourced snapshot of which embedding names are indexed (mirrors `IndexedPropertyCatalog`).
@@ -205,8 +212,8 @@ impl IndexedEmbeddingCatalog {
     pub fn spec_for(&self, embedding_name_id: u16) -> Option<IndexedEmbeddingSpec> {
         self.embeddings
             .iter()
-            .copied()
             .find(|spec| spec.embedding_name_id == embedding_name_id)
+            .cloned()
     }
 }
 
@@ -914,6 +921,7 @@ mod tests {
                 metric: VectorMetric::L2Squared,
                 encoding: VectorEncoding::F32,
                 dims: 16,
+                labels: vec![crate::entry::VertexLabelId::from_raw(1)],
             }],
         };
         assert!(!catalog.is_empty());

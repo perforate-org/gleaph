@@ -1067,6 +1067,71 @@ fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
 }
 
 #[test]
+fn lookup_vertex_label_id_fails_closed_on_unknown_label() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    store
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
+        .expect("intern label");
+    // Known label resolves; an unknown label fails closed (the `admin_register_vector_index`
+    // label-resolution path relies on this to reject a registration with an unknown label).
+    assert!(
+        store
+            .lookup_vertex_label_id(tenant_main_graph_id(), "Person")
+            .is_ok()
+    );
+    assert!(matches!(
+        store.lookup_vertex_label_id(tenant_main_graph_id(), "Unknown"),
+        Err(RouterError::NotFound(_))
+    ));
+}
+
+#[test]
+fn resolve_vector_index_labels_rejects_empty_and_unknown() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    store
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
+        .expect("intern label");
+    let graph_id = tenant_main_graph_id();
+
+    // Known label resolves; unknown label fails closed; empty set is rejected (ADR 0064 §Router
+    // catalog: the index is scoped to a non-empty creation-fixed label set).
+    assert_eq!(
+        crate::facade::stable::vector_index_catalog::resolve_vector_index_labels(
+            &store,
+            graph_id,
+            &["Person".to_string()]
+        )
+        .expect("resolve known label"),
+        vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)]
+    );
+    assert!(matches!(
+        crate::facade::stable::vector_index_catalog::resolve_vector_index_labels(
+            &store,
+            graph_id,
+            &["Unknown".to_string()]
+        ),
+        Err(RouterError::NotFound(_))
+    ));
+    assert!(matches!(
+        crate::facade::stable::vector_index_catalog::resolve_vector_index_labels(
+            &store,
+            graph_id,
+            &[]
+        ),
+        Err(RouterError::InvalidArgument(_))
+    ));
+}
+
+#[test]
 fn ordered_catalog_resolution_is_read_only_and_deduplicates_names() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
@@ -4003,6 +4068,7 @@ pub(crate) mod graph_type_catalog_vocabulary {
             graph_id,
             index_id,
             name_id,
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
             gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
             gleaph_graph_kernel::vector_index::VectorEncoding::F32,

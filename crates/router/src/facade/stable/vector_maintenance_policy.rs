@@ -205,6 +205,7 @@ mod tests {
             graph_id,
             index_id,
             EmbeddingNameId::from_raw(index_id as u16),
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             VectorMetric::L2Squared,
             VectorEncoding::F32,

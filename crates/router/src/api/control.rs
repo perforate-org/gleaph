@@ -236,8 +236,9 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
         .target
         .map(|canister| vector_index_catalog::VectorIndexTarget { canister });
     // Preflight (conflict / if-not-exists no-op / anonymous-target rejection) BEFORE interning the
-    // embedding name, so a rejected or no-op registration never allocates a durable EmbeddingNameId
-    // (which would pollute the graph-scoped name catalog and could exhaust the u16 name space).
+    // embedding name or resolving labels, so a rejected or no-op registration never allocates a durable
+    // EmbeddingNameId (which would pollute the graph-scoped name catalog and could exhaust the u16 name
+    // space) and a conflict/no-op reports its own error instead of a label-resolution error.
     if vector_index_catalog::preflight_register(
         graph_id,
         args.index_id,
@@ -247,6 +248,10 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
     {
         return Ok(false);
     }
+    // Resolve each label string to a `VertexLabelId` (rejecting an empty set and failing closed on an
+    // unknown label) before any durable write, so a rejected registration never allocates an embedding
+    // name or a def.
+    let labels = vector_index_catalog::resolve_vector_index_labels(&store, graph_id, &args.labels)?;
     let embedding_name_id =
         embedding_name_catalog::intern_embedding_name(graph_id, &args.embedding_name)?;
     // Slice 3 supports exactly one variant of each physical parameter; the wire stays
@@ -255,6 +260,7 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
         graph_id,
         args.index_id,
         embedding_name_id,
+        labels,
         VectorIndexKind::IvfFlat,
         args.metric.unwrap_or(VectorMetric::L2Squared),
         VectorEncoding::F32,
@@ -341,6 +347,7 @@ async fn ingest_vertex_embeddings(
         metric: def.metric,
         encoding: def.encoding,
         dims: def.dims,
+        labels: def.labels.clone(),
     };
 
     let item_count = args.items.len();
@@ -394,7 +401,7 @@ async fn ingest_vertex_embeddings(
         by_canister.entry(shard.graph_canister).or_default().push((
             VertexEmbeddingIngestionArgs {
                 local_vertex_id: global_id.local_vertex_id,
-                spec,
+                spec: spec.clone(),
                 values: item.values,
                 mutation_id,
             },

@@ -56,6 +56,7 @@ fn register(env: &FederationEnv, target: Principal) {
         embedding_name: EMBEDDING_NAME.to_string(),
         index_id: INDEX_ID,
         dims: DIMS,
+        labels: vec!["User".to_string()],
         metric: Some(VectorMetric::L2Squared),
         target: Some(target),
         if_not_exists: false,

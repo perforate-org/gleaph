@@ -60,6 +60,7 @@ mod tests {
             metric: VectorMetric::L2Squared,
             encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
             dims: 2,
+            labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
         }
     }
 

@@ -79,6 +79,7 @@ fn register_vector_index(env: &FederationEnv, metric: VectorMetric, target: Prin
         embedding_name: EMBEDDING_NAME.to_string(),
         index_id: INDEX_ID,
         dims: DIMS,
+        labels: vec!["Document".to_string()],
         metric: Some(metric),
         target: Some(target),
         if_not_exists: false,

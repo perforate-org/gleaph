@@ -483,6 +483,7 @@ mod tests {
             graph_id,
             5,
             name_id,
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
             gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
             gleaph_graph_kernel::vector_index::VectorEncoding::F32,

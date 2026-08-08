@@ -2469,6 +2469,7 @@ pub fn fully_activate_social_vector_index(
         embedding_name: embedding_name.to_string(),
         index_id,
         dims,
+        labels: vec!["User".to_string()],
         metric: Some(VectorMetric::L2Squared),
         target: Some(vector),
         if_not_exists: false,

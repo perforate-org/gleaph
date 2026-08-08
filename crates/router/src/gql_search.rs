@@ -2989,6 +2989,7 @@ mod tests {
             graph_id,
             1,
             name_id,
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             metric,
             VectorEncoding::F32,

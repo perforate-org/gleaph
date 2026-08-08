@@ -156,6 +156,7 @@ fn dense_embedding_name_allocation_is_isolated_for_rejected_registrations() {
                 embedding_name: embedding_name.to_string(),
                 index_id,
                 dims: DIMS,
+                labels: vec!["User".to_string()],
                 metric: Some(VectorMetric::L2Squared),
                 target: tgt,
                 if_not_exists,

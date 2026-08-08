@@ -2608,6 +2608,7 @@ mod tests {
                     metric: crate::vector_index::VectorMetric::L2Squared,
                     encoding: crate::vector_index::VectorEncoding::F32,
                     dims: 16,
+                    labels: vec![crate::entry::VertexLabelId::from_raw(1)],
                 }],
             }),
             resolved_search_blob: None,
