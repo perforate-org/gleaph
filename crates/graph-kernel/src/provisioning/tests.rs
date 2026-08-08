@@ -8,7 +8,10 @@ fn provisionable_resource_kind_bytes_match_router_fixture() {
         ProvisionableResourceKind::PropertyIndex.into_bytes(),
         vec![1]
     );
-    assert_eq!(ProvisionableResourceKind::VectorIndex.into_bytes(), vec![2]);
+    assert_eq!(
+        ProvisionableResourceKind::VectorCanister.into_bytes(),
+        vec![2]
+    );
     assert_eq!(
         ProvisionableResourceKind::from_bytes(vec![0].into()),
         ProvisionableResourceKind::GraphShard
@@ -19,7 +22,7 @@ fn provisionable_resource_kind_bytes_match_router_fixture() {
     );
     assert_eq!(
         ProvisionableResourceKind::from_bytes(vec![2].into()),
-        ProvisionableResourceKind::VectorIndex
+        ProvisionableResourceKind::VectorCanister
     );
 }
 

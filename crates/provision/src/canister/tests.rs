@@ -1664,7 +1664,7 @@ fn publish_compatible_release(r: ReleaseId) {
         publish_verified_artifact_for_release(CanisterKind::Router, "0.1.0", vec![b"r0"]),
         publish_verified_artifact_for_release(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
         publish_verified_artifact_for_release(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
-        publish_verified_artifact_for_release(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]),
+        publish_verified_artifact_for_release(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
     ];
     release_publish_with_caller(
         gov(),
@@ -1799,7 +1799,7 @@ fn release_install_rejects_unverified_artifact() {
     let prop =
         publish_verified_artifact_for_release(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
     let vector =
-        publish_verified_artifact_for_release(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]);
+        publish_verified_artifact_for_release(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]);
     release_publish_with_caller(
         gov_principal(),
         ReleasePublishArgs {
@@ -1822,7 +1822,7 @@ fn release_install_rejects_unverified_artifact() {
     ProvisionArtifactStore::new().remove_all_chunks(&vector);
 
     let args = ReleaseInstallArgs {
-        target_canister_kind: CanisterKind::VectorIndex,
+        target_canister_kind: CanisterKind::VectorCanister,
         target_canister_id: Some(install_target()),
         install_args: vec![],
         registry_version: 1,

@@ -17,7 +17,7 @@ use std::borrow::Cow;
 pub enum ProvisionableResourceKind {
     GraphShard,
     PropertyIndex,
-    VectorIndex,
+    VectorCanister,
 }
 
 impl Storable for ProvisionableResourceKind {
@@ -48,7 +48,7 @@ impl ProvisionableResourceKind {
         match ordinal {
             Some(0) => Self::GraphShard,
             Some(1) => Self::PropertyIndex,
-            Some(2) => Self::VectorIndex,
+            Some(2) => Self::VectorCanister,
             Some(b) => panic!("unknown ProvisionableResourceKind ordinal {b}"),
             None => panic!("missing ProvisionableResourceKind ordinal"),
         }

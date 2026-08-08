@@ -496,7 +496,7 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         CanisterKind::Router
             | CanisterKind::Graph
             | CanisterKind::PropertyIndex
-            | CanisterKind::VectorIndex
+            | CanisterKind::VectorCanister
     ) {
         return Err(ArtifactError::NotProvision(args.canister_kind));
     }
@@ -826,7 +826,7 @@ fn build_release_manifest(
             CanisterKind::Router
                 | CanisterKind::Graph
                 | CanisterKind::PropertyIndex
-                | CanisterKind::VectorIndex
+                | CanisterKind::VectorCanister
         ) {
             return Err(ReleaseError::ProvisionKindForbidden(artifact_id.clone()));
         }
@@ -848,7 +848,7 @@ fn build_release_manifest(
         CanisterKind::Router,
         CanisterKind::Graph,
         CanisterKind::PropertyIndex,
-        CanisterKind::VectorIndex,
+        CanisterKind::VectorCanister,
     ];
     let mut missing = Vec::new();
     for kind in &required {
@@ -873,7 +873,7 @@ fn build_release_manifest(
         router_artifact: by_kind.remove(&CanisterKind::Router).unwrap(),
         graph_artifact: by_kind.remove(&CanisterKind::Graph).unwrap(),
         property_index_artifact: by_kind.remove(&CanisterKind::PropertyIndex).unwrap(),
-        vector_index_artifact: by_kind.remove(&CanisterKind::VectorIndex).unwrap(),
+        vector_canister_artifact: by_kind.remove(&CanisterKind::VectorCanister).unwrap(),
     })
 }
 
@@ -993,14 +993,14 @@ pub(crate) fn release_activate_with_caller(
         &manifest.router_artifact,
         &manifest.graph_artifact,
         &manifest.property_index_artifact,
-        &manifest.vector_index_artifact,
+        &manifest.vector_canister_artifact,
     ] {
         if !matches!(
             artifact_id.canister_kind,
             CanisterKind::Router
                 | CanisterKind::Graph
                 | CanisterKind::PropertyIndex
-                | CanisterKind::VectorIndex
+                | CanisterKind::VectorCanister
         ) {
             append_artifact_audit(
                 caller,
@@ -1248,7 +1248,7 @@ pub(crate) async fn release_install_with_caller(
         CanisterKind::Router
             | CanisterKind::Graph
             | CanisterKind::PropertyIndex
-            | CanisterKind::VectorIndex
+            | CanisterKind::VectorCanister
     ) {
         append_artifact_audit(
             caller,
@@ -1325,7 +1325,7 @@ pub(crate) async fn release_install_with_caller(
         CanisterKind::Router => &manifest.router_artifact,
         CanisterKind::Graph => &manifest.graph_artifact,
         CanisterKind::PropertyIndex => &manifest.property_index_artifact,
-        CanisterKind::VectorIndex => &manifest.vector_index_artifact,
+        CanisterKind::VectorCanister => &manifest.vector_canister_artifact,
     };
 
     let metadata = match artifact_store.get_metadata(artifact_id) {

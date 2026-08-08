@@ -1,3 +1,4 @@
+// Arguments for `admin_install_deployment_binding`.
 type AdminInstallDeploymentBindingArgs = record {
   binding_version : nat64;
   router_principal : principal;
@@ -119,7 +120,7 @@ type BootstrapAuthEntry = record {
 };
 // Kind of canister that an artifact can be installed into.
 // Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
-type CanisterKind = variant { Router; Graph; PropertyIndex; VectorIndex };
+type CanisterKind = variant { Router; Graph; PropertyIndex; VectorCanister };
 // Bootstrap trust binding for a deployment. Written only by governance principal.
 // This is authentication configuration, not graph topology or tenancy.
 type DeploymentBinding = record {
@@ -218,7 +219,7 @@ type ProvisionableResource = record {
 // Shared stable+wire resource kind. One-byte ordinal in stable memory.
 type ProvisionableResourceKind = variant {
   PropertyIndex;
-  VectorIndex;
+  VectorCanister;
   GraphShard;
 };
 // Intent lock key for Map 47: (deployment_id, resource_kind, logical_resource_key) → marker.
@@ -274,8 +275,8 @@ type ReleaseInstallResult = record {
 // Immutable release manifest: exactly one `ArtifactId` per non-Provision canister kind.
 type ReleaseManifest = record {
   graph_artifact : ArtifactId;
-  vector_index_artifact : ArtifactId;
   router_artifact : ArtifactId;
+  vector_canister_artifact : ArtifactId;
   release_id : text;
   property_index_artifact : ArtifactId;
 };

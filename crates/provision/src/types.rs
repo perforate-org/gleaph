@@ -417,7 +417,7 @@ pub enum CanisterKind {
     Router,
     Graph,
     PropertyIndex,
-    VectorIndex,
+    VectorCanister,
 }
 
 /// Composite stable key identifying one published artifact.
@@ -611,7 +611,7 @@ pub struct ReleaseManifest {
     pub router_artifact: ArtifactId,
     pub graph_artifact: ArtifactId,
     pub property_index_artifact: ArtifactId,
-    pub vector_index_artifact: ArtifactId,
+    pub vector_canister_artifact: ArtifactId,
 }
 
 /// Return value of `release_activate` confirming the active release that was swapped.
