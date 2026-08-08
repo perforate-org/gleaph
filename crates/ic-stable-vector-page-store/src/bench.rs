@@ -33,23 +33,24 @@ fn next_rand(state: &mut u64) -> u64 {
     x
 }
 
+/// Masks a random `u32` down to the f32 mantissa and forces sign 0 / exponent 0x7F, so every
+/// generated value is finite in `[1.0, 2.0)` (no NaN/Inf; NaN would defeat the early-exit
+/// comparison in the L2 benches).
+fn unitish(bits: u32) -> f32 {
+    f32::from_bits((bits & 0x007F_FFFF) | 0x3F80_0000)
+}
+
 fn f32_row_bytes(dims: usize) -> Vec<u8> {
     let mut state = 0x9E37_79B9_7F4A_7C15;
     (0..dims)
-        .flat_map(|_| {
-            let bits = next_rand(&mut state) as u32;
-            f32::from_bits(bits | 0x3F80_0000).to_le_bytes() // in [1.0, 2.0)
-        })
+        .flat_map(|_| unitish(next_rand(&mut state) as u32).to_le_bytes())
         .collect()
 }
 
 fn query_f32(dims: usize) -> Vec<f32> {
     let mut state = 0x4D59_5DF4_D0F3_3173;
     (0..dims)
-        .map(|_| {
-            let bits = next_rand(&mut state) as u32;
-            f32::from_bits(bits | 0x3F80_0000) // in [1.0, 2.0)
-        })
+        .map(|_| unitish(next_rand(&mut state) as u32))
         .collect()
 }
 
@@ -110,4 +111,24 @@ fn bench_page_geometry_d1536() -> canbench_rs::BenchResult {
         let layout = PageLayout::new(&header).expect("valid layout");
         black_box(layout.page_len());
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_values_are_finite_in_unit_range() {
+        // NaN/Inf would defeat the early-exit comparison in the L2 benches (NaN > threshold is
+        // always false), so the generators must produce finite [1.0, 2.0) values only.
+        for dims in [1, 4, 1536] {
+            for v in query_f32(dims) {
+                assert!(v.is_finite() && (1.0..2.0).contains(&v));
+            }
+            for chunk in f32_row_bytes(dims).as_chunks::<4>().0 {
+                let v = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                assert!(v.is_finite() && (1.0..2.0).contains(&v));
+            }
+        }
+    }
 }

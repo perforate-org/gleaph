@@ -1,0 +1,37 @@
+benches:
+  bench_binary_popcount_d1536:
+    total:
+      calls: 1
+      instructions: 1610
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_dot_d1536:
+    total:
+      calls: 1
+      instructions: 15264
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_l2_early_exit_d1536:
+    total:
+      calls: 1
+      instructions: 382
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_l2_full_d1536:
+    total:
+      calls: 1
+      instructions: 16800
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_page_geometry_d1536:
+    total:
+      calls: 1
+      instructions: 365
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+version: 0.7.0
