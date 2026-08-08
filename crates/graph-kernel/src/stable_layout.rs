@@ -1424,9 +1424,10 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             StableMemoryClass::Derived,
             "vector page directory",
             "(index_id, index_version, partition_id, page_id) → VectorPageMeta { slab_offset, \
-             capacity, row_count, live_count, row_stride, tombstone_count }: page directory for the \
-             ADR 0032 composite slab page store (companion to VECTOR_ROW_SLAB id 13). Fresh layout \
-             cutover from the development VECTOR_PAGE store: no migration or compatibility reader",
+             capacity, row_count, live_count, row_stride, tombstone_count, meta_stride, run_capacity }: \
+             page directory for the ADR 0064 §7 two-table slab page store (companion to VECTOR_ROW_SLAB \
+             id 13). Fresh layout cutover (format version 1, breaking): no migration or compatibility \
+             reader",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(
@@ -1434,9 +1435,9 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             11,
             StableMemoryClass::Derived,
             "vector id reverse map",
-            "(index_id, vector_id) → VectorSubject: reverse locator (ADR 0031 Slice 6); retired from \
-             the partition-page search hot path by ADR 0032's row-local subject_locator but retained \
-             for non-hot-path use. VECTOR_SUBJECT_TO_ID remains the freshness source of truth",
+            "(index_id, vector_id) → VectorSubject: reverse locator; write-maintained only, no \
+             production reader (retirement deferred). VECTOR_SUBJECT_TO_ID remains the freshness \
+             source of truth",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(
@@ -1453,10 +1454,11 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             13,
             StableMemoryClass::Derived,
             "vector row slab",
-            "Raw stable memory holding structure-of-arrays vector row bytes behind a magic/version \
-             header (ADR 0032); companion to VECTOR_PAGE_META (id 10), opened as one composite \
-             store. Fresh layout cutover from the development VECTOR_PAGE store: no migration or \
-             compatibility reader, distinct from the canonical vertex_embedding_backfill rebuild",
+            "Raw stable memory holding two-table vector row pages (run table + packed VertexPayload \
+             + pad-stride rows) behind a VSL/version-1 header (ADR 0064 §7); companion to \
+             VECTOR_PAGE_META (id 10), opened as one composite store. Fresh layout cutover (format \
+             version 1, breaking): no migration or compatibility reader, distinct from the canonical \
+             vertex_embedding_backfill rebuild",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(

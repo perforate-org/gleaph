@@ -400,18 +400,25 @@ version) and shares the `vertex_embedding_backfill` rebuild path. Slice 7 also e
 (serde-default, no repack) so an atomic publish stays metadata-only; search resolves the live slot
 via `current_slot_for(active_index_version)`.
 
-ADR 0032 replaces the MemoryId 10 large-value page store with a composite slab page store: MemoryId
-10 becomes `VECTOR_PAGE_META` (a `(index_id, version, partition_id, page_id) → VectorPageMeta`
-directory of `{ slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }`), and a
-new MemoryId 13 `VECTOR_ROW_SLAB` holds the raw structure-of-arrays row bytes behind a magic/version
-header. The two regions form one composite store (`PAGE_STORE`) that opens together and fails closed
-on a partial layout (see [ADR 0032](../adr/0032-vector-index-slab-page-store.md)). This is a **fresh
-layout cutover** with no deployed `VECTOR_PAGE` state, no migration, and no compatibility reader; the
-`vertex_embedding_backfill` rebuild path is the canonical-embedding reconstruction route, not a
-page-format migration. Each row carries a derived `subject_locator` that retires
-`VECTOR_ID_TO_SUBJECT` from the partition-scan hot path while `VECTOR_SUBJECT_TO_ID` stays the
-freshness source of truth. `VECTOR_PARTITION_HEADS` (MemoryId 9) remains the per-partition
-allocator/counter owner and is deliberately outside the composite store.
+ADR 0064 §7 replaces the ADR 0032 structure-of-arrays page store with the **two-table** page format from
+`ic-stable-vector-page-store`: `[PageHeader][run_table × run_capacity][row_meta × capacity][vector_bytes ×
+capacity]`. MemoryId 10 remains `VECTOR_PAGE_META` (a `(index_id, version, partition_id, page_id) →
+VectorPageMeta` directory of `{ slab_offset, capacity, row_count, live_count, row_stride,
+tombstone_count, meta_stride, run_capacity }`), and MemoryId 13 `VECTOR_ROW_SLAB` holds the raw pages
+behind a `VSL`/version-1 slab header. Rows store a packed 30-bit `VertexPayload` (vertex id + bit-31
+tombstone); the shard is shared across contiguous rows via the run table, and the page rolls a new page
+when its run table is full. `vector_bytes` rows are `pad_stride_bytes` wide (16-byte aligned), with the
+trailing pad zeroed so scoring kernels never observe non-finite garbage. Rows are write-once at tail
+positions: superseded rows are tombstoned, and freshness is validated positionally (subject-map slot
+matches the scanned position) rather than by a row-carried `vector_id`/`generation` (removed). The two
+regions form one composite store (`PAGE_STORE`) that opens together and fails closed on a partial layout
+(see [ADR 0032](../adr/0032-vector-index-slab-page-store.md); the row format is superseded by
+[ADR 0064](../adr/0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)). This is a **fresh
+layout cutover** (format version 1, breaking) with no deployed state, no migration, and no compatibility
+reader; `VECTOR_SUBJECT_TO_ID` stays the freshness source of truth, and the `VECTOR_ID_TO_SLOT` /
+`VECTOR_ID_TO_SUBJECT` reverse maps remain write-maintained (retirement deferred). `VECTOR_PARTITION_HEADS`
+(MemoryId 9) remains the per-partition allocator/counter owner and is deliberately outside the composite
+store.
 
 A derived, router-guarded admin query (`get_vector_slab_stats`) reports slab-space observability
 over these two regions: whole-slab physical facts (size, `occupied_tail`, global referenced bytes,
@@ -442,10 +449,10 @@ deferred.
 | 7        | `VECTOR_SUBJECT_TO_ID`                 | `VECTOR_SUBJECT_TO_ID`     | `init_subject_map`            | derived     | subject tombstone clock                                                                                                                                                                                                                                                                                        | `vertex_embedding_backfill`                                                                |
 | 8        | `VECTOR_ID_TO_SLOT`                    | `VECTOR_ID_TO_SLOT`        | `init_id_to_slot`             | derived     | vector-id → slot map                                                                                                                                                                                                                                                                                           | `vertex_embedding_backfill`                                                                |
 | 9        | `VECTOR_PARTITION_HEADS`               | `VECTOR_PARTITION_HEADS`   | `init_partition_heads`        | derived     | partition page chains + `next_page_id` allocator                                                                                                                                                                                                                                                               | `vertex_embedding_backfill`                                                                |
-| 10       | `VECTOR_PAGE_META`                     | `PAGE_STORE`               | `init_page_store`             | derived     | page-directory metadata (slab offset + capacity/row/live/tombstone counts) for the slab page store (**ADR 0032**)                                                                                                                                                                                              | `vertex_embedding_backfill`                                                                |
-| 11       | `VECTOR_ID_TO_SUBJECT`                 | `VECTOR_ID_TO_SUBJECT`     | `init_id_to_subject`          | derived     | vector-id → subject reverse locator (**Slice 6**; retired from the search hot path by ADR 0032's row-local `subject_locator`, region retained)                                                                                                                                                                 | `vertex_embedding_backfill`                                                                |
+| 10       | `VECTOR_PAGE_META`                     | `PAGE_STORE`               | `init_page_store`             | derived     | page-directory metadata (slab offset + capacity/row/live/tombstone counts + meta/run geometry) for the two-table slab page store (**ADR 0064 §7**)                                                                                                                                                             | `vertex_embedding_backfill`                                                                |
+| 11       | `VECTOR_ID_TO_SUBJECT`                 | `VECTOR_ID_TO_SUBJECT`     | `init_id_to_subject`          | derived     | vector-id → subject reverse locator (**write-maintained only**; no production reader; retirement deferred)                                                                                                                                                                                                     | `vertex_embedding_backfill`                                                                |
 | 12       | `VECTOR_REBUILD_STATE`                 | `VECTOR_REBUILD_STATE`     | `init_rebuild_state`          | derived     | bounded shadow-version rebuild lifecycle (**Slice 7**)                                                                                                                                                                                                                                                         | `vertex_embedding_backfill`                                                                |
-| 13       | `VECTOR_ROW_SLAB`                      | `PAGE_STORE`               | `init_page_store`             | derived     | raw structure-of-arrays vector row slab with magic/version header (**ADR 0032**); companion to `VECTOR_PAGE_META`, opened as one composite store                                                                                                                                                               | `vertex_embedding_backfill`                                                                |
+| 13       | `VECTOR_ROW_SLAB`                      | `PAGE_STORE`               | `init_page_store`             | derived     | raw two-table vector row slab (run table + packed `VertexPayload` + pad-stride rows) with `VSL`/version-1 header (**ADR 0064 §7**); companion to `VECTOR_PAGE_META`, opened as one composite store                                                                                                             | `vertex_embedding_backfill`                                                                |
 | 14       | `VECTOR_MAINTENANCE_STATE`             | `VECTOR_MAINTENANCE_STATE` | `init_maintenance_state`      | maintenance | `index_id → VectorMaintenanceState` page-health scan progress cursor + merged counters (`Failed` carries a bounded message) for Router-forwarded maintenance orchestration (**Slice 10**); operational bookkeeping discarded/restarted, not reconstructed; persists across upgrade, cleared only on init/reset | —                                                                                          |
 
 ---
