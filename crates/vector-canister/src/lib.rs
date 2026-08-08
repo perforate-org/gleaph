@@ -20,8 +20,10 @@ pub mod init;
 pub mod state;
 
 mod canister;
+mod encoding;
 mod guards;
 
+pub use encoding::{BinaryConvention, EncodingError, EncodingRecord, ScoringKernel};
 pub use facade::VectorCanisterStore;
 pub use init::VectorCanisterInitArgs;
 pub use state::VectorCanisterError;

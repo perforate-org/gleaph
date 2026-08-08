@@ -10,6 +10,7 @@ use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, FIRST_ALLOCATION, INITIAL_INDEX_VERSION,
     PAGE_HEADER_BYTES, VectorCanisterStore,
 };
+use crate::encoding::EncodingRecord;
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::facade::stable::{
@@ -119,7 +120,12 @@ impl VectorCanisterStore {
             }
             return Ok(def);
         }
-        let stride_bytes = encoding.stride_bytes(dims);
+        // The encoding record is the single source of width truth (ADR 0064 §8): it validates the
+        // (encoding, dims, metric) combination and derives the stored stride before any def or row
+        // is written. `dimension_mismatch` maps any invalid combination (wire-unchanged).
+        let record = EncodingRecord::from_parts(encoding, dims)
+            .map_err(|_| VectorCanisterError::DimensionMismatch)?;
+        let stride_bytes = record.stride_bytes;
         let slots_per_page = slots_per_page_for(DEFAULT_MAX_PAGE_BYTES, stride_bytes)?;
         let def = VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
