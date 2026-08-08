@@ -215,6 +215,17 @@ impl IndexedEmbeddingCatalog {
             .find(|spec| spec.embedding_name_id == embedding_name_id)
             .cloned()
     }
+
+    /// Derived `label → [spec]` projection (ADR 0064 §Router catalog): the specs whose creation-fixed
+    /// label set includes `label_id`. The graph uses it to determine locally whether a vertex's label
+    /// change/delete needs vector notification, and to read each candidate's label set in one pass.
+    pub fn specs_for_label(&self, label_id: VertexLabelId) -> Vec<IndexedEmbeddingSpec> {
+        self.embeddings
+            .iter()
+            .filter(|spec| spec.labels.contains(&label_id))
+            .cloned()
+            .collect()
+    }
 }
 
 /// Router → graph shard: one bounded canonical vertex-embedding ingestion request.
@@ -933,6 +944,46 @@ mod tests {
             catalog
         );
         assert!(IndexedEmbeddingCatalog::default().is_empty());
+    }
+
+    #[test]
+    fn catalog_label_projection_and_spec_for_index() {
+        let l1 = crate::entry::VertexLabelId::from_raw(1);
+        let l2 = crate::entry::VertexLabelId::from_raw(2);
+        let catalog = IndexedEmbeddingCatalog {
+            embeddings: vec![
+                IndexedEmbeddingSpec {
+                    embedding_name_id: 5,
+                    index_id: 11,
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    labels: vec![l1],
+                },
+                IndexedEmbeddingSpec {
+                    embedding_name_id: 6,
+                    index_id: 12,
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    labels: vec![l1, l2],
+                },
+            ],
+        };
+        // `label → [spec]` projection: both indexes carry label 1, only index 12 carries label 2.
+        let l1_specs = catalog.specs_for_label(l1);
+        assert_eq!(l1_specs.len(), 2);
+        assert!(l1_specs.iter().all(|s| s.labels.contains(&l1)));
+        let l2_specs = catalog.specs_for_label(l2);
+        assert_eq!(l2_specs.len(), 1);
+        assert_eq!(l2_specs[0].index_id, 12);
+        assert!(
+            catalog
+                .specs_for_label(crate::entry::VertexLabelId::from_raw(3))
+                .is_empty()
+        );
     }
 
     #[test]

@@ -41,6 +41,18 @@ pub(crate) fn spec_for(embedding_name_id: u16) -> Option<IndexedEmbeddingSpec> {
     })
 }
 
+/// The specs whose creation-fixed label set includes `label_id` (ADR 0064 §Router catalog).
+pub(crate) fn specs_for_label(
+    label_id: gleaph_graph_kernel::entry::VertexLabelId,
+) -> Vec<IndexedEmbeddingSpec> {
+    CURRENT.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|catalog| catalog.specs_for_label(label_id))
+            .unwrap_or_default()
+    })
+}
+
 /// The current operation's indexed-embedding specs, if a catalog is installed.
 pub(crate) fn specs() -> Vec<IndexedEmbeddingSpec> {
     CURRENT.with(|c| {

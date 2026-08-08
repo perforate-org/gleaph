@@ -863,6 +863,9 @@ fn execute_remove_item(
                     }
                 })?;
                 let had_label = store.vertex_has_label(vertex_id, vertex, label_id);
+                // Capture the pre-removal label set only when the label was present, so the label-loss
+                // vector dispatch can compute the remaining labels (ADR 0064 §DML-driven removes).
+                let old_labels = had_label.then(|| store.vertex_labels(vertex_id, vertex));
                 // ADR 0030 slice 5b: dropping a label removes the applicability of its
                 // `(label, property)` constraints — capture each freed value before the label is
                 // gone (only when the vertex actually carried the label).
@@ -899,6 +902,21 @@ fn execute_remove_item(
                     .map_err(GraphStoreError::from)?;
                 if had_label {
                     bindings.add_vertex_label_delta(label_id, -1);
+                    // ADR 0064 §DML-driven removes: dispatch a vector remove for each index the vertex
+                    // fell out of (the removed label was in the index's label set and no remaining
+                    // label intersects it).
+                    let remaining: Vec<_> = old_labels
+                        .expect("old_labels captured when had_label")
+                        .iter()
+                        .copied()
+                        .filter(|l| *l != label_id)
+                        .collect();
+                    crate::index::vector_dispatch::dispatch_vertex_removes_for_label_loss(
+                        vertex_id,
+                        label_id,
+                        &remaining,
+                        mutation_id,
+                    );
                 }
                 return Ok(());
             }
@@ -2263,6 +2281,78 @@ mod tests {
         let vertex = store.vertex(vertex_id).expect("read updated vertex");
 
         assert_eq!(store.vertex_labels(vertex_id, vertex), vec![employee]);
+    }
+
+    #[test]
+    fn remove_label_dispatches_vector_remove_for_fell_out_index() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: Some(candid::Principal::management_canister()),
+            }))
+            .expect("set routing");
+        crate::index::vector_pending::clear_pending();
+
+        let plan = PhysicalPlan {
+            ops: vec![PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec!["Person".into()],
+                properties: vec![],
+            }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert vertex");
+        let person = crate::test_labels::vertex_label_id_for_name("Person");
+
+        // Inject a vector catalog with an index scoped to the "Person" label (ADR 0064 §Router
+        // catalog). Removing the label makes the vertex fall out of that index.
+        let _guard = crate::index::vector_catalog_context::enter_indexed(&[
+            gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec {
+                embedding_name_id: 1,
+                index_id: 7,
+                kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+                metric: gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+                encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+                dims: 2,
+                labels: vec![person],
+            },
+        ]);
+
+        let remove = PhysicalPlan {
+            ops: vec![PlanOp::RemoveProperties {
+                items: vec![RemovePlanItem::Label {
+                    variable: "a".into(),
+                    label: "Person".into(),
+                }],
+            }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+        let mut existing_bindings = bindings;
+        execute_ops_with_bindings(
+            &store,
+            &remove.ops,
+            &BTreeMap::new(),
+            GqlExecutionContext::default(),
+            &mut existing_bindings,
+        )
+        .expect("execute remove label");
+
+        let ops = crate::index::vector_pending::pending_snapshot();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].index_id, 7);
+        assert!(ops[0].remove);
+        assert!(ops[0].bytes.is_empty());
+        crate::index::vector_pending::clear_pending();
+        store.set_federation_routing(None).expect("clear routing");
     }
 
     #[test]
