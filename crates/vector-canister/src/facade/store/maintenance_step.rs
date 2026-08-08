@@ -97,6 +97,10 @@ impl VectorCanisterStore {
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorCanisterError::UnknownIndex)?;
 
+        // ADR 0064 §5: run a bounded subject-map GC step on each maintenance tick so a quiet graph or
+        // Router (no `vector_sync_batch`) never blocks GC of deleted entries below the watermarks.
+        super::gc_subjects_step(crate::canister::GC_SUBJECTS_BUDGET);
+
         // 0. A prior step failed: no-op until an explicit reset.
         if let VectorMaintenanceState::Failed(failure) = maintenance_state_of(index_id) {
             return Ok(VectorMaintenanceStepResult::Failed(failure));

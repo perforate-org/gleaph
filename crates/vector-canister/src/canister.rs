@@ -18,6 +18,10 @@ use ic_cdk::api::msg_caller;
 pub(crate) const VECTOR_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
 pub(crate) const VECTOR_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
 
+/// Upper bound on subject-map entries a single GC step examines (ADR 0064 §5). Bounds the per-message
+/// GC work so a large subject map cannot force an O(N) scan in one message.
+pub(crate) const GC_SUBJECTS_BUDGET: u32 = 20_000;
+
 #[inline]
 pub(crate) fn instruction_counter() -> u64 {
     #[cfg(target_family = "wasm")]
@@ -70,7 +74,7 @@ pub(crate) fn vector_sync_batch(
     let store = VectorCanisterStore::new();
     let baseline = instruction_counter();
     let mut applied = 0u32;
-    for operation in operations {
+    for operation in &operations {
         let exhausted = instruction_counter()
             .saturating_sub(baseline)
             .saturating_add(VECTOR_BATCH_RESERVE_INSTRUCTIONS)
@@ -83,12 +87,16 @@ pub(crate) fn vector_sync_batch(
             });
         }
         if operation.remove {
-            store.vector_remove(caller, &operation)?;
+            store.vector_remove(caller, operation)?;
         } else {
-            store.vector_upsert(caller, &operation)?;
+            store.vector_upsert(caller, operation)?;
         }
         applied = applied.saturating_add(1);
     }
+    // ADR 0064 §5: advance the caller's watermark to the max stamp in the batch, then run a bounded
+    // GC step to drop deleted subject-map entries below the cutoff.
+    crate::facade::advance_watermark(caller, &operations);
+    crate::facade::gc_subjects_step(GC_SUBJECTS_BUDGET);
     Ok(VectorSyncBatchProgress {
         applied,
         next_index: None,

@@ -368,6 +368,41 @@ impl Storable for SubjectMapEntry {
     }
 }
 
+/// Per-shard watermark pair bounding the subject map (ADR 0064 §5).
+///
+/// `graph_watermark` is the highest graph→vector acked stamp; `router_watermark` is the highest
+/// Router→vector acked stamp. A deleted subject-map entry with `stamp <= min(both)` for its shard is
+/// unreachable (no stale replay can arrive) and is GC'd.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ShardWatermarks {
+    pub graph_watermark: u64,
+    pub router_watermark: u64,
+}
+
+impl ShardWatermarks {
+    /// The GC cutoff: `min(graph_watermark, router_watermark)`. A deleted entry at or below this stamp
+    /// is unreachable. `0` (no watermark yet) means nothing is GC-eligible.
+    pub fn cutoff(&self) -> u64 {
+        self.graph_watermark.min(self.router_watermark)
+    }
+}
+
+impl Storable for ShardWatermarks {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ShardWatermarks"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ShardWatermarks")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), ShardWatermarks).expect("decode ShardWatermarks")
+    }
+}
+
 /// Per-partition head: page chain bounds + durable `page_id` allocator (`VECTOR_PARTITION_HEADS`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct PartitionHead {

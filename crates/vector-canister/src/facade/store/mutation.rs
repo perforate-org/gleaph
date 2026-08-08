@@ -97,12 +97,19 @@ fn owned_run_capacity() -> u32 {
 }
 
 impl VectorCanisterStore {
-    /// Asserts the caller is the attached canister for some shard, and that shard owns the subject.
+    /// Asserts the caller may mutate `subject_shard`.
+    ///
+    /// The Router is the trusted coordinator (ADR 0064 §6): it persists ops for any shard, so it owns
+    /// every subject. A graph shard may only mutate its own shard.
     fn assert_caller_owns_subject(
         &self,
         caller: Principal,
         subject_shard: gleaph_graph_kernel::federation::ShardId,
     ) -> Result<(), VectorCanisterError> {
+        let router = crate::facade::stable::VECTOR_INDEX_ROUTER.with_borrow(|r| *r.get());
+        if caller == router {
+            return Ok(());
+        }
         let attached = crate::facade::stable::SHARD_CANISTER_CATALOG
             .with_borrow(|c| c.shard_for_canister(caller));
         let Some(shard) = attached else {

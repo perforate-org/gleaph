@@ -43,4 +43,12 @@ thread_local! {
     // ADR 0031 Slice 10: vector-canister-owned maintenance scan execution state.
     pub(crate) static VECTOR_MAINTENANCE_STATE: RefCell<memory::StableMaintenanceStateMap> =
         RefCell::new(memory::init_maintenance_state());
+
+    // ADR 0064 §5: per-shard watermark pair bounding the subject map.
+    pub(crate) static VECTOR_SHARD_WATERMARKS: RefCell<memory::StableShardWatermarksMap> =
+        RefCell::new(memory::init_shard_watermarks());
+
+    // ADR 0064 §5: durable GC resume cursor (last examined SubjectKey).
+    pub(crate) static VECTOR_GC_CURSOR: RefCell<memory::StableGcCursorCell> =
+        RefCell::new(memory::init_gc_cursor());
 }

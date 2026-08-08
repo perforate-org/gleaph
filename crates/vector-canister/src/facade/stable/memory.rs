@@ -16,7 +16,7 @@ use std::cell::RefCell;
 
 use crate::records::{
     IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawMaintenanceState, RawRebuildState,
-    SubjectKey, SubjectMapEntry, VectorIndexDef,
+    ShardWatermarks, SubjectKey, SubjectMapEntry, VectorIndexDef,
 };
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -41,6 +41,11 @@ pub(crate) const VECTOR_ROW_SLAB: MemoryId = MemoryId::new(13);
 // page-health scan execution state (cursor + merged counters). Stable execution state — it must
 // survive upgrade and is cleared only on canister init/reset.
 const VECTOR_MAINTENANCE_STATE: MemoryId = MemoryId::new(14);
+// ADR 0064 §5: per-shard watermark pair bounding the subject map (graph_watermark, router_watermark).
+const VECTOR_SHARD_WATERMARKS: MemoryId = MemoryId::new(15);
+// ADR 0064 §5: durable GC resume cursor (last examined SubjectKey) so a bounded GC step never
+// starves deleted entries that sort after a long run of live entries.
+const VECTOR_GC_CURSOR: MemoryId = MemoryId::new(16);
 
 pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
@@ -54,6 +59,8 @@ pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, 
 pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
 pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
+pub(crate) type StableShardWatermarksMap = BTreeMap<ShardId, ShardWatermarks, Memory>;
+pub(crate) type StableGcCursorCell = Cell<Option<SubjectKey>, Memory>;
 
 /// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
 /// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
@@ -216,6 +223,17 @@ pub(crate) fn init_rebuild_state() -> StableRebuildStateMap {
 
 pub(crate) fn init_maintenance_state() -> StableMaintenanceStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_MAINTENANCE_STATE)))
+}
+
+pub(crate) fn init_shard_watermarks() -> StableShardWatermarksMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SHARD_WATERMARKS)))
+}
+
+pub(crate) fn init_gc_cursor() -> StableGcCursorCell {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_GC_CURSOR)),
+        None,
+    )
 }
 
 #[cfg(test)]

@@ -447,6 +447,29 @@ fn mutation_auth_rejects_unattached_and_cross_shard() {
 }
 
 #[test]
+fn router_can_persist_any_shard_subject() {
+    let store = fresh_store();
+    // The Router is the trusted coordinator (ADR 0064 §6): it persists ops for any shard, so it must
+    // not be rejected as an unattached caller. This is the path `vector_sync_batch` exercises.
+    store
+        .vector_upsert(router(), &upsert_op(7, 1, 0xAA))
+        .expect("Router upsert for shard 0");
+
+    let mut cross = upsert_op(8, 2, 0xBB);
+    cross.subject = VectorSubject::Vertex {
+        shard_id: ShardId::new(1),
+        vertex_id: 8,
+    };
+    store
+        .vector_upsert(router(), &cross)
+        .expect("Router upsert for a shard it is not attached to");
+
+    store
+        .vector_remove(router(), &remove_op(7, 3))
+        .expect("Router remove");
+}
+
+#[test]
 fn init_rejects_anonymous_router() {
     let store = VectorCanisterStore::new();
     let err = store

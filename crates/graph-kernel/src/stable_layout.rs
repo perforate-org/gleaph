@@ -1493,6 +1493,27 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
              rebuild path",
             RebuildPath::None,
         ),
+        region(
+            "VECTOR_SHARD_WATERMARKS",
+            15,
+            StableMemoryClass::Maintenance,
+            "per-shard watermark pair",
+            "shard_id → ShardWatermarks { graph_watermark, router_watermark }: highest graph→vector and \
+             Router→vector acked stamps bounding the subject map (ADR 0064 §5). A deleted subject-map \
+             entry with stamp <= min(both) for its shard is unreachable and GC'd. Operational \
+             bookkeeping, not a query-facing index or canonical fact: it carries no rebuild path",
+            RebuildPath::None,
+        ),
+        region(
+            "VECTOR_GC_CURSOR",
+            16,
+            StableMemoryClass::Maintenance,
+            "subject-map GC resume cursor",
+            "Option<SubjectKey>: last examined subject-map key so a bounded GC step never starves \
+             deleted entries that sort after a long run of live entries (ADR 0064 §5). Operational \
+             bookkeeping, not a query-facing index or canonical fact: it carries no rebuild path",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1860,9 +1881,9 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 15);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 13);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(14));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 17);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 15);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(16));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -1942,6 +1963,32 @@ mod tests {
         );
         assert!(matches!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[14].rebuild,
+            RebuildPath::None
+        ));
+        // ADR 0064 §5: per-shard watermark pair bounding the subject map.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[15].symbol,
+            "VECTOR_SHARD_WATERMARKS"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[15].class,
+            StableMemoryClass::Maintenance
+        );
+        assert!(matches!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[15].rebuild,
+            RebuildPath::None
+        ));
+        // ADR 0064 §5: subject-map GC resume cursor.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[16].symbol,
+            "VECTOR_GC_CURSOR"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[16].class,
+            StableMemoryClass::Maintenance
+        );
+        assert!(matches!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[16].rebuild,
             RebuildPath::None
         ));
     }

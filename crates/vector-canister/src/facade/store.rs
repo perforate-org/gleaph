@@ -12,8 +12,10 @@ mod maintenance_step;
 mod mutation;
 mod rebuild;
 mod search;
+mod watermark;
 
 pub(crate) use maintenance::recommend_partition_maintenance;
+pub(crate) use watermark::{advance_watermark, gc_subjects_step};
 
 #[cfg(feature = "canbench")]
 pub(crate) use search::SearchTuning;
