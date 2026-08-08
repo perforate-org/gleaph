@@ -2576,6 +2576,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-stable-vector-page-store"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "ic-cdk",
+ "ic-stable-structures",
+]
+
+[[package]]
 name = "ic-transport-types"
 version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,26 @@
+[package]
+name = "ic-stable-vector-page-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Low-level stable vector page storage (the physical layer of the Gleaph vector canister).
+# The crate owns physical facts only — slab/page/run/row mechanics, header validation, and
+# distance kernels — and must not know subject-map clocks, partitions, centroids, labels,
+# rebuild, or search semantics. Clippy structural lints are allowed at the storage boundary.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:ic-cdk", "dep:candid"]
+
+[dependencies]
+canbench-rs = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
+ic-cdk = { workspace = true, optional = true }
+ic-stable-structures.workspace = true

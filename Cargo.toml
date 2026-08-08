@@ -22,6 +22,7 @@ members = [
     "crates/prepared-runtime",
     "crates/vector-canister",
     "crates/ic-stable-lara",
+    "crates/ic-stable-vector-page-store",
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-variable-memory-manager",
     "crates/ic-stable-vec-deque",
@@ -67,6 +68,7 @@ gleaph-prepared-runtime = { path = "crates/prepared-runtime" }
 gleaph-vector-canister = { path = "crates/vector-canister" }
 gleaph-router = { path = "crates/router" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
+ic-stable-vector-page-store = { path = "crates/ic-stable-vector-page-store" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
