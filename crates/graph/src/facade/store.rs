@@ -26,7 +26,6 @@ mod edge_insert;
 mod edge_profiles;
 mod edge_properties;
 mod edge_scan;
-mod embeddings;
 mod error;
 mod handle;
 pub(crate) mod helpers;

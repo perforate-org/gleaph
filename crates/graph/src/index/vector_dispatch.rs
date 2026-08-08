@@ -1,85 +1,46 @@
-//! Derives `vector-canister` mutations from canonical embedding writes (ADR 0031).
+//! Derives `vector-canister` mutations from DML-driven removes (ADR 0064).
 //!
-//! Hooked from the [`crate::facade::store`] embedding write/delete paths. Dispatch is gated by the
-//! ephemeral router-sourced catalog ([`crate::index::vector_catalog_context`]): if the embedding
-//! name is not indexed for the current operation, no op is queued. The op carries the canonical
-//! record's `encoding` / `dims` / `embedding_version`, so the vector index never has to consult the
-//! Graph shard for embedding contents.
+//! The graph no longer stores embedding bytes (ADR 0064 §1), so it cannot dispatch upserts from its
+//! own canonical store — the Router sends bytes + stamp directly to the vector canister. The graph
+//! only dispatches **removes** for DML-driven deletions (vertex delete, label loss), gated by the
+//! ephemeral router-sourced catalog ([`crate::index::vector_catalog_context`]). Because the graph
+//! cannot enumerate a vertex's embeddings, it over-notifies by dispatching a remove for every indexed
+//! name; `remove-on-missing-row` is a safe no-op on the vector canister.
 
 use crate::facade::GraphStore;
 use crate::index::vector_pending;
-use gleaph_graph_kernel::entry::EmbeddingNameId;
-use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorEncoding, VectorSubject};
+use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
 use ic_stable_lara::VertexId;
 
 fn vertex_id_raw(vertex_id: VertexId) -> u32 {
     u32::try_from(u64::from(vertex_id)).unwrap_or(0)
 }
 
-/// Queues an upsert for a just-written canonical vertex embedding, if its name is indexed. Reads the
-/// canonical record back to source the authoritative `encoding`, `dims`, and bytes for the op. The
-/// `mutation_id` is the Router-issued per-shard mutation sequence (ADR 0064 §5/§6).
-pub(crate) fn dispatch_vertex_upsert(
-    vertex_id: VertexId,
-    embedding_name_id: EmbeddingNameId,
-    mutation_id: u64,
-) {
-    let Some(spec) = crate::index::vector_catalog_context::spec_for(embedding_name_id.raw()) else {
-        return;
-    };
-    let store = GraphStore::new();
-    let Some(routing) = store.federation_routing() else {
-        return;
-    };
-    let Some(record) = store.vertex_embedding(vertex_id, embedding_name_id) else {
-        return;
-    };
-    vector_pending::push_vector_op(VectorEmbeddingSyncOp {
-        index_id: spec.index_id,
-        embedding_name_id: embedding_name_id.raw(),
-        subject: VectorSubject::Vertex {
-            shard_id: routing.shard_id,
-            vertex_id: vertex_id_raw(vertex_id),
-        },
-        mutation_id,
-        encoding: record.encoding,
-        dims: record.dims,
-        metric: spec.metric,
-        bytes: record.bytes,
-        remove: false,
-    });
-}
-
-/// Queues a remove for a just-deleted canonical vertex embedding, if its name is indexed. The op
-/// carries the `mutation_id` so the canister's stamp-fenced clock supersedes a stale same-stamp
-/// replay without tombstoning a newer reinsert (`bytes` is empty on remove).
-pub(crate) fn dispatch_vertex_remove(
-    vertex_id: VertexId,
-    embedding_name_id: EmbeddingNameId,
-    mutation_id: u64,
-    encoding: VectorEncoding,
-    dims: u16,
-) {
-    let Some(spec) = crate::index::vector_catalog_context::spec_for(embedding_name_id.raw()) else {
-        return;
-    };
+/// Queues a remove for every indexed embedding name (vertex-delete sidecar clear). The graph no
+/// longer stores embedding bytes, so it cannot enumerate a vertex's embeddings; it over-notifies by
+/// dispatching a remove for every indexed name. The op carries the DML `mutation_id` so the canister's
+/// stamp-fenced clock supersedes a stale same-stamp replay without tombstoning a newer reinsert
+/// (`bytes` is empty on remove).
+pub(crate) fn dispatch_vertex_removes_for_all_indexed(vertex_id: VertexId, mutation_id: u64) {
     let Some(routing) = GraphStore::new().federation_routing() else {
         return;
     };
-    vector_pending::push_vector_op(VectorEmbeddingSyncOp {
-        index_id: spec.index_id,
-        embedding_name_id: embedding_name_id.raw(),
-        subject: VectorSubject::Vertex {
-            shard_id: routing.shard_id,
-            vertex_id: vertex_id_raw(vertex_id),
-        },
-        mutation_id,
-        encoding,
-        dims,
-        metric: spec.metric,
-        bytes: Vec::new(),
-        remove: true,
-    });
+    for spec in crate::index::vector_catalog_context::specs() {
+        vector_pending::push_vector_op(VectorEmbeddingSyncOp {
+            index_id: spec.index_id,
+            embedding_name_id: spec.embedding_name_id,
+            subject: VectorSubject::Vertex {
+                shard_id: routing.shard_id,
+                vertex_id: vertex_id_raw(vertex_id),
+            },
+            mutation_id,
+            encoding: spec.encoding,
+            dims: spec.dims,
+            metric: spec.metric,
+            bytes: Vec::new(),
+            remove: true,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -91,21 +52,13 @@ mod tests {
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{IndexedEmbeddingSpec, VectorIndexKind, VectorMetric};
 
-    fn vec_bytes(values: &[f32]) -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
     fn spec(name: u16) -> IndexedEmbeddingSpec {
-        spec_with_metric(name, VectorMetric::L2Squared)
-    }
-
-    fn spec_with_metric(name: u16, metric: VectorMetric) -> IndexedEmbeddingSpec {
         IndexedEmbeddingSpec {
             embedding_name_id: name,
             index_id: 7,
             kind: VectorIndexKind::IvfFlat,
-            metric,
-            encoding: VectorEncoding::F32,
+            metric: VectorMetric::L2Squared,
+            encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
             dims: 2,
         }
     }
@@ -128,84 +81,26 @@ mod tests {
     }
 
     #[test]
-    fn indexed_embedding_write_queues_upsert_op() {
+    fn vertex_delete_dispatches_remove_for_every_indexed_name() {
         with_routing(|store| {
             let vid = store.insert_vertex().expect("vertex");
-            let name = EmbeddingNameId::from_raw(1);
-            let _guard = vector_catalog_context::enter_indexed(&[spec(1)]);
-            store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
-                .expect("set embedding");
+            let _guard = vector_catalog_context::enter_indexed(&[spec(1), spec(2)]);
+            dispatch_vertex_removes_for_all_indexed(vid, 7);
             let ops = vector_pending::pending_snapshot();
-            assert_eq!(ops.len(), 1);
-            assert_eq!(ops[0].index_id, 7);
-            assert_eq!(ops[0].embedding_name_id, 1);
-            assert_eq!(ops[0].mutation_id, 1);
-            assert!(!ops[0].remove);
-            assert_eq!(ops[0].bytes, vec_bytes(&[1.0, 2.0]));
+            assert_eq!(ops.len(), 2);
+            assert!(ops.iter().all(|op| op.remove));
+            assert!(ops.iter().all(|op| op.bytes.is_empty()));
+            assert!(ops.iter().all(|op| op.mutation_id == 7));
+            assert!(ops.iter().all(|op| op.index_id == 7));
         });
     }
 
     #[test]
-    fn indexed_embedding_write_carries_cosine_metric() {
+    fn vertex_delete_with_no_catalog_dispatches_nothing() {
         with_routing(|store| {
             let vid = store.insert_vertex().expect("vertex");
-            let name = EmbeddingNameId::from_raw(1);
-            let _guard =
-                vector_catalog_context::enter_indexed(&[spec_with_metric(1, VectorMetric::Cosine)]);
-            store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
-                .expect("set embedding");
-            let ops = vector_pending::pending_snapshot();
-            assert_eq!(ops.len(), 1);
-            assert_eq!(ops[0].metric, VectorMetric::Cosine);
-        });
-    }
-
-    #[test]
-    fn unindexed_embedding_write_queues_nothing() {
-        with_routing(|store| {
-            let vid = store.insert_vertex().expect("vertex");
-            let name = EmbeddingNameId::from_raw(2);
-            // Catalog registers a different name → this write is not indexed.
-            let _guard = vector_catalog_context::enter_indexed(&[spec(1)]);
-            store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
-                .expect("set embedding");
+            dispatch_vertex_removes_for_all_indexed(vid, 7);
             assert!(vector_pending::pending_snapshot().is_empty());
-        });
-    }
-
-    #[test]
-    fn no_catalog_queues_nothing() {
-        with_routing(|store| {
-            let vid = store.insert_vertex().expect("vertex");
-            let name = EmbeddingNameId::from_raw(1);
-            store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
-                .expect("set embedding");
-            assert!(vector_pending::pending_snapshot().is_empty());
-        });
-    }
-
-    #[test]
-    fn indexed_embedding_remove_queues_remove_op() {
-        with_routing(|store| {
-            let vid = store.insert_vertex().expect("vertex");
-            let name = EmbeddingNameId::from_raw(1);
-            let _guard = vector_catalog_context::enter_indexed(&[spec(1)]);
-            store
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]), 1)
-                .expect("set embedding");
-            vector_pending::clear_pending();
-            store
-                .remove_vertex_embedding(vid, name, 1)
-                .expect("removed");
-            let ops = vector_pending::pending_snapshot();
-            assert_eq!(ops.len(), 1);
-            assert!(ops[0].remove);
-            assert!(ops[0].bytes.is_empty());
-            assert_eq!(ops[0].mutation_id, 1);
         });
     }
 }

@@ -192,7 +192,12 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         self.commit_clear_vertex_properties(vertex_id);
-        self.commit_clear_vertex_embeddings(vertex_id, mutation_id);
+        // The graph no longer stores embedding bytes (ADR 0064 §1), so it cannot enumerate a
+        // vertex's embeddings; it over-notifies by dispatching a remove for every indexed name.
+        crate::index::vector_dispatch::dispatch_vertex_removes_for_all_indexed(
+            vertex_id,
+            mutation_id,
+        );
 
         let vertex = self.vertex(vertex_id).ok_or_else(|| {
             GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {

@@ -280,15 +280,10 @@ fn list_vector_indexes(
         .collect())
 }
 
-/// Maximum vertex-embedding ingestion items dispatched in a single Router→Graph inter-canister
-/// call. The bound keeps the encoded Candid message well under the 2 MiB ingress/inter-canister
-/// message limit and stays below the IC update-call instruction budget for the canonical write +
-/// vector-index flush work performed inside the Graph shard. (Social-demo seed: ~71 items.)
-const ADMIN_INGEST_VERTEX_EMBEDDING_BATCH_CHUNK: usize = 1_024;
-
-/// Ingest finite F32 vertex embeddings into the owning Graph shard(s) in one call (plan 0048).
-/// Items are validated up front, grouped by target graph canister, and dispatched in bounded
-/// chunks so a social-demo seed pays one Router→Graph call and one Graph→Vector call.
+/// Ingest finite F32 vertex embeddings via the Router-initiated two-call flow (ADR 0064 §6):
+/// Router → Graph `stamp_embedding` (validate + consume a `mutation_id`, no byte storage), then
+/// Router → Vector (bytes + stamp). The graph holds no embedding bytes; the vector canister is the
+/// sole owner. Items are validated up front and grouped by target graph canister.
 #[update]
 async fn ingest_vertex_embeddings(
     args: types::AdminIngestVertexEmbeddingBatchArgs,
@@ -325,6 +320,12 @@ async fn ingest_vertex_embeddings(
                 args.embedding_name
             ))
         })?;
+    let vector_canister = def
+        .target
+        .ok_or_else(|| {
+            RouterError::Conflict(format!("vector index {} has no target set", def.index_id))
+        })?
+        .canister;
 
     if def.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
         return Err(RouterError::InvalidArgument(format!(
@@ -344,9 +345,17 @@ async fn ingest_vertex_embeddings(
 
     let item_count = args.items.len();
 
-    // Resolve each item to its target graph canister and group by canister.
-    type Grouped =
-        std::collections::BTreeMap<candid::Principal, Vec<(VertexEmbeddingIngestionArgs, usize)>>;
+    // Resolve each item to its target graph canister and group by canister. Each item carries the
+    // Router-issued per-shard mutation sequence (ADR 0064 §5/§6) and the shard id needed to build the
+    // vector subject.
+    type Grouped = std::collections::BTreeMap<
+        candid::Principal,
+        Vec<(
+            VertexEmbeddingIngestionArgs,
+            gleaph_graph_kernel::federation::ShardId,
+            usize,
+        )>,
+    >;
     let mut by_canister: Grouped = Grouped::new();
     for (item_index, item) in args.items.into_iter().enumerate() {
         if item.encoded_vertex_id.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
@@ -379,7 +388,7 @@ async fn ingest_vertex_embeddings(
             .find(|s| s.shard_id == global_id.shard_id)
             .ok_or(RouterError::ShardNotRegistered)?;
         // The Router issues the per-shard mutation sequence and passes it to the graph (ADR 0064
-        // §5/§6); the graph uses it as the vector dispatch stamp.
+        // §5/§6); the graph consumes it as the vector dispatch stamp.
         let mutation_id = store.allocate_mutation_id()?;
 
         by_canister.entry(shard.graph_canister).or_default().push((
@@ -389,6 +398,7 @@ async fn ingest_vertex_embeddings(
                 values: item.values,
                 mutation_id,
             },
+            global_id.shard_id,
             item_index,
         ));
     }
@@ -398,25 +408,63 @@ async fn ingest_vertex_embeddings(
     > = Vec::with_capacity(item_count);
     results.resize(item_count, Err("not dispatched".to_string()));
 
+    // Phase 1: Router → Graph `stamp_embedding` (validate + consume the mutation_id, no byte
+    // storage). Collect the consumed stamps per item.
+    let mut stamped: Vec<(
+        gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        usize,
+    )> = Vec::new();
     for (graph_canister, mut group) in by_canister {
-        group.sort_by_key(|(_, original_index)| *original_index);
-        for chunk in group.chunks(ADMIN_INGEST_VERTEX_EMBEDDING_BATCH_CHUNK) {
-            let chunk_args: Vec<VertexEmbeddingIngestionArgs> =
-                chunk.iter().map(|(arg, _)| arg.clone()).collect();
-            let chunk_results =
-                crate::graph_client::ingest_vertex_embedding_batch(graph_canister, chunk_args)
-                    .await
-                    .map_err(RouterError::Internal)?;
-            if chunk_results.len() != chunk.len() {
-                return Err(RouterError::Internal(format!(
-                    "graph returned {} results for {} ingestion args",
-                    chunk_results.len(),
-                    chunk.len()
-                )));
+        group.sort_by_key(|(_, _, original_index)| *original_index);
+        for (arg, shard_id, original_index) in group {
+            match crate::graph_client::stamp_embedding(graph_canister, arg.clone()).await {
+                Ok(stamp) => {
+                    let bytes: Vec<u8> = arg.values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    stamped.push((
+                        gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp {
+                            index_id: spec.index_id,
+                            embedding_name_id: spec.embedding_name_id,
+                            subject: gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
+                                shard_id,
+                                vertex_id: arg.local_vertex_id,
+                            },
+                            mutation_id: stamp,
+                            encoding: spec.encoding,
+                            dims: spec.dims,
+                            metric: spec.metric,
+                            bytes,
+                            remove: false,
+                        },
+                        original_index,
+                    ));
+                }
+                Err(err) => {
+                    results[original_index] = Err(err);
+                }
             }
-            for ((_, original_index), result) in chunk.iter().zip(chunk_results) {
-                results[*original_index] = result;
-            }
+        }
+    }
+
+    // Phase 2: Router → Vector persist (bytes + stamp). The vector canister is the single target for
+    // the whole graph, so all stamped ops are delivered in one bounded batch.
+    if !stamped.is_empty() {
+        let ops: Vec<_> = stamped.iter().map(|(op, _)| op.clone()).collect();
+        let progress = crate::vector_sync::vector_sync_batch(vector_canister, ops)
+            .await
+            .map_err(RouterError::Internal)?;
+        let applied = usize::try_from(progress.applied).unwrap_or(0);
+        for (index, (op, original_index)) in stamped.into_iter().enumerate() {
+            let outcome = if index < applied {
+                gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::Applied
+            } else {
+                gleaph_graph_kernel::vector_index::VertexEmbeddingProjectionOutcome::DeferredForRepair
+            };
+            results[original_index] = Ok(
+                gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult {
+                    embedding_version: op.mutation_id,
+                    projection_outcome: outcome,
+                },
+            );
         }
     }
 

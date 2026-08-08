@@ -635,27 +635,24 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              constraints; freed by owner-matched release, drained by the DROP purge",
             RebuildPath::None,
         ),
-        // Canonical vertex embeddings (ADR 0031)
+        // Reserved holes retained after removal of the graph's canonical vertex-embedding regions
+        // (ADR 0064 §1: the vector canister owns embedding bytes). These IDs must not be reused silently.
         region(
-            "VERTEX_EMBEDDINGS",
+            "RESERVED_44",
             44,
-            StableMemoryClass::Canonical,
-            "embeddings",
-            "(VertexId, EmbeddingNameId) → StoredEmbedding { encoding, dims, version, bytes }: \
-             canonical fixed-dimension F32 vertex embeddings owned by the graph shard; source for \
-             future derived vector-index backfill",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former VERTEX_EMBEDDINGS canonical embedding region; intentionally unallocated after the \
+             vector canister became the sole owner of embedding bytes (ADR 0064 §1)",
             RebuildPath::None,
         ),
-        // Delete-spanning embedding incarnation high-water marks (ADR 0031 Slice 4)
         region(
-            "VERTEX_EMBEDDING_INCARNATIONS",
+            "RESERVED_45",
             45,
-            StableMemoryClass::Canonical,
-            "embedding incarnations",
-            "(VertexId, EmbeddingNameId) → u64: delete-spanning incarnation high-water mark per \
-             embedding identity. Retained across remove so a reinsert allocates a strictly greater \
-             incarnation; the vector canister orders derived sync by (incarnation, version) so a \
-             stale remove can never tombstone a newer live vector",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former VERTEX_EMBEDDING_INCARNATIONS delete-spanning incarnation region; intentionally \
+             unallocated after the mutation_id ordering fence replaced the incarnation clock (ADR 0064 §5)",
             RebuildPath::None,
         ),
         // Durable derived-index outbox (0088)
@@ -1675,11 +1672,8 @@ mod tests {
             GRAPH_STABLE_LAYOUT.regions[43].symbol,
             "GRAPH_LOCAL_UNIQUE_VALUES"
         );
-        assert_eq!(GRAPH_STABLE_LAYOUT.regions[44].symbol, "VERTEX_EMBEDDINGS");
-        assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[45].symbol,
-            "VERTEX_EMBEDDING_INCARNATIONS"
-        );
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[44].symbol, "RESERVED_44");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[45].symbol, "RESERVED_45");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[46].symbol,
             "DERIVED_INDEX_OUTBOX"

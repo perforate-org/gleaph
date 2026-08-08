@@ -8,18 +8,11 @@
 //! presumed unavailable). Re-application is idempotent, so no compensation is
 //! needed here.
 //!
-//! Vector ops (ADR 0031) are not replayed verbatim. Because the canonical Graph
-//! store resets `embedding_version` to `1` on re-insert, a stored vector op's
-//! version alone cannot be ordered against the vector canister's clock. Instead
-//! each vector entry is *reconciled* against the canonical store at drain time
-//! (canonical wins): if the subject still owns the embedding we deliver a current
-//! upsert re-derived with the canonical `(embedding_incarnation, embedding_version)`;
-//! if it was deleted we deliver a remove stamped with the persisted (delete-spanning)
-//! incarnation. Since the incarnation strictly increases across each reinsert and the
-//! vector canister orders by `(incarnation, version)` (ADR 0031 Slice 4), the
-//! reconcile remove is incarnation-fenced: it can no longer tombstone a newer
-//! reinsert that raced ahead of it. A vector entry with no configured vector client
-//! is skipped (left durable) so it never wedges the property repairs queued after it.
+//! Vector ops (ADR 0031) are not replayed verbatim. Because the graph no longer stores embedding
+//! bytes (ADR 0064 §1), the drain cannot re-derive the canonical state; each vector entry is
+//! delivered as-is and the vector canister's `mutation_id` fence (`stamp <= clock`) makes a stale
+//! replay a no-op. A vector entry with no configured vector client is skipped (left durable) so it
+//! never wedges the property repairs queued after it.
 
 use crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp;
 use crate::facade::{GraphStore, RepairPostingOp};
@@ -27,24 +20,11 @@ use crate::index::lookup::PropertyIndexLookup;
 use crate::index::vector_lookup::VectorCanisterLookup;
 use crate::plan::PlanQueryError;
 use candid::Encode;
-use gleaph_graph_kernel::entry::EmbeddingNameId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::IndexBuildDmlRequest;
 use gleaph_graph_kernel::index::IndexPostingMutation;
-use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
+use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use gleaph_message_sizing::{FitError, SizingPolicy, adaptive_fitting_prefix};
-use ic_stable_lara::VertexId;
-
-/// `embedding_version` stamped on a reconcile-driven remove when the canonical
-/// store no longer owns the subject. The journaled op's own version cannot be
-/// trusted: it may be *older* than a newer live slot of the **same incarnation**
-/// already in the vector index, in which case the canister would no-op the remove
-/// (`version < clock`) and the derived vector would be orphaned once the drain
-/// drops the journal entry. A canonical-wins removal therefore uses the maximum
-/// version so it supersedes any live slot **within its incarnation**. The remove
-/// also carries the canonical delete-spanning incarnation (ADR 0031 Slice 4), so a
-/// strictly newer reinsert (higher incarnation) is never tombstoned by this remove.
-const RECONCILE_TOMBSTONE_VERSION: u64 = u64::MAX;
 
 /// Outcome of re-applying a single journal entry.
 enum ApplyOutcome {
@@ -500,54 +480,14 @@ async fn apply(
     }
 }
 
-/// Reconciles a journaled vector op against the canonical Graph store (canonical
-/// wins) and delivers the current truth: a fresh upsert if the subject still owns
-/// the embedding, otherwise a remove. This discards stale upserts whose subject
-/// was deleted, so they cannot resurrect a tombstoned vector.
-///
-/// Both branches re-derive the canonical delete-spanning `embedding_incarnation`
-/// (ADR 0031 Slice 4) rather than trusting the journaled op:
-///
-/// - **Present** -> upsert with the canonical `(incarnation, version)`. If a
-///   delete + reinsert happened since the op was journaled, `incarnation_for` now
-///   returns the *new* incarnation, so the replay cannot regress the clock.
-/// - **Absent** -> remove stamped with the persisted (deleted) incarnation and
-///   `embedding_version = RECONCILE_TOMBSTONE_VERSION`. Because the incarnation
-///   strictly increases on reinsert and the vector canister orders by
-///   `(incarnation, version)`, a remove for the deleted incarnation can never
-///   tombstone a newer reinsert that raced ahead of the drain. This closes the
-///   reverse-orphan race that made the Slice 2 blind remove unsafe to activate.
+/// Reconciles a journaled vector op for delivery. The graph no longer stores embedding bytes (ADR
+/// 0064 §1), so it cannot re-derive the canonical state; the op is delivered as-is. The vector
+/// canister's `mutation_id` fence (`stamp <= clock`) makes a stale replay a no-op, so no
+/// reconciliation is required for idempotence or ordering.
 async fn reconcile_vector_op(
     op: &VectorEmbeddingSyncOp,
 ) -> Result<VectorEmbeddingSyncOp, PlanQueryError> {
-    let VectorSubject::Vertex { vertex_id, .. } = op.subject;
-    let vid = VertexId::from(vertex_id);
-    let name = EmbeddingNameId::from_raw(op.embedding_name_id);
-    let store = GraphStore::new();
-    match store.vertex_embedding(vid, name) {
-        Some(record) => Ok(VectorEmbeddingSyncOp {
-            index_id: op.index_id,
-            embedding_name_id: op.embedding_name_id,
-            subject: op.subject,
-            mutation_id: op.mutation_id,
-            encoding: record.encoding,
-            dims: record.dims,
-            metric: op.metric,
-            bytes: record.bytes,
-            remove: false,
-        }),
-        None => Ok(VectorEmbeddingSyncOp {
-            index_id: op.index_id,
-            embedding_name_id: op.embedding_name_id,
-            subject: op.subject,
-            mutation_id: op.mutation_id,
-            encoding: op.encoding,
-            dims: op.dims,
-            metric: op.metric,
-            bytes: Vec::new(),
-            remove: true,
-        }),
-    }
+    Ok(op.clone())
 }
 
 #[cfg(test)]
@@ -988,20 +928,8 @@ mod tests {
 
     #[test]
     fn drain_retries_unacknowledged_vector_suffix_after_partial_progress() {
-        use gleaph_graph_kernel::vector_index::VectorEncoding;
-
         with_routing(|graph| {
             for vertex_id in 0..5 {
-                graph
-                    .set_vertex_embedding(
-                        VertexId::from(vertex_id),
-                        EmbeddingNameId::from_raw(1),
-                        VectorEncoding::F32,
-                        1,
-                        vec![0, 0, 0, 0],
-                        1,
-                    )
-                    .expect("set embedding");
                 graph.derived_index_outbox_append(17, [vector_upsert_op(vertex_id)]);
             }
             let index = CountingIndex::batch();
@@ -1018,23 +946,10 @@ mod tests {
     }
 
     #[test]
-    fn drain_reconciles_present_subject_to_upsert() {
-        use gleaph_graph_kernel::vector_index::VectorEncoding;
+    fn drain_delivers_journaled_upsert_as_is() {
         with_routing(|graph| {
-            // Canonical still owns the embeddings → reconcile re-derives current upserts, ignoring
-            // the (possibly stale) journaled op contents.
-            for vid in [1u32, 2] {
-                graph
-                    .set_vertex_embedding(
-                        VertexId::from(vid),
-                        EmbeddingNameId::from_raw(1),
-                        VectorEncoding::F32,
-                        1,
-                        vec![0, 0, 0, 0],
-                        1,
-                    )
-                    .expect("set embedding");
-            }
+            // The graph no longer stores embedding bytes (ADR 0064 §1), so the drain delivers the
+            // journaled op as-is; the vector canister's mutation_id fence makes a stale replay a no-op.
             graph.repair_journal_append(0, [vector_upsert_op(1), vector_upsert_op(2)]);
             let index = CountingIndex::new(0);
             let vector = RecordingVectorCanister::new();
@@ -1044,61 +959,27 @@ mod tests {
             assert_eq!(
                 vector.last_upsert_mutation_id.load(Ordering::SeqCst),
                 1,
-                "reconcile preserves the op's mutation_id stamp"
+                "drain preserves the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());
         });
     }
 
     #[test]
-    fn drain_reconciles_deleted_subject_to_remove() {
+    fn drain_delivers_journaled_upsert_as_is_without_canonical_state() {
         with_routing(|graph| {
-            // No canonical embedding for this subject → a stale upsert replay is reconciled into a
-            // remove, so it can never resurrect a tombstoned vector.
+            // No canonical embedding store exists; the drain still delivers the journaled upsert
+            // as-is rather than reconciling it to a remove.
             graph.repair_journal_append(0, [vector_upsert_op(5)]);
             let index = CountingIndex::new(0);
             let vector = RecordingVectorCanister::new();
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
-            assert_eq!(vector.upserts.load(Ordering::SeqCst), 0);
-            assert_eq!(
-                vector.removes.load(Ordering::SeqCst),
-                1,
-                "stale upsert reconciled to a remove"
-            );
-            assert_eq!(
-                vector.last_remove_mutation_id.load(Ordering::SeqCst),
-                1,
-                "reconcile remove carries the op's mutation_id stamp"
-            );
-            assert!(graph.repair_journal_is_empty());
-        });
-    }
-
-    #[test]
-    fn drain_reconcile_reinsert_re_derives_new_incarnation() {
-        use gleaph_graph_kernel::vector_index::VectorEncoding;
-        with_routing(|graph| {
-            let vid = VertexId::from(1u32);
-            let name = EmbeddingNameId::from_raw(1);
-            // Delete + reinsert bumps the canonical incarnation to 2 after the stale op (stamped
-            // incarnation 1) was journaled.
-            graph
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0], 1)
-                .expect("first insert");
-            graph.remove_vertex_embedding(vid, name, 1).expect("remove");
-            graph
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0], 1)
-                .expect("reinsert");
-            graph.repair_journal_append(0, [vector_upsert_op(1)]);
-
-            let index = CountingIndex::new(0);
-            let vector = RecordingVectorCanister::new();
-            pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 1);
+            assert_eq!(vector.removes.load(Ordering::SeqCst), 0);
             assert_eq!(
                 vector.last_upsert_mutation_id.load(Ordering::SeqCst),
                 1,
-                "reconcile preserves the op's mutation_id stamp"
+                "drain preserves the op's mutation_id stamp"
             );
             assert!(graph.repair_journal_is_empty());
         });
@@ -1156,13 +1037,7 @@ mod tests {
 
     #[test]
     fn drain_repair_preserves_journaled_cosine_metric() {
-        use gleaph_graph_kernel::vector_index::VectorEncoding;
         with_routing(|graph| {
-            let vid = VertexId::from(1u32);
-            let name = EmbeddingNameId::from_raw(1);
-            graph
-                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0], 1)
-                .expect("seed canonical embedding");
             graph.repair_journal_append(0, [vector_cosine_upsert_op(1)]);
 
             let index = CountingIndex::new(0);

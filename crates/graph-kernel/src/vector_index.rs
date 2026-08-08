@@ -1,23 +1,16 @@
 //! Shared vector-index types.
 //!
-//! Per [ADR 0031](design/adr/0031-vertex-embedding-store-and-derived-vector-index.md), this module
-//! is the home for vector-index wire types. Slice 1 carried only the canonical embedding encoding.
-//! Slice 2 adds the derived sync/mutation wire surface (`VectorIndexKind`, `VectorMetric`,
-//! `VectorSubject`, `VectorEmbeddingSyncOp`, `IndexedEmbeddingCatalog`, `VectorCanisterError`).
-//! Search/cursor types are deliberately deferred to Slice 5+ (Router catalog + target resolution
-//! is Slice 3; incarnation-fenced production activation is Slice 4; search/centroids are Slice 5+).
+//! Per [ADR 0064](design/adr/0064-vector-canister-redesign-ownership-layout-fencing-ingest.md), this
+//! module is the home for vector-index wire types. The graph no longer stores embedding bytes; the
+//! vector canister is the sole owner. The wire carries `VectorEmbeddingSyncOp` (bytes + `mutation_id`
+//! stamp), `IndexedEmbeddingCatalog`, and `VectorCanisterError`.
 //!
 //! # Version naming glossary
 //!
-//! Four distinct concepts that are never conflated in code or wire:
+//! Distinct concepts that are never conflated in code or wire:
 //!
-//! - `embedding_incarnation` (graph canonical store, ADR 0031 Slice 4): delete-spanning ordering
-//!   fence per `(VertexId, EmbeddingNameId)` identity. Strictly increases across each delete/reinsert
-//!   and is never reset. The vector canister orders sync ops by `(embedding_incarnation,
-//!   embedding_version)`, so a stale remove cannot tombstone a newer live vector.
-//! - `embedding_version` (graph canonical store): `StoredEmbedding.version`; the per-incarnation
-//!   update counter (resets to `1` on each fresh incarnation), carried on sync ops and the repair
-//!   journal and consulted only within an incarnation for sync/repair idempotence.
+//! - `mutation_id` (graph per-shard sequence, Router-allocated): the single ordering fence for ingest
+//!   and DML-driven removes (ADR 0064 §5). The vector canister orders sync ops by `stamp <= clock`.
 //! - `index_version` (vector canister): physical index generation; page/partition head keys.
 //! - `generation` (vector canister): slot/entity handle incarnation for append-and-tombstone.
 
@@ -245,9 +238,10 @@ pub enum VertexEmbeddingProjectionOutcome {
 
 /// Result of [`VertexEmbeddingIngestionArgs`].
 ///
-/// `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
-/// `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
-/// repair so callers do not blindly retry a canonical write that has already committed.
+/// `embedding_version` is the Router-issued `mutation_id` stamp consumed by the graph (the graph no
+/// longer stores an embedding version). The `projection_outcome` distinguishes a fully applied derived
+/// projection from a durable deferred repair so callers do not blindly retry a write that has already
+/// committed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VertexEmbeddingIngestionResult {
     pub embedding_version: u64,

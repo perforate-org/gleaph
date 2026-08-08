@@ -22,7 +22,6 @@ pub mod vector_dispatch;
 pub mod vector_ic;
 pub mod vector_lookup;
 pub mod vector_pending;
-pub mod vertex_embedding_backfill;
 pub mod vertex_property_backfill;
 
 pub mod plan_cache;

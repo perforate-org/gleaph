@@ -16,7 +16,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabStats,
-    VectorSlabStatsStep,
+    VectorSlabStatsStep, VectorSyncBatchProgress,
 };
 
 // The attach-handshake helpers below are only driven by `finish_shard_vector_attach`, which is itself
@@ -101,6 +101,36 @@ pub async fn vector_search(
     _req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, String> {
     Ok(VectorSearchResult { hits: Vec::new() })
+}
+
+/// Router → vector canister: persist embedding bytes + stamp (ADR 0064 §6). The Router holds the op
+/// durably in its request records and delivers bytes + stamp directly to the vector canister; the
+/// canister orders by `mutation_id` (`stamp <= clock`).
+#[cfg(target_family = "wasm")]
+pub async fn vector_sync_batch(
+    vector_canister: Principal,
+    operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+) -> Result<VectorSyncBatchProgress, String> {
+    use ic_cdk::call::Call;
+
+    Call::bounded_wait(vector_canister, "vector_sync_batch")
+        .with_args(&(operations,))
+        .await
+        .map_err(|e| format!("vector vector_sync_batch call failed: {e}"))?
+        .candid::<VectorSyncBatchProgress>()
+        .map_err(|e| format!("vector vector_sync_batch decode failed: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn vector_sync_batch(
+    _vector_canister: Principal,
+    _operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+) -> Result<VectorSyncBatchProgress, String> {
+    Ok(VectorSyncBatchProgress {
+        applied: 0,
+        next_index: None,
+        instruction_budget_exhausted: false,
+    })
 }
 
 // --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface ---

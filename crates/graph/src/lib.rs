@@ -335,25 +335,6 @@ fn index_export_page(
     canister::handlers::index_export_page(request)
 }
 
-/// Router → graph (plan 0048): bounded canonical vertex-embedding ingestion.
-#[update(guard = "guard_router_canister")]
-async fn admin_ingest_vertex_embedding(
-    args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
-) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String> {
-    canister::handlers::admin_ingest_vertex_embedding(args).await
-}
-
-/// Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
-#[update(guard = "guard_router_canister")]
-async fn admin_ingest_vertex_embedding_batch(
-    args: Vec<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs>,
-) -> Result<
-    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
-    String,
-> {
-    canister::handlers::admin_ingest_vertex_embedding_batch(args).await
-}
-
 /// Router → graph (ADR 0064 §6): validate an embedding ingestion and consume a `mutation_id` without
 /// a DML mutation or canonical write. The Router then sends the bytes + stamp to the vector canister.
 #[update(guard = "guard_router_canister")]
@@ -564,13 +545,6 @@ async fn backfill_edge_property_postings(
     req: gleaph_graph_kernel::federation::EdgePropertyBackfillRequest,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
     canister::handlers::backfill_edge_property_postings(req).await
-}
-
-#[update(guard = "guard_router_canister")]
-async fn backfill_vertex_embeddings(
-    req: gleaph_graph_kernel::federation::VertexEmbeddingBackfillRequest,
-) -> Result<gleaph_graph_kernel::federation::EmbeddingBackfillResult, String> {
-    canister::handlers::backfill_vertex_embeddings(req).await
 }
 
 #[update(guard = "guard_router_canister")]

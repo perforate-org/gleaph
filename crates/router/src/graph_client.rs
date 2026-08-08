@@ -302,6 +302,13 @@ pub async fn backfill_edge_property_postings(
     call_graph_result(graph, "backfill_edge_property_postings", req).await
 }
 
+pub async fn stamp_embedding(
+    graph: Principal,
+    args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
+) -> Result<u64, String> {
+    call_graph_result(graph, "stamp_embedding", args).await
+}
+
 pub async fn backfill_vertex_embeddings(
     graph: Principal,
     args: gleaph_graph_kernel::federation::EmbeddingBackfillArgs,
@@ -309,16 +316,6 @@ pub async fn backfill_vertex_embeddings(
 ) -> Result<gleaph_graph_kernel::federation::EmbeddingBackfillResult, String> {
     let req = gleaph_graph_kernel::federation::VertexEmbeddingBackfillRequest { args, catalog };
     call_graph_result(graph, "backfill_vertex_embeddings", req).await
-}
-
-pub async fn ingest_vertex_embedding_batch(
-    graph: Principal,
-    args: Vec<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs>,
-) -> Result<
-    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
-    String,
-> {
-    call_graph_result(graph, "admin_ingest_vertex_embedding_batch", args).await
 }
 
 pub async fn finalize_bulk_ingest(

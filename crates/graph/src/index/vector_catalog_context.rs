@@ -41,6 +41,16 @@ pub(crate) fn spec_for(embedding_name_id: u16) -> Option<IndexedEmbeddingSpec> {
     })
 }
 
+/// The current operation's indexed-embedding specs, if a catalog is installed.
+pub(crate) fn specs() -> Vec<IndexedEmbeddingSpec> {
+    CURRENT.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|catalog| catalog.embeddings.clone())
+            .unwrap_or_default()
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn enter_indexed(specs: &[IndexedEmbeddingSpec]) -> VectorCatalogGuard {
     enter(IndexedEmbeddingCatalog {

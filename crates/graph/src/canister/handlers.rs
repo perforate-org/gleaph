@@ -19,6 +19,7 @@ use crate::index::repair_journal::drain_outbox_once;
 use crate::index::router::verify_shard_attachment;
 #[cfg(target_family = "wasm")]
 use crate::index::vector_ic::IcVectorCanisterClient;
+#[cfg(target_family = "wasm")]
 use crate::index::vector_lookup::VectorCanisterLookup;
 #[cfg(target_family = "wasm")]
 use crate::plan::PlanQueryError;
@@ -42,10 +43,7 @@ use gleaph_graph_kernel::plan_exec::{
 };
 
 use super::types::GraphInitArgs;
-use gleaph_graph_kernel::vector_index::{
-    IndexedEmbeddingCatalog, IndexedEmbeddingSpec, VertexEmbeddingIngestionArgs,
-    VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome,
-};
+use gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs;
 
 #[cfg(test)]
 thread_local! {
@@ -1861,18 +1859,6 @@ pub fn index_export_page(
     crate::index::canonical_export::export_page(request)
 }
 
-/// Router → graph (plan 0048): commit one canonical vertex embedding and attempt the derived
-/// vector-index projection. The caller (Router) has already resolved the opaque vertex id to a
-/// shard-local id and the embedding definition. The graph shard validates vertex existence,
-/// finiteness, and dimension match; installs the supplied ephemeral indexed-embedding catalog so
-/// the canonical write dispatches exactly one derived op; and reports whether the projection was
-/// applied or deferred for repair.
-pub async fn admin_ingest_vertex_embedding(
-    args: VertexEmbeddingIngestionArgs,
-) -> Result<VertexEmbeddingIngestionResult, String> {
-    admin_ingest_vertex_embedding_with_vector(args, None).await
-}
-
 /// Router → graph (ADR 0064 §6): validate an embedding ingestion and consume a `mutation_id` without
 /// a DML mutation or canonical write. The Router then sends the bytes + stamp to the vector canister.
 /// This is the stamp-separated ingest path: the graph holds no bytes transiently, and the phantom
@@ -1910,175 +1896,6 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
     // Consume the mutation_id as a phantom stamp: no DML mutation, no canonical write, no journal
     // entry, no outbox/derived-index watermark advance. The vector canister orders by this stamp.
     Ok(args.mutation_id)
-}
-
-/// Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
-///
-/// Each item is validated and written independently. A single derived vector-index flush is
-/// attempted after all canonical writes, so N embeddings cost one Router→Graph call and one
-/// Graph→Vector call instead of 2N calls. The per-item result carries the canonical embedding
-/// version and the shared batch projection outcome (`Applied` or `DeferredForRepair`).
-pub async fn admin_ingest_vertex_embedding_batch(
-    args: Vec<VertexEmbeddingIngestionArgs>,
-) -> Result<Vec<Result<VertexEmbeddingIngestionResult, String>>, String> {
-    Ok(admin_ingest_vertex_embedding_batch_with_vector(args, None).await)
-}
-
-async fn admin_ingest_vertex_embedding_batch_with_vector(
-    args: Vec<VertexEmbeddingIngestionArgs>,
-    vector_override: Option<&dyn VectorCanisterLookup>,
-) -> Vec<Result<VertexEmbeddingIngestionResult, String>> {
-    if args.is_empty() {
-        return Vec::new();
-    }
-
-    // Build an ephemeral catalog covering every distinct embedding spec referenced by the batch.
-    // All items are ingested under the same catalog so each canonical write dispatches its vector
-    // op into the shared pending queue.
-    let mut specs: Vec<IndexedEmbeddingSpec> = Vec::new();
-    for arg in &args {
-        if !specs
-            .iter()
-            .any(|s| s.embedding_name_id == arg.spec.embedding_name_id)
-        {
-            specs.push(arg.spec);
-        }
-    }
-    let catalog = IndexedEmbeddingCatalog { embeddings: specs };
-    let _catalog_guard = crate::index::vector_catalog_context::enter(catalog);
-
-    let mut versions = Vec::with_capacity(args.len());
-    for arg in args {
-        versions.push(admin_ingest_vertex_embedding_item(arg).await);
-    }
-
-    let projection_outcome = match vector_override {
-        Some(v) => flush_single_vector_pending(Some(v)).await,
-        None => {
-            #[cfg(target_family = "wasm")]
-            {
-                let client = crate::facade::GraphStore::new()
-                    .federation_routing()
-                    .and_then(|r| r.vector_canister)
-                    .map(
-                        |vector_principal| crate::index::vector_ic::IcVectorCanisterClient {
-                            vector_principal,
-                        },
-                    );
-                let vx = client.as_ref().map(|c| c as &dyn VectorCanisterLookup);
-                flush_single_vector_pending(vx).await
-            }
-            #[cfg(not(target_family = "wasm"))]
-            {
-                flush_single_vector_pending(None).await
-            }
-        }
-    };
-
-    versions
-        .into_iter()
-        .map(|r| {
-            r.map(|version| VertexEmbeddingIngestionResult {
-                embedding_version: version,
-                projection_outcome,
-            })
-        })
-        .collect()
-}
-
-async fn admin_ingest_vertex_embedding_item(
-    args: VertexEmbeddingIngestionArgs,
-) -> Result<u64, String> {
-    let store = GraphStore::new();
-    let vertex_id = ic_stable_lara::VertexId::from(args.local_vertex_id);
-
-    let Some(vertex) = store.vertex(vertex_id) else {
-        return Err(format!("vertex {} not found", args.local_vertex_id));
-    };
-    if vertex.is_tombstone() {
-        return Err(format!("vertex {} is tombstoned", args.local_vertex_id));
-    }
-
-    let dims = args.spec.dims;
-    if args.values.len() != dims as usize {
-        return Err(format!(
-            "vector length {} does not match dims {}",
-            args.values.len(),
-            dims
-        ));
-    }
-    if args.values.iter().copied().any(|v| !v.is_finite()) {
-        return Err("vector values must be finite".to_string());
-    }
-    if args.spec.embedding_name_id == 0 {
-        return Err("embedding name id 0 is reserved".to_string());
-    }
-    if args.spec.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
-        return Err(format!(
-            "encoding {:?} is not supported for ingestion; only F32 is accepted",
-            args.spec.encoding
-        ));
-    }
-
-    let bytes: Vec<u8> = args.values.iter().flat_map(|v| v.to_le_bytes()).collect();
-    store
-        .set_vertex_embedding(
-            vertex_id,
-            gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(args.spec.embedding_name_id),
-            args.spec.encoding,
-            dims,
-            bytes,
-            args.mutation_id,
-        )
-        .map_err(|e| e.to_string())
-}
-
-async fn admin_ingest_vertex_embedding_with_vector(
-    args: VertexEmbeddingIngestionArgs,
-    vector_override: Option<&dyn VectorCanisterLookup>,
-) -> Result<VertexEmbeddingIngestionResult, String> {
-    let catalog = IndexedEmbeddingCatalog {
-        embeddings: vec![args.spec],
-    };
-    let _catalog_guard = crate::index::vector_catalog_context::enter(catalog);
-    let version = admin_ingest_vertex_embedding_item(args).await?;
-
-    let projection_outcome = match vector_override {
-        Some(v) => flush_single_vector_pending(Some(v)).await,
-        None => {
-            #[cfg(target_family = "wasm")]
-            {
-                let client = crate::facade::GraphStore::new()
-                    .federation_routing()
-                    .and_then(|r| r.vector_canister)
-                    .map(
-                        |vector_principal| crate::index::vector_ic::IcVectorCanisterClient {
-                            vector_principal,
-                        },
-                    );
-                let vx = client.as_ref().map(|c| c as &dyn VectorCanisterLookup);
-                flush_single_vector_pending(vx).await
-            }
-            #[cfg(not(target_family = "wasm"))]
-            {
-                flush_single_vector_pending(None).await
-            }
-        }
-    };
-
-    Ok(VertexEmbeddingIngestionResult {
-        embedding_version: version,
-        projection_outcome,
-    })
-}
-
-async fn flush_single_vector_pending(
-    vector: Option<&dyn VectorCanisterLookup>,
-) -> VertexEmbeddingProjectionOutcome {
-    match crate::index::vector_pending::flush_pending(vector, None).await {
-        Ok(()) => VertexEmbeddingProjectionOutcome::Applied,
-        Err(_) => VertexEmbeddingProjectionOutcome::DeferredForRepair,
-    }
 }
 
 /// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
@@ -2884,32 +2701,6 @@ pub async fn backfill_edge_property_postings(
     };
     let _catalog = crate::index::catalog_context::enter(req.catalog);
     crate::index::edge_property_backfill::backfill_edge_property_postings(&store, &index, req.args)
-        .await
-}
-
-/// Resolve the shard's derived vector-index client from its local routing (ADR 0031 Slice 4). `None`
-/// until the vector attach handshake has set `vector_canister`.
-fn wasm_vector_client_holder() -> Option<crate::index::vector_ic::IcVectorCanisterClient> {
-    GraphStore::new()
-        .federation_routing()
-        .and_then(|r| r.vector_canister)
-        .map(
-            |vector_principal| crate::index::vector_ic::IcVectorCanisterClient { vector_principal },
-        )
-}
-
-/// Router → graph (ADR 0031 Slice 4/5): run one bounded vertex-embedding backfill step against the
-/// shard's vector index, using the router-supplied indexed-embedding catalog for the batch. Mirrors
-/// [`backfill_vertex_property_postings`]; the router drives resume cursors until `done`.
-pub async fn backfill_vertex_embeddings(
-    req: gleaph_graph_kernel::federation::VertexEmbeddingBackfillRequest,
-) -> Result<gleaph_graph_kernel::federation::EmbeddingBackfillResult, String> {
-    let store = GraphStore::new();
-    let Some(vector) = wasm_vector_client_holder() else {
-        return Err("vector index not configured".into());
-    };
-    let _catalog = crate::index::vector_catalog_context::enter(req.catalog);
-    crate::index::vertex_embedding_backfill::backfill_vertex_embeddings(&store, &vector, req.args)
         .await
 }
 
@@ -4210,18 +4001,11 @@ mod vertex_embedding_ingestion_tests {
     use super::*;
     use crate::facade::{FederationRouting, GraphStore};
     use crate::index::federation_routing::local_vertex_id_raw;
-    use async_trait::async_trait;
     use candid::Principal;
-    use gleaph_graph_kernel::entry::EmbeddingNameId;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{
-        IndexedEmbeddingSpec, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
+        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn vec_bytes(values: &[f32]) -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
 
     fn spec(name_id: u16, dims: u16) -> IndexedEmbeddingSpec {
         IndexedEmbeddingSpec {
@@ -4251,61 +4035,6 @@ mod vertex_embedding_ingestion_tests {
             store.repair_journal_remove(seq);
         }
         crate::index::vector_pending::clear_pending();
-    }
-
-    #[derive(Default)]
-    struct RecordingVector {
-        upserts: std::cell::RefCell<Vec<VectorEmbeddingSyncOp>>,
-    }
-    #[async_trait(?Send)]
-    impl VectorCanisterLookup for RecordingVector {
-        async fn vector_upsert(
-            &self,
-            op: VectorEmbeddingSyncOp,
-        ) -> Result<(), crate::plan::PlanQueryError> {
-            self.upserts.borrow_mut().push(op);
-            Ok(())
-        }
-        async fn vector_remove(
-            &self,
-            _op: VectorEmbeddingSyncOp,
-        ) -> Result<(), crate::plan::PlanQueryError> {
-            Ok(())
-        }
-    }
-
-    struct FlakyVector {
-        fail_after: usize,
-        upserts: AtomicUsize,
-    }
-    impl FlakyVector {
-        fn new(fail_after: usize) -> Self {
-            Self {
-                fail_after,
-                upserts: AtomicUsize::new(0),
-            }
-        }
-    }
-    #[async_trait(?Send)]
-    impl VectorCanisterLookup for FlakyVector {
-        async fn vector_upsert(
-            &self,
-            _op: VectorEmbeddingSyncOp,
-        ) -> Result<(), crate::plan::PlanQueryError> {
-            let n = self.upserts.fetch_add(1, Ordering::SeqCst) + 1;
-            if n == self.fail_after {
-                return Err(crate::plan::PlanQueryError::UnsupportedOp(
-                    "test_flaky_vector",
-                ));
-            }
-            Ok(())
-        }
-        async fn vector_remove(
-            &self,
-            _op: VectorEmbeddingSyncOp,
-        ) -> Result<(), crate::plan::PlanQueryError> {
-            Ok(())
-        }
     }
 
     fn insert_vertex() -> ic_stable_lara::VertexId {
@@ -4339,214 +4068,65 @@ mod vertex_embedding_ingestion_tests {
     }
 
     #[test]
-    fn valid_ingestion_returns_version_one_and_applied() {
-        setup_routing();
-        let vid = insert_vertex();
-        clear_journals();
-        let vector = RecordingVector::default();
-        let result = pollster::block_on(admin_ingest_vertex_embedding_with_vector(
-            VertexEmbeddingIngestionArgs {
-                local_vertex_id: local_vertex_id_raw(vid),
-                spec: spec(1, 2),
-                values: vec![1.0, 2.0],
-                mutation_id: 1,
-            },
-            Some(&vector as &dyn VectorCanisterLookup),
-        ))
-        .expect("valid ingestion");
-        assert_eq!(result.embedding_version, 1);
-        assert!(
-            matches!(
-                result.projection_outcome,
-                VertexEmbeddingProjectionOutcome::Applied
-            ),
-            "projection should be applied"
-        );
-
-        let store = GraphStore::new();
-        let record = store
-            .vertex_embedding(vid, EmbeddingNameId::from_raw(1))
-            .expect("canonical record");
-        assert_eq!(record.version, 1);
-        assert_eq!(record.dims, 2);
-        assert_eq!(record.bytes, vec_bytes(&[1.0, 2.0]));
-        assert!(store.repair_journal_is_empty());
-    }
-
-    #[test]
-    fn missing_vertex_rejects_without_mutation() {
+    fn stamp_embedding_rejects_missing_vertex() {
         setup_routing();
         clear_journals();
-        let err = pollster::block_on(admin_ingest_vertex_embedding_with_vector(
-            VertexEmbeddingIngestionArgs {
-                local_vertex_id: 9999,
-                spec: spec(1, 2),
-                values: vec![1.0, 2.0],
-                mutation_id: 1,
-            },
-            Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
-        ))
+        let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
+            local_vertex_id: 9999,
+            spec: spec(1, 2),
+            values: vec![1.0, 2.0],
+            mutation_id: 1,
+        }))
         .expect_err("missing vertex rejected");
         assert!(err.contains("not found"), "unexpected error: {err}");
         assert!(GraphStore::new().repair_journal_is_empty());
     }
 
     #[test]
-    fn dimension_mismatch_rejects_without_mutation() {
+    fn stamp_embedding_rejects_dimension_mismatch() {
         setup_routing();
         let vid = insert_vertex();
         clear_journals();
-        let err = pollster::block_on(admin_ingest_vertex_embedding_with_vector(
-            VertexEmbeddingIngestionArgs {
-                local_vertex_id: local_vertex_id_raw(vid),
-                spec: spec(1, 2),
-                values: vec![1.0, 2.0, 3.0],
-                mutation_id: 1,
-            },
-            Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
-        ))
+        let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
+            local_vertex_id: local_vertex_id_raw(vid),
+            spec: spec(1, 2),
+            values: vec![1.0, 2.0, 3.0],
+            mutation_id: 1,
+        }))
         .expect_err("dimension mismatch rejected");
         assert!(err.contains("vector length"), "unexpected error: {err}");
-        assert!(
-            GraphStore::new()
-                .vertex_embedding(vid, EmbeddingNameId::from_raw(1))
-                .is_none()
-        );
         assert!(GraphStore::new().repair_journal_is_empty());
     }
 
     #[test]
-    fn non_finite_value_rejects_without_mutation() {
+    fn stamp_embedding_rejects_non_finite_value() {
         setup_routing();
         let vid = insert_vertex();
         clear_journals();
-        let err = pollster::block_on(admin_ingest_vertex_embedding_with_vector(
-            VertexEmbeddingIngestionArgs {
-                local_vertex_id: local_vertex_id_raw(vid),
-                spec: spec(1, 2),
-                values: vec![1.0, f32::NAN],
-                mutation_id: 1,
-            },
-            Some(&RecordingVector::default() as &dyn VectorCanisterLookup),
-        ))
+        let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
+            local_vertex_id: local_vertex_id_raw(vid),
+            spec: spec(1, 2),
+            values: vec![1.0, f32::NAN],
+            mutation_id: 1,
+        }))
         .expect_err("non-finite rejected");
         assert!(err.contains("finite"), "unexpected error: {err}");
         assert!(GraphStore::new().repair_journal_is_empty());
     }
 
     #[test]
-    fn projection_failure_deferred_with_canonical_state_retained() {
+    fn stamp_embedding_rejects_reserved_embedding_name() {
         setup_routing();
         let vid = insert_vertex();
         clear_journals();
-        let flaky = FlakyVector::new(1);
-        let result = pollster::block_on(admin_ingest_vertex_embedding_with_vector(
-            VertexEmbeddingIngestionArgs {
-                local_vertex_id: local_vertex_id_raw(vid),
-                spec: spec(1, 2),
-                values: vec![1.0, 2.0],
-                mutation_id: 1,
-            },
-            Some(&flaky as &dyn VectorCanisterLookup),
-        ))
-        .expect("canonical commit succeeds even when projection fails");
-        assert_eq!(result.embedding_version, 1);
-        assert!(
-            matches!(
-                result.projection_outcome,
-                VertexEmbeddingProjectionOutcome::DeferredForRepair
-            ),
-            "projection failure should defer to repair"
-        );
-
-        let store = GraphStore::new();
-        let record = store
-            .vertex_embedding(vid, EmbeddingNameId::from_raw(1))
-            .expect("canonical state retained");
-        assert_eq!(record.version, 1);
-        assert!(
-            !store.repair_journal_is_empty(),
-            "deferred batch must be journaled"
-        );
-    }
-    #[test]
-    fn ingestion_preserves_pre_existing_pending_ops() {
-        use gleaph_graph_kernel::vector_index::VectorSubject;
-
-        setup_routing();
-        let vid = insert_vertex();
-        clear_journals();
-
-        // Seed a pre-existing pending op as if a prior GQL mutation queued it before ingestion.
-        let pre_op = VectorEmbeddingSyncOp {
-            index_id: 7,
-            embedding_name_id: 1,
-            subject: VectorSubject::Vertex {
-                shard_id: ShardId::new(0),
-                vertex_id: local_vertex_id_raw(vid),
-            },
+        let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
+            local_vertex_id: local_vertex_id_raw(vid),
+            spec: spec(0, 2),
+            values: vec![1.0, 2.0],
             mutation_id: 1,
-            encoding: VectorEncoding::F32,
-            dims: 2,
-            metric: VectorMetric::L2Squared,
-            bytes: vec_bytes(&[3.0, 4.0]),
-            remove: false,
-        };
-        crate::index::vector_pending::push_vector_op(pre_op.clone());
-
-        let vector = RecordingVector::default();
-        let result = pollster::block_on(admin_ingest_vertex_embedding_with_vector(
-            VertexEmbeddingIngestionArgs {
-                local_vertex_id: local_vertex_id_raw(vid),
-                spec: spec(1, 2),
-                values: vec![1.0, 2.0],
-                mutation_id: 1,
-            },
-            Some(&vector as &dyn VectorCanisterLookup),
-        ))
-        .expect("valid ingestion");
-        assert_eq!(result.embedding_version, 1);
-        assert!(
-            matches!(
-                result.projection_outcome,
-                VertexEmbeddingProjectionOutcome::Applied
-            ),
-            "projection should be applied"
-        );
-
-        // The vector client must observe *both* the pre-existing op and the new ingestion op in
-        // order. If ingestion had called clear_pending() before its canonical write, the pre-op
-        // would be silently dropped and these assertions would fail.
-        let delivered = vector.upserts.borrow();
-        assert_eq!(
-            delivered.len(),
-            2,
-            "both pre-existing and ingestion-derived ops must be delivered"
-        );
-        assert_eq!(
-            delivered[0].bytes, pre_op.bytes,
-            "first delivered op must be the pre-existing op"
-        );
-        assert_eq!(
-            delivered[1].bytes,
-            vec_bytes(&[1.0, 2.0]),
-            "second delivered op must be the ingestion op"
-        );
-        drop(delivered);
-
-        assert!(
-            crate::index::vector_pending::pending_snapshot().is_empty(),
-            "pending queue must be flushed after applied projection"
-        );
-        assert!(
-            GraphStore::new().repair_journal_is_empty(),
-            "applied projection leaves no repair journal"
-        );
-
-        // Canonical state reflects the ingestion, not the pre-existing bytes.
-        let record = GraphStore::new()
-            .vertex_embedding(vid, EmbeddingNameId::from_raw(1))
-            .expect("canonical record");
-        assert_eq!(record.bytes, vec_bytes(&[1.0, 2.0]));
+        }))
+        .expect_err("reserved name rejected");
+        assert!(err.contains("reserved"), "unexpected error: {err}");
+        assert!(GraphStore::new().repair_journal_is_empty());
     }
 }

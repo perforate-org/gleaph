@@ -4,7 +4,6 @@
 use super::canonical_export::CanonicalExportScopeStore;
 use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
-use super::vertex_embeddings::VertexEmbeddingStore;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::Edge;
@@ -85,11 +84,8 @@ const UNIQUE_EFFECT_OUTBOX: MemoryId = MemoryId::new(42);
 // --- ShardLocalGlobal fast path: graph-shard-local unique value table (ADR 0030 slice 10) (1 memory) ---
 const GRAPH_LOCAL_UNIQUE_VALUES: MemoryId = MemoryId::new(43);
 
-// --- Canonical vertex embeddings (ADR 0031) (1 memory) ---
-const VERTEX_EMBEDDINGS: MemoryId = MemoryId::new(44);
-
-// --- Delete-spanning embedding incarnation high-water marks (ADR 0031 Slice 4) (1 memory) ---
-const VERTEX_EMBEDDING_INCARNATIONS: MemoryId = MemoryId::new(45);
+// MemoryIds 44-45 were formerly VERTEX_EMBEDDINGS / VERTEX_EMBEDDING_INCARNATIONS (ADR 0031).
+// They remain reserved and are not allocated: the vector canister owns embedding bytes (ADR 0064 §1).
 
 // --- Durable derived-index outbox (0088) (1 memory) ---
 const DERIVED_INDEX_OUTBOX: MemoryId = MemoryId::new(46);
@@ -170,8 +166,6 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (INDEX_REPAIR_JOURNAL, 16),
     (UNIQUE_EFFECT_OUTBOX, 16),
     (GRAPH_LOCAL_UNIQUE_VALUES, 64),
-    (VERTEX_EMBEDDINGS, 32),
-    (VERTEX_EMBEDDING_INCARNATIONS, 8),
     (DERIVED_INDEX_OUTBOX, 16),
     (CANONICAL_EXPORT_SCOPES, 8),
 ];
@@ -188,7 +182,6 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
-pub(crate) type StableVertexEmbeddingStore = VertexEmbeddingStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableLabelStatsDeltaSeq = StableCell<u64, Memory>;
@@ -401,12 +394,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ("index_repair_journal", 41, INDEX_REPAIR_JOURNAL),
         ("unique_effect_outbox", 42, UNIQUE_EFFECT_OUTBOX),
         ("graph_local_unique_values", 43, GRAPH_LOCAL_UNIQUE_VALUES),
-        ("vertex_embeddings", 44, VERTEX_EMBEDDINGS),
-        (
-            "vertex_embedding_incarnations",
-            45,
-            VERTEX_EMBEDDING_INCARNATIONS,
-        ),
+        // MemoryIds 44-45 are reserved after VERTEX_EMBEDDINGS / VERTEX_EMBEDDING_INCARNATIONS removal.
         ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
         ("canonical_export_scopes", 51, CANONICAL_EXPORT_SCOPES),
     ];
@@ -455,13 +443,6 @@ pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
 
 pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
     VertexPropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_PROPERTIES)))
-}
-
-pub(crate) fn init_vertex_embedding_store() -> StableVertexEmbeddingStore {
-    VertexEmbeddingStore::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EMBEDDINGS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EMBEDDING_INCARNATIONS)),
-    )
 }
 
 pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {
