@@ -1,776 +1,455 @@
 # Vector index
 
-Last updated: 2026-07-15
-Anchor timestamp: 2026-07-15 08:58:08 UTC +0000
+Last updated: 2026-08-07
+Anchor timestamp: 2026-08-07 23:39:30 UTC +0000
 
 ## Status
 
-**Partially implemented** — [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md)
-accepts the ownership boundary: graph shards own canonical vertex embeddings, vector index
-canisters own derived candidate-generation structures, and Router owns vector query orchestration.
+**Deprecated → Planned (breaking redesign).** The ADR 0031/0032/0033 design and its Slices 1–10
+implementation are **deprecated / completely discarded**; the new design below is **Planned** — it is
+the active design contract and is intentionally ahead of implementation (none of it is implemented
+yet). The stable-memory layout lineage restarts at version 1: the new slab/page headers use a 3-byte
+magic (`VSL` / `VPG`) plus a **binary `u8` version byte `1`**. The discarded format's ASCII magic
+(`VSL1` / `VPG1`, 4th byte `0x31`) no longer matches (4th byte `0x01`), so old-format data is
+rejected fail-closed. This is a breaking change: dev stable data is wiped, and there is no
+compatibility reader, migration path, or canonical backfill for the old layout. See _Superseded
+implementation (Slices 1–10)_ below and the ADRs for the discarded design.
 
-Slice 1 is implemented: the graph-owned canonical `VertexEmbeddingStore` (fixed-dimension `F32`,
-stable region `VERTEX_EMBEDDINGS` / MemoryId 44) plus shared `EmbeddingNameId` / `VectorEncoding`
-types in `graph-kernel`.
+The redesign keeps the canonical/derived separation but changes four boundaries:
 
-Slice 2 is implemented: the derived sync path plus a degenerate `ivf_flat` `graph-vector-index`
-canister foundation (mutation-only). This covers `graph-kernel` sync/mutation wire types
-(`VectorEmbeddingSyncOp`, `VectorSubject::Vertex`, `IndexedEmbeddingCatalog`), the
-`VECTOR_INDEX_STABLE_LAYOUT` registry (11 regions, MemoryId 0–10), the `graph-vector-index` canister
-  storage (`vector_upsert` / `vector_remove`, plus the bounded `vector_sync_batch` transport wrapper,
-durable allocators, subject tombstone clock, attach /
-detach), and the graph-side delta plumbing (catalog-gated dispatch, `vector_pending`,
-`RepairPostingOp::VectorEmbedding`, repair drain, and bounded `vertex_embedding_backfill`).
+| Boundary               | Old (discarded)                                      | New                                                                                                        |
+| ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Embedding bytes        | graph canister canonical store (`VERTEX_EMBEDDINGS`) | **vector canister owns the only durable copy**; graph holds zero embedding state                           |
+| Ordering fence         | `(embedding_incarnation, embedding_version)`         | **graph per-shard `mutation_id`**                                                                          |
+| Presence determination | per-vertex canonical store enumeration               | **label sets on index definitions** + injected label→index mapping                                         |
+| Ingest path            | Router → Graph (bytes) → Vector (bytes)              | **stamp separation**: Router→Graph (metadata + stamp), Router→Vector (bytes) — bytes cross the subnet once |
 
-The degenerate `ivf_flat` foundation runs with `nlist = 1`, `partition_id = 0`, and no centroids;
-the `IVF_CENTROIDS` region (MemoryId 6) is reserved-but-empty so Slice 4 needs no stable repack.
-
-Slice 3 is implemented: the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`,
-MemoryId 42) and graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds
-40–41), the admin/query surface, single-target (inspect-only) resolution, and the ephemeral
-`ExecutePlanArgs.indexed_embeddings` injection path.
-
-Slice 4 is implemented: the delete-spanning **incarnation fence** (canonical
-`VERTEX_EMBEDDING_INCARNATIONS`, graph MemoryId 45) makes the canonical-wins drain production-correct
-and **activates production dispatch** behind a Router-owned stable activation flag
-(`ROUTER_VECTOR_DISPATCH_ACTIVATION`, MemoryId 43, default off) plus a per-graph readiness gate. See
-*Router catalog, target resolution, and the activation gate (Slice 4, implemented)* below.
-
-Plan 0048 is implemented: the canonical vertex-embedding ingestion boundary adds a
-Router admin write surface (`admin_ingest_vertex_embedding`) that resolves the opaque graph-scoped
-vertex id, validates the registered embedding definition, and dispatches a single canonical write to
-the owning Graph shard. Graph commits the canonical bytes/version and attempts the derived vector
-projection; the result distinguishes `Applied` from `DeferredForRepair` so callers do not retry an
-already-committed canonical write. Social-demo semantic retrieval remains planned.
-
-**Without an installed catalog the graph shard skips vector dispatch entirely** (mirroring
-property-index behavior when no catalog is present); the shard never persists an indexed-embedding
-registry, and the injected catalog is empty whenever dispatch is not ready.
-
-Slice 5 is implemented: the first production **read path** — an exact top-k `ivf_flat` search. The
-vector canister exposes a router-guarded query `vector_search(VectorSearchRequest) ->
-VectorSearchResult` that scans the **live subject map** (`VECTOR_SUBJECT_TO_ID`) over the requested
-`index_id`, reads each live slot's bytes through a per-query page cache, scores with `L2Squared`, and
-returns a bounded, deterministically ordered top-k. An activated index with no embeddings yet has no
-physical def (it is created lazily on first upsert), so search returns an **empty** result rather than
-an error. The Router exposes `vector_search` as a
-`#[query(composite = true)]` that resolves the graph/index to its single activated target and **fails
-closed** on the same Slice 4 activation gate (`activation_block_reason`) before forwarding; it also
-prevalidates `top_k` / `dims` / query byte length against the registered definition so user mistakes
-surface as `InvalidArgument` rather than an opaque internal error. The vector-canister query is
-router-guarded so the derived vectors cannot be queried directly around the gate. This slice
-introduces **no stable-layout change** (no new region, no `PageRow`/reverse-map
-change): correctness and freshness come from the subject map, which is already the source of truth for
-which subjects are live and at which slot. The kernel adds `VectorSearchRequest` / `VectorSearchHit`
-/ `VectorSearchResult` and `MAX_VECTOR_SEARCH_TOP_K` (1024).
-
-The `top_k` bound limits only the Vector Index response and the Router's SEARCH seed relation. A
-subsequent GQL expansion or join may produce more rows than the search hit count, so the Graph and
-Router execution boundaries separately reject Candid-encoded GQL results above the shared
-cross-subnet-safe payload ceiling; they do not silently truncate results.
-
-Slice 6 is implemented: the first real `ivf_flat` **partition-page read path**. It adds a derived
-`VECTOR_ID_TO_SUBJECT` (MemoryId 11) reverse locator and a `partition_page_scan` that scores the
-query against the index's centroids, selects the `nprobe` nearest partitions, and scans only those
-partitions' page chains. Each scanned `PageRow` is reverse-mapped (`VECTOR_ID_TO_SUBJECT`) back to
-its subject and re-validated against `VECTOR_SUBJECT_TO_ID` (not deleted, `vector_id` matches, `slot`
-points at exactly this page/slot/generation) before scoring, so `VECTOR_SUBJECT_TO_ID` stays the
-single freshness source of truth and the reverse map is only a locator. `vector_search` selects the
-read path: it uses the **exact subject-map scan** (Slice 5) when `nlist <= 1` or the centroids are
-not ready/current, and the partition-page scan otherwise; a stale or incomplete centroid set falls
-back to the exact scan with no error. `nprobe` is the only recall knob — the selected partitions are
-scanned **in full**, so the result is the exact top-k over those partitions and there is no mid-scan
-budget that could silently truncate it (`VectorSearchResult` carries no partial/cursor marker). The
-in-canister default is `nprobe = min(4, nlist)` (clamped to `1..=nlist`); the public Router/kernel
-request stays algorithm-neutral (no `nprobe` on the wire), and an internal `vector_search_tuned`
-varies `nprobe` for tests/benchmarks only.
-
-Slice 7 is implemented: a production, vector-canister-owned **bounded shadow-version rebuild** that
-turns a degenerate (`nlist = 1`) — or an already-partitioned — index into an `nlist > 1` index, and
-makes published `nlist > 1` indexes **mutable** (removing the Slice 6 "seeded fixtures are immutable"
-limitation). The `SubjectMapEntry` gains a second `shadow_slot`, a new `VECTOR_REBUILD_STATE` region
-(MemoryId 12) holds the per-index lifecycle, and the registry is now 13 regions (MemoryId 0–12). See
-*Slice 7 production rebuild + dual-write (implemented)* below. Centroid layouts are still also
-producible by the test/bench `seed_ivf_for_test` helper, but production no longer depends on it.
-
-Slice 8 is implemented: a bounded, deterministic **k-means-lite `Training` phase** between `Sampling`
-and `Building` that refines the centroids (Slice 7 used the first `nlist` distinct samples verbatim),
-plus a head-only **partition-health** summary for skew visibility. No new stable region. See *Slice 8
-training quality + partition health (implemented)* below.
-
-[ADR 0032](../adr/0032-vector-index-slab-page-store.md) replaces the `VECTOR_PAGE` large-value page
-store with a vector-index-owned composite slab page store: a `VECTOR_PAGE_META` directory (MemoryId
-10) of per-page `{ slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }` plus a
-raw `VECTOR_ROW_SLAB` region (MemoryId 13) holding structure-of-arrays row bytes
-(`vector_id`/`generation`/`subject_locator`/`tombstone_bits`/`vector_bytes`) behind a magic/version
-header. The two regions form one composite store (`PAGE_STORE`) that opens together and fails closed
-on a partial layout, with a valid empty-initialized store treated as a normal reopen. The development
-page representation has no deployed runtime state, so this is a fresh layout cutover with no old-page
-migration, compatibility reader, or canonical backfill/rebuild step. Append is fallible (slab `grow`
-can fail) and write-then-commit ordered; row tombstoning owns the page-meta and `PartitionHead`
-`live_len` accounting; page cleanup deletes `VECTOR_PAGE_META` entries only (no slab tail rewind in
-this slice — dropped bytes are leaked dead space). ADR 0032 preserves the ADR 0031 freshness
-contract: `VECTOR_SUBJECT_TO_ID` remains the live-clock/source-of-truth row, while the row-local
-`subject_locator` is derived scan acceleration that retires `VECTOR_ID_TO_SUBJECT` from the
-partition-scan hot path (the region is retained; the search path re-validates each candidate against
-`VECTOR_SUBJECT_TO_ID.current_slot_for(active)`).
-
-The slab store exposes a derived, admin-only observability query (`admin_vector_slab_stats`,
-router-guarded) over the ADR 0032 page store. It is maintenance observation, not search truth: it is
-computed purely from `VECTOR_PAGE_META` plus the slab header, never reads row bytes or
-`VECTOR_SUBJECT_TO_ID`, and never feeds search/mutation/rebuild/freshness decisions —
-`VECTOR_SUBJECT_TO_ID` remains the freshness source of truth. Because `VECTOR_ROW_SLAB` is a single
-global allocation domain, the physical slab facts (`slab_size_bytes`, `occupied_tail_bytes`,
-`referenced_page_bytes_global`, `estimated_unreferenced_bytes`) are always whole-slab global, while
-an optional `index_id` scopes only the logical counters and the per-version breakdown. The reported
-`physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone rows), which can
-exceed the searchable count because the search freshness check skips stale/meta-drift rows; the
-dead-space estimate is approximate and intentionally conservative (it grows as cleanup deletes page
-meta without rewinding the slab tail). `admin_vector_slab_stats` is an unbounded full page-meta scan
-retained as a convenience query; for large stores the IC-safe path is `admin_vector_slab_stats_step`,
-a cursor/budgeted variant that scans at most `max_pages` page-meta entries per call (clamped
-server-side) and returns an opaque `PageKey` cursor to resume from. Its per-step results are partial
-and additive: the caller repeats until `exhausted` and sums them, except the physical snapshots
-(`slab_size_bytes`/`occupied_tail_bytes`) which are repeated (take any step's value). Each step still
-scans the whole map for global referenced bytes even under an `index_id` filter, so each step's
-`estimated_unreferenced_bytes` is reported as `0`; the caller recomputes it once after merging as
-`occupied_tail_bytes - slab_header_len - sum(referenced_page_bytes_global)`. The step cursor is
-external caller input, so a malformed cursor is rejected with an error rather than trapping. The
-stepped path is a bounded best-effort scan, **not** a point-in-time snapshot: the cursor is only a
-`PageKey`, so it has no snapshot isolation against concurrent `VECTOR_PAGE_META` writes between calls
-(a page inserted before the cursor is missed, a counted-then-deleted page lingers in the merge, and
-the last step's `occupied_tail_bytes` may pair with earlier-state referenced bytes). For an exact
-whole-slab figure, run the steps during a quiescent window or use the single-call
-`admin_vector_slab_stats`; the diagnostic-only counters tolerate small cross-call drift otherwise.
-Neither query changes allocation, and any compaction/tail-rewind work remains deferred.
-
-Slice 9 is implemented: bounded page-meta **tombstone-ratio / total-row partition health**
-(`admin_vector_partition_health_step`), a policy-driven **rebuild recommendation + trigger**
-(`recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended`, no autonomous
-timer), and a transient **heap centroid cache** (`admin_vector_centroid_cache_warmup` / `_clear` /
-`_status`, read-only on the `#[query]` search path). No new stable region. See *Slice 9 maintenance
-visibility + centroid cache (implemented)* below.
-
-Slice 10 is implemented: **Router-forwarded maintenance** for the full Slice 7-9 surface, a
-Router-owned **maintenance policy catalog** (`ROUTER_VECTOR_MAINTENANCE_POLICIES`, MemoryId 44,
-disabled by default), and a **vector-owned maintenance execution state** (`VECTOR_MAINTENANCE_STATE`,
-MemoryId 14) driven one bounded unit per Router push (`admin_vector_maintenance_step`). Publish stays
-explicit (the step stops at `ReadyToPublish`). See *Slice 10 maintenance orchestration (implemented)*
-below.
-
-Still deferred to Slice 11+: full/balanced k-means and k-means++ init, autonomous (timer-driven)
-partition tombstone-cleanup scheduling, candidate pagination, query ranking/merge, PQ/HNSW, and
-`VectorSubject::Edge`. The standard vector-index
-kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a separate kind, and
-later `ivf_pq` or experimental `hnsw` implementations must preserve the same canonical/derived
-boundary.
-
-### Slice 7 production rebuild + dual-write (implemented)
-
-A bounded shadow-version rebuild trains centroids and builds partition pages for a new
-`index_version`, then **atomically publishes** it, without losing canonical mutations that arrive
-while the build is in flight. The concurrency model is **dual-write to both the active and the shadow
-`index_version` while a build is active** (quiesce and delta-replay were rejected: quiesce is
-operationally costly and delta-replay reintroduces the watermark design dual-write avoids). The
-rebuild is driven by Router-guarded admin endpoints and every long-running phase is bounded and
-cursor-resumable so no single message performs an O(N) sweep:
-
-- `admin_start_vector_rebuild(index_id, nlist, sample_limit)` — O(1); validates params
-  (`2 <= nlist <= MAX_NLIST`, `nlist <= sample_limit <= MAX_REBUILD_SAMPLE_LIMIT`, and the Slice 8
-  feasibility check `2 * nlist * stride_bytes + MAX_REBUILD_STATE_OVERHEAD_BYTES <=
-  MAX_REBUILD_STATE_BYTES` (combined candidate-pool + centroid durable state fits the encoded
-  envelope) **and** `nlist^2 * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS` (one training iteration over
-  `>= nlist` candidates fits the per-message op budget); `F32`/`L2Squared`, `Idle`) and enters
-  `Sampling` without scanning subjects or writing centroids.
-- `admin_vector_rebuild_step(index_id, max_subjects)` — drives `Sampling` (collect a **bounded
-  distinct candidate pool**, capped by the smaller of the combined-state byte budget and the
-  distance-op count, then transition to `Training` if `>= nlist` distinct candidates were collected,
-  else `Failed`), then `Training` (one deterministic k-means-lite iteration per step; see Slice 8
-  below) which writes the refined `IVF_CENTROIDS`, then `Building` (shadow every live subject's vector
-  into its nearest target partition), reaching `ReadyToPublish`. Each `Sampling`/`Building` step is
-  bounded on **both** axes: the caller's `max_subjects` is clamped to `1..=MAX_REBUILD_STEP_WORK` (row
-  count) and the step also breaks once the transient vector bytes it buffers reach
-  `MAX_REBUILD_STEP_VECTOR_BYTES` (heap bytes, since `stride_bytes` scales with `dims`), always
-  buffering at least one vector so it makes forward progress. Insufficient distinct live vectors
-  (range or `sample_limit` exhausted with `< nlist` distinct) ends in `Failed` (nothing persisted,
-  O(1) recoverable to `Idle` via abort).
-- `admin_publish_vector_rebuild(index_id)` — **O(1)**: completeness is an invariant established by
-  `Building` + dual-write, so publish performs no live-subject scan. It flips
-  `def.active_index_version` + `nlist` and the centroid metadata in one message, then enters
-  `Cleaning`.
-- `admin_vector_rebuild_cleanup_step(index_id, max_work)` — drives both the post-publish `Cleaning`
-  teardown (collapse `shadow_slot -> slot`, repoint the reverse locator, drop the old version's
-  pages/heads/centroids) and the `Aborting` teardown (clear `shadow_slot`, drop the shadow version's
-  pages/heads/centroids), bounded across a subject sub-stage then a page sub-stage. `max_work` is
-  clamped to `1..=MAX_REBUILD_STEP_WORK` for the same reason as the rebuild step.
-- `admin_abort_vector_rebuild(index_id)` / `admin_vector_rebuild_status(index_id)` — abort returns
-  straight to `Idle` from `Sampling`/`Training`/`Failed` (nothing persisted: `Training` keeps its
-  centroids in the state record until the transition to `Building`) or enters `Aborting` from
-  `Building`/`ReadyToPublish`; status is an O(1) scalar snapshot (never the candidate bytes), carrying
-  the `Training` iteration count.
-
-**Two-slot subject entry / atomic publish.** Publish stays metadata-only because the shadow live slot
-lives in `SubjectMapEntry.shadow_slot` and search resolves the live slot via
-`current_slot_for(def.active_index_version)`: the active `slot` while it matches, else the
-`shadow_slot` once the atomic flip moves the active version onto the rebuilt one. Both read paths
-(exact subject scan and partition-page scan) resolve through `current_slot_for`, so freshness is
-never read off the wrong version — including the post-publish `Cleaning` window before a subject is
-collapsed. `VECTOR_SUBJECT_TO_ID` therefore remains the single freshness source of truth; the
-`VECTOR_ID_TO_SLOT` reverse locator tracks the active slot and is intentionally stale for
-not-yet-collapsed subjects during `Cleaning` (search never relies on it), repointed at collapse.
-
-**Dual-write semantics.** A mutation branches on the rebuild phase: active-only (no rebuild /
-`Sampling` / `Training` / `Failed` / `Aborting`; a `Training`-era mutation is later shadowed when
-`Building` walks every live subject), dual-write into active + shadow (`Building` / `ReadyToPublish`),
-or active-only on the now-`target` version during `Cleaning`. In `Cleaning`, any **state-changing**
-mutation collapses the touched subject (`slot = target`, `shadow_slot = None`, `VECTOR_ID_TO_SLOT`
-repointed); a pure idempotent no-op (same version, identical bytes) changes nothing and is left for
-`cleanup_step` to collapse. The active append uses centroid assignment whenever the active `nlist > 1`
-(the published-index mutability path) and the shadow append always uses the target centroids.
-
-### Slice 8 training quality + partition health (implemented)
-
-A bounded, deterministic `Training` phase sits between `Sampling` and `Building`; the lifecycle is
-now `Idle → Sampling → Training → Building → ReadyToPublish → Cleaning → Idle` (abort from
-`Sampling`/`Training` is O(1) to `Idle`). No new stable region is added; the durable
-`VectorRebuildStateRecord` gains a `Training` variant.
-
-- **Bounded candidate pool (P2).** `Sampling` accumulates a *distinct* candidate pool capped by
-  `candidate_pool_cap = min(byte_cap, op_cap)`, where `byte_cap = (MAX_REBUILD_STATE_BYTES -
-  nlist * stride_bytes - MAX_REBUILD_STATE_OVERHEAD_BYTES) / stride_bytes` reserves room for the
-  trained centroids and Candid encoding overhead inside the combined-state envelope, and `op_cap =
-  MAX_REBUILD_TRAINING_DISTANCE_OPS / (nlist * dims)`. `MAX_REBUILD_STATE_BYTES` (8 MiB) is the
-  **Candid-encoded** `to_bytes()` cap on the whole rebuild-state value, not a raw-vector-bytes cap.
-- **Bounded per-message training work (P1).** `Training` performs exactly one k-means-lite iteration
-  per `admin_vector_rebuild_step`: assign each candidate to its nearest current centroid (ties to the
-  lowest id), recompute each centroid as the arithmetic mean of its members (an empty cluster keeps
-  its previous centroid), `iteration += 1`. The pool cap guarantees
-  `candidate_count * nlist * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`; the per-iteration sums/counts
-  are transient heap buffers (`O(nlist * dims)`), never persisted. After
-  `MAX_REBUILD_TRAINING_ITERATIONS` it writes exactly `nlist` centroids to `IVF_CENTROIDS` and enters
-  `Building`. `Training` writes no pages and no shadow slots.
-- **Rebuild-state read cost (ADR 0033).** The candidate pool deliberately remains inside the
-  `VECTOR_REBUILD_STATE` (MemoryId 12) record: measurement showed a contiguous-blob or dedicated-raw-region
-  layout does not reduce the per-step cost, which is the repeated stable-memory read of the record. See
-  [ADR 0033](../adr/0033-vector-rebuild-state-read-memoization.md) for the rejected layout changes and the
-  proposed transient heap memoization of `rebuild_state_of`.
-- **Fail-closed encoded-size guard (single encode).** Before persisting any `Training` value (the
-  `Sampling → Training` transition and each post-iteration `Training → Training` re-persist) the
-  canister Candid-encodes the value **once**, checks that length against `MAX_REBUILD_STATE_BYTES`,
-  and — if within budget — stores those same bytes verbatim via `RawRebuildState` rather than
-  re-encoding on insert. An oversized value returns `InvalidRebuildParams` rather than
-  `assert!`/trapping the message and leaves the prior recoverable state intact. The conservative pool
-  cap normally keeps this from firing; the guard absorbs Candid-overhead drift. The `RawRebuildState`
-  wrapper stores the exact `VectorRebuildStateRecord` Candid bytes (on-disk format unchanged), so the
-  guard and the persist share one encode and `rebuild_state_of` decodes once per step.
-- **Partition health.** `admin_vector_partition_health(index_id)` (Router-guarded `#[query]`) returns
-  a head-only, integer-only `VectorPartitionHealthSummary { nlist, partitions_examined, live_rows,
-  page_count, max_partition_live_rows }`. It reads the active version's `0..nlist` `PartitionHead`
-  rows (O(`nlist`), bounded by `MAX_NLIST`, no page scan); the caller derives
-  `avg = live_rows / nlist` and the skew ratio `max_partition_live_rows / avg`. Tombstone accounting
-  is deferred to Slice 9+ (it would need a page scan or new persisted counters). Search is unchanged
-  (no `nprobe` on the wire, no mid-scan truncation).
-
-### Slice 9 maintenance visibility + centroid cache (implemented)
-
-Maintenance/cache surface only — no change to canonical ownership, search semantics, or stable layout
-(heap-only cache; reuses `VECTOR_PAGE_META`, `VECTOR_PARTITION_HEADS`, `IVF_CENTROIDS`). All new admin
-endpoints stay on the vector canister behind `guard_router_canister` (driven by the router principal);
-Router forwarding landed in Slice 10 (below).
-
-- **Bounded page-meta tombstone health.** `admin_vector_partition_health_step(index_id, cursor,
-  max_pages)` (Router-guarded `#[query]`) scans at most `max_pages` `VECTOR_PAGE_META` entries of the
-  active `(index_id, active_index_version)` — page meta only, never row bytes or `VECTOR_SUBJECT_TO_ID`
-  — returning an additive `VectorPartitionHealthStep { partial: VectorPartitionPageHealth { index_id,
-  index_version, page_count, total_rows, physical_live_rows, tombstoned_rows }, cursor, exhausted }`.
-  Callers repeat until `exhausted` and sum the partials (the `VectorSlabStatsStep` merge /
-  no-snapshot-isolation contract); `max_pages` is clamped server-side and a malformed or wrong-scope
-  cursor returns `InvalidStatsCursor` rather than trapping. This complements the head-only Slice 8 skew
-  summary with the tombstone signal the head cannot see.
-- **Recommendation + trigger (no autonomous timer).** `recommend_partition_maintenance(summary,
-  page_health, policy)` is a pure function returning `VectorMaintenanceRecommendation { Healthy,
-  RebuildRecommended, RebuildRequired }` as the max severity across two independently min-row-gated
-  signals — tombstone ratio (`tombstoned_rows / total_rows`) and partition skew
-  (`max_partition_live_rows * nlist / live_rows`) — compared against a `VectorMaintenancePolicy`'s split
-  `recommended_*_bps`/`required_*_bps` thresholds with `u128` cross-multiplication (no floats, no
-  overflow; an inverted policy returns `InvalidMaintenancePolicy`).
-  `admin_start_vector_rebuild_if_recommended(index_id, attested_page_health, policy, target_nlist,
-  sample_limit)` (Router-guarded `#[update]`) recomputes the head-only skew `summary` server-side from
-  the authoritative partition heads (O(`nlist`)), re-derives the recommendation, and, when not
-  `Healthy`, begins an existing rebuild, returning the recommendation. The skew summary thus has no
-  caller-trust surface; only the page-meta tombstone health is *trusted admin input*. A generation
-  guard rejects page health attested against a different generation (`attested_page_health.index_id`/
-  `index_version` must equal the active version, else `StaleMaintenanceHealth`). `target_nlist = None`
-  defaults to `def.nlist` only when `>= 2` (degenerate `nlist = 1` requires an explicit target).
-- **Heap centroid cache.** A transient `thread_local` cache keyed by `(index_id ->
-  {version, nlist, dims})` memoizes the decoded centroid set so the partition-page `#[query]` search
-  skips the `IVF_CENTROIDS` stable read + `f32` decode. IC `#[query]` execution is non-committing, so
-  the query path is **read-only**: a warmed entry is used; a miss reads stable for that call only and
-  does **not** populate the cache. Population/eviction are `#[update]`-only —
-  `admin_vector_centroid_cache_warmup(index_id)` (caches a ready `nlist > 1` set; drops stale entries
-  for degenerate/untrained indexes), `admin_vector_centroid_cache_clear()`, and a publish-time
-  invalidation when the active generation flips; the cache is byte-bounded and dropped on init/upgrade.
-  `admin_vector_centroid_cache_status()` reports `VectorCentroidCacheStatus { entries, bytes,
-  max_bytes }` — per-query hit/miss is intentionally not tracked (a query cannot commit counters on IC).
-  Canbench shows the warm partition-page search is measurably cheaper than cold (e.g. d768/nlist64:
-  ~98.1M cold vs ~92.0M instructions warm).
-
-### Slice 10 maintenance orchestration (implemented)
-
-Slice 10 makes the Slice 7-9 maintenance surface operable from the Router without moving execution
-state out of the vector canister. The boundary is: **Router owns policy + authority; the vector
-canister owns derived maintenance execution.** It adds one stable region per canister and changes no
-search/dual-write/publish semantics.
-
-- **Vector-owned execution state (`VECTOR_MAINTENANCE_STATE`, MemoryId 14).** A per-index
-  `VectorMaintenanceState` — `Idle`; `Scanning { cursor: Option<Vec<u8>>, exhausted: bool, merged:
-  VectorPartitionPageHealth }` (`exhausted` is an explicit phase flag, never encoded via
-  `cursor == None`); `Failed(VectorMaintenanceFailure { code, message })` (message truncated to a
-  bounded length so persisted size is error-string-independent). Unlike the heap-only centroid cache,
-  this is durable execution state: it **persists across upgrade** and is cleared only on canister
-  init/reset.
-- **Bounded vector step.** `admin_vector_maintenance_step(index_id, VectorMaintenanceStepRequest {
-  policy, target_nlist, sample_limit, scan_max_pages, rebuild_max_subjects, cleanup_max_work })`
-  (Router-guarded `#[update]`) advances exactly one bounded unit: it drives an in-flight
-  rebuild/cleanup first; otherwise from `Idle` it starts a scan and does one
-  `partition_page_health_step`; when the scan exhausts it validates the merged generation against the
-  active version, recomputes the head summary, and runs `recommend_partition_maintenance`, starting a
-  rebuild on `Recommended`/`Required`. Two generation guards keep it correct across an active-version
-  flip: a stale cursor mid-scan (`InvalidStatsCursor`) restarts from the lower bound, and the
-  exhausted→recommend boundary re-checks `merged.index_version == active_index_version`. It **stops at
-  `ReadyToPublish`** (returns `AwaitingPublish`) — publish stays explicit.
-  `admin_vector_maintenance_status` (query) and `admin_vector_maintenance_reset(index_id)` (update;
-  `Idle` from any state including `Failed`, without touching the rebuild state) round out the surface.
-- **Router policy SSOT (`ROUTER_VECTOR_MAINTENANCE_POLICIES`, MemoryId 44).** A per-`(graph_id,
-  index_id)` `VectorMaintenancePolicyRecord { enabled, policy, target_nlist, sample_limit,
-  scan_max_pages, rebuild_max_subjects, cleanup_max_work }`, **absent/disabled by default**. Authorship
-  (`admin_set_/disable_/delete_vector_maintenance_policy`, validated for `recommended_*_bps <=
-  required_*_bps`, nonzero budgets, and an existing definition) is `authorize_index_ddl`; stepping,
-  reads, and reset use a new Admin-only `authorize_vector_maintenance`.
-- **Router forwarding.** The Router exposes the whole Slice 7-9 maintenance surface as forwards to the
-  resolved single target (reads as composite queries, mutators/drivers as updates), each gated on
-  resolve + non-anonymous target + dispatch readiness. The push step `admin_vector_maintenance_step(
-  graph, index_id)` returns `Disabled` when no enabled policy exists, otherwise snapshots the policy
-  and forwards one bounded unit; `vector_maintenance_status(graph, index_id)` reports Router
-  policy/readiness plus the forwarded execution + rebuild state (cursors present/absent, not decoded).
-  Future automatic mode (vector-index-pull from Router policy) is documented but not implemented.
-
-## Version naming glossary
-
-Four distinct concepts; `version` is never overloaded in APIs or idempotence rules:
-
-| Name                   | Owner                 | Meaning                                                                                                                  |
-| ---------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `embedding_incarnation`| graph canonical store | Delete-spanning, monotonic per `(VertexId, EmbeddingNameId)` ordering token; strictly increases on each reinsert and is **never deleted** (high-water mark). Stamped on every sync op. |
-| `embedding_version`    | graph canonical store | `StoredEmbedding.version` per-incarnation update counter; resets to `1` on reinsert; carried on sync ops and the repair journal |
-| `index_version`        | vector-index canister | Physical index generation: `active_index_version` in defs, shadow rebuild target, page / partition-head keys           |
-| `generation`           | vector-index canister | Slot / entity handle generation for append-and-tombstone; bumps on each new slot for a subject                          |
-
-The subject map row (`VECTOR_SUBJECT_TO_ID[(index_id, subject)]`) is a **clock that survives
-deletion**: a removed subject retains its `(embedding_incarnation, embedding_version)` and
-`deleted = true`. The canister orders every write by `(embedding_incarnation, embedding_version)`:
-
-- **Older incarnation (`op.inc < clock.inc`):** stale no-op — neither an upsert nor a remove from a
-  prior incarnation can affect a newer one. This closes the reverse-orphan race.
-- **Same incarnation (`op.inc == clock.inc`):** ordered by `embedding_version` against the clock for
-  a live subject (stale `<` no-op; `==` identical no-op / different conflict; `>` appends a new slot,
-  reusing the live `VectorId`); a deleted subject no-ops a same-incarnation upsert.
-- **Newer incarnation (`op.inc > clock.inc`):** an upsert **resurrects** with a *fresh* `VectorId`
-  (resurrection requires a strictly newer incarnation); a remove records the newer deleted clock.
-
-Stale-replay protection is now enforced by **both** the canister clock (incarnation ordering) and
-the **graph repair-drain**, which reconciles vector journal entries against the canonical store
-rather than replaying them verbatim (canonical wins). If the subject still owns the embedding the
-drain delivers an upsert stamped with the re-derived current `(incarnation, version)`; if it was
-deleted the drain delivers a remove stamped with the **persisted incarnation** and
-`RECONCILE_TOMBSTONE_VERSION` (the within-incarnation max), which supersedes a live slot of the same
-incarnation yet — being incarnation-fenced — cannot tombstone a newer reinsert. A repair entry with
-no configured vector client is skipped (left durable) and never wedges the property repairs queued
-after it.
-
-`VectorId` is never reused: a reinsert after delete allocates a fresh id from the durable
-`next_vector_id` allocator. Remove ops carry an empty `bytes` field and rely on
-`(embedding_incarnation, embedding_version)` for idempotence.
-
-### Router catalog, target resolution, and the activation gate (Slice 4, implemented)
-
-Slice 3 made vector-index dispatch **addressable** from the Router; Slice 4 **activates** it behind
-the incarnation fence and a two-condition gate (global flag AND per-graph shard attach):
-
-- **Embedding-name catalog (Router-owned, graph-scoped).** `ROUTER_EMBEDDING_NAME_CATALOG`
-  (MemoryIds 40–41) interns embedding **names** to `EmbeddingNameId`s. The Router is the sole
-  allocator, so the id stored on a definition is exactly the id the graph stamps on canonical
-  embedding writes. Registration resolves **by name**; a caller-supplied raw `u16` is never accepted.
-- **Vector-index definition catalog.** `ROUTER_VECTOR_INDEXES` (MemoryId 42) maps
-  `(graph_id, index_id)` to a versioned `VectorIndexDefRecord { embedding_name_id, kind, metric,
-  encoding, dims, target: Option<VectorIndexTarget { canister }>, activation_state }`.
-- **Router invariants.** **One vector index per embedding name per graph** (registration rejects a
-  second def for the same `embedding_name_id` with `Conflict`, checked before interning the name) and
-  **one vector-index target per graph** (every def and every attached shard must share one target
-  principal). Both exist because graph dispatch/backfill/repair are single-route; transport batching
-  may combine multiple ordered operations for that one target without moving vector ownership.
-- **Activation flag.** `ROUTER_VECTOR_DISPATCH_ACTIVATION` (MemoryId 43) is a Router-owned stable
-  boolean, default off, toggled by `admin_set_vector_dispatch_activation` and read by
-  `vector_dispatch_activation_enabled` (RBAC `authorize_index_ddl` / admin). It replaces the old
-  `const false` fencing predicate and is reversible without a redeploy.
-- **The two-condition gate.** `graph_vector_dispatch_ready(graph_id)` is true only when the global
-  flag is on **and** every live (index-attached) shard of the graph carries a non-anonymous
-  `vector_index_canister` equal to the graph's single target with `vector_index_attached == true`.
-  `to_indexed_embedding_catalog(graph_id)` exports `DispatchEnabled` specs **only** when ready;
-  otherwise it stays empty (fail-closed), so a global enable can never act on a partially wired graph.
-- **Derived activation state.** `VectorIndexActivationState { Registered, DispatchBlocked,
-  DispatchEnabled }` is recomputed at read time, so the flag/attach activates existing targeted defs
-  with no stored-state migration. The activation-status query distinguishes blocked reasons
-  `DispatchNotActivated` (flag off) and `ShardsNotVectorAttached`.
-- **Target wiring.** A router-guarded graph endpoint `admin_set_vector_index_canister` writes the
-  target into the shard's **local** `FederationRouting` (idempotent, upgrade-durable). The Router
-  endpoint `admin_attach_vector_index_shard` drives the attach handshake — write graph-local routing
-  first, attach the shard to the vector canister, then flip the registry `vector_index_attached` bit
-  only after both succeed — so the registry bit cannot claim readiness while the shard is locally
-  `None`. A retrofit path attaches already-registered shards. `ShardRegistryEntry` carries
-  `vector_index_canister`/`vector_index_attached` via a `V2` stable envelope (old `V1` bytes decode).
-- **Vector-canister ownership is graph-scoped.** Because there is one target per graph, the vector
-  canister fixes ownership on `graph_id` alone and accepts **every** shard of that graph (a different
-  `graph_id` is rejected with `GraphOwnershipMismatch`). Unlike property indexes — where each index
-  canister owns one contiguous shard *group* (`index_group_size` / `group_index`) — the vector attach
-  carries no group descriptor; reusing the property group formula would split a multi-shard graph
-  into per-shard groups that a single target rejects.
-- **Admin/query surface (RBAC via `authorize_index_ddl`).** Register, set target, list, activation
-  status / explain-blocked, inspect-only single-target resolution (rejecting anonymous targets), the
-  activation flag set/get, and the vector-shard attach endpoint.
-- **Bounded backfill.** `admin_vector_index_backfill_step` is a real bounded driver (router
-  orchestration → `graph_client::backfill_vertex_embeddings` → graph endpoint → existing worker)
-  taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor. The worker batches
-  embedding operations through `vector_sync_batch` when supported and retains the per-operation
-  fallback for native/legacy clients; each operation preserves its incarnation/version fence. It
-  fails closed (`VectorDispatchActivationBlocked`) while dispatch is not ready.
-
-
-## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19)
-
-A bounded candidate allowlist can restrict the search to an exact top-k over current live vector
-slots. The allowlist is produced by the Router from the Property Index for both leading and
-non-leading `SEARCH ... WHERE` predicates (one equality, one to eight `AND`-connected same-binding
-equalities on distinct properties, one same-binding numeric range predicate, exactly two
-same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper
-`<`/`<=`) forming a two-sided range, one to eight equality predicates on distinct properties
-plus one one- or two-sided numeric range predicate on a distinct property, two to eight
-`OR`-connected same-binding same-property equality predicates, two to eight `OR`-connected
-same-binding pure equality predicates where property names may repeat or differ, two to eight
-`OR`-connected same-binding same-property one-sided numeric range predicates, two to eight
-`OR`-connected same-binding cross-property one-sided numeric range predicates, or two to eight
-`OR`-connected same-binding heterogeneous comparison predicates where each leaf is independently
-an equality or a one-sided numeric range comparison) and arrives in
-`VectorSearchRequest.candidate_subjects`.
-Router intersects the two range arms into one encoded interval, unions equality disjunction arms,
-merges range disjunction arms into disjoint encoded intervals **within each property id**, and normalizes
-heterogeneous disjunction arms into a combined set of deduplicated equality sources and per-property
-merged range sources before issuing the allowlist;
-Vector Index behavior is unchanged:
-
-- `None` keeps the existing unrestricted search path (exact subject scan or partition-page scan).
-- `Some([])` returns an empty result without reading vector rows.
-- A non-empty allowlist is validated at the receiving boundary: the count must not exceed
-  `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096), every subject must be a vertex, and duplicates are
-  rejected with `InvalidSearchCandidates`.
-- For each allowed subject, the canister resolves the current slot via `VECTOR_SUBJECT_TO_ID`,
-  re-reads the row through the slab page store, re-validates `vector_id` / `generation` / `slot`
-  consistency, and scores the row with the existing metric exact path. Deleted, stale, superseded, or
-  otherwise inconsistent subjects are skipped.
-- Qualifying rows are pushed through the same bounded top-k heap and deterministic tie-breaking used
-  by unrestricted search, so the result is the exact top-k over the allowlist.
-- The allowlist is transient: no new stable-memory region is introduced, and property values are not
-  copied into the vector canister.
+The canister role is renamed from _vector index canister_ to **vector canister**: it owns the embedding
+bytes (a derived encoding of graph data), the per-subject clock, and the search structures.
 
 ## Purpose
 
-Define the planned boundary between:
+Define the boundary between:
 
-- the graph-owned vertex embedding store;
-- edge inline property vectors used during traversal;
-- derived vector index canisters; and
-- Router vector query coordination.
+- the graph-owned canonical data that embeddings are derived from;
+- the vector canister's derived embedding bytes and search structures;
+- the Router's definitions, routing, and orchestration.
 
-The goal is to make vector search a graph-native candidate-generation path without turning Gleaph
-into a standalone vector database.
+The goal is to make vector search a graph-native candidate-generation path without turning Gleaph into
+a standalone vector database, while keeping the vector canister's data volume and per-query instruction
+cost bounded on the Internet Computer.
 
 ## Non-goals
 
-- Committing PQ or HNSW stable-memory layouts.
-- Using CSR as a vector-index stable-memory layout or snapshot format.
-- Exposing physical index kinds in GQL query syntax.
-- Defining public GraphRAG syntax.
-- Replacing edge inline property vectors used by traversal predicates.
-- Moving canonical vertex or edge state into an index canister.
+- Committing PQ or HNSW stable-memory layouts (deferred; see _Algorithm roadmap_).
+- Exposing physical index kinds or training knobs in GQL query syntax.
+- Mixing multiple encodings or dimensions inside one index (one index = one model = one stride).
+- Cross-encoding search in one index (merge across indexes at the Router if ever needed).
+- Retaining the discarded Slice 1–10 implementation or its layout in any form.
+
+## Design principles
+
+1. **Growth-rate data placement.** Stores that grow fast hold the minimum possible bytes; per-row
+   interpretation rules, constants, and progress state live in slow-growing stores (definitions,
+   EncodingRecord, per-shard watermarks).
+2. **Measurement-driven.** Every optimization (scoring formulation, pruning, page sizing, encoding)
+   is adopted only after canbench isolates its instruction and storage effect against a baseline.
+3. **Simplest structure that meets the budget.** No PMA/free-span/compaction tiers, no maintained
+   reverse maps, no row moves: append-only positions and rebuild-as-compaction.
+4. **Stored precision = search precision.** The encoding is the data; non-`F32` indexes are
+   approximate by contract, documented per definition.
 
 ## Ownership model
 
-| Layer | Owns | Must not own |
-|-------|------|--------------|
-| Router | vector index target resolution, auth, planning integration, fan-out, merge, seed construction | canonical vectors, ANN storage internals |
-| Graph | canonical vertex embeddings, vertex delete/update semantics, embedding backfill source | ANN partitions, centroid assignment, cross-canister query merge |
-| Vector index canister | derived full-vector copies, `ivf_flat`/`flat`/future `ivf_pq`/future `hnsw` search structures, candidate scoring | final graph results, traversal, property filtering, vertex existence |
-| GQL portable crates | generic language and planning structures only | Gleaph/IC-specific vector storage or canister assumptions |
+| Layer           | Owns                                                                                                                                                                           | Must not own                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| Router          | vector index definitions (incl. label sets), embedding-name catalog, activation/readiness, target resolution (list-capable), fan-out + deterministic merge, maintenance policy | embedding bytes, per-subject state, partition internals            |
+| Graph           | canonical graph data (the semantic source of embeddings), vertex existence, label membership, per-shard `mutation_id` sequence                                                 | embedding bytes (never, not even transiently), vector-domain state |
+| Vector canister | embedding bytes (only durable copy), per-(index, subject) clock, partitions, centroids, rebuild/search                                                                         | final graph rows, traversal, property filtering, vertex existence  |
 
-## Vertex embeddings vs edge inline property vectors
+## Embeddings are derived encodings
 
-Vertex embeddings and edge inline property vectors are separate concepts.
+An embedding vector is a **derived encoding** of graph data through an external embedding model. The
+graph cannot re-derive it (the model is external), so:
 
-| Concept | Owner | Use |
-|---------|-------|-----|
-| Vertex embedding | Graph canister | semantic representation of a vertex; GraphRAG candidate generation; vector-index backfill |
-| Edge inline property vector | Graph canister / LARA edge inline property | traversal-critical edge-local vector predicate during expand |
-| Vector index entry | Vector index canister | derived search structure for candidate generation |
+- the graph's canonical data is the _semantic_ source, never the _byte_ source;
+- the vector canister's copy is the only durable byte copy;
+- partition rebuild is self-serve (from the vector canister's own rows); full loss is recovered by
+  client re-ingestion (documented recovery contract, same as any standalone vector store).
 
-`EdgeInlinePropertyEncoding::VectorF32` remains valid for edge-local predicates. The canonical vertex
-embedding store exists for vertex semantic embeddings so the graph shard can enforce dimensions,
-encoding, versioning, delete behavior, and rebuild/backfill into derived vector indexes.
+## Router catalog
 
-## Canonical vertex embedding store
-
-**Implemented (slice 1).** The canonical key shape is committed:
+Definitions (`ROUTER_VECTOR_INDEXES`) carry a **label set**, creation-fixed:
 
 ```text
-(VertexId, EmbeddingNameId) -> EmbeddingRecord
-```
-
-The key is vertex-major and big-endian fixed-width (6 bytes) so delete can enumerate all
-embeddings owned by one vertex. Backfill-by-embedding-name is deliberately not optimized in the
-canonical store; a later derived embedding-name index may be added when vector-index backfill needs
-it.
-
-This records the accepted trade-off: `(VertexId, EmbeddingNameId)` favors per-vertex delete
-enumeration over whole-embedding-name scans. A future `(EmbeddingNameId, VertexId)` access path may
-be added as **derived** state when vector-index backfill needs it, but it must not become a second
-canonical store.
-
-Record shape (graph facade `StoredEmbedding`, stable region `VERTEX_EMBEDDINGS`, MemoryId 44):
-
-```text
-EmbeddingRecord {
-  encoding: F32,
-  dims: u16,
-  version: u64,   // 1 on insert, +1 per update; 0 reserved = unset / no record
-  bytes,          // inline little-endian f32 components, byte width = dims * 4
+VectorIndexDefRecord {
+  index_id, embedding_name_id,
+  labels: Vec<LabelId>,          // creation-fixed; change = drop + recreate
+  kind, metric, encoding, dims,
+  target: Option<VectorIndexTarget>,
+  activation_state,
 }
 ```
 
-The slice supports only fixed-dimension `F32`. `EmbeddingNameId(0)` is reserved and rejected at the
-write boundary. Dimension changes on an existing embedding are rejected (`DimensionMismatch`):
-re-embedding at a different dimension under the same `EmbeddingNameId` requires remove + insert or a
-new embedding name. The stored bytes are a manual, length-prefixed layout led by a `schema_version`
-tag; an unknown schema or encoding tag traps on read because an incompatible stable layout requires
-a migration. Later encodings such as `F16` or quantized `I8` require explicit design updates because
-they affect byte-width validation, scoring, and backfill.
+- One index per (embedding name × label set) per graph; label set of size 1 covers the single-label
+  case.
+- The injected `IndexedEmbeddingCatalog` carries each spec's label set plus a derived
+  `label → [index_id]` projection (ephemeral), so the graph can determine locally whether a vertex's
+  change/delete needs vector notification.
+- **Presence is two-layered**: label membership is the graph-side _upper bound_ (could have a
+  sidecar); the vector canister's subject map is the _exact_ authority. The graph may over-notify;
+  remove-on-missing-row is a safe no-op.
 
-## Derived vector index model
+## Mutation flow
 
-Vector index canisters return candidates, not final graph rows.
+### Ingest (stamp separation)
 
 ```text
-VectorHit {
-  shard_id,
-  subject,
-  score,
+Router ── VertexEmbeddingStampRequest {local_vertex_id, embedding_name_id, dims} ──▶ Graph
+Graph  ── VertexEmbeddingStamp {mutation_id} ────────────────────────────────────────▶ Router
+Router ── VectorEmbeddingSyncOp {index_id, subject, stamp, encoding, dims, metric, bytes} ─▶ Vector
+```
+
+- The graph validates vertex existence, label membership against the injected mapping, and
+  dims/encoding, then **consumes one per-shard `mutation_id`** (the same sequence DML mutations use)
+  and returns it. It never sees or persists the bytes.
+- The Router holds the op durably in its request records and delivers bytes + stamp directly to the
+  vector canister. Bytes cross the subnet exactly once; the graph's durable outbox never carries
+  embedding bytes.
+- Two calls is the minimum: the fence requires ingest stamps and DML stamps to be comparable, and the
+  graph is the only authority that sees both.
+
+### DML-driven removes
+
+- **Vertex delete**: the graph captures the vertex's labels before deletion, intersects them with the
+  injected mapping, and dispatches remove ops (metadata only) with the deletion's `mutation_id`.
+- **Label loss**: the label-mutation path diffs old/new label sets against the mapping and dispatches
+  removes for indexes the vertex fell out of. Embedding data does not outlive label membership on IC
+  (deviation from Memgraph's move-back, documented).
+- Failed remove delivery is re-derived from graph state (vertex gone / label gone); no byte replay.
+
+### Wire op
+
+```text
+VectorEmbeddingSyncOp { index_id, subject, stamp: mutation_id, encoding, dims, metric, bytes, remove }
+```
+
+`embedding_name_id` is dropped (index_id is 1:1 per graph). Remove ops carry empty bytes.
+
+## Ordering fence and watermark GC
+
+### Mutation-ordering fence
+
+Every op carries the graph's per-shard `mutation_id`; the vector canister keeps a per-`(index_id,
+subject)` clock `current_stamp`:
+
+- `op.stamp <= current_stamp` → no-op (replay/retry idempotence);
+- `op.stamp > current_stamp` → apply: upsert appends a row and advances the clock; remove marks
+  deleted (row retained as a deleted clock) and advances the clock;
+- remove on a missing row → no-op (no row created). Safe: a later upsert sets the clock, and any
+  stale replay compares against it.
+
+The graph's per-shard mutation sequence plays the role of a monolithic DB's transaction log; the
+fence exists only because delivery is async and at-least-once across the graph/vector boundary.
+
+### Watermark GC (bounds the subject map)
+
+The subject map is the only store that would otherwise grow monotonically with cumulative
+ever-ingested subjects (deleted clocks are retained for the fence). Two per-shard watermarks bound it:
+
+```text
+shard → { graph_watermark, router_watermark }   // piggybacked on existing calls, O(shards)
+```
+
+- `graph_watermark`: highest graph→vector acked stamp (attached to an existing `vector_sync_batch`);
+- `router_watermark`: highest Router→vector acked stamp (attached to the next ingest batch).
+
+Watermarks are delivered-and-acked marks, maintained even when a delivery path is idle, so a quiet
+graph or Router never blocks GC.
+
+A deleted entry with `current_stamp <= min(both)` for its shard is unreachable (no stale replay can
+arrive) and is GC'd. The subject map therefore stays at `≈ N + recently deleted`.
+
+## Physical layout
+
+### Slab and pages (two-table format)
+
+The `VECTOR_ROW_SLAB` holds fixed-stride pages; `VECTOR_PAGE_META` is the directory. Each page:
+
+```text
+[PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
+```
+
+- **Run table** shares the shard across contiguous rows: rows within a run store only the 30-bit
+  vertex id. Runs are created at the page tail (no middle insertion); a run is bounded by the shard
+  range the canister owns (`run_capacity = min(owned_shards, MAX_RUNS=64)`).
+- **row_meta** unifies identity + aux constants into one table so the partition scan reads a single
+  metadata span per page.
+- **vector_bytes** is 16-byte aligned for SIMD scoring.
+- Tail-only allocation, positions are write-once (never reused), so a row is validated **positionally**
+  (subject map slot matches the scanned position) — no stamp/vector_id/generation per row.
+
+### Headers (3-byte magic + u8 version; version 1, breaking)
+
+```rust
+pub struct SlabHeader {
+    pub magic: [u8; 3],        // b"VSL"
+    pub version: u8,           // 1 (fresh lineage; old "VSL1" ASCII magic is rejected)
+    pub occupied_tail: u64,
+    pub flags: u32,
+    pub reserved: [u8; 16],
 }
 
-VectorSubject =
-  Vertex { vertex_id }
-  | Edge { owner_vertex_id, label_id, slot_index }
+pub struct PageHeader {
+    pub magic: [u8; 3],        // b"VPG"
+    pub version: u8,           // 1
+    pub capacity: u32,
+    pub row_stride: u32,       // EncodingRecord.pad_stride_bytes (16B-aligned)
+    pub meta_stride: u32,      // 4 + aux_bytes  (4 | 8 | 12)
+    pub run_capacity: u32,
+    pub run_count: u32,
+}
 ```
 
-Phase 1 should support vertex subjects first. Edge subjects are deferred until there is a concrete
-need to externalize edge-inline-property vector search from graph execution.
+Reopen validation is fail-closed: magic/version must match, `meta_stride ∈ {4,8,12}`, and the page
+span must be overflow-safe.
 
-### Derived vector storage
+### Row meta
 
-Vector index canisters store derived full-vector copies in partition-local fixed-width vector pages.
-`VectorId` is index-local:
+```rust
+#[repr(transparent)]
+pub struct VertexPayload(u32);   // bits 0..30: vertex id; bit 30: reserved;
+                                 // bit 31: tombstone (mirrors VertexRef::TOMBSTONE_BIT)
+
+pub struct RowMeta {             // stored width = meta_stride (4 | 8 | 12)
+    pub vertex: VertexPayload,
+    pub aux: [u8; 8],            // low meta_stride - 4 bytes meaningful
+}
+```
+
+- The 30-bit payload is a contract: the ingest boundary rejects `vertex_id >= 2^30` (fail-closed).
+  The graph's own edge representation (`VertexRef::PAYLOAD_MASK = (1<<30)-1`) already treats
+  shard-local vertex identity as 30-bit.
+- The tombstone bit preserves the scan's cheap dead-row skip; correctness is backed by positional
+  validation.
+- Aux bytes are interpreted by `(encoding, metric, pruning_config)` via `RowAux`; the storage layer
+  keeps them opaque.
+
+### Memory manager
+
+The vector canister uses `ic-stable-variable-memory-manager` with per-region bucket policies:
+
+| Region                      | Bucket    |
+| --------------------------- | --------- |
+| `VECTOR_ROW_SLAB`           | 64 pages  |
+| `VECTOR_SUBJECT_TO_ID`      | 32 pages  |
+| `VECTOR_PAGE_META`          | 16 pages  |
+| centroids / heads / defs    | 8 pages   |
+| rebuild / maintenance state | 4–8 pages |
+
+## Encodings
+
+`EncodingRecord` is a first-class concept (the LARA `label → width` generalization, owned by the
+vector canister):
+
+```rust
+pub struct EncodingRecord {
+    pub encoding: VectorEncoding,          // F32 | F16 | Bf16 | I8 | U8 | Binary
+    pub dims: u16,
+    pub stride_bytes: u32,                 // stored stride, minimal per encoding
+    pub pad_stride_bytes: u32,             // scoring scratch stride = ceil(dims/4)*16
+    pub aux_bytes: u32,                    // 0 | 4 | 8
+    pub binary_convention: Option<BinaryConvention>,  // Bits01 | Signs
+    pub kernel: ScoringKernel,             // F32Dot | UpcastF32Dot | BinaryPopcnt
+}
+```
+
+- **One index = one encoding = one dims = one stride** (different models → different indexes).
+- Scoring **materializes once per page read** into the f32 scratch (except binary, which scores via
+  `i64.popcnt` directly). `F16`/`Bf16`/`I8` upcast at page granularity, so upcast cost is amortized,
+  never per row.
+- **Binary cosine**: `Bits01` → `n11·rq·rv` (`n11 = Σ popcnt(q∧v)`, per-row `rv = 1/√popcnt(v)`);
+  `Signs` → `1 − 2H/d` (`H = Σ popcnt(q⊕v)`, cosine ≡ Hamming order, no sqrt). The convention is a
+  per-model property.
+- **Stored precision = search precision** (accepted and documented): an `int8`/`binary` index's
+  "exact rerank" is exact over the stored encoding, not full precision. Quantized indexes use
+  **quantized centroids** with SPANN's representative-point replacement (k-means means of binary
+  vectors are not binary).
+
+### Aux interpretation (RowAux)
+
+| encoding × metric        | aux_bytes | meaning                                         |
+| ------------------------ | --------- | ----------------------------------------------- |
+| F32 × L2 (default)       | 0         | sub-square SIMD + early exit; no norm, no bound |
+| F32 × cosine (default)   | 0         | normalized dot only                             |
+| I8                       | 4         | quantization scale (mandatory)                  |
+| opt-in row-level pruning | +4        | L2 bound `dist(v, c_p)` (sub-square path)       |
+| opt-in row-level pruning | 8         | cosine `(s_v, t_v)` or norm + bound             |
+
+## Search algorithm
+
+`ivf_flat` is the kind (category); SPANN is the blueprint (a high-performance instance of the same
+family: inverted index + uncompressed vectors + exact rerank).
+
+### Scoring formulation
+
+- **L2 (default)**: `sub-square` SIMD (`Σ(q−v)²`) with HARMONY-style **dimension-blocked early exit**
+  (prewarm the k-th best with the first rows, then stop each row's SIMD once its partial distance
+  exceeds the running threshold; block order per-query by descending `‖q_block‖`). Monotone partial
+  sums make early exit safe; no per-row norm is stored.
+- **Cosine**: normalized vectors stored at ingest; score is `1 − dot` only.
+- The `dot + norms` formulation (FMA inner loop, precomputed `‖v‖²`) remains an opt-in alternative.
+- SIMD is `f32x4` with multi-accumulator batching; the scratch is 16-byte aligned and decoded by
+  direct reinterpretation (no per-row `Vec<f32>` allocation).
+
+### Partition selection
+
+Fixed `nprobe` is replaced by the **query-aware pruning rule**:
 
 ```text
-(index_id, vector_id) -> one vector slot
+select partition p iff dist(q, c_p) <= (1 + eps_query) * dist(q, c_best)
 ```
 
-Placement is resolved through the index definition and slot map:
+`eps_query` is a per-definition setting. The selected partitions are scanned **in full** (no mid-scan
+truncation; `VectorSearchResult` carries no partial marker).
 
-```text
-VECTOR_INDEX_DEFS[index_id] -> { kind: ivf_flat, encoding, dims, metric, active_version, ... }
-VECTOR_ID_TO_SLOT[(index_id, vector_id)] -> SlotRef { version, partition_id, page_id, slot, generation }
-VECTOR_SUBJECT_TO_ID[(index_id, subject)] -> { vector_id, generation }
-```
+### Hierarchical partition structure (level-generic, designed from the start)
 
-Each page is both a storage unit and a scoring unit. Per [ADR 0032](../adr/0032-vector-index-slab-page-store.md)
-a page is a `VECTOR_PAGE_META` directory entry over a fixed-stride span of the raw `VECTOR_ROW_SLAB`,
-laid out structure-of-arrays so the vector bytes form one contiguous scan unit, separated from the
-per-row metadata tables:
+The partition structure is **level-generic**: a definition carries `levels`, `nlist[level]`, and
+`eps_query[level]`, and a leaf `partition_id` packs its path (`coarse_id × nlist_2 + fine_id`).
+Centroids are tagged by level; each level's centroids are trained over its parent's members only
+(per-subtree bounded training jobs). Search iterates levels: score the query against the selected
+parents' children and recurse to the leaves.
 
-```text
-VECTOR_PAGE_META[(index_id, version, partition_id, page_id)] ->
-  { slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }
+- **Flat is the degenerate case (`levels = 1`)** — one level of `nlist` centroids, no fine training,
+  single-stage selection, behaviorally identical to the non-hierarchical design. The same code path
+  serves both, so designing the hierarchy from the start does **not** force a 2-level deployment.
+- **Why from the start**: the 8 MiB training envelope is a _per-training-job_ bound, so the ≈677
+  `nlist` ceiling at `d = 1536` applies **per level**, not globally. A hierarchy restores trainable
+  centroid counts and avoids the flat candidate-pool degeneration (pool ≈ `nlist` → k-means
+  degrades to sampled centroids) at the design target. Retrofitting level semantics later would
+  touch partition keys, centroid metadata, the rebuild state machine, the search path, and the
+  definition config at once.
+- **Deployment stays measured**: `levels = 1` (flat behavior) is the default until the scan-cost
+  measurement at the target scale justifies `levels = 2` (e.g., 64×64). The L1 centroid table is
+  the Router's future routing index for partition-based multi-canister dispatch.
 
-VECTOR_ROW_SLAB @ slab_offset ->
-  page header { page_magic, capacity, row_stride }
-  vector_id       [u64; capacity]
-  generation      [u64; capacity]
-  subject_locator [(shard_id, vertex_id); capacity]
-  tombstone_bits  [ceil(capacity / 8)]
-  vector_bytes    [capacity * row_stride]
-```
+### Search path
 
-The first derived store supports `F32` only. The structure is still encoding-aware: different
-dimensions or encodings use different indexes or physical page families, mirroring the LabeledLARA
-pattern where owner metadata fixes the byte width before reading. Vector ids are not reused in the
-first implementation; deletes set tombstone bits so stale slot references remain safe until cleanup.
+1. Heap centroid cache (query path is read-only; a miss reads stable for that call only).
+2. Query × nlist centroids (SIMD; `nlist <= MAX_NLIST`).
+3. ε₂ partition selection.
+4. Per selected partition: read extents as contiguous spans → tombstone skip (bit 31) → positional
+   validation against the subject map → (opt-in) row-level bound pruning → SIMD.
+5. Deterministic top-k heap ordered by `(score, subject)`.
+6. Filtered search (ADR 0034): the candidate allowlist from the Property Index is unchanged.
 
-Updates append a new slot and tombstone the old slot. Search reads a selected page's slab span into
-a reused heap scratch buffer and performs SIMD exact scoring over the contiguous `vector_bytes`
-table.
+## Rebuild and compaction
 
-### IVF stable layout
+**Rebuild is the only compaction.** The shadow-version state machine
+(`Idle → Sampling → Training → Building → ReadyToPublish → Cleaning`) with dual-write and atomic
+publish is retained unchanged. There is no free-span allocator, no PMA rebalance, and no routine
+extent compaction: tail-only allocation grows the slab, and the Slice 9/10 tombstone-ratio policy
+bounds it (`slab ≤ live/(1 − r)` for trigger ratio `r`).
 
-`ivf_flat` is the standard vector-index kind. It uses SPANN-inspired partition pages: stable-backed
-centroids, optional bounded heap centroid cache, balanced partition assignment, query-aware pruning,
-and exact full-vector rerank. CSR is intentionally not part of the vector-index stable layout or
-future snapshot format:
+Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
 
-```text
-IVF_CENTROIDS[(index_id, version, partition_id)] -> centroid vector
-IVF_CENTROID_META[index_id] -> { active_version, dims, nlist, encoding, metric, centroid_epoch }
-IVF_PARTITION_HEADS[(index_id, version, partition_id)] ->
-  { first_page, mutable_page, page_count, live_len }
-VECTOR_PAGE_META[(index_id, version, partition_id, page_id)] ->
-  { slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }
-VECTOR_ROW_SLAB -> raw structure-of-arrays row bytes addressed by VECTOR_PAGE_META.slab_offset
-```
+## Growth model
 
-The search path scores the query against the heap centroid cache, reads a bounded number of
-centroid-selected partition pages, skips tombstoned slots, and performs exact SIMD rerank over the
-page-local vector bytes. Balanced partition assignment and query-aware pruning are part of the first
-`ivf_flat` contract; closure replication, PQ, and HNSW are later optimizations. If partition-locality
-benchmarks fail, the preferred fixes are page sizing, balanced assignment, read-budget pruning,
-tombstone cleanup, and encoding-specific page reads, not CSR conversion.
+Symbols: `N` = live subjects per index, `G` = cumulative ever-ingested, `s` = stored stride,
+`m` = row metadata (4B vertex + aux 0–8B + page amortization), `r` = rebuild tombstone trigger,
+`η` = B-tree overhead.
 
-### IC implementation gates
+| Store                         | Growth                            | Bound / lever                                              |
+| ----------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `VECTOR_ROW_SLAB`             | `N/(1−r) × (m + s)`               | encoding (F32→I8 1/4, Binary 1/32); tombstone-ratio policy |
+| `VECTOR_SUBJECT_TO_ID`        | `(N + recent deletes) × ~60B × η` | **watermark GC** (monotonic growth eliminated)             |
+| `VECTOR_PAGE_META` / heads    | O(N / slots per page), O(nlist)   | negligible                                                 |
+| centroids / defs / watermarks | O(nlist × d), O(#defs), O(shards) | negligible                                                 |
+| graph                         | 0 embedding bytes                 | outbox carries remove metadata only                        |
 
-`ivf_flat` is the standard vector-index kind only if the implementation preserves IC execution and
-upgrade constraints:
+At `d = 1536` (the design target): `F32` at 10⁸ subjects (~616 GB) exceeds one canister, so large
+high-dim indexes require `I8`/`Binary` or future multi-canister placement.
 
-- centroid metadata is authoritative in stable memory; heap centroid cache is derived acceleration;
-- cache miss behavior is explicit: either `CacheNotReady` or a bounded stable centroid scan fallback;
-- rebuild writes a shadow `version` and publishes by atomically switching `active_version`;
-- balanced partition assignment is required before publishing a rebuilt index;
-- partition maintenance records `live_len`, `page_count`, and tombstone ratio;
-- partitions whose tombstone ratio or page count crosses a threshold enter cleanup/rebuild;
-- search enforces page/read/instruction budgets before reading vector pages; and
-- canbench compares `ivf_flat` against a `flat` exact-scan baseline at the same dataset size.
+## Multi-canister readiness
 
-### Query syntax and algorithm selection
+Single canister today; two future split axes are distinguished:
 
-GQL query syntax should express vector-search intent, not physical index selection. Queries name the
-embedding field, query vector, metric-compatible scoring, top-k, thresholds, and rerank needs. They
-should not name `ivf_flat`, `ivf_pq`, or `hnsw` directly.
+- **A. Shard-group split (near-term future)**: each vector canister owns a contiguous graph shard
+  range (mirrors ADR 0019; industry standard — Milvus/Qdrant/Vespa hash-stable routing). Per-canister
+  IVF, Router fan-out + merge, rebuild stays canister-local. Run-table shard sharing becomes most
+  effective here.
+- **B. Partition-based split (future ADR)**: global centroids, partition ownership, query-aware
+  dispatch (SPANN §7). Requires global training, cross-canister rebuild, and a routing story; research
+  grounding (SPFresh/LIRE boundary-only reassignment) makes the subject→canister routing index mostly
+  static. Deferred.
 
-Algorithm choice belongs to index definition or Router/index configuration:
+Prepared now:
 
-```text
-algorithm: "ivf_flat"
-metric: "cosine" | "l2"
-dims: 1536
-encoding: "f32"
-```
-
-This keeps future `ivf_pq`, `hnsw`, or `flat` implementations behind the same query semantics.
-Query-time knobs, if needed, should be semantic quality or cost hints rather than direct access to
-internal index structures.
-
-## Consistency and rebuild
-
-The vector index follows the graph-index pattern:
-
-1. Graph mutation commits canonical embedding changes on the graph shard.
-2. The graph shard emits derived vector-index insert/remove/update deltas.
-3. Happy-path flush to vector index is volatile.
-4. Failed flush persists to a durable repair path.
-5. Bounded backfill can rebuild vector-index entries from the graph-owned embedding store.
-
-During maintenance, if the durable repair journal already has older entries, newer pending vector
-operations are appended to the journal tail before replay. Replay still reconciles every vector
-operation against canonical Graph state and retains the incarnation/version fence; only the
-dispatch grouping changes.
-The vector pending queue is likewise heap-only until a flush or maintenance pass journalizes it;
-an upgrade before that boundary is not a replayable vector-index failure.
-Plan 0088 has added the durable outbox storage primitive and connects Router→Graph wire-DML vector
-handoff to it; maintenance passes the durable vector suffix to the vector batch endpoint, which
-owns its instruction budget and returns partial progress. The encoded vector batch is capped at
-the conservative 2 MiB cross-subnet request limit before dispatch. DML-only ad-hoc/native blocks
-now use the outbox; DML followed by an in-block read
-retains the legacy flush boundary for read-after-write visibility.
-
-Derived vector-index lag follows the same high-level rule as other derived indexes: canonical graph
-state wins when derived state disagrees.
-
-Rebuild is a bounded maintenance state machine:
-
-```text
-CollectSample(cursor)
-TrainCentroids(iteration, batch_cursor)
-AssignVectors(cursor)
-Publish(active_version)
-Cleanup(old_version_cursor)
-```
-
-The publish step must be metadata-only from the query path's perspective: once `active_version`
-changes, searches use the new centroid metadata and partition pages. Old pages are deleted by
-bounded cleanup after publication.
+- Router vector resolution returns a **target list** and the search orchestration is fan-out + merge
+  with a **global deterministic top-k** contract (scores are comparable: same metric/dims/encoding).
+- `VectorIndexOwnershipConfig` gains `index_group_size` / `group_index` (Option; `None` = whole
+  graph).
+- **Row-copy migration** primitive (`export_vector_rows` / `import_vector_rows`, bounded cursor) is
+  the only split path — the graph holds no bytes, so graph backfill cannot migrate a vector canister.
 
 ## Algorithm roadmap
 
-| Phase | Algorithm | Status | Purpose |
-|-------|-----------|--------|---------|
-| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing + `nprobe` partition-page scan implemented (Slice 6); production bounded shadow-version rebuild + dual-write + atomic publish implemented (Slice 7); bounded k-means-lite training + head-only partition health implemented (Slice 8); bounded page-meta tombstone health + rebuild recommendation/trigger + heap centroid cache implemented (Slice 9); Router-forwarded maintenance + Router policy catalog + vector-owned bounded maintenance step implemented (Slice 10); full/balanced k-means + autonomous tombstone cleanup planned (Slice 11+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
-| 2 | Flat (`flat`) | subsumed by degenerate `ivf_flat` exact scan (Slice 5) | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
-| 3 | IVF_PQ | planned | compressed approximate scoring plus full-vector rerank |
-| 4 | HNSW | experimental planned | only after update/delete/repair and IC instruction bounds are specified |
+| Phase | Item                                                                               | Status                                                                                                          |
+| ----- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 1     | `ivf_flat` (degenerate `nlist=1` → production `nlist>1`)                           | current kind                                                                                                    |
+| 2     | ε₂ query-aware pruning                                                             | Slice 11+ candidate                                                                                             |
+| 3     | balance-aware training (SPANN HBC objective, λ penalty); k-means++ init (optional) | Slice 11+ candidate                                                                                             |
+| 4     | dimension-blocked early exit (HARMONY-style)                                       | Slice 11+ candidate                                                                                             |
+| 5     | two-level hierarchy (e.g., 64×64)                                                  | **designed level-generic from the start** (`levels = 1` = flat behavior); 2-level deployment measured           |
+| 6     | closure replication (coarse-level, opt-in)                                         | Slice 11+ candidate                                                                                             |
+| —     | `ivf_pq`, global HNSW                                                              | **deferred** (PQ recall; HNSW: random reads, unbounded instruction budget, delete repair, cross-canister edges) |
 
-## Design gates before implementation
+At `d = 1536` a single training job is bounded to ≈677 centroids by the 8 MiB envelope; with the
+level-generic structure this becomes a **per-level** bound, restoring trainable counts. A raw
+candidate region remains the documented fallback if per-job pools still bind.
 
-- [done, slice 1] Choose vertex embedding key shape and stable region classification.
-- [done, slice 1] Define canonical embedding ids and encoding types in `graph-kernel`.
-- Define derived vector-index wire types and bounded candidate page/cursor APIs.
-- Define `ivf_flat` index-definition metadata and keep algorithm choice out of query syntax.
-- Define mutation delta and repair journal representation.
-- Define backfill cursor and delete/tombstone behavior.
-- [done, slice 9] Define centroid cache miss behavior: the heap cache is read-only on the `#[query]`
-  search path (a miss reads stable for that call only, no population); warmup/clear/invalidation are
-  `#[update]`-only.
-- Define shadow-version rebuild, balanced assignment, publish, and cleanup.
-- Define partition tombstone cleanup thresholds. [partial, slice 9/10] Caller-supplied
-  `VectorMaintenancePolicy` thresholds (tombstone ratio + skew, split recommended/required bps) drive
-  the `recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended` trigger (Slice 9),
-  and Slice 10 makes them a **durable Router-owned policy catalog** (disabled by default) forwarded one
-  bounded step at a time; autonomous (timer-driven) cleanup scheduling remains Slice 11+.
-- [done, slice 5] Add canbench targets for exact `ivf_flat` search (`crates/graph-vector-index`,
-  dims 128/384/768 × top_k 10/100).
-- [done, slice 6] Add canbench targets for the partition-page scan over clustered seeded datasets
-  (dims 128/384/768 × `nlist` 16/64 × `nprobe` 1/4/8/16): `nprobe = nlist` is the exact-parity upper
-  bound (matching result set, higher instruction cost than exact due to centroid + reverse-map
-  lookups), and lower `nprobe` measurably reduces cost.
-- [done, slice 7] Add canbench targets for the production rebuild: full rebuild (start → bounded steps
-  → publish) at dims 128/384/768, an isolated `Building` shadow-append step, and normal vs dual-write
-  upsert cost (dual-write is ~2× a normal upsert since it writes both versions).
-- [done, slice 8] Add canbench targets for an isolated k-means-lite `Training` iteration over the full
-  candidate pool (dims 128/384/768 × `nlist` 16/64); the full-rebuild targets now also cover the
-  training cost end to end.
-- [done, slice 9] Add canbench targets for the bounded page-meta health scan (clean and
-  tombstone-heavy), cold-vs-warm partition-page search with the heap centroid cache (dims 128/768 ×
-  `nlist` 64 × `nprobe` 8), and the centroid-cache warmup cost.
+## Research grounding
+
+- **SPANN** (arXiv 2111.08566): ivf_flat-family blueprint — balanced clustering, closure, query-aware
+  pruning. The hierarchy and ε₂ follow it directly.
+- **SPFresh / LIRE** (SOSP 2023): boundary-only incremental reassignment makes cluster-partitioned
+  indexes mutable cheaply; grounds the future partition-based split.
+- **HARMONY** (ACM MOD 2025): dimension-split is unsuitable for IC (communication cost); its
+  early-stop pruning transfers as the intra-row optimization.
+- **Routing indices** (Crespo & Garcia-Molina, ICDCS 2002): query-side routing summaries; maps to the
+  Router's centroid set + ownership map.
+- **Industry survey**: Neo4j/Memgraph/Kuzu/TigerGraph/FalkorDB/Dgraph/pgvector — embeddings are node
+  data, indexes are label-scoped, data outlives labels (we deviate on IC: bytes live only in the
+  vector canister). Memgraph's single-store (bytes in the index, reference in the property store) is
+  the closest precedent for this ownership split.
+
+## Superseded implementation (Slices 1–10)
+
+The discarded ADR 0031/0032/0033 implementation is documented in git history and the ADRs. In brief:
+it stored canonical embedding bytes on graph shards (`VERTEX_EMBEDDINGS`, MemoryId 44; incarnations
+MemoryId 45), fenced by `(incarnation, version)`, relayed bytes through the graph on ingest, and
+sharded the vector canister by single-target-per-graph. None of its stable layout survives; the
+canister's stable regions are rebuilt under the new layout.
+
+## Open items
+
+1. **Per-level `nlist` under the 8 MiB envelope**: the level-generic structure makes the ≈677 ceiling
+   a per-training-job bound; a hierarchy restores trainable counts at `d = 1536`. A raw candidate
+   region remains the documented fallback if per-job pools still bind.
+2. **Hierarchy deployment timing**: ships as `levels = 1` (flat behavior); enabling `levels = 2`
+   follows the scan-cost measurement at the target scale.
+3. **Scoring formulation**: canbench `(a)` dot+norms+pruning, `(b)` sub-square+early-exit (default),
+   `(c)` sub-square+bound, at `d=1536`.
+4. **Page size / slots per page**: config tuned by the scan-cost measurement.
 
 ## Related documents
 
-- [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md)
+- [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md) (superseded)
+- [ADR 0032](../adr/0032-vector-index-slab-page-store.md) (superseded)
+- [ADR 0033](../adr/0033-vector-rebuild-state-read-memoization.md) (superseded)
 - [property-index.md](property-index.md)
 - [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [capacity-planning.md](capacity-planning.md)
 - [../architecture/overview.md](../architecture/overview.md)
-- [../storage/labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)
-- [../storage/inline-property-bytes-first-traversal.md](../storage/inline-property-bytes-first-traversal.md)
+- [../storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md)

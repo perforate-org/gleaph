@@ -1,14 +1,18 @@
 # 0031. Vertex embedding store and derived vector index canister
 
 Date: 2026-06-23
-Status: accepted (partially implemented)
-Last revised: 2026-07-04 01:39:31 UTC +0000
+Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
+Last revised: 2026-08-07 23:39:30 UTC +0000
+
+> **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
+> replaces this design; the Slices 1–10 implementation is **completely discarded** (breaking layout
+> change, dev data wiped). The historical content below is retained as decision history only.
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
 > vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`
 > `graph-vector-index` canister foundation — mutation-only) are implemented. Slice 2 covers the
-> `graph-kernel` sync/mutation wire types, the `VECTOR_INDEX_STABLE_LAYOUT` registry (11 regions,
-> MemoryId 0–10, `IVF_CENTROIDS` reserved-empty), the canister storage (`vector_upsert` /
+> `graph-kernel` sync/mutation wire types, the then-11-region `VECTOR_INDEX_STABLE_LAYOUT` registry
+> (historical Slice 2 layout at MemoryId 0–10, `IVF_CENTROIDS` reserved-empty), the canister storage (`vector_upsert` /
 > `vector_remove`, durable allocators, subject tombstone clock, attach/detach), and the graph-side
 > delta plumbing (catalog-gated dispatch, `vector_pending`, `RepairPostingOp::VectorEmbedding`,
 > repair drain, `vertex_embedding_backfill`). The convergence model is canonical-wins, now made
@@ -17,8 +21,7 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > reconciles journaled vector ops against the canonical store rather than replaying them.
 >
 > **Slice 3 (implemented): Router catalog, target resolution, and the fail-closed activation gate.**
-> Slice 3 adds the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`, MemoryId
-> 42) and the graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds 40–41)
+> Slice 3 adds the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`, MemoryId 42) and the graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds 40–41)
 > that the Router solely allocates, plus the admin/query surface (register by embedding **name**, set
 > target, list, activation status/explain-blocked, inspect-only single-target resolution) and the
 > ephemeral `ExecutePlanArgs.indexed_embeddings` injection path. Slice 3 deliberately did **not**
@@ -26,6 +29,7 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 >
 > **Slice 4 (implemented): incarnation-fenced production activation.** Slice 4 makes derived vector
 > sync production-correct and activatable:
+>
 > - **The incarnation fence.** A graph-owned, delete-spanning, monotonic `embedding_incarnation`
 >   (canonical `VERTEX_EMBEDDING_INCARNATIONS`, graph MemoryId 45) strictly increases across each
 >   delete/reinsert of a `(VertexId, EmbeddingNameId)` identity and is **never deleted** (it persists
@@ -85,11 +89,11 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > **Slice 5 (implemented): exact `ivf_flat` search MVP (read path).** Slice 5 lands the first
 > production vector-search read path over the already-synced derived index, with **no stable-layout
 > change**. The vector canister exposes a router-guarded query `vector_search(VectorSearchRequest) ->
-> VectorSearchResult` that **scans the live subject map** (`VECTOR_SUBJECT_TO_ID`) over the requested
+VectorSearchResult` that **scans the live subject map** (`VECTOR_SUBJECT_TO_ID`) over the requested
 > `index_id` — the source of truth for which subjects are live and at which slot — reading each live
 > slot's bytes through a per-query page cache, scoring with `L2Squared`, and returning a bounded top-k
 > ordered by `(distance asc, subject asc)`. Because the subject row carries `(embedding_incarnation,
-> embedding_version)` and the live `slot`, tombstones and superseded generations are never scored and
+embedding_version)` and the live `slot`, tombstones and superseded generations are never scored and
 > freshness is exact; this avoids any `PageRow`/reverse-map change or new stable region (deferred to
 > Slice 6 partition scans). The Router exposes `vector_search` as a `#[query(composite = true)]` that
 > resolves the graph/index to its single activated target and **fails closed** on the same Slice 4
@@ -113,33 +117,41 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > This ADR fixes ownership, consistency, the standard `ivf_flat` vector-index kind, and the first
 > derived vector-index stable-memory shape before the GQL query operator is committed.
 >
-> **Slice 6 (implemented): `ivf_flat` partition-page read path.** Slice 6 lands the first real
-> `ivf_flat` read path beyond the exact scan. It adds **one stable region**, `VECTOR_ID_TO_SUBJECT`
-> (MemoryId 11), a derived `(index_id, vector_id) → VectorSubject` reverse **locator** maintained in
-> lockstep with `VECTOR_ID_TO_SLOT` on insert/resurrect/remove and rebuilt by the same
-> `vertex_embedding_backfill` path (`VECTOR_INDEX_STABLE_LAYOUT` is now **12** regions, 0–11). A new
-> `partition_page_scan` scores the query against the index's centroids (`IVF_CENTROIDS`), selects the
-> `nprobe` nearest partitions, and range-scans only those partitions' `VECTOR_PAGE` chains; each
-> scanned row is reverse-mapped to its subject and re-validated against `VECTOR_SUBJECT_TO_ID` (not
-> deleted, matching `vector_id`, and `slot` pointing at exactly this page/slot/generation) before
-> scoring, so `VECTOR_SUBJECT_TO_ID` remains the single freshness source of truth and the reverse map
-> is only a locator. `vector_search` selects the path: exact subject-map scan when `nlist <= 1` or the
-> centroids are not ready/current, partition-page scan otherwise; a stale/incomplete centroid set
-> falls back to the exact scan with **no error**. `nprobe` is the only recall knob and the selected
-> partitions are scanned in full, so the result is the exact top-k over those partitions with **no
-> mid-scan budget** that could silently truncate it; the in-canister default is `nprobe = min(4,
-> nlist)` (clamped to `1..=nlist`), and the public Router/kernel request stays algorithm-neutral
-> (no `nprobe` on the wire — an internal `vector_search_tuned` varies it for tests/benchmarks only).
+> **Slice 6 (historical implementation): `ivf_flat` partition-page read path.** Slice 6 first added
+> this read path beyond the exact scan and then allocated `VECTOR_ID_TO_SUBJECT` at MemoryId 11 as a
+> derived `(index_id, vector_id) → VectorSubject` locator. It was maintained beside
+> `VECTOR_ID_TO_SLOT`, and the then-current layout had 12 allocated regions at 0–11. The historical
+> partition scan reverse-mapped each selected page row before re-validating it against
+> `VECTOR_SUBJECT_TO_ID`.
 >
-> Production cannot yet create `nlist > 1` indexes, so Slice 6 partitioned/centroid layouts are
-> produced by **test/bench-only seed helpers** (`seed_ivf_for_test`); the production mutation path
-> still appends to `partition_id = 0` (correct only while `nlist == 1`, the only `nlist` any
-> production def has). **Seeded multi-partition indexes are therefore immutable after seeding in Slice
-> 6** — mutating one would hide fresh writes for `nprobe < nlist`; centroid-aware mutation assignment
-> is owned by Slice 7. A canbench suite over clustered seeded datasets (dims 128/384/768 × `nlist`
-> 16/64 × `nprobe` 1/4/8/16) records that `nprobe = nlist` returns the **same result set** as the exact
-> scan at higher instruction cost (centroid + reverse-map lookups) while lower `nprobe` measurably
-> reduces cost.
+> **Current layout (2026-08-07 04:00:46 UTC +0000):** Plans 0206 and 0207 remove the unread
+> `VECTOR_ID_TO_SUBJECT` and `VECTOR_ID_TO_SLOT` collections. Partition scans reconstruct the subject
+> from the slab row via
+> `RowHeader::subject()` and then validate deletion, `vector_id`, slot, and generation against
+> `VECTOR_SUBJECT_TO_ID`, which remains the freshness source of truth. The layout has **13 allocated
+> stores** across **15 numbered registry slots (MemoryId 0–14)**; MemoryIds 8 and 11 are explicitly
+> unallocated bookkeeping only, not compatibility regions, migration paths, or readers. Partition
+> heads, page metadata, rebuild state, row slab, and maintenance state remain at MemoryIds 9, 10, 12,
+> 13, and 14. No replacement reverse map or lookup is introduced: `SubjectMapEntry.slot` and
+> `shadow_slot` locate current rows and the slab retains row-local `vector_id` and
+> `subject_locator`. This current-format deletion neither repacks nor provides migration
+> compatibility and does not change Candid/canister ingress; the public Rust layout inventory
+> intentionally reports one fewer allocated store.
+>
+> `vector_search` selects the path: exact subject-map scan when `nlist <= 1` or the centroids are not
+> ready/current, partition-page scan otherwise; a stale/incomplete centroid set falls back to the
+> exact scan with **no error**. `nprobe` is the only recall knob and the selected partitions are
+> scanned in full, so the result is the exact top-k over those partitions with **no mid-scan budget**
+> that could silently truncate it; the in-canister default is `nprobe = min(4, nlist)` (clamped to
+> `1..=nlist`), and the public Router/kernel request stays algorithm-neutral (no `nprobe` on the wire
+> — an internal `vector_search_tuned` varies it for tests/benchmarks only).
+>
+> **Historical Slice 6 fixture and benchmark note:** Before Slice 7, partitioned/centroid layouts
+> came from test/bench-only seed helpers and were immutable after seeding. The historical clustered
+> canbench suite (dims 128/384/768 × `nlist` 16/64 × `nprobe` 1/4/8/16) recorded that `nprobe = nlist`
+> returned the same result set as the exact scan at higher instruction cost, including then-present
+> centroid and reverse-map lookups; lower `nprobe` reduced cost. Those figures are historical
+> references, not a current post-retirement benchmark result.
 >
 > **Slice 7 (implemented): production centroid training + shadow-version rebuild + dual-write.** Slice
 > 7 turns the Slice 6 seeded partition fixtures into production-created `nlist > 1` indexes and lifts
@@ -148,8 +160,8 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > **one stable region**, `VECTOR_REBUILD_STATE` (MemoryId 12), a derived per-index rebuild lifecycle
 > (`Idle` → `Sampling` → bounded `Building` steps → `ReadyToPublish` → `Cleaning` → `Idle`, with
 > `Aborting` and a sampling-only `Failed`), and extends the `SubjectMapEntry` value with a second
-> `shadow_slot` (serde-default, no repack) so publish is metadata-only (`VECTOR_INDEX_STABLE_LAYOUT`
-> is now **13** regions, 0–12). Search resolves the live slot via
+> `shadow_slot` (serde-default, no repack) so publish was metadata-only (the then-current
+> `VECTOR_INDEX_STABLE_LAYOUT` had **13** allocated regions, 0–12). Search resolves the live slot via
 > `current_slot_for(active_index_version)` — the active `slot` while it matches, else the `shadow_slot`
 > after the atomic version flip — across both read paths.
 >
@@ -180,7 +192,7 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > deterministic `Training` phase between `Sampling` and `Building` in the existing rebuild lifecycle
 > (`Idle` → `Sampling` → `Training` → `Building` → `ReadyToPublish` → `Cleaning` → `Idle`) and adds **no
 > new stable region** — the `Training` variant reuses `VECTOR_REBUILD_STATE`. `Sampling` now collects a
-> *bounded distinct candidate pool* (typically more than `nlist`) instead of stopping at the first
+> _bounded distinct candidate pool_ (typically more than `nlist`) instead of stopping at the first
 > `nlist` distinct vectors; `Training` runs k-means-lite over that pool, one iteration per
 > `admin_vector_rebuild_step` (assign to nearest centroid, recompute per-cluster means, empty cluster
 > keeps its previous centroid), for at most `MAX_REBUILD_TRAINING_ITERATIONS`, then writes exactly
@@ -196,19 +208,19 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > `Cleaning`, `Aborting`, and the search wire are unchanged. A new Router-guarded query
 > `admin_vector_partition_health(index_id)` returns an integer-only, head-only
 > `VectorPartitionHealthSummary { nlist, partitions_examined, live_rows, page_count,
-> max_partition_live_rows }` (O(nlist), no page scan); tombstone-ratio health is deferred to Slice 9+.
+max_partition_live_rows }` (O(nlist), no page scan); tombstone-ratio health is deferred to Slice 9+.
 >
 > **Slice 9 (implemented): maintenance visibility, rebuild recommendation, and a heap centroid
 > cache.** Slice 9 adds maintenance/cache surface only — no change to canonical ownership, search
 > semantics, or stable layout (no new stable region). Three additions: (1) a bounded, cursor-resumable
 > page-meta tombstone-health scan, `admin_vector_partition_health_step(index_id, cursor, max_pages)`,
 > returning an additive `VectorPartitionHealthStep { partial: VectorPartitionPageHealth { index_id,
-> index_version, page_count, total_rows, physical_live_rows, tombstoned_rows }, cursor, exhausted }`
+index_version, page_count, total_rows, physical_live_rows, tombstoned_rows }, cursor, exhausted }`
 > scoped to the active version (mirrors the `VectorSlabStatsStep` merge / no-snapshot-isolation
 > contract). It complements the head-only skew summary with the tombstone signal the head cannot see.
 > (2) A pure `recommend_partition_maintenance(summary, page_health, policy)` and a Router-guarded
 > `admin_start_vector_rebuild_if_recommended(index_id, attested_page_health, policy, target_nlist,
-> sample_limit)` that, when health crosses a `VectorMaintenancePolicy` (split `recommended`/`required`
+sample_limit)` that, when health crosses a `VectorMaintenancePolicy` (split `recommended`/`required`
 > basis-point thresholds for tombstone ratio and partition skew, judged with `u128` cross-multiplication,
 > independently min-row gated), begins an existing rebuild and returns the three-state
 > `VectorMaintenanceRecommendation { Healthy, RebuildRecommended, RebuildRequired }` (no autonomous timer
@@ -216,7 +228,7 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > partition heads (O(`nlist`)), so it has no caller-trust surface; only the page-meta tombstone health is
 > trusted admin input (proving its completeness would need an unbounded scan). A generation guard rejects
 > page health attested against a different generation (`StaleMaintenanceHealth`), and `target_nlist =
-> None` defaults to `def.nlist` only when `>= 2`. (3) A
+None` defaults to `def.nlist` only when `>= 2`. (3) A
 > transient **heap** centroid cache (`admin_vector_centroid_cache_warmup` / `_clear` / `_status`,
 > reporting `VectorCentroidCacheStatus { entries, bytes, max_bytes }`): the partition-page `#[query]`
 > search reads decoded centroids from the heap when warmed (skipping the `IVF_CENTROIDS` stable read +
@@ -359,22 +371,20 @@ The derived vector index canister stores copied vector bytes in search-optimized
 structures. These bytes are derived from graph-owned canonical embeddings and are rebuildable by
 backfill.
 
-`VectorId` is **index-local**, not globally unique:
-
-```text
-(index_id, vector_id) -> one vector slot
-```
-
-The vector index does not compute a physical offset directly from `index_id`. Instead, every live
-vector resolves through a slot reference:
+`VectorId` is **index-local**, not globally unique. The vector index does not compute a physical
+offset directly from `index_id`; the live subject clock carries both the id and its slot reference:
 
 ```text
 VECTOR_INDEX_DEFS[index_id] -> { kind: ivf_flat, encoding, dims, metric, active_version, ... }
-VECTOR_ID_TO_SLOT[(index_id, vector_id)] -> SlotRef { version, partition_id, page_id, slot, generation }
-VECTOR_SUBJECT_TO_ID[(index_id, subject)] -> { vector_id, generation }
-VECTOR_ID_TO_SUBJECT[(index_id, vector_id)] -> VectorSubject   # Slice 6 reverse locator (partition-page scan)
+VECTOR_SUBJECT_TO_ID[(index_id, subject)] ->
+  { vector_id, slot, shadow_slot, embedding_incarnation, stored_embedding_version, deleted }
 VECTOR_REBUILD_STATE[index_id] -> rebuild lifecycle             # Slice 7 bounded shadow-version rebuild
 ```
+
+The current registry retains 15 numbered slots at MemoryId 0–14 but allocates only 13 stores:
+MemoryIds 8 and 11 are explicitly unallocated. Later assignments remain unchanged: partition heads
+9, page metadata 10, rebuild state 12, row slab 13, and maintenance state 14. Neither hole opens old
+bytes or supplies migration, compatibility, or fallback behavior.
 
 The Slice 7 `SubjectMapEntry` value (the `VECTOR_SUBJECT_TO_ID` row, simplified above) additionally
 carries a second `shadow_slot: Option<SlotRef>` alongside the active `slot`; search resolves the live
@@ -557,8 +567,8 @@ Execution flow:
    `VectorIndexDef.active_index_version`, `nlist`, and centroid metadata to the shadow version, then
    enters `Cleaning`. Empty partitions are allowed.
 5. `admin_vector_rebuild_cleanup_step(index_id, max_work)` drives the bounded post-publish `Cleaning`
-   teardown (collapse `shadow_slot → slot`, repoint the reverse locator, drop the old version's
-   pages/heads/centroids) back to `Idle`, and the bounded `Aborting` teardown after an abort.
+   teardown (collapse `shadow_slot → slot`, drop the old version's pages/heads/centroids) back to
+   `Idle`, and the bounded `Aborting` teardown after an abort.
    `max_work` is clamped to `1..=MAX_REBUILD_STEP_WORK` like the rebuild step.
 6. `admin_abort_vector_rebuild(index_id)` returns straight to `Idle` from `Sampling`/`Training`/`Failed`
    (nothing persisted) or enters bounded `Aborting` from `Building`/`ReadyToPublish`, keeping the active version
@@ -620,7 +630,7 @@ Invariants:
 3. `Training` runs deterministic k-means-lite only over the bounded candidate pool: exactly one
    iteration per `admin_vector_rebuild_step` (assign each candidate to its nearest current centroid,
    recompute centroids as the per-cluster mean), bounded so `candidate_count * nlist * dims <=
-   MAX_REBUILD_TRAINING_DISTANCE_OPS` with transient `O(nlist * dims)` sums/counts. It runs at most
+MAX_REBUILD_TRAINING_DISTANCE_OPS` with transient `O(nlist * dims)` sums/counts. It runs at most
    `MAX_REBUILD_TRAINING_ITERATIONS` iterations, keeps exactly `nlist` dimension-valid centroids (an
    empty cluster keeps its previous centroid), and never scans the full subject map.
 4. Once `Training` finishes, it writes exactly `nlist` target centroids and transitions to the
@@ -630,7 +640,7 @@ Invariants:
 5. Slice 8 exposes a **head-only** partition-health summary for admin visibility via the
    Router-guarded query `admin_vector_partition_health(index_id)`, scanning the active version's
    `PartitionHead` records bounded by `nlist <= MAX_NLIST`: `VectorPartitionHealthSummary { nlist,
-   partitions_examined, live_rows, page_count, max_partition_live_rows }`. The wire is integer-only;
+partitions_examined, live_rows, page_count, max_partition_live_rows }`. The wire is integer-only;
    callers derive average live rows and skew ratio from raw counts. Slice 8 does **not** report
    `tombstoned_rows`, `total_rows`, or tombstone ratio, because those require either a bounded page
    scan or persisted counters. Tombstone accounting is deferred to the cleanup/maintenance slice.
@@ -652,34 +662,34 @@ region** (heap-only cache; reuses existing `VECTOR_PAGE_META`, `VECTOR_PARTITION
 `IVF_CENTROIDS`). It closes the operational gap left by the head-only Slice 8 summary:
 
 1. **Bounded page-meta tombstone health.** `admin_vector_partition_health_step(index_id, cursor,
-   max_pages)` (Router-guarded `#[query]`) scans at most `max_pages` `VECTOR_PAGE_META` entries of the
+max_pages)` (Router-guarded `#[query]`) scans at most `max_pages` `VECTOR_PAGE_META` entries of the
    active `(index_id, active_index_version)` — reading only page meta, never row bytes or
    `VECTOR_SUBJECT_TO_ID` — and returns an additive `VectorPartitionHealthStep { partial:
-   VectorPartitionPageHealth { index_id, index_version, page_count, total_rows, physical_live_rows,
-   tombstoned_rows }, cursor, exhausted }`. Callers repeat until `exhausted` and sum the partials. It
+VectorPartitionPageHealth { index_id, index_version, page_count, total_rows, physical_live_rows,
+tombstoned_rows }, cursor, exhausted }`. Callers repeat until `exhausted` and sum the partials. It
    mirrors the `VectorSlabStatsStep` merge / no-snapshot-isolation contract; `max_pages` is clamped
    server-side and a malformed or wrong-scope cursor returns `InvalidStatsCursor` rather than trapping.
    `physical_live_rows` is `VectorPageMeta.live_count` (not subject-freshness). This complements the
    head-only skew summary with the tombstone signal the head cannot see.
 2. **Recommendation + trigger.** The pure `recommend_partition_maintenance(summary, page_health,
-   policy)` returns `VectorMaintenanceRecommendation { Healthy, RebuildRecommended, RebuildRequired }`
+policy)` returns `VectorMaintenanceRecommendation { Healthy, RebuildRecommended, RebuildRequired }`
    as the max severity across two independently min-row-gated signals — tombstone ratio
    (`tombstoned_rows / total_rows`) and partition skew (`max_partition_live_rows * nlist / live_rows`)
    — compared against the split `recommended_*_bps`/`required_*_bps` thresholds of a
    `VectorMaintenancePolicy` using `u128` cross-multiplication (no floats, no overflow; an inverted
    policy returns `InvalidMaintenancePolicy`). `admin_start_vector_rebuild_if_recommended(index_id,
-   attested_page_health, policy, target_nlist, sample_limit)` (Router-guarded `#[update]`) recomputes
+attested_page_health, policy, target_nlist, sample_limit)` (Router-guarded `#[update]`) recomputes
    the head-only skew `summary` server-side from the authoritative partition heads (O(`nlist`)),
    re-derives the recommendation, and, when not `Healthy`, begins an existing rebuild, returning the
    recommendation (a `Healthy` result is an explicit no-op, not an error). There is **no autonomous
    timer** in this slice. The skew summary therefore has no caller-trust surface; only the page-meta
-   tombstone health is *trusted admin input* (proving its completeness would require an unbounded scan).
+   tombstone health is _trusted admin input_ (proving its completeness would require an unbounded scan).
    A generation guard rejects page health attested against a different generation
    (`attested_page_health.index_id`/`index_version` must equal the active version, else
    `StaleMaintenanceHealth`). `target_nlist = None` defaults to `def.nlist` only when `>= 2`
    (degenerate `nlist = 1` requires an explicit `target_nlist`, since rebuild requires `nlist >= 2`).
 3. **Heap centroid cache.** A transient `thread_local` cache keyed by `(index_id ->
-   {version, nlist, dims})` memoizes the decoded centroid set so the partition-page `#[query]` search
+{version, nlist, dims})` memoizes the decoded centroid set so the partition-page `#[query]` search
    skips the `IVF_CENTROIDS` stable read + `f32` decode. Because IC `#[query]` execution is
    non-committing, the query path is **read-only**: a warmed entry is used, and a miss reads stable for
    that call only without populating the cache. Population/eviction are `#[update]`-only —
@@ -687,7 +697,7 @@ region** (heap-only cache; reuses existing `VECTOR_PAGE_META`, `VECTOR_PARTITION
    entry for degenerate/untrained indexes), `admin_vector_centroid_cache_clear()`, and a publish-time
    `invalidate(index_id)` when the active generation changes; the cache is byte-bounded and dropped on
    init/upgrade. `admin_vector_centroid_cache_status()` reports `VectorCentroidCacheStatus { entries,
-   bytes, max_bytes }` — per-query hit/miss is intentionally **not** tracked (a query cannot commit
+bytes, max_bytes }` — per-query hit/miss is intentionally **not** tracked (a query cannot commit
    counters on IC).
 4. All new admin endpoints stay on the vector canister behind `guard_router_canister`, driven directly
    by the router principal (the Slice 7/8 precedent); Router forwarding is a deferred follow-up. Search
@@ -754,7 +764,7 @@ state that mutates that derived representation.
   `Failed`, without touching the rebuild state) complete the surface.
 - **Router policy SSOT.** A new Router stable region `ROUTER_VECTOR_MAINTENANCE_POLICIES` (MemoryId 44)
   stores a per-`(graph_id, index_id)` `VectorMaintenancePolicyRecord { enabled, policy, target_nlist,
-  sample_limit, scan_max_pages, rebuild_max_subjects, cleanup_max_work }`, default absent/disabled.
+sample_limit, scan_max_pages, rebuild_max_subjects, cleanup_max_work }`, default absent/disabled.
   Policy authorship (`admin_set_/disable_/delete_vector_maintenance_policy`, validated for
   `recommended_*_bps <= required_*_bps`, nonzero budgets, and an existing definition) is `authorize_index_ddl`;
   stepping/reads/reset are a new Admin-only `authorize_vector_maintenance`.
@@ -840,18 +850,18 @@ future ADR proves that physical index selection must be user-visible.
 
 ## Alternatives considered
 
-| Alternative | Why rejected |
-|-------------|--------------|
-| Store canonical vectors only in vector index canisters | Makes the index canister authoritative and prevents graph-owned rebuild/backfill. |
-| Store vertex embeddings as edge inline properties | Mixes vertex semantic state with traversal-critical edge-local inline property bytes storage. |
-| Store embeddings only as ordinary vertex properties | Does not give embedding-specific dimension, encoding, update, and backfill invariants a clear owner. |
-| Make `flat` the standard index kind | Simpler, but not enough for production-scale candidate generation; keep it as a baseline/debug implementation. |
-| Expose algorithm names in query syntax | Couples user-facing query semantics to derived physical index choices; use index definition/config instead. |
-| Start with HNSW | Commits graph-index-specific stable structures before the canonical/derived boundary and repair model are proven. |
-| Let graph shards call vector index during query execution | Moves query orchestration away from Router and conflicts with the existing federation target. |
-| Store vector bytes in blob-per-vector records | Hurts SIMD/range-read locality; fixed-width vector pages make batched scoring cheaper. |
-| Use CSR for IVF list storage or snapshots | Optimizes locality for mostly static rows but creates heavier insert/delete/repair behavior and a second derived representation; partition-local pages fit Gleaph's mutation and repair model better. |
-| Use global `VectorId`s across indexes | Makes placement, maintenance, and per-index deletion harder; index-local ids keep slot references small and page placement stable. |
+| Alternative                                               | Why rejected                                                                                                                                                                                          |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Store canonical vectors only in vector index canisters    | Makes the index canister authoritative and prevents graph-owned rebuild/backfill.                                                                                                                     |
+| Store vertex embeddings as edge inline properties         | Mixes vertex semantic state with traversal-critical edge-local inline property bytes storage.                                                                                                         |
+| Store embeddings only as ordinary vertex properties       | Does not give embedding-specific dimension, encoding, update, and backfill invariants a clear owner.                                                                                                  |
+| Make `flat` the standard index kind                       | Simpler, but not enough for production-scale candidate generation; keep it as a baseline/debug implementation.                                                                                        |
+| Expose algorithm names in query syntax                    | Couples user-facing query semantics to derived physical index choices; use index definition/config instead.                                                                                           |
+| Start with HNSW                                           | Commits graph-index-specific stable structures before the canonical/derived boundary and repair model are proven.                                                                                     |
+| Let graph shards call vector index during query execution | Moves query orchestration away from Router and conflicts with the existing federation target.                                                                                                         |
+| Store vector bytes in blob-per-vector records             | Hurts SIMD/range-read locality; fixed-width vector pages make batched scoring cheaper.                                                                                                                |
+| Use CSR for IVF list storage or snapshots                 | Optimizes locality for mostly static rows but creates heavier insert/delete/repair behavior and a second derived representation; partition-local pages fit Gleaph's mutation and repair model better. |
+| Use global `VectorId`s across indexes                     | Makes placement, maintenance, and per-index deletion harder; index-local ids keep slot references small and page placement stable.                                                                    |
 
 ## Implementation plan
 
@@ -867,8 +877,10 @@ future ADR proves that physical index selection must be user-visible.
    graph-local vector routing, shard attach readiness, and bounded vector backfill.
 7. **[done, slice 5]** Add router-guarded exact `ivf_flat` search over the live subject map, plus
    canbench exact-scan baselines.
-8. **[done, slice 6]** Add `VECTOR_ID_TO_SUBJECT`, partition-page search, internal `nprobe`, seeded
-   partition fixtures, and partitioned-search canbench baselines.
+8. **[done, historical slice 6; superseded in Plan 0206]** Added `VECTOR_ID_TO_SUBJECT`,
+   partition-page search, internal `nprobe`, seeded partition fixtures, and partitioned-search
+   canbench baselines; the reverse-map collection was later removed while row-local subject
+   reconstruction and subject-map freshness validation remain.
 9. **[done, slice 7]** Add the bounded rebuild lifecycle state machine (`VECTOR_REBUILD_STATE`,
    MemoryId 12) and admin surface: start/step/status/publish/abort/cleanup for a shadow
    `index_version`.

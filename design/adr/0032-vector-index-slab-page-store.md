@@ -1,15 +1,23 @@
 # 0032. Vector index slab page store
 
 Date: 2026-06-24
-Status: implemented
-Last revised: 2026-06-24
+Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
+Last revised: 2026-08-07 23:39:30 UTC +0000
 
-> **Status note:** Implemented as of `2026-06-24 16:13:21 UTC +0000`. The composite slab page store
+> **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
+> replaces this design; the slab page store is **completely discarded** (fresh two-table layout,
+> version 1, breaking). The historical content below is retained as decision history only.
+
+> **Status note:** Implemented as of `2026-06-24 16:13:21 UTC +0000`; current-layout wording revised
+> at `2026-08-07 04:00:46 UTC +0000`. The composite slab page store
 > (`VECTOR_PAGE_META` MemoryId 10 + raw `VECTOR_ROW_SLAB` MemoryId 13, opened together with
 > fail-closed reopen validation) replaces the former `VECTOR_PAGE` large-value store, encapsulated
 > behind `VectorSlabStore` in `crates/graph-vector-index/src/facade/stable/page_store.rs`. No
-> old-page migration, compatibility reader, or canonical backfill/rebuild step was added; the new
-> `VECTOR_INDEX_STABLE_LAYOUT` is defined directly (14 regions, 0–13). Benchmarks (`canbench`) show
+> old-page migration, compatibility reader, or canonical backfill/rebuild step was added. Plans 0206
+> and 0207 subsequently retired two unread reverse maps without repacking: the current
+> `VECTOR_INDEX_STABLE_LAYOUT` has 13 allocated stores across 15 numbered slots (0–14), with 8 and
+> 11 unallocated while the slab owners remain at 10 and 13. This changes Rust layout metadata, not
+> Candid/canister ingress. Benchmarks (`canbench`) show
 > 30–95% instruction reductions across search / upsert / rebuild paths versus the prior Candid page
 > layout; see `crates/graph-vector-index/canbench_results.yml`.
 
@@ -289,14 +297,24 @@ vector bytes (and a fresh page header) first, then bump `occupied_tail`, then in
 `VECTOR_PAGE_META`, and update `VECTOR_PARTITION_HEADS` (including `live_len`) last — so a failed
 grow/write can never leave a head or page-meta pointing at unwritten bytes. If a trap occurs between
 the `occupied_tail` bump and the directory writes, the surplus slab bytes are acceptable leaked dead
-space (see *Allocation and cleanup*).
+space (see _Allocation and cleanup_).
 
-Because `append_row` is fallible, dual-write callers (`vector_upsert` during `Building`) make both
-appends — active then shadow — before any `tombstone_row`, `VECTOR_ID_TO_SLOT`, or
-`VECTOR_SUBJECT_TO_ID` commit. If the shadow append fails, the caller tombstones the already-appended
-active row before returning the error, so the residual is a tombstoned dead row (page-meta and
-`PartitionHead.live_len` accounting restored) rather than a live-counted orphan, and the subject
-clock / id map stay pointing at the prior valid slot.
+Because `append_row` is fallible, mutation ordering is branch-specific:
+
+- A same-incarnation newer-version update appends the active row and then, while dual-writing, the
+  shadow row before tombstoning superseded rows and committing `VECTOR_SUBJECT_TO_ID`. If the shadow
+  append fails, the caller tombstones only the just-appended active row before returning
+  `StableGrowFailed`; page-meta and `PartitionHead.live_len` accounting are restored and the old
+  subject entry and physical row remain live.
+- `insert_new_subject` likewise appends active and optional shadow rows before creating its new
+  subject-map entry. A failed shadow append tombstones the just-appended active row and leaves no new
+  subject entry.
+- The pre-existing existing-live newer-incarnation replacement branch is different: it tombstones
+  the old active row and, while dual-writing, old shadow row before calling fallible
+  `insert_new_subject`. A later `StableGrowFailed` can leave the retained old subject entry pointing
+  at tombstoned rows. Plan 0207 removes only an adjacent unread, infallible reverse-map write; it
+  neither changes this order nor makes the branch atomic. The defect remains tracked as
+  [GAP-2026-08-07-001](../implementation-gaps.md#gap-2026-08-07-001--newer-incarnation-replacement-can-tombstone-the-old-row-before-a-fallible-append).
 
 `tombstone_row` owns all live/tombstone accounting idempotently: on the live→tombstoned transition it
 sets the bit and adjusts `VectorPageMeta.live_count`/`tombstone_count` and the row's
@@ -352,7 +370,7 @@ The implementation must enforce these invariants at the Vector Index storage bou
 4. `SlotRef.slot < row_count`.
 5. A non-tombstoned row can be scored only after `VECTOR_SUBJECT_TO_ID` confirms that the subject is
    live, owns the row's `vector_id`, and points at the same `(index_version, partition_id, page_id,
-   slot, generation)`.
+slot, generation)`.
 6. `VECTOR_PAGE_META` and `VECTOR_ROW_SLAB` never reopen partially. The composite is keyed on raw
    slab size: `slab.size() == 0 && meta.is_empty()` is fresh; a slab with a valid header reopens
    (a **valid empty-initialized** store — empty meta with an in-bounds `occupied_tail` — is a valid

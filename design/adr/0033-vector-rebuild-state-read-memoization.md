@@ -1,8 +1,12 @@
 # 0033. Vector rebuild candidate pool storage and rebuild-state read cost
 
 Date: 2026-06-25
-Status: accepted (implementation deferred)
-Last revised: 2026-06-25
+Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
+Last revised: 2026-08-07 23:39:30 UTC +0000
+
+> **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
+> replaces the vector-index design; the rebuild-state investigation below is retained as decision
+> history only.
 
 > **Summary.** This ADR investigates how to cut the remaining serialization cost of the bounded vector
 > rebuild after ADR 0031 Slice 7/8. The tempting fix — change how the `Sampling`/`Training` candidate
@@ -25,7 +29,7 @@ k-means-lite iteration per bounded `admin_vector_rebuild_step` message (ADR 0031
 
 A prior optimization (single-encode persist via `RawRebuildState`) removed a redundant Candid encode
 and clone on the write path, cutting full-rebuild `canbench` instructions ~17-21%. Phase-level
-`bench_scope` instrumentation then showed where the *remaining* cost sits.
+`bench_scope` instrumentation then showed where the _remaining_ cost sits.
 
 ## Problem
 
@@ -38,7 +42,7 @@ the candidate pool) from stable memory once per bounded step:
 - `bench_rebuild_full_d768_nlist64`: `rebuild_read_state` = 3.08B over 10 steps (~20% of the 15.03B
   total).
 
-Because `Training` is k-means over the *immutable* pool and each iteration is a separate bounded
+Because `Training` is k-means over the _immutable_ pool and each iteration is a separate bounded
 message, the pool is read out of stable memory again on every one of the ~8 training steps. The
 dominant `bench_rebuild_full_d768_nlist64` cost overall is `rebuild_training_assign` (9.57B, ~64%),
 which is inherent k-means L2 work (`candidate_count * nlist * dims`) and out of scope here.
@@ -46,7 +50,7 @@ which is inherent k-means L2 work (`candidate_count * nlist * dims`) and out of 
 ## Existing Architecture Assessment
 
 The Vector Index domain already owns the rebuild lifecycle, the candidate pool, and `VECTOR_REBUILD_STATE`.
-Nothing about the *ownership* or *boundaries* is wrong. The question is purely whether a different
+Nothing about the _ownership_ or _boundaries_ is wrong. The question is purely whether a different
 **storage layout** for the candidate pool would reduce the per-step read.
 
 Two storage-layout hypotheses were evaluated against measured evidence (a throwaway prototype run
@@ -64,7 +68,7 @@ through `canbench`; results below are the prototype's change vs the committed ba
 
 Therefore the demonstrated cost is the repeated stable-memory read of the rebuild value. A
 storage-layout change does not remove a stable read that the rebuild still has to perform every step;
-only *not re-reading* removes it.
+only _not re-reading_ removes it.
 
 ## Alternatives
 
@@ -90,7 +94,7 @@ Move the pool out of the record into a new raw slab region (e.g. MemoryId 14), a
 `VECTOR_ROW_SLAB`. `rebuild_state_of` would then read only the small lifecycle record (cheap), and
 `Training` would read candidates directly from the region.
 
-- Analysis: this *relocates* rather than *eliminates* the per-step pool read. `Training` still needs
+- Analysis: this _relocates_ rather than _eliminates_ the per-step pool read. `Training` still needs
   the entire immutable pool each iteration, so it reads `~pool_bytes` from the region every step — the
   same stable bytes that `read_state` reads today, just under a different scope. Net is ~neutral unless
   combined with memoization of the pool across steps. A raw slab read may be marginally cheaper than a
