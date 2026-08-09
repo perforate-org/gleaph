@@ -237,19 +237,37 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableHashMap<K, V, M> {
     }
 
     /// Inserts `key`/`value`, returning the previous value if the key was present.
+    ///
+    /// A single linear probe handles both cases: an existing key is replaced in place (no resize), and
+    /// a new key is inserted at the first empty slot (resizing first if the map is full).
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
-        // Probe first: if the key already exists, replace without resizing (a replace does not need
-        // room for a new slot).
-        if let Some(idx) = self.find_inner_idx(&key) {
-            let prev = self.read_value(idx);
-            self.write_value(idx, &value);
-            return Ok(Some(prev));
+        let capacity = self.capacity();
+        let key_bytes = key.to_bytes();
+        let mut i = hash(&key_bytes, capacity);
+        loop {
+            match self.read_flag(i) {
+                OCCUPIED => {
+                    if self.read_key(i) == key {
+                        let prev = self.read_value(i);
+                        self.write_value(i, &value);
+                        return Ok(Some(prev));
+                    }
+                    i = (i + 1) % capacity;
+                }
+                EMPTY => {
+                    if self.is_full() {
+                        self.resize()?;
+                        return Ok(self.insert_internal(key, value));
+                    }
+                    self.write_key(i, &key);
+                    self.write_value(i, &value);
+                    self.write_flag(i, OCCUPIED);
+                    self.set_len(self.len() + 1);
+                    return Ok(None);
+                }
+                _ => unreachable!("invalid slot flag"),
+            }
         }
-        // New key: resize if full, then insert.
-        if self.is_full() {
-            self.resize()?;
-        }
-        Ok(self.insert_internal(key, value))
     }
 
     /// Removes `key`, returning the previous value if present.
