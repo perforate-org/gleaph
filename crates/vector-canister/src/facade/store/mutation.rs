@@ -205,12 +205,7 @@ impl VectorCanisterStore {
     }
 
     pub(super) fn read_slot_bytes(&self, index_id: u32, slot: SlotRef) -> Option<Vec<u8>> {
-        PAGE_STORE.with_borrow(|store| {
-            let mut out = Vec::new();
-            store
-                .read_row_bytes(index_id, slot, &mut out)
-                .map(|(_, bytes)| bytes.to_vec())
-        })
+        PAGE_STORE.with_borrow(|store| store.read_row_bytes(index_id, slot).map(|(_, bytes)| bytes))
     }
 
     /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
