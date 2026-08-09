@@ -25,6 +25,7 @@
 
 mod hash_map;
 mod header;
+mod iter;
 mod memory;
 
 #[cfg(feature = "canbench")]
@@ -32,3 +33,4 @@ mod bench;
 
 pub use hash_map::{InsertError, StableHashMap};
 pub use header::InitError;
+pub use iter::Iter;

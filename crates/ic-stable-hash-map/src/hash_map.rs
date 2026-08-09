@@ -34,6 +34,7 @@
 //! fixed-width. Hashing uses `rapidhash(data)` (deterministic constant seed, stable across upgrades).
 
 use crate::header::{self, DATA_OFFSET, InitError};
+use crate::iter::Iter;
 use crate::memory::{grow_memory_to_at_least_bytes, read_u32, read_u64, write_u64};
 use ic_stable_structures::{Memory, Storable};
 use rapidhash::v1::rapidhash_v1;
@@ -186,7 +187,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableHashMap<K, V, M> {
             .write(key_flag_offset(idx, self.key_size()), &[flag]);
     }
 
-    fn read_key(&self, idx: u64) -> K {
+    pub(crate) fn read_key(&self, idx: u64) -> K {
         let offset = key_data_offset(idx, self.key_size());
         let mut buf = vec![0u8; self.key_size() as usize];
         self.memory.read(offset, &mut buf);
@@ -198,7 +199,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableHashMap<K, V, M> {
         self.memory.write(offset, &key.to_bytes());
     }
 
-    fn read_value(&self, idx: u64) -> V {
+    pub(crate) fn read_value(&self, idx: u64) -> V {
         let offset = value_offset(idx, self.key_size(), self.value_size(), self.capacity());
         let mut buf = vec![0u8; self.value_size() as usize];
         self.memory.read(offset, &mut buf);
@@ -214,6 +215,11 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableHashMap<K, V, M> {
         write_u64(&self.memory, header::LEN_OFFSET, len);
     }
 
+    /// Returns `true` if the slot at `idx` is occupied.
+    pub(crate) fn is_occupied(&self, idx: u64) -> bool {
+        self.read_flag(idx) == OCCUPIED
+    }
+
     /// Returns the value stored by `key`, if any.
     pub fn get(&self, key: &K) -> Option<V> {
         let idx = self.find_inner_idx(key)?;
@@ -225,8 +231,21 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableHashMap<K, V, M> {
         self.find_inner_idx(key).is_some()
     }
 
+    /// Returns an iterator over the map's `(key, value)` entries (unordered slot order).
+    pub fn iter(&self) -> Iter<'_, K, V, M> {
+        Iter::new(self)
+    }
+
     /// Inserts `key`/`value`, returning the previous value if the key was present.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        // Probe first: if the key already exists, replace without resizing (a replace does not need
+        // room for a new slot).
+        if let Some(idx) = self.find_inner_idx(&key) {
+            let prev = self.read_value(idx);
+            self.write_value(idx, &value);
+            return Ok(Some(prev));
+        }
+        // New key: resize if full, then insert.
         if self.is_full() {
             self.resize()?;
         }
@@ -424,6 +443,21 @@ mod tests {
             assert_eq!(map.get(&k), Some(k * 7));
         }
         assert_eq!(map.len(), 1000);
+    }
+
+    #[test]
+    fn iter_yields_all_entries() {
+        let map = fresh();
+        for k in 0..100u64 {
+            map.insert(k, k * 3).unwrap();
+        }
+        let mut collected: Vec<(u64, u64)> = map.iter().collect();
+        collected.sort();
+        assert_eq!(collected.len(), 100);
+        for (i, (k, v)) in collected.iter().enumerate() {
+            assert_eq!(*k, i as u64);
+            assert_eq!(*v, (i as u64) * 3);
+        }
     }
 
     #[test]
