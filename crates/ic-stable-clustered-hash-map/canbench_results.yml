@@ -1,4 +1,40 @@
 benches:
+  bench_btree_get:
+    total:
+      calls: 1
+      instructions: 109078795
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_btree_get:
+        calls: 1
+        instructions: 109077800
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_btree_insert:
+    total:
+      calls: 1
+      instructions: 246849807
+      heap_increase: 3
+      stable_memory_increase: 0
+    scopes:
+      bench_btree_insert:
+        calls: 1
+        instructions: 246848812
+        heap_increase: 3
+        stable_memory_increase: 0
+  bench_btree_remove:
+    total:
+      calls: 1
+      instructions: 235280384
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_btree_remove:
+        calls: 1
+        instructions: 235279389
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_clustered_get:
     total:
       calls: 1

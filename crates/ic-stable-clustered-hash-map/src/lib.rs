@@ -8,8 +8,9 @@
 //!
 //! - **O(1)** amortized [`StableClusteredHashMap::get`], [`StableClusteredHashMap::insert`],
 //!   [`StableClusteredHashMap::remove`], [`StableClusteredHashMap::contains_key`] (by key).
-//! - Growing when `len >= 3/4 * buckets` rehashes all entries into a `2^(N+1) + (N+1)` table:
-//!   **O(len)** work plus stable memory growth. (An in-place incremental resize is a later slice.)
+//! - Growing when `len >= 3/4 * buckets` grows the table in place to a `2^(N+1) + (N+1)` layout
+//!   and rehashes entries incrementally: the remap is spread across subsequent operations
+//!   (amortized **O(1)** per op) rather than a single stop-the-world pass.
 //!
 //! # Type parameters
 //!
