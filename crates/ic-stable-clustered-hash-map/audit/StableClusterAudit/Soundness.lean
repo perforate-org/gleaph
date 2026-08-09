@@ -207,8 +207,32 @@ lemma relocateWrite_preserves_clusterInvariant {s s' : State} {entry : Key} {val
     relocateWrite_preserves_entryAtCorrectBucket h hci.2.2 hremap hremap'
   ⟩
 
-lemma insert_preserves_invariant (h : ClusterInvariant s) (hstep : RelocateStep s s' entry value position) :
-    ClusterInvariant s' := by
+-- A single relocation step keeps the distance invariant: the entry written at `position`
+-- has `entryDist ≤ position`, and all other slots are unchanged.
+lemma relocateStep_preserves_distanceValid {s s' : State} {entry : Key} {value : Nat}
+    {entryDist : Nat} {position : Nat} (h : RelocateStep s s' entry value entryDist position)
+    (hiv : DistanceValid s) : DistanceValid s' := by
+  intro i hicap hiocc
+  by_cases hpos : i = position
+  · rw [hpos, h.entryDistAt]
+    exact h.entryDist_le
+  · have hicap_s : i < capacity s.n := by simpa [h.n] using hicap
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.dist_other i hpos]
+      exact hiocc
+    have hvalid := hiv i hicap_s hiocc_s
+    rw [h.dist_other i hpos]
+    exact hvalid
+
+-- A single relocation step is an *intermediate* state (the displaced entry is in flight, not
+-- yet written), so it does not by itself preserve `ClusterInvariant`: the full `insert` is a
+-- chain of such steps terminated by a `RelocateWrite`, and the invariant is preserved by the
+-- whole chain. Proving that requires an induction over the chain length, with each step
+-- keeping the ordered-cluster structure across the displaced region; that induction is the
+-- remaining core of target (b) and is deferred here.
+lemma insert_preserves_invariant (h : ClusterInvariant s)
+    (hstep : RelocateStep s s' entry value entryDist position) : ClusterInvariant s' := by
   sorry
 
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :

@@ -127,24 +127,35 @@ proofs (targets (a) and (b)).
 -- cluster and pushing it down by the cluster length until an empty slot is reached.
 -- src/map.rs L447-L476.
 --
--- One relocation step: at an occupied `position`, read the occupant `t`, extend its
--- distance by `(next - position)` where `next` is its cluster end, write the new entry,
--- and continue from `next` with `entry := t`.
+-- One relocation step (an intermediate state of the loop): at an occupied `position`, the
+-- occupant `t` is read, its distance would grow by `(next - position)`, the new `entry` is
+-- written at `position`, and the loop continues from `next` with `entry := t`. In this
+-- single step only `position` changes; the displaced `t` is NOT yet written anywhere (it is
+-- the pending entry). Hence a single step does not preserve the entry set or
+-- `ClusterInvariant`; only the whole chain (steps followed by a terminating
+-- `RelocateWrite`) does.
 -- src/map.rs L468-L474.
-def RelocateStep (s s' : State) (entry : Key) (value : Nat) (position : Nat) : Prop :=
-  ∃ tKey tVal tDist next,
-    s.keyAt position = some tKey ∧ s.valAt position = tVal ∧ s.dist position = tDist ∧
-    next = endOfCluster s position ∧
-    -- displaced entry keeps its key/value, distance grows by (next - position)
-    tDist + (next - position) < EMPTY ∧
-    s'.keyAt position = some entry ∧ s'.valAt position = value ∧
-    s'.dist position = tDist + (next - position) ∧
-    -- everything else is unchanged except at `next` where the displaced entry lands
-    s'.keyAt next = some tKey ∧ s'.valAt next = tVal ∧
-    s'.dist next = s.dist next ∧
-    (∀ i, i ≠ position → i ≠ next → s'.keyAt i = s.keyAt i) ∧
-    (∀ i, i ≠ position → i ≠ next → s'.valAt i = s.valAt i) ∧
-    (∀ i, i ≠ position → i ≠ next → s'.dist i = s.dist i)
+structure RelocateStep (s s' : State) (entry : Key) (value : Nat) (entryDist : Nat)
+    (position : Nat) where
+  n : s.n = s'.n
+  tKey : Key
+  tVal : Nat
+  tDist : Nat
+  next : Nat
+  occT : s.keyAt position = some tKey
+  valT : s.valAt position = tVal
+  distT : s.dist position = tDist
+  next_is_end : next = endOfCluster s position
+  -- the displaced occupant's distance grows by the shift; it becomes the next pending entry
+  tDistShifted : tDist + (next - position) < EMPTY
+  -- the new entry lands at `position` with its own distance
+  entryAt : s'.keyAt position = some entry
+  entryVal : s'.valAt position = value
+  entryDistAt : s'.dist position = entryDist
+  entryDist_le : entryDist ≤ position
+  keyAt_other : ∀ i, i ≠ position → s'.keyAt i = s.keyAt i
+  valAt_other : ∀ i, i ≠ position → s'.valAt i = s.valAt i
+  dist_other : ∀ i, i ≠ position → s'.dist i = s.dist i
 
 -- `insert_and_relocate` base case: an empty slot at `position` is written directly, with
 -- the entry's distance = `position - bucket(entry, n)` so it sits at its home bucket.
