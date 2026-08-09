@@ -11,8 +11,9 @@
 //! locator, ADR 0032).
 //!
 //! The `bench_ivf_d1536_*` sweep covers the ADR 0064 §8 design target (`d = 1536`) across the nlist
-//! values that stay trainable at that width; it is the cost surface slice 6 tunes
-//! `DEFAULT_EPS_QUERY` by (recall is covered by the boundary-recall unit test).
+//! values that stay trainable at that width; it isolated the ~144K ins/centroid and ~164K ins/row
+//! cost model that confirmed `DEFAULT_EPS_QUERY = 0.0` (recall is covered by the boundary-recall unit
+//! test).
 //!
 //! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 

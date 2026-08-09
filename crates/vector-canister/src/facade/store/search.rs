@@ -37,12 +37,14 @@ use std::ops::Bound;
 /// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
 /// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`.
 ///
-/// Slice 6 decision: keep `0.0` (cost-minimal) as the default. The recall/cost tradeoff is real — a
-/// query near a partition boundary drops the adjacent partition's members at `0.0` (see the
-/// `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers` test) — but raising the
-/// global default without a measured cost baseline would be speculative. `eps_query` is a
-/// per-definition setting, so operators can raise recall; the d=1536 canbench ε₂ sweep (bench.rs)
-/// supplies the cost data to confirm the final value.
+/// Slice 6 decision: keep `0.0` (cost-minimal), confirmed by the d=1536 canbench ε₂ sweep. The
+/// sweep isolates the cost model at the design target — ~144K ins per centroid (fixed, scales with
+/// `nlist`) and ~164K ins per scanned row — so raising `eps_query` strictly adds the scanned-partition
+/// row cost (one→two partitions measured +7% at nlist256 and +53% at nlist64). `0.0` is the right
+/// global default for well-clustered data; the recall cost of a single-partition scan is documented
+/// by `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`. The design's
+/// per-definition `eps_query` recall escape hatch is not yet wired into the definition config (a
+/// follow-up); until then every search uses this global default.
 const DEFAULT_EPS_QUERY: f32 = 0.0;
 
 /// Internal, algorithm-specific search tuning. Never crosses the Router/kernel wire (the public

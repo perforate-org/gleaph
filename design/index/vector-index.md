@@ -439,14 +439,18 @@ canister's stable regions are rebuilt under the new layout.
    region remains the documented fallback if per-job pools still bind.
 2. **Hierarchy deployment timing** (**Slice 6 decision: ship `levels = 1` / flat, defer `levels = 2`**):
    the flat `ivf_flat` model stays the deployed form; enabling `levels = 2` (e.g. 64×64) follows the
-   scan-cost measurement at the target scale. No level-generic structure is introduced into the
-   definition config, partition keys, or search path until that measurement justifies it.
-3. **Scoring formulation** (**Slice 6: sub-square + early-exit is the default**): canbench `(a)`
-   dot+norms+pruning, `(b)` sub-square+early-exit (default), `(c)` sub-square+bound, at `d=1536`.
-   The ε₂ default is kept at `DEFAULT_EPS_QUERY = 0.0` (cost-minimal); the boundary-recall test
-   (`partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`) documents the recall
-   cost of a single-partition default, and the `bench_ivf_d1536_*` ε₂ sweep measures the cost of
-   raising it before the value is confirmed.
+   scan-cost measurement at the target scale. Slice 6 measured ~164K instructions per scanned row at
+   `d = 1536` (`bench_ivf_d1536_*`), which makes a flat single-partition scan at the 10⁸ target
+   (~148K rows/partition at `nlist ≈ 677`) an infeasible ~24B instructions — a concrete, measured
+   argument for the two-level hierarchy at scale, not just a structural one.
+3. **Scoring formulation** (**Slice 6 decision: sub-square + early-exit is the default; ε default
+   confirmed at `0.0`**): the d=1536 ε₂ sweep isolates the cost model — ~144K ins/centroid (fixed,
+   `nlist`-scaled) and ~164K ins/row (per scanned row) — so `DEFAULT_EPS_QUERY = 0.0` is the
+   cost-minimal default (ε>0 strictly adds scanned-partition row cost: one→two partitions measured
+   +7% at nlist256, +53% at nlist64). The recall cost of a single-partition default is documented by
+   `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`; per-definition
+   `eps_query` (the operator recall escape hatch) is designed but not yet wired into the definition
+   config — a follow-up.
 4. **Page size / slots per page**: config tuned by the scan-cost measurement.
 
 ## Related documents
