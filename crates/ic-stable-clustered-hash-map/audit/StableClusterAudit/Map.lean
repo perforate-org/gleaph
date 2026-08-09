@@ -138,6 +138,8 @@ proofs (targets (a) and (b)).
 structure RelocateStep (s s' : State) (entry : Key) (value : Nat) (entryDist : Nat)
     (position : Nat) where
   n : s.n = s'.n
+  -- `insert_and_relocate` (without a resize) never touches the resize boundary.
+  remapEnd : s'.remapEnd = s.remapEnd
   tKey : Key
   tVal : Nat
   tDist : Nat
