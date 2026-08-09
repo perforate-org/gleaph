@@ -34,6 +34,23 @@ thread_local! {
 /// only source of growth (new client keys) and the journal converges to its TTL window.
 const MUTATION_GC_BUDGET: u32 = 2;
 
+struct OrderedBatchTransitionErrors {
+    mutation_id_mismatch: &'static str,
+    request_fingerprint_mismatch: &'static str,
+    inactive_routing_reservation: &'static str,
+    already_completed: &'static str,
+    non_pristine_scalar_reservation: &'static str,
+    oversized_record: &'static str,
+}
+
+struct OrderedBatchTransition {
+    request_identity: crate::facade::stable::label_stats::RouterMutationRequestIdentityV1,
+    resolved_labels: ResolvedLabelTable,
+    resolved_properties: ResolvedPropertyTable,
+    payload: RouterMutationPayloadV1,
+    errors: OrderedBatchTransitionErrors,
+}
+
 #[cfg(test)]
 pub(crate) fn reset_mutation_gc_cursor_for_test() {
     MUTATION_GC_CURSOR.with_borrow_mut(|cursor| *cursor = None);
@@ -655,6 +672,62 @@ impl RouterStore {
         (recoverable, last_key, scanned)
     }
 
+    fn transition_scalar_reservation_to_ordered_payload(
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+        transition: OrderedBatchTransition,
+    ) -> Result<(), RouterError> {
+        let OrderedBatchTransition {
+            request_identity,
+            resolved_labels,
+            resolved_properties,
+            payload,
+            errors,
+        } = transition;
+        let key = key.clone();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(errors.mutation_id_mismatch.into()));
+            }
+            if v1.request_identity.request_fingerprint() != request_identity.request_fingerprint() {
+                return Err(RouterError::Conflict(
+                    errors.request_fingerprint_mismatch.into(),
+                ));
+            }
+            if !v1.routing_in_progress {
+                return Err(RouterError::Conflict(
+                    errors.inactive_routing_reservation.into(),
+                ));
+            }
+            if v1.completed_row_count.is_some() {
+                return Err(RouterError::Conflict(errors.already_completed.into()));
+            }
+            if !matches!(
+                v1.payload,
+                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
+            ) {
+                return Err(RouterError::Conflict(
+                    errors.non_pristine_scalar_reservation.into(),
+                ));
+            }
+            v1.request_identity = request_identity;
+            v1.resolved_labels = Some(resolved_labels);
+            v1.resolved_properties = Some(resolved_properties);
+            v1.payload = payload;
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(RouterError::InvalidArgument(errors.oversized_record.into()));
+            }
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
     /// Atomically transition a pristine scalar reservation to an ordered Graph replay payload.
     ///
     /// The public fingerprint and item count remain Router-owned identity; the target validates
@@ -669,14 +742,13 @@ impl RouterStore {
         target: crate::facade::stable::label_stats::RouterOrderedEdgeBatchTargetV1,
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
-            OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
-            RouterMutationRequestIdentityV1, RouterOrderedEdgeBatchReplayV1,
+            OrderedEdgeBatchTargetProgressV1, RouterMutationRequestIdentityV1,
+            RouterOrderedEdgeBatchReplayV1,
         };
-        let (public_fingerprint, public_item_count) = match &request_identity {
+        let public_item_count = match &request_identity {
             RouterMutationRequestIdentityV1::OrderedEdgeBatch {
-                public_fingerprint,
-                public_item_count,
-            } => (*public_fingerprint, *public_item_count),
+                public_item_count, ..
+            } => *public_item_count,
             _ => {
                 return Err(RouterError::InvalidArgument(
                     "ordered edge batch transition requires an OrderedEdgeBatch request identity"
@@ -698,56 +770,26 @@ impl RouterStore {
                 "ordered Graph target must be pristine at admission".into(),
             ));
         }
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered batch transition".into(),
-                ));
-            }
-            if v1.request_identity.request_fingerprint() != public_fingerprint {
-                return Err(RouterError::Conflict(
-                    "public request fingerprint mismatch at ordered batch transition".into(),
-                ));
-            }
-            if !v1.routing_in_progress {
-                return Err(RouterError::Conflict(
-                    "ordered batch transition requires an active routing reservation".into(),
-                ));
-            }
-            if v1.completed_row_count.is_some() {
-                return Err(RouterError::Conflict(
-                    "ordered batch transition refused: record already completed".into(),
-                ));
-            }
-            if !matches!(
-                v1.payload,
-                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
-            ) {
-                return Err(RouterError::Conflict(
-                    "ordered batch transition requires a pristine scalar reservation".into(),
-                ));
-            }
-            v1.request_identity = request_identity;
-            v1.resolved_labels = Some(resolved_labels);
-            v1.resolved_properties = Some(resolved_properties);
-            v1.payload = RouterMutationPayloadV1::OrderedEdgeBatch(Box::new(
-                RouterOrderedEdgeBatchReplayV1 { target },
-            ));
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(RouterError::InvalidArgument(
-                    "ordered edge batch record exceeds safe inter-canister payload bound".into(),
-                ));
-            }
-            m.insert(key, record);
-            Ok(())
-        })
+        Self::transition_scalar_reservation_to_ordered_payload(
+            key,
+            mutation_id,
+            OrderedBatchTransition {
+                request_identity,
+                resolved_labels,
+                resolved_properties,
+                payload: RouterMutationPayloadV1::OrderedEdgeBatch(Box::new(
+                    RouterOrderedEdgeBatchReplayV1 { target },
+                )),
+                errors: OrderedBatchTransitionErrors {
+                    mutation_id_mismatch: "mutation_id mismatch at ordered batch transition",
+                    request_fingerprint_mismatch: "public request fingerprint mismatch at ordered batch transition",
+                    inactive_routing_reservation: "ordered batch transition requires an active routing reservation",
+                    already_completed: "ordered batch transition refused: record already completed",
+                    non_pristine_scalar_reservation: "ordered batch transition requires a pristine scalar reservation",
+                    oversized_record: "ordered edge batch record exceeds safe inter-canister payload bound",
+                },
+            },
+        )
     }
 
     /// Atomically transition a pristine scalar reservation to an ordered Graph vertex replay
@@ -763,14 +805,13 @@ impl RouterStore {
         target: crate::facade::stable::label_stats::RouterOrderedVertexBatchTargetV1,
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
-            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
-            RouterMutationRequestIdentityV1, RouterOrderedVertexBatchReplayV1,
+            OrderedVertexBatchTargetProgressV1, RouterMutationRequestIdentityV1,
+            RouterOrderedVertexBatchReplayV1,
         };
-        let (public_fingerprint, public_item_count) = match &request_identity {
+        let public_item_count = match &request_identity {
             RouterMutationRequestIdentityV1::OrderedVertexBatch {
-                public_fingerprint,
-                public_item_count,
-            } => (*public_fingerprint, *public_item_count),
+                public_item_count, ..
+            } => *public_item_count,
             _ => {
                 return Err(RouterError::InvalidArgument(
                     "ordered vertex batch transition requires an OrderedVertexBatch request identity"
@@ -792,56 +833,26 @@ impl RouterStore {
                 "ordered vertex Graph target must be pristine at admission".into(),
             ));
         }
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered vertex batch transition".into(),
-                ));
-            }
-            if v1.request_identity.request_fingerprint() != public_fingerprint {
-                return Err(RouterError::Conflict(
-                    "public request fingerprint mismatch at ordered vertex batch transition".into(),
-                ));
-            }
-            if !v1.routing_in_progress {
-                return Err(RouterError::Conflict(
-                    "ordered vertex batch transition requires an active routing reservation".into(),
-                ));
-            }
-            if v1.completed_row_count.is_some() {
-                return Err(RouterError::Conflict(
-                    "ordered vertex batch transition refused: record already completed".into(),
-                ));
-            }
-            if !matches!(
-                v1.payload,
-                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
-            ) {
-                return Err(RouterError::Conflict(
-                    "ordered vertex batch transition requires a pristine scalar reservation".into(),
-                ));
-            }
-            v1.request_identity = request_identity;
-            v1.resolved_labels = Some(resolved_labels);
-            v1.resolved_properties = Some(resolved_properties);
-            v1.payload = RouterMutationPayloadV1::OrderedVertexBatch(Box::new(
-                RouterOrderedVertexBatchReplayV1 { target },
-            ));
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(RouterError::InvalidArgument(
-                    "ordered vertex batch record exceeds safe inter-canister payload bound".into(),
-                ));
-            }
-            m.insert(key, record);
-            Ok(())
-        })
+        Self::transition_scalar_reservation_to_ordered_payload(
+            key,
+            mutation_id,
+            OrderedBatchTransition {
+                request_identity,
+                resolved_labels,
+                resolved_properties,
+                payload: RouterMutationPayloadV1::OrderedVertexBatch(Box::new(
+                    RouterOrderedVertexBatchReplayV1 { target },
+                )),
+                errors: OrderedBatchTransitionErrors {
+                    mutation_id_mismatch: "mutation_id mismatch at ordered vertex batch transition",
+                    request_fingerprint_mismatch: "public request fingerprint mismatch at ordered vertex batch transition",
+                    inactive_routing_reservation: "ordered vertex batch transition requires an active routing reservation",
+                    already_completed: "ordered vertex batch transition refused: record already completed",
+                    non_pristine_scalar_reservation: "ordered vertex batch transition requires a pristine scalar reservation",
+                    oversized_record: "ordered vertex batch record exceeds safe inter-canister payload bound",
+                },
+            },
+        )
     }
 
     /// Atomically transition a pristine scalar reservation to an ordered Graph mixed replay
@@ -857,18 +868,17 @@ impl RouterStore {
         target: crate::facade::stable::label_stats::RouterOrderedMixedBatchTargetV1,
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
-            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
-            RouterMutationRequestIdentityV1, RouterOrderedMixedBatchReplayV1,
+            OrderedMixedBatchTargetProgressV1, RouterMutationRequestIdentityV1,
+            RouterOrderedMixedBatchReplayV1,
         };
-        let (public_fingerprint, public_operation_count, public_vertex_count, public_edge_count) =
+        let (public_operation_count, public_vertex_count, public_edge_count) =
             match &request_identity {
                 RouterMutationRequestIdentityV1::OrderedMixedBatch {
-                    public_fingerprint,
                     public_operation_count,
                     public_vertex_count,
                     public_edge_count,
+                    ..
                 } => (
-                    *public_fingerprint,
                     *public_operation_count,
                     *public_vertex_count,
                     *public_edge_count,
@@ -915,56 +925,26 @@ impl RouterStore {
                 "ordered mixed Graph target must be pristine at admission".into(),
             ));
         }
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered mixed batch transition".into(),
-                ));
-            }
-            if v1.request_identity.request_fingerprint() != public_fingerprint {
-                return Err(RouterError::Conflict(
-                    "public request fingerprint mismatch at ordered mixed batch transition".into(),
-                ));
-            }
-            if !v1.routing_in_progress {
-                return Err(RouterError::Conflict(
-                    "ordered mixed batch transition requires an active routing reservation".into(),
-                ));
-            }
-            if v1.completed_row_count.is_some() {
-                return Err(RouterError::Conflict(
-                    "ordered mixed batch transition refused: record already completed".into(),
-                ));
-            }
-            if !matches!(
-                v1.payload,
-                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
-            ) {
-                return Err(RouterError::Conflict(
-                    "ordered mixed batch transition requires a pristine scalar reservation".into(),
-                ));
-            }
-            v1.request_identity = request_identity;
-            v1.resolved_labels = Some(resolved_labels);
-            v1.resolved_properties = Some(resolved_properties);
-            v1.payload = RouterMutationPayloadV1::OrderedMixedBatch(Box::new(
-                RouterOrderedMixedBatchReplayV1 { target },
-            ));
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-                return Err(RouterError::InvalidArgument(
-                    "ordered mixed batch record exceeds safe inter-canister payload bound".into(),
-                ));
-            }
-            m.insert(key, record);
-            Ok(())
-        })
+        Self::transition_scalar_reservation_to_ordered_payload(
+            key,
+            mutation_id,
+            OrderedBatchTransition {
+                request_identity,
+                resolved_labels,
+                resolved_properties,
+                payload: RouterMutationPayloadV1::OrderedMixedBatch(Box::new(
+                    RouterOrderedMixedBatchReplayV1 { target },
+                )),
+                errors: OrderedBatchTransitionErrors {
+                    mutation_id_mismatch: "mutation_id mismatch at ordered mixed batch transition",
+                    request_fingerprint_mismatch: "public request fingerprint mismatch at ordered mixed batch transition",
+                    inactive_routing_reservation: "ordered mixed batch transition requires an active routing reservation",
+                    already_completed: "ordered mixed batch transition refused: record already completed",
+                    non_pristine_scalar_reservation: "ordered mixed batch transition requires a pristine scalar reservation",
+                    oversized_record: "ordered mixed batch record exceeds safe inter-canister payload bound",
+                },
+            },
+        )
     }
 
     /// Persist the Graph-owned canonical receipt for an ordered vertex batch.
