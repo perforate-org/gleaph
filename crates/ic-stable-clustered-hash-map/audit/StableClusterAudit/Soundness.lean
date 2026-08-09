@@ -315,18 +315,18 @@ lemma relocateStep_preserves_clusterInvariant {s s' : State} {entry : Key} {valu
 -- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
 -- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
 -- `relocateStep_preserves_clusterInvariant`), so the invariant holds throughout the chain.
--- The `done` (base) case is proved below; the `step` case additionally needs the per-step
--- hypotheses for the displaced entry — that its order boundary (`IsOrderBoundary`) and
--- home-bucket (`position - entryDist = bucket ...`) properties hold at each step, which the
--- loop maintains but which are not yet discharged.
+-- `hbound` (an order boundary, valid whether the first slot is empty or occupied) is what
+-- `find_insert_position` yields. The `done` case is proved; the `step` case additionally
+-- needs the per-step boundary / home-bucket properties for each displaced entry, which the
+-- loop maintains but which require a separate maintenance argument (not yet discharged).
 lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {position : Nat}
     (h : InsertRelocate s s' key value position) (hci : ClusterInvariant s)
-    (hip : IsInsertionPoint s position (bucket key s.n))
+    (hbound : IsOrderBoundary s position (bucket key s.n))
     (hremap : s.remapEnd = none) (hremap' : s'.remapEnd = s.remapEnd) :
     ClusterInvariant s' := by
   induction h with
   | done hw =>
-      exact relocateWrite_preserves_clusterInvariant hw hci hip hremap hremap'
+      exact relocateWrite_preserves_clusterInvariant hw hci ⟨hw.slotEmpty, hbound.1, hbound.2⟩ hremap hremap'
   | step hstep hind =>
       sorry
 
