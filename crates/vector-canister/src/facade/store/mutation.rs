@@ -13,12 +13,14 @@ use crate::encoding::EncodingRecord;
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::facade::stable::{
-    IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS,
+    VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
 #[cfg(test)]
 use crate::records::PartitionKey;
 use crate::records::{
-    IvfCentroidMeta, SlotRef, SubjectKey, SubjectMapEntry, VectorIndexDef, VectorRebuildStateRecord,
+    DeletedSubjectKey, FixedSubjectMapEntry, IvfCentroidMeta, SlotRef, SubjectKey, VectorIndexDef,
+    VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -94,6 +96,25 @@ fn slots_per_page_for(
 fn owned_run_capacity() -> u32 {
     let owned = SHARD_CANISTER_CATALOG.with_borrow(|c| c.owned_shard_count());
     (owned as u32).clamp(1, MAX_RUNS)
+}
+
+/// The deleted-list key for a tombstoned `subject` at `stamp`.
+fn deleted_key_for(subject: SubjectKey, stamp: u64) -> DeletedSubjectKey {
+    DeletedSubjectKey::new(subject.subject.shard_id(), stamp, subject)
+}
+
+/// Records `subject` as deleted at `stamp` in `VECTOR_DELETED_SUBJECTS` (the GC's stable cursor).
+fn mark_deleted(subject: SubjectKey, stamp: u64) {
+    VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| {
+        m.insert(deleted_key_for(subject, stamp), 0);
+    });
+}
+
+/// Removes `subject` from `VECTOR_DELETED_SUBJECTS` (on resurrect or a stamp change while deleted).
+fn unmark_deleted(subject: SubjectKey, stamp: u64) {
+    VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| {
+        m.remove(&deleted_key_for(subject, stamp));
+    });
 }
 
 impl VectorCanisterStore {
@@ -206,6 +227,20 @@ impl VectorCanisterStore {
 
     pub(super) fn read_slot_bytes(&self, index_id: u32, slot: SlotRef) -> Option<Vec<u8>> {
         PAGE_STORE.with_borrow(|store| store.read_row_bytes(index_id, slot).map(|(_, bytes)| bytes))
+    }
+
+    /// Inserts a subject-map row, mapping the map's `OutOfMemory` to the canister's stable-grow
+    /// error so the mutation path can propagate it instead of panicking.
+    fn insert_subject_entry(
+        &self,
+        key: SubjectKey,
+        entry: FixedSubjectMapEntry,
+    ) -> Result<(), VectorCanisterError> {
+        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+            m.insert(key, entry)
+                .map(|_| ())
+                .map_err(|_| VectorCanisterError::StableGrowFailed)
+        })
     }
 
     /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
@@ -334,18 +369,29 @@ impl VectorCanisterStore {
                     {
                         self.tombstone_slot(op.index_id, old_shadow);
                     }
+                } else {
+                    // Resurrect: the subject was tombstoned at `entry.stamp`; drop it from the
+                    // deleted list so the GC does not remove the now-live row.
+                    unmark_deleted(key, entry.stamp);
                 }
-                VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                    m.insert(
-                        key,
-                        SubjectMapEntry {
-                            stamp: op.mutation_id,
-                            deleted: false,
-                            slot: Some(new_slot),
-                            shadow_slot,
-                        },
-                    )
-                });
+                if let Err(err) = self.insert_subject_entry(
+                    key,
+                    FixedSubjectMapEntry {
+                        stamp: op.mutation_id,
+                        deleted: false,
+                        slot: Some(new_slot),
+                        shadow_slot,
+                    },
+                ) {
+                    // The subject-map commit failed (OutOfMemory): tombstone the just-appended slots
+                    // so the residual is a tombstoned dead row (live counters restored) rather than a
+                    // live-counted orphan, mirroring the shadow-append failure handling above.
+                    self.tombstone_slot(op.index_id, new_slot);
+                    if let Some(shadow) = shadow_slot {
+                        self.tombstone_slot(op.index_id, shadow);
+                    }
+                    return Err(err);
+                }
                 Ok(())
             }
             std::cmp::Ordering::Equal => {
@@ -413,17 +459,24 @@ impl VectorCanisterStore {
             }
             RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
         };
-        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-            m.insert(
-                key,
-                SubjectMapEntry {
-                    stamp: op.mutation_id,
-                    deleted: false,
-                    slot: Some(slot),
-                    shadow_slot,
-                },
-            )
-        });
+        if let Err(err) = self.insert_subject_entry(
+            key,
+            FixedSubjectMapEntry {
+                stamp: op.mutation_id,
+                deleted: false,
+                slot: Some(slot),
+                shadow_slot,
+            },
+        ) {
+            // The subject-map commit failed (OutOfMemory): tombstone the just-appended slots so the
+            // residual is a tombstoned dead row (live counters restored) rather than a live-counted
+            // orphan, mirroring the shadow-append failure handling above.
+            self.tombstone_slot(op.index_id, slot);
+            if let Some(shadow) = shadow_slot {
+                self.tombstone_slot(op.index_id, shadow);
+            }
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -461,17 +514,16 @@ impl VectorCanisterStore {
         let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
 
         let Some(entry) = existing else {
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                m.insert(
-                    key,
-                    SubjectMapEntry {
-                        stamp: op.mutation_id,
-                        deleted: true,
-                        slot: None,
-                        shadow_slot: None,
-                    },
-                )
-            });
+            self.insert_subject_entry(
+                key,
+                FixedSubjectMapEntry {
+                    stamp: op.mutation_id,
+                    deleted: true,
+                    slot: None,
+                    shadow_slot: None,
+                },
+            )?;
+            mark_deleted(key, op.mutation_id);
             return Ok(());
         };
 
@@ -495,18 +547,20 @@ impl VectorCanisterStore {
                     {
                         self.tombstone_slot(op.index_id, shadow_slot);
                     }
+                } else {
+                    // Already deleted at an older stamp: the deleted-list key changes with the stamp.
+                    unmark_deleted(key, entry.stamp);
                 }
-                VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                    m.insert(
-                        key,
-                        SubjectMapEntry {
-                            stamp: op.mutation_id,
-                            deleted: true,
-                            slot: None,
-                            shadow_slot: None,
-                        },
-                    )
-                });
+                self.insert_subject_entry(
+                    key,
+                    FixedSubjectMapEntry {
+                        stamp: op.mutation_id,
+                        deleted: true,
+                        slot: None,
+                        shadow_slot: None,
+                    },
+                )?;
+                mark_deleted(key, op.mutation_id);
                 Ok(())
             }
             std::cmp::Ordering::Equal => {
@@ -523,17 +577,16 @@ impl VectorCanisterStore {
                 {
                     self.tombstone_slot(op.index_id, shadow_slot);
                 }
-                VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                    m.insert(
-                        key,
-                        SubjectMapEntry {
-                            stamp: op.mutation_id,
-                            deleted: true,
-                            slot: None,
-                            shadow_slot: None,
-                        },
-                    )
-                });
+                self.insert_subject_entry(
+                    key,
+                    FixedSubjectMapEntry {
+                        stamp: op.mutation_id,
+                        deleted: true,
+                        slot: None,
+                        shadow_slot: None,
+                    },
+                )?;
+                mark_deleted(key, op.mutation_id);
                 Ok(())
             }
         }
@@ -587,7 +640,7 @@ impl VectorCanisterStore {
         &self,
         index_id: u32,
         subject: gleaph_graph_kernel::vector_index::VectorSubject,
-    ) -> Option<SubjectMapEntry> {
+    ) -> Option<FixedSubjectMapEntry> {
         VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(index_id, subject)))
     }
 

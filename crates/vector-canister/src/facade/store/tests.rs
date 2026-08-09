@@ -818,7 +818,7 @@ fn search_does_not_read_rows_of_a_different_index() {
 #[test]
 fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
-    use crate::records::{SubjectKey, SubjectMapEntry};
+    use crate::records::{FixedSubjectMapEntry, SubjectKey};
 
     let store = fresh_store();
     // Seed a valid live vector so the def, a page row, and a real slot all exist.
@@ -833,13 +833,15 @@ fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
     // The search no longer consults the subject map: it scores every non-tombstoned row, relying on
     // the write-path invariant that a non-tombstoned row is the subject's current live slot. Even if
     // the subject-map entry is corrupted (no resolvable slot), the non-tombstoned row is still scored.
-    let drifted = SubjectMapEntry {
+    let drifted = FixedSubjectMapEntry {
         slot: None,
         shadow_slot: None,
         ..entry
     };
-    VECTOR_SUBJECT_TO_ID
-        .with_borrow_mut(|m| m.insert(SubjectKey::new(INDEX_ID, subject(7)), drifted));
+    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+        m.insert(SubjectKey::new(INDEX_ID, subject(7)), drifted)
+            .expect("insert drifted entry");
+    });
 
     let result = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(
@@ -1356,7 +1358,7 @@ fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
 #[test]
 fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
-    use crate::records::{SubjectKey, SubjectMapEntry};
+    use crate::records::{FixedSubjectMapEntry, SubjectKey};
 
     let store = fresh_store();
     store.seed_ivf_for_test(
@@ -1375,11 +1377,12 @@ fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
         m.insert(
             SubjectKey::new(INDEX_ID, subject(1)),
-            SubjectMapEntry {
+            FixedSubjectMapEntry {
                 deleted: true,
                 ..entry
             },
         )
+        .expect("insert deleted entry");
     });
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
@@ -1415,7 +1418,7 @@ fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
 #[test]
 fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
-    use crate::records::{SlotRef, SubjectKey, SubjectMapEntry};
+    use crate::records::{FixedSubjectMapEntry, SlotRef, SubjectKey};
 
     let store = fresh_store();
     store.seed_ivf_for_test(
@@ -1438,11 +1441,12 @@ fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
         m.insert(
             SubjectKey::new(INDEX_ID, subject(1)),
-            SubjectMapEntry {
+            FixedSubjectMapEntry {
                 slot: Some(drifted),
                 ..entry
             },
         )
+        .expect("insert drifted entry");
     });
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
@@ -1909,16 +1913,13 @@ fn publish_switches_to_partition_search_with_exact_parity() {
     assert_eq!(def.active_index_version, TARGET_V);
     assert_eq!(def.nlist, 2);
 
-    // Default search now runs the partition scan (nprobe clamps to nlist=2 == full scan == exact).
+    // Default search now runs the partition scan. The default `eps_query = 0.0` is a recall knob
+    // (nearest partition only), so exact parity is asserted at the full scan (`eps_query = INFINITY`),
+    // which is independent of the candidate-pool iteration order.
     let after = store
-        .vector_search(&search_value(1.5, 10))
-        .expect("partition");
-    assert_eq!(after.hits, before.hits);
-    // nprobe = nlist parity is explicit too.
-    let tuned_after = store
         .vector_search_tuned(&search_value(1.5, 10), tuned(f32::INFINITY))
-        .expect("tuned");
-    assert_eq!(tuned_after.hits, before.hits);
+        .expect("partition full scan");
+    assert_eq!(after.hits, before.hits);
 }
 
 #[test]
@@ -2207,9 +2208,10 @@ fn second_rebuild_from_partitioned_active() {
         .admin_publish_vector_rebuild(router(), INDEX_ID)
         .expect("publish 1");
     drive_cleanup(&store, INDEX_ID);
+    // Full-scan parity baseline (eps_query = INFINITY), independent of the candidate-pool order.
     let before = store
-        .vector_search(&search_value(2.5, 10))
-        .expect("exact-ish");
+        .vector_search_tuned(&search_value(2.5, 10), tuned(f32::INFINITY))
+        .expect("full scan");
 
     // Second rebuild to nlist=3 from the partitioned (nlist=2) active version.
     store

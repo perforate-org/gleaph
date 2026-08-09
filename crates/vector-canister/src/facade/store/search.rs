@@ -18,7 +18,7 @@
 //! the exact top-k over those partitions. There is no mid-scan page/candidate budget that could
 //! silently truncate the result (`VectorSearchResult` carries no partial/cursor marker).
 //!
-//! [`SubjectMapEntry`]: crate::records::SubjectMapEntry
+//! [`FixedSubjectMapEntry`]: crate::records::FixedSubjectMapEntry
 
 use super::VectorCanisterStore;
 use crate::facade::stable::page_store::PageScratch;

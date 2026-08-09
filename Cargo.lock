@@ -2097,6 +2097,7 @@ dependencies = [
  "gleaph-message-sizing",
  "ic-cdk",
  "ic-cdk-macros",
+ "ic-stable-clustered-hash-map",
  "ic-stable-structures",
  "ic-stable-vector-page-store",
  "rapidhash",

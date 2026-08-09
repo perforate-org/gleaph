@@ -16,7 +16,7 @@
 //! - `Aborting` (from `Building`/`ReadyToPublish`) clears `shadow_slot` and drops the shadow pages.
 //!
 //! Shadow state is never visible to `vector_search`: search resolves the live slot via
-//! [`crate::records::SubjectMapEntry::current_slot_for`] against `def.active_index_version`, which is
+//! [`crate::records::FixedSubjectMapEntry::current_slot_for`] against `def.active_index_version`, which is
 //! the old version until the atomic publish.
 
 use super::search::{assign_partition, decode_f32, encode_f32, read_centroids_at};
@@ -30,7 +30,8 @@ use crate::facade::stable::{
     VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
-    IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey, VectorRebuildStateRecord,
+    IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey, SubjectScanCursor,
+    VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -39,13 +40,12 @@ use gleaph_graph_kernel::vector_index::{
     VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
     VectorSlabStatsStep,
 };
+use ic_stable_structures::Storable;
 use ic_stable_vector_page_store::kernel::l2_squared_f32 as page_l2_squared_f32;
 
 use super::recommend_partition_maintenance;
-use ic_stable_structures::storable::Storable;
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
-use std::ops::Bound;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -251,22 +251,14 @@ fn status_of(state: &VectorRebuildStateRecord) -> VectorRebuildStatus {
     }
 }
 
-/// Inclusive/exclusive lower bound for resuming a `VECTOR_SUBJECT_TO_ID` scan over one index.
-fn subject_lower(index_id: u32, cursor: &Option<Vec<u8>>) -> Bound<SubjectKey> {
-    match cursor {
-        None => Bound::Included(SubjectKey::index_lower(index_id)),
-        Some(bytes) => Bound::Excluded(SubjectKey::from_bytes(Cow::Borrowed(bytes))),
-    }
-}
-
 /// Marker stored in a teardown `subject_cursor` once the subject sub-stage is exhausted, so the page
-/// sub-stage can begin. An empty byte string is never a valid 13-byte `SubjectKey`.
-fn subjects_done_marker() -> Option<Vec<u8>> {
-    Some(Vec::new())
+/// sub-stage can begin. `slot == u64::MAX` is never a valid slot index (capacity is far below it).
+fn subjects_done_marker() -> Option<SubjectScanCursor> {
+    Some(SubjectScanCursor::new(u64::MAX, 0))
 }
 
-fn is_subjects_done(cursor: &Option<Vec<u8>>) -> bool {
-    matches!(cursor, Some(bytes) if bytes.is_empty())
+fn is_subjects_done(cursor: &Option<SubjectScanCursor>) -> bool {
+    matches!(cursor, Some(c) if c.slot == u64::MAX)
 }
 
 /// Deletes up to `max_work` page-meta entries of `(index_id, version)` from the slab page store,
@@ -527,7 +519,7 @@ impl VectorCanisterStore {
         let pool_cap = candidate_pool_cap(nlist, def.stride_bytes, def.dims);
 
         let mut examined = 0u32;
-        let mut last_key: Option<SubjectKey> = None;
+        let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
         let mut live_bytes: Vec<Vec<u8>> = Vec::new();
@@ -535,18 +527,24 @@ impl VectorCanisterStore {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_sampling_scan");
             VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
-                    let key = entry.key();
+                let capacity = subjects.capacity();
+                // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
+                // resized the map, invalidating the slot cursor).
+                let start_slot = match cursor {
+                    Some(c) if c.capacity == capacity => c.slot,
+                    _ => 0,
+                };
+                let mut iter = subjects.iter_from(start_slot);
+                while let Some((key, value)) = iter.next() {
                     if key.index_id != index_id {
-                        break;
+                        continue; // slot order is not index-major
                     }
                     if examined >= max_subjects {
                         range_exhausted = false;
                         break;
                     }
                     examined += 1;
-                    last_key = Some(*key);
-                    let value = entry.value();
+                    last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
                     if value.deleted {
                         continue;
                     }
@@ -563,7 +561,7 @@ impl VectorCanisterStore {
                         live_bytes.push(bytes);
                     }
                     // Bound transient heap bytes: break after buffering at least one vector once the
-                    // per-step byte budget is reached (cursor resumes from `last_key`).
+                    // per-step byte budget is reached (cursor resumes from `last_cursor`).
                     if bytes_buffered >= max_vector_bytes {
                         range_exhausted = false;
                         break;
@@ -623,7 +621,7 @@ impl VectorCanisterStore {
             target_index_version,
             nlist,
             sample_limit,
-            cursor: last_key.map(Storable::into_bytes),
+            cursor: last_cursor,
             subjects_scanned,
             candidates,
         })
@@ -764,7 +762,7 @@ impl VectorCanisterStore {
             .ok_or(VectorCanisterError::RebuildIncomplete)?;
 
         let mut examined = 0u32;
-        let mut last_key: Option<SubjectKey> = None;
+        let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
         // (subject key, active slot, active bytes) for subjects still needing a shadow.
@@ -773,18 +771,24 @@ impl VectorCanisterStore {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_scan");
             VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
-                    let key = entry.key();
+                let capacity = subjects.capacity();
+                // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
+                // resized the map, invalidating the slot cursor).
+                let start_slot = match cursor {
+                    Some(c) if c.capacity == capacity => c.slot,
+                    _ => 0,
+                };
+                let mut iter = subjects.iter_from(start_slot);
+                while let Some((key, value)) = iter.next() {
                     if key.index_id != index_id {
-                        break;
+                        continue; // slot order is not index-major
                     }
                     if examined >= max_subjects {
                         range_exhausted = false;
                         break;
                     }
                     examined += 1;
-                    last_key = Some(*key);
-                    let value = entry.value();
+                    last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
                     if value.deleted {
                         continue;
                     }
@@ -801,9 +805,9 @@ impl VectorCanisterStore {
                         continue;
                     };
                     bytes_buffered += bytes.len() as u64;
-                    pending.push((*key, active_slot, bytes));
+                    pending.push((key, active_slot, bytes));
                     // Bound transient heap bytes: break after buffering at least one vector once the
-                    // per-step byte budget is reached (cursor resumes from `last_key`).
+                    // per-step byte budget is reached (cursor resumes from `last_cursor`).
                     if bytes_buffered >= max_vector_bytes {
                         range_exhausted = false;
                         break;
@@ -833,7 +837,8 @@ impl VectorCanisterStore {
                         && entry.current_slot_for(active) == Some(active_slot)
                     {
                         entry.shadow_slot = Some(shadow_slot);
-                        m.insert(key, entry);
+                        m.insert(key, entry)
+                            .expect("reinsert existing subject entry");
                     }
                 });
                 subjects_processed += 1;
@@ -849,7 +854,7 @@ impl VectorCanisterStore {
             Ok(VectorRebuildStateRecord::Building {
                 target_index_version,
                 nlist,
-                cursor: last_key.map(Storable::into_bytes),
+                cursor: last_cursor,
                 subjects_processed,
             })
         }
@@ -1172,30 +1177,36 @@ impl VectorCanisterStore {
         &self,
         index_id: u32,
         target: u64,
-        cursor: Option<Vec<u8>>,
+        cursor: Option<SubjectScanCursor>,
         max_work: u32,
-    ) -> (Option<Vec<u8>>, bool) {
+    ) -> (Option<SubjectScanCursor>, bool) {
         let mut examined = 0u32;
-        let mut last_key: Option<SubjectKey> = None;
+        let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut exhausted = true;
         let mut updates: Vec<(SubjectKey, SlotRef)> = Vec::new();
         VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
-                let key = entry.key();
+            let capacity = subjects.capacity();
+            // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
+            // resized the map, invalidating the slot cursor).
+            let start_slot = match cursor {
+                Some(c) if c.capacity == capacity => c.slot,
+                _ => 0,
+            };
+            let mut iter = subjects.iter_from(start_slot);
+            while let Some((key, value)) = iter.next() {
                 if key.index_id != index_id {
-                    break;
+                    continue; // slot order is not index-major
                 }
                 if examined >= max_work {
                     exhausted = false;
                     break;
                 }
                 examined += 1;
-                last_key = Some(*key);
-                let value = entry.value();
+                last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
                 if let Some(shadow) = value.shadow_slot
                     && shadow.index_version as u64 == target
                 {
-                    updates.push((*key, shadow));
+                    updates.push((key, shadow));
                 }
             }
         });
@@ -1205,12 +1216,13 @@ impl VectorCanisterStore {
                 if let Some(mut entry) = m.get(&key) {
                     entry.slot = Some(shadow);
                     entry.shadow_slot = None;
-                    m.insert(key, entry);
+                    m.insert(key, entry)
+                        .expect("reinsert existing subject entry");
                 }
             });
         }
 
-        (last_key.map(Storable::into_bytes), exhausted)
+        (last_cursor, exhausted)
     }
 
     /// Stage 1 of `Aborting`: clear `shadow_slot@target` for up to `max_work` subjects without
@@ -1219,31 +1231,37 @@ impl VectorCanisterStore {
         &self,
         index_id: u32,
         target: u64,
-        cursor: Option<Vec<u8>>,
+        cursor: Option<SubjectScanCursor>,
         max_work: u32,
-    ) -> (Option<Vec<u8>>, bool) {
+    ) -> (Option<SubjectScanCursor>, bool) {
         let mut examined = 0u32;
-        let mut last_key: Option<SubjectKey> = None;
+        let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut exhausted = true;
         let mut keys: Vec<SubjectKey> = Vec::new();
         VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
-                let key = entry.key();
+            let capacity = subjects.capacity();
+            // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
+            // resized the map, invalidating the slot cursor).
+            let start_slot = match cursor {
+                Some(c) if c.capacity == capacity => c.slot,
+                _ => 0,
+            };
+            let mut iter = subjects.iter_from(start_slot);
+            while let Some((key, value)) = iter.next() {
                 if key.index_id != index_id {
-                    break;
+                    continue; // slot order is not index-major
                 }
                 if examined >= max_work {
                     exhausted = false;
                     break;
                 }
                 examined += 1;
-                last_key = Some(*key);
-                let value = entry.value();
+                last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
                 if value
                     .shadow_slot
                     .is_some_and(|s| s.index_version as u64 == target)
                 {
-                    keys.push(*key);
+                    keys.push(key);
                 }
             }
         });
@@ -1252,12 +1270,13 @@ impl VectorCanisterStore {
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                 if let Some(mut entry) = m.get(&key) {
                     entry.shadow_slot = None;
-                    m.insert(key, entry);
+                    m.insert(key, entry)
+                        .expect("reinsert existing subject entry");
                 }
             });
         }
 
-        (last_key.map(Storable::into_bytes), exhausted)
+        (last_cursor, exhausted)
     }
 }
 

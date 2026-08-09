@@ -4,20 +4,17 @@ use super::VectorCanisterStore;
 use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, PAGE_STORE, SHARD_CANISTER_CATALOG,
-    VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_MAINTENANCE_STATE, VECTOR_PARTITION_HEADS,
-    VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
+    VECTOR_DELETED_SUBJECTS, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_MAINTENANCE_STATE,
+    VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::init::VectorCanisterInitArgs;
-use crate::records::SubjectKey;
+use crate::records::{DeletedSubjectKey, SubjectKey, SubjectScanCursor};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{
     ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult, ShardId,
 };
 use gleaph_graph_kernel::vector_index::VectorCanisterError;
-use ic_stable_structures::Storable;
-use std::borrow::Cow;
-use std::ops::Bound;
 
 /// Upper bound on subject keys examined per detach step, keeping one message within the canister
 /// instruction / stable read budget regardless of total index size.
@@ -36,6 +33,7 @@ impl VectorCanisterStore {
         IVF_CENTROID_META.with_borrow_mut(|m| m.clear_new());
         IVF_CENTROIDS.with_borrow_mut(|m| m.clear_new());
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.clear_new());
+        VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| m.clear_new());
         VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.clear_new());
         // Stable execution state: persists across upgrade, cleared only on this init/reset path.
         VECTOR_MAINTENANCE_STATE.with_borrow_mut(|m| m.clear_new());
@@ -122,48 +120,60 @@ impl VectorCanisterStore {
         }
     }
 
-    /// Scans up to `budget` subject keys (resuming after `resume_key`), removing all rows owned by
+    /// Scans up to `budget` subject keys (resuming after the saved slot), removing all rows owned by
     /// `shard_id`: for live rows, tombstones the slot and drops the id→slot entry; then removes the
-    /// subject clock (the shard is gone). Collects matches before removing to avoid mutating the map
-    /// mid-iteration.
+    /// subject clock (the shard is gone). Collects matches before removing so the slot cursor stays
+    /// stable across the scan (removal would otherwise shift slots).
     fn purge_subjects_step(
         &self,
         shard_id: ShardId,
         resume_key: &[u8],
         budget: u32,
     ) -> SubjectPurgeStep {
+        let resume = decode_scan_cursor(resume_key);
         let mut examined = 0u32;
         let mut to_remove: Vec<SubjectKey> = Vec::new();
-        let mut last_key: Option<SubjectKey> = None;
+        let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut exhausted = true;
         VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            let lower = if resume_key.is_empty() {
-                Bound::Unbounded
-            } else {
-                Bound::Excluded(SubjectKey::from_bytes(Cow::Borrowed(resume_key)))
+            let capacity = subjects.capacity();
+            // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
+            // resized the map, invalidating the slot cursor).
+            let start_slot = match resume {
+                Some(c) if c.capacity == capacity => c.slot,
+                _ => 0,
             };
-            for entry in subjects.range((lower, Bound::Unbounded)) {
+            let mut iter = subjects.iter_from(start_slot);
+            while let Some((key, _value)) = iter.next() {
                 if examined >= budget {
                     exhausted = false;
                     break;
                 }
                 examined += 1;
-                let key = entry.key();
+                last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
                 if key.subject.shard_id() == shard_id {
-                    to_remove.push(*key);
+                    to_remove.push(key);
                 }
-                last_key = Some(*key);
             }
         });
 
         let removed = u32::try_from(to_remove.len()).unwrap_or(u32::MAX);
         for key in &to_remove {
             let entry = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(key));
-            if let Some(entry) = entry
-                && !entry.deleted
-                && let Some(slot) = entry.slot
-            {
-                self.tombstone_slot(key.index_id, slot);
+            if let Some(entry) = entry {
+                if entry.deleted {
+                    // Drop the tombstoned row from the deleted list so the GC does not later try to
+                    // remove an already-purged subject.
+                    VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| {
+                        m.remove(&DeletedSubjectKey::new(
+                            key.subject.shard_id(),
+                            entry.stamp,
+                            *key,
+                        ));
+                    });
+                } else if let Some(slot) = entry.slot {
+                    self.tombstone_slot(key.index_id, slot);
+                }
             }
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key));
         }
@@ -171,7 +181,7 @@ impl VectorCanisterStore {
         let resume_key = if exhausted {
             None
         } else {
-            last_key.map(Storable::into_bytes)
+            last_cursor.map(encode_scan_cursor)
         };
         SubjectPurgeStep {
             examined,
@@ -239,6 +249,26 @@ struct SubjectPurgeStep {
     examined: u32,
     removed: u32,
     resume_key: Option<Vec<u8>>,
+}
+
+/// Encodes a [`SubjectScanCursor`] into the detach `resume_key` byte string.
+fn encode_scan_cursor(cursor: SubjectScanCursor) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    out.extend_from_slice(&cursor.slot.to_le_bytes());
+    out.extend_from_slice(&cursor.capacity.to_le_bytes());
+    out
+}
+
+/// Decodes a [`SubjectScanCursor`] from the detach `resume_key` byte string.
+///
+/// An empty key means "start from slot 0" (fresh purge).
+fn decode_scan_cursor(resume_key: &[u8]) -> Option<SubjectScanCursor> {
+    if resume_key.is_empty() {
+        return None;
+    }
+    let slot = u64::from_le_bytes(resume_key[0..8].try_into().unwrap());
+    let capacity = u64::from_le_bytes(resume_key[8..16].try_into().unwrap());
+    Some(SubjectScanCursor::new(slot, capacity))
 }
 
 /// Convenience for test setup: attach a shard of graph 1 to this single vector target.

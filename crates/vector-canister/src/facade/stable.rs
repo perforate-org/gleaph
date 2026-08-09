@@ -29,6 +29,10 @@ thread_local! {
     pub(crate) static VECTOR_SUBJECT_TO_ID: RefCell<memory::StableSubjectMap> =
         RefCell::new(memory::init_subject_map());
 
+    // ADR 0064 §5: deleted-subjects list giving the GC a stable key-based cursor.
+    pub(crate) static VECTOR_DELETED_SUBJECTS: RefCell<memory::StableDeletedSubjectsMap> =
+        RefCell::new(memory::init_deleted_subjects());
+
     pub(crate) static VECTOR_PARTITION_HEADS: RefCell<memory::StablePartitionHeadsMap> =
         RefCell::new(memory::init_partition_heads());
 

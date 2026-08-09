@@ -15,9 +15,10 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::records::{
-    IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawMaintenanceState, RawRebuildState,
-    ShardWatermarks, SubjectKey, SubjectMapEntry, VectorIndexDef,
+    DeletedSubjectKey, FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionHead, PartitionKey,
+    RawMaintenanceState, RawRebuildState, ShardWatermarks, SubjectKey, VectorIndexDef,
 };
+use ic_stable_clustered_hash_map::{InitError, StableClusteredHashMap};
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -46,6 +47,9 @@ const VECTOR_SHARD_WATERMARKS: MemoryId = MemoryId::new(15);
 // ADR 0064 §5: durable GC resume cursor (last examined SubjectKey) so a bounded GC step never
 // starves deleted entries that sort after a long run of live entries.
 const VECTOR_GC_CURSOR: MemoryId = MemoryId::new(16);
+// ADR 0064 §5: deleted-subjects list `(shard, tombstone stamp, subject) -> ()` giving the GC a
+// stable key-based cursor (the subject map's slot order is unstable under removal).
+const VECTOR_DELETED_SUBJECTS: MemoryId = MemoryId::new(17);
 
 pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
@@ -54,13 +58,14 @@ pub(crate) type StableShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StableDefsMap = BTreeMap<u32, VectorIndexDef, Memory>;
 pub(crate) type StableCentroidMetaMap = BTreeMap<u32, IvfCentroidMeta, Memory>;
 pub(crate) type StableCentroidsMap = BTreeMap<PartitionKey, Vec<u8>, Memory>;
-pub(crate) type StableSubjectMap = BTreeMap<SubjectKey, SubjectMapEntry, Memory>;
+pub(crate) type StableSubjectMap = StableClusteredHashMap<SubjectKey, FixedSubjectMapEntry, Memory>;
+pub(crate) type StableDeletedSubjectsMap = BTreeMap<DeletedSubjectKey, u8, Memory>;
 pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, Memory>;
 pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
 pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
 pub(crate) type StableShardWatermarksMap = BTreeMap<ShardId, ShardWatermarks, Memory>;
-pub(crate) type StableGcCursorCell = Cell<Option<SubjectKey>, Memory>;
+pub(crate) type StableGcCursorCell = Cell<Option<DeletedSubjectKey>, Memory>;
 
 /// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
 /// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
@@ -202,7 +207,20 @@ pub(crate) fn init_centroids() -> StableCentroidsMap {
 }
 
 pub(crate) fn init_subject_map() -> StableSubjectMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SUBJECT_TO_ID)))
+    let memory = MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SUBJECT_TO_ID));
+    match StableClusteredHashMap::init(memory.clone()) {
+        Ok(map) => map,
+        // Empty (fresh) memory has no `CHM` magic; create the map like `ic-stable-structures`
+        // `BTreeMap::init` does for a fresh region. A non-zero wrong magic is genuine corruption.
+        Err(InitError::BadMagic { actual: [0, 0, 0] }) => {
+            StableClusteredHashMap::new(memory).expect("init subject map")
+        }
+        Err(e) => panic!("init subject map: {e}"),
+    }
+}
+
+pub(crate) fn init_deleted_subjects() -> StableDeletedSubjectsMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_DELETED_SUBJECTS)))
 }
 
 pub(crate) fn init_partition_heads() -> StablePartitionHeadsMap {

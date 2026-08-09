@@ -17,7 +17,9 @@ use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION, VectorCanisterStore};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
-use crate::records::{IvfCentroidMeta, PartitionKey, SubjectKey, SubjectMapEntry, VectorIndexDef};
+use crate::records::{
+    FixedSubjectMapEntry, IvfCentroidMeta, PartitionKey, SubjectKey, VectorIndexDef,
+};
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
@@ -151,13 +153,14 @@ impl VectorCanisterStore {
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                 m.insert(
                     SubjectKey::new(index_id, *subject),
-                    SubjectMapEntry {
+                    FixedSubjectMapEntry {
                         stamp: 1,
                         deleted: false,
                         slot: Some(slot),
                         shadow_slot: None,
                     },
                 )
+                .expect("seed insert");
             });
         }
 

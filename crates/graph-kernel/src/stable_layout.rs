@@ -1412,11 +1412,9 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             7,
             StableMemoryClass::Derived,
             "subject map",
-            "(index_id, subject) → SubjectMapEntry { embedding_incarnation, \
-             stored_embedding_version, deleted, slot, shadow_slot }: retained as a durable clock \
-             after delete; ordered by (embedding_incarnation, stored_embedding_version) so a stale \
-             remove cannot tombstone a newer reinsert and a stale upsert cannot resurrect a removed \
-             vector (ADR 0031 Slice 4)",
+            "(index_id, subject) → FixedSubjectMapEntry { stamp, deleted, slot, shadow_slot }: \
+             retained as a durable clock after delete; a stale remove cannot tombstone a newer reinsert \
+             and a stale upsert cannot resurrect a removed vector (ADR 0064 §5)",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(

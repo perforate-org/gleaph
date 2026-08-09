@@ -13,10 +13,10 @@
 //! and is GC'd. The subject map therefore stays at `≈ N + recently deleted`.
 
 use crate::facade::stable::{
-    SHARD_CANISTER_CATALOG, VECTOR_GC_CURSOR, VECTOR_INDEX_ROUTER, VECTOR_SHARD_WATERMARKS,
-    VECTOR_SUBJECT_TO_ID,
+    SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS, VECTOR_GC_CURSOR, VECTOR_INDEX_ROUTER,
+    VECTOR_SHARD_WATERMARKS, VECTOR_SUBJECT_TO_ID,
 };
-use crate::records::SubjectKey;
+use crate::records::DeletedSubjectKey;
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use std::ops::Bound;
@@ -61,46 +61,45 @@ pub(crate) fn advance_watermark(caller: Principal, ops: &[VectorEmbeddingSyncOp]
 /// Live entries and deleted entries above the cutoff are retained. A shard with no watermark record
 /// has a cutoff of `0`, so nothing is GC-eligible until both watermarks advance.
 ///
-/// The scan resumes from the durable `VECTOR_GC_CURSOR` (the last examined key) so a long run of
-/// live entries at the start of the subject map cannot starve deleted entries that sort later; the
-/// cursor wraps to the start once the map is exhausted.
+/// The scan walks `VECTOR_DELETED_SUBJECTS` (the deleted-subjects list, keyed by `(shard, stamp,
+/// subject)`) rather than the subject map, because the subject map's slot order is unstable under
+/// removal (a slot-index cursor would be invalidated by the GC's own removes). The list gives a
+/// stable key-based cursor: it resumes from the durable `VECTOR_GC_CURSOR` (the last examined
+/// deleted key) and wraps to the start once exhausted.
 pub(crate) fn gc_subjects_step(budget: u32) -> u32 {
     let mut examined = 0u32;
-    let mut to_remove: Vec<SubjectKey> = Vec::new();
-    let mut last_key: Option<SubjectKey> = None;
+    let mut to_remove: Vec<DeletedSubjectKey> = Vec::new();
+    let mut last_key: Option<DeletedSubjectKey> = None;
     let mut exhausted = true;
     let resume = VECTOR_GC_CURSOR.with_borrow(|c| *c.get());
-    VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+    VECTOR_DELETED_SUBJECTS.with_borrow(|deleted| {
         let lower = match resume {
             None => Bound::Unbounded,
             Some(key) => Bound::Excluded(key),
         };
-        for entry in subjects.range((lower, Bound::Unbounded)) {
+        for entry in deleted.range((lower, Bound::Unbounded)) {
             if examined >= budget {
                 exhausted = false;
                 break;
             }
             examined += 1;
-            let key = entry.key();
-            let subject_entry = entry.value();
-            last_key = Some(*key);
-            if !subject_entry.deleted {
-                continue;
-            }
+            let key = *entry.key();
+            last_key = Some(key);
             let cutoff = VECTOR_SHARD_WATERMARKS.with_borrow(|watermarks| {
                 watermarks
-                    .get(&key.subject.shard_id())
+                    .get(&key.shard_id)
                     .map(|wm| wm.cutoff())
                     .unwrap_or(0)
             });
-            if subject_entry.stamp <= cutoff {
-                to_remove.push(*key);
+            if key.stamp <= cutoff {
+                to_remove.push(key);
             }
         }
     });
 
     for key in &to_remove {
-        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key));
+        VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| m.remove(key));
+        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&key.subject));
     }
     // Persist the resume cursor: the last examined key if the scan was budget-bounded, else wrap to
     // the start (None) so the next step scans from the beginning again.
@@ -113,7 +112,7 @@ pub(crate) fn gc_subjects_step(budget: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::init::VectorCanisterInitArgs;
-    use crate::records::{ShardWatermarks, SubjectKey, SubjectMapEntry};
+    use crate::records::{DeletedSubjectKey, FixedSubjectMapEntry, ShardWatermarks, SubjectKey};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric};
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
@@ -181,7 +180,7 @@ mod tests {
         VECTOR_SHARD_WATERMARKS.with_borrow(|wm| wm.get(&shard_id).unwrap_or_default())
     }
 
-    fn subject_entry(vertex_id: u32) -> Option<SubjectMapEntry> {
+    fn subject_entry(vertex_id: u32) -> Option<FixedSubjectMapEntry> {
         VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(INDEX_ID, subject(vertex_id))))
     }
 
@@ -309,7 +308,8 @@ mod tests {
         let mm = MemoryManager::init(DefaultMemoryImpl::default());
         let mut watermarks: BTreeMap<ShardId, ShardWatermarks, _> =
             BTreeMap::init(mm.get(MemoryId::new(15)));
-        let mut cursor: Cell<Option<SubjectKey>, _> = Cell::init(mm.get(MemoryId::new(16)), None);
+        let mut cursor: Cell<Option<DeletedSubjectKey>, _> =
+            Cell::init(mm.get(MemoryId::new(16)), None);
 
         watermarks.insert(
             ShardId::new(0),
@@ -318,13 +318,21 @@ mod tests {
                 router_watermark: 9,
             },
         );
-        cursor.set(Some(SubjectKey::new(1, subject(7))));
+        cursor.set(Some(DeletedSubjectKey::new(
+            ShardId::new(0),
+            2,
+            SubjectKey::new(1, subject(7)),
+        )));
 
         // Each collection is independently readable from its own MemoryId.
         assert_eq!(watermarks.get(&ShardId::new(0)).unwrap().graph_watermark, 5);
         assert_eq!(
             *cursor.get(),
-            Some(SubjectKey::new(1, subject(7))),
+            Some(DeletedSubjectKey::new(
+                ShardId::new(0),
+                2,
+                SubjectKey::new(1, subject(7)),
+            )),
             "GC cursor must not be clobbered by the watermark map"
         );
     }
@@ -334,11 +342,27 @@ mod tests {
     #[test]
     fn gc_cursor_write_over_write_keeps_latest() {
         let mm = MemoryManager::init(DefaultMemoryImpl::default());
-        let mut cursor: Cell<Option<SubjectKey>, _> = Cell::init(mm.get(MemoryId::new(16)), None);
+        let mut cursor: Cell<Option<DeletedSubjectKey>, _> =
+            Cell::init(mm.get(MemoryId::new(16)), None);
 
-        cursor.set(Some(SubjectKey::new(1, subject(7))));
-        cursor.set(Some(SubjectKey::new(1, subject(8))));
-        assert_eq!(*cursor.get(), Some(SubjectKey::new(1, subject(8))));
+        cursor.set(Some(DeletedSubjectKey::new(
+            ShardId::new(0),
+            2,
+            SubjectKey::new(1, subject(7)),
+        )));
+        cursor.set(Some(DeletedSubjectKey::new(
+            ShardId::new(0),
+            2,
+            SubjectKey::new(1, subject(8)),
+        )));
+        assert_eq!(
+            *cursor.get(),
+            Some(DeletedSubjectKey::new(
+                ShardId::new(0),
+                2,
+                SubjectKey::new(1, subject(8)),
+            ))
+        );
     }
 
     /// Upgrade persistence: the watermark store survives a re-init (simulated upgrade) through the

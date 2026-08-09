@@ -36,21 +36,6 @@ impl SubjectKey {
         Self { index_id, subject }
     }
 
-    /// Smallest `SubjectKey` for an `index_id`, used as the inclusive lower bound of a per-index
-    /// range scan (`VECTOR_SUBJECT_TO_ID` is index-major). This must remain the minimum key for the
-    /// `index_id` prefix even as `VectorSubject` grows variants: the encoding writes the subject
-    /// tag at byte 4, and `SUBJECT_TAG_VERTEX == 0` is the lowest tag, so the all-zero subject body
-    /// stays the prefix minimum. A scan starts here and stops when `key.index_id != index_id`.
-    pub const fn index_lower(index_id: u32) -> Self {
-        Self {
-            index_id,
-            subject: VectorSubject::Vertex {
-                shard_id: ShardId::new(0),
-                vertex_id: 0,
-            },
-        }
-    }
-
     fn to_array(self) -> [u8; 13] {
         let mut out = [0u8; 13];
         out[0..4].copy_from_slice(&self.index_id.to_be_bytes());
@@ -317,28 +302,20 @@ impl Storable for SlotRef {
     }
 }
 
-/// Subject map row — a durable clock that survives deletion (`VECTOR_SUBJECT_TO_ID`).
+/// Fixed-size encoding of the subject-map row for the clustered-hash-map subject store.
 ///
-/// A removed subject keeps `stamp` (the graph's per-shard `mutation_id`) so a stale replay cannot
-/// resurrect it and a stale remove cannot tombstone a newer reinsert (ADR 0064 §5). The clock is a
-/// single monotonic stamp: `stamp <= clock` is a no-op.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct SubjectMapEntry {
-    /// Last applied graph `mutation_id` (live OR tombstoned).
+/// The clustered hash map requires a fixed-size `Storable` value, so the row is stored with a fixed
+/// 43-byte layout: `stamp` (8) + `deleted` (1) + `slot` (1 tag + 16) + `shadow_slot` (1 tag + 16).
+/// The tag byte disambiguates `None` from a zero-valued [`SlotRef`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FixedSubjectMapEntry {
     pub stamp: u64,
-    /// True once removed; the row is retained as a tombstone clock.
     pub deleted: bool,
-    /// `Some` when live; `None` once deleted. Points at the live slot in the **active** index
-    /// version while no rebuild is collapsing this subject.
     pub slot: Option<SlotRef>,
-    /// Live slot in a rebuild's shadow (target) index version, maintained by dual-write while a
-    /// rebuild is `Building`/`ReadyToPublish` (ADR 0031 Slice 7). `#[serde(default)]` so any row
-    /// predating the field decodes as `None`. Collapsed into `slot` by post-publish cleanup.
-    #[serde(default)]
     pub shadow_slot: Option<SlotRef>,
 }
 
-impl SubjectMapEntry {
+impl FixedSubjectMapEntry {
     /// Resolves the live slot for `active_index_version`: the active `slot` when it matches, else the
     /// `shadow_slot` when it matches (after an atomic publish flips the active version onto the
     /// rebuilt one), else `None`. Both search paths and the rebuild-aware mutation path resolve the
@@ -358,19 +335,135 @@ impl SubjectMapEntry {
     }
 }
 
-impl Storable for SubjectMapEntry {
-    const BOUND: Bound = Bound::Unbounded;
+/// Encodes an `Option<SlotRef>` into `out[off..off+17]` (1 tag byte + 16 bytes), returning the next
+/// offset. `None` writes a `0` tag and leaves the 16 bytes as zero.
+fn encode_slot_ref_opt(slot: Option<SlotRef>, out: &mut [u8; 43], off: usize) -> usize {
+    match slot {
+        Some(s) => {
+            out[off] = 1;
+            out[off + 1..off + 5].copy_from_slice(&s.index_version.to_le_bytes());
+            out[off + 5..off + 9].copy_from_slice(&s.partition_id.to_le_bytes());
+            out[off + 9..off + 13].copy_from_slice(&s.page_id.to_le_bytes());
+            out[off + 13..off + 17].copy_from_slice(&s.slot.to_le_bytes());
+            off + 17
+        }
+        None => off + 17,
+    }
+}
+
+/// Decodes an `Option<SlotRef>` from `bytes[off..off+17]`, returning `(value, next offset)`.
+fn decode_slot_ref_opt(bytes: &[u8], off: usize) -> (Option<SlotRef>, usize) {
+    if bytes[off] == 0 {
+        (None, off + 17)
+    } else {
+        let s = SlotRef {
+            index_version: u32::from_le_bytes(bytes[off + 1..off + 5].try_into().unwrap()),
+            partition_id: u32::from_le_bytes(bytes[off + 5..off + 9].try_into().unwrap()),
+            page_id: u32::from_le_bytes(bytes[off + 9..off + 13].try_into().unwrap()),
+            slot: u32::from_le_bytes(bytes[off + 13..off + 17].try_into().unwrap()),
+        };
+        (Some(s), off + 17)
+    }
+}
+
+impl Storable for FixedSubjectMapEntry {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 43,
+        is_fixed_size: true,
+    };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode SubjectMapEntry"))
+        let mut out = [0u8; 43];
+        out[0..8].copy_from_slice(&self.stamp.to_le_bytes());
+        out[8] = self.deleted as u8;
+        let mut off = 9;
+        off = encode_slot_ref_opt(self.slot, &mut out, off);
+        encode_slot_ref_opt(self.shadow_slot, &mut out, off);
+        Cow::Owned(out.to_vec())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode SubjectMapEntry")
+        self.to_bytes().into_owned()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), SubjectMapEntry).expect("decode SubjectMapEntry")
+        let b = bytes.as_ref();
+        let stamp = u64::from_le_bytes(b[0..8].try_into().unwrap());
+        let deleted = b[8] != 0;
+        let (slot, off) = decode_slot_ref_opt(b, 9);
+        let (shadow_slot, _) = decode_slot_ref_opt(b, off);
+        Self {
+            stamp,
+            deleted,
+            slot,
+            shadow_slot,
+        }
+    }
+}
+
+/// Key for the deleted-subjects list (`VECTOR_DELETED_SUBJECTS`): `(shard, tombstone stamp, subject)`.
+///
+/// The subject is part of the key so two subjects in the same shard tombstoned by the same DML
+/// `mutation_id` (e.g. a vertex delete dispatching removes across multiple index ids) do not collide.
+/// Big-endian so `BTreeMap` order groups by shard, then stamp, then subject — the order the GC walks
+/// to stop at each shard's cutoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeletedSubjectKey {
+    pub shard_id: ShardId,
+    pub stamp: u64,
+    pub subject: SubjectKey,
+}
+
+impl DeletedSubjectKey {
+    pub const fn new(shard_id: ShardId, stamp: u64, subject: SubjectKey) -> Self {
+        Self {
+            shard_id,
+            stamp,
+            subject,
+        }
+    }
+
+    fn to_array(self) -> [u8; 25] {
+        let mut out = [0u8; 25];
+        out[0..4].copy_from_slice(&self.shard_id.raw().to_be_bytes());
+        out[4..12].copy_from_slice(&self.stamp.to_be_bytes());
+        out[12..25].copy_from_slice(&self.subject.to_array());
+        out
+    }
+
+    fn from_array(raw: [u8; 25]) -> Self {
+        let shard_id = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        let stamp = u64::from_be_bytes([
+            raw[4], raw[5], raw[6], raw[7], raw[8], raw[9], raw[10], raw[11],
+        ]);
+        let mut subject_raw = [0u8; 13];
+        subject_raw.copy_from_slice(&raw[12..25]);
+        Self {
+            shard_id: shard_id.into(),
+            stamp,
+            subject: SubjectKey::from_array(subject_raw),
+        }
+    }
+}
+
+impl Storable for DeletedSubjectKey {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 25,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Vec::from(self.to_array()))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Vec::from(self.to_array())
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let mut raw = [0u8; 25];
+        raw.copy_from_slice(bytes.as_ref());
+        Self::from_array(raw)
     }
 }
 
@@ -454,7 +547,7 @@ pub enum VectorRebuildStateRecord {
         target_index_version: u64,
         nlist: u32,
         sample_limit: u32,
-        cursor: Option<Vec<u8>>,
+        cursor: Option<SubjectScanCursor>,
         subjects_scanned: u64,
         candidates: Vec<Vec<u8>>,
     },
@@ -469,7 +562,7 @@ pub enum VectorRebuildStateRecord {
     Building {
         target_index_version: u64,
         nlist: u32,
-        cursor: Option<Vec<u8>>,
+        cursor: Option<SubjectScanCursor>,
         subjects_processed: u64,
     },
     ReadyToPublish {
@@ -480,13 +573,13 @@ pub enum VectorRebuildStateRecord {
         old_version: u64,
         old_nlist: u32,
         target_index_version: u64,
-        subject_cursor: Option<Vec<u8>>,
+        subject_cursor: Option<SubjectScanCursor>,
         page_cursor: Option<Vec<u8>>,
     },
     Aborting {
         target_index_version: u64,
         target_nlist: u32,
-        subject_cursor: Option<Vec<u8>>,
+        subject_cursor: Option<SubjectScanCursor>,
         page_cursor: Option<Vec<u8>>,
     },
     Failed {
@@ -508,6 +601,20 @@ impl Storable for VectorRebuildStateRecord {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Decode!(bytes.as_ref(), VectorRebuildStateRecord).expect("decode VectorRebuildStateRecord")
+    }
+}
+
+/// Resume cursor for a bounded subject-map scan: the next slot to examine and the map capacity at
+/// the time the cursor was saved (to detect a concurrent resize that invalidates the slot).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct SubjectScanCursor {
+    pub slot: u64,
+    pub capacity: u64,
+}
+
+impl SubjectScanCursor {
+    pub const fn new(slot: u64, capacity: u64) -> Self {
+        Self { slot, capacity }
     }
 }
 
@@ -591,45 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn index_lower_is_prefix_minimum() {
-        let id = 7;
-        let lower = SubjectKey::index_lower(id);
-        // Equals the smallest concrete subject of this index today.
-        assert_eq!(
-            lower,
-            SubjectKey::new(
-                id,
-                VectorSubject::Vertex {
-                    shard_id: ShardId::new(0),
-                    vertex_id: 0,
-                },
-            )
-        );
-        // <= any subject in the same index (prefix minimum), regardless of subject body.
-        let some = SubjectKey::new(
-            id,
-            VectorSubject::Vertex {
-                shard_id: ShardId::new(u32::MAX),
-                vertex_id: u32::MAX,
-            },
-        );
-        assert!(lower.to_array() <= some.to_array());
-        // Strictly greater than every key of the previous index_id, and strictly less than the next
-        // index's lower bound — so a `range(index_lower(id)..)` that breaks on `index_id != id`
-        // sees exactly this index's rows.
-        let prev_max = SubjectKey::new(
-            id - 1,
-            VectorSubject::Vertex {
-                shard_id: ShardId::new(u32::MAX),
-                vertex_id: u32::MAX,
-            },
-        );
-        assert!(lower.to_array() > prev_max.to_array());
-        assert!(lower.to_array() < SubjectKey::index_lower(id + 1).to_array());
-    }
-
-    #[test]
-    fn page_key_roundtrip_and_order() {
+    fn page_key_storable_roundtrip_and_order() {
         let a = PageKey::new(1, 1, 0, 0);
         let b = PageKey::new(1, 1, 0, 1);
         assert!(a.to_array() < b.to_array());
@@ -656,24 +725,62 @@ mod tests {
     }
 
     #[test]
-    fn subject_entry_storable_roundtrip() {
-        let entry = SubjectMapEntry {
-            stamp: 4,
-            deleted: false,
-            slot: Some(SlotRef {
-                index_version: 1,
-                partition_id: 0,
-                page_id: 0,
-                slot: 2,
-            }),
-            shadow_slot: Some(SlotRef {
-                index_version: 2,
-                partition_id: 3,
-                page_id: 0,
-                slot: 2,
-            }),
-        };
-        assert_eq!(SubjectMapEntry::from_bytes(entry.to_bytes()), entry);
+    fn fixed_subject_entry_storable_roundtrip() {
+        for entry in [
+            FixedSubjectMapEntry {
+                stamp: 4,
+                deleted: false,
+                slot: Some(SlotRef {
+                    index_version: 1,
+                    partition_id: 0,
+                    page_id: 0,
+                    slot: 2,
+                }),
+                shadow_slot: Some(SlotRef {
+                    index_version: 2,
+                    partition_id: 3,
+                    page_id: 0,
+                    slot: 2,
+                }),
+            },
+            FixedSubjectMapEntry {
+                stamp: 0,
+                deleted: true,
+                slot: None,
+                shadow_slot: None,
+            },
+            FixedSubjectMapEntry {
+                stamp: u64::MAX,
+                deleted: false,
+                slot: Some(SlotRef {
+                    index_version: u32::MAX,
+                    partition_id: u32::MAX,
+                    page_id: u32::MAX,
+                    slot: u32::MAX,
+                }),
+                shadow_slot: None,
+            },
+        ] {
+            assert_eq!(FixedSubjectMapEntry::from_bytes(entry.to_bytes()), entry);
+        }
+    }
+
+    #[test]
+    fn deleted_subject_key_storable_roundtrip_and_order() {
+        let subject = SubjectKey::new(
+            7,
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(2),
+                vertex_id: 42,
+            },
+        );
+        let key = DeletedSubjectKey::new(ShardId::new(1), 9, subject);
+        assert_eq!(DeletedSubjectKey::from_bytes(key.to_bytes()), key);
+        // Ordering groups by shard, then stamp, then subject.
+        let same_shard_lower_stamp = DeletedSubjectKey::new(ShardId::new(1), 8, subject);
+        let higher_shard = DeletedSubjectKey::new(ShardId::new(2), 0, subject);
+        assert!(same_shard_lower_stamp.to_array() < key.to_array());
+        assert!(key.to_array() < higher_shard.to_array());
     }
 
     #[test]
@@ -684,7 +791,7 @@ mod tests {
                 target_index_version: 2,
                 nlist: 8,
                 sample_limit: 1024,
-                cursor: Some(vec![1, 2, 3]),
+                cursor: Some(SubjectScanCursor::new(5, 64)),
                 subjects_scanned: 17,
                 candidates: vec![vec![0u8; 16], vec![1u8; 16]],
             },
@@ -710,7 +817,7 @@ mod tests {
                 old_version: 1,
                 old_nlist: 1,
                 target_index_version: 2,
-                subject_cursor: Some(vec![9]),
+                subject_cursor: Some(SubjectScanCursor::new(3, 64)),
                 page_cursor: None,
             },
             VectorRebuildStateRecord::Aborting {
@@ -745,7 +852,7 @@ mod tests {
             page_id: 0,
             slot: 0,
         };
-        let entry = SubjectMapEntry {
+        let entry = FixedSubjectMapEntry {
             stamp: 1,
             deleted: false,
             slot: Some(active),
