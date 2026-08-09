@@ -1,38 +1,38 @@
 benches:
-  bench_hash_map_get:
+  bench_clustered_get:
     total:
       calls: 1
-      instructions: 19676111
+      instructions: 17282561
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_hash_map_get:
+      bench_clustered_get:
         calls: 1
-        instructions: 19675116
+        instructions: 17281566
         heap_increase: 0
         stable_memory_increase: 0
-  bench_hash_map_insert:
+  bench_clustered_insert:
     total:
       calls: 1
-      instructions: 58355378
+      instructions: 132703915
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
-      bench_hash_map_insert:
+      bench_clustered_insert:
         calls: 1
-        instructions: 58354383
+        instructions: 132702920
         heap_increase: 3
         stable_memory_increase: 0
-  bench_hash_map_remove:
+  bench_clustered_remove:
     total:
       calls: 1
-      instructions: 38255610
+      instructions: 36181238
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_hash_map_remove:
+      bench_clustered_remove:
         calls: 1
-        instructions: 38254615
+        instructions: 36180243
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.7.0

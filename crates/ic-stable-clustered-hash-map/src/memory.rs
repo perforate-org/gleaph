@@ -7,6 +7,18 @@ use std::fmt::{Display, Formatter};
 
 pub(crate) const WASM_PAGE_SIZE: u64 = 65536;
 
+/// Reads a single 8-bit integer at `offset`.
+pub(crate) fn read_u8<M: Memory>(m: &M, offset: u64) -> u8 {
+    let mut buf = [0u8; 1];
+    m.read(offset, &mut buf);
+    buf[0]
+}
+
+/// Writes a single 8-bit integer at `offset`.
+pub(crate) fn write_u8<M: Memory>(m: &M, offset: u64, val: u8) {
+    write(m, offset, &[val]);
+}
+
 /// Reads a single 32-bit little-endian integer at `offset`.
 pub(crate) fn read_u32<M: Memory>(m: &M, offset: u64) -> u32 {
     let mut buf = [0u8; 4];

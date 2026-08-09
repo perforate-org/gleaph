@@ -2519,7 +2519,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ic-stable-hash-map"
+name = "ic-stable-clustered-hash-map"
 version = "0.1.0"
 dependencies = [
  "canbench-rs",

@@ -26,7 +26,7 @@ members = [
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-variable-memory-manager",
     "crates/ic-stable-vec-deque",
-    "crates/ic-stable-hash-map",
+    "crates/ic-stable-clustered-hash-map",
     "crates/index-ddl",
     "crates/instruction-budget",
     "crates/pocket-ic-tests",
@@ -73,7 +73,7 @@ ic-stable-vector-page-store = { path = "crates/ic-stable-vector-page-store" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
-ic-stable-hash-map = { path = "crates/ic-stable-hash-map" }
+ic-stable-clustered-hash-map = { path = "crates/ic-stable-clustered-hash-map" }
 
 base64 = "0.23"
 bitflags = "2.13.1"
