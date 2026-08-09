@@ -1,8 +1,10 @@
-//! Gleaph-specific extension DDL: `CREATE INDEX` / `DROP INDEX` (ADR 0009 §4, ADR 0012).
+//! Gleaph-specific extension DDL for indexes and uniqueness constraints.
 //!
-//! This crate is the single parser owner for the vendor index syntax. It intentionally does not
-//! extend the general-purpose `gleaph-gql` grammar; Router and migration tooling consume the
-//! parsed, Gleaph-specific statement through this boundary.
+//! This crate is the single parser owner for the vendor `CREATE INDEX` / `DROP INDEX` syntax
+//! (ADR 0009 §4, ADR 0012) and `CREATE CONSTRAINT` / `DROP CONSTRAINT` syntax (ADR 0030). It
+//! intentionally does not extend the general-purpose `gleaph-gql` grammar; Router and migration
+//! tooling consume parsed, Gleaph-specific statements through separate entrypoints at this
+//! boundary.
 
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::index::IndexedPropertyKind;
@@ -40,6 +42,32 @@ pub enum IndexDdlParseError {
     SlashEdgePatternNotSupported,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstraintDdlStatement {
+    Create {
+        constraint_name: String,
+        if_not_exists: bool,
+        label: String,
+        property: String,
+    },
+    Drop {
+        constraint_name: String,
+        if_exists: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ConstraintDdlParseError {
+    #[error("expected {0}")]
+    Expected(String),
+    #[error("unexpected trailing input")]
+    TrailingInput,
+    #[error("the REQUIRE variable must match the FOR pattern variable")]
+    VariableMismatch,
+    #[error("edge uniqueness constraints are not supported in the first cut (ADR 0030)")]
+    EdgeConstraintUnsupported,
+}
+
 /// Returns `None` when the query is not index DDL (caller should use standard GQL parsing).
 ///
 /// A query may chain several statements with `NEXT`, mirroring the migration payload convention;
@@ -72,6 +100,19 @@ pub fn try_parse(query: &str) -> Option<Result<Vec<IndexDdlStatement>, IndexDdlP
     Some(parse(&parse_input))
 }
 
+/// Returns `None` when the query is not constraint DDL (caller should use standard GQL parsing).
+pub fn try_parse_constraint(
+    query: &str,
+) -> Option<Result<ConstraintDdlStatement, ConstraintDdlParseError>> {
+    let trimmed = query.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.starts_with("CREATE CONSTRAINT") || upper.starts_with("DROP CONSTRAINT") {
+        Some(parse_constraint(trimmed))
+    } else {
+        None
+    }
+}
+
 fn ident_is(token: &gleaph_gql::token::Token, expected: &str) -> bool {
     matches!(token, gleaph_gql::token::Token::Ident(value) if value.eq_ignore_ascii_case(expected))
 }
@@ -99,6 +140,79 @@ fn parse(query: &str) -> Result<Vec<IndexDdlStatement>, IndexDdlParseError> {
         return Err(IndexDdlParseError::TrailingInput);
     }
     Ok(statements)
+}
+
+fn parse_constraint(query: &str) -> Result<ConstraintDdlStatement, ConstraintDdlParseError> {
+    let mut cur = Cursor::new(query);
+    cur.skip_ws();
+    if cur.consume_ascii_ci("CREATE") {
+        cur.expect_ascii_ci("CONSTRAINT")?;
+        let constraint_name = cur.parse_ident()?;
+        let if_not_exists = cur.try_consume_ascii_ci("IF NOT EXISTS");
+        cur.expect_ascii_ci("FOR")?;
+        let (var, label) = parse_constraint_vertex_pattern(&mut cur)?;
+        cur.expect_ascii_ci("REQUIRE")?;
+        let (required_var, property) = parse_constraint_property_ref(&mut cur)?;
+        if required_var != var {
+            return Err(ConstraintDdlParseError::VariableMismatch);
+        }
+        cur.expect_ascii_ci("IS")?;
+        cur.expect_ascii_ci("UNIQUE")?;
+        cur.try_consume(';');
+        cur.skip_ws();
+        if !cur.is_eof() {
+            return Err(ConstraintDdlParseError::TrailingInput);
+        }
+        Ok(ConstraintDdlStatement::Create {
+            constraint_name,
+            if_not_exists,
+            label,
+            property,
+        })
+    } else if cur.consume_ascii_ci("DROP") {
+        cur.expect_ascii_ci("CONSTRAINT")?;
+        let constraint_name = cur.parse_ident()?;
+        let if_exists = cur.try_consume_ascii_ci("IF EXISTS");
+        cur.try_consume(';');
+        cur.skip_ws();
+        if !cur.is_eof() {
+            return Err(ConstraintDdlParseError::TrailingInput);
+        }
+        Ok(ConstraintDdlStatement::Drop {
+            constraint_name,
+            if_exists,
+        })
+    } else {
+        Err(ConstraintDdlParseError::Expected(
+            "CREATE CONSTRAINT or DROP CONSTRAINT".into(),
+        ))
+    }
+}
+
+/// Parses `(var:Label)`. An edge pattern (`()-[..]-()`) is rejected as unsupported.
+fn parse_constraint_vertex_pattern(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, String), ConstraintDdlParseError> {
+    cur.expect('(')?;
+    cur.skip_ws();
+    if cur.peek() == Some(')') {
+        return Err(ConstraintDdlParseError::EdgeConstraintUnsupported);
+    }
+    let var = cur.parse_ident()?;
+    cur.expect(':')?;
+    let label = cur.parse_ident()?;
+    cur.skip_ws();
+    cur.expect(')')?;
+    Ok((var, label))
+}
+
+fn parse_constraint_property_ref(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, String), ConstraintDdlParseError> {
+    let var = cur.parse_ident()?;
+    cur.expect('.')?;
+    let property = cur.parse_ident()?;
+    Ok((var, property))
 }
 
 fn parse_statement(cur: &mut Cursor<'_>) -> Result<IndexDdlStatement, IndexDdlParseError> {
@@ -260,7 +374,7 @@ fn parse_for_edge_pattern(
 fn parse_edge_pattern_filler(cur: &mut Cursor<'_>) -> Result<String, IndexDdlParseError> {
     let _var = cur.parse_ident()?;
     cur.expect(':')?;
-    cur.parse_ident()
+    Ok(cur.parse_ident()?)
 }
 
 fn parse_on_property(cur: &mut Cursor<'_>) -> Result<String, IndexDdlParseError> {
@@ -280,6 +394,20 @@ fn parse_on_property(cur: &mut Cursor<'_>) -> Result<String, IndexDdlParseError>
 struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
+}
+
+struct CursorExpected(String);
+
+impl From<CursorExpected> for IndexDdlParseError {
+    fn from(error: CursorExpected) -> Self {
+        Self::Expected(error.0)
+    }
+}
+
+impl From<CursorExpected> for ConstraintDdlParseError {
+    fn from(error: CursorExpected) -> Self {
+        Self::Expected(error.0)
+    }
 }
 
 impl<'a> Cursor<'a> {
@@ -345,21 +473,21 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn expect_ascii_ci(&mut self, word: &str) -> Result<(), IndexDdlParseError> {
+    fn expect_ascii_ci(&mut self, word: &str) -> Result<(), CursorExpected> {
         if self.consume_ascii_ci(word) {
             Ok(())
         } else {
-            Err(IndexDdlParseError::Expected(word.to_string()))
+            Err(CursorExpected(word.to_string()))
         }
     }
 
-    fn expect(&mut self, ch: char) -> Result<(), IndexDdlParseError> {
+    fn expect(&mut self, ch: char) -> Result<(), CursorExpected> {
         self.skip_ws();
         if self.peek() == Some(ch) {
             self.pos += 1;
             Ok(())
         } else {
-            Err(IndexDdlParseError::Expected(ch.to_string()))
+            Err(CursorExpected(ch.to_string()))
         }
     }
 
@@ -373,14 +501,14 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn parse_ident(&mut self) -> Result<String, IndexDdlParseError> {
+    fn parse_ident(&mut self) -> Result<String, CursorExpected> {
         self.skip_ws();
         let start = self.pos;
         let first = self
             .peek()
-            .ok_or_else(|| IndexDdlParseError::Expected("identifier".into()))?;
+            .ok_or_else(|| CursorExpected("identifier".into()))?;
         if !(first.is_ascii_alphabetic() || first == '_') {
-            return Err(IndexDdlParseError::Expected("identifier".into()));
+            return Err(CursorExpected("identifier".into()));
         }
         self.pos += 1;
         while let Some(ch) = self.peek() {
@@ -391,7 +519,7 @@ impl<'a> Cursor<'a> {
             }
         }
         let s = std::str::from_utf8(&self.bytes[start..self.pos])
-            .map_err(|_| IndexDdlParseError::Expected("identifier".into()))?;
+            .map_err(|_| CursorExpected("identifier".into()))?;
         Ok(s.to_string())
     }
 }
@@ -566,5 +694,123 @@ mod tests {
             panic!("expected comment between CREATE and INDEX");
         };
         assert_eq!(index_name, "person_age");
+    }
+
+    fn parse_constraint_ok(query: &str) -> ConstraintDdlStatement {
+        try_parse_constraint(query)
+            .expect("constraint DDL")
+            .expect("parse")
+    }
+
+    #[test]
+    fn parses_create_constraint_with_and_without_if_not_exists() {
+        assert_eq!(
+            parse_constraint_ok(
+                "CREATE CONSTRAINT user_email IF NOT EXISTS FOR (n:User) REQUIRE n.email IS UNIQUE;"
+            ),
+            ConstraintDdlStatement::Create {
+                constraint_name: "user_email".into(),
+                if_not_exists: true,
+                label: "User".into(),
+                property: "email".into(),
+            }
+        );
+        assert_eq!(
+            parse_constraint_ok("CREATE CONSTRAINT c FOR (u:Account) REQUIRE u.handle IS UNIQUE"),
+            ConstraintDdlStatement::Create {
+                constraint_name: "c".into(),
+                if_not_exists: false,
+                label: "Account".into(),
+                property: "handle".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_drop_constraint_with_and_without_if_exists() {
+        assert_eq!(
+            parse_constraint_ok("DROP CONSTRAINT user_email IF EXISTS"),
+            ConstraintDdlStatement::Drop {
+                constraint_name: "user_email".into(),
+                if_exists: true,
+            }
+        );
+        assert_eq!(
+            parse_constraint_ok("DROP CONSTRAINT user_email;"),
+            ConstraintDdlStatement::Drop {
+                constraint_name: "user_email".into(),
+                if_exists: false,
+            }
+        );
+    }
+
+    #[test]
+    fn constraint_rejects_edge_pattern_and_variable_mismatch() {
+        let edge_error = try_parse_constraint(
+            "CREATE CONSTRAINT c FOR ()-[r:KNOWS]-() REQUIRE r.weight IS UNIQUE",
+        )
+        .expect("constraint DDL")
+        .expect_err("edge constraint");
+        assert_eq!(
+            edge_error,
+            ConstraintDdlParseError::EdgeConstraintUnsupported
+        );
+
+        let mismatch_error =
+            try_parse_constraint("CREATE CONSTRAINT c FOR (n:User) REQUIRE m.email IS UNIQUE")
+                .expect("constraint DDL")
+                .expect_err("variable mismatch");
+        assert_eq!(mismatch_error, ConstraintDdlParseError::VariableMismatch);
+    }
+
+    #[test]
+    fn constraint_rejects_trailing_input_and_incomplete_syntax() {
+        let trailing_error = try_parse_constraint(
+            "CREATE CONSTRAINT c FOR (n:User) REQUIRE n.email IS UNIQUE trailing",
+        )
+        .expect("constraint DDL")
+        .expect_err("trailing input");
+        assert_eq!(trailing_error, ConstraintDdlParseError::TrailingInput);
+
+        let syntax_error =
+            try_parse_constraint("CREATE CONSTRAINT c FOR (n:User) REQUIRE n.email IS")
+                .expect("constraint DDL")
+                .expect_err("missing UNIQUE");
+        assert_eq!(
+            syntax_error,
+            ConstraintDdlParseError::Expected("UNIQUE".into())
+        );
+    }
+
+    #[test]
+    fn constraint_recognition_stays_separate_from_index_ddl() {
+        assert!(try_parse_constraint("MATCH (n) RETURN n").is_none());
+        assert!(try_parse_constraint("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
+        assert!(try_parse("CREATE CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE").is_none());
+        assert!(
+            try_parse_constraint("CREATE CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE").is_some()
+        );
+    }
+
+    #[test]
+    fn constraint_does_not_accept_index_comment_or_next_extensions() {
+        assert!(
+            try_parse_constraint("// leading\nCREATE CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE")
+                .is_none()
+        );
+
+        assert!(
+            try_parse_constraint(
+                "CREATE /* between */ CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE"
+            )
+            .is_none()
+        );
+
+        let next_error = try_parse_constraint(
+            "CREATE CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE NEXT DROP CONSTRAINT c",
+        )
+        .expect("constraint DDL")
+        .expect_err("NEXT is index-only");
+        assert_eq!(next_error, ConstraintDdlParseError::TrailingInput);
     }
 }

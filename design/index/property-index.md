@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-08-03
-Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
+Last updated: 2026-08-09
+Anchor timestamp: 2026-08-09 04:08:02 UTC +0000
 
 ## Status
 
@@ -51,7 +51,7 @@ call.
 
 **Phase D (ADR 0009) — Implemented:** router `EdgeIndexScan` / all-edge intersection → `lookup_edge_equal` / `lookup_intersection`; per-shard `LocalEdgePosting` seeds; graph applies edge seeds and skips leading `EdgeIndexScan`; shard-local `EDGE_EQUALITY_POSTINGS` retired (MemoryId repack to 40 regions); expand reads graph-index or canonical `EDGE_PROPERTIES` scan when no index client.
 
-**Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed in `router/index_ddl.rs`, executed on `gql_execute*`); named index catalog per logical graph; Admin or Manager+ auth. Legacy `admin_set_indexed_*` APIs delegate to `CREATE INDEX IF NOT EXISTS` with synthetic index names (require entity label + property).
+**Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed by the shared Gleaph vendor DDL owner `gleaph-index-ddl`, executed on `gql_execute*`); named index catalog per logical graph; Admin or Manager+ auth. Legacy `admin_set_indexed_*` APIs delegate to `CREATE INDEX IF NOT EXISTS` with synthetic index names (require entity label + property).
 
 **ADR 0059 — Partially implemented:** migration-driven `CREATE INDEX`
 selector/checksum, Graph export, graph-index pull, `PhysicalIndexId` namespace, touched-first

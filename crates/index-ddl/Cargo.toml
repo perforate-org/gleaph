@@ -3,7 +3,7 @@ name = "gleaph-index-ddl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Gleaph-specific CREATE INDEX and DROP INDEX parser"
+description = "Gleaph-specific index and constraint DDL parser"
 
 [dependencies]
 gleaph-gql.workspace = true

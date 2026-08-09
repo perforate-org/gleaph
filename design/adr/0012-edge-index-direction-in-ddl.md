@@ -2,8 +2,8 @@
 
 Date: 2026-06-13  
 Status: accepted  
-Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 11:35:08 UTC +0000
+Last revised: 2026-08-09
+Anchor timestamp: 2026-08-09 04:08:02 UTC +0000
 
 ## Revision history
 
@@ -13,6 +13,7 @@ Anchor timestamp: 2026-06-13 11:35:08 UTC +0000
 | 2026-06-13 | §5: leading `EdgeIndexScan` includes `Undirected`; PocketIC subset negative e2e. |
 | 2026-06-13 | Reject slash edge patterns in CREATE INDEX FOR (no edge variable for ON clause). |
 | 2026-06-13 | Proposed; GQL `EdgeDirection` in edge `CREATE INDEX FOR`; wire label in graph-index keys; planner subset rule. |
+| 2026-08-09 | The shared `gleaph-index-ddl` parser owns vendor DDL syntax and keeps edge-direction parsing outside the generic GQL grammar. |
 
 ## Context
 
@@ -104,9 +105,10 @@ CREATE INDEX w_any    FOR () -[e:KNOWS]- ()   ON (e.weight);
 Slash edge patterns (`-/L/->`, `~/L/~`, …) are valid in `MATCH` / `INSERT` but **rejected** in
 `CREATE INDEX FOR` because they do not declare the edge variable referenced by `ON (e.<property>)`.
 
-**Parsing:** replace the ad-hoc edge branch in [`index_ddl.rs`](../../crates/router/src/index_ddl.rs)
-with a thin wrapper around `gleaph-gql` pattern parsing that produces
-`(EdgeDirection, edge_variable, label_name)`. Vertex `FOR (n:Person)` parsing stays as today.
+**Parsing (implemented):** `gleaph-index-ddl` owns the vendor DDL parser and its private lexical
+cursor; the Router `index_ddl.rs` module is an import facade. The index parser produces
+`(EdgeDirection, edge_variable, label_name)` for edge targets while remaining outside the generic
+`gleaph-gql` grammar. Vertex `FOR (n:Person)` parsing remains in the same shared parser.
 
 ### 2. Index registry stores `EdgeDirection`
 
