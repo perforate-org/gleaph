@@ -217,6 +217,22 @@ impl VectorCanisterStore {
         })
     }
 
+    /// Batched append used by the rebuild shadow build: appends a whole partition's rows at once via
+    /// [`VectorSlabStore::append_rows`], which commits the page directory at page granularity instead
+    /// of per row. Returns one `SlotRef` per input row, in order.
+    pub(super) fn append_slot_batch(
+        &self,
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+        def: &VectorIndexDef,
+        rows: &[(VectorSubject, &[u8])],
+    ) -> Result<Vec<SlotRef>, VectorCanisterError> {
+        PAGE_STORE.with_borrow_mut(|store| {
+            store.append_rows(index_id, index_version, partition_id, def, rows)
+        })
+    }
+
     /// Marks a slot tombstoned via the slab page store, which owns the `VectorPageMeta` live/
     /// tombstone counts and the `VECTOR_PARTITION_HEADS.live_len` decrement. Idempotent.
     pub(super) fn tombstone_slot(&self, index_id: u32, slot: SlotRef) {

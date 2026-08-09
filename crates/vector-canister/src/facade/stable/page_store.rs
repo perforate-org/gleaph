@@ -55,6 +55,18 @@ const MAX_SLAB_STATS_STEP_PAGES: u32 = 20_000;
 /// [`VectorSlabStore::stats_step`] cursor must be exactly this many bytes.
 const PAGE_KEY_LEN: usize = 24;
 
+/// Cached open-page state for the batched [`VectorSlabStore::append_rows`] write loop: page id,
+/// mutable meta, mutable header, layout, slab offset, last run's shard, and last run's length.
+type OpenPageState = (
+    u64,
+    VectorPageMeta,
+    PageHeader,
+    PageLayout,
+    u64,
+    Option<u32>,
+    u32,
+);
+
 /// Per-page directory metadata for the slab page store. Carries page-physical facts; the page header
 /// on the slab is the format source of truth and the directory is cross-checked against it on reopen.
 /// `row_stride` is the stored `pad_stride_bytes` (16-aligned), `meta_stride` is 4 | 8 | 12, and
@@ -738,6 +750,190 @@ impl VectorSlabStore {
         })
     }
 
+    /// Appends a run of rows into one partition's page chain, rolling a new page when the mutable
+    /// page is full or its run table would overflow (the same rules as [`Self::append_row`]). Used by
+    /// the rebuild shadow build (`building_step`), which appends a whole partition's batch at once;
+    /// the dual-write upsert path keeps using the single-row `append_row`.
+    ///
+    /// Unlike `append_row`, the partition head, page meta, page header, and run table are tracked in
+    /// cached locals and the directory (page meta + partition head) is committed at page granularity
+    /// rather than per row, so consecutive rows sharing a page avoid re-reading/re-committing the
+    /// directory for every row. Write-then-commit per page: the only fallible step is `reserve_page`
+    /// (slab `grow`) when opening a page. Pages already closed before a mid-batch failure are
+    /// committed (meta + head, `live_len` included); the in-flight page is left uncommitted, so a
+    /// failed batch never leaves a page meta or head pointing at unwritten bytes.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn append_rows(
+        &mut self,
+        index_id: u32,
+        index_version: u64,
+        partition_id: u32,
+        def: &VectorIndexDef,
+        rows: &[(VectorSubject, &[u8])],
+    ) -> Result<Vec<SlotRef>, VectorCanisterError> {
+        // Test-only: simulate a slab `grow` failure before any state mutation (see `append_row`'s
+        // seam). A batch that fails here leaves the partition head untouched.
+        #[cfg(test)]
+        if take_injected_append_failure() {
+            return Err(VectorCanisterError::StableGrowFailed);
+        }
+        let mut slots = Vec::with_capacity(rows.len());
+        if rows.is_empty() {
+            return Ok(slots);
+        }
+        let capacity = def.slots_per_page;
+        let row_stride = def.pad_stride_bytes;
+        let meta_stride = def.meta_stride_bytes;
+        let run_capacity = def.run_capacity;
+
+        let head_key = PartitionKey::new(index_id, index_version, partition_id);
+        let mut head = VECTOR_PARTITION_HEADS
+            .with_borrow(|h| h.get(&head_key))
+            .unwrap_or_default();
+
+        // Cached open-page state; `None` until a page is opened. The run table and page header's
+        // `run_count` are tracked incrementally so a row landing in the same page does not re-read
+        // the head/meta/page-header/run table from stable memory.
+        let mut page: Option<OpenPageState> = None;
+
+        for (subject, bytes) in rows {
+            let VectorSubject::Vertex {
+                shard_id,
+                vertex_id,
+            } = *subject;
+            let shard = shard_id.raw();
+            // Reject vertex ids beyond the 30-bit payload contract fail-closed.
+            let payload =
+                VertexPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
+            debug_assert!(
+                bytes.len() <= row_stride as usize,
+                "append row stride mismatch"
+            );
+
+            // Open a fresh page when none is open, or when the open page is full / its run table
+            // would overflow (mirrors `append_row`'s `need_new_page`).
+            let need_new_page = match &page {
+                None => true,
+                Some((_, meta, header, _, _, last_shard, _)) => {
+                    meta.row_count >= capacity
+                        || (last_shard.is_some_and(|s| s != shard)
+                            && header.run_count >= run_capacity)
+                }
+            };
+
+            if need_new_page {
+                // Close the current page (commit its meta + head) before opening the next, so a
+                // later grow failure never loses already-written rows.
+                if let Some((page_id, meta, _, _, _, _, _)) = page.take() {
+                    head.live_len += meta.row_count as u64;
+                    self.meta.insert(
+                        PageKey::new(index_id, index_version, partition_id, page_id),
+                        meta,
+                    );
+                    VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.insert(head_key, head));
+                }
+                let page_id = head.next_page_id;
+                let slab_offset = self.occupied_tail;
+                // Fallible slab grow + page-header init BEFORE any directory mutation.
+                let header = self.reserve_page(
+                    slab_offset,
+                    capacity,
+                    row_stride,
+                    meta_stride,
+                    run_capacity,
+                )?;
+                let layout = PageLayout::new(&header).expect("valid page layout");
+                self.set_occupied_tail(slab_offset + layout.page_len() as u64);
+                if head.page_count == 0 {
+                    head.first_page = page_id;
+                }
+                head.mutable_page = page_id;
+                head.page_count += 1;
+                head.next_page_id = page_id + 1;
+                let meta = VectorPageMeta {
+                    slab_offset,
+                    capacity,
+                    row_count: 0,
+                    live_count: 0,
+                    row_stride,
+                    tombstone_count: 0,
+                    meta_stride,
+                    run_capacity,
+                };
+                page = Some((page_id, meta, header, layout, slab_offset, None, 0));
+            }
+
+            let (page_id, mut meta, mut header, layout, base, mut last_shard, mut last_run_len) =
+                page.take().expect("open page present");
+            let slot = meta.row_count;
+            // Cached run append: no per-row header/run reads; keeps `header.run_count` in sync so
+            // the in-memory header stays authoritative for the next `run_count`/`run_capacity` test.
+            if slot == 0 {
+                debug_assert_eq!(header.run_count, 0, "fresh page starts with no runs");
+                write_run_at(&self.slab, base, &layout, 0, RunEntry::new(shard, 1));
+                header.run_count = 1;
+                write_page_header_run_count(&self.slab, base, &header, header.run_count);
+                last_shard = Some(shard);
+                last_run_len = 1;
+            } else {
+                let last_index = header.run_count - 1;
+                if last_shard == Some(shard) {
+                    last_run_len += 1;
+                    write_run_at(
+                        &self.slab,
+                        base,
+                        &layout,
+                        last_index,
+                        RunEntry::new(shard, last_run_len),
+                    );
+                } else {
+                    debug_assert!(
+                        header.run_count < run_capacity,
+                        "new run would exceed run_capacity"
+                    );
+                    let idx = header.run_count;
+                    write_run_at(&self.slab, base, &layout, idx, RunEntry::new(shard, 1));
+                    header.run_count += 1;
+                    write_page_header_run_count(&self.slab, base, &header, header.run_count);
+                    last_shard = Some(shard);
+                    last_run_len = 1;
+                }
+            }
+            // Infallible page writes (the page region is already reserved/grown).
+            self.write_row(base, &layout, slot, payload, bytes);
+
+            meta.row_count += 1;
+            meta.live_count += 1;
+            slots.push(SlotRef {
+                index_version: index_version as u32,
+                partition_id,
+                page_id: page_id as u32,
+                slot,
+            });
+            page = Some((
+                page_id,
+                meta,
+                header,
+                layout,
+                base,
+                last_shard,
+                last_run_len,
+            ));
+        }
+
+        // Commit the final open page's meta and the partition head (live_len for the whole batch).
+        if let Some((page_id, meta, _, _, _, _, _)) = page.take() {
+            head.live_len += meta.row_count as u64;
+            self.meta.insert(
+                PageKey::new(index_id, index_version, partition_id, page_id),
+                meta,
+            );
+        }
+        VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.insert(head_key, head));
+
+        Ok(slots)
+    }
+
     /// Marks a slot tombstoned, owning all live/tombstone accounting idempotently: on the
     /// live->tombstoned transition it sets the payload tombstone bit and adjusts
     /// `VectorPageMeta.live_count` / `tombstone_count` and the row's `VECTOR_PARTITION_HEADS.live_len`
@@ -1322,6 +1518,146 @@ mod tests {
             seen.push((slot.page_id, info.shard_id));
         });
         assert_eq!(seen, vec![(0, 0), (0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn append_rows_round_trip() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(4);
+        let mut store = open(&mm);
+        let b1 = bytes(1.0, 2.0);
+        let b2 = bytes(3.0, 4.0);
+        let b3 = bytes(5.0, 6.0);
+        let rows = vec![
+            (subject(1), b1.as_slice()),
+            (subject(2), b2.as_slice()),
+            (subject(3), b3.as_slice()),
+        ];
+        let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
+        assert_eq!(slots.len(), 3);
+        assert_eq!((slots[0].page_id, slots[0].slot), (0, 0));
+        assert_eq!((slots[1].page_id, slots[1].slot), (0, 1));
+        assert_eq!((slots[2].page_id, slots[2].slot), (0, 2));
+        assert_eq!(head_live_len(1, 1, 0), 3);
+
+        let store = open(&mm);
+        for (slot, (vertex_id, expected)) in
+            slots.iter().zip([(1u32, &b1), (2u32, &b2), (3u32, &b3)])
+        {
+            let (got, vec) = store
+                .read_row_bytes(1, *slot)
+                .expect("row present after reopen");
+            assert_eq!(got, vertex_id);
+            assert_eq!(&vec[..expected.len()], expected.as_slice());
+            assert_eq!(vec.len(), d.pad_stride_bytes as usize);
+        }
+    }
+
+    #[test]
+    fn append_rows_rolls_new_page_at_capacity() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm);
+        let b1 = bytes(0.0, 0.0);
+        let b2 = bytes(1.0, 1.0);
+        let b3 = bytes(2.0, 2.0);
+        let rows = vec![
+            (subject(1), b1.as_slice()),
+            (subject(2), b2.as_slice()),
+            (subject(3), b3.as_slice()),
+        ];
+        let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
+        assert_eq!((slots[0].page_id, slots[0].slot), (0, 0));
+        assert_eq!((slots[1].page_id, slots[1].slot), (0, 1));
+        assert_eq!(
+            (slots[2].page_id, slots[2].slot),
+            (1, 0),
+            "third row rolls a new page"
+        );
+        assert_eq!(store.version_page_count(1, 1), 2);
+        assert_eq!(head_live_len(1, 1, 0), 3);
+    }
+
+    #[test]
+    fn append_rows_run_split_across_two_shards() {
+        clear_heads();
+        let mm = fresh_mm();
+        let mut d = def(16);
+        d.run_capacity = 16; // several runs per page so shard splits stay on one page
+        let mut store = open(&mm);
+        let b1 = bytes(1.0, 0.0);
+        let b2 = bytes(2.0, 0.0);
+        let b3 = bytes(3.0, 0.0);
+        let rows = vec![
+            (subject(1), b1.as_slice()),
+            (subject_shard(1, 2), b2.as_slice()),
+            (subject(3), b3.as_slice()),
+        ];
+        let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
+        assert_eq!(slots[0].page_id, 0);
+
+        let mut seen: Vec<(u32, u32, u32)> = Vec::new();
+        store.visit_partition_pages(1, 1, 0, &mut PageScratch::new(), |slot, info, _| {
+            seen.push((slot.slot, info.shard_id, info.vertex_id));
+        });
+        assert_eq!(seen, vec![(0, 0, 1), (1, 1, 2), (2, 0, 3)]);
+    }
+
+    #[test]
+    fn append_rows_run_full_rolls_new_page() {
+        clear_heads();
+        let mm = fresh_mm();
+        let mut d = def(16);
+        d.run_capacity = 2; // at most 2 runs per page
+        let mut store = open(&mm);
+        let b1 = bytes(1.0, 0.0);
+        let b2 = bytes(2.0, 0.0);
+        let b3 = bytes(3.0, 0.0);
+        let rows = vec![
+            (subject(1), b1.as_slice()),
+            (subject_shard(1, 2), b2.as_slice()),
+            (subject_shard(2, 3), b3.as_slice()),
+        ];
+        let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
+        assert_eq!((slots[0].page_id, slots[1].page_id), (0, 0));
+        assert_eq!(slots[2].page_id, 1, "run table full -> new page");
+        assert_eq!(slots[2].slot, 0);
+
+        let mut seen: Vec<(u32, u32)> = Vec::new();
+        store.visit_partition_pages(1, 1, 0, &mut PageScratch::new(), |slot, info, _| {
+            seen.push((slot.page_id, info.shard_id));
+        });
+        assert_eq!(seen, vec![(0, 0), (0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn append_rows_empty_is_noop() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(4);
+        let mut store = open(&mm);
+        let slots = store.append_rows(1, 1, 0, &d, &[]).unwrap();
+        assert!(slots.is_empty());
+        assert_eq!(head_live_len(1, 1, 0), 0);
+        assert_eq!(store.version_page_count(1, 1), 0);
+    }
+
+    #[test]
+    fn append_rows_grow_failure_leaves_consistent_state() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(4);
+        let mut store = open(&mm);
+        let b1 = bytes(1.0, 2.0);
+        // The very next batch fails before any directory mutation (mirrors `append_row`'s seam).
+        arm_append_failure(0);
+        let rows = vec![(subject(1), b1.as_slice())];
+        let err = store.append_rows(1, 1, 0, &d, &rows).unwrap_err();
+        assert_eq!(err, VectorCanisterError::StableGrowFailed);
+        assert_eq!(head_live_len(1, 1, 0), 0);
+        assert_eq!(store.version_page_count(1, 1), 0);
     }
 
     #[test]

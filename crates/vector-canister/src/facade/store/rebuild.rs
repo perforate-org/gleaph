@@ -30,15 +30,15 @@ use crate::facade::stable::{
     VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
-    IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey, SubjectScanCursor,
-    VectorRebuildStateRecord,
+    FixedSubjectMapEntry, IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey,
+    SubjectScanCursor, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
     VectorMetric, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
-    VectorSlabStatsStep,
+    VectorSlabStatsStep, VectorSubject,
 };
 use ic_stable_structures::Storable;
 use ic_stable_vector_page_store::kernel::l2_squared_f32 as page_l2_squared_f32;
@@ -46,6 +46,10 @@ use ic_stable_vector_page_store::kernel::l2_squared_f32 as page_l2_squared_f32;
 use super::recommend_partition_maintenance;
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
+
+/// One subject awaiting its shadow row in the `Building` phase: key, owned subject entry, active
+/// slot the bytes were read from, and the active bytes.
+type ShadowPendingRow = (SubjectKey, FixedSubjectMapEntry, SlotRef, Vec<u8>);
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -832,8 +836,10 @@ impl VectorCanisterStore {
         let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
-        // (subject key, active slot, active bytes) for subjects still needing a shadow.
-        let mut pending: Vec<(SubjectKey, SlotRef, Vec<u8>)> = Vec::new();
+        // (subject key, owned subject entry, active slot, active bytes) for subjects still needing a
+        // shadow. The owned entry is carried so the append loop can write its `shadow_slot` with a
+        // single map insert instead of a get + insert.
+        let mut pending: Vec<ShadowPendingRow> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_scan");
@@ -872,7 +878,7 @@ impl VectorCanisterStore {
                         continue;
                     };
                     bytes_buffered += bytes.len() as u64;
-                    pending.push((key, active_slot, bytes));
+                    pending.push((key, value, active_slot, bytes));
                     // Bound transient heap bytes: break after buffering at least one vector once the
                     // per-step byte budget is reached (cursor resumes from `last_cursor`).
                     if bytes_buffered >= max_vector_bytes {
@@ -886,29 +892,48 @@ impl VectorCanisterStore {
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_append");
-            for (key, active_slot, bytes) in pending {
+            // Pre-compute each row's nearest target partition and group by partition, so a whole
+            // partition's shadow rows are appended in one batched page-store call (amortizing page
+            // directory commits across rows) and each subject entry is updated with a single map
+            // insert (no redundant get). The guard below is still checked per row because the
+            // subject's live slot must be the one we read bytes from.
+            let mut by_partition: Vec<Vec<ShadowPendingRow>> =
+                (0..nlist as usize).map(|_| Vec::new()).collect();
+            for (key, entry, active_slot, bytes) in pending {
                 let partition = assign_partition(&centroids, &bytes);
-                let shadow_slot = self.append_slot(
-                    index_id,
-                    target_index_version,
-                    partition,
-                    &def,
-                    key.subject,
-                    &bytes,
-                )?;
-                VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+                by_partition[partition as usize].push((key, entry, active_slot, bytes));
+            }
+            for (partition, bucket) in by_partition.into_iter().enumerate() {
+                if bucket.is_empty() {
+                    continue;
+                }
+                let shadow_slots = {
+                    let rows: Vec<(VectorSubject, &[u8])> = bucket
+                        .iter()
+                        .map(|(key, _, _, bytes)| (key.subject, bytes.as_slice()))
+                        .collect();
+                    self.append_slot_batch(
+                        index_id,
+                        target_index_version,
+                        partition as u32,
+                        &def,
+                        &rows,
+                    )?
+                };
+                for (shadow_slot, (key, mut entry, active_slot, _)) in
+                    shadow_slots.into_iter().zip(bucket)
+                {
                     // Positional stale-read guard: the subject's current live slot must still be the
                     // one we read bytes from (replaces the retired `vector_id` equality check).
-                    if let Some(mut entry) = m.get(&key)
-                        && !entry.deleted
-                        && entry.current_slot_for(active) == Some(active_slot)
-                    {
+                    if !entry.deleted && entry.current_slot_for(active) == Some(active_slot) {
                         entry.shadow_slot = Some(shadow_slot);
-                        m.insert(key, entry)
-                            .expect("reinsert existing subject entry");
+                        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+                            m.insert(key, entry)
+                                .expect("reinsert existing subject entry");
+                        });
                     }
-                });
-                subjects_processed += 1;
+                    subjects_processed += 1;
+                }
             }
         }
 

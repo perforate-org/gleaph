@@ -299,6 +299,15 @@ grow/write can never leave a head or page-meta pointing at unwritten bytes. If a
 the `occupied_tail` bump and the directory writes, the surplus slab bytes are acceptable leaked dead
 space (see _Allocation and cleanup_).
 
+The rebuild `Building` phase shadows a whole partition's rows at once through a batched
+`append_rows` sibling of `append_row`: it appends multiple rows into one partition's page chain
+with the same per-page geometry and run/shard rules, but tracks the head/meta/page-header/run
+table in cached locals and commits the directory (`VECTOR_PAGE_META` + `VECTOR_PARTITION_HEADS`
+`live_len`) at page granularity rather than per row. Write-then-commit still holds per page: the
+only fallible step is `reserve_page` (slab `grow`) when opening a page, and pages already closed
+before a mid-batch failure are committed while the in-flight page is left uncommitted. The
+single-row `append_row` remains the dual-write upsert path.
+
 Because `append_row` is fallible, mutation ordering is branch-specific:
 
 - A same-incarnation newer-version update appends the active row and then, while dual-writing, the
