@@ -3655,6 +3655,42 @@ fn candidate_scan_page_major_matches_exact_scan_across_pages() {
 }
 
 #[test]
+fn candidate_scan_with_membership_matches_resolve_based() {
+    let store = fresh_store();
+    // Distinct subjects 1..8 (values 0.0..7.0); a large allowlist (>= live/2) is the scan-with-
+    // membership regime, and it must produce the same top-k as the resolve-based path.
+    seed_distinct(&store, 8);
+    let allowlist: Vec<VectorSubject> = (0..8).map(|v| subject(v + 1)).collect();
+    let query = search_value(4.0, 5);
+    let qv = super::search::decode_f32(&query.query);
+    let resolve = store
+        .candidate_subject_scan(
+            INDEX_ID,
+            1,
+            &qv,
+            VectorMetric::L2Squared,
+            &allowlist,
+            5,
+            0.0,
+        )
+        .expect("resolve-based");
+    let membership = super::search::candidate_scan_with_membership(
+        INDEX_ID,
+        1,
+        1,
+        &qv,
+        VectorMetric::L2Squared,
+        0.0,
+        &allowlist,
+        5,
+    );
+    assert_eq!(
+        resolve.hits, membership.hits,
+        "scan-with-membership must match the resolve-based candidate scan"
+    );
+}
+
+#[test]
 fn candidate_search_rejects_oversized_allowlist() {
     let store = fresh_store();
     let mut req = search_value(0.0, 10);

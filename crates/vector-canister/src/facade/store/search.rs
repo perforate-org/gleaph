@@ -23,7 +23,8 @@
 use super::VectorCanisterStore;
 use crate::facade::stable::page_store::PageScratch;
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_PARTITION_HEADS,
+    VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{PageKey, PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
@@ -33,8 +34,12 @@ use gleaph_graph_kernel::vector_index::{
     VectorSubject,
 };
 use ic_stable_vector_page_store::kernel::{dot_f32, l2_squared_f32, l2_squared_f32_early_exit};
+use rapidhash::{HashSetExt, RapidHashSet};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
+use canbench_rs::bench_scope;
 
 /// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
 /// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`.
@@ -309,6 +314,70 @@ fn scan_partitions(
     finalize(heap)
 }
 
+/// Total live rows in the active version across `0..nlist` partitions (sum of `PartitionHead.live_len`).
+fn active_live_count(index_id: u32, active: u64, nlist: u32) -> u64 {
+    VECTOR_PARTITION_HEADS.with_borrow(|h| {
+        (0..nlist)
+            .map(|p| {
+                h.get(&PartitionKey::new(index_id, active, p))
+                    .map(|head| head.live_len)
+                    .unwrap_or(0)
+            })
+            .sum()
+    })
+}
+
+/// Filtered scan for a **large** candidate allowlist: builds an in-memory candidate set and scans the
+/// active partitions' rows (page-batched via `visit_partition_pages`), keeping rows whose subject is
+/// in the set. The page-scan invariant (a non-tombstoned active row is a live subject) yields the same
+/// live candidates as a per-candidate subject-map resolve, without the ~3.5K/get cost; the early-exit
+/// is order-independent, so the top-k is identical to `candidate_subject_scan`.
+pub(super) fn candidate_scan_with_membership(
+    index_id: u32,
+    active_index_version: u64,
+    nlist: u32,
+    query: &[f32],
+    metric: VectorMetric,
+    q_norm: f32,
+    candidates: &[VectorSubject],
+    top_k: u32,
+) -> VectorSearchResult {
+    let mut candidate_set: RapidHashSet<VectorSubject> =
+        RapidHashSet::with_capacity(candidates.len());
+    candidate_set.extend(candidates.iter().copied());
+    let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+    let mut scratch = PageScratch::new();
+    PAGE_STORE.with_borrow(|store| {
+        for partition_id in 0..nlist {
+            store.visit_partition_pages(
+                index_id,
+                active_index_version,
+                partition_id,
+                &mut scratch,
+                |_slot, info, bytes| {
+                    let subject = VectorSubject::Vertex {
+                        shard_id: ShardId::new(info.shard_id),
+                        vertex_id: info.vertex_id,
+                    };
+                    if !candidate_set.contains(&subject) {
+                        return;
+                    }
+                    let threshold = if heap.len() as u32 == top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
+                        return;
+                    };
+                    push_bounded(&mut heap, top_k, Candidate { distance, subject });
+                },
+            );
+        }
+    });
+    finalize(heap)
+}
+
 /// Reads centroids `0..nlist` for `(index_id, version)`, returning `None` unless exactly `nlist`
 /// centroids of `dims` components are present (a partial/stale centroid set is not ready). Shared by
 /// search (active version) and the rebuild build/publish paths (shadow target version, Slice 7).
@@ -481,6 +550,21 @@ impl VectorCanisterStore {
         // over current live vector slots. The receiving boundary validates count, vertex-only
         // subjects, and duplicates independently of the Router.
         if let Some(candidates) = &req.candidate_subjects {
+            // For a large allowlist relative to the live rows, scan-with-membership (page scan +
+            // in-memory candidate set) is cheaper than a per-candidate subject-map resolve.
+            let live = active_live_count(req.index_id, def.active_index_version, def.nlist);
+            if candidates.len() as u64 * 2 >= live {
+                return Ok(candidate_scan_with_membership(
+                    req.index_id,
+                    def.active_index_version,
+                    def.nlist,
+                    &query,
+                    def.metric,
+                    q_norm,
+                    candidates,
+                    req.top_k,
+                ));
+            }
             return self.candidate_subject_scan(
                 req.index_id,
                 def.active_index_version,
@@ -556,7 +640,7 @@ impl VectorCanisterStore {
     /// once per candidate. The early-exit threshold is order-independent (a partial sum already
     /// exceeding the k-th best proves the row cannot be in the top-k), so the page-major order yields
     /// the same exact top-k.
-    fn candidate_subject_scan(
+    pub(super) fn candidate_subject_scan(
         &self,
         index_id: u32,
         active_index_version: u64,
@@ -568,27 +652,31 @@ impl VectorCanisterStore {
     ) -> Result<VectorSearchResult, VectorCanisterError> {
         // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
         let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            for subject in candidates {
-                let key = SubjectKey::new(index_id, *subject);
-                let Some(value) = subjects.get(&key) else {
-                    continue;
-                };
-                if value.deleted {
-                    continue;
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("filtered_resolve");
+            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                for subject in candidates {
+                    let key = SubjectKey::new(index_id, *subject);
+                    let Some(value) = subjects.get(&key) else {
+                        continue;
+                    };
+                    if value.deleted {
+                        continue;
+                    }
+                    let Some(slot) = value.current_slot_for(active_index_version) else {
+                        continue;
+                    };
+                    let page_key = PageKey::new(
+                        index_id,
+                        slot.index_version as u64,
+                        slot.partition_id,
+                        slot.page_id as u64,
+                    );
+                    rows.push((page_key, *subject, slot));
                 }
-                let Some(slot) = value.current_slot_for(active_index_version) else {
-                    continue;
-                };
-                let page_key = PageKey::new(
-                    index_id,
-                    slot.index_version as u64,
-                    slot.partition_id,
-                    slot.page_id as u64,
-                );
-                rows.push((page_key, *subject, slot));
-            }
-        });
+            });
+        }
         if rows.is_empty() {
             return Ok(VectorSearchResult { hits: Vec::new() });
         }
@@ -597,7 +685,11 @@ impl VectorCanisterStore {
 
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut scratch = PageScratch::new();
-        score_sorted_rows(query, metric, q_norm, top_k, &mut heap, &rows, &mut scratch);
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("filtered_score");
+            score_sorted_rows(query, metric, q_norm, top_k, &mut heap, &rows, &mut scratch);
+        }
 
         Ok(finalize(heap))
     }

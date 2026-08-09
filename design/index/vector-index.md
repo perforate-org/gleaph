@@ -358,7 +358,11 @@ parents' children and recurse to the leaves.
 4. Per selected partition: read extents as contiguous spans → tombstone skip (bit 31) → positional
    validation against the subject map → (opt-in) row-level bound pruning → SIMD.
 5. Deterministic top-k heap ordered by `(score, subject)`.
-6. Filtered search (ADR 0034): the candidate allowlist from the Property Index is unchanged.
+6. Filtered search (ADR 0034): the candidate allowlist from the Property Index is unchanged. For a
+   **large** allowlist (≥ ~half the live rows) the vector canister scans the active rows page-batched
+   and keeps rows whose subject is in the candidate set (scan-with-membership), avoiding the
+   per-candidate subject-map `get`; for small allowlists it resolves each candidate via the subject map.
+   Both paths yield the identical top-k (the page-scan invariant and order-independent early exit).
 
 ## Rebuild and compaction
 
