@@ -32,6 +32,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
     VectorSubject,
 };
+use ic_stable_vector_page_store::kernel::l2_squared_f32 as kernel_l2_squared_f32;
 use ic_stable_vector_page_store::kernel::{dot_and_norm2_f32, l2_squared_f32_early_exit};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -340,11 +341,12 @@ fn read_centroids(def: &VectorIndexDef, index_id: u32) -> Option<Vec<Vec<f32>>> 
 /// lowest partition id. Shared by the rebuild shadow build, dual-write shadow append, and
 /// post-publish `nlist > 1` active upserts.
 pub(super) fn assign_partition(centroids: &[Vec<f32>], bytes: &[u8]) -> u32 {
-    let vector = decode_f32(bytes);
     let mut best = 0u32;
     let mut best_d = f32::INFINITY;
     for (p, centroid) in centroids.iter().enumerate() {
-        let d = l2_squared_f32(centroid, &vector);
+        // SIMD L2 over the encoded row bytes and the decoded centroid (same kernel and tie-break as
+        // `training_step`), avoiding a `decode_f32` allocation and the scalar per-centroid loop.
+        let d = kernel_l2_squared_f32(bytes, centroid);
         if d < best_d {
             best_d = d;
             best = p as u32;
@@ -765,5 +767,16 @@ mod tests {
             score_row(VectorMetric::Cosine, &zero, &q, 0.0, f32::INFINITY),
             None
         );
+    }
+
+    #[test]
+    fn assign_partition_nearest_centroid_and_tie_break() {
+        let centroids = vec![vec![10.0f32; 4], vec![0.0f32; 4]];
+        // Value 0 is nearest to centroid 1 (distance 0), value 10 to centroid 0.
+        assert_eq!(assign_partition(&centroids, &row(&[0.0f32; 4])), 1);
+        assert_eq!(assign_partition(&centroids, &row(&[10.0f32; 4])), 0);
+        // Exact tie keeps the lowest partition id.
+        let tie = vec![vec![3.0f32; 4], vec![3.0f32; 4]];
+        assert_eq!(assign_partition(&tie, &row(&[3.0f32; 4])), 0);
     }
 }
