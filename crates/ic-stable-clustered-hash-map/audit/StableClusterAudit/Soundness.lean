@@ -312,15 +312,23 @@ lemma relocateStep_preserves_clusterInvariant {s s' : State} {entry : Key} {valu
     relocateStep_preserves_entryAtCorrectBucket h hci.2.2 hremap hremap' hbucket
   ⟩
 
--- A single relocation step is an *intermediate* state (the displaced entry is in flight, not
--- yet written), so it does not by itself preserve `ClusterInvariant`: the full `insert` is a
--- chain of such steps terminated by a `RelocateWrite`, and the invariant is preserved by the
--- whole chain. Proving that requires an induction over the chain length, with each step
--- keeping the ordered-cluster structure across the displaced region; that induction is the
--- remaining core of target (b) and is deferred here.
-lemma insert_preserves_invariant (h : ClusterInvariant s)
-    (hstep : RelocateStep s s' entry value entryDist position) : ClusterInvariant s' := by
-  sorry
+-- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
+-- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
+-- `relocateStep_preserves_clusterInvariant`), so the invariant holds throughout the chain.
+-- The `done` (base) case is proved below; the `step` case additionally needs the per-step
+-- hypotheses for the displaced entry — that its order boundary (`IsOrderBoundary`) and
+-- home-bucket (`position - entryDist = bucket ...`) properties hold at each step, which the
+-- loop maintains but which are not yet discharged.
+lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {position : Nat}
+    (h : InsertRelocate s s' key value position) (hci : ClusterInvariant s)
+    (hip : IsInsertionPoint s position (bucket key s.n))
+    (hremap : s.remapEnd = none) (hremap' : s'.remapEnd = s.remapEnd) :
+    ClusterInvariant s' := by
+  induction h with
+  | done hw =>
+      exact relocateWrite_preserves_clusterInvariant hw hci hip hremap hremap'
+  | step hstep hind =>
+      sorry
 
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by

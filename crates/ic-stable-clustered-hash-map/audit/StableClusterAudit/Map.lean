@@ -191,6 +191,18 @@ def IsOrderBoundary (s : State) (position b : Nat) : Prop :=
   (∀ i, i < position → IsOccupied s i → BucketAt s i ≤ b) ∧
   (∀ i, i > position → i < capacity s.n → IsOccupied s i → b ≤ BucketAt s i)
 
+-- The relocation chain of `insert_and_relocate` (src/map.rs L447-L476): zero or more
+-- `RelocateStep`s (each displacing the next entry) followed by a terminating
+-- `RelocateWrite`. `key`/`value` is the initial pending entry at `position`; the displaced
+-- occupant becomes the pending entry of the next step.
+inductive InsertRelocate : State → State → Key → Nat → Nat → Prop where
+  | done {s s' : State} {key : Key} {value : Nat} {position : Nat}
+      (h : RelocateWrite s s' key value position) : InsertRelocate s s' key value position
+  | step {s mid s' : State} {key : Key} {value : Nat} {entryDist position : Nat}
+      (hstep : RelocateStep s mid key value entryDist position)
+      (hnext : InsertRelocate mid s' hstep.tKey hstep.tVal hstep.next) :
+      InsertRelocate s s' key value position
+
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L491-L508.
 -- One step: the slot `position` is freed and the tail `next` of the cluster at
