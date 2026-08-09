@@ -1487,6 +1487,28 @@ fn stale_centroids_fall_back_to_exact_scan() {
 }
 
 #[test]
+fn exact_scan_chunk_boundary_accumulates_top_k_across_chunks() {
+    let store = fresh_store();
+    // More live subjects than the exact scan's SCAN_CHUNK (4096), valued by vertex id. A query at
+    // 4096.0 puts the nearest hit (v4096) in the second chunk and a top-k hit (v4095) in the first
+    // chunk, so the global top-3 must accumulate correctly across the chunk flush.
+    for v in 0..5000u32 {
+        store
+            .vector_upsert(shard_canister(), &upsert_vec(v, 1, v as f32))
+            .expect("upsert");
+    }
+    let result = store
+        .vector_search(&search_value(4096.0, 3))
+        .expect("exact scan");
+    let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
+    assert_eq!(
+        subjects,
+        vec![subject(4096), subject(4095), subject(4097)],
+        "chunked exact scan accumulates the global top-3 across the SCAN_CHUNK boundary"
+    );
+}
+
+#[test]
 #[should_panic(expected = "must be >= 0")]
 fn tuned_negative_eps_query_panics() {
     let store = fresh_store();

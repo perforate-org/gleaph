@@ -192,6 +192,73 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
     VectorSearchResult { hits }
 }
 
+/// Scores a page-major-sorted list of `(page_key, subject, slot, stamp)` rows, bulk-reading each
+/// distinct page once into `scratch` and scoring from the zero-copy slice. Shared by the candidate
+/// (bounded allowlist) and exact (chunked subject-map) scans. The early-exit threshold is
+/// order-independent, so the walk order does not change the result.
+fn score_sorted_rows(
+    query: &[f32],
+    metric: VectorMetric,
+    q_norm: f32,
+    top_k: u32,
+    heap: &mut BinaryHeap<Candidate>,
+    rows: &[(PageKey, VectorSubject, SlotRef, u64)],
+    scratch: &mut PageScratch,
+) {
+    PAGE_STORE.with_borrow(|store| {
+        let mut i = 0;
+        while i < rows.len() {
+            let page_key = rows[i].0;
+            let page_loaded = store.load_page(page_key, scratch);
+            let mut end = i + 1;
+            while end < rows.len() && rows[end].0 == page_key {
+                end += 1;
+            }
+            if page_loaded {
+                let row_count = scratch.row_count();
+                for (_, subject, slot, stamp) in &rows[i..end] {
+                    // Defensive parity with `read_row_bytes`: a slot at/after `row_count` is
+                    // uninitialized; a tombstoned row is not the live slot.
+                    if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                        continue;
+                    }
+                    // Positional + payload validation: the row's packed vertex id must match the
+                    // subject (the shard is known from the allowlist/subject-map key).
+                    let vertex_id = scratch.row_info(slot.slot).vertex_id;
+                    let VectorSubject::Vertex {
+                        shard_id: _,
+                        vertex_id: subject_vertex,
+                    } = *subject;
+                    if vertex_id != subject_vertex {
+                        continue;
+                    }
+                    // The L2 early-exit threshold is the current k-th best, applied only once the
+                    // heap is full (a partial max before then would wrongly skip top-k candidates).
+                    let threshold = if heap.len() as u32 == top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    let bytes = scratch.vec_slice(slot.slot);
+                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
+                        continue;
+                    };
+                    push_bounded(
+                        heap,
+                        top_k,
+                        Candidate {
+                            distance,
+                            subject: *subject,
+                            mutation_id: *stamp,
+                        },
+                    );
+                }
+            }
+            i = end;
+        }
+    });
+}
+
 /// Reads centroids `0..nlist` for `(index_id, version)`, returning `None` unless exactly `nlist`
 /// centroids of `dims` components are present (a partial/stale centroid set is not ready). Shared by
 /// search (active version) and the rebuild build/publish paths (shadow target version, Slice 7).
@@ -466,66 +533,18 @@ impl VectorCanisterStore {
 
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut scratch = PageScratch::new();
-        PAGE_STORE.with_borrow(|store| {
-            let mut i = 0;
-            while i < rows.len() {
-                let page_key = rows[i].0;
-                let page_loaded = store.load_page(page_key, &mut scratch);
-                let mut end = i + 1;
-                while end < rows.len() && rows[end].0 == page_key {
-                    end += 1;
-                }
-                if page_loaded {
-                    let row_count = scratch.row_count();
-                    for (_, subject, slot, stamp) in &rows[i..end] {
-                        // Defensive parity with `read_row_bytes`: a slot at/after `row_count` is
-                        // uninitialized; a tombstoned row is not the live slot.
-                        if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
-                            continue;
-                        }
-                        // Positional + payload validation: the row's packed vertex id must match the
-                        // allowlisted subject (the shard is known from the allowlist).
-                        let vertex_id = scratch.row_info(slot.slot).vertex_id;
-                        let VectorSubject::Vertex {
-                            shard_id: _,
-                            vertex_id: subject_vertex,
-                        } = *subject;
-                        if vertex_id != subject_vertex {
-                            continue;
-                        }
-                        // The L2 early-exit threshold is the current k-th best, applied only once the
-                        // heap is full (a partial max before then would wrongly skip top-k candidates).
-                        let threshold = if heap.len() as u32 == top_k {
-                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                        } else {
-                            f32::INFINITY
-                        };
-                        let bytes = scratch.vec_slice(slot.slot);
-                        let Some(distance) = score_row(metric, bytes, query, q_norm, threshold)
-                        else {
-                            continue;
-                        };
-                        push_bounded(
-                            &mut heap,
-                            top_k,
-                            Candidate {
-                                distance,
-                                subject: *subject,
-                                mutation_id: *stamp,
-                            },
-                        );
-                    }
-                }
-                i = end;
-            }
-        });
+        score_sorted_rows(query, metric, q_norm, top_k, &mut heap, &rows, &mut scratch);
 
         Ok(finalize(heap))
     }
 
-    /// Slice 5 exact scan: walk every live subject of the index and score its current slot. The live
-    /// slot is resolved via `current_slot_for(active)` (ADR 0031 Slice 7) so a post-publish exact
-    /// fallback reads the new active version (`shadow_slot`), never the stale old `entry.slot`.
+    /// Exact fallback scan: sequential-iterate the subject map, collect each live subject's current
+    /// slot + stamp into a bounded chunk, and bulk-read each distinct page once page-major (via
+    /// [`score_sorted_rows`]) instead of calling `read_row_bytes` once per subject. Keeping the
+    /// sequential subject-map iteration avoids the per-row random-`get` regression (plan 0213), and
+    /// chunking bounds the transient collection. The live slot is resolved via `current_slot_for(active)`
+    /// so a post-publish exact fallback reads the new active version (`shadow_slot`), never the stale
+    /// old `entry.slot`. The deterministic top-k and early-exit are unchanged.
     fn exact_subject_scan(
         &self,
         req: &VectorSearchRequest,
@@ -534,57 +553,65 @@ impl VectorCanisterStore {
         metric: VectorMetric,
         q_norm: f32,
     ) -> VectorSearchResult {
+        // Chunking bounds the transient slot collection to SCAN_CHUNK entries (the same order as the
+        // bounded candidate allowlist), so a large degenerate index does not allocate O(subjects). A
+        // page whose rows straddle two chunks is bulk-read once per chunk it appears in (correct, a
+        // minor re-read). The heap accumulates the global top-k across chunks; early-exit is
+        // order-independent, so the result is unchanged.
+        const SCAN_CHUNK: usize = 4096;
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut rows: Vec<(PageKey, VectorSubject, SlotRef, u64)> = Vec::with_capacity(SCAN_CHUNK);
+        let mut scratch = PageScratch::new();
 
-        PAGE_STORE.with_borrow(|store| {
-            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                let lower = SubjectKey::index_lower(req.index_id);
-                for entry in subjects.range((Bound::Included(lower), Bound::Unbounded)) {
-                    let key = entry.key();
-                    if key.index_id != req.index_id {
-                        break; // index-major order: past this index's prefix.
-                    }
-                    let value = entry.value();
-                    if value.deleted {
-                        continue;
-                    }
-                    let Some(slot) = value.current_slot_for(active_index_version) else {
-                        continue;
-                    };
-                    let Some((vertex_id, bytes)) = store.read_row_bytes(req.index_id, slot) else {
-                        continue;
-                    };
-                    // Positional + payload validation: the row's packed vertex id must match the
-                    // subject-map key's vertex id.
-                    let VectorSubject::Vertex {
-                        shard_id: _,
-                        vertex_id: subject_vertex,
-                    } = key.subject;
-                    if vertex_id != subject_vertex {
-                        continue;
-                    }
-                    // The L2 early-exit threshold is the current k-th best, applied only once the
-                    // heap is full.
-                    let threshold = if heap.len() as u32 == req.top_k {
-                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                    } else {
-                        f32::INFINITY
-                    };
-                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
-                        continue;
-                    };
-                    push_bounded(
-                        &mut heap,
-                        req.top_k,
-                        Candidate {
-                            distance,
-                            subject: key.subject,
-                            mutation_id: value.stamp,
-                        },
-                    );
+        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+            let lower = SubjectKey::index_lower(req.index_id);
+            for entry in subjects.range((Bound::Included(lower), Bound::Unbounded)) {
+                let key = entry.key();
+                if key.index_id != req.index_id {
+                    break; // index-major order: past this index's prefix.
                 }
-            });
+                let value = entry.value();
+                if value.deleted {
+                    continue;
+                }
+                let Some(slot) = value.current_slot_for(active_index_version) else {
+                    continue;
+                };
+                let page_key = PageKey::new(
+                    req.index_id,
+                    slot.index_version,
+                    slot.partition_id,
+                    slot.page_id,
+                );
+                rows.push((page_key, key.subject, slot, value.stamp));
+                if rows.len() >= SCAN_CHUNK {
+                    rows.sort_by_key(|(page, _, slot, _)| (*page, slot.slot));
+                    score_sorted_rows(
+                        query,
+                        metric,
+                        q_norm,
+                        req.top_k,
+                        &mut heap,
+                        &rows,
+                        &mut scratch,
+                    );
+                    rows.clear();
+                }
+            }
         });
+        // Flush the final (partial) chunk.
+        if !rows.is_empty() {
+            rows.sort_by_key(|(page, _, slot, _)| (*page, slot.slot));
+            score_sorted_rows(
+                query,
+                metric,
+                q_norm,
+                req.top_k,
+                &mut heap,
+                &rows,
+                &mut scratch,
+            );
+        }
 
         finalize(heap)
     }
