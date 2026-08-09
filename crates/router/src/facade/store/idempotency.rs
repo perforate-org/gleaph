@@ -71,6 +71,30 @@ enum OrderedBatchProgressUpdate {
     IdempotentNoop,
 }
 
+/// Read-only guards shared by ordered projection-advance callbacks.
+struct OrderedProjectionAdvanceGate {
+    target_graph_request_fingerprint: [u8; 32],
+    target_shard_id: ShardId,
+    watermark_shard_id: ShardId,
+}
+
+impl OrderedProjectionAdvanceGate {
+    fn require(
+        self,
+        graph_request_fingerprint: [u8; 32],
+        fingerprint_mismatch: &'static str,
+        shard_mismatch: &'static str,
+    ) -> Result<(), RouterError> {
+        if self.target_graph_request_fingerprint != graph_request_fingerprint {
+            return Err(RouterError::Conflict(fingerprint_mismatch.into()));
+        }
+        if self.watermark_shard_id != self.target_shard_id {
+            return Err(RouterError::Conflict(shard_mismatch.into()));
+        }
+        Ok(())
+    }
+}
+
 /// Normalized read-only view of the family-specific target fields that gate an ordered retirement
 /// completion. The payload-family match and its diagnostic remain at the caller, while this type
 /// owns the common fingerprint, exact-receipt, and projection-watermark checks.
@@ -1284,17 +1308,16 @@ impl RouterStore {
                         ));
                     }
                 };
-                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                    return Err(RouterError::Conflict(
-                        "Graph request fingerprint mismatch at ordered mixed projection advancement"
-                            .into(),
-                    ));
+                OrderedProjectionAdvanceGate {
+                    target_graph_request_fingerprint: replay.target.graph_request_fingerprint,
+                    target_shard_id: replay.target.request.target_shard_id,
+                    watermark_shard_id: watermark.shard_id,
                 }
-                if watermark.shard_id != replay.target.request.target_shard_id {
-                    return Err(RouterError::Conflict(
-                        "ordered mixed projection watermark targets a different shard".into(),
-                    ));
-                }
+                .require(
+                    graph_request_fingerprint,
+                    "Graph request fingerprint mismatch at ordered mixed projection advancement",
+                    "ordered mixed projection watermark targets a different shard",
+                )?;
                 match &replay.target.progress {
                     OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt) => {
                         replay.target.progress =
@@ -1500,17 +1523,16 @@ impl RouterStore {
                         ));
                     }
                 };
-                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                    return Err(RouterError::Conflict(
-                        "Graph request fingerprint mismatch at ordered vertex projection advancement"
-                            .into(),
-                    ));
+                OrderedProjectionAdvanceGate {
+                    target_graph_request_fingerprint: replay.target.graph_request_fingerprint,
+                    target_shard_id: replay.target.request.target_shard_id,
+                    watermark_shard_id: watermark.shard_id,
                 }
-                if watermark.shard_id != replay.target.request.target_shard_id {
-                    return Err(RouterError::Conflict(
-                        "ordered vertex projection watermark targets a different shard".into(),
-                    ));
-                }
+                .require(
+                    graph_request_fingerprint,
+                    "Graph request fingerprint mismatch at ordered vertex projection advancement",
+                    "ordered vertex projection watermark targets a different shard",
+                )?;
                 match &replay.target.progress {
                     OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt) => {
                         replay.target.progress =
@@ -1772,17 +1794,16 @@ impl RouterStore {
                         ));
                     }
                 };
-                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                    return Err(RouterError::Conflict(
-                        "Graph request fingerprint mismatch at ordered projection advancement"
-                            .into(),
-                    ));
+                OrderedProjectionAdvanceGate {
+                    target_graph_request_fingerprint: replay.target.graph_request_fingerprint,
+                    target_shard_id: replay.target.request.target_shard_id,
+                    watermark_shard_id: watermark.shard_id,
                 }
-                if watermark.shard_id != replay.target.request.target_shard_id {
-                    return Err(RouterError::Conflict(
-                        "ordered projection watermark targets a different shard".into(),
-                    ));
-                }
+                .require(
+                    graph_request_fingerprint,
+                    "Graph request fingerprint mismatch at ordered projection advancement",
+                    "ordered projection watermark targets a different shard",
+                )?;
                 match &replay.target.progress {
                     OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt) => {
                         replay.target.progress =
