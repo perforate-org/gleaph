@@ -62,6 +62,15 @@ enum OrderedBatchRetirementUpdate {
     IdempotentNoop,
 }
 
+/// The only durable writes an ordered projection-advance callback may make.
+///
+/// `Persist` records the watermark after moving the exact target to `ProjectionAdvanced`;
+/// `IdempotentNoop` leaves an exact replay untouched.
+enum OrderedProjectionAdvanceUpdate {
+    Persist,
+    IdempotentNoop,
+}
+
 /// Normalized read-only view of the family-specific target fields that gate an ordered retirement
 /// completion. The payload-family match and its diagnostic remain at the caller, while this type
 /// owns the common fingerprint, exact-receipt, and projection-watermark checks.
@@ -847,6 +856,39 @@ impl RouterStore {
         })
     }
 
+    fn apply_ordered_batch_projection_advance<F>(
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+        mutation_id_mismatch: &'static str,
+        update_payload: F,
+    ) -> Result<(), RouterError>
+    where
+        F: FnOnce(
+            &mut RouterMutationPayloadV1,
+        ) -> Result<OrderedProjectionAdvanceUpdate, RouterError>,
+    {
+        let key = key.clone();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let update = {
+                let v1 = record.as_v1_mut();
+                if v1.mutation_id != mutation_id {
+                    return Err(RouterError::Conflict(mutation_id_mismatch.into()));
+                }
+                update_payload(&mut v1.payload)?
+            };
+            match update {
+                OrderedProjectionAdvanceUpdate::Persist => {
+                    m.insert(key, record);
+                }
+                OrderedProjectionAdvanceUpdate::IdempotentNoop => {}
+            }
+            Ok(())
+        })
+    }
+
     /// Atomically transition a pristine scalar reservation to an ordered Graph replay payload.
     ///
     /// The public fingerprint and item count remain Router-owned identity; the target validates
@@ -1238,53 +1280,50 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered mixed projection advancement".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
-                _ => {
+        Self::apply_ordered_batch_projection_advance(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered mixed projection advancement",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered mixed projection advancement requires an OrderedMixedBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
                     return Err(RouterError::Conflict(
-                        "ordered mixed projection advancement requires an OrderedMixedBatch payload".into(),
+                        "Graph request fingerprint mismatch at ordered mixed projection advancement"
+                            .into(),
                     ));
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered mixed projection advancement".into(),
-                ));
-            }
-            if watermark.shard_id != replay.target.request.target_shard_id {
-                return Err(RouterError::Conflict(
-                    "ordered mixed projection watermark targets a different shard".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt) => {
-                    replay.target.progress =
-                        OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
-                    replay.target.projection_watermark = Some(watermark);
-                    m.insert(key, record);
-                    Ok(())
+                if watermark.shard_id != replay.target.request.target_shard_id {
+                    return Err(RouterError::Conflict(
+                        "ordered mixed projection watermark targets a different shard".into(),
+                    ));
                 }
-                OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_)
-                    if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
-                {
-                    Ok(())
+                match &replay.target.progress {
+                    OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt) => {
+                        replay.target.progress =
+                            OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
+                        replay.target.projection_watermark = Some(watermark);
+                        Ok(OrderedProjectionAdvanceUpdate::Persist)
+                    }
+                    OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_)
+                        if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
+                    {
+                        Ok(OrderedProjectionAdvanceUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered mixed projection advancement conflicts with persisted progress"
+                            .into(),
+                    )),
                 }
-                _ => Err(RouterError::Conflict(
-                    "ordered mixed projection advancement conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     pub fn record_ordered_mixed_batch_retirement_pending(
@@ -1460,53 +1499,50 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered vertex projection advancement".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
-                _ => {
+        Self::apply_ordered_batch_projection_advance(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered vertex projection advancement",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered vertex projection advancement requires an OrderedVertexBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
                     return Err(RouterError::Conflict(
-                        "ordered vertex projection advancement requires an OrderedVertexBatch payload".into(),
+                        "Graph request fingerprint mismatch at ordered vertex projection advancement"
+                            .into(),
                     ));
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered vertex projection advancement".into(),
-                ));
-            }
-            if watermark.shard_id != replay.target.request.target_shard_id {
-                return Err(RouterError::Conflict(
-                    "ordered vertex projection watermark targets a different shard".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt) => {
-                    replay.target.progress =
-                        OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
-                    replay.target.projection_watermark = Some(watermark);
-                    m.insert(key, record);
-                    Ok(())
+                if watermark.shard_id != replay.target.request.target_shard_id {
+                    return Err(RouterError::Conflict(
+                        "ordered vertex projection watermark targets a different shard".into(),
+                    ));
                 }
-                OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
-                    if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
-                {
-                    Ok(())
+                match &replay.target.progress {
+                    OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt) => {
+                        replay.target.progress =
+                            OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
+                        replay.target.projection_watermark = Some(watermark);
+                        Ok(OrderedProjectionAdvanceUpdate::Persist)
+                    }
+                    OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
+                        if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
+                    {
+                        Ok(OrderedProjectionAdvanceUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered vertex projection advancement conflicts with persisted progress"
+                            .into(),
+                    )),
                 }
-                _ => Err(RouterError::Conflict(
-                    "ordered vertex projection advancement conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     pub fn record_ordered_vertex_batch_retirement_pending(
@@ -1743,54 +1779,49 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered projection advancement".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
-                _ => {
+        Self::apply_ordered_batch_projection_advance(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered projection advancement",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered projection advancement requires an OrderedEdgeBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
                     return Err(RouterError::Conflict(
-                        "ordered projection advancement requires an OrderedEdgeBatch payload"
+                        "Graph request fingerprint mismatch at ordered projection advancement"
                             .into(),
                     ));
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered projection advancement".into(),
-                ));
-            }
-            if watermark.shard_id != replay.target.request.target_shard_id {
-                return Err(RouterError::Conflict(
-                    "ordered projection watermark targets a different shard".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt) => {
-                    replay.target.progress =
-                        OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
-                    replay.target.projection_watermark = Some(watermark);
-                    m.insert(key, record);
-                    Ok(())
+                if watermark.shard_id != replay.target.request.target_shard_id {
+                    return Err(RouterError::Conflict(
+                        "ordered projection watermark targets a different shard".into(),
+                    ));
                 }
-                OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
-                    if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
-                {
-                    Ok(())
+                match &replay.target.progress {
+                    OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt) => {
+                        replay.target.progress =
+                            OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
+                        replay.target.projection_watermark = Some(watermark);
+                        Ok(OrderedProjectionAdvanceUpdate::Persist)
+                    }
+                    OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
+                        if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
+                    {
+                        Ok(OrderedProjectionAdvanceUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered projection advancement conflicts with persisted progress".into(),
+                    )),
                 }
-                _ => Err(RouterError::Conflict(
-                    "ordered projection advancement conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     /// Persist that Router has begun the fingerprint-bound Graph retirement call.

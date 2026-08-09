@@ -2537,10 +2537,62 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .record_ordered_edge_batch_projection_pending(&key, 1, graph_fingerprint)
         .expect("projection pending");
+    let before_projection_advanced = store
+        .router_mutation_record(&key)
+        .expect("edge projection-pending record");
     let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
         shard_id: ShardId::new(0),
         label_stats_seq: None,
     };
+    let wrong_shard_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(1),
+        label_stats_seq: None,
+    };
+    let err = store
+        .record_ordered_edge_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            wrong_shard_watermark,
+        )
+        .expect_err("a watermark for another shard must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict("ordered projection watermark targets a different shard".into())
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after wrong-shard rejection"),
+        before_projection_advanced,
+        "a rejected projection watermark must leave the durable record unchanged"
+    );
+    let wrong_projection_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_edge_batch_projection_advanced(
+            &key,
+            1,
+            wrong_projection_fingerprint,
+            watermark.clone(),
+        )
+        .expect_err("a different Graph fingerprint must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered projection advancement".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after projection fingerprint rejection"),
+        before_projection_advanced,
+        "a rejected projection fingerprint must leave the durable record unchanged"
+    );
     store
         .record_ordered_edge_batch_projection_advanced(
             &key,
@@ -2549,9 +2601,49 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
             watermark.clone(),
         )
         .expect("projection advanced");
+    let projection_advanced = store
+        .router_mutation_record(&key)
+        .expect("edge projection-advanced record");
     store
-        .record_ordered_edge_batch_projection_advanced(&key, 1, graph_fingerprint, watermark)
+        .record_ordered_edge_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            watermark.clone(),
+        )
         .expect("idempotent projection advancement");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after projection-advanced replay"),
+        projection_advanced,
+        "an exact projection-advanced replay must leave the durable record unchanged"
+    );
+    let conflicting_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(0),
+        label_stats_seq: Some(1),
+    };
+    let err = store
+        .record_ordered_edge_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            conflicting_watermark,
+        )
+        .expect_err("a different projection watermark must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered projection advancement conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after projection watermark conflict"),
+        projection_advanced,
+        "a conflicting projection watermark must leave the durable record unchanged"
+    );
     let before_retirement_pending = store
         .router_mutation_record(&key)
         .expect("projected edge record");
@@ -2852,20 +2944,116 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     store
         .record_ordered_mixed_batch_projection_pending(&key, 1, graph_fingerprint)
         .expect("mixed projection pending");
+    let before_projection_advanced = store
+        .router_mutation_record(&key)
+        .expect("mixed projection-pending record");
+    let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(0),
+        label_stats_seq: None,
+    };
+    let wrong_shard_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(1),
+        label_stats_seq: None,
+    };
+    let err = store
+        .record_ordered_mixed_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            wrong_shard_watermark,
+        )
+        .expect_err("a mixed watermark for another shard must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed projection watermark targets a different shard".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after wrong-shard rejection"),
+        before_projection_advanced,
+        "a rejected mixed projection watermark must leave the durable record unchanged"
+    );
+    let wrong_projection_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_mixed_batch_projection_advanced(
+            &key,
+            1,
+            wrong_projection_fingerprint,
+            watermark.clone(),
+        )
+        .expect_err("a different mixed Graph fingerprint must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered mixed projection advancement".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after projection fingerprint rejection"),
+        before_projection_advanced,
+        "a rejected mixed projection fingerprint must leave the durable record unchanged"
+    );
     store
         .record_ordered_mixed_batch_projection_advanced(
             &key,
             1,
             graph_fingerprint,
-            gleaph_graph_kernel::plan_exec::MutationTokenShard {
-                shard_id: ShardId::new(0),
-                label_stats_seq: None,
-            },
+            watermark.clone(),
         )
         .expect("mixed projection advanced");
-    let record = store
+    let projection_advanced = store
         .router_mutation_record(&key)
         .expect("mixed projected record");
+    store
+        .record_ordered_mixed_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            watermark.clone(),
+        )
+        .expect("idempotent mixed projection advancement");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after projection-advanced replay"),
+        projection_advanced,
+        "an exact mixed projection-advanced replay must leave the durable record unchanged"
+    );
+    let conflicting_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(0),
+        label_stats_seq: Some(1),
+    };
+    let err = store
+        .record_ordered_mixed_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            conflicting_watermark,
+        )
+        .expect_err("a different mixed projection watermark must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed projection advancement conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after projection watermark conflict"),
+        projection_advanced,
+        "a conflicting mixed projection watermark must leave the durable record unchanged"
+    );
+    let record = projection_advanced;
     assert!(matches!(
         record.payload(),
         RouterMutationPayloadV1::OrderedMixedBatch(replay)
@@ -3169,10 +3357,64 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     store
         .record_ordered_vertex_batch_projection_pending(&key, 1, graph_fingerprint)
         .expect("vertex projection pending");
+    let before_projection_advanced = store
+        .router_mutation_record(&key)
+        .expect("vertex projection-pending record");
     let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
         shard_id: ShardId::new(0),
         label_stats_seq: None,
     };
+    let wrong_shard_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(1),
+        label_stats_seq: None,
+    };
+    let err = store
+        .record_ordered_vertex_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            wrong_shard_watermark,
+        )
+        .expect_err("a vertex watermark for another shard must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered vertex projection watermark targets a different shard".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after wrong-shard rejection"),
+        before_projection_advanced,
+        "a rejected vertex projection watermark must leave the durable record unchanged"
+    );
+    let wrong_projection_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_vertex_batch_projection_advanced(
+            &key,
+            1,
+            wrong_projection_fingerprint,
+            watermark.clone(),
+        )
+        .expect_err("a different vertex Graph fingerprint must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered vertex projection advancement".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after projection fingerprint rejection"),
+        before_projection_advanced,
+        "a rejected vertex projection fingerprint must leave the durable record unchanged"
+    );
     store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
@@ -3181,6 +3423,49 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
             watermark.clone(),
         )
         .expect("vertex projection advanced");
+    let projection_advanced = store
+        .router_mutation_record(&key)
+        .expect("vertex projection-advanced record");
+    store
+        .record_ordered_vertex_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            watermark.clone(),
+        )
+        .expect("idempotent vertex projection advancement");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after projection-advanced replay"),
+        projection_advanced,
+        "an exact vertex projection-advanced replay must leave the durable record unchanged"
+    );
+    let conflicting_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(0),
+        label_stats_seq: Some(1),
+    };
+    let err = store
+        .record_ordered_vertex_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            conflicting_watermark,
+        )
+        .expect_err("a different vertex projection watermark must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered vertex projection advancement conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after projection watermark conflict"),
+        projection_advanced,
+        "a conflicting vertex projection watermark must leave the durable record unchanged"
+    );
     let before_retirement_pending = store
         .router_mutation_record(&key)
         .expect("projected vertex record");
