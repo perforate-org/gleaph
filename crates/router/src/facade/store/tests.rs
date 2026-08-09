@@ -2552,9 +2552,62 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .record_ordered_edge_batch_projection_advanced(&key, 1, graph_fingerprint, watermark)
         .expect("idempotent projection advancement");
+    let before_retirement_pending = store
+        .router_mutation_record(&key)
+        .expect("projected edge record");
+    let err = store
+        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .expect_err("retirement completion before RetirementPending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered retirement completion requires RetirementPending progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after premature retirement completion"),
+        before_retirement_pending,
+        "premature retirement completion must leave the durable record unchanged"
+    );
     store
         .record_ordered_edge_batch_retirement_pending(&key, 1, graph_fingerprint)
         .expect("retirement pending");
+    let retirement_pending = store
+        .router_mutation_record(&key)
+        .expect("edge retirement-pending record");
+    store
+        .record_ordered_edge_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .expect("idempotent retirement-pending replay");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after retirement-pending replay"),
+        retirement_pending,
+        "exact retirement-pending replay must leave the durable record unchanged"
+    );
+    let mut mismatched_pending_receipt = receipt.clone();
+    mismatched_pending_receipt.hot_forward_vertices = vec![7];
+    mismatched_pending_receipt
+        .validate()
+        .expect("mismatched pending edge receipt remains valid");
+    let err = store
+        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, mismatched_pending_receipt)
+        .expect_err("different receipt at RetirementPending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered retirement completion requires RetirementPending progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after pending receipt rejection"),
+        retirement_pending,
+        "rejected pending receipt must leave the durable record unchanged"
+    );
     store
         .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
         .expect("retirement completion");
@@ -2617,6 +2670,13 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt)
         .expect("idempotent retirement completion");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after terminal retirement replay"),
+        record,
+        "exact terminal retirement replay must leave the durable record unchanged"
+    );
 }
 
 #[test]
@@ -2812,9 +2872,60 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
             if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_))
                 && replay.target.projection_watermark.is_some()
     ));
+    let before_retirement_pending = record;
+    let err = store
+        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .expect_err("mixed retirement completion before RetirementPending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed retirement completion requires RetirementPending progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after premature retirement completion"),
+        before_retirement_pending,
+        "premature mixed retirement completion must leave the durable record unchanged"
+    );
     store
         .record_ordered_mixed_batch_retirement_pending(&key, 1, graph_fingerprint)
         .expect("mixed retirement pending");
+    let retirement_pending = store
+        .router_mutation_record(&key)
+        .expect("mixed retirement-pending record");
+    store
+        .record_ordered_mixed_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .expect("idempotent mixed retirement-pending replay");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after retirement-pending replay"),
+        retirement_pending,
+        "exact mixed retirement-pending replay must leave the durable record unchanged"
+    );
+    let mut mismatched_pending_receipt = receipt.clone();
+    mismatched_pending_receipt.allocated_vertex_ids = vec![8];
+    mismatched_pending_receipt
+        .validate()
+        .expect("mismatched pending mixed receipt remains valid");
+    let err = store
+        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, mismatched_pending_receipt)
+        .expect_err("different mixed receipt at RetirementPending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed retirement completion requires RetirementPending progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after pending receipt rejection"),
+        retirement_pending,
+        "rejected pending mixed receipt must leave the durable record unchanged"
+    );
     store
         .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
         .expect("mixed retirement complete");
@@ -2875,6 +2986,13 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     store
         .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt)
         .expect("idempotent mixed retirement completion");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after terminal retirement replay"),
+        record,
+        "exact terminal mixed retirement replay must leave the durable record unchanged"
+    );
 }
 
 #[test]
@@ -3063,9 +3181,62 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
             watermark.clone(),
         )
         .expect("vertex projection advanced");
+    let before_retirement_pending = store
+        .router_mutation_record(&key)
+        .expect("projected vertex record");
+    let err = store
+        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .expect_err("vertex retirement completion before RetirementPending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered vertex retirement completion requires RetirementPending progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after premature retirement completion"),
+        before_retirement_pending,
+        "premature vertex retirement completion must leave the durable record unchanged"
+    );
     store
         .record_ordered_vertex_batch_retirement_pending(&key, 1, graph_fingerprint)
         .expect("vertex retirement pending");
+    let retirement_pending = store
+        .router_mutation_record(&key)
+        .expect("vertex retirement-pending record");
+    store
+        .record_ordered_vertex_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .expect("idempotent vertex retirement-pending replay");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after retirement-pending replay"),
+        retirement_pending,
+        "exact vertex retirement-pending replay must leave the durable record unchanged"
+    );
+    let mut mismatched_pending_receipt = receipt.clone();
+    mismatched_pending_receipt.allocated_vertex_ids = vec![8];
+    mismatched_pending_receipt
+        .validate()
+        .expect("mismatched pending vertex receipt remains valid");
+    let err = store
+        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, mismatched_pending_receipt)
+        .expect_err("different vertex receipt at RetirementPending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered vertex retirement completion requires RetirementPending progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after pending receipt rejection"),
+        retirement_pending,
+        "rejected pending vertex receipt must leave the durable record unchanged"
+    );
     store
         .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
         .expect("vertex retirement complete");
@@ -3129,6 +3300,13 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     store
         .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt)
         .expect("idempotent vertex retirement completion");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after terminal retirement replay"),
+        record,
+        "exact terminal vertex retirement replay must leave the durable record unchanged"
+    );
 }
 
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only

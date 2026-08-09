@@ -51,6 +51,82 @@ struct OrderedBatchTransition {
     errors: OrderedBatchTransitionErrors,
 }
 
+/// The only durable writes an ordered-retirement callback may make.
+///
+/// `Persist` advances the exact replay target to `RetirementPending`; `Completed` replaces that
+/// target only after the Graph retirement acknowledgement has been checked; `IdempotentNoop`
+/// leaves either an exact pending or an exact compacted-terminal replay untouched.
+enum OrderedBatchRetirementUpdate {
+    Persist,
+    Completed { row_count: u64 },
+    IdempotentNoop,
+}
+
+/// Normalized read-only view of the family-specific target fields that gate an ordered retirement
+/// completion. The payload-family match and its diagnostic remain at the caller, while this type
+/// owns the common fingerprint, exact-receipt, and projection-watermark checks.
+struct OrderedRetirementCompletionState<'a, Receipt> {
+    graph_request_fingerprint: [u8; 32],
+    retirement_pending_receipt: Option<&'a Receipt>,
+    projection_watermark: Option<&'a gleaph_graph_kernel::plan_exec::MutationTokenShard>,
+}
+
+impl<Receipt: PartialEq> OrderedRetirementCompletionState<'_, Receipt> {
+    fn require_exact(
+        &self,
+        graph_request_fingerprint: [u8; 32],
+        receipt: &Receipt,
+        fingerprint_mismatch: &'static str,
+        retirement_pending_required: &'static str,
+        projection_watermark_required: &'static str,
+    ) -> Result<gleaph_graph_kernel::plan_exec::MutationTokenShard, RouterError> {
+        if self.graph_request_fingerprint != graph_request_fingerprint {
+            return Err(RouterError::Conflict(fingerprint_mismatch.into()));
+        }
+        if self.retirement_pending_receipt != Some(receipt) {
+            return Err(RouterError::Conflict(retirement_pending_required.into()));
+        }
+        self.projection_watermark
+            .cloned()
+            .ok_or_else(|| RouterError::Conflict(projection_watermark_required.into()))
+    }
+}
+
+fn require_ordered_retirement_target(
+    target_graph_request_fingerprint: [u8; 32],
+    projection_watermark: Option<&gleaph_graph_kernel::plan_exec::MutationTokenShard>,
+    graph_request_fingerprint: [u8; 32],
+    fingerprint_mismatch: &'static str,
+    projection_watermark_required: &'static str,
+) -> Result<(), RouterError> {
+    if target_graph_request_fingerprint != graph_request_fingerprint {
+        return Err(RouterError::Conflict(fingerprint_mismatch.into()));
+    }
+    if projection_watermark.is_none() {
+        return Err(RouterError::Conflict(projection_watermark_required.into()));
+    }
+    Ok(())
+}
+
+fn exact_completed_ordered_retirement_replay<Receipt: PartialEq>(
+    existing_graph_request_fingerprint: &[u8; 32],
+    existing_receipt: &Receipt,
+    graph_request_fingerprint: [u8; 32],
+    receipt: &Receipt,
+    fingerprint_mismatch: &'static str,
+    ordered_replay_payload_required: &'static str,
+) -> Result<OrderedBatchRetirementUpdate, RouterError> {
+    if existing_graph_request_fingerprint != &graph_request_fingerprint {
+        return Err(RouterError::Conflict(fingerprint_mismatch.into()));
+    }
+    if existing_receipt == receipt {
+        return Ok(OrderedBatchRetirementUpdate::IdempotentNoop);
+    }
+    Err(RouterError::Conflict(
+        ordered_replay_payload_required.into(),
+    ))
+}
+
 #[cfg(test)]
 pub(crate) fn reset_mutation_gc_cursor_for_test() {
     MUTATION_GC_CURSOR.with_borrow_mut(|cursor| *cursor = None);
@@ -728,6 +804,49 @@ impl RouterStore {
         })
     }
 
+    fn apply_ordered_batch_retirement<F>(
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+        mutation_id_mismatch: &'static str,
+        update_payload: F,
+    ) -> Result<(), RouterError>
+    where
+        F: FnOnce(
+            &mut RouterMutationPayloadV1,
+        ) -> Result<OrderedBatchRetirementUpdate, RouterError>,
+    {
+        let key = key.clone();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let update = {
+                let v1 = record.as_v1_mut();
+                if v1.mutation_id != mutation_id {
+                    return Err(RouterError::Conflict(mutation_id_mismatch.into()));
+                }
+                update_payload(&mut v1.payload)?
+            };
+            match update {
+                OrderedBatchRetirementUpdate::Persist => {
+                    m.insert(key, record);
+                }
+                OrderedBatchRetirementUpdate::Completed { row_count } => {
+                    let v1 = record.as_v1_mut();
+                    v1.completed_row_count = Some(row_count);
+                    v1.resolved_labels = None;
+                    v1.resolved_properties = None;
+                    v1.routing_in_progress = false;
+                    v1.routing_lease_ns = None;
+                    record.mark_terminal_at_ns(ic_time_ns());
+                    m.insert(key, record);
+                }
+                OrderedBatchRetirementUpdate::IdempotentNoop => {}
+            }
+            Ok(())
+        })
+    }
+
     /// Atomically transition a pristine scalar reservation to an ordered Graph replay payload.
     ///
     /// The public fingerprint and item count remain Router-owned identity; the target validates
@@ -1174,52 +1293,43 @@ impl RouterStore {
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::{
-            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
-        };
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered mixed retirement pending".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "ordered mixed retirement pending requires an OrderedMixedBatch payload"
-                            .into(),
-                    ));
+        use crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1;
+        Self::apply_ordered_batch_retirement(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered mixed retirement pending",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered mixed retirement pending requires an OrderedMixedBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                require_ordered_retirement_target(
+                    replay.target.graph_request_fingerprint,
+                    replay.target.projection_watermark.as_ref(),
+                    graph_request_fingerprint,
+                    "Graph request fingerprint mismatch at ordered mixed retirement pending",
+                    "ordered mixed retirement requires a persisted projection watermark",
+                )?;
+                match &replay.target.progress {
+                    OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
+                        replay.target.progress =
+                            OrderedMixedBatchTargetProgressV1::RetirementPending(receipt.clone());
+                        Ok(OrderedBatchRetirementUpdate::Persist)
+                    }
+                    OrderedMixedBatchTargetProgressV1::RetirementPending(_) => {
+                        Ok(OrderedBatchRetirementUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered mixed retirement pending conflicts with persisted progress".into(),
+                    )),
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered mixed retirement pending".into(),
-                ));
-            }
-            if replay.target.projection_watermark.is_none() {
-                return Err(RouterError::Conflict(
-                    "ordered mixed retirement requires a persisted projection watermark".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
-                    replay.target.progress =
-                        OrderedMixedBatchTargetProgressV1::RetirementPending(receipt.clone());
-                    m.insert(key, record);
-                    Ok(())
-                }
-                OrderedMixedBatchTargetProgressV1::RetirementPending(_) => Ok(()),
-                _ => Err(RouterError::Conflict(
-                    "ordered mixed retirement pending conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     pub fn record_ordered_mixed_batch_retired(
@@ -1229,89 +1339,65 @@ impl RouterStore {
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1,
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        use crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1;
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered mixed retirement completion".into(),
-                ));
-            }
-            let watermark = match &v1.payload {
-                RouterMutationPayloadV1::OrderedMixedBatch(replay) => {
-                    if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                        return Err(RouterError::Conflict(
-                            "Graph request fingerprint mismatch at ordered mixed retirement completion".into(),
-                        ));
+        Self::apply_ordered_batch_retirement(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered mixed retirement completion",
+            |payload| {
+                let watermark = match payload {
+                    RouterMutationPayloadV1::OrderedMixedBatch(replay) => {
+                        OrderedRetirementCompletionState {
+                            graph_request_fingerprint: replay.target.graph_request_fingerprint,
+                            retirement_pending_receipt: match &replay.target.progress {
+                                OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => {
+                                    Some(receipt)
+                                }
+                                _ => None,
+                            },
+                            projection_watermark: replay.target.projection_watermark.as_ref(),
+                        }
+                        .require_exact(
+                            graph_request_fingerprint,
+                            &receipt,
+                            "Graph request fingerprint mismatch at ordered mixed retirement completion",
+                            "ordered mixed retirement completion requires RetirementPending progress",
+                            "ordered mixed retirement completion requires a projection watermark",
+                        )?
                     }
-                    if !matches!(
-                        &replay.target.progress,
-                        crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::RetirementPending(existing_receipt)
-                            if existing_receipt == &receipt
-                    ) {
-                        return Err(RouterError::Conflict(
-                            "ordered mixed retirement completion requires RetirementPending progress".into(),
-                        ));
+                    RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                        graph_request_fingerprint: existing_graph_request_fingerprint,
+                        receipt: existing_receipt,
+                        ..
+                    } => {
+                        return exact_completed_ordered_retirement_replay(
+                            existing_graph_request_fingerprint,
+                            existing_receipt,
+                            graph_request_fingerprint,
+                            &receipt,
+                            "Graph request fingerprint mismatch at ordered mixed retirement completion",
+                            "ordered mixed retirement completion requires an ordered replay payload",
+                        );
                     }
-                    replay.target.projection_watermark.clone().ok_or_else(|| {
-                        RouterError::Conflict(
-                            "ordered mixed retirement completion requires a projection watermark".into(),
-                        )
-                    })?
-                }
-                RouterMutationPayloadV1::CompletedOrderedMixedBatch {
-                    graph_request_fingerprint: existing_graph_request_fingerprint,
-                    receipt: existing_receipt,
-                    ..
-                } => {
-                    if existing_graph_request_fingerprint != &graph_request_fingerprint {
+                    _ => {
                         return Err(RouterError::Conflict(
-                            "Graph request fingerprint mismatch at ordered mixed retirement completion"
+                            "ordered mixed retirement completion requires an ordered replay payload"
                                 .into(),
                         ));
                     }
-                    if existing_receipt == &receipt {
-                        return Ok(());
-                    }
-                    return Err(RouterError::Conflict(
-                        "ordered mixed retirement completion requires an ordered replay payload"
-                            .into(),
-                    ));
-                }
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "ordered mixed retirement completion requires an ordered replay payload".into(),
-                    ));
-                }
-            };
-            v1.payload = RouterMutationPayloadV1::CompletedOrderedMixedBatch {
-                graph_request_fingerprint,
-                receipt,
-                projection_watermark: watermark,
-            };
-            v1.completed_row_count = Some(
-                match &v1.payload {
-                    RouterMutationPayloadV1::CompletedOrderedMixedBatch { receipt, .. } => {
-                        receipt.logical_operation_count
-                    }
-                    _ => unreachable!(),
-                },
-            );
-            v1.resolved_labels = None;
-            v1.resolved_properties = None;
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            record.mark_terminal_at_ns(ic_time_ns());
-            m.insert(key, record);
-            Ok(())
-        })
+                };
+                let row_count = receipt.logical_operation_count;
+                *payload = RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                    graph_request_fingerprint,
+                    receipt,
+                    projection_watermark: watermark,
+                };
+                Ok(OrderedBatchRetirementUpdate::Completed { row_count })
+            },
+        )
     }
 
     pub fn record_ordered_vertex_batch_projection_pending(
@@ -1429,53 +1515,44 @@ impl RouterStore {
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::{
-            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
-        };
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered vertex retirement pending".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "ordered vertex retirement pending requires an OrderedVertexBatch payload"
+        use crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1;
+        Self::apply_ordered_batch_retirement(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered vertex retirement pending",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered vertex retirement pending requires an OrderedVertexBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                require_ordered_retirement_target(
+                    replay.target.graph_request_fingerprint,
+                    replay.target.projection_watermark.as_ref(),
+                    graph_request_fingerprint,
+                    "Graph request fingerprint mismatch at ordered vertex retirement pending",
+                    "ordered vertex retirement requires a persisted projection watermark",
+                )?;
+                match &replay.target.progress {
+                    OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
+                        replay.target.progress =
+                            OrderedVertexBatchTargetProgressV1::RetirementPending(receipt.clone());
+                        Ok(OrderedBatchRetirementUpdate::Persist)
+                    }
+                    OrderedVertexBatchTargetProgressV1::RetirementPending(_) => {
+                        Ok(OrderedBatchRetirementUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered vertex retirement pending conflicts with persisted progress"
                             .into(),
-                    ));
+                    )),
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered vertex retirement pending"
-                        .into(),
-                ));
-            }
-            if replay.target.projection_watermark.is_none() {
-                return Err(RouterError::Conflict(
-                    "ordered vertex retirement requires a persisted projection watermark".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
-                    replay.target.progress =
-                        OrderedVertexBatchTargetProgressV1::RetirementPending(receipt.clone());
-                    m.insert(key, record);
-                    Ok(())
-                }
-                OrderedVertexBatchTargetProgressV1::RetirementPending(_) => Ok(()),
-                _ => Err(RouterError::Conflict(
-                    "ordered vertex retirement pending conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     pub fn record_ordered_vertex_batch_retired(
@@ -1485,90 +1562,65 @@ impl RouterStore {
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1,
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        use crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1;
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered vertex retirement completion".into(),
-                ));
-            }
-            let watermark = match &v1.payload {
-                RouterMutationPayloadV1::OrderedVertexBatch(replay) => {
-                    if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                        return Err(RouterError::Conflict(
-                            "Graph request fingerprint mismatch at ordered vertex retirement completion".into(),
-                        ));
+        Self::apply_ordered_batch_retirement(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered vertex retirement completion",
+            |payload| {
+                let watermark = match payload {
+                    RouterMutationPayloadV1::OrderedVertexBatch(replay) => {
+                        OrderedRetirementCompletionState {
+                            graph_request_fingerprint: replay.target.graph_request_fingerprint,
+                            retirement_pending_receipt: match &replay.target.progress {
+                                OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => {
+                                    Some(receipt)
+                                }
+                                _ => None,
+                            },
+                            projection_watermark: replay.target.projection_watermark.as_ref(),
+                        }
+                        .require_exact(
+                            graph_request_fingerprint,
+                            &receipt,
+                            "Graph request fingerprint mismatch at ordered vertex retirement completion",
+                            "ordered vertex retirement completion requires RetirementPending progress",
+                            "ordered vertex retirement completion requires a projection watermark",
+                        )?
                     }
-                    if !matches!(
-                        &replay.target.progress,
-                        crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::RetirementPending(
+                    RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                        graph_request_fingerprint: existing_graph_request_fingerprint,
+                        receipt: existing_receipt,
+                        ..
+                    } => {
+                        return exact_completed_ordered_retirement_replay(
+                            existing_graph_request_fingerprint,
                             existing_receipt,
-                        ) if existing_receipt == &receipt
-                    ) {
-                        return Err(RouterError::Conflict(
-                            "ordered vertex retirement completion requires RetirementPending progress".into(),
-                        ));
+                            graph_request_fingerprint,
+                            &receipt,
+                            "Graph request fingerprint mismatch at ordered vertex retirement completion",
+                            "ordered vertex retirement completion requires an ordered replay payload",
+                        );
                     }
-                    replay.target.projection_watermark.clone().ok_or_else(|| {
-                        RouterError::Conflict(
-                            "ordered vertex retirement completion requires a projection watermark".into(),
-                        )
-                    })?
-                }
-                RouterMutationPayloadV1::CompletedOrderedVertexBatch {
-                    graph_request_fingerprint: existing_graph_request_fingerprint,
-                    receipt: existing_receipt,
-                    ..
-                } => {
-                    if existing_graph_request_fingerprint != &graph_request_fingerprint {
+                    _ => {
                         return Err(RouterError::Conflict(
-                            "Graph request fingerprint mismatch at ordered vertex retirement completion"
+                            "ordered vertex retirement completion requires an ordered replay payload"
                                 .into(),
                         ));
                     }
-                    if existing_receipt == &receipt {
-                        return Ok(());
-                    }
-                    return Err(RouterError::Conflict(
-                        "ordered vertex retirement completion requires an ordered replay payload"
-                            .into(),
-                    ));
-                }
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "ordered vertex retirement completion requires an ordered replay payload".into(),
-                    ));
-                }
-            };
-            v1.payload = RouterMutationPayloadV1::CompletedOrderedVertexBatch {
-                graph_request_fingerprint,
-                receipt,
-                projection_watermark: watermark,
-            };
-            v1.completed_row_count = Some(
-                match &v1.payload {
-                    RouterMutationPayloadV1::CompletedOrderedVertexBatch { receipt, .. } => {
-                        receipt.logical_vertex_count
-                    }
-                    _ => unreachable!(),
-                },
-            );
-            v1.resolved_labels = None;
-            v1.resolved_properties = None;
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            record.mark_terminal_at_ns(ic_time_ns());
-            m.insert(key, record);
-            Ok(())
-        })
+                };
+                let row_count = receipt.logical_vertex_count;
+                *payload = RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                    graph_request_fingerprint,
+                    receipt,
+                    projection_watermark: watermark,
+                };
+                Ok(OrderedBatchRetirementUpdate::Completed { row_count })
+            },
+        )
     }
 
     /// Persist the Graph-owned canonical receipt for an ordered edge batch.
@@ -1748,51 +1800,43 @@ impl RouterStore {
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::{
-            OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
-        };
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered retirement pending".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "ordered retirement pending requires an OrderedEdgeBatch payload".into(),
-                    ));
+        use crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1;
+        Self::apply_ordered_batch_retirement(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered retirement pending",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered retirement pending requires an OrderedEdgeBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                require_ordered_retirement_target(
+                    replay.target.graph_request_fingerprint,
+                    replay.target.projection_watermark.as_ref(),
+                    graph_request_fingerprint,
+                    "Graph request fingerprint mismatch at ordered retirement pending",
+                    "ordered retirement requires a persisted projection watermark",
+                )?;
+                match &replay.target.progress {
+                    OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
+                        replay.target.progress =
+                            OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt.clone());
+                        Ok(OrderedBatchRetirementUpdate::Persist)
+                    }
+                    OrderedEdgeBatchTargetProgressV1::RetirementPending(_) => {
+                        Ok(OrderedBatchRetirementUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered retirement pending conflicts with persisted progress".into(),
+                    )),
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered retirement pending".into(),
-                ));
-            }
-            if replay.target.projection_watermark.is_none() {
-                return Err(RouterError::Conflict(
-                    "ordered retirement requires a persisted projection watermark".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
-                    replay.target.progress =
-                        OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt.clone());
-                    m.insert(key, record);
-                    Ok(())
-                }
-                OrderedEdgeBatchTargetProgressV1::RetirementPending(_) => Ok(()),
-                _ => Err(RouterError::Conflict(
-                    "ordered retirement pending conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     /// Finalize an ordered mutation after the Graph retirement acknowledgement is durable.
@@ -1803,86 +1847,65 @@ impl RouterStore {
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1,
     ) -> Result<(), RouterError> {
-        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        use crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1;
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered retirement completion".into(),
-                ));
-            }
-            let watermark = match &v1.payload {
-                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
-                    if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                        return Err(RouterError::Conflict(
-                            "Graph request fingerprint mismatch at ordered retirement completion"
-                                .into(),
-                        ));
+        Self::apply_ordered_batch_retirement(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered retirement completion",
+            |payload| {
+                let watermark = match payload {
+                    RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
+                        OrderedRetirementCompletionState {
+                            graph_request_fingerprint: replay.target.graph_request_fingerprint,
+                            retirement_pending_receipt: match &replay.target.progress {
+                                OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => {
+                                    Some(receipt)
+                                }
+                                _ => None,
+                            },
+                            projection_watermark: replay.target.projection_watermark.as_ref(),
+                        }
+                        .require_exact(
+                            graph_request_fingerprint,
+                            &receipt,
+                            "Graph request fingerprint mismatch at ordered retirement completion",
+                            "ordered retirement completion requires RetirementPending progress",
+                            "ordered retirement completion requires a projection watermark",
+                        )?
                     }
-                    if !matches!(
-                        &replay.target.progress,
-                        crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::RetirementPending(
+                    RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                        graph_request_fingerprint: existing_graph_request_fingerprint,
+                        receipt: existing_receipt,
+                        ..
+                    } => {
+                        return exact_completed_ordered_retirement_replay(
+                            existing_graph_request_fingerprint,
                             existing_receipt,
-                        ) if existing_receipt == &receipt
-                    ) {
+                            graph_request_fingerprint,
+                            &receipt,
+                            "Graph request fingerprint mismatch at ordered retirement completion",
+                            "ordered retirement completion requires an ordered replay payload",
+                        );
+                    }
+                    _ => {
                         return Err(RouterError::Conflict(
-                            "ordered retirement completion requires RetirementPending progress"
+                            "ordered retirement completion requires an ordered replay payload"
                                 .into(),
                         ));
                     }
-                    replay.target.projection_watermark.clone().ok_or_else(|| {
-                        RouterError::Conflict(
-                            "ordered retirement completion requires a projection watermark"
-                                .into(),
-                        )
-                    })?
-                }
-                RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
-                    graph_request_fingerprint: existing_graph_request_fingerprint,
-                    receipt: existing_receipt,
-                    ..
-                } => {
-                    if existing_graph_request_fingerprint != &graph_request_fingerprint {
-                        return Err(RouterError::Conflict(
-                            "Graph request fingerprint mismatch at ordered retirement completion"
-                                .into(),
-                        ));
-                    }
-                    if existing_receipt == &receipt {
-                        return Ok(());
-                    }
-                    return Err(RouterError::Conflict(
-                        "ordered retirement completion requires an ordered replay payload".into(),
-                    ));
-                }
-                _ => {
-                    return Err(RouterError::Conflict(
-                        "ordered retirement completion requires an ordered replay payload".into(),
-                    ));
-                }
-            };
-            let row_count = receipt.logical_edge_count;
-            v1.payload = RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
-                graph_request_fingerprint,
-                receipt,
-                projection_watermark: watermark,
-            };
-            v1.completed_row_count = Some(row_count);
-            v1.resolved_labels = None;
-            v1.resolved_properties = None;
-            v1.routing_in_progress = false;
-            v1.routing_lease_ns = None;
-            record.mark_terminal_at_ns(ic_time_ns());
-            m.insert(key, record);
-            Ok(())
-        })
+                };
+                let row_count = receipt.logical_edge_count;
+                *payload = RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                    graph_request_fingerprint,
+                    receipt,
+                    projection_watermark: watermark,
+                };
+                Ok(OrderedBatchRetirementUpdate::Completed { row_count })
+            },
+        )
     }
     pub fn record_router_mutation_shards(
         &self,
