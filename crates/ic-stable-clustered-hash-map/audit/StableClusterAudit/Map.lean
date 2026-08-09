@@ -183,11 +183,17 @@ preservation) and (c) (re-open) build on them.
 -- `size_up`: grows in place to `2^(n+1) + (n+1)`, keeping all entries, and starts the
 -- incremental remap at `remapEnd = prev_capacity`.
 -- src/map.rs L513-L542.
-def SizeUp (s s' : State) : Prop :=
-  s'.n = s.n + 1 ∧ s'.len = s.len ∧ s'.remapEnd = some (capacity s.n) ∧
+structure SizeUp (s s' : State) : Prop where
+  n : s'.n = s.n + 1
+  len : s'.len = s.len
+  remapEnd : s'.remapEnd = some (capacity s.n)
   -- the key/value content is preserved (only geometry grows; remap later relocates)
-  (∀ i, s'.keyAt i = s.keyAt i) ∧ (∀ i, s'.valAt i = s.valAt i) ∧
-  (∀ i, i < capacity s.n → s'.dist i = s.dist i)
+  keyAt : ∀ i, s'.keyAt i = s.keyAt i
+  valAt : ∀ i, s'.valAt i = s.valAt i
+  -- old region keeps its distances; the newly grown region [capacity n, capacity (n+1))
+  -- is cleared (EMPTY), matching `clear_region` in src/map.rs L529-L536.
+  distOld : ∀ i, i < capacity s.n → s'.dist i = s.dist i
+  distNew : ∀ i, capacity s.n ≤ i → i < capacity s'.n → s'.dist i = EMPTY
 
 -- `remap_step`: processes positions from the bottom of the mixed range, relocating
 -- entries whose bucket changed under the new size, until the boundary reaches 0.
