@@ -304,10 +304,11 @@ family: inverted index + uncompressed vectors + exact rerank).
   `row_is_finite` pre-scan.
 - The `dot + norms` formulation (FMA inner loop, precomputed `‖v‖²`) remains an opt-in alternative.
 - SIMD is `f32x4` with multi-accumulator batching; the scratch is 16-byte aligned and decoded by
-  direct reinterpretation (no per-row `Vec<f32>` allocation). Partition routing (`assign_partition`)
-  and the rebuild `Training` assignment score encoded row bytes against the decoded centroids with the
-  same SIMD `l2_squared_f32(bytes, centroid)` kernel (no `decode_f32` allocation), sharing one
-  tie-break rule (lowest id).
+  direct reinterpretation (no per-row `Vec<f32>` allocation). Partition routing (`assign_partition`),
+  ε₂ partition selection (`select_partitions`, over the encoded query bytes), and the rebuild
+  `Training` assignment all score with the same SIMD `l2_squared_f32(bytes, centroid)` kernel (no
+  `decode_f32` allocation), sharing one tie-break rule (lowest id); there is no remaining scalar
+  f32×f32 L2 in the vector canister.
 
 ### Partition selection
 

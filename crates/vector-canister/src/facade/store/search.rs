@@ -32,8 +32,9 @@ use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
     VectorSubject,
 };
-use ic_stable_vector_page_store::kernel::l2_squared_f32 as kernel_l2_squared_f32;
-use ic_stable_vector_page_store::kernel::{dot_and_norm2_f32, l2_squared_f32_early_exit};
+use ic_stable_vector_page_store::kernel::{
+    dot_and_norm2_f32, l2_squared_f32, l2_squared_f32_early_exit,
+};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -57,19 +58,6 @@ pub(crate) struct SearchTuning {
     /// ε₂ query-aware pruning factor: scan every partition with `dist(q, c_p) <= (1 + eps_query) *
     /// dist(q, c_best)`. `0.0` scans only the nearest; `f32::INFINITY` scans all.
     pub eps_query: f32,
-}
-
-/// Squared Euclidean distance between two equal-length `f32` vectors. Isolated so a SIMD variant can
-/// replace the inner loop later without changing search semantics (ADR 0031 Slice 5).
-pub(super) fn l2_squared_f32(query: &[f32], vector: &[f32]) -> f32 {
-    query
-        .iter()
-        .zip(vector.iter())
-        .map(|(q, v)| {
-            let d = q - v;
-            d * d
-        })
-        .sum()
 }
 
 /// Decodes contiguous little-endian `f32` components (`VectorEncoding::F32`).
@@ -346,7 +334,7 @@ pub(super) fn assign_partition(centroids: &[Vec<f32>], bytes: &[u8]) -> u32 {
     for (p, centroid) in centroids.iter().enumerate() {
         // SIMD L2 over the encoded row bytes and the decoded centroid (same kernel and tie-break as
         // `training_step`), avoiding a `decode_f32` allocation and the scalar per-centroid loop.
-        let d = kernel_l2_squared_f32(bytes, centroid);
+        let d = l2_squared_f32(bytes, centroid);
         if d < best_d {
             best_d = d;
             best = p as u32;
@@ -366,14 +354,17 @@ fn centroids_ready(def: &VectorIndexDef, index_id: u32) -> bool {
 }
 
 /// Selects the partitions to scan under ε₂ query-aware pruning (ADR 0064 §9): every partition whose
-/// centroid distance to `query` is within `(1 + eps_query) * dist(q, c_best)` of the nearest
+/// centroid distance to the query is within `(1 + eps_query) * dist(q, c_best)` of the nearest
 /// centroid. Deterministic `(distance asc, partition id asc)` order. `eps_query = 0` selects only the
 /// nearest partition(s); a large value (e.g. `f32::INFINITY`) selects all.
-fn select_partitions(centroids: &[Vec<f32>], query: &[f32], eps_query: f32) -> Vec<u32> {
+///
+/// `query_bytes` is the request's encoded query (≥ `centroid.len() * 4`); distances are scored with
+/// the SIMD `l2_squared_f32(bytes, centroid)` kernel.
+fn select_partitions(centroids: &[Vec<f32>], query_bytes: &[u8], eps_query: f32) -> Vec<u32> {
     let mut scored: Vec<(f32, u32)> = centroids
         .iter()
         .enumerate()
-        .map(|(p, c)| (l2_squared_f32(query, c), p as u32))
+        .map(|(p, c)| (l2_squared_f32(query_bytes, c), p as u32))
         .collect();
     // A full scan (`eps_query = INF`) selects every partition. Special-case it: the generic
     // `(1 + eps) * best` threshold degenerates to `INF * 0 = NaN` when the query sits exactly on a
@@ -640,7 +631,7 @@ impl VectorCanisterStore {
             );
         };
         let active = def.active_index_version;
-        let selected = select_partitions(&centroids, query, tuning.eps_query);
+        let selected = select_partitions(&centroids, &req.query, tuning.eps_query);
         scan_partitions(
             req.index_id,
             active,
@@ -665,9 +656,10 @@ mod tests {
     fn select_partitions_eps_zero_selects_nearest() {
         let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
         let query = vec![0.5f32; 4];
-        assert_eq!(select_partitions(&centroids, &query, 0.0), vec![0]);
+        let qb = encode_f32(&query);
+        assert_eq!(select_partitions(&centroids, &qb, 0.0), vec![0]);
         assert_eq!(
-            select_partitions(&centroids, &query, f32::INFINITY),
+            select_partitions(&centroids, &qb, f32::INFINITY),
             vec![0, 1]
         );
     }
@@ -678,9 +670,9 @@ mod tests {
         // exactly on a centroid (`best == 0`). The old `(1 + INF) * best = INF * 0 = NaN` threshold
         // filtered out all partitions, returning an empty scan.
         let centroids = vec![vec![2.5f32; 4], vec![0.5f32; 4], vec![4.5f32; 4]];
-        let query = vec![2.5f32; 4];
+        let qb = encode_f32(&[2.5f32; 4]);
         assert_eq!(
-            select_partitions(&centroids, &query, f32::INFINITY),
+            select_partitions(&centroids, &qb, f32::INFINITY),
             vec![0, 1, 2],
             "full scan selects every partition in (distance, partition) order"
         );
@@ -691,8 +683,8 @@ mod tests {
         // Query exactly at centroid 0: threshold = 0, so only partition 0 is selected even with a
         // large eps_query.
         let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
-        let query = vec![0.0f32; 4];
-        assert_eq!(select_partitions(&centroids, &query, 1.0), vec![0]);
+        let qb = encode_f32(&[0.0f32; 4]);
+        assert_eq!(select_partitions(&centroids, &qb, 1.0), vec![0]);
     }
 
     #[test]

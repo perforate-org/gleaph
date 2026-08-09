@@ -42,7 +42,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorSlabStatsStep, VectorSubject,
 };
 use ic_stable_structures::Storable;
-use ic_stable_vector_page_store::kernel::l2_squared_f32 as page_l2_squared_f32;
+use ic_stable_vector_page_store::kernel::l2_squared_f32;
 
 use super::recommend_partition_maintenance;
 use rapidhash::{HashSetExt, RapidHashSet};
@@ -286,7 +286,7 @@ fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<V
     let zero: Vec<f32> = vec![0.0; dims as usize];
     let norms: Vec<f32> = candidates
         .iter()
-        .map(|c| page_l2_squared_f32(c, &zero))
+        .map(|c| l2_squared_f32(c, &zero))
         .collect();
     let mut dist = vec![f32::INFINITY; n];
     let mut chosen = vec![false; n];
@@ -301,7 +301,7 @@ fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<V
     out.push(candidates[first].clone());
     let first_decoded = decode_f32(&candidates[first]);
     for i in 0..n {
-        dist[i] = page_l2_squared_f32(&candidates[i], &first_decoded);
+        dist[i] = l2_squared_f32(&candidates[i], &first_decoded);
     }
 
     // Subsequent: candidate farthest from the chosen set (ties -> lowest index).
@@ -315,7 +315,7 @@ fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<V
         out.push(candidates[next].clone());
         let next_decoded = decode_f32(&candidates[next]);
         for i in 0..n {
-            let d = page_l2_squared_f32(&candidates[i], &next_decoded);
+            let d = l2_squared_f32(&candidates[i], &next_decoded);
             if d < dist[i] {
                 dist[i] = d;
             }
@@ -793,7 +793,7 @@ impl VectorCanisterStore {
                     // SIMD L2 over the candidate's encoded bytes and the decoded centroid (4 dims per
                     // `v128` op) instead of the scalar L2; the candidate is still decoded below for the
                     // mean accumulation.
-                    let d = page_l2_squared_f32(cand, centroid);
+                    let d = l2_squared_f32(cand, centroid);
                     if d < best_d {
                         best_d = d;
                         best = p;

@@ -12,7 +12,7 @@
 //! assignment is owned by Slice 7 (alongside the dual-write rebuild); tests/bench never mutate a
 //! seeded partitioned index.
 
-use super::search::{encode_f32, l2_squared_f32};
+use super::search::encode_f32;
 use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION, VectorCanisterStore};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
@@ -24,13 +24,14 @@ use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
 use ic_stable_vector_page_store::PageLayout;
+use ic_stable_vector_page_store::kernel::l2_squared_f32;
 
-/// Index of the centroid nearest to `vector` (the assigned partition id).
-fn nearest_partition(centroids: &[Vec<f32>], vector: &[f32]) -> u32 {
+/// Index of the centroid nearest to the encoded `vector_bytes` (the assigned partition id).
+fn nearest_partition(centroids: &[Vec<f32>], vector_bytes: &[u8]) -> u32 {
     let mut best = 0u32;
     let mut best_d = f32::INFINITY;
     for (p, centroid) in centroids.iter().enumerate() {
-        let d = l2_squared_f32(centroid, vector);
+        let d = l2_squared_f32(vector_bytes, centroid);
         if d < best_d {
             best_d = d;
             best = p as u32;
@@ -139,16 +140,10 @@ impl VectorCanisterStore {
         // Live slots, assigned to the nearest centroid partition.
         for (subject, vector) in vectors {
             assert_eq!(vector.len(), dims as usize, "vector dims mismatch");
-            let partition_id = nearest_partition(centroids, vector);
+            let encoded = encode_f32(vector);
+            let partition_id = nearest_partition(centroids, &encoded);
             let slot = self
-                .append_slot(
-                    index_id,
-                    active,
-                    partition_id,
-                    &def,
-                    *subject,
-                    &encode_f32(vector),
-                )
+                .append_slot(index_id, active, partition_id, &def, *subject, &encoded)
                 .expect("seed append");
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                 m.insert(
