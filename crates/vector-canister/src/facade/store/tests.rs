@@ -2025,6 +2025,39 @@ fn dual_write_shadow_append_failure_rolls_back_update() {
 }
 
 #[test]
+fn newer_stamp_upsert_commit_failure_keeps_old_slot_live() {
+    // GAP-2026-08-07-001 regression: a newer-stamp upsert whose subject-map commit fails must leave
+    // the old slot live (it is tombstoned only after a successful commit), not pointing at a
+    // tombstoned row.
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let before = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    let old_slot = before.slot.expect("seeded subject is live");
+    let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
+
+    // Force the subject-map commit to fail after the new active row is appended.
+    crate::facade::store::mutation::arm_subject_insert_failure(0);
+    let err = store
+        .vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
+        .expect_err("subject-map commit failure propagates");
+    assert_eq!(err, VectorCanisterError::StableGrowFailed);
+
+    // The old subject entry and its live slot are preserved — the old slot must NOT be tombstoned.
+    let after = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(after.slot, Some(old_slot), "old slot stays live");
+    assert!(
+        store.read_slot_bytes(INDEX_ID, old_slot).is_some(),
+        "old row remains live and searchable"
+    );
+    // The appended-then-tombstoned new row restores live accounting.
+    assert_eq!(
+        store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
+        live_before,
+        "live_len restored after commit rollback"
+    );
+}
+
+#[test]
 fn remove_during_building_does_not_resurrect_after_publish() {
     let store = fresh_store();
     seed_distinct(&store, 4);

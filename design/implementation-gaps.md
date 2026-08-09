@@ -435,6 +435,27 @@ maintenance tick and per-step costs`)
   [design/index/property-index.md](index/property-index.md),
   [design/index/vector-index.md](index/vector-index.md)
 
+### GAP-2026-08-07-001 — Newer-incarnation replacement can tombstone the old row before a fallible append
+
+- **Status:** Resolved by a commit-before-tombstone reorder in `vector_upsert` (Plan 0233).
+- **Severity:** P2 correctness edge (only reachable on stable-memory OOM during a subject-map commit)
+- **Owner:** graph-vector-index (`VectorCanisterStore::vector_upsert`)
+- **Observed behavior:** In the `mutation_id > stamp` (newer-incarnation) branch, the superseded old
+  active/shadow slots were tombstoned _before_ the fallible `VECTOR_SUBJECT_TO_ID` commit. If that
+  commit failed (`StableGrowFailed`, stable-memory OOM), the retained old subject entry pointed at a
+  now-tombstoned row, ghosting the subject from search.
+- **Resolution:** The branch now commits the subject map (pointing at the new slot) before tombstoning
+  the old slots; on a commit failure it tombstones only the just-appended rows, leaving the old slot
+  live and the retained entry consistent. A regression test
+  (`newer_stamp_upsert_commit_failure_keeps_old_slot_live`) injects a subject-map insert failure via
+  a test seam (`arm_subject_insert_failure`) and asserts the old slot stays live and `live_len` is
+  unchanged. The resurrection case is likewise fixed: `unmark_deleted` now runs only after a
+  successful commit.
+- **Evidence:** `crates/vector-canister/src/facade/store/mutation.rs` (reorder + seam),
+  `crates/vector-canister/src/facade/store/tests.rs`
+  (`newer_stamp_upsert_commit_failure_keeps_old_slot_live`).
+- **Related contracts:** [ADR 0032](adr/0032-vector-index-slab-page-store.md)
+
 ## Property and index capability gaps
 
 The following status was verified against the implementation at the anchor timestamp above.

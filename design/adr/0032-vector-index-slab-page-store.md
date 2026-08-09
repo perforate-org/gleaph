@@ -321,11 +321,11 @@ Because `append_row` is fallible, mutation ordering is branch-specific:
 - `insert_new_subject` likewise appends active and optional shadow rows before creating its new
   subject-map entry. A failed shadow append tombstones the just-appended active row and leaves no new
   subject entry.
-- The pre-existing existing-live newer-incarnation replacement branch is different: it tombstones
-  the old active row and, while dual-writing, old shadow row before calling fallible
-  `insert_new_subject`. A later `StableGrowFailed` can leave the retained old subject entry pointing
-  at tombstoned rows. Plan 0207 removes only an adjacent unread, infallible reverse-map write; it
-  neither changes this order nor makes the branch atomic. The defect remains tracked as
+- The existing-live newer-incarnation replacement branch (the `mutation_id > stamp` case) appends the
+  active and shadow rows, commits `VECTOR_SUBJECT_TO_ID` pointing at the new slot, and **only then**
+  tombstones the superseded old rows. Because the old slot is tombstoned after the fallible commit, a
+  `StableGrowFailed` on the subject-map commit leaves the retained old entry pointing at a **live**
+  row (the new rows are tombstoned and live accounting restored) — this resolved
   [GAP-2026-08-07-001](../implementation-gaps.md#gap-2026-08-07-001--newer-incarnation-replacement-can-tombstone-the-old-row-before-a-fallible-append).
 
 `tombstone_row` owns all live/tombstone accounting idempotently: on the live→tombstoned transition it

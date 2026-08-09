@@ -29,6 +29,40 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only fault-injection seam for [`VectorCanisterStore::insert_subject_entry`], mirroring the
+    /// page-store append seam. `None` disables injection; `Some(k)` lets the next `k` subject-map
+    /// inserts succeed and forces the `(k+1)`-th to fail with
+    /// [`VectorCanisterError::StableGrowFailed`] (then disarms). This exercises the fallible commit
+    /// branch of `vector_upsert`/`insert_new_subject`, otherwise only reachable by exhausting stable
+    /// memory.
+    static FAIL_SUBJECT_INSERT_AFTER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Arms the [`insert_subject_entry`](VectorCanisterStore::insert_subject_entry) failure seam: `skip`
+/// subsequent subject-map inserts succeed, then the next one fails once with
+/// [`VectorCanisterError::StableGrowFailed`]. Test-only.
+#[cfg(test)]
+pub(crate) fn arm_subject_insert_failure(skip: u32) {
+    FAIL_SUBJECT_INSERT_AFTER.with(|c| c.set(Some(skip)));
+}
+
+#[cfg(test)]
+fn take_injected_subject_insert_failure() -> bool {
+    FAIL_SUBJECT_INSERT_AFTER.with(|c| match c.get() {
+        Some(0) => {
+            c.set(None);
+            true
+        }
+        Some(k) => {
+            c.set(Some(k - 1));
+            false
+        }
+        None => false,
+    })
+}
+
 /// How a mutation must mirror its live effect across index versions during a rebuild (ADR 0031
 /// Slice 7). Derived per-op from the durable rebuild state of `op.index_id`.
 #[derive(Clone, Copy, Debug)]
@@ -252,6 +286,11 @@ impl VectorCanisterStore {
         key: SubjectKey,
         entry: FixedSubjectMapEntry,
     ) -> Result<(), VectorCanisterError> {
+        // Test-only: simulate a stable-memory grow failure before the map insert (see seam above).
+        #[cfg(test)]
+        if take_injected_subject_insert_failure() {
+            return Err(VectorCanisterError::StableGrowFailed);
+        }
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
             m.insert(key, entry)
                 .map(|_| ())
@@ -333,9 +372,11 @@ impl VectorCanisterStore {
             std::cmp::Ordering::Less => Ok(()), // stale replay: no-op
             std::cmp::Ordering::Greater => {
                 // Newer stamp: append a fresh slot (and shadow while dual-writing) FIRST (fallible),
-                // then tombstone any live slot of the older stamp (infallible), then commit. This
-                // preserves the write-then-commit atomicity: a failed shadow append leaves the old
-                // slot live.
+                // then commit the subject map pointing at the new slot (fallible), then tombstone any
+                // live slot of the older stamp (infallible). Write-then-commit holds end-to-end: a
+                // failed shadow append or a failed subject-map commit both leave the old slot live,
+                // because the old slot is only tombstoned after the commit succeeds
+                // (GAP-2026-08-07-001).
                 let active_partition = self.active_partition(&def, op.index_id, &op.bytes);
                 let new_slot = self.append_slot(
                     op.index_id,
@@ -374,8 +415,28 @@ impl VectorCanisterStore {
                     }
                     RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
                 };
-                // Infallible: tombstone the superseded live slots (active, and the old shadow while
-                // dual-writing).
+                if let Err(err) = self.insert_subject_entry(
+                    key,
+                    FixedSubjectMapEntry {
+                        stamp: op.mutation_id,
+                        deleted: false,
+                        slot: Some(new_slot),
+                        shadow_slot,
+                    },
+                ) {
+                    // The subject-map commit failed (OutOfMemory): tombstone the just-appended slots so
+                    // the residual is a tombstoned dead row (live counters restored) rather than a
+                    // live-counted orphan. The old slot is NOT touched here (it is only tombstoned
+                    // after a successful commit), so the retained old entry keeps pointing at a live
+                    // row — the GAP-2026-08-07-001 fix.
+                    self.tombstone_slot(op.index_id, new_slot);
+                    if let Some(shadow) = shadow_slot {
+                        self.tombstone_slot(op.index_id, shadow);
+                    }
+                    return Err(err);
+                }
+                // Infallible: the commit succeeded, so now tombstone the superseded live slots
+                // (active, and the old shadow while dual-writing).
                 if !entry.deleted {
                     if let Some(active_slot) = entry.current_slot_for(active) {
                         self.tombstone_slot(op.index_id, active_slot);
@@ -387,26 +448,9 @@ impl VectorCanisterStore {
                     }
                 } else {
                     // Resurrect: the subject was tombstoned at `entry.stamp`; drop it from the
-                    // deleted list so the GC does not remove the now-live row.
+                    // deleted list so the GC does not remove the now-live row (only after the commit
+                    // succeeded, so a failed resurrection keeps the deleted marking).
                     unmark_deleted(key, entry.stamp);
-                }
-                if let Err(err) = self.insert_subject_entry(
-                    key,
-                    FixedSubjectMapEntry {
-                        stamp: op.mutation_id,
-                        deleted: false,
-                        slot: Some(new_slot),
-                        shadow_slot,
-                    },
-                ) {
-                    // The subject-map commit failed (OutOfMemory): tombstone the just-appended slots
-                    // so the residual is a tombstoned dead row (live counters restored) rather than a
-                    // live-counted orphan, mirroring the shadow-append failure handling above.
-                    self.tombstone_slot(op.index_id, new_slot);
-                    if let Some(shadow) = shadow_slot {
-                        self.tombstone_slot(op.index_id, shadow);
-                    }
-                    return Err(err);
                 }
                 Ok(())
             }
