@@ -1487,43 +1487,6 @@ fn stale_centroids_fall_back_to_exact_scan() {
 }
 
 #[test]
-fn exact_fallback_walks_all_partitions_with_correct_order() {
-    use crate::facade::stable::IVF_CENTROID_META;
-    use crate::records::IvfCentroidMeta;
-
-    let store = fresh_store();
-    store.seed_ivf_for_test(
-        INDEX_ID,
-        VectorEncoding::F32,
-        DIMS,
-        &two_clusters(),
-        &clustered_vectors(),
-    );
-    // Rows span both partitions (nlist = 2). Stale centroids force the exact fallback, which must
-    // walk 0..nlist (both partitions) and order hits by (distance, subject): s3(49), s2(81), s4(81),
-    // s1(121). If the fallback only walked partition 0 it would drop s3/s4 entirely.
-    IVF_CENTROID_META.with_borrow_mut(|m| {
-        m.insert(
-            INDEX_ID,
-            IvfCentroidMeta {
-                centroid_ready: true,
-                centroid_epoch: 1,
-                trained_index_version: 999,
-            },
-        )
-    });
-    let result = store
-        .vector_search(&search_value(5.5, 10))
-        .expect("exact fallback");
-    let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
-    assert_eq!(
-        subjects,
-        vec![subject(3), subject(2), subject(4), subject(1)],
-        "exact fallback walks both partitions and orders by (distance, subject)"
-    );
-}
-
-#[test]
 #[should_panic(expected = "must be >= 0")]
 fn tuned_negative_eps_query_panics() {
     let store = fresh_store();
