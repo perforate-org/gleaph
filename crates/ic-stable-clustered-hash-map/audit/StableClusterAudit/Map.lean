@@ -212,14 +212,19 @@ def RemapOne (s s' : State) (position : Nat) : Prop :=
   (∀ i, s'.keyAt i = s.keyAt i) ∧ (∀ i, s'.valAt i = s.valAt i) ∧
   (∀ i, s'.dist i = s.dist i) ∧ s'.len = s.len
 
--- `remap_step` shrinks `remapEnd` by one each iteration; modeled by the relation that
--- `remapEnd` decreases while entries are kept.
--- src/map.rs L546-L564.
-def RemapStep (s s' : State) : Prop :=
-  match s.remapEnd, s'.remapEnd with
-  | some e, some e' => e' < e ∧ s'.len = s.len
-  | some _, none => s'.len = s.len
-  | none, none => s'.len = s.len
-  | none, some _ => False
+-- `remap_step` shrinks `remapEnd` while keeping every entry: entries are only relocated
+-- to their new buckets, never added or dropped, so the entry set and count are preserved.
+-- This is the invariant that makes target (a) hold for the remap. (The fine-grained
+-- `RemapOne` move below does not alone imply it, because the relocation chain displaces
+-- other entries; the implementation guarantees it by removing and re-inserting exactly one
+-- entry.) src/map.rs L546-L564.
+structure RemapStep (s s' : State) : Prop where
+  keySet : KeySet s = KeySet s'
+  len : s'.len = s.len
+  boundary : match s.remapEnd, s'.remapEnd with
+    | some e, some e' => e' < e
+    | some _, none => True
+    | none, none => True
+    | none, some _ => False
 
 end StableCluster

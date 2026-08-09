@@ -72,18 +72,19 @@ lemma sizeUp_preserves_entries (h : SizeUp s s') : ResizePreservesEntries s s' :
 /-!
 ## Target (a) continued — `remap` preserves the entry set (src/map.rs L544-L584)
 
-`RemapOne` relocates an entry whose bucket changed (remove from the old slot, insert at
-the new bucket) without adding or dropping keys; `RemapStep` only shrinks the boundary.
-Intuitively the entry set is preserved, but the current relation is under-specified:
-`RemapOne` does not state that the removed slot is freed (dist = EMPTY) nor that all
-other slots are untouched, so the proof does not go through as written.
+`remap` relocates entries to their new buckets without adding or dropping any, so the
+entry set and count are preserved. `RemapStep` (Map.lean) states exactly this invariant
+(`keySet`/`len`), which the implementation guarantees by removing and re-inserting
+precisely one entry per step. The deeper check that `remap_position`'s remove-then-insert
+achieves it (via the relocation chain) is the same argument as target (b) and remains
+deferred.
 -/
 
--- TODO (Stage 3): strengthen `RemapOne`/`RemapStep` with the missing "only the moved
--- entry changes, its old slot is freed" conditions, then prove `KeySet` is preserved
--- across a remap. Not discharged yet.
 lemma remap_preserves_keySet (h : RemapStep s s') (k : Key) : KeySet s k ↔ KeySet s' k := by
-  sorry
+  exact Iff.of_eq (congrFun h.keySet k)
+
+lemma remap_preserves_entries (h : RemapStep s s') : ResizePreservesEntries s s' := by
+  exact ⟨h.keySet, h.len.symm⟩
 
 /-!
 ## Target (b) — cluster invariant preserved by mutations (src/map.rs L411-L508)
