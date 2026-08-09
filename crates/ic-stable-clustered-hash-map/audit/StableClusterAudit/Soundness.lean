@@ -268,6 +268,50 @@ lemma relocateStep_preserves_clusterOrdered {s s' : State} {entry : Key} {value 
       have hiocc_sj : IsOccupied s j := (hocc_iff j h_j_pos).1 hiocc_j
       exact hco i j hicap_si hicap_sj hij hiocc_si hiocc_sj
 
+-- A single relocation step keeps each entry at its correct bucket, provided the pending
+-- entry is at its home bucket (`position - entryDist = bucket entry s.n`, which the loop
+-- maintains) and no resize is in progress. All other entries are unchanged.
+lemma relocateStep_preserves_entryAtCorrectBucket {s s' : State} {entry : Key} {value : Nat}
+    {entryDist : Nat} {position : Nat} (h : RelocateStep s s' entry value entryDist position)
+    (hcorrect : EntryAtCorrectBucket s) (hremap : s.remapEnd = none)
+    (hremap' : s'.remapEnd = s.remapEnd) (hbucket : position - entryDist = bucket entry s.n) :
+    EntryAtCorrectBucket s' := by
+  intro i hicap hiocc
+  by_cases hi_pos : i = position
+  · rw [hi_pos]
+    unfold BucketAt
+    rw [h.entryDistAt, hbucket]
+    have heb : ExpectedBucket s' position = bucket entry s.n := by
+      simp [ExpectedBucket, h.entryAt, hremap', hremap, h.n.symm]
+    rw [heb]
+  · have hicap_s : i < capacity s.n := by simpa [h.n] using hicap
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.dist_other i hi_pos]
+      exact hiocc
+    have hc := hcorrect i hicap_s hiocc_s
+    have heb : ExpectedBucket s' i = ExpectedBucket s i := by
+      simp [ExpectedBucket, h.keyAt_other i hi_pos, hremap', hremap, h.n.symm]
+    rw [heb]
+    unfold BucketAt
+    rw [h.dist_other i hi_pos]
+    exact hc
+
+-- A single relocation step preserves the full cluster invariant: even though the displaced
+-- entry is in flight, the resulting (partial) table still satisfies the cluster invariant,
+-- given the order-boundary, the pending entry being at its home bucket, and no resize.
+lemma relocateStep_preserves_clusterInvariant {s s' : State} {entry : Key} {value : Nat}
+    {entryDist : Nat} {position : Nat} (h : RelocateStep s s' entry value entryDist position)
+    (hci : ClusterInvariant s) (hbound : IsOrderBoundary s position (position - entryDist))
+    (hremap : s.remapEnd = none) (hremap' : s'.remapEnd = s.remapEnd)
+    (hbucket : position - entryDist = bucket entry s.n) :
+    ClusterInvariant s' := by
+  exact ⟨
+    relocateStep_preserves_distanceValid h hci.1,
+    relocateStep_preserves_clusterOrdered h hci.2.1 hbound,
+    relocateStep_preserves_entryAtCorrectBucket h hci.2.2 hremap hremap' hbucket
+  ⟩
+
 -- A single relocation step is an *intermediate* state (the displaced entry is in flight, not
 -- yet written), so it does not by itself preserve `ClusterInvariant`: the full `insert` is a
 -- chain of such steps terminated by a `RelocateWrite`, and the invariant is preserved by the
