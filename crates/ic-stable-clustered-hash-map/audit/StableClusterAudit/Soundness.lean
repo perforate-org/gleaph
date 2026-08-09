@@ -94,7 +94,28 @@ lemma remap_preserves_entries (h : RemapStep s s') : ResizePreservesEntries s s'
 relocation chain is the crux of the audit. The relocation relations (`RelocateStep`,
 `UnRelocateStep`) capture one step but not the loop's closure, so an inductive argument
 over the relocation chain is required.
+
+Progress: the base case of an insert (writing into an empty slot) preserves
+`DistanceValid`; the ordered-cluster argument and the chain are deferred below.
 -/
+
+-- The base insert write keeps the distance invariant: the new slot's distance
+-- `position - bucket ≤ position`, and all other slots are unchanged.
+lemma relocateWrite_preserves_distanceValid {s s' : State} {entry : Key} {value : Nat} {position : Nat}
+    (h : RelocateWrite s s' entry value position) (hiv : DistanceValid s) : DistanceValid s' := by
+  intro i hicap hiocc
+  by_cases hpos : i = position
+  · subst hpos
+    rw [h.dist]
+    exact Nat.sub_le i (bucket entry s.n)
+  · have hicap_s : i < capacity s.n := by simpa [h.n] using hicap
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.dist_other i hpos]
+      exact hiocc
+    have hvalid := hiv i hicap_s hiocc_s
+    rw [h.dist_other i hpos]
+    exact hvalid
 
 lemma insert_preserves_invariant (h : ClusterInvariant s) (hstep : RelocateStep s s' entry value position) :
     ClusterInvariant s' := by

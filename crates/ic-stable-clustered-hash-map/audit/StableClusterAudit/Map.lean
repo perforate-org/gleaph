@@ -146,14 +146,20 @@ def RelocateStep (s s' : State) (entry : Key) (value : Nat) (position : Nat) : P
     (∀ i, i ≠ position → i ≠ next → s'.valAt i = s.valAt i) ∧
     (∀ i, i ≠ position → i ≠ next → s'.dist i = s.dist i)
 
--- `insert_and_relocate` base case: an empty slot at `position` is written directly.
--- src/map.rs L464-L466.
-def RelocateWrite (s s' : State) (entry : Key) (value : Nat) (position : Nat) : Prop :=
-  s.dist position = EMPTY ∧ s'.keyAt position = some entry ∧ s'.valAt position = value ∧
-  s'.dist position = 0 ∧
-  (∀ i, i ≠ position → s'.keyAt i = s.keyAt i) ∧
-  (∀ i, i ≠ position → s'.valAt i = s.valAt i) ∧
-  (∀ i, i ≠ position → s'.dist i = s.dist i)
+-- `insert_and_relocate` base case: an empty slot at `position` is written directly, with
+-- the entry's distance = `position - bucket(entry, n)` so it sits at its home bucket.
+-- `find_insert_position` guarantees `position` is the end of the bucket's cluster, which is
+-- what keeps the table ordered (target (b)). src/map.rs L464-L466.
+structure RelocateWrite (s s' : State) (entry : Key) (value : Nat) (position : Nat) : Prop where
+  n : s.n = s'.n
+  slotEmpty : s.dist position = EMPTY
+  distFit : position - bucket entry s.n < EMPTY
+  keyAt : s'.keyAt position = some entry
+  valAt : s'.valAt position = value
+  dist : s'.dist position = position - bucket entry s.n
+  keyAt_other : ∀ i, i ≠ position → s'.keyAt i = s.keyAt i
+  valAt_other : ∀ i, i ≠ position → s'.valAt i = s.valAt i
+  dist_other : ∀ i, i ≠ position → s'.dist i = s.dist i
 
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L491-L508.
