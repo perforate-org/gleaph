@@ -452,12 +452,27 @@ fn centroids_ready(def: &VectorIndexDef, index_id: u32) -> bool {
 /// nearest partition(s); a large value (e.g. `f32::INFINITY`) selects all.
 ///
 /// `query_bytes` is the request's encoded query (≥ `centroid.len() * 4`); distances are scored with
-/// the SIMD `l2_squared_f32(bytes, centroid)` kernel.
-fn select_partitions(centroids: &[Vec<f32>], query_bytes: &[u8], eps_query: f32) -> Vec<u32> {
+/// the SIMD `l2_squared_f32(bytes, centroid)` kernel. For **cosine**, the query is unit-normalized so
+/// `L2²(q̂, c) = 2 − 2·cos` over the unit centroids (a tight, cosine-meaningful ε₂ threshold); the raw
+/// query's large `‖q‖²` would otherwise make the relative threshold include (almost) all partitions.
+fn select_partitions(
+    centroids: &[Vec<f32>],
+    query_bytes: &[u8],
+    metric: VectorMetric,
+    dims: usize,
+    eps_query: f32,
+) -> Vec<u32> {
+    let qb: Vec<u8> = if metric == VectorMetric::Cosine {
+        // `search_impl` rejects zero-norm cosine queries; a `None` fallback degrades to an empty bytes
+        // query -> all distances 0 -> a full scan (safe, unpruned).
+        normalize_f32(query_bytes, dims).unwrap_or_default()
+    } else {
+        query_bytes.to_vec()
+    };
     let mut scored: Vec<(f32, u32)> = centroids
         .iter()
         .enumerate()
-        .map(|(p, c)| (l2_squared_f32(query_bytes, c), p as u32))
+        .map(|(p, c)| (l2_squared_f32(&qb, c), p as u32))
         .collect();
     // A full scan (`eps_query = INF`) selects every partition. Special-case it: the generic
     // `(1 + eps) * best` threshold degenerates to `INF * 0 = NaN` when the query sits exactly on a
@@ -744,7 +759,13 @@ impl VectorCanisterStore {
             );
         };
         let active = def.active_index_version;
-        let selected = select_partitions(&centroids, &req.query, tuning.eps_query);
+        let selected = select_partitions(
+            &centroids,
+            &req.query,
+            def.metric,
+            def.dims as usize,
+            tuning.eps_query,
+        );
         scan_partitions(
             req.index_id,
             active,
@@ -770,9 +791,12 @@ mod tests {
         let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
         let query = vec![0.5f32; 4];
         let qb = encode_f32(&query);
-        assert_eq!(select_partitions(&centroids, &qb, 0.0), vec![0]);
         assert_eq!(
-            select_partitions(&centroids, &qb, f32::INFINITY),
+            select_partitions(&centroids, &qb, VectorMetric::L2Squared, 4, 0.0),
+            vec![0]
+        );
+        assert_eq!(
+            select_partitions(&centroids, &qb, VectorMetric::L2Squared, 4, f32::INFINITY),
             vec![0, 1]
         );
     }
@@ -785,7 +809,7 @@ mod tests {
         let centroids = vec![vec![2.5f32; 4], vec![0.5f32; 4], vec![4.5f32; 4]];
         let qb = encode_f32(&[2.5f32; 4]);
         assert_eq!(
-            select_partitions(&centroids, &qb, f32::INFINITY),
+            select_partitions(&centroids, &qb, VectorMetric::L2Squared, 4, f32::INFINITY),
             vec![0, 1, 2],
             "full scan selects every partition in (distance, partition) order"
         );
@@ -797,7 +821,32 @@ mod tests {
         // large eps_query.
         let centroids = vec![vec![0.0f32; 4], vec![10.0f32; 4]];
         let qb = encode_f32(&[0.0f32; 4]);
-        assert_eq!(select_partitions(&centroids, &qb, 1.0), vec![0]);
+        assert_eq!(
+            select_partitions(&centroids, &qb, VectorMetric::L2Squared, 4, 1.0),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn select_partitions_cosine_eps_selects_subset() {
+        // Unit centroids along the axes. A query with a large magnitude exposes the raw-query artifact:
+        // its big ‖q‖² constant makes a moderate eps threshold include (almost) all partitions.
+        // Normalizing makes L2² = 2 − 2cos, so a moderate eps prunes to the cosine-nearest subset.
+        let centroids = vec![
+            vec![1.0f32, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0],
+        ];
+        let qb = encode_f32(&[100.0f32, 1.0, 1.0, 1.0]);
+        let all = select_partitions(&centroids, &qb, VectorMetric::Cosine, 4, f32::INFINITY);
+        assert_eq!(all.len(), 4);
+        let half = select_partitions(&centroids, &qb, VectorMetric::Cosine, 4, 0.5);
+        assert!(
+            half.len() < all.len(),
+            "eps=0.5 must prune cosine partitions"
+        );
+        assert_eq!(half, vec![0], "nearest cosine partition selected");
     }
 
     #[test]
