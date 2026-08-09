@@ -2558,20 +2558,65 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
         .expect("retirement completion");
-    store
-        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt)
-        .expect("idempotent retirement completion");
     let record = store
         .router_mutation_record(&key)
         .expect("completed ordered record");
     assert!(matches!(
         record.payload(),
         RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+            graph_request_fingerprint: persisted_graph_fingerprint,
             receipt,
             projection_watermark,
-        } if receipt.logical_edge_count == 1 && projection_watermark.shard_id == ShardId::new(0)
+        } if persisted_graph_fingerprint == &graph_fingerprint
+            && receipt.logical_edge_count == 1
+            && projection_watermark.shard_id == ShardId::new(0)
     ));
     assert_eq!(record.as_v1().completed_row_count, Some(1));
+    let mismatched_graph_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_edge_batch_retired(&key, 1, mismatched_graph_fingerprint, receipt.clone())
+        .expect_err("mismatched terminal Graph fingerprint must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered retirement completion".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("record after fingerprint rejection"),
+        record,
+        "mismatched terminal fingerprint must leave the durable record unchanged"
+    );
+    let mut mismatched_receipt = receipt.clone();
+    mismatched_receipt.hot_forward_vertices = vec![7];
+    mismatched_receipt
+        .validate()
+        .expect("mismatched edge receipt remains valid");
+    let err = store
+        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, mismatched_receipt)
+        .expect_err("mismatched terminal receipt must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered retirement completion requires an ordered replay payload".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("record after receipt rejection"),
+        record,
+        "mismatched terminal receipt must leave the durable record unchanged"
+    );
+    store
+        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt)
+        .expect("idempotent retirement completion");
 }
 
 #[test]
@@ -2779,11 +2824,57 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     assert!(matches!(
         record.payload(),
         RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+            graph_request_fingerprint: persisted_graph_fingerprint,
             receipt: persisted,
-            projection_watermark: _
-        } if persisted == &receipt
+            projection_watermark: _,
+        } if persisted_graph_fingerprint == &graph_fingerprint && persisted == &receipt
     ));
     assert_eq!(record.as_v1().completed_row_count, Some(2));
+    let mismatched_graph_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_mixed_batch_retired(&key, 1, mismatched_graph_fingerprint, receipt.clone())
+        .expect_err("mismatched terminal mixed Graph fingerprint must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered mixed retirement completion".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after fingerprint rejection"),
+        record,
+        "mismatched terminal mixed fingerprint must leave the durable record unchanged"
+    );
+    let mut mismatched_receipt = receipt.clone();
+    mismatched_receipt.allocated_vertex_ids = vec![8];
+    mismatched_receipt
+        .validate()
+        .expect("mismatched mixed receipt remains valid");
+    let err = store
+        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, mismatched_receipt)
+        .expect_err("mismatched terminal mixed receipt must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed retirement completion requires an ordered replay payload".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after receipt rejection"),
+        record,
+        "mismatched terminal mixed receipt must leave the durable record unchanged"
+    );
+    store
+        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt)
+        .expect("idempotent mixed retirement completion");
 }
 
 #[test]
@@ -2985,11 +3076,59 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     assert!(matches!(
         record.payload(),
         RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+            graph_request_fingerprint: persisted_graph_fingerprint,
             receipt: persisted,
             projection_watermark,
-        } if persisted == &receipt && projection_watermark == &watermark
+        } if persisted_graph_fingerprint == &graph_fingerprint
+            && persisted == &receipt
+            && projection_watermark == &watermark
     ));
     assert_eq!(record.as_v1().completed_row_count, Some(1));
+    let mismatched_graph_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_vertex_batch_retired(&key, 1, mismatched_graph_fingerprint, receipt.clone())
+        .expect_err("mismatched terminal vertex Graph fingerprint must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered vertex retirement completion".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after fingerprint rejection"),
+        record,
+        "mismatched terminal vertex fingerprint must leave the durable record unchanged"
+    );
+    let mut mismatched_receipt = receipt.clone();
+    mismatched_receipt.allocated_vertex_ids = vec![8];
+    mismatched_receipt
+        .validate()
+        .expect("mismatched vertex receipt remains valid");
+    let err = store
+        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, mismatched_receipt)
+        .expect_err("mismatched terminal vertex receipt must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered vertex retirement completion requires an ordered replay payload".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after receipt rejection"),
+        record,
+        "mismatched terminal vertex receipt must leave the durable record unchanged"
+    );
+    store
+        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt)
+        .expect("idempotent vertex retirement completion");
 }
 
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only

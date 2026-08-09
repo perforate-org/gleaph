@@ -2,8 +2,8 @@
 
 Date: 2026-06-20
 Status: implemented (terminal-completion retention anchor added by ADR 0057; eviction predicate and timer stance revised by ADR 0029 Phase 4)
-Last revised: 2026-08-02
-Anchor timestamp: 2026-08-02 14:44:33 UTC +0000
+Last revised: 2026-08-09
+Anchor timestamp: 2026-08-09 02:46:41 UTC +0000
 
 ## Context
 
@@ -48,11 +48,14 @@ fan-out are never read again: replay short-circuits on `completed_row_count`
 (`run_gql_dml` returns at the `router_mutation_completed_row_count` check before touching
 the heavy fields). At that point `record_router_mutation_shard_projection_advanced` pins
 the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and any
-shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; ordered terminal
-records retain only their bounded family receipt and projection watermark. Durable bulk-load jobs
-retain their terminal lifecycle and aggregate state in `BulkLoadCoordinator`; chunk receipts remain
-in the dedicated MemoryId 49 map until the bounded receipt-GC pass removes them. No typed/shared
-GQL seed payload is retained or decoded.
+shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; compacted ordered
+edge, vertex, and mixed terminal records retain only their bounded family receipt, projection
+watermark, and fixed Graph-request fingerprint through the terminal-retention window. Compaction
+drops the full Graph request and target, so terminal validation compares the stored fingerprint
+rather than recomputing it from a discarded envelope. Durable bulk-load jobs retain their terminal
+lifecycle and aggregate state in `BulkLoadCoordinator`; chunk receipts remain in the dedicated
+MemoryId 49 map until the bounded receipt-GC pass removes them. No typed/shared GQL seed payload is
+retained or decoded.
 
 ### B — amortized GC on the write path (bound count, automatic)
 
@@ -144,4 +147,5 @@ predicate. Terminal records past the TTL evict exactly as before.
 `sweep_requires_admin_and_nonzero_budget`,
 `ttl_eviction_retains_nonterminal_saga_but_evicts_terminal` (ADR 0029 Phase 4 predicate),
 and shared terminal-anchor retention cases for scalar, durable bulk-load, and ordered atomic-insert
-records (ADR 0057).
+records (ADR 0057), including compacted ordered edge/vertex/mixed records that retain their fixed
+Graph-request fingerprint, drop their Graph request/target, and reject a changed fingerprint.

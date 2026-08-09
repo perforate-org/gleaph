@@ -2,8 +2,8 @@
 
 Date: 2026-08-02
 Status: implemented
-Last revised: 2026-08-06
-Anchor timestamp: 2026-08-06 07:02:35 UTC +0000
+Last revised: 2026-08-09
+Anchor timestamp: 2026-08-09 02:46:41 UTC +0000
 
 ## Context
 
@@ -152,6 +152,11 @@ scalar, atomic-insert, durable bulk-load, and ordered records. Idempotency and r
 retention. Retired Graph evidence retains the existing nine-day margin under ADR 0027, whose
 retirement anchor remains unchanged. Expiry removes receipt recovery, not the canonical vertices or
 validity of IDs already persisted by the client.
+
+Compacted ordered edge, vertex, and mixed atomic-insert completions retain their fixed 32-byte
+Graph-request fingerprint throughout that terminal-retention window. They drop the full Graph
+request and target after retirement acknowledgement; the retained fingerprint is immutable terminal
+identity, not a digest recomputed from the discarded envelope.
 
 Graph journal codec v1 allocates appendix flag `0x10` to `allocated_vertex_ids`, encoded as a checked
 `u32` count followed by input-ordinal `u32` local IDs. Edge-only entries require the appendix to be
@@ -428,8 +433,10 @@ development stable-format activation requires an explicit wipe/reinstall gate be
 ## Required tests
 
 - query/update and prepared-manifest kind mismatch rejection;
-- atomic vertex/mixed receipt input-order IDs, direct immediate edge insertion, exact replay,
-  response-loss/status recovery, family mismatch, payload preflight, upgrade/reopen, and retention;
+- atomic edge/vertex/mixed receipt input-order IDs, direct immediate edge insertion, exact replay,
+  response-loss/status recovery, family mismatch, payload preflight, upgrade/reopen, and retention,
+  including compacted ordered completions that retain the fixed Graph-request fingerprint while
+  dropping the Graph request/target and reject a changed fingerprint without rewriting the record;
 - bulk Start/Append/Finalize/Abort state transitions, exact/conflicting/out-of-order chunk replay,
   response loss, paged receipt recovery, prefix preservation, projection/retirement recovery,
   same textual key on distinct graphs, exact `Busy.operation` values, upgrade/reopen, retention range

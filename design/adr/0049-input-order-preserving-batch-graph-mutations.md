@@ -2,8 +2,8 @@
 
 Date: 2026-07-23
 Status: Implemented
-Last revised: 2026-08-02
-Anchor timestamp: 2026-08-02 14:44:33 UTC +0000
+Last revised: 2026-08-09
+Anchor timestamp: 2026-08-09 02:46:41 UTC +0000
 
 The 2026-08-02 public-surface correction replaces the specialized Router updates
 with the `atomic_insert(AtomicInsertRequest)` mutation and the
@@ -1284,6 +1284,7 @@ RouterMutationPayloadV1 =
   | OrderedEdgeBatchRouting
   | OrderedEdgeBatch(RouterOrderedEdgeBatchReplayV1)
   | CompletedOrderedEdgeBatch {
+        graph_request_fingerprint: [u8; 32],
         receipt: GraphOrderedEdgeBatchReceiptV1,
         projection_watermark: MutationTokenShard,
     }
@@ -1324,9 +1325,10 @@ GraphOrderedEdgeBatchReceiptV1 {
 ```
 
 The sketch above is the edge-focused decision-history shape. The implemented V1 adds corresponding
-ordered vertex/mixed request identities, replay payloads, and receipts, plus `terminal_at_ns` on
-the shared Router record; the definitions in the current source are normative. No compatibility
-decoder for the removed typed/shared payloads is retained.
+ordered vertex/mixed request identities, replay payloads, receipts, and compacted completion forms,
+plus `terminal_at_ns` on the shared Router record. Each compacted ordered edge, vertex, or mixed
+completion retains `graph_request_fingerprint: [u8; 32]`; the definitions in the current source are
+normative. No compatibility decoder for the removed typed/shared payloads is retained.
 
 The Graph canonical endpoint returns
 `GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1)`. A completed
@@ -1539,15 +1541,19 @@ retirement acknowledgement: it could also reflect a separately reset or
 corrupted Graph owner. No outcome from `RetirementPending` authorizes canonical
 query or redispatch.
 
-The compacted ordered record retains the public item count and fingerprint in
-`RouterMutationRequestIdentityV1`, the full validated
-`GraphOrderedEdgeBatchReceiptV1` in the completed payload, the exact target
-projection watermark, and mutation id plus the validated logical edge count in
-the top-level `completed_row_count`. The retained receipt is the source for an
-exact same-key replay; the watermark and count reconstruct the `MutationToken`
-without retaining the discarded Graph request envelope. The Graph request
-envelope is discarded only after the canonical and required projection
-outcomes are durable and the Graph retirement transition is acknowledged.
+The compacted ordered edge, vertex, or mixed record retains the public item
+count and fingerprint in `RouterMutationRequestIdentityV1`, the fixed
+`graph_request_fingerprint` captured from its validated Graph target, its full
+validated aggregate receipt, the shard-scoped projection watermark, and
+mutation id plus the validated logical count in the top-level
+`completed_row_count`. The retained receipt is the source for an exact same-key
+replay; the watermark and count reconstruct the `MutationToken` without
+retaining the full Graph request or target. The Graph request/target is
+discarded only after the canonical and required projection outcomes are durable
+and the Graph retirement transition is acknowledged. The stored fingerprint
+remains unchanged through terminal retention, so a terminal completion or
+replay with a different Graph fingerprint conflicts without rewriting the
+compacted record.
 
 Every remote side effect is fenced by its durable pre-`await` state, and every
 successful callback advances the corresponding state atomically. If a Graph
@@ -2404,9 +2410,12 @@ At minimum, implementation must cover:
   version envelopes, for scalar plan execution, durable bulk-load, and ordered
   routing/`CanonicalPending`/`CanonicalCommitted`/`ProjectionPending`/
   `ProjectionAdvanced`/`RetirementPending` states;
-- completed ordered records must retain the full validated receipt needed for
-  exact same-key replay after payload compaction, including both delta-sequence
-  bounds and the bounded hot-forward vertex list;
+- completed ordered edge, vertex, and mixed records must retain the full
+  validated receipt and fixed Graph-request fingerprint needed for exact
+  same-key replay after payload compaction, including both delta-sequence bounds
+  and the bounded hot-forward vertex list; they must drop the full Graph request
+  and target, and a changed fingerprint must reject without rewriting the
+  compacted record;
 - bounded Router retry-diagnostic and terminal-failure round-trips for every
   code and maximum-size field; record-size enforcement in routing, active,
   diagnostic, terminal, progress, and completed states; sanitized external
@@ -2549,6 +2558,9 @@ Adversarial tests must reject:
 - invalid ordered target progress transitions, premature envelope compaction, or
   canonical redispatch by background recovery or from
   `RetirementPending`;
+- a compacted ordered edge, vertex, or mixed completion that drops or changes
+  its fixed Graph-request fingerprint, retains a full Graph request/target, or
+  accepts a changed fingerprint while rewriting the terminal record;
 - age-only eviction of an active ordered journal entry, retirement with a
   conflicting fingerprint/request kind, completion before retirement proof, or
   treating journal absence as retirement proof from any Router state;

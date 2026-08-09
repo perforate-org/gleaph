@@ -162,6 +162,7 @@ impl AtomicInsertResponse {
             RouterMutationPayloadV1::CompletedOrderedVertexBatch {
                 receipt,
                 projection_watermark,
+                ..
             } => Some(vertex_receipt(
                 receipt.logical_vertex_count,
                 projection_watermark.shard_id,
@@ -187,6 +188,7 @@ impl AtomicInsertResponse {
             RouterMutationPayloadV1::CompletedOrderedMixedBatch {
                 receipt,
                 projection_watermark,
+                ..
             } => Some(mixed_receipt(
                 receipt.logical_operation_count,
                 receipt.logical_vertex_count,
@@ -2244,6 +2246,7 @@ mod tests {
         let mut record = record_with(Vec::new());
         record.as_v1_mut().payload =
             crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                graph_request_fingerprint: [0; 32],
                 receipt: GraphOrderedEdgeBatchReceiptV1 {
                     logical_edge_count: 3,
                     emitted_delta_first_seq: None,
@@ -2264,6 +2267,7 @@ mod tests {
 
         record.as_v1_mut().payload = crate::facade::stable::label_stats::RouterMutationPayloadV1::
             CompletedOrderedVertexBatch {
+                graph_request_fingerprint: [0; 32],
                 receipt: GraphOrderedVertexBatchReceiptV1 {
                     logical_vertex_count: 2,
                     emitted_delta_first_seq: None,
@@ -2285,6 +2289,7 @@ mod tests {
 
         record.as_v1_mut().payload = crate::facade::stable::label_stats::RouterMutationPayloadV1::
             CompletedOrderedMixedBatch {
+                graph_request_fingerprint: [0; 32],
                 receipt: GraphOrderedMixedBatchReceiptV1 {
                     logical_operation_count: 5,
                     logical_vertex_count: 2,

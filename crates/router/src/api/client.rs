@@ -353,6 +353,7 @@ mod tests {
         atomic_record.as_v1_mut().routing_in_progress = false;
         atomic_record.as_v1_mut().completed_row_count = Some(3);
         atomic_record.as_v1_mut().payload = RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+            graph_request_fingerprint: [0; 32],
             receipt,
             projection_watermark: MutationTokenShard {
                 shard_id: ShardId::new(0),

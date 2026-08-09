@@ -821,16 +821,19 @@ pub enum RouterMutationPayloadV1 {
     OrderedMixedBatch(Box<RouterOrderedMixedBatchReplayV1>),
     /// Compacted ordered completion retained after projection convergence.
     CompletedOrderedEdgeBatch {
+        graph_request_fingerprint: [u8; 32],
         receipt: GraphOrderedEdgeBatchReceiptV1,
         projection_watermark: MutationTokenShard,
     },
     /// Compacted ordered vertex completion retained after projection convergence.
     CompletedOrderedVertexBatch {
+        graph_request_fingerprint: [u8; 32],
         receipt: GraphOrderedVertexBatchReceiptV1,
         projection_watermark: MutationTokenShard,
     },
     /// Compacted ordered mixed completion retained after projection convergence.
     CompletedOrderedMixedBatch {
+        graph_request_fingerprint: [u8; 32],
         receipt: GraphOrderedMixedBatchReceiptV1,
         projection_watermark: MutationTokenShard,
     },

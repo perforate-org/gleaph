@@ -1287,9 +1287,24 @@ impl RouterStore {
                     })?
                 }
                 RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                    graph_request_fingerprint: existing_graph_request_fingerprint,
                     receipt: existing_receipt,
                     ..
-                } if existing_receipt == &receipt => return Ok(()),
+                } => {
+                    if existing_graph_request_fingerprint != &graph_request_fingerprint {
+                        return Err(RouterError::Conflict(
+                            "Graph request fingerprint mismatch at ordered mixed retirement completion"
+                                .into(),
+                        ));
+                    }
+                    if existing_receipt == &receipt {
+                        return Ok(());
+                    }
+                    return Err(RouterError::Conflict(
+                        "ordered mixed retirement completion requires an ordered replay payload"
+                            .into(),
+                    ));
+                }
                 _ => {
                     return Err(RouterError::Conflict(
                         "ordered mixed retirement completion requires an ordered replay payload".into(),
@@ -1297,6 +1312,7 @@ impl RouterStore {
                 }
             };
             v1.payload = RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                graph_request_fingerprint,
                 receipt,
                 projection_watermark: watermark,
             };
@@ -1528,9 +1544,24 @@ impl RouterStore {
                     })?
                 }
                 RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                    graph_request_fingerprint: existing_graph_request_fingerprint,
                     receipt: existing_receipt,
                     ..
-                } if existing_receipt == &receipt => return Ok(()),
+                } => {
+                    if existing_graph_request_fingerprint != &graph_request_fingerprint {
+                        return Err(RouterError::Conflict(
+                            "Graph request fingerprint mismatch at ordered vertex retirement completion"
+                                .into(),
+                        ));
+                    }
+                    if existing_receipt == &receipt {
+                        return Ok(());
+                    }
+                    return Err(RouterError::Conflict(
+                        "ordered vertex retirement completion requires an ordered replay payload"
+                            .into(),
+                    ));
+                }
                 _ => {
                     return Err(RouterError::Conflict(
                         "ordered vertex retirement completion requires an ordered replay payload".into(),
@@ -1538,6 +1569,7 @@ impl RouterStore {
                 }
             };
             v1.payload = RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                graph_request_fingerprint,
                 receipt,
                 projection_watermark: watermark,
             };
@@ -1833,11 +1865,22 @@ impl RouterStore {
                     })?
                 }
                 RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                    graph_request_fingerprint: existing_graph_request_fingerprint,
                     receipt: existing_receipt,
-                    projection_watermark: _,
-                } if existing_receipt == &receipt =>
-                {
-                    return Ok(());
+                    ..
+                } => {
+                    if existing_graph_request_fingerprint != &graph_request_fingerprint {
+                        return Err(RouterError::Conflict(
+                            "Graph request fingerprint mismatch at ordered retirement completion"
+                                .into(),
+                        ));
+                    }
+                    if existing_receipt == &receipt {
+                        return Ok(());
+                    }
+                    return Err(RouterError::Conflict(
+                        "ordered retirement completion requires an ordered replay payload".into(),
+                    ));
                 }
                 _ => {
                     return Err(RouterError::Conflict(
@@ -1847,6 +1890,7 @@ impl RouterStore {
             };
             let row_count = receipt.logical_edge_count;
             v1.payload = RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                graph_request_fingerprint,
                 receipt,
                 projection_watermark: watermark,
             };
