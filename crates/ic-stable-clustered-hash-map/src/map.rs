@@ -50,6 +50,8 @@ const EMPTY: u16 = u16::MAX;
 const FIB_CONST: u64 = 11400714819323198485;
 /// Initial `log2_buckets`: 2^3 = 8 buckets, capacity = 8 + 3 = 11.
 const DEFAULT_LOG2_BUCKETS: u8 = 3;
+/// Number of positions the incremental resize remaps per insert/remove step.
+const REMAP_BATCH: u64 = 64;
 
 /// Failure inserting into a [`StableClusteredHashMap`].
 #[derive(Debug, PartialEq, Eq)]
@@ -129,7 +131,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         let size = DATA_OFFSET + capacity * (key_size as u64 + value_size as u64 + 2);
         grow_memory_to_at_least_bytes(&memory, size).map_err(|_| InitError::OutOfMemory)?;
         header::write_header(&memory, n, key_size, value_size);
-        Self::clear_table(&memory, capacity, key_size, value_size);
+        Self::clear_region(&memory, 0, capacity, key_size, value_size);
         Ok(Self {
             memory,
             _marker: PhantomData,
@@ -172,6 +174,15 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     fn value_size(&self) -> u32 {
         read_u32(&self.memory, header::VALUE_SIZE_OFFSET)
+    }
+
+    /// The incremental-resize mixed-range boundary; `u64::MAX` = no resize in progress.
+    fn remap_end(&self) -> u64 {
+        read_u64(&self.memory, header::REMAP_END_OFFSET)
+    }
+
+    fn set_remap_end(&self, v: u64) {
+        write_u64(&self.memory, header::REMAP_END_OFFSET, v);
     }
 
     fn entry_stride(&self) -> u64 {
@@ -304,6 +315,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// Probes for `key`, returning `(found_index, insert_position, bucket)`. When the key is absent,
     /// `insert_position` is where a new entry with `bucket` should be inserted (the end of the
     /// cluster of `bucket`, or the end of the previous cluster), so `insert` avoids a second search.
+    /// During an in-place resize, also checks the previous table size in the mixed range (read-only).
     fn lookup_index(&self, key: &K) -> (Option<u64>, u64, u64) {
         let n = self.log2_buckets();
         let hash = rapidhash_v1(&key.to_bytes());
@@ -312,6 +324,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             // Empty map: the first entry lands at its bucket with distance 0.
             return (None, b, b);
         }
+        // Search with the current N.
         let mut i = b;
         while i < self.capacity() {
             let dist = self.read_distance(i);
@@ -326,6 +339,28 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
                 return (Some(i), i, b);
             }
             i += 1;
+        }
+        // If a resize is in progress, check the previous N in the mixed range [0, remap_end].
+        let remap_end = self.remap_end();
+        if remap_end != u64::MAX && n > 0 {
+            let prev_bucket = bucket(hash, n - 1);
+            if prev_bucket <= remap_end {
+                let mut j = prev_bucket;
+                while j <= remap_end {
+                    let dist = self.read_distance(j);
+                    if dist == EMPTY {
+                        break;
+                    }
+                    let bucket_j = j - dist as u64;
+                    if bucket_j > prev_bucket {
+                        break;
+                    }
+                    if bucket_j == prev_bucket && self.read_key(j) == *key {
+                        return (Some(j), j, b);
+                    }
+                    j += 1;
+                }
+            }
         }
         (None, i, b)
     }
@@ -349,6 +384,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     /// Inserts `key`/`value`, returning the previous value if the key was present.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        self.remap_step(REMAP_BATCH);
         let (found, insert_position, b) = self.lookup_index(&key);
         if let Some(idx) = found {
             let prev = self.read_value(idx);
@@ -356,7 +392,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             return Ok(Some(prev));
         }
         if self.is_full() {
-            self.resize()?;
+            self.size_up()?;
             let n = self.log2_buckets();
             let b = bucket(rapidhash_v1(&key.to_bytes()), n);
             let insert_position = self.find_insert_position(b);
@@ -365,7 +401,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
                 value,
                 distance: (insert_position - b) as u16,
             };
-            self.insert_and_relocate(entry, insert_position)?;
+            self.insert_and_relocate(entry, insert_position, true)?;
             self.set_len(self.len() + 1);
             return Ok(None);
         }
@@ -374,45 +410,35 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             value,
             distance: (insert_position - b) as u16,
         };
-        self.insert_and_relocate(entry, insert_position)?;
+        self.insert_and_relocate(entry, insert_position, true)?;
         self.set_len(self.len() + 1);
         Ok(None)
     }
 
-    /// Inserts without a resize trigger (used by the resize rehash).
-    fn insert_internal(&self, key: K, value: V) {
-        let n = self.log2_buckets();
-        let b = bucket(rapidhash_v1(&key.to_bytes()), n);
-        let position = self.find_insert_position(b);
-        let entry = Entry {
-            key,
-            value,
-            distance: (position - b) as u16,
-        };
-        // During rehash the new table is 2x, so the overflow area never fills; unwrap is safe.
-        self.insert_and_relocate(entry, position)
-            .expect("rehash insert cannot overflow");
-        self.set_len(self.len() + 1);
-    }
-
     /// Core insert with relocation: append to the cluster tail, swapping the displaced head of the
-    /// next cluster and relocating it. Resizes (full rehash) if the overflow area fills.
+    /// next cluster and relocating it. Returns the last affected position. When `allow_size_up` is
+    /// true (a normal insert), grows in place if the overflow area fills; when false (a remap), the
+    /// load is low so the overflow area never fills.
     fn insert_and_relocate(
         &self,
         mut entry: Entry<K, V>,
         mut position: u64,
-    ) -> Result<(), InsertError> {
+        allow_size_up: bool,
+    ) -> Result<u64, InsertError> {
         loop {
             if position >= self.capacity() {
-                self.resize()?;
-                let n = self.log2_buckets();
-                let b = bucket(rapidhash_v1(&entry.key.to_bytes()), n);
-                position = self.find_insert_position(b);
-                continue;
+                if allow_size_up {
+                    self.size_up()?;
+                    let n = self.log2_buckets();
+                    let b = bucket(rapidhash_v1(&entry.key.to_bytes()), n);
+                    position = self.find_insert_position(b);
+                    continue;
+                }
+                unreachable!("remap insert overflowed the table");
             }
             if self.is_empty_slot(position) {
                 self.write_entry(position, &entry);
-                return Ok(());
+                return Ok(position);
             }
             let t = self.read_entry(position);
             let next = self.end_of_cluster_by_position(position);
@@ -426,6 +452,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     /// Removes `key`, returning the previous value if present.
     pub fn remove(&self, key: &K) -> Option<V> {
+        self.remap_step(REMAP_BATCH);
         let (idx, _, _) = self.lookup_index(key);
         let idx = idx?;
         let prev = self.read_value(idx);
@@ -455,40 +482,86 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         }
     }
 
-    /// Grows the table to `2^(N+1) + (N+1)` and rehashes all entries (full rehash; the in-place
-    /// incremental resize is a later slice).
-    fn resize(&self) -> Result<(), InsertError> {
+    /// Grows the table in place to `2^(N+1) + (N+1)` and starts an incremental remap. The old table
+    /// is the first part of the new table; only the new region is cleared. Completes any in-progress
+    /// resize first (rare fallback when the overflow area fills).
+    fn size_up(&self) -> Result<(), InsertError> {
+        while self.remap_end() != u64::MAX {
+            self.remap_step(u64::MAX);
+        }
         let n = self.log2_buckets();
         let new_n = n + 1;
+        let prev_capacity = self.capacity();
         let new_capacity = (1u64 << new_n) + new_n as u64;
         let key_size = self.key_size();
         let value_size = self.value_size();
+        let stride = key_size as u64 + value_size as u64 + 2;
 
-        // Read all entries into a transient heap buffer (the new table overlaps the old).
-        let mut entries: Vec<(K, V)> = Vec::with_capacity(self.len() as usize);
-        for i in 0..self.capacity() {
-            if !self.is_empty_slot(i) {
-                entries.push((self.read_key(i), self.read_value(i)));
-            }
-        }
-
-        let new_size = DATA_OFFSET + new_capacity * (key_size as u64 + value_size as u64 + 2);
+        let new_size = DATA_OFFSET + new_capacity * stride;
         grow_memory_to_at_least_bytes(&self.memory, new_size)
             .map_err(|_| InsertError::OutOfMemory)?;
 
-        Self::clear_table(&self.memory, new_capacity, key_size, value_size);
+        // Clear only the new region [prev_capacity, new_capacity).
+        Self::clear_region(
+            &self.memory,
+            prev_capacity,
+            new_capacity,
+            key_size,
+            value_size,
+        );
+
+        // Bump log2_buckets and start the incremental remap.
         write_u8(&self.memory, header::LOG2_BUCKETS_OFFSET, new_n);
-        write_u64(&self.memory, header::LEN_OFFSET, 0);
-        for (k, v) in entries {
-            self.insert_internal(k, v);
-        }
+        self.set_remap_end(prev_capacity);
         Ok(())
     }
 
-    /// Sets every slot's distance to [`EMPTY`] (the key/value bytes are left as garbage; they are
-    /// only read when the slot is occupied). Writes the table in chunks so the resize clear is a few
+    /// Remaps up to `max_entries` positions from the bottom of the mixed range, relocating items
+    /// whose bucket changed under the new N. Returns `true` when the resize is complete.
+    fn remap_step(&self, max_entries: u64) -> bool {
+        let mut left = max_entries;
+        while self.remap_end() != u64::MAX && left > 0 {
+            let position = self.remap_end();
+            if !self.is_empty_slot(position) {
+                let n = self.log2_buckets();
+                let key = self.read_key(position);
+                let new_bucket = bucket(rapidhash_v1(&key.to_bytes()), n);
+                let current_bucket = self.bucket_by_position(position);
+                if current_bucket != new_bucket {
+                    self.remap_position(position, key, new_bucket);
+                    left -= 1;
+                    continue;
+                }
+            }
+            self.set_remap_end(position.wrapping_sub(1));
+        }
+        self.remap_end() == u64::MAX
+    }
+
+    /// Relocates the item at `position` to `new_bucket`, expanding `remap_end` if the relocation
+    /// pushed an item across the boundary. `key` is already read by the caller, so it is not re-read.
+    fn remap_position(&self, position: u64, key: K, new_bucket: u64) {
+        let value = self.read_value(position);
+        self.remove_and_relocate(position);
+        let insert_position = self.find_insert_position(new_bucket);
+        let entry = Entry {
+            key,
+            value,
+            distance: (insert_position - new_bucket) as u16,
+        };
+        let last_affected = self
+            .insert_and_relocate(entry, insert_position, false)
+            .expect("remap insert cannot overflow");
+        let remap_end = self.remap_end();
+        if remap_end != u64::MAX && insert_position <= remap_end && remap_end < last_affected {
+            self.set_remap_end(last_affected);
+        }
+    }
+
+    /// Sets every slot's distance in `[start, end)` to [`EMPTY`] (the key/value bytes are left as
+    /// garbage; they are only read when the slot is occupied). Writes in chunks so the clear is a few
     /// large writes instead of one 2-byte write per slot.
-    fn clear_table<M2: Memory>(memory: &M2, capacity: u64, key_size: u32, value_size: u32) {
+    fn clear_region<M2: Memory>(memory: &M2, start: u64, end: u64, key_size: u32, value_size: u32) {
         const CHUNK: u64 = 64;
         let stride = key_size as u64 + value_size as u64 + 2;
         let dist_offset = key_size as u64 + value_size as u64;
@@ -498,9 +571,9 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             let e = (i * stride + dist_offset) as usize;
             chunk[e..e + 2].copy_from_slice(&EMPTY.to_le_bytes());
         }
-        let mut i = 0;
-        while i < capacity {
-            let n = (capacity - i).min(CHUNK);
+        let mut i = start;
+        while i < end {
+            let n = (end - i).min(CHUNK);
             memory.write(DATA_OFFSET + i * stride, &chunk[..(n * stride) as usize]);
             i += n;
         }
@@ -636,6 +709,100 @@ mod tests {
         assert_eq!(map.len(), ref_map.len() as u64);
         for (k, v) in &ref_map {
             assert_eq!(map.get(k), Some(*v));
+        }
+    }
+
+    #[test]
+    fn incremental_resize_preserves_all_entries() {
+        let map = fresh();
+        for k in 0..5000u64 {
+            map.insert(k, k * 7).unwrap();
+        }
+        assert!(map.buckets() > 8, "resized beyond the initial 8 buckets");
+        for k in 0..5000u64 {
+            assert_eq!(map.get(&k), Some(k * 7), "key {k} reachable");
+        }
+        assert_eq!(map.len(), 5000);
+        assert_eq!(map.remap_end(), u64::MAX, "resize completed");
+    }
+
+    #[test]
+    fn mixed_range_lookup_finds_items_during_resize() {
+        let map = fresh();
+        let mut saw_resize = false;
+        for k in 0..5000u64 {
+            map.insert(k, k).unwrap();
+            if map.remap_end() != u64::MAX {
+                saw_resize = true;
+                // Lookups must find every entry while the resize is in progress.
+                for j in 0..=k {
+                    assert_eq!(map.get(&j), Some(j), "key {j} found mid-resize");
+                }
+                break;
+            }
+        }
+        assert!(saw_resize, "a resize was observed in progress");
+    }
+
+    #[test]
+    fn upgrade_persistence_reopens_mid_resize() {
+        let mm = VectorMemory::default();
+        let mut inserted = 0u64;
+        {
+            let map = StableClusteredHashMap::<u64, u64, _>::new(mm.clone()).expect("new");
+            for k in 0..5000u64 {
+                map.insert(k, k).unwrap();
+                inserted = k + 1;
+                if map.remap_end() != u64::MAX {
+                    break;
+                }
+            }
+            assert_ne!(map.remap_end(), u64::MAX, "resize in progress");
+        }
+        let map = StableClusteredHashMap::<u64, u64, _>::init(mm).expect("reopen");
+        assert_eq!(map.len(), inserted);
+        for k in 0..inserted {
+            assert_eq!(
+                map.get(&k),
+                Some(k),
+                "key {k} reachable after reopen mid-resize"
+            );
+        }
+        // Drive the remap to completion.
+        for k in inserted..inserted + 200 {
+            map.insert(k, k).unwrap();
+        }
+        assert_eq!(map.remap_end(), u64::MAX, "resize completed after reopen");
+        for k in 0..inserted + 200 {
+            assert_eq!(map.get(&k), Some(k));
+        }
+    }
+
+    #[test]
+    fn fuzz_interleaved_resize_insert_remove() {
+        use std::collections::HashMap;
+        let map = fresh();
+        let mut ref_map: HashMap<u64, u64> = HashMap::new();
+        let mut seed = 0x123456789ABCDEF0u64;
+        for _ in 0..5000 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let k = seed % 2000;
+            let v = seed;
+            if seed.is_multiple_of(4) {
+                let got = map.remove(&k);
+                let expected = ref_map.remove(&k);
+                assert_eq!(got, expected, "remove {k}");
+            } else {
+                let got = map.insert(k, v).unwrap();
+                let expected = ref_map.insert(k, v);
+                assert_eq!(got, expected, "insert {k}");
+            }
+        }
+        assert_eq!(map.len(), ref_map.len() as u64);
+        for (k, v) in &ref_map {
+            assert_eq!(map.get(k), Some(*v), "key {k} survives interleaved resize");
         }
     }
 }

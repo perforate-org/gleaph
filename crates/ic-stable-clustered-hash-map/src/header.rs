@@ -16,6 +16,7 @@ pub(crate) const LEN_OFFSET: u64 = 4;
 pub(crate) const LOG2_BUCKETS_OFFSET: u64 = 12;
 pub(crate) const KEY_SIZE_OFFSET: u64 = 13;
 pub(crate) const VALUE_SIZE_OFFSET: u64 = 17;
+pub(crate) const REMAP_END_OFFSET: u64 = 21;
 
 /// Failure opening existing memory with [`crate::StableClusteredHashMap::init`].
 #[derive(PartialEq, Eq, Debug)]
@@ -61,6 +62,8 @@ pub(crate) struct Header {
     pub log2_buckets: u8,
     pub key_size: u32,
     pub value_size: u32,
+    /// Boundary of the in-place incremental resize's mixed range; `u64::MAX` = no resize in progress.
+    pub remap_end: u64,
 }
 
 /// Reads and validates the header at the start of `memory`.
@@ -82,6 +85,7 @@ pub(crate) fn read_header<M: Memory>(m: &M) -> Result<Header, InitError> {
         log2_buckets: read_u8(m, LOG2_BUCKETS_OFFSET),
         key_size: read_u32(m, KEY_SIZE_OFFSET),
         value_size: read_u32(m, VALUE_SIZE_OFFSET),
+        remap_end: read_u64(m, REMAP_END_OFFSET),
     })
 }
 
@@ -93,4 +97,5 @@ pub(crate) fn write_header<M: Memory>(m: &M, log2_buckets: u8, key_size: u32, va
     write_u8(m, LOG2_BUCKETS_OFFSET, log2_buckets);
     write_u32(m, KEY_SIZE_OFFSET, key_size);
     write_u32(m, VALUE_SIZE_OFFSET, value_size);
+    write_u64(m, REMAP_END_OFFSET, u64::MAX);
 }
