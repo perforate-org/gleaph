@@ -633,9 +633,11 @@ impl VectorCanisterStore {
     /// each centroid as the arithmetic mean of its members, and keeps a previous centroid unchanged
     /// for an empty cluster. The per-iteration work `candidate_count * nlist * dims` is bounded by
     /// [`MAX_REBUILD_TRAINING_DISTANCE_OPS`] (the `Sampling` pool cap); sums/counts are transient
-    /// heap buffers (`O(nlist * dims)`), never persisted. After
-    /// [`MAX_REBUILD_TRAINING_ITERATIONS`] iterations it writes exactly `nlist` centroids to
-    /// `IVF_CENTROIDS` and transitions to `Building`.
+    /// heap buffers (`O(nlist * dims)`), never persisted. Once the recomputed centroids equal the
+    /// previous iteration's (the assignment is stable) or [`MAX_REBUILD_TRAINING_ITERATIONS`] is
+    /// reached, it writes exactly `nlist` centroids to `IVF_CENTROIDS` and transitions to `Building`
+    /// (the early-exit is exact: a converged centroid set reproduces itself, so stopping early changes
+    /// no result).
     fn training_step(
         &self,
         index_id: u32,
@@ -664,6 +666,11 @@ impl VectorCanisterStore {
         if centroids.is_empty() {
             centroids = candidates.iter().take(nlist_usize).cloned().collect();
         }
+        // The centroids used for this iteration's assignment. The recompute below is deterministic
+        // (same assignment -> same mean), so if it leaves them unchanged the assignment is stable and
+        // k-means has converged: a further iteration would reproduce the same centroids, so stopping
+        // early is exact.
+        let prev_centroids = centroids.clone();
 
         let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; nlist_usize];
         let mut counts: Vec<u64> = vec![0u64; nlist_usize];
@@ -706,8 +713,9 @@ impl VectorCanisterStore {
             }
         }
         let iteration = iteration + 1;
+        let converged = prev_centroids == centroids;
 
-        if iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
+        if converged || iteration >= MAX_REBUILD_TRAINING_ITERATIONS {
             IVF_CENTROIDS.with_borrow_mut(|m| {
                 for (p, bytes) in centroids.iter().enumerate() {
                     m.insert(
