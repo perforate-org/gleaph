@@ -1,10 +1,13 @@
 #![cfg_attr(test, feature(f128))]
 // wasm64 exposes the wasm SIMD intrinsics behind this nightly feature gate (rust-lang #90599);
 // SIMD is enabled for canister builds via the workspace-root `.cargo/config.toml` target rustflags.
+// `unused_features` fires on host builds where this gate is cfg'd out (clippy does not honor the
+// cfg for this lint); the feature is genuinely required on wasm64.
 #![cfg_attr(
     all(target_family = "wasm", target_arch = "wasm64"),
     feature(simd_wasm64)
 )]
+#![allow(unused_features)]
 
 #[cfg(feature = "canbench")]
 mod bench;
