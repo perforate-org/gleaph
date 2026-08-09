@@ -13,6 +13,22 @@ impl<'a, K: Storable + PartialEq, V: Storable, M: Memory> Iter<'a, K, V, M> {
     pub(crate) fn new(map: &'a StableClusteredHashMap<K, V, M>) -> Self {
         Self { map, next_idx: 0 }
     }
+
+    /// Resumes iteration from `slot` (inclusive) in slot order. Used to continue a bounded scan
+    /// across steps. The caller must ensure `slot` is a valid slot index for the map's current
+    /// capacity; a stale slot after a resize is handled by the caller restarting the scan.
+    pub(crate) fn from_slot(map: &'a StableClusteredHashMap<K, V, M>, slot: u64) -> Self {
+        Self {
+            map,
+            next_idx: slot,
+        }
+    }
+
+    /// The slot index of the next entry to be examined (one past the last yielded slot). Used to
+    /// persist a resumable scan cursor across steps.
+    pub fn position(&self) -> u64 {
+        self.next_idx
+    }
 }
 
 impl<'a, K: Storable + PartialEq, V: Storable, M: Memory> Iterator for Iter<'a, K, V, M> {

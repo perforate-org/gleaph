@@ -382,6 +382,25 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         Iter::new(self)
     }
 
+    /// Returns an iterator over the map's `(key, value)` entries starting at `slot` (inclusive), in
+    /// slot order. Used to resume a bounded scan across steps. The caller must ensure `slot` is a
+    /// valid slot index for the map's current capacity; a stale slot after a resize is handled by
+    /// the caller restarting the scan.
+    pub fn iter_from(&self, slot: u64) -> Iter<'_, K, V, M> {
+        Iter::from_slot(self, slot)
+    }
+
+    /// Clears the map in place, resetting it to a fresh empty state (used on canister init/reset).
+    /// Keeps the current capacity; the table region is cleared and the length/remap state reset.
+    pub fn clear_new(&mut self) {
+        self.set_len(0);
+        self.set_remap_end(u64::MAX);
+        let key_size = self.key_size();
+        let value_size = self.value_size();
+        let capacity = self.capacity();
+        Self::clear_region(&self.memory, 0, capacity, key_size, value_size);
+    }
+
     /// Inserts `key`/`value`, returning the previous value if the key was present.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
         self.remap_step(REMAP_BATCH);
@@ -666,6 +685,46 @@ mod tests {
         seen.sort();
         let expected: Vec<(u64, u64)> = (0..100).map(|k| (k, k)).collect();
         assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn iter_from_resumes_at_slot() {
+        let map = fresh();
+        for k in 0..100u64 {
+            map.insert(k, k).unwrap();
+        }
+        // `iter_from(slot)` scans physical slots >= slot, so it yields a suffix of the full
+        // slot-ordered iteration (empty slots are skipped in both).
+        let full: Vec<(u64, u64)> = map.iter().collect();
+        let resume_slot = 40;
+        let tail: Vec<(u64, u64)> = map.iter_from(resume_slot).collect();
+        assert!(
+            full.ends_with(&tail),
+            "resumed tail must be a suffix of the full iteration"
+        );
+        assert!(
+            tail.len() < full.len(),
+            "resuming mid-table must skip the prefix"
+        );
+        // Resuming from the end yields nothing.
+        assert!(map.iter_from(map.capacity()).next().is_none());
+    }
+
+    #[test]
+    fn clear_new_resets_to_empty() {
+        let mut map = fresh();
+        for k in 0..200u64 {
+            map.insert(k, k).unwrap();
+        }
+        assert!(map.buckets() > 8, "resized beyond the initial 8 buckets");
+        map.clear_new();
+        assert!(map.is_empty());
+        assert_eq!(map.len(), 0);
+        assert_eq!(map.get(&0), None);
+        // The map is usable again after the reset.
+        map.insert(1, 10).unwrap();
+        assert_eq!(map.get(&1), Some(10));
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
