@@ -778,9 +778,19 @@ impl VectorSlabStore {
     }
 
     /// Reads a slot's vector bytes + decoded vertex id, rejecting out-of-range and tombstoned slots.
+    /// Reads one row's vector bytes into the caller-provided `out` buffer. The buffer is reused
+    /// across scan iterations so the per-row `Vec` allocation is avoided (a scan over thousands of
+    /// rows would otherwise allocate once per row); the row-meta bytes are read into a stack buffer
+    /// (`meta_stride` is validated to be 4 | 8 | 12).
     /// Callers resolve the subject from the map key and validate the returned `vertex_id` against
-    /// `subject.vertex_id` (positional + payload validation; no row-carried id/generation).
-    pub(crate) fn read_row_bytes(&self, index_id: u32, slot: SlotRef) -> Option<(u32, Vec<u8>)> {
+    /// `subject.vertex_id` (positional + payload validation; no row-carried id/generation). The
+    /// returned slice borrows `out` and must not be retained across iterations that reuse it.
+    pub(crate) fn read_row_bytes<'a>(
+        &self,
+        index_id: u32,
+        slot: SlotRef,
+        out: &'a mut Vec<u8>,
+    ) -> Option<(u32, &'a [u8])> {
         let page_key = PageKey::new(
             index_id,
             slot.index_version,
@@ -794,17 +804,21 @@ impl VectorSlabStore {
         let header = self.read_page_header(meta.slab_offset);
         let layout = PageLayout::new(&header).ok()?;
         let meta_range = layout.row_meta_range_at(slot.slot);
-        let mut buf = vec![0u8; layout.meta_stride()];
-        self.slab
-            .read(meta.slab_offset + meta_range.start as u64, &mut buf);
-        let row_meta = RowMeta::from_bytes(&buf, layout.meta_stride()).ok()?;
+        let mut meta_buf = [0u8; 12];
+        self.slab.read(
+            meta.slab_offset + meta_range.start as u64,
+            &mut meta_buf[..layout.meta_stride()],
+        );
+        let row_meta =
+            RowMeta::from_bytes(&meta_buf[..layout.meta_stride()], layout.meta_stride()).ok()?;
         if row_meta.vertex.is_tombstone() {
             return None;
         }
         let vec_start = meta.slab_offset + layout.vector_range_at(slot.slot).start as u64;
-        let mut out = vec![0u8; layout.vector_stride()];
-        self.slab.read(vec_start, &mut out);
-        Some((row_meta.vertex.vertex_id(), out))
+        out.clear();
+        out.resize(layout.vector_stride(), 0);
+        self.slab.read(vec_start, out);
+        Some((row_meta.vertex.vertex_id(), out.as_slice()))
     }
 
     /// Page/batch visitor over one partition's page chain. Each page is bulk-read once into
@@ -1209,8 +1223,9 @@ mod tests {
         assert_eq!(slot.slot, 0);
 
         let store = open(&mm);
+        let mut buf = Vec::new();
         let (vertex_id, vec) = store
-            .read_row_bytes(7, slot)
+            .read_row_bytes(7, slot, &mut buf)
             .expect("row present after reopen");
         assert_eq!(vertex_id, 100);
         // Row bytes are pad-stride wide; the payload is at the front.
@@ -1316,7 +1331,10 @@ mod tests {
             page_id: 0,
             slot: 0,
         };
-        let (_, vec) = store.read_row_bytes(1, slot).expect("row present");
+        let mut buf = Vec::new();
+        let (_, vec) = store
+            .read_row_bytes(1, slot, &mut buf)
+            .expect("row present");
         assert_eq!(vec.len(), 16);
         assert_eq!(&vec[8..], &[0u8; 8], "pad region is zeroed");
         // A reset + reappend over the same slab bytes still yields a finite row. The head allocator
@@ -1327,7 +1345,7 @@ mod tests {
             .append_row(1, 1, 0, &d, subject(2), &bytes(3.0, 4.0))
             .unwrap();
         let (_, vec) = store
-            .read_row_bytes(1, slot)
+            .read_row_bytes(1, slot, &mut buf)
             .expect("row present after reset");
         assert_eq!(&vec[8..], &[0u8; 8], "pad stays zeroed across slab reuse");
     }
@@ -1352,8 +1370,9 @@ mod tests {
         assert_eq!(meta.live_count, 1);
         assert_eq!(meta.tombstone_count, 1);
         assert_eq!(head_live_len(1, 1, 0), 1);
+        let mut buf = Vec::new();
         assert!(
-            store.read_row_bytes(1, slot).is_none(),
+            store.read_row_bytes(1, slot, &mut buf).is_none(),
             "tombstoned row unreadable"
         );
     }
@@ -1368,9 +1387,10 @@ mod tests {
             .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
             .unwrap();
         let oob = SlotRef { slot: 9, ..slot };
-        assert!(store.read_row_bytes(1, oob).is_none());
+        let mut buf = Vec::new();
+        assert!(store.read_row_bytes(1, oob, &mut buf).is_none());
         store.tombstone_row(1, slot);
-        assert!(store.read_row_bytes(1, slot).is_none());
+        assert!(store.read_row_bytes(1, slot, &mut buf).is_none());
     }
 
     #[test]

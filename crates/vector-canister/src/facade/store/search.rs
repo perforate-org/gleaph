@@ -428,6 +428,7 @@ impl VectorCanisterStore {
         q_norm: f32,
     ) -> Result<VectorSearchResult, VectorCanisterError> {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut row_buf = Vec::new();
 
         PAGE_STORE.with_borrow(|store| {
             VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
@@ -442,7 +443,9 @@ impl VectorCanisterStore {
                     let Some(slot) = value.current_slot_for(active_index_version) else {
                         continue;
                     };
-                    let Some((vertex_id, bytes)) = store.read_row_bytes(index_id, slot) else {
+                    let Some((vertex_id, bytes)) =
+                        store.read_row_bytes(index_id, slot, &mut row_buf)
+                    else {
                         continue;
                     };
                     // Positional + payload validation: the row's packed vertex id must match the
@@ -461,7 +464,7 @@ impl VectorCanisterStore {
                     } else {
                         f32::INFINITY
                     };
-                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
+                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
                         continue;
                     };
                     push_bounded(
@@ -492,6 +495,7 @@ impl VectorCanisterStore {
         q_norm: f32,
     ) -> VectorSearchResult {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut row_buf = Vec::new();
 
         PAGE_STORE.with_borrow(|store| {
             VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
@@ -508,7 +512,9 @@ impl VectorCanisterStore {
                     let Some(slot) = value.current_slot_for(active_index_version) else {
                         continue;
                     };
-                    let Some((vertex_id, bytes)) = store.read_row_bytes(req.index_id, slot) else {
+                    let Some((vertex_id, bytes)) =
+                        store.read_row_bytes(req.index_id, slot, &mut row_buf)
+                    else {
                         continue;
                     };
                     // Positional + payload validation: the row's packed vertex id must match the
@@ -527,7 +533,7 @@ impl VectorCanisterStore {
                     } else {
                         f32::INFINITY
                     };
-                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
+                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
                         continue;
                     };
                     push_bounded(
