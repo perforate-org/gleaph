@@ -571,9 +571,9 @@ impl VectorCanisterStore {
                 };
                 let page_key = PageKey::new(
                     index_id,
-                    slot.index_version,
+                    slot.index_version as u64,
                     slot.partition_id,
-                    slot.page_id,
+                    slot.page_id as u64,
                 );
                 rows.push((page_key, *subject, slot));
             }

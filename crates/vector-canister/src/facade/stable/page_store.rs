@@ -731,9 +731,9 @@ impl VectorSlabStore {
         VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.insert(head_key, head));
 
         Ok(SlotRef {
-            index_version,
+            index_version: index_version as u32,
             partition_id,
-            page_id,
+            page_id: page_id as u32,
             slot,
         })
     }
@@ -745,9 +745,9 @@ impl VectorSlabStore {
     pub(crate) fn tombstone_row(&mut self, index_id: u32, slot: SlotRef) -> bool {
         let page_key = PageKey::new(
             index_id,
-            slot.index_version,
+            slot.index_version as u64,
             slot.partition_id,
-            slot.page_id,
+            slot.page_id as u64,
         );
         let Some(mut meta) = self.meta.get(&page_key) else {
             return false;
@@ -776,7 +776,7 @@ impl VectorSlabStore {
         meta.live_count = meta.live_count.saturating_sub(1);
         self.meta.insert(page_key, meta);
 
-        let head_key = PartitionKey::new(index_id, slot.index_version, slot.partition_id);
+        let head_key = PartitionKey::new(index_id, slot.index_version as u64, slot.partition_id);
         VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
             if let Some(mut head) = h.get(&head_key) {
                 head.live_len = head.live_len.saturating_sub(1);
@@ -792,9 +792,9 @@ impl VectorSlabStore {
     pub(crate) fn read_row_bytes(&self, index_id: u32, slot: SlotRef) -> Option<(u32, Vec<u8>)> {
         let page_key = PageKey::new(
             index_id,
-            slot.index_version,
+            slot.index_version as u64,
             slot.partition_id,
-            slot.page_id,
+            slot.page_id as u64,
         );
         let meta = self.meta.get(&page_key)?;
         if slot.slot >= meta.row_count {
@@ -865,9 +865,9 @@ impl VectorSlabStore {
                 }
                 let info = scratch.row_info(slot);
                 let slot_ref = SlotRef {
-                    index_version,
+                    index_version: index_version as u32,
                     partition_id,
-                    page_id: key.page_id,
+                    page_id: key.page_id as u32,
                     slot,
                 };
                 visitor(slot_ref, &info, scratch.vec_slice(slot));
@@ -1317,7 +1317,7 @@ mod tests {
         assert_eq!(s2.page_id, 1, "run table full -> new page");
         assert_eq!(s2.slot, 0);
 
-        let mut seen: Vec<(u64, u32)> = Vec::new();
+        let mut seen: Vec<(u32, u32)> = Vec::new();
         store.visit_partition_pages(1, 1, 0, &mut PageScratch::new(), |slot, info, _| {
             seen.push((slot.page_id, info.shard_id));
         });

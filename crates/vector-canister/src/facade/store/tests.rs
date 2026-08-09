@@ -1645,7 +1645,7 @@ fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
     for v in 1..=4u32 {
         let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
         let shadow = entry.shadow_slot.expect("shadow slot");
-        assert_eq!(shadow.index_version, TARGET_V);
+        assert_eq!(shadow.index_version, TARGET_V as u32);
     }
 }
 
@@ -1806,7 +1806,7 @@ fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
     for v in 1..=4u32 {
         let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
         let slot = entry.slot.expect("collapsed live slot");
-        assert_eq!(slot.index_version, TARGET_V);
+        assert_eq!(slot.index_version, TARGET_V as u32);
         assert_eq!(entry.shadow_slot, None);
     }
 }
@@ -2066,7 +2066,7 @@ fn mutation_during_cleaning_collapses_on_touch() {
     // Now in Cleaning; subject 2 is not yet collapsed (slot @ old version, shadow @ target).
     let pre = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
     assert_eq!(pre.slot.unwrap().index_version, 1);
-    assert_eq!(pre.shadow_slot.unwrap().index_version, TARGET_V);
+    assert_eq!(pre.shadow_slot.unwrap().index_version, TARGET_V as u32);
 
     // Touch subject 2: a newer-version upsert must operate on the target version and collapse it.
     store
@@ -2075,7 +2075,7 @@ fn mutation_during_cleaning_collapses_on_touch() {
     let post = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
     assert_eq!(
         post.slot.unwrap().index_version,
-        TARGET_V,
+        TARGET_V as u32,
         "collapsed to target"
     );
     assert_eq!(post.shadow_slot, None, "shadow cleared on touch");
@@ -2180,7 +2180,7 @@ fn post_publish_nlist_gt_1_upsert_assigns_nearest_partition() {
         .expect("post-publish upsert");
     let entry = store.subject_entry_for_test(INDEX_ID, subject(50)).unwrap();
     let slot = entry.slot.unwrap();
-    assert_eq!(slot.index_version, TARGET_V);
+    assert_eq!(slot.index_version, TARGET_V as u32);
     assert_eq!(
         slot.partition_id, 0,
         "value 0 lands in centroid-0 partition"

@@ -287,11 +287,17 @@ impl Storable for IvfCentroidMeta {
 /// `SlotRef` carries no per-row generation: freshness is validated positionally by the caller
 /// against `VECTOR_SUBJECT_TO_ID`, and the slot must be in range and non-tombstoned to read (ADR 0064
 /// §7).
+///
+/// `index_version` and `page_id` are stored as `u32` to keep the subject-map value compact. Both are
+/// small in practice (`index_version` is the physical index generation, incremented per rebuild;
+/// `page_id` is bounded by the page count within a partition). Callers widen to `u64` when building
+/// `PageKey`/`PartitionKey` or comparing against the `u64` active/target index version; this is a
+/// fail-closed assumption that neither exceeds `u32::MAX`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SlotRef {
-    pub index_version: u64,
+    pub index_version: u32,
     pub partition_id: u32,
-    pub page_id: u64,
+    pub page_id: u32,
     pub slot: u32,
 }
 
@@ -339,12 +345,12 @@ impl SubjectMapEntry {
     /// live slot through this so freshness is never read off the wrong version (ADR 0031 Slice 7).
     pub fn current_slot_for(&self, active_index_version: u64) -> Option<SlotRef> {
         if let Some(slot) = self.slot
-            && slot.index_version == active_index_version
+            && slot.index_version as u64 == active_index_version
         {
             return Some(slot);
         }
         if let Some(shadow) = self.shadow_slot
-            && shadow.index_version == active_index_version
+            && shadow.index_version as u64 == active_index_version
         {
             return Some(shadow);
         }

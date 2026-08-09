@@ -790,7 +790,7 @@ impl VectorCanisterStore {
                     }
                     if value
                         .shadow_slot
-                        .is_some_and(|s| s.index_version == target_index_version)
+                        .is_some_and(|s| s.index_version as u64 == target_index_version)
                     {
                         continue; // already shadowed (e.g. by dual-write)
                     }
@@ -1193,7 +1193,7 @@ impl VectorCanisterStore {
                 last_key = Some(*key);
                 let value = entry.value();
                 if let Some(shadow) = value.shadow_slot
-                    && shadow.index_version == target
+                    && shadow.index_version as u64 == target
                 {
                     updates.push((*key, shadow));
                 }
@@ -1239,7 +1239,10 @@ impl VectorCanisterStore {
                 examined += 1;
                 last_key = Some(*key);
                 let value = entry.value();
-                if value.shadow_slot.is_some_and(|s| s.index_version == target) {
+                if value
+                    .shadow_slot
+                    .is_some_and(|s| s.index_version as u64 == target)
+                {
                     keys.push(*key);
                 }
             }
