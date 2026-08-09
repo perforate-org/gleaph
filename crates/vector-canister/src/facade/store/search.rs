@@ -22,7 +22,7 @@ use crate::facade::stable::page_store::{PageScratch, RowInfo};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
-use crate::records::{PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
+use crate::records::{PageKey, PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
@@ -411,12 +411,18 @@ impl VectorCanisterStore {
         Ok(())
     }
 
-    /// Slice 6 exact scan restricted to a bounded candidate allowlist.
+    /// Filtered scan over a bounded candidate allowlist, batch-read page-major.
     ///
     /// Precondition: `candidates` has already passed [`validate_candidate_allowlist`], so the scan
     /// only resolves each subject to its current live slot, scores, and pushes through the bounded
     /// top-k heap. Deleted, stale, or superseded subjects are skipped silently; they represent
     /// derived-index drift rather than protocol violations.
+    ///
+    /// Pass 1 resolves each live candidate's current slot and subject-map stamp; pass 2 groups those
+    /// slots by page and bulk-reads each distinct page once (via [`VectorSlabStore::load_page`] into a
+    /// reused [`PageScratch`]) instead of calling `read_row_bytes` once per candidate. The early-exit
+    /// threshold is order-independent (a partial sum already exceeding the k-th best proves the row
+    /// cannot be in the top-k), so the page-major order yields the same exact top-k.
     fn candidate_subject_scan(
         &self,
         index_id: u32,
@@ -427,54 +433,91 @@ impl VectorCanisterStore {
         top_k: u32,
         q_norm: f32,
     ) -> Result<VectorSearchResult, VectorCanisterError> {
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-
-        PAGE_STORE.with_borrow(|store| {
-            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                for subject in candidates {
-                    let key = SubjectKey::new(index_id, *subject);
-                    let Some(value) = subjects.get(&key) else {
-                        continue;
-                    };
-                    if value.deleted {
-                        continue;
-                    }
-                    let Some(slot) = value.current_slot_for(active_index_version) else {
-                        continue;
-                    };
-                    let Some((vertex_id, bytes)) = store.read_row_bytes(index_id, slot) else {
-                        continue;
-                    };
-                    // Positional + payload validation: the row's packed vertex id must match the
-                    // allowlisted subject (the shard is known from the allowlist).
-                    let VectorSubject::Vertex {
-                        shard_id: _,
-                        vertex_id: subject_vertex,
-                    } = *subject;
-                    if vertex_id != subject_vertex {
-                        continue;
-                    }
-                    // The L2 early-exit threshold is the current k-th best, applied only once the
-                    // heap is full (a partial max before then would wrongly skip top-k candidates).
-                    let threshold = if heap.len() as u32 == top_k {
-                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                    } else {
-                        f32::INFINITY
-                    };
-                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
-                        continue;
-                    };
-                    push_bounded(
-                        &mut heap,
-                        top_k,
-                        Candidate {
-                            distance,
-                            subject: *subject,
-                            mutation_id: value.stamp,
-                        },
-                    );
+        // Pass 1: resolve current slots and stamps. The list is bounded by
+        // `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`; the stamp is required to build each `Candidate`.
+        let mut rows: Vec<(PageKey, VectorSubject, SlotRef, u64)> =
+            Vec::with_capacity(candidates.len());
+        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+            for subject in candidates {
+                let key = SubjectKey::new(index_id, *subject);
+                let Some(value) = subjects.get(&key) else {
+                    continue;
+                };
+                if value.deleted {
+                    continue;
                 }
-            });
+                let Some(slot) = value.current_slot_for(active_index_version) else {
+                    continue;
+                };
+                let page_key = PageKey::new(
+                    index_id,
+                    slot.index_version,
+                    slot.partition_id,
+                    slot.page_id,
+                );
+                rows.push((page_key, *subject, slot, value.stamp));
+            }
+        });
+        if rows.is_empty() {
+            return Ok(VectorSearchResult { hits: Vec::new() });
+        }
+        // Pass 2: page-major order so each distinct page is bulk-read once.
+        rows.sort_by_key(|(page, _, slot, _)| (*page, slot.slot));
+
+        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut scratch = PageScratch::new();
+        PAGE_STORE.with_borrow(|store| {
+            let mut i = 0;
+            while i < rows.len() {
+                let page_key = rows[i].0;
+                let page_loaded = store.load_page(page_key, &mut scratch);
+                let mut end = i + 1;
+                while end < rows.len() && rows[end].0 == page_key {
+                    end += 1;
+                }
+                if page_loaded {
+                    let row_count = scratch.row_count();
+                    for (_, subject, slot, stamp) in &rows[i..end] {
+                        // Defensive parity with `read_row_bytes`: a slot at/after `row_count` is
+                        // uninitialized; a tombstoned row is not the live slot.
+                        if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                            continue;
+                        }
+                        // Positional + payload validation: the row's packed vertex id must match the
+                        // allowlisted subject (the shard is known from the allowlist).
+                        let vertex_id = scratch.row_info(slot.slot).vertex_id;
+                        let VectorSubject::Vertex {
+                            shard_id: _,
+                            vertex_id: subject_vertex,
+                        } = *subject;
+                        if vertex_id != subject_vertex {
+                            continue;
+                        }
+                        // The L2 early-exit threshold is the current k-th best, applied only once the
+                        // heap is full (a partial max before then would wrongly skip top-k candidates).
+                        let threshold = if heap.len() as u32 == top_k {
+                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                        } else {
+                            f32::INFINITY
+                        };
+                        let bytes = scratch.vec_slice(slot.slot);
+                        let Some(distance) = score_row(metric, bytes, query, q_norm, threshold)
+                        else {
+                            continue;
+                        };
+                        push_bounded(
+                            &mut heap,
+                            top_k,
+                            Candidate {
+                                distance,
+                                subject: *subject,
+                                mutation_id: *stamp,
+                            },
+                        );
+                    }
+                }
+                i = end;
+            }
         });
 
         Ok(finalize(heap))

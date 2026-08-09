@@ -241,16 +241,18 @@ pub(crate) struct PageScratch {
     buf: Vec<u8>,
     layout: PageLayout,
     run_count: u32,
+    row_count: u32,
 }
 
 impl PageScratch {
     pub(crate) fn new() -> Self {
-        // Placeholder geometry; `load` overwrites both fields before any decode.
+        // Placeholder geometry; `load` overwrites every field before any decode.
         let placeholder = PageHeader::new(1, 16, 4, 1).expect("placeholder page header");
         Self {
             buf: Vec::new(),
             layout: PageLayout::new(&placeholder).expect("placeholder layout"),
             run_count: 0,
+            row_count: 0,
         }
     }
 
@@ -261,16 +263,23 @@ impl PageScratch {
         slab.read(meta.slab_offset, &mut self.buf[..layout.page_len()]);
         self.layout = layout;
         self.run_count = header.run_count;
+        self.row_count = meta.row_count;
     }
 
-    fn is_tombstoned(&self, slot: u32) -> bool {
+    /// Number of written rows in the loaded page; slots `>= row_count` are uninitialized and must be
+    /// skipped (the same guard `read_row_bytes` applies).
+    pub(crate) fn row_count(&self) -> u32 {
+        self.row_count
+    }
+
+    pub(crate) fn is_tombstoned(&self, slot: u32) -> bool {
         let r = self.layout.row_meta_range_at(slot);
         let meta = RowMeta::from_bytes(&self.buf[r.start..r.end], self.layout.meta_stride())
             .expect("decode row meta");
         meta.vertex.is_tombstone()
     }
 
-    fn row_info(&self, slot: u32) -> RowInfo {
+    pub(crate) fn row_info(&self, slot: u32) -> RowInfo {
         let r = self.layout.row_meta_range_at(slot);
         let meta = RowMeta::from_bytes(&self.buf[r.start..r.end], self.layout.meta_stride())
             .expect("decode row meta");
@@ -297,7 +306,7 @@ impl PageScratch {
         );
     }
 
-    fn vec_slice(&self, slot: u32) -> &[u8] {
+    pub(crate) fn vec_slice(&self, slot: u32) -> &[u8] {
         let r = self.layout.vector_range_at(slot);
         &self.buf[r.start..r.end]
     }
@@ -805,6 +814,22 @@ impl VectorSlabStore {
         let mut out = vec![0u8; layout.vector_stride()];
         self.slab.read(vec_start, &mut out);
         Some((row_meta.vertex.vertex_id(), out))
+    }
+
+    /// Bulk-reads one specific page into `scratch`. Returns `false` when the page is absent from the
+    /// directory or its header is invalid, so the caller skips the page group (the same fail path as
+    /// `read_row_bytes`'s `None`). `scratch` is reused across pages, so a scan pays one bulk read per
+    /// distinct page instead of one per row.
+    pub(crate) fn load_page(&self, page_key: PageKey, scratch: &mut PageScratch) -> bool {
+        let Some(meta) = self.meta.get(&page_key) else {
+            return false;
+        };
+        let header = self.read_page_header(meta.slab_offset);
+        if PageLayout::new(&header).is_err() {
+            return false;
+        }
+        scratch.load(&self.slab, &meta, &header);
+        true
     }
 
     /// Page/batch visitor over one partition's page chain. Each page is bulk-read once into
@@ -1371,6 +1396,44 @@ mod tests {
         assert!(store.read_row_bytes(1, oob).is_none());
         store.tombstone_row(1, slot);
         assert!(store.read_row_bytes(1, slot).is_none());
+    }
+
+    #[test]
+    fn load_page_loads_distinct_pages_distinctly_and_rejects_missing() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2); // 2 rows per page
+        let mut store = open(&mm);
+        let s0 = store
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0))
+            .unwrap();
+        let s1 = store
+            .append_row(1, 1, 0, &d, subject(2), &bytes(2.0, 0.0))
+            .unwrap();
+        let s2 = store
+            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 0.0))
+            .unwrap();
+        assert_eq!((s0.page_id, s1.page_id), (0, 0));
+        assert_eq!(s2.page_id, 1, "third row rolls to page 1");
+
+        let mut scratch = PageScratch::new();
+        assert!(store.load_page(PageKey::new(1, 1, 0, 0), &mut scratch));
+        assert_eq!(scratch.row_count(), 2);
+        assert_eq!(scratch.row_info(0).vertex_id, 1);
+        assert_eq!(&scratch.vec_slice(0)[..8], bytes(1.0, 0.0).as_slice());
+        assert!(!scratch.is_tombstoned(0));
+
+        // A distinct page decodes distinct content, not the previously loaded page.
+        assert!(store.load_page(PageKey::new(1, 1, 0, 1), &mut scratch));
+        assert_eq!(scratch.row_count(), 1);
+        assert_eq!(
+            scratch.row_info(0).vertex_id,
+            3,
+            "page 1 row 0 is vertex 3, not page-0's vertex 1"
+        );
+
+        // Missing page / invalid page id returns false.
+        assert!(!store.load_page(PageKey::new(1, 1, 0, 99), &mut scratch));
     }
 
     #[test]

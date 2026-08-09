@@ -3445,6 +3445,44 @@ fn candidate_search_preserves_none_as_unrestricted_path() {
 }
 
 #[test]
+fn candidate_scan_page_major_matches_exact_scan_across_pages() {
+    let store = fresh_store();
+    // d = 4 F32: pad stride 16, meta 4. A small page budget forces 2 rows per page, so five rows
+    // span three pages ([0,1], [2,3], [4]) and the candidate scan must bulk-read every page.
+    store
+        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80)
+        .expect("create");
+    assert_eq!(store.def_for_test(INDEX_ID).unwrap().slots_per_page, 2);
+
+    for (v, value) in [(0u32, 0.0f32), (1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0)] {
+        store
+            .vector_upsert(shard_canister(), &upsert_vec(v, 1, value))
+            .expect("upsert");
+    }
+
+    // Query at 4.0 puts vertex 4 (the last row, last page) in the top-3, so a page-major scan that
+    // drops or misreads a later page would diverge from the exact (read_row_bytes) scan.
+    let allowlist: Vec<VectorSubject> = (0..5).map(subject).collect();
+    let mut req = search_value(4.0, 3);
+    req.candidate_subjects = Some(allowlist);
+    let batched = store.vector_search(&req).expect("batched candidate scan");
+    let exact = store
+        .vector_search(&search_value(4.0, 3))
+        .expect("exact scan");
+    assert_eq!(
+        batched.hits, exact.hits,
+        "page-major candidate scan must equal the exact read_row_bytes scan across pages"
+    );
+    assert_eq!(
+        batched.hits[0].subject,
+        subject(4),
+        "last-page vertex is nearest"
+    );
+    assert_eq!(batched.hits[1].subject, subject(3));
+    assert_eq!(batched.hits[2].subject, subject(2));
+}
+
+#[test]
 fn candidate_search_rejects_oversized_allowlist() {
     let store = fresh_store();
     let mut req = search_value(0.0, 10);
