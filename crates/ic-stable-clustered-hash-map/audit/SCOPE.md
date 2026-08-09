@@ -83,6 +83,7 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
 - `Abstract.lean` (Stage 1: state model + invariants + assumptions)
 - `Map.lean` (Stage 2: transcription of the map logic)
 - `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample)
-- `Soundness.lean` (Stage 3: proofs — target (a) `size_up` entry preservation proved;
-  the remap part of (a) and targets (b)/(c) are deferred with `sorry` + comments)
-- The final `REPORT.md` is still to be added under `audit/`
+- `Soundness.lean` (Stage 3: proofs — target (a) `size_up`/`remap` entry preservation
+  proved; target (b) step-level invariant preservation proved; the chain-level
+  maintenance for insert/remove/remap and target (c) are deferred with `sorry` + comments)
+- `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)
