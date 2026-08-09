@@ -353,6 +353,35 @@ lemma bucketAt_in_scan (s : State) (b i i' : Nat) (hle : i ≤ i') (hlt : i' < e
     BucketAt s i' = b :=
   bucketAt_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt
 
+-- The cluster scan never returns a slot before where it started.
+lemma endOfClusterFrom_ge_aux (s : State) (b : Nat) :
+    ∀ m i, capacity s.n - i = m → i ≤ endOfClusterFrom s b i := by
+  intro m
+  induction m using Nat.strong_induction_on with
+  | h m ih =>
+      intro i hm
+      by_cases hicap : i < capacity s.n
+      · by_cases hguard : IsOccupied s i ∧ BucketAt s i = b
+        · have hrecur : endOfClusterFrom s b i = endOfClusterFrom s b (i + 1) := by
+            rw [endOfClusterFrom]
+            simp [hicap, hguard]
+          have hm' : capacity s.n - (i + 1) < m := by omega
+          have hge : i + 1 ≤ endOfClusterFrom s b (i + 1) :=
+            ih (capacity s.n - (i + 1)) hm' (i + 1) rfl
+          rw [hrecur]
+          omega
+        · have heq : endOfClusterFrom s b i = i := by
+            rw [endOfClusterFrom]
+            simp [hicap, hguard]
+          rw [heq]
+      · have heq : endOfClusterFrom s b i = i := by
+          rw [endOfClusterFrom]
+          simp [hicap]
+        rw [heq]
+
+lemma endOfClusterFrom_ge (s : State) (b i : Nat) : i ≤ endOfClusterFrom s b i :=
+  endOfClusterFrom_ge_aux s b (capacity s.n - i) i rfl
+
 -- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
 -- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
 -- `relocateStep_preserves_clusterInvariant`), so the invariant holds throughout the chain.
