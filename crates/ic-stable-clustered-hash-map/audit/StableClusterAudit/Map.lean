@@ -8,6 +8,7 @@ of scope. Every definition cites the Rust line range. Proof obligations (termina
 invariant preservation) are deferred to Stage 3 and left as `sorry` with comments.
 -/
 
+import Mathlib
 import StableClusterAudit.Abstract
 
 open StableCluster

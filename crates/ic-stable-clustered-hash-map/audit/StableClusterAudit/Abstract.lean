@@ -9,6 +9,8 @@ magic, memory growth and `OutOfMemory`/`InsertError` paths are out of scope. Key
 abstract type; the hash is a deterministic function (SCOPE.md §5).
 -/
 
+import Mathlib
+
 namespace StableCluster
 
 /-!
@@ -16,11 +18,11 @@ namespace StableCluster
 -/
 
 -- Abstract key type. The implementation requires `K: Storable + PartialEq`; here we only
--- need decidable equality for probing.
+-- need decidable equality for probing. `Classical.decEq` supplies it non-constructively,
+-- which is all the model requires.
 -- src/map.rs L106: `impl<K: Storable + PartialEq, V: Storable, M: Memory>`
 axiom Key : Type
-axiom KeyDecEq : DecidableEq Key
-noncomputable instance : DecidableEq Key := KeyDecEq
+noncomputable instance : DecidableEq Key := Classical.decEq Key
 
 -- Deterministic hash of a key (rapidhash v3, constant seed). The hash internals are out
 -- of scope; we treat it as a deterministic function of the key.
