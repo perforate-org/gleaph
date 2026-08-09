@@ -38,37 +38,37 @@ benches:
   bench_clustered_get:
     total:
       calls: 1
-      instructions: 17375056
+      instructions: 17393680
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_get:
         calls: 1
-        instructions: 17374061
+        instructions: 17392685
         heap_increase: 0
         stable_memory_increase: 0
   bench_clustered_insert:
     total:
       calls: 1
-      instructions: 161405821
+      instructions: 161667181
       heap_increase: 5
       stable_memory_increase: 0
     scopes:
       bench_clustered_insert:
         calls: 1
-        instructions: 161404826
+        instructions: 161666186
         heap_increase: 5
         stable_memory_increase: 0
   bench_clustered_remove:
     total:
       calls: 1
-      instructions: 38521639
+      instructions: 38556747
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_remove:
         calls: 1
-        instructions: 38520644
+        instructions: 38555752
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.7.0

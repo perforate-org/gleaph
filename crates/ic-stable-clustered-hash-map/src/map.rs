@@ -19,16 +19,16 @@
 //! ----------------------------------------
 //! Reserved space         ↕ 43 bytes
 //! ---------------------------------------- <- Address 64
-//! Entries: [K + V + distance(u16); capacity]
+//! Entries: [K + V + distance(u32); capacity]
 //!   capacity = 2^N + N   (overflow area = N)
 //! ----------------------------------------
 //! Unallocated space
 //! ```
 //!
-//! `distance == u16::MAX` marks an empty slot (real distances are bounded by the overflow area `N`,
-//! far below `u16::MAX`). Buckets are `lower N bits of (rapidhash(key) * 2^64/phi)` (Fibonacci
-//! hashing). The hash is **not stored** (saves 8B/entry); lookup compares keys directly and remap
-//! recomputes `rapidhash`.
+//! `distance == u32::MAX` marks an empty slot. Real distances are checked at insert and must stay
+//! strictly below it; an overflow traps (rolling back the message on the IC). Buckets are `lower N
+//! bits of (rapidhash(key) * 2^64/phi)` (Fibonacci hashing). The hash is **not stored** (saves
+//! 8B/entry); lookup compares keys directly and remap recomputes `rapidhash`.
 //!
 //! `K` and `V` must be **fixed-size** [`Storable`](ic_stable_structures::Storable). All mutations use
 //! `&self` via [`Memory`](ic_stable_structures::Memory).
@@ -43,9 +43,8 @@ use rapidhash::v3::{DEFAULT_RAPID_SECRETS, rapidhash_v3_inline};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-/// Empty marker: a real distance is bounded by the overflow area `N`, so `u16::MAX` is never a real
-/// distance.
-const EMPTY: u16 = u16::MAX;
+/// Empty marker: `u32::MAX` is never a real distance (distances are checked at insert).
+const EMPTY: u32 = u32::MAX;
 /// `2^64 / phi` (golden ratio), the Fibonacci hashing multiplier.
 const FIB_CONST: u64 = 11400714819323198485;
 /// Initial `log2_buckets`: 2^3 = 8 buckets, capacity = 8 + 3 = 11.
@@ -86,11 +85,23 @@ fn hash_key(key: &[u8]) -> u64 {
     rapidhash_v3_inline::<true, false, false>(key, &DEFAULT_RAPID_SECRETS)
 }
 
+/// Converts a `u64` distance to the stored width, trapping if it would reach the [`EMPTY`] marker
+/// (real distances must stay strictly below it). On the IC a trap rolls back the whole message, so
+/// the map is never left partially written.
+fn checked_distance(distance: u64) -> u32 {
+    assert!(
+        distance < EMPTY as u64,
+        "distance overflow: a bucket's cluster exceeds the maximum representable distance ({})",
+        EMPTY - 1
+    );
+    distance as u32
+}
+
 /// An in-memory entry used during insert relocation.
 struct Entry<K, V> {
     key: K,
     value: V,
-    distance: u16,
+    distance: u32,
 }
 
 /// Stable clustered hash map over a [`Memory`] region.
@@ -115,7 +126,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         }
         let capacity = (1u64 << header.log2_buckets) + header.log2_buckets as u64;
         let expected =
-            DATA_OFFSET + capacity * (header.key_size as u64 + header.value_size as u64 + 2);
+            DATA_OFFSET + capacity * (header.key_size as u64 + header.value_size as u64 + 4);
         if memory.size() * 65536 < expected {
             return Err(InitError::InvalidLayout);
         }
@@ -134,7 +145,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         }
         let n = DEFAULT_LOG2_BUCKETS;
         let capacity = (1u64 << n) + n as u64;
-        let size = DATA_OFFSET + capacity * (key_size as u64 + value_size as u64 + 2);
+        let size = DATA_OFFSET + capacity * (key_size as u64 + value_size as u64 + 4);
         grow_memory_to_at_least_bytes(&memory, size).map_err(|_| InitError::OutOfMemory)?;
         header::write_header(&memory, n, key_size, value_size);
         Self::clear_region(&memory, 0, capacity, key_size, value_size);
@@ -192,7 +203,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     }
 
     fn entry_stride(&self) -> u64 {
-        self.key_size() as u64 + self.value_size() as u64 + 2
+        self.key_size() as u64 + self.value_size() as u64 + 4
     }
 
     fn entry_offset(&self, i: u64) -> u64 {
@@ -211,13 +222,13 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         self.entry_offset(i) + self.key_size() as u64 + self.value_size() as u64
     }
 
-    fn read_distance(&self, i: u64) -> u16 {
-        let mut buf = [0u8; 2];
+    fn read_distance(&self, i: u64) -> u32 {
+        let mut buf = [0u8; 4];
         self.memory.read(self.distance_offset(i), &mut buf);
-        u16::from_le_bytes(buf)
+        u32::from_le_bytes(buf)
     }
 
-    fn write_distance(&self, i: u64, d: u16) {
+    fn write_distance(&self, i: u64, d: u32) {
         self.memory.write(self.distance_offset(i), &d.to_le_bytes());
     }
 
@@ -421,19 +432,21 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             let n = self.log2_buckets();
             let b = bucket(hash_key(&key.to_bytes()), n);
             let insert_position = self.find_insert_position(b);
+            let distance = checked_distance(insert_position - b);
             let entry = Entry {
                 key,
                 value,
-                distance: (insert_position - b) as u16,
+                distance,
             };
             self.insert_and_relocate(entry, insert_position, true)?;
             self.set_len(self.len() + 1);
             return Ok(None);
         }
+        let distance = checked_distance(insert_position - b);
         let entry = Entry {
             key,
             value,
-            distance: (insert_position - b) as u16,
+            distance,
         };
         self.insert_and_relocate(entry, insert_position, true)?;
         self.set_len(self.len() + 1);
@@ -468,7 +481,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             let t = self.read_entry(position);
             let next = self.end_of_cluster_by_position(position);
             let mut t = t;
-            t.distance = (t.distance as u64 + (next - position)) as u16;
+            t.distance = checked_distance(t.distance as u64 + (next - position));
             self.write_entry(position, &entry);
             entry = t;
             position = next;
@@ -501,7 +514,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             }
             let next = self.tail_of_cluster_by_position(position + 1);
             let mut tail = self.read_entry(next);
-            tail.distance = (tail.distance as u64 - (next - position)) as u16;
+            tail.distance = (tail.distance as u64 - (next - position)) as u32;
             self.write_entry(position, &tail);
             position = next;
         }
@@ -572,7 +585,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         let entry = Entry {
             key,
             value,
-            distance: (insert_position - new_bucket) as u16,
+            distance: checked_distance(insert_position - new_bucket),
         };
         let last_affected = self
             .insert_and_relocate(entry, insert_position, false)
@@ -588,13 +601,13 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// large writes instead of one 2-byte write per slot.
     fn clear_region<M2: Memory>(memory: &M2, start: u64, end: u64, key_size: u32, value_size: u32) {
         const CHUNK: u64 = 64;
-        let stride = key_size as u64 + value_size as u64 + 2;
+        let stride = key_size as u64 + value_size as u64 + 4;
         let dist_offset = key_size as u64 + value_size as u64;
         // Build one chunk of `CHUNK` entries: [0; key] [0; value] [EMPTY] repeated.
         let mut chunk = vec![0u8; (CHUNK * stride) as usize];
         for i in 0..CHUNK {
             let e = (i * stride + dist_offset) as usize;
-            chunk[e..e + 2].copy_from_slice(&EMPTY.to_le_bytes());
+            chunk[e..e + 4].copy_from_slice(&EMPTY.to_le_bytes());
         }
         let mut i = start;
         while i < end {
@@ -612,6 +625,24 @@ mod tests {
 
     fn fresh() -> StableClusteredHashMap<u64, u64, VectorMemory> {
         StableClusteredHashMap::new(VectorMemory::default()).expect("new")
+    }
+
+    #[test]
+    fn checked_distance_accepts_up_to_empty_minus_one() {
+        assert_eq!(checked_distance(0), 0);
+        assert_eq!(checked_distance(EMPTY as u64 - 1), EMPTY - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "distance overflow")]
+    fn checked_distance_panics_at_empty() {
+        checked_distance(EMPTY as u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "distance overflow")]
+    fn checked_distance_panics_on_huge() {
+        checked_distance(u64::MAX);
     }
 
     #[test]
