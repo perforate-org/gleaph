@@ -2788,7 +2788,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: 1.25f32,
-                mutation_id: 0,
             },
             VectorSearchHit {
                 subject: VectorSubject::Vertex {
@@ -2796,7 +2795,6 @@ mod tests {
                     vertex_id: 9,
                 },
                 distance: 2.5f32,
-                mutation_id: 0,
             },
         ];
         let by_shard = build_search_seeds("d", "distance", &[], &hits, VectorMetric::L2Squared)
@@ -2821,7 +2819,6 @@ mod tests {
                 vertex_id: 5,
             },
             distance: 0.0f32,
-            mutation_id: 0,
         }];
         let by_shard = build_search_seeds(
             "d",
@@ -2846,7 +2843,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: 1.0f32,
-                mutation_id: 0,
             },
             VectorSearchHit {
                 subject: VectorSubject::Vertex {
@@ -2854,7 +2850,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: 2.0f32,
-                mutation_id: 0,
             },
         ];
         let err = build_search_seeds("d", "distance", &[], &hits, VectorMetric::L2Squared)
@@ -3116,7 +3111,6 @@ mod tests {
                 vertex_id: 7,
             },
             distance: 1.0,
-            mutation_id: 0,
         };
         let (count, mock) = vector_search_counter(vec![stale_hit]);
         let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
@@ -3157,7 +3151,6 @@ mod tests {
                 vertex_id: 7,
             },
             distance: 0.25f32,
-            mutation_id: 0,
         }];
         let by_shard = build_search_seeds("d", "similarity", &[], &hits, VectorMetric::Cosine)
             .expect("build seeds");
@@ -3175,7 +3168,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: bad,
-                mutation_id: 0,
             }];
             let err = build_search_seeds("d", "distance", &[], &hits, VectorMetric::L2Squared)
                 .expect_err("non-finite distance must fail");
@@ -3196,7 +3188,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: bad,
-                mutation_id: 0,
             }];
             let err = build_search_seeds("d", "similarity", &[], &hits, VectorMetric::Cosine)
                 .expect_err("non-finite score must fail");
@@ -3365,7 +3356,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: 1.25f32,
-                mutation_id: 0,
             },
             VectorSearchHit {
                 subject: VectorSubject::Vertex {
@@ -3373,7 +3363,6 @@ mod tests {
                     vertex_id: 8,
                 },
                 distance: 2.25f32,
-                mutation_id: 0,
             },
         ];
         let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
@@ -3404,7 +3393,6 @@ mod tests {
                 vertex_id: 7,
             },
             distance: 1.25f32,
-            mutation_id: 0,
         }];
         let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
         let by_shard = build_resolved_search_wires(
@@ -3438,7 +3426,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: 1.0f32,
-                mutation_id: 0,
             },
             VectorSearchHit {
                 subject: VectorSubject::Vertex {
@@ -3446,7 +3433,6 @@ mod tests {
                     vertex_id: 7,
                 },
                 distance: 2.0f32,
-                mutation_id: 0,
             },
         ];
         let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
@@ -3473,7 +3459,6 @@ mod tests {
                 vertex_id: 7,
             },
             distance: f32::NAN,
-            mutation_id: 0,
         }];
         let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
         let err = build_resolved_search_wires(
@@ -3502,7 +3487,6 @@ mod tests {
                 vertex_id: 7,
             },
             distance: 1.25f32,
-            mutation_id: 0,
         }];
         let (count, mock) = vector_search_counter(hits);
         let result = pollster::block_on(try_execute_gql_search(
