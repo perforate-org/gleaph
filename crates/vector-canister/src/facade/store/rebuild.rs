@@ -589,48 +589,90 @@ impl VectorCanisterStore {
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_sampling_scan");
-            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                let capacity = subjects.capacity();
-                // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
-                // resized the map, invalidating the slot cursor).
-                let start_slot = match cursor {
-                    Some(c) if c.capacity == capacity => c.slot,
-                    _ => 0,
-                };
-                let mut iter = subjects.iter_from(start_slot);
-                while let Some((key, value)) = iter.next() {
-                    if key.index_id != index_id {
-                        continue; // slot order is not index-major
-                    }
-                    if examined >= max_subjects {
-                        range_exhausted = false;
-                        break;
-                    }
-                    examined += 1;
-                    last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                    if value.deleted {
-                        continue;
-                    }
-                    let Some(slot) = value.current_slot_for(active) else {
-                        continue;
+            // Phase 1: walk the subject map and collect live subjects to sample, keyed by their
+            // active page. The byte budget is charged by row stride so the buffered `live_bytes`
+            // stays bounded; the actual bytes are read in phase 2 (mirrors the rebuild `Building`
+            // scan and the search exact-scan).
+            let mut to_read: Vec<(PageKey, SlotRef)> = Vec::new();
+            {
+                VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                    let capacity = subjects.capacity();
+                    // Restart from slot 0 if the saved capacity no longer matches (a concurrent
+                    // mutation resized the map, invalidating the slot cursor).
+                    let start_slot = match cursor {
+                        Some(c) if c.capacity == capacity => c.slot,
+                        _ => 0,
                     };
-                    if subjects_scanned >= sample_limit as u64 {
-                        range_exhausted = false;
-                        break;
+                    let mut iter = subjects.iter_from(start_slot);
+                    while let Some((key, value)) = iter.next() {
+                        if key.index_id != index_id {
+                            continue; // slot order is not index-major
+                        }
+                        if examined >= max_subjects {
+                            range_exhausted = false;
+                            break;
+                        }
+                        examined += 1;
+                        last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
+                        if value.deleted {
+                            continue;
+                        }
+                        let Some(slot) = value.current_slot_for(active) else {
+                            continue;
+                        };
+                        if subjects_scanned >= sample_limit as u64 {
+                            range_exhausted = false;
+                            break;
+                        }
+                        subjects_scanned += 1;
+                        bytes_buffered += def.pad_stride_bytes as u64;
+                        to_read.push((
+                            PageKey::new(
+                                index_id,
+                                slot.index_version as u64,
+                                slot.partition_id,
+                                slot.page_id as u64,
+                            ),
+                            slot,
+                        ));
+                        // Bound transient heap bytes: break after buffering at least one vector once
+                        // the per-step byte budget is reached (cursor resumes from `last_cursor`).
+                        if bytes_buffered >= max_vector_bytes {
+                            range_exhausted = false;
+                            break;
+                        }
                     }
-                    subjects_scanned += 1;
-                    if let Some(bytes) = self.read_slot_bytes(index_id, slot) {
-                        bytes_buffered += bytes.len() as u64;
-                        live_bytes.push(bytes);
+                });
+            }
+            // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
+            // each sampled row's bytes into `live_bytes`. A slot at/after `row_count` or tombstoned
+            // is dropped, matching the per-subject `read_row_bytes` `None` path.
+            {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("rebuild_sampling_read");
+                to_read.sort_by_key(|(page_key, _)| *page_key);
+                let mut scratch = PageScratch::new();
+                let mut i = 0usize;
+                while i < to_read.len() {
+                    let page_key = to_read[i].0;
+                    let loaded =
+                        PAGE_STORE.with_borrow(|store| store.load_page(page_key, &mut scratch));
+                    let mut end = i + 1;
+                    while end < to_read.len() && to_read[end].0 == page_key {
+                        end += 1;
                     }
-                    // Bound transient heap bytes: break after buffering at least one vector once the
-                    // per-step byte budget is reached (cursor resumes from `last_cursor`).
-                    if bytes_buffered >= max_vector_bytes {
-                        range_exhausted = false;
-                        break;
+                    if loaded {
+                        let row_count = scratch.row_count();
+                        for (_, slot) in &to_read[i..end] {
+                            if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                                continue;
+                            }
+                            live_bytes.push(scratch.vec_slice(slot.slot).to_vec());
+                        }
                     }
+                    i = end;
                 }
-            });
+            }
         }
 
         // Distinct membership via a transient set seeded from the existing pool (P1): keeps the
