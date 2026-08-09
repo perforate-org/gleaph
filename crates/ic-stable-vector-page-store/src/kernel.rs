@@ -128,6 +128,12 @@ pub fn l2_squared_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) ->
                 return None;
             }
         }
+        // A non-finite component makes the accumulated sum NaN (or overflow to inf); a NaN sum never
+        // triggers the strict `> threshold` early exit, so it reaches here and is skipped as a
+        // non-finite row (fusing the caller's finiteness guard into this single pass).
+        if !sum.is_finite() {
+            return None;
+        }
         Some(sum)
     }
     #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
@@ -139,6 +145,9 @@ pub fn l2_squared_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) ->
             if sum > threshold {
                 return None;
             }
+        }
+        if !sum.is_finite() {
+            return None;
         }
         Some(sum)
     }
@@ -365,6 +374,24 @@ mod tests {
         assert_eq!(
             l2_squared_f32_early_exit(&f32_row(&v), &q, f32::NAN),
             Some(8.0)
+        );
+    }
+
+    #[test]
+    fn l2_early_exit_skips_non_finite_row() {
+        let q = vec![0.0f32; 8];
+        // A NaN component poisons the partial sum; even with an infinite threshold it must be
+        // skipped (fused finiteness), never returned as a NaN distance.
+        let v_nan = vec![f32::NAN, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        assert_eq!(
+            l2_squared_f32_early_exit(&f32_row(&v_nan), &q, f32::INFINITY),
+            None
+        );
+        // +inf component is likewise non-finite and skipped.
+        let v_inf = vec![f32::INFINITY, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        assert_eq!(
+            l2_squared_f32_early_exit(&f32_row(&v_inf), &q, f32::INFINITY),
+            None
         );
     }
 

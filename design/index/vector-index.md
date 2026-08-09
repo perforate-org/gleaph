@@ -296,7 +296,9 @@ family: inverted index + uncompressed vectors + exact rerank).
 - **L2 (default)**: `sub-square` SIMD (`Σ(q−v)²`) with HARMONY-style **dimension-blocked early exit**
   (prewarm the k-th best with the first rows, then stop each row's SIMD once its partial distance
   exceeds the running threshold; block order per-query by descending `‖q_block‖`). Monotone partial
-  sums make early exit safe; no per-row norm is stored.
+  sums make early exit safe; no per-row norm is stored. Finiteness is **fused into the kernel**: a
+  non-finite component makes the partial sum non-finite, which is skipped (returns no hit) in the same
+  pass — there is no separate `row_is_finite` pre-scan on the L2 path.
 - **Cosine**: normalized vectors stored at ingest; score is `1 − dot` only.
 - The `dot + norms` formulation (FMA inner loop, precomputed `‖v‖²`) remains an opt-in alternative.
 - SIMD is `f32x4` with multi-accumulator batching; the scratch is 16-byte aligned and decoded by

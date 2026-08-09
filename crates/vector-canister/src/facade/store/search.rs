@@ -118,12 +118,14 @@ fn score_row(
     q_norm: f32,
     threshold: f32,
 ) -> Option<f32> {
-    if !row_is_finite(bytes, query.len()) {
-        return None;
-    }
     match metric {
+        // L2 finiteness is fused into the early-exit kernel: a non-finite row yields a non-finite
+        // sum and is skipped (`None`) in the same pass, so no separate `row_is_finite` pre-scan.
         VectorMetric::L2Squared => l2_squared_f32_early_exit(bytes, query, threshold),
         VectorMetric::Cosine => {
+            if !row_is_finite(bytes, query.len()) {
+                return None;
+            }
             let (dot, v_norm2) = dot_and_norm2_f32(bytes, query);
             if v_norm2 == 0.0 {
                 return None;
