@@ -1179,29 +1179,50 @@ fn l2_metric_mismatch_on_later_upsert_fails_closed() {
 }
 
 #[test]
-fn cosine_partition_page_scan_is_not_supported() {
+fn cosine_partition_scan_returns_cosine_ordered_rows() {
     let store = fresh_store();
-    // Seed an `nlist = 2` index with no rows; centroids are ready so the partition-page path is
-    // selected, then fail-closed because cosine is exact-scan only in this slice.
+    // Unit centroids along the axes so L2-based selection is cosine-ordered (L2²(q,c) = 2 − 2cos
+    // on unit vectors).
+    let centroids = vec![vec![1.0f32, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]];
+    // Rows in distinct directions (normalized at append); two per partition.
+    let rows: Vec<(VectorSubject, Vec<f32>)> = [
+        (1u32, [2.0f32, 0.1, 0.0, 0.0]), // near centroid 0 (+x)
+        (2, [0.1, 2.0, 0.0, 0.0]),       // near centroid 1 (+y)
+        (3, [1.5, 0.2, 0.0, 0.0]),       // near centroid 0
+        (4, [0.2, 1.5, 0.0, 0.0]),       // near centroid 1
+    ]
+    .map(|(v, dir)| (subject(v), dir.to_vec()))
+    .to_vec();
     store.seed_ivf_with_metric_for_test(
         INDEX_ID,
         VectorEncoding::F32,
         DIMS,
         VectorMetric::Cosine,
-        &two_clusters(),
-        &[],
+        &centroids,
+        &rows,
     );
-    let err = store
+    // Query along +x: nearest centroid is partition 0. With the default eps=0 only partition 0 is
+    // scanned, so the top hits are rows 1 and 3 (both x-direction), ordered by 1 − cos.
+    let result = store
         .vector_search(&search_metric_from(
-            &[1.0f32; DIMS as usize],
+            &[1.0f32, 0.0, 0.0, 0.0],
             10,
             VectorMetric::Cosine,
         ))
-        .expect_err("partition-page cosine must fail closed");
-    assert!(matches!(
-        err,
-        VectorCanisterError::MetricNotSupportedForPartitionScan
-    ));
+        .expect("partitioned cosine search");
+    assert_eq!(result.hits[0].subject, subject(1));
+    assert_eq!(result.hits[1].subject, subject(3));
+    // A full scan (eps = INF) returns all four, still cosine-ordered (x-rows first).
+    let all = store
+        .vector_search_tuned(
+            &search_metric_from(&[1.0f32, 0.0, 0.0, 0.0], 10, VectorMetric::Cosine),
+            SearchTuning {
+                eps_query: f32::INFINITY,
+            },
+        )
+        .expect("full cosine scan");
+    assert_eq!(all.hits.len(), 4);
+    assert_eq!(all.hits[0].subject, subject(1));
 }
 
 #[test]
@@ -1245,22 +1266,20 @@ fn cosine_rebuild_succeeds_with_spherical_kmeans() {
             Some(TARGET_V as u32)
         );
     }
-    // Publish, then an nlist>1 cosine search fails closed until Phase 2 (cosine partition scan).
+    // Publish, then the nlist>1 cosine index uses the partition scan (Phase 2) and still returns
+    // 1 − cos ordering.
     store
         .admin_publish_vector_rebuild(router(), INDEX_ID)
         .expect("publish");
     drive_cleanup(&store, INDEX_ID);
-    let err = store
+    let result = store
         .vector_search(&search_metric_from(
             &[1.0f32; DIMS as usize],
             10,
             VectorMetric::Cosine,
         ))
-        .expect_err("nlist>1 cosine partition scan not yet supported");
-    assert!(matches!(
-        err,
-        VectorCanisterError::MetricNotSupportedForPartitionScan
-    ));
+        .expect("partitioned cosine search");
+    assert!(!result.hits.is_empty());
 }
 
 #[test]

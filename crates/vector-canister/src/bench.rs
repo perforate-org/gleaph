@@ -255,6 +255,53 @@ fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore
     store
 }
 
+/// Seeds a trained, clustered cosine partitioned `ivf_flat` index: **unit** centroids in distinct
+/// directions (so L2-based partition selection is cosine-ordered), with `n` varied-direction vectors
+/// assigned round-robin to clusters. Cosine rows are unit-normalized at append, so each cluster holds
+/// unit vectors near its centroid direction; a smaller `eps_query` scans fewer populated clusters.
+fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
+    let store = VectorCanisterStore::new();
+    store
+        .init_from_args(&VectorCanisterInitArgs {
+            router_canister: router(),
+        })
+        .expect("init");
+    let centroids: Vec<Vec<f32>> = (0..nlist)
+        .map(|c| {
+            let raw: Vec<f32> = (0..dims)
+                .map(|j| (c as f32 + 1.0) * 0.3 + j as f32 * 0.01 + 1.0)
+                .collect();
+            let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+            raw.iter().map(|x| x / norm).collect()
+        })
+        .collect();
+    let vectors: Vec<(VectorSubject, Vec<f32>)> = (0..n)
+        .map(|i| {
+            let c = (i % nlist) as usize;
+            let jitter = (i / nlist) as f32 * 0.001;
+            // Slightly perturb the centroid direction so every row is distinct but nearest to its
+            // own cluster.
+            let raw: Vec<f32> = centroids[c].iter().map(|x| x + jitter).collect();
+            (
+                VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: i,
+                },
+                raw,
+            )
+        })
+        .collect();
+    store.seed_ivf_with_metric_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        dims,
+        VectorMetric::Cosine,
+        &centroids,
+        &vectors,
+    );
+    store
+}
+
 macro_rules! partitioned_bench {
     ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr) => {
         #[bench(raw)]
@@ -310,6 +357,40 @@ partitioned_bench!(bench_ivf_d1536_nlist64_eps1, 1536, 64, 1.0);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps0, 1536, 256, 0.0);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps05, 1536, 256, 0.5);
 partitioned_bench!(bench_ivf_d1536_nlist256_eps1, 1536, 256, 1.0);
+
+/// Cosine ε₂ sweep over a partitioned cosine index (unit centroids make L2 selection cosine-ordered):
+/// a smaller `eps_query` scans fewer populated clusters, so `eps_query = INF` is the exact-parity
+/// upper bound and the eps0/eps05 costs show the scan-row reduction vs the exact scan.
+macro_rules! partitioned_cosine_bench {
+    ($name:ident, $dims:expr, $nlist:expr, $eps_query:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_partitioned_cosine_store($dims, SCAN_N, $nlist);
+            let req = search_req_metric_value($dims, 10, 1.0, VectorMetric::Cosine);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = store
+                    .vector_search_tuned(
+                        black_box(&req),
+                        SearchTuning {
+                            eps_query: $eps_query,
+                        },
+                    )
+                    .expect("vector_search_tuned");
+                black_box(result);
+            })
+        }
+    };
+}
+
+partitioned_cosine_bench!(bench_ivf_cosine_d1536_nlist64_eps0, 1536, 64, 0.0);
+partitioned_cosine_bench!(bench_ivf_cosine_d1536_nlist64_eps05, 1536, 64, 0.5);
+partitioned_cosine_bench!(
+    bench_ivf_cosine_d1536_nlist64_epsinf,
+    1536,
+    64,
+    f32::INFINITY
+);
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
 

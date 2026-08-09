@@ -510,7 +510,6 @@ impl VectorCanisterStore {
 
         // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
         // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
-        // Cosine only supports the exact-scan path in this slice.
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
             Ok(self.exact_subject_scan(
                 req,
@@ -520,8 +519,6 @@ impl VectorCanisterStore {
                 def.metric,
                 q_norm,
             ))
-        } else if def.metric == VectorMetric::Cosine {
-            Err(VectorCanisterError::MetricNotSupportedForPartitionScan)
         } else {
             Ok(self.partition_page_scan(req, &def, &query, tuning, q_norm))
         }

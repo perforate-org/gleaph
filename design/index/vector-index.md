@@ -306,7 +306,10 @@ family: inverted index + uncompressed vectors + exact rerank).
   non-finite and the row is skipped) — no separate `row_is_finite` pre-scan. Cosine rebuilds train
   with **spherical k-means**: candidate rows and centroids are unit, so `L2²(cand, centroid) =
 2 − 2·cos` makes the L2 assignment cosine-aware; recomputed centroid means are renormalized to unit
-  (a zero-norm mean keeps the previous centroid).
+  (a zero-norm mean keeps the previous centroid). Because cosine centroids are unit, the nlist > 1
+  cosine index uses the **same ε₂ partition scan as L2**: `L2²(q, c) = ‖q‖² + 1 − 2·dot(q,c)` is
+  monotone in `dot` for a fixed query, so the L2-based partition selection is cosine-ordered and bounds
+  the scanned rows.
 - The `dot + norms` formulation (FMA inner loop, precomputed `‖v‖²`) remains an opt-in alternative.
 - SIMD is `f32x4` with multi-accumulator batching; the scratch is 16-byte aligned and decoded by
   direct reinterpretation (no per-row `Vec<f32>` allocation). Partition routing (`assign_partition`),
