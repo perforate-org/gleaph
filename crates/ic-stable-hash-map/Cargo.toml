@@ -1,0 +1,23 @@
+[package]
+name = "ic-stable-hash-map"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ic-stable-structures.workspace = true
+rapidhash.workspace = true
+
+[features]
+canbench = ["dep:canbench-rs", "dep:ic-cdk", "dep:candid"]
+
+[dependencies.canbench-rs]
+version = "0.7"
+optional = true
+
+[dependencies.ic-cdk]
+workspace = true
+optional = true
+
+[dependencies.candid]
+workspace = true
+optional = true

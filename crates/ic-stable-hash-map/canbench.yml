@@ -1,0 +1,2 @@
+# canbench configuration for ic-stable-hash-map
+# Run from `crates/ic-stable-hash-map`: `canbench`.
