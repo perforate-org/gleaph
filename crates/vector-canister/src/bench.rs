@@ -365,6 +365,27 @@ rebuild_full_bench!(bench_rebuild_full_d128_nlist16, 128, 16);
 rebuild_full_bench!(bench_rebuild_full_d384_nlist16, 384, 16);
 rebuild_full_bench!(bench_rebuild_full_d768_nlist64, 768, 64);
 
+/// Full rebuild over well-separated clustered data (`setup_partitioned_store`), the realistic case
+/// for embeddings. With furthest-point seeding + the early-convergence exit, k-means converges in a
+/// few iterations, so this measures the real-world rebuild cost that the linear-ramp variant (a
+/// k-means worst case) understates.
+macro_rules! rebuild_full_clustered_bench {
+    ($name:ident, $dims:expr, $nlist:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_partitioned_store($dims, REBUILD_N, $nlist);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                run_full_rebuild(&store, REBUILD_N, $nlist);
+            })
+        }
+    };
+}
+
+rebuild_full_clustered_bench!(bench_rebuild_full_clustered_d128_nlist16, 128, 16);
+rebuild_full_clustered_bench!(bench_rebuild_full_clustered_d384_nlist16, 384, 16);
+rebuild_full_clustered_bench!(bench_rebuild_full_clustered_d768_nlist64, 768, 64);
+
 macro_rules! training_step_bench {
     ($name:ident, $dims:expr, $nlist:expr) => {
         /// Cost of one k-means-lite `Training` iteration over the full candidate pool (ADR 0031
