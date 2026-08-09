@@ -315,6 +315,45 @@ pub struct VectorSearchResult {
     pub hits: Vec<VectorSearchHit>,
 }
 
+/// Merge hits from multiple vector targets into a global deterministic top-k (ADR 0064
+/// Multi-canister readiness). All targets share the same metric/dims/encoding, so `distance` values are
+/// comparable. Deduplicates by subject (keeping the best/lowest distance), orders by
+/// `(distance, subject)`, and truncates to `top_k`. Uses the standard `RandomState` hasher.
+pub fn merge_vector_search_results(
+    results: Vec<VectorSearchResult>,
+    top_k: u32,
+) -> VectorSearchResult {
+    merge_vector_search_results_with_hasher(
+        results,
+        top_k,
+        std::collections::hash_map::RandomState::new(),
+    )
+}
+
+/// [`merge_vector_search_results`] with a caller-supplied `BuildHasher`, so a caller that depends on a
+/// fast hasher (e.g. `rapidhash`) can deduplicate without `gleaph-graph-kernel` depending on it.
+pub fn merge_vector_search_results_with_hasher<S: std::hash::BuildHasher>(
+    results: Vec<VectorSearchResult>,
+    top_k: u32,
+    hasher: S,
+) -> VectorSearchResult {
+    let mut hits: Vec<VectorSearchHit> = results.into_iter().flat_map(|r| r.hits).collect();
+    // Sort by (distance, subject) so the first occurrence of each subject is the best.
+    hits.sort_by(|a, b| {
+        a.distance
+            .partial_cmp(&b.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.subject.cmp(&b.subject))
+    });
+    // Dedupe by subject, keeping the best (first, since sorted).
+    let mut seen: std::collections::HashSet<VectorSubject, S> =
+        std::collections::HashSet::with_hasher(hasher);
+    hits.retain(|hit| seen.insert(hit.subject));
+    // Truncate to top_k.
+    hits.truncate(top_k as usize);
+    VectorSearchResult { hits }
+}
+
 /// Phase tag of a per-index rebuild lifecycle (ADR 0031 Slice 7). Mirrors the durable
 /// `VectorRebuildStateRecord` but carries no cursors or per-subject collections — only a bounded
 /// scalar snapshot for the admin status query.
@@ -984,6 +1023,99 @@ mod tests {
                 .specs_for_label(crate::entry::VertexLabelId::from_raw(3))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn merge_vector_search_results_dedupes_orders_and_truncates() {
+        let subject = |shard, vertex| VectorSubject::Vertex {
+            shard_id: ShardId::new(shard),
+            vertex_id: vertex,
+        };
+        let hit = |subject, distance| VectorSearchHit {
+            subject,
+            distance,
+            mutation_id: 1,
+        };
+        let results = vec![
+            VectorSearchResult {
+                hits: vec![hit(subject(0, 1), 0.5), hit(subject(0, 2), 0.3)],
+            },
+            VectorSearchResult {
+                hits: vec![hit(subject(0, 1), 0.2), hit(subject(0, 3), 0.4)],
+            },
+        ];
+        // Dedupe: subject (0,1) keeps the best distance 0.2. Order by (distance, subject):
+        // (0,1)=0.2, (0,2)=0.3, (0,3)=0.4. Truncate to top_k=2.
+        let merged = merge_vector_search_results(results, 2);
+        assert_eq!(merged.hits.len(), 2);
+        assert_eq!(merged.hits[0].subject, subject(0, 1));
+        assert_eq!(merged.hits[0].distance, 0.2);
+        assert_eq!(merged.hits[1].subject, subject(0, 2));
+        assert_eq!(merged.hits[1].distance, 0.3);
+    }
+
+    #[test]
+    fn merge_vector_search_results_empty_and_truncation() {
+        assert!(merge_vector_search_results(vec![], 10).hits.is_empty());
+        let s1 = VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: 1,
+        };
+        let s2 = VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: 2,
+        };
+        let results = vec![VectorSearchResult {
+            hits: vec![
+                VectorSearchHit {
+                    subject: s1,
+                    distance: 0.1,
+                    mutation_id: 1,
+                },
+                VectorSearchHit {
+                    subject: s2,
+                    distance: 0.2,
+                    mutation_id: 1,
+                },
+            ],
+        }];
+        let merged = merge_vector_search_results(results, 1);
+        assert_eq!(merged.hits.len(), 1);
+        assert_eq!(merged.hits[0].subject, s1);
+    }
+
+    #[test]
+    fn merge_vector_search_results_with_custom_hasher() {
+        // A caller-supplied hasher (e.g. rapidhash in the Router) deduplicates identically; the
+        // `_with_hasher` variant keeps the hasher out of gleaph-graph-kernel's dependencies.
+        let subject = VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: 1,
+        };
+        let results = vec![
+            VectorSearchResult {
+                hits: vec![VectorSearchHit {
+                    subject,
+                    distance: 0.5,
+                    mutation_id: 1,
+                }],
+            },
+            VectorSearchResult {
+                hits: vec![VectorSearchHit {
+                    subject,
+                    distance: 0.2,
+                    mutation_id: 1,
+                }],
+            },
+        ];
+        let merged = merge_vector_search_results_with_hasher(
+            results,
+            1,
+            std::collections::hash_map::RandomState::new(),
+        );
+        assert_eq!(merged.hits.len(), 1);
+        assert_eq!(merged.hits[0].subject, subject);
+        assert_eq!(merged.hits[0].distance, 0.2);
     }
 
     #[test]
