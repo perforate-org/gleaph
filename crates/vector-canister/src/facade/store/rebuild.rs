@@ -25,13 +25,14 @@ use super::{
     MAX_REBUILD_STEP_VECTOR_BYTES, MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS,
     MAX_REBUILD_TRAINING_ITERATIONS, VectorCanisterStore,
 };
+use crate::facade::stable::page_store::PageScratch;
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_PARTITION_HEADS,
     VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
-    FixedSubjectMapEntry, IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey,
-    SubjectScanCursor, VectorRebuildStateRecord,
+    FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionKey, RawRebuildState, SlotRef,
+    SubjectKey, SubjectScanCursor, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -836,57 +837,98 @@ impl VectorCanisterStore {
         let mut last_cursor: Option<SubjectScanCursor> = None;
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
-        // (subject key, owned subject entry, active slot, active bytes) for subjects still needing a
-        // shadow. The owned entry is carried so the append loop can write its `shadow_slot` with a
-        // single map insert instead of a get + insert.
         let mut pending: Vec<ShadowPendingRow> = Vec::new();
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_building_scan");
-            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                let capacity = subjects.capacity();
-                // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
-                // resized the map, invalidating the slot cursor).
-                let start_slot = match cursor {
-                    Some(c) if c.capacity == capacity => c.slot,
-                    _ => 0,
-                };
-                let mut iter = subjects.iter_from(start_slot);
-                while let Some((key, value)) = iter.next() {
-                    if key.index_id != index_id {
-                        continue; // slot order is not index-major
-                    }
-                    if examined >= max_subjects {
-                        range_exhausted = false;
-                        break;
-                    }
-                    examined += 1;
-                    last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                    if value.deleted {
-                        continue;
-                    }
-                    if value
-                        .shadow_slot
-                        .is_some_and(|s| s.index_version as u64 == target_index_version)
-                    {
-                        continue; // already shadowed (e.g. by dual-write)
-                    }
-                    let Some(active_slot) = value.current_slot_for(active) else {
-                        continue;
+            // Phase 1: walk the subject map and collect subjects still needing a shadow, keyed by
+            // their active page. The byte budget is charged by row stride (the bytes each shadow row
+            // will carry) so the buffered `pending` stays bounded; the actual bytes are read in phase
+            // 2.
+            let mut to_read: Vec<(PageKey, SubjectKey, FixedSubjectMapEntry, SlotRef)> = Vec::new();
+            {
+                VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                    let capacity = subjects.capacity();
+                    // Restart from slot 0 if the saved capacity no longer matches (a concurrent
+                    // mutation resized the map, invalidating the slot cursor).
+                    let start_slot = match cursor {
+                        Some(c) if c.capacity == capacity => c.slot,
+                        _ => 0,
                     };
-                    let Some(bytes) = self.read_slot_bytes(index_id, active_slot) else {
-                        continue;
-                    };
-                    bytes_buffered += bytes.len() as u64;
-                    pending.push((key, value, active_slot, bytes));
-                    // Bound transient heap bytes: break after buffering at least one vector once the
-                    // per-step byte budget is reached (cursor resumes from `last_cursor`).
-                    if bytes_buffered >= max_vector_bytes {
-                        range_exhausted = false;
-                        break;
+                    let mut iter = subjects.iter_from(start_slot);
+                    while let Some((key, value)) = iter.next() {
+                        if key.index_id != index_id {
+                            continue; // slot order is not index-major
+                        }
+                        if examined >= max_subjects {
+                            range_exhausted = false;
+                            break;
+                        }
+                        examined += 1;
+                        last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
+                        if value.deleted {
+                            continue;
+                        }
+                        if value
+                            .shadow_slot
+                            .is_some_and(|s| s.index_version as u64 == target_index_version)
+                        {
+                            continue; // already shadowed (e.g. by dual-write)
+                        }
+                        let Some(active_slot) = value.current_slot_for(active) else {
+                            continue;
+                        };
+                        bytes_buffered += def.pad_stride_bytes as u64;
+                        to_read.push((
+                            PageKey::new(
+                                index_id,
+                                active_slot.index_version as u64,
+                                active_slot.partition_id,
+                                active_slot.page_id as u64,
+                            ),
+                            key,
+                            value,
+                            active_slot,
+                        ));
+                        // Bound transient heap bytes: break after buffering at least one vector once
+                        // the per-step byte budget is reached (cursor resumes from `last_cursor`).
+                        if bytes_buffered >= max_vector_bytes {
+                            range_exhausted = false;
+                            break;
+                        }
                     }
+                });
+            }
+            // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
+            // each row's bytes. A subject whose slot is at/after `row_count` or is tombstoned is
+            // dropped, matching the per-subject `read_row_bytes` `None` path.
+            {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("rebuild_building_read");
+                to_read.sort_by_key(|(page_key, _, _, _)| *page_key);
+                let mut scratch = PageScratch::new();
+                let mut i = 0usize;
+                while i < to_read.len() {
+                    let page_key = to_read[i].0;
+                    let loaded =
+                        PAGE_STORE.with_borrow(|store| store.load_page(page_key, &mut scratch));
+                    let mut end = i + 1;
+                    while end < to_read.len() && to_read[end].0 == page_key {
+                        end += 1;
+                    }
+                    if loaded {
+                        let row_count = scratch.row_count();
+                        for (_, key, entry, slot) in &to_read[i..end] {
+                            if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
+                                continue;
+                            }
+                            let bytes = scratch.vec_slice(slot.slot).to_vec();
+                            pending.push((*key, *entry, *slot, bytes));
+                        }
+                    }
+                    i = end;
                 }
-            });
+            }
         }
 
         {

@@ -306,7 +306,9 @@ table in cached locals and commits the directory (`VECTOR_PAGE_META` + `VECTOR_P
 `live_len`) at page granularity rather than per row. Write-then-commit still holds per page: the
 only fallible step is `reserve_page` (slab `grow`) when opening a page, and pages already closed
 before a mid-batch failure are committed while the in-flight page is left uncommitted. The
-single-row `append_row` remains the dual-write upsert path.
+single-row `append_row` remains the dual-write upsert path. On the read side, `Building` reads each
+distinct active page once via `load_page` into a reused `PageScratch` (extracting each shadow
+candidate's bytes with `vec_slice`) instead of one `read_row_bytes` per subject.
 
 Because `append_row` is fallible, mutation ordering is branch-specific:
 

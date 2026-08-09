@@ -557,9 +557,10 @@ Execution flow:
    `stride_bytes` scales with `dims`), always buffering at least one vector to guarantee progress — so
    neither a malformed huge `max_subjects` nor a large `dims` can make one message perform an
    unbounded scan or buffer unbounded heap bytes. Insufficient distinct live vectors ends in `Failed`
-   (sampling-only, O(1) recoverable to `Idle` via abort). `Building` appends each partition's shadow
-   rows in one batched page-store call (see ADR 0032 `append_rows`), amortizing the page-directory
-   commits across the partition's rows.
+   (sampling-only, O(1) recoverable to `Idle` via abort). `Building` reads each distinct active page
+   once via the page store's `load_page` into a reused `PageScratch` (rather than one `read_row_bytes`
+   per subject) and appends each partition's shadow rows in one batched page-store call (see ADR 0032
+   `append_rows`), amortizing the page-directory reads/commits across the partition's rows.
 3. While `Building` or `ReadyToPublish` is active, `vector_upsert` and `vector_remove` dual-write:
    they update the active version used by current search and the shadow version being prepared for
    publish. Stale replay, remove, update, resurrection, and incarnation ordering are identical in both
