@@ -1939,6 +1939,31 @@ pub fn index_sync_status() -> gleaph_graph_kernel::federation::IndexSyncStatus {
     GraphStore::new().index_sync_status()
 }
 
+/// Installs the Router-owned indexed-property catalog for a PocketIC fixture write.
+///
+/// Production GQL execution carries this catalog on the Router → Graph request. The
+/// direct PocketIC helpers deliberately bypass that request to preserve explicit
+/// shard placement, so they must fetch the same authoritative catalog before their
+/// first canonical write rather than synthesize physical index identities.
+#[cfg(feature = "pocket-ic-e2e")]
+async fn e2e_router_catalog_guard(
+    store: &GraphStore,
+) -> Result<crate::index::catalog_context::CatalogGuard, String> {
+    let routing = store
+        .federation_routing()
+        .ok_or_else(|| "federation not configured".to_string())?;
+    let graph_name = store
+        .logical_graph_name()
+        .ok_or_else(|| "logical graph name not configured".to_string())?;
+    let catalog = crate::index::federation_routing::fetch_indexed_catalog(
+        routing.router_canister,
+        &graph_name,
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok(crate::index::catalog_context::enter(catalog))
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
     use crate::index::federation_routing;
@@ -1965,25 +1990,12 @@ pub async fn e2e_insert_vertex_with_property(
     use gleaph_graph_kernel::entry::PropertyId;
 
     let store = GraphStore::new();
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
-    // E2E scaffolding stands in for the router: supply the indexed catalog for the
-    // property under test so DML emits its posting (ADR 0023 D1/D3).
-    let _catalog =
-        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
-                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
-                    .expect("e2e physical id"),
-                catalog_epoch: 1,
-                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                property_id: args.property_id,
-                label_id: 0,
-            }],
-            ..Default::default()
-        });
     store
         .set_vertex_property(vertex_id, property_id, Value::Int64(args.value))
         .map_err(|e| e.to_string())?;
@@ -2012,32 +2024,11 @@ pub async fn e2e_insert_vertex_with_two_properties(
     use gleaph_graph_kernel::entry::PropertyId;
 
     let store = GraphStore::new();
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
         .map_err(|e| e.to_string())?;
-    let _catalog =
-        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            vertex_indexes: vec![
-                gleaph_graph_kernel::index::IndexedVertexMembership {
-                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
-                        .expect("e2e physical id"),
-                    catalog_epoch: 1,
-                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                    property_id: args.property_a,
-                    label_id: 0,
-                },
-                gleaph_graph_kernel::index::IndexedVertexMembership {
-                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
-                        .expect("e2e physical id"),
-                    catalog_epoch: 1,
-                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                    property_id: args.property_b,
-                    label_id: 0,
-                },
-            ],
-            ..Default::default()
-        });
     store
         .set_vertex_property(
             vertex_id,
@@ -2357,6 +2348,7 @@ pub async fn e2e_insert_directed_edge_with_property(
     use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 
     let store = GraphStore::new();
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
     let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
@@ -2364,20 +2356,6 @@ pub async fn e2e_insert_directed_edge_with_property(
         .insert_directed_edge(source, target, Some(label))
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
-    let _catalog =
-        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
-                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
-                    .expect("e2e physical id"),
-                catalog_epoch: 1,
-                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                label_id: args.edge_label_id,
-                property_id: args.property_id,
-                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
-                field_path: String::new(),
-            }],
-            ..Default::default()
-        });
     store
         .set_edge_property(
             handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
@@ -2406,6 +2384,7 @@ pub async fn e2e_insert_undirected_edge_with_property(
     use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 
     let store = GraphStore::new();
+    let _catalog = e2e_router_catalog_guard(&store).await?;
     let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
     let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
@@ -2413,20 +2392,6 @@ pub async fn e2e_insert_undirected_edge_with_property(
         .insert_undirected_edge(source, target, Some(label))
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
-    let _catalog =
-        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-            edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
-                physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
-                    .expect("e2e physical id"),
-                catalog_epoch: 1,
-                phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                label_id: args.edge_label_id,
-                property_id: args.property_id,
-                direction: gleaph_graph_kernel::index::EdgeIndexDirection::Any,
-                field_path: String::new(),
-            }],
-            ..Default::default()
-        });
     store
         .set_edge_property(
             handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),

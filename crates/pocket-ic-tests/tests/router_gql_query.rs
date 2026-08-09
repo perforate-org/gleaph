@@ -1320,7 +1320,8 @@ fn single_shard_undirected_edge_index_lifecycle() {
         "anonymous undirected expansion must return one row per endpoint without an index anchor"
     );
 
-    // Phase 2: undirected-only index seeds undirected equality queries.
+    // Phase 2: a post-CREATE Router GQL insert carries the active catalog and seeds
+    // an undirected equality query without relying on a pre-index fixture posting.
     create_undirected_edge_property_index(
         &env,
         LIFECYCLE_EDGE_WEIGHT_UNDIR_NAME,
@@ -1329,9 +1330,19 @@ fn single_shard_undirected_edge_index_lifecycle() {
         "lifecycle_undir_create",
     );
 
+    let indexed_insert = gql_mutate_as_admin(
+        &env,
+        "INSERT (:Person)~[:LifecycleKnowsUndir {weight: 7}]~(:Project)",
+        "lifecycle_undir_indexed_insert",
+    );
+    assert_eq!(
+        indexed_insert, 0,
+        "post-CREATE undirected GQL INSERT should return no rows"
+    );
+
     let seeded = gql_query_as_admin(
         &env,
-        "MATCH ()~[e:LifecycleKnowsUndir {weight: 5}]~() RETURN e",
+        "MATCH ()~[e:LifecycleKnowsUndir {weight: 7}]~() RETURN e",
     );
     assert_eq!(
         seeded.row_count, 1,
@@ -1339,16 +1350,14 @@ fn single_shard_undirected_edge_index_lifecycle() {
     );
 
     // Phase 3: directed inserts must not seed an undirected-only index (ADR 0012 subset rule).
-    let c = e2e_insert_vertex(&env, env.graph_source);
-    let d = e2e_insert_vertex(&env, env.graph_source);
-    e2e_insert_directed_edge_with_property(
+    let directed_insert = gql_mutate_as_admin(
         &env,
-        env.graph_source,
-        c.local_vertex_id,
-        d.local_vertex_id,
-        label.raw(),
-        weight.raw(),
-        6,
+        "INSERT (:Person)-[:LifecycleKnowsUndir {weight: 6}]->(:Project)",
+        "lifecycle_undir_directed_insert",
+    );
+    assert_eq!(
+        directed_insert, 0,
+        "post-CREATE directed GQL INSERT should return no rows"
     );
 
     let undirected_after_directed = gql_query_as_admin(
