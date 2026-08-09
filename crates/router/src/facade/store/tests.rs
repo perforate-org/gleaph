@@ -2528,12 +2528,77 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         emitted_delta_last_seq: None,
         hot_forward_vertices: Vec::new(),
     };
+    let before_canonical = store
+        .router_mutation_record(&key)
+        .expect("edge canonical-pending record");
+    let wrong_canonical_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_edge_batch_canonical_committed(
+            &key,
+            1,
+            wrong_canonical_fingerprint,
+            receipt.clone(),
+        )
+        .expect_err("a different Graph fingerprint must be rejected before canonical commit");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered canonical completion".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after canonical fingerprint rejection"),
+        before_canonical,
+        "a rejected canonical fingerprint must leave the durable record unchanged"
+    );
     store
         .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
         .expect("canonical completion");
+    let canonical_committed = store
+        .router_mutation_record(&key)
+        .expect("edge canonical-committed record");
     store
         .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
         .expect("idempotent canonical completion");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after canonical replay"),
+        canonical_committed,
+        "an exact canonical replay must leave the durable record unchanged"
+    );
+    let mut mismatched_receipt = receipt.clone();
+    mismatched_receipt.hot_forward_vertices = vec![7];
+    mismatched_receipt
+        .validate()
+        .expect("mismatched edge canonical receipt remains valid");
+    let err = store
+        .record_ordered_edge_batch_canonical_committed(
+            &key,
+            1,
+            graph_fingerprint,
+            mismatched_receipt,
+        )
+        .expect_err("a different canonical receipt must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered canonical completion conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after canonical receipt rejection"),
+        canonical_committed,
+        "a rejected canonical receipt must leave the durable record unchanged"
+    );
     let before_projection_pending = store
         .router_mutation_record(&key)
         .expect("edge canonical record before projection pending");
@@ -2573,6 +2638,22 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
             .expect("edge record after projection-pending replay"),
         projection_pending,
         "an exact projection-pending replay must leave the durable record unchanged"
+    );
+    let err = store
+        .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .expect_err("canonical commit after projection pending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered canonical completion conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after canonical progress conflict"),
+        projection_pending,
+        "a canonical progress conflict must leave the durable record unchanged"
     );
     let before_projection_advanced = projection_pending;
     let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
@@ -2981,18 +3062,83 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         hot_forward_vertices: Vec::new(),
         allocated_vertex_ids: vec![7],
     };
+    let before_canonical = store
+        .router_mutation_record(&key)
+        .expect("mixed canonical-pending record");
+    let wrong_canonical_fingerprint = {
+        let mut fingerprint = graph_fingerprint;
+        fingerprint[0] ^= 1;
+        fingerprint
+    };
+    let err = store
+        .record_ordered_mixed_batch_canonical_committed(
+            &key,
+            1,
+            wrong_canonical_fingerprint,
+            receipt.clone(),
+        )
+        .expect_err("a different mixed Graph fingerprint must be rejected before canonical commit");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "Graph request fingerprint mismatch at ordered mixed canonical completion".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after canonical fingerprint rejection"),
+        before_canonical,
+        "a rejected mixed canonical fingerprint must leave the durable record unchanged"
+    );
     store
         .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
         .expect("mixed canonical receipt");
-    let record = store
+    let canonical_committed = store
         .router_mutation_record(&key)
         .expect("mixed canonical record");
     assert!(matches!(
-        record.payload(),
+        canonical_committed.payload(),
         RouterMutationPayloadV1::OrderedMixedBatch(replay)
             if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalCommitted(ref persisted) if persisted == &receipt)
     ));
-    let before_projection_pending = record;
+    store
+        .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .expect("idempotent mixed canonical receipt");
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after canonical replay"),
+        canonical_committed,
+        "an exact mixed canonical replay must leave the durable record unchanged"
+    );
+    let mut mismatched_receipt = receipt.clone();
+    mismatched_receipt.allocated_vertex_ids = vec![8];
+    mismatched_receipt
+        .validate()
+        .expect("mismatched mixed canonical receipt remains valid");
+    let err = store
+        .record_ordered_mixed_batch_canonical_committed(
+            &key,
+            1,
+            graph_fingerprint,
+            mismatched_receipt,
+        )
+        .expect_err("a different mixed canonical receipt must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed canonical completion conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after canonical receipt rejection"),
+        canonical_committed,
+        "a rejected mixed canonical receipt must leave the durable record unchanged"
+    );
+    let before_projection_pending = canonical_committed;
     let wrong_pending_fingerprint = {
         let mut fingerprint = graph_fingerprint;
         fingerprint[0] ^= 1;
@@ -3031,6 +3177,22 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
             .expect("mixed record after projection-pending replay"),
         projection_pending,
         "an exact mixed projection-pending replay must leave the durable record unchanged"
+    );
+    let err = store
+        .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .expect_err("mixed canonical commit after projection pending must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered mixed canonical completion conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after canonical progress conflict"),
+        projection_pending,
+        "a mixed canonical progress conflict must leave the durable record unchanged"
     );
     let before_projection_advanced = projection_pending;
     let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {

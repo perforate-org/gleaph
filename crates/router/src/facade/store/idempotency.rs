@@ -62,11 +62,11 @@ enum OrderedBatchRetirementUpdate {
     IdempotentNoop,
 }
 
-/// The only durable writes an ordered projection callback may make.
+/// The only durable writes an ordered batch progress callback may make.
 ///
 /// `Persist` records the requested progress transition; `IdempotentNoop` leaves an exact replay
 /// untouched.
-enum OrderedProjectionUpdate {
+enum OrderedBatchProgressUpdate {
     Persist,
     IdempotentNoop,
 }
@@ -856,14 +856,14 @@ impl RouterStore {
         })
     }
 
-    fn apply_ordered_batch_projection_update<F>(
+    fn apply_ordered_batch_progress_update<F>(
         key: &ClientMutationKey,
         mutation_id: MutationId,
         mutation_id_mismatch: &'static str,
         update_payload: F,
     ) -> Result<(), RouterError>
     where
-        F: FnOnce(&mut RouterMutationPayloadV1) -> Result<OrderedProjectionUpdate, RouterError>,
+        F: FnOnce(&mut RouterMutationPayloadV1) -> Result<OrderedBatchProgressUpdate, RouterError>,
     {
         let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
@@ -878,10 +878,10 @@ impl RouterStore {
                 update_payload(&mut v1.payload)?
             };
             match update {
-                OrderedProjectionUpdate::Persist => {
+                OrderedBatchProgressUpdate::Persist => {
                     m.insert(key, record);
                 }
-                OrderedProjectionUpdate::IdempotentNoop => {}
+                OrderedBatchProgressUpdate::IdempotentNoop => {}
             }
             Ok(())
         })
@@ -1174,49 +1174,44 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered mixed canonical completion".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
-                _ => {
+        Self::apply_ordered_batch_progress_update(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered mixed canonical completion",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered mixed canonical completion requires an OrderedMixedBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
                     return Err(RouterError::Conflict(
-                        "ordered mixed canonical completion requires an OrderedMixedBatch payload"
+                        "Graph request fingerprint mismatch at ordered mixed canonical completion"
                             .into(),
                     ));
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered mixed canonical completion"
-                        .into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedMixedBatchTargetProgressV1::CanonicalPending => {
-                    replay.target.progress =
-                        OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt);
-                    m.insert(key, record);
-                    Ok(())
+                match &replay.target.progress {
+                    OrderedMixedBatchTargetProgressV1::CanonicalPending => {
+                        replay.target.progress =
+                            OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt);
+                        Ok(OrderedBatchProgressUpdate::Persist)
+                    }
+                    OrderedMixedBatchTargetProgressV1::CanonicalCommitted(existing)
+                        if existing == &receipt =>
+                    {
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered mixed canonical completion conflicts with persisted progress"
+                            .into(),
+                    )),
                 }
-                OrderedMixedBatchTargetProgressV1::CanonicalCommitted(existing)
-                    if existing == &receipt =>
-                {
-                    Ok(())
-                }
-                _ => Err(RouterError::Conflict(
-                    "ordered mixed canonical completion conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     pub fn record_ordered_mixed_batch_projection_pending(
@@ -1228,7 +1223,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self::apply_ordered_batch_projection_update(
+        Self::apply_ordered_batch_progress_update(
             key,
             mutation_id,
             "mutation_id mismatch at ordered mixed projection pending",
@@ -1252,10 +1247,10 @@ impl RouterStore {
                     OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt) => {
                         replay.target.progress =
                             OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt.clone());
-                        Ok(OrderedProjectionUpdate::Persist)
+                        Ok(OrderedBatchProgressUpdate::Persist)
                     }
                     OrderedMixedBatchTargetProgressV1::ProjectionPending(_) => {
-                        Ok(OrderedProjectionUpdate::IdempotentNoop)
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
                     }
                     _ => Err(RouterError::Conflict(
                         "ordered mixed projection pending conflicts with persisted progress".into(),
@@ -1275,7 +1270,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self::apply_ordered_batch_projection_update(
+        Self::apply_ordered_batch_progress_update(
             key,
             mutation_id,
             "mutation_id mismatch at ordered mixed projection advancement",
@@ -1305,12 +1300,12 @@ impl RouterStore {
                         replay.target.progress =
                             OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
                         replay.target.projection_watermark = Some(watermark);
-                        Ok(OrderedProjectionUpdate::Persist)
+                        Ok(OrderedBatchProgressUpdate::Persist)
                     }
                     OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_)
                         if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
                     {
-                        Ok(OrderedProjectionUpdate::IdempotentNoop)
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
                     }
                     _ => Err(RouterError::Conflict(
                         "ordered mixed projection advancement conflicts with persisted progress"
@@ -1443,7 +1438,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self::apply_ordered_batch_projection_update(
+        Self::apply_ordered_batch_progress_update(
             key,
             mutation_id,
             "mutation_id mismatch at ordered vertex projection pending",
@@ -1467,10 +1462,10 @@ impl RouterStore {
                     OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt) => {
                         replay.target.progress =
                             OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt.clone());
-                        Ok(OrderedProjectionUpdate::Persist)
+                        Ok(OrderedBatchProgressUpdate::Persist)
                     }
                     OrderedVertexBatchTargetProgressV1::ProjectionPending(_) => {
-                        Ok(OrderedProjectionUpdate::IdempotentNoop)
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
                     }
                     _ => Err(RouterError::Conflict(
                         "ordered vertex projection pending conflicts with persisted progress"
@@ -1491,7 +1486,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self::apply_ordered_batch_projection_update(
+        Self::apply_ordered_batch_progress_update(
             key,
             mutation_id,
             "mutation_id mismatch at ordered vertex projection advancement",
@@ -1521,12 +1516,12 @@ impl RouterStore {
                         replay.target.progress =
                             OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
                         replay.target.projection_watermark = Some(watermark);
-                        Ok(OrderedProjectionUpdate::Persist)
+                        Ok(OrderedBatchProgressUpdate::Persist)
                     }
                     OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
                         if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
                     {
-                        Ok(OrderedProjectionUpdate::IdempotentNoop)
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
                     }
                     _ => Err(RouterError::Conflict(
                         "ordered vertex projection advancement conflicts with persisted progress"
@@ -1668,47 +1663,42 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = key.clone();
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            let mut record = m
-                .get(&key)
-                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            let v1 = record.as_v1_mut();
-            if v1.mutation_id != mutation_id {
-                return Err(RouterError::Conflict(
-                    "mutation_id mismatch at ordered canonical completion".into(),
-                ));
-            }
-            let replay = match &mut v1.payload {
-                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
-                _ => {
+        Self::apply_ordered_batch_progress_update(
+            key,
+            mutation_id,
+            "mutation_id mismatch at ordered canonical completion",
+            |payload| {
+                let replay = match payload {
+                    RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
+                    _ => {
+                        return Err(RouterError::Conflict(
+                            "ordered canonical completion requires an OrderedEdgeBatch payload"
+                                .into(),
+                        ));
+                    }
+                };
+                if replay.target.graph_request_fingerprint != graph_request_fingerprint {
                     return Err(RouterError::Conflict(
-                        "ordered canonical completion requires an OrderedEdgeBatch payload".into(),
+                        "Graph request fingerprint mismatch at ordered canonical completion".into(),
                     ));
                 }
-            };
-            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
-                return Err(RouterError::Conflict(
-                    "Graph request fingerprint mismatch at ordered canonical completion".into(),
-                ));
-            }
-            match &replay.target.progress {
-                OrderedEdgeBatchTargetProgressV1::CanonicalPending => {
-                    replay.target.progress =
-                        OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt);
-                    m.insert(key, record);
-                    Ok(())
+                match &replay.target.progress {
+                    OrderedEdgeBatchTargetProgressV1::CanonicalPending => {
+                        replay.target.progress =
+                            OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt);
+                        Ok(OrderedBatchProgressUpdate::Persist)
+                    }
+                    OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(existing)
+                        if existing == &receipt =>
+                    {
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
+                    }
+                    _ => Err(RouterError::Conflict(
+                        "ordered canonical completion conflicts with persisted progress".into(),
+                    )),
                 }
-                OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(existing)
-                    if existing == &receipt =>
-                {
-                    Ok(())
-                }
-                _ => Err(RouterError::Conflict(
-                    "ordered canonical completion conflicts with persisted progress".into(),
-                )),
-            }
-        })
+            },
+        )
     }
 
     /// Mark an ordered batch as waiting for Router-owned projection convergence.
@@ -1721,7 +1711,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self::apply_ordered_batch_projection_update(
+        Self::apply_ordered_batch_progress_update(
             key,
             mutation_id,
             "mutation_id mismatch at ordered projection pending",
@@ -1744,10 +1734,10 @@ impl RouterStore {
                     OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt) => {
                         replay.target.progress =
                             OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt.clone());
-                        Ok(OrderedProjectionUpdate::Persist)
+                        Ok(OrderedBatchProgressUpdate::Persist)
                     }
                     OrderedEdgeBatchTargetProgressV1::ProjectionPending(_) => {
-                        Ok(OrderedProjectionUpdate::IdempotentNoop)
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
                     }
                     _ => Err(RouterError::Conflict(
                         "ordered projection pending conflicts with persisted progress".into(),
@@ -1768,7 +1758,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self::apply_ordered_batch_projection_update(
+        Self::apply_ordered_batch_progress_update(
             key,
             mutation_id,
             "mutation_id mismatch at ordered projection advancement",
@@ -1798,12 +1788,12 @@ impl RouterStore {
                         replay.target.progress =
                             OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
                         replay.target.projection_watermark = Some(watermark);
-                        Ok(OrderedProjectionUpdate::Persist)
+                        Ok(OrderedBatchProgressUpdate::Persist)
                     }
                     OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
                         if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
                     {
-                        Ok(OrderedProjectionUpdate::IdempotentNoop)
+                        Ok(OrderedBatchProgressUpdate::IdempotentNoop)
                     }
                     _ => Err(RouterError::Conflict(
                         "ordered projection advancement conflicts with persisted progress".into(),
