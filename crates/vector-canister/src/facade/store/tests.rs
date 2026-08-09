@@ -1205,18 +1205,62 @@ fn cosine_partition_page_scan_is_not_supported() {
 }
 
 #[test]
-fn cosine_rebuild_is_rejected() {
+fn cosine_rebuild_succeeds_with_spherical_kmeans() {
     let store = fresh_store();
+    // Distinct non-zero cosine directions so a rebuild can form >= 2 clusters.
+    for (v, dir) in [
+        (1u32, [1.0f32, 0.0, 0.0, 0.0]),
+        (2, [0.0, 1.0, 0.0, 0.0]),
+        (3, [-1.0, 0.0, 0.0, 0.0]),
+        (4, [0.0, -1.0, 0.0, 0.0]),
+    ] {
+        store
+            .vector_upsert(
+                shard_canister(),
+                &upsert_vec_from(v, 1, &dir, VectorMetric::Cosine),
+            )
+            .unwrap();
+    }
     store
-        .vector_upsert(
-            shard_canister(),
-            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
-        )
-        .unwrap();
-    let err = store
         .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
-        .expect_err("cosine rebuild must fail closed");
-    assert!(matches!(err, VectorCanisterError::InvalidRebuildParams));
+        .expect("cosine rebuild starts");
+    let status = drive_steps(&store, INDEX_ID);
+    assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+    // Spherical k-means stores unit-normalized centroids.
+    let centroids =
+        super::search::read_centroids_at(INDEX_ID, TARGET_V, 2, DIMS).expect("centroids");
+    assert_eq!(centroids.len(), 2);
+    for c in &centroids {
+        let norm_sq: f32 = c.iter().map(|x| x * x).sum();
+        assert!(
+            (norm_sq - 1.0).abs() < 1e-4,
+            "centroid is unit, got {norm_sq}"
+        );
+    }
+    // Every live subject got a shadow slot at the target version.
+    for v in 1..=4u32 {
+        let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
+        assert_eq!(
+            entry.shadow_slot.map(|s| s.index_version),
+            Some(TARGET_V as u32)
+        );
+    }
+    // Publish, then an nlist>1 cosine search fails closed until Phase 2 (cosine partition scan).
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    drive_cleanup(&store, INDEX_ID);
+    let err = store
+        .vector_search(&search_metric_from(
+            &[1.0f32; DIMS as usize],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect_err("nlist>1 cosine partition scan not yet supported");
+    assert!(matches!(
+        err,
+        VectorCanisterError::MetricNotSupportedForPartitionScan
+    ));
 }
 
 #[test]

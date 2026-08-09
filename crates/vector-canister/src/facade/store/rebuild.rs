@@ -372,7 +372,9 @@ impl VectorCanisterStore {
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorCanisterError::UnknownIndex)?;
-        if def.encoding != VectorEncoding::F32 || def.metric != VectorMetric::L2Squared {
+        if def.encoding != VectorEncoding::F32
+            || (def.metric != VectorMetric::L2Squared && def.metric != VectorMetric::Cosine)
+        {
             return Err(VectorCanisterError::InvalidRebuildParams);
         }
         if !(2..=MAX_NLIST).contains(&nlist) {
@@ -809,13 +811,27 @@ impl VectorCanisterStore {
             // Recompute each centroid as the mean; an empty cluster keeps its previous centroid.
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("rebuild_training_recompute");
+            let is_cosine = def.metric == VectorMetric::Cosine;
             for p in 0..nlist_usize {
                 if counts[p] == 0 {
                     continue;
                 }
                 let inv = 1.0f32 / counts[p] as f32;
                 let mean: Vec<f32> = sums[p].iter().map(|s| s * inv).collect();
-                centroids[p] = encode_f32(&mean);
+                // Spherical k-means (cosine): renormalize the mean direction to unit length so the
+                // next L2 assignment is cosine-aware (L2² = 2 − 2cos on unit vectors). A zero-norm
+                // mean (members cancel direction) keeps the previous centroid.
+                let new_centroid: Vec<f32> = if is_cosine {
+                    let norm_sq: f32 = mean.iter().map(|x| x * x).sum();
+                    if norm_sq == 0.0 {
+                        continue;
+                    }
+                    let inv_norm = 1.0 / norm_sq.sqrt();
+                    mean.iter().map(|x| x * inv_norm).collect()
+                } else {
+                    mean
+                };
+                centroids[p] = encode_f32(&new_centroid);
             }
         }
         let iteration = iteration + 1;
