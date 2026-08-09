@@ -4,7 +4,7 @@
 //! This file consolidates ten former PocketIC bootstraps into five isolated lifecycle fixtures.
 //! Former-test to scenario mapping:
 //! - `register_resolve_and_backfill_stay_fail_closed` + `anonymous_target_is_rejected`
-//!   -> `catalog_lifecycle_keeps_backfill_fail_closed_and_rejects_anonymous_target`
+//!   -> `catalog_lifecycle_keeps_activation_fail_closed_and_rejects_anonymous_target`
 //! - `failed_registration_does_not_allocate_an_embedding_name`
 //!   -> `dense_embedding_name_allocation_is_isolated_for_rejected_registrations`
 //! - `activation_is_fenced_on_flag_and_shard_attach`
@@ -33,8 +33,7 @@ use gleaph_pocket_ic_tests::{
     install_vector_canister,
 };
 use gleaph_router::types::{
-    AdminAttachVectorIndexShardArgs, AdminVectorIndexBackfillStepArgs,
-    AdminVectorIndexBackfillStepResult, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
+    AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
     VectorIndexActivationStateView, VectorIndexActivationStatus, VectorIndexInfo,
 };
 use std::collections::BTreeMap;
@@ -101,28 +100,23 @@ fn resolve_target(env: &FederationEnv, index_id: u32) -> Result<Principal, Route
     Decode!(&bytes, Result<Principal, RouterError>).expect("decode resolve")
 }
 
-fn backfill_step(
+/// Assert the index reports `DispatchBlocked` with the exact fail-closed reason.
+fn assert_activation_blocked(
     env: &FederationEnv,
     index_id: u32,
-) -> Result<AdminVectorIndexBackfillStepResult, RouterError> {
-    let args = AdminVectorIndexBackfillStepArgs {
-        logical_graph_name: GRAPH_NAME.to_string(),
-        index_id,
-        shard_id: ShardId::new(0),
-        start_vertex_id: 0,
-        max_vertices: 256,
-    };
-    let bytes = env
-        .pic
-        .update_call(
-            env.router,
-            env.admin,
-            "advance_vector_index_backfill",
-            Encode!(&args).expect("encode backfill args"),
-        )
-        .expect("admin_vector_index_backfill_step call");
-    Decode!(&bytes, Result<AdminVectorIndexBackfillStepResult, RouterError>)
-        .expect("decode backfill result")
+    expected_reason: VectorActivationBlockReason,
+) {
+    let status = activation_status(env, index_id).expect("activation status");
+    assert_eq!(
+        status.activation_state,
+        VectorIndexActivationStateView::DispatchBlocked,
+        "index {index_id} should be DispatchBlocked"
+    );
+    assert_eq!(
+        status.blocked_reason.as_deref(),
+        Some(expected_reason.to_string().as_str()),
+        "blocked reason mismatch for index {index_id}"
+    );
 }
 
 fn set_target(env: &FederationEnv, index_id: u32, target: Principal) -> Result<(), RouterError> {
@@ -220,11 +214,11 @@ fn dense_embedding_name_allocation_is_isolated_for_rejected_registrations() {
 }
 
 #[test]
-fn catalog_lifecycle_keeps_backfill_fail_closed_and_rejects_anonymous_target() {
+fn catalog_lifecycle_keeps_activation_fail_closed_and_rejects_anonymous_target() {
     let env = install_federation();
     let target = env.index;
 
-    // Scenario: targeted registration / resolve / list / backfill-disabled.
+    // Scenario: targeted registration / resolve / list / activation-gate-disabled.
     let created = register(
         &env,
         &RegisterVectorIndexArgs {
@@ -232,6 +226,7 @@ fn catalog_lifecycle_keeps_backfill_fail_closed_and_rejects_anonymous_target() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
             target: Some(target),
             if_not_exists: false,
@@ -267,14 +262,11 @@ fn catalog_lifecycle_keeps_backfill_fail_closed_and_rejects_anonymous_target() {
         "embedding name id 0 is reserved/unset"
     );
 
-    assert!(
-        matches!(
-            backfill_step(&env, INDEX_ID),
-            Err(RouterError::VectorDispatchActivationBlocked(
-                VectorActivationBlockReason::DispatchNotActivated
-            ))
-        ),
-        "backfill must fail closed while the global activation flag is off"
+    // The activation gate stays fail-closed while the global dispatch flag is off.
+    assert_activation_blocked(
+        &env,
+        INDEX_ID,
+        VectorActivationBlockReason::DispatchNotActivated,
     );
 
     // Scenario: targetless definition rejects an anonymous target and stays targetless.
@@ -286,6 +278,7 @@ fn catalog_lifecycle_keeps_backfill_fail_closed_and_rejects_anonymous_target() {
                 embedding_name: TARGETLESS_EMBEDDING_NAME.to_string(),
                 index_id: TARGETLESS_INDEX_ID,
                 dims: DIMS,
+                labels: vec!["User".to_string()],
                 metric: Some(VectorMetric::L2Squared),
                 target: None,
                 if_not_exists: false,
@@ -445,6 +438,7 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
@@ -455,14 +449,10 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
     // Gate 1 only: flag on, no shard attach -> blocked on shard attachment.
     set_dispatch_activation(&env, true).expect("enable dispatch flag");
     assert!(dispatch_activation_enabled(&env), "flag is now on");
-    assert!(
-        matches!(
-            backfill_step(&env, INDEX_ID),
-            Err(RouterError::VectorDispatchActivationBlocked(
-                VectorActivationBlockReason::ShardsNotVectorAttached
-            ))
-        ),
-        "flag alone is insufficient: shards are not vector-attached yet"
+    assert_activation_blocked(
+        &env,
+        INDEX_ID,
+        VectorActivationBlockReason::ShardsNotVectorAttached,
     );
 
     // Wire graph/vector handshakes explicitly so we can observe the partial-shard gate.
@@ -474,7 +464,7 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
     attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
         .expect("single vector target accepts shard 1");
 
-    // Attach only shard 0 via the Router catalog: activation and backfill must stay blocked.
+    // Attach only shard 0 via the Router catalog: activation must stay blocked.
     attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
     assert!(
         matches!(
@@ -485,14 +475,10 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
         ),
         "shard 1 still missing -> DispatchBlocked"
     );
-    assert!(
-        matches!(
-            backfill_step(&env, INDEX_ID),
-            Err(RouterError::VectorDispatchActivationBlocked(
-                VectorActivationBlockReason::ShardsNotVectorAttached
-            ))
-        ),
-        "shard 0 alone is insufficient: shard 1 is not vector-attached yet"
+    assert_activation_blocked(
+        &env,
+        INDEX_ID,
+        VectorActivationBlockReason::ShardsNotVectorAttached,
     );
 
     // Attach shard 1 -> both gates pass.
@@ -507,12 +493,6 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
         status.blocked_reason.is_none(),
         "enabled state has no reason"
     );
-
-    // Bounded empty backfill converges immediately.
-    let step = backfill_step(&env, INDEX_ID).expect("backfill step runs once dispatch is ready");
-    assert_eq!(step.shard_id, ShardId::new(0));
-    assert!(step.done, "empty shard converges in a single step");
-    assert_eq!(step.embeddings_synced, 0);
 
     // Attach is idempotent.
     attach_shard(&env, ShardId::new(0), vector).expect("re-attach is idempotent");
@@ -561,14 +541,10 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
     // Re-fence dispatch by disabling the global flag.
     set_dispatch_activation(&env, false).expect("disable dispatch flag");
     assert!(!dispatch_activation_enabled(&env), "flag is now off");
-    assert!(
-        matches!(
-            backfill_step(&env, INDEX_ID),
-            Err(RouterError::VectorDispatchActivationBlocked(
-                VectorActivationBlockReason::DispatchNotActivated
-            ))
-        ),
-        "global flag is the outermost fence"
+    assert_activation_blocked(
+        &env,
+        INDEX_ID,
+        VectorActivationBlockReason::DispatchNotActivated,
     );
 }
 
@@ -594,8 +570,7 @@ fn seed_embedding(
             shard_id: ShardId::new(0),
             vertex_id,
         },
-        embedding_incarnation: 1,
-        embedding_version: 1,
+        mutation_id: 1,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric: VectorMetric::L2Squared,
@@ -629,8 +604,7 @@ fn seed_embedding_with_metric(
             shard_id: ShardId::new(0),
             vertex_id,
         },
-        embedding_incarnation: 1,
-        embedding_version: 1,
+        mutation_id: 1,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric,
@@ -685,6 +659,7 @@ fn vector_and_gql_search_reject_top_k_above_shared_bound() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
@@ -793,6 +768,7 @@ fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
@@ -834,8 +810,7 @@ fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
         "nearest subject must be the inserted graph vertex"
     );
     assert_eq!(nearest.distance, 0.0, "exact match has zero distance");
-    assert_eq!(nearest.embedding_incarnation, 1);
-    assert_eq!(nearest.embedding_version, 1);
+    assert_eq!(nearest.mutation_id, 1);
     assert!(
         router_result.hits[1].distance > 0.0,
         "the second hit must be farther than the exact match"
@@ -883,6 +858,7 @@ fn cosine_score_as_is_exact_and_distance_as_rejected_without_poisoning() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            labels: vec!["User".to_string()],
             metric: Some(VectorMetric::Cosine),
             target: Some(vector),
             if_not_exists: false,
