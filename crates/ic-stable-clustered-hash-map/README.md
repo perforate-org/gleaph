@@ -21,8 +21,8 @@ crate. Measured with canbench (`N = 4096`, per-op instructions):
 | operation | clustered | btree   | clustered vs btree |
 | --------- | --------- | ------- | ------------------ |
 | get       | ≈ 4.2k    | ≈ 26.6k | ~6.3x faster       |
-| insert    | ≈ 42k     | ≈ 60.3k | ~1.4x faster       |
-| remove    | ≈ 9k      | ≈ 57.4k | ~6.4x faster       |
+| insert    | ≈ 39k     | ≈ 60.3k | ~1.5x faster       |
+| remove    | ≈ 9.4k    | ≈ 57.4k | ~6.1x faster       |
 
 Use **clustered** when point lookups dominate and keys are fixed-size. Use
 **`StableBTreeMap`** when you need ordered iteration / range scans, or variable-size
