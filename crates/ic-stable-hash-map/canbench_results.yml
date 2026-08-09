@@ -1,0 +1,38 @@
+benches:
+  bench_hash_map_get:
+    total:
+      calls: 1
+      instructions: 19676111
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_hash_map_get:
+        calls: 1
+        instructions: 19675116
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_hash_map_insert:
+    total:
+      calls: 1
+      instructions: 58355378
+      heap_increase: 3
+      stable_memory_increase: 0
+    scopes:
+      bench_hash_map_insert:
+        calls: 1
+        instructions: 58354383
+        heap_increase: 3
+        stable_memory_increase: 0
+  bench_hash_map_remove:
+    total:
+      calls: 1
+      instructions: 38255610
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_hash_map_remove:
+        calls: 1
+        instructions: 38254615
+        heap_increase: 0
+        stable_memory_increase: 0
+version: 0.7.0
