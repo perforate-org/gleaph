@@ -305,8 +305,9 @@ impl Storable for SlotRef {
 /// Fixed-size encoding of the subject-map row for the clustered-hash-map subject store.
 ///
 /// The clustered hash map requires a fixed-size `Storable` value, so the row is stored with a fixed
-/// 43-byte layout: `stamp` (8) + `deleted` (1) + `slot` (1 tag + 16) + `shadow_slot` (1 tag + 16).
-/// The tag byte disambiguates `None` from a zero-valued [`SlotRef`].
+/// 41-byte layout: `stamp` (8) + `flags` (1) + `slot` (16) + `shadow_slot` (16). The flags byte packs
+/// `deleted` (bit 0), `slot` presence (bit 1), and `shadow_slot` presence (bit 2), disambiguating
+/// `None` from a zero-valued [`SlotRef`] without a per-option tag byte.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FixedSubjectMapEntry {
     pub stamp: u64,
@@ -335,50 +336,42 @@ impl FixedSubjectMapEntry {
     }
 }
 
-/// Encodes an `Option<SlotRef>` into `out[off..off+17]` (1 tag byte + 16 bytes), returning the next
-/// offset. `None` writes a `0` tag and leaves the 16 bytes as zero.
-fn encode_slot_ref_opt(slot: Option<SlotRef>, out: &mut [u8; 43], off: usize) -> usize {
-    match slot {
-        Some(s) => {
-            out[off] = 1;
-            out[off + 1..off + 5].copy_from_slice(&s.index_version.to_le_bytes());
-            out[off + 5..off + 9].copy_from_slice(&s.partition_id.to_le_bytes());
-            out[off + 9..off + 13].copy_from_slice(&s.page_id.to_le_bytes());
-            out[off + 13..off + 17].copy_from_slice(&s.slot.to_le_bytes());
-            off + 17
-        }
-        None => off + 17,
+/// Encodes a `SlotRef` payload into `out[off..off+16]`, returning the next offset. Presence is
+/// tracked in the entry's flags byte (not here); a `None` leaves the 16 bytes zero.
+fn encode_slot_ref(slot: Option<SlotRef>, out: &mut [u8], off: usize) -> usize {
+    if let Some(s) = slot {
+        out[off..off + 4].copy_from_slice(&s.index_version.to_le_bytes());
+        out[off + 4..off + 8].copy_from_slice(&s.partition_id.to_le_bytes());
+        out[off + 8..off + 12].copy_from_slice(&s.page_id.to_le_bytes());
+        out[off + 12..off + 16].copy_from_slice(&s.slot.to_le_bytes());
     }
+    off + 16
 }
 
-/// Decodes an `Option<SlotRef>` from `bytes[off..off+17]`, returning `(value, next offset)`.
-fn decode_slot_ref_opt(bytes: &[u8], off: usize) -> (Option<SlotRef>, usize) {
-    if bytes[off] == 0 {
-        (None, off + 17)
-    } else {
-        let s = SlotRef {
-            index_version: u32::from_le_bytes(bytes[off + 1..off + 5].try_into().unwrap()),
-            partition_id: u32::from_le_bytes(bytes[off + 5..off + 9].try_into().unwrap()),
-            page_id: u32::from_le_bytes(bytes[off + 9..off + 13].try_into().unwrap()),
-            slot: u32::from_le_bytes(bytes[off + 13..off + 17].try_into().unwrap()),
-        };
-        (Some(s), off + 17)
+/// Decodes a `SlotRef` payload from `bytes[off..off+16]`.
+fn decode_slot_ref(bytes: &[u8], off: usize) -> SlotRef {
+    SlotRef {
+        index_version: u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()),
+        partition_id: u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()),
+        page_id: u32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap()),
+        slot: u32::from_le_bytes(bytes[off + 12..off + 16].try_into().unwrap()),
     }
 }
 
 impl Storable for FixedSubjectMapEntry {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 43,
+        max_size: 41,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut out = [0u8; 43];
+        let mut out = [0u8; 41];
         out[0..8].copy_from_slice(&self.stamp.to_le_bytes());
-        out[8] = self.deleted as u8;
-        let mut off = 9;
-        off = encode_slot_ref_opt(self.slot, &mut out, off);
-        encode_slot_ref_opt(self.shadow_slot, &mut out, off);
+        out[8] = (self.deleted as u8)
+            | ((self.slot.is_some() as u8) << 1)
+            | ((self.shadow_slot.is_some() as u8) << 2);
+        encode_slot_ref(self.slot, &mut out, 9);
+        encode_slot_ref(self.shadow_slot, &mut out, 25);
         Cow::Owned(out.to_vec())
     }
 
@@ -389,9 +382,10 @@ impl Storable for FixedSubjectMapEntry {
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let b = bytes.as_ref();
         let stamp = u64::from_le_bytes(b[0..8].try_into().unwrap());
-        let deleted = b[8] != 0;
-        let (slot, off) = decode_slot_ref_opt(b, 9);
-        let (shadow_slot, _) = decode_slot_ref_opt(b, off);
+        let flags = b[8];
+        let deleted = flags & 0b0000_0001 != 0;
+        let slot = (flags & 0b0000_0010 != 0).then(|| decode_slot_ref(b, 9));
+        let shadow_slot = (flags & 0b0000_0100 != 0).then(|| decode_slot_ref(b, 25));
         Self {
             stamp,
             deleted,
@@ -726,6 +720,8 @@ mod tests {
 
     #[test]
     fn fixed_subject_entry_storable_roundtrip() {
+        // 41-byte fixed layout: stamp(8) + flags(1) + slot(16) + shadow_slot(16).
+        assert_eq!(FixedSubjectMapEntry::BOUND.max_size(), 41);
         for entry in [
             FixedSubjectMapEntry {
                 stamp: 4,
@@ -741,6 +737,24 @@ mod tests {
                     partition_id: 3,
                     page_id: 0,
                     slot: 2,
+                }),
+            },
+            // A zero-valued SlotRef must round-trip as Some (the flags byte, not the payload,
+            // records presence).
+            FixedSubjectMapEntry {
+                stamp: 1,
+                deleted: false,
+                slot: Some(SlotRef {
+                    index_version: 0,
+                    partition_id: 0,
+                    page_id: 0,
+                    slot: 0,
+                }),
+                shadow_slot: Some(SlotRef {
+                    index_version: 0,
+                    partition_id: 0,
+                    page_id: 0,
+                    slot: 0,
                 }),
             },
             FixedSubjectMapEntry {
@@ -761,7 +775,9 @@ mod tests {
                 shadow_slot: None,
             },
         ] {
-            assert_eq!(FixedSubjectMapEntry::from_bytes(entry.to_bytes()), entry);
+            let bytes = entry.to_bytes();
+            assert_eq!(bytes.len(), 41, "encoded subject entry must be 41 bytes");
+            assert_eq!(FixedSubjectMapEntry::from_bytes(bytes), entry);
         }
     }
 
