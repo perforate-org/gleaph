@@ -20,6 +20,7 @@ namespace StableCluster
 -- src/map.rs L106: `impl<K: Storable + PartialEq, V: Storable, M: Memory>`
 axiom Key : Type
 axiom KeyDecEq : DecidableEq Key
+noncomputable instance : DecidableEq Key := KeyDecEq
 
 -- Deterministic hash of a key (rapidhash v3, constant seed). The hash internals are out
 -- of scope; we treat it as a deterministic function of the key.
@@ -63,14 +64,14 @@ structure State where
 
 -- A slot is occupied iff its distance is not the EMPTY marker.
 -- src/map.rs L279-L281: `is_empty_slot` returns `read_distance(i) == EMPTY`.
-def IsOccupied (s : State) (i : Nat) : Prop := s.dist i ≠ EMPTY
+@[reducible] def IsOccupied (s : State) (i : Nat) : Prop := s.dist i ≠ EMPTY
 
 -- Slot index within the table.
 def InBounds (s : State) (i : Nat) : Prop := i < capacity s.n
 
 -- Bucket of the entry at slot i, derived from position and distance.
 -- src/map.rs L283-L286: `fn bucket_by_position` = `i - read_distance(i)`.
-def BucketAt (s : State) (i : Nat) : Nat := i - s.dist i
+@[reducible] def BucketAt (s : State) (i : Nat) : Nat := i - s.dist i
 
 -- True when slot i lies in the mixed range [0, remapEnd] of an in-progress resize.
 -- Entries there still use the OLD table size (n-1).

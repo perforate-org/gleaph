@@ -77,9 +77,10 @@ the key set is unchanged across re-open during a resize.
 
 ## 7. Deliverables
 
-Lean artifacts under `audit/`:
+Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; see
+`audit/lakefile.lean`):
 
 - `Abstract.lean` (Stage 1: state model + invariants + assumptions)
 - `Map.lean` (Stage 2: transcription of the map logic)
-- `Soundness.lean` / `Safety.lean` (Stage 3: proofs for targets a/b/c)
-- `REPORT.md` (Stage 4 / final report)
+- `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample)
+- Stage 3 proofs and the final `REPORT.md` to be added under `audit/`

@@ -18,7 +18,7 @@ u32 and enforces the fit at insert via `checked_distance`, which traps on overfl
 reference.
 -/
 
-import Abstract
+import StableClusterAudit.Abstract
 
 open StableCluster
 
