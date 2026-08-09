@@ -1,3 +1,4 @@
+import { For } from "solid-js";
 import { useI18n } from "~/i18n";
 
 type BenchmarkPoint = {
@@ -62,24 +63,26 @@ export function TopicPathPerformanceChart() {
         <title id="topic-path-chart-title">{t("explanation.topicPathChartTitle")}</title>
         <desc id="topic-path-chart-description">{t("explanation.topicPathChartDescription")}</desc>
 
-        {Y_TICKS.map((tick) => {
-          const y = yForSeconds(tick);
-          return (
-            <g>
-              <line
-                x1={LEFT}
-                x2={WIDTH - RIGHT}
-                y1={y}
-                y2={y}
-                stroke="#cbd5e1"
-                stroke-dasharray="3 3"
-              />
-              <text x={LEFT - 8} y={y + 4} text-anchor="end" class="fill-slate-500 text-[10px]">
-                {tick === 3600 ? "1h" : tick < 1 ? `${tick}s` : `${tick}s`}
-              </text>
-            </g>
-          );
-        })}
+        <For each={Y_TICKS}>
+          {(tick) => {
+            const y = yForSeconds(tick);
+            return (
+              <g>
+                <line
+                  x1={LEFT}
+                  x2={WIDTH - RIGHT}
+                  y1={y}
+                  y2={y}
+                  stroke="#cbd5e1"
+                  stroke-dasharray="3 3"
+                />
+                <text x={LEFT - 8} y={y + 4} text-anchor="end" class="fill-slate-500 text-[10px]">
+                  {tick === 3600 ? "1h" : tick < 1 ? `${tick}s` : `${tick}s`}
+                </text>
+              </g>
+            );
+          }}
+        </For>
 
         <line x1={LEFT} x2={LEFT} y1={TOP} y2={HEIGHT - BOTTOM} stroke="#64748b" />
         <line
@@ -90,49 +93,55 @@ export function TopicPathPerformanceChart() {
           stroke="#64748b"
         />
 
-        {[2, 3, 4, 5].map((depth) => (
-          <g>
-            <line
-              x1={xForDepth(depth)}
-              x2={xForDepth(depth)}
-              y1={HEIGHT - BOTTOM}
-              y2={HEIGHT - BOTTOM + 5}
-              stroke="#64748b"
-            />
-            <text
-              x={xForDepth(depth)}
-              y={HEIGHT - BOTTOM + 19}
-              text-anchor="middle"
-              class="fill-slate-600 text-[11px]"
-            >
-              {depth}
-            </text>
-          </g>
-        ))}
+        <For each={[2, 3, 4, 5]}>
+          {(depth) => (
+            <g>
+              <line
+                x1={xForDepth(depth)}
+                x2={xForDepth(depth)}
+                y1={HEIGHT - BOTTOM}
+                y2={HEIGHT - BOTTOM + 5}
+                stroke="#64748b"
+              />
+              <text
+                x={xForDepth(depth)}
+                y={HEIGHT - BOTTOM + 19}
+                text-anchor="middle"
+                class="fill-slate-600 text-[11px]"
+              >
+                {depth}
+              </text>
+            </g>
+          )}
+        </For>
 
         <polyline fill="none" stroke="#e11d48" stroke-width="3" points={linePoints(MYSQL)} />
         <polyline fill="none" stroke="#4f46e5" stroke-width="3" points={linePoints(NEO4J)} />
 
-        {MYSQL.map((point) =>
-          point.seconds === null ? null : (
-            <circle
-              cx={xForDepth(point.depth)}
-              cy={yForSeconds(point.seconds)}
-              r="4"
-              fill="#e11d48"
-            />
-          ),
-        )}
-        {NEO4J.map((point) =>
-          point.seconds === null ? null : (
-            <circle
-              cx={xForDepth(point.depth)}
-              cy={yForSeconds(point.seconds)}
-              r="4"
-              fill="#4f46e5"
-            />
-          ),
-        )}
+        <For each={MYSQL}>
+          {(point) =>
+            point.seconds === null ? null : (
+              <circle
+                cx={xForDepth(point.depth)}
+                cy={yForSeconds(point.seconds)}
+                r="4"
+                fill="#e11d48"
+              />
+            )
+          }
+        </For>
+        <For each={NEO4J}>
+          {(point) =>
+            point.seconds === null ? null : (
+              <circle
+                cx={xForDepth(point.depth)}
+                cy={yForSeconds(point.seconds)}
+                r="4"
+                fill="#4f46e5"
+              />
+            )
+          }
+        </For>
 
         <path
           d={`M ${xForDepth(5)} ${TOP - 1} l -5 8 h 10 z`}
