@@ -182,6 +182,15 @@ def IsInsertionPoint (s : State) (position b : Nat) : Prop :=
   (∀ i, i < position → IsOccupied s i → BucketAt s i ≤ b) ∧
   (∀ i, i > position → i < capacity s.n → IsOccupied s i → b ≤ BucketAt s i)
 
+-- `position` is an order boundary for bucket `b`: every occupied slot below it has bucket
+-- ≤ `b` and every occupied slot above it has bucket ≥ `b`. Writing an entry of bucket `b`
+-- at `position` keeps the table ordered. This is the property `find_insert_position` gives
+-- for the relocation step, where the displaced cluster lies at / above `position`.
+-- src/map.rs L309-L319 (find_insert_position), L468-L474 (relocation step).
+def IsOrderBoundary (s : State) (position b : Nat) : Prop :=
+  (∀ i, i < position → IsOccupied s i → BucketAt s i ≤ b) ∧
+  (∀ i, i > position → i < capacity s.n → IsOccupied s i → b ≤ BucketAt s i)
+
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L491-L508.
 -- One step: the slot `position` is freed and the tail `next` of the cluster at
