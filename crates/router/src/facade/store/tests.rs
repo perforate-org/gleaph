@@ -74,6 +74,10 @@ fn tenant_main_graph_id() -> GraphId {
     lookup_graph_id("tenant.main").expect("tenant.main")
 }
 
+fn test_mutation_key(caller: Principal, graph_id: GraphId, client_key: &str) -> ClientMutationKey {
+    ClientMutationKey::new(caller, graph_id, client_key.to_owned())
+}
+
 #[test]
 fn list_shards_for_graph_returns_matching_registrations() {
     let store = RouterStore::new();
@@ -1553,6 +1557,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     let request = b"request-a".to_vec();
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
 
     let first = store
         .reserve_mutation_id_for_client_key(
@@ -1566,9 +1571,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
     assert_eq!(first, 1);
     store
         .record_router_mutation_shards(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
+            &key,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![RouterMutationShardV1::new(
@@ -1998,7 +2001,7 @@ fn bulk_load_gc_owner_resumes_bounded_cursor_and_removes_parent_last() {
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
         .expect("first bounded sweep");
     let first = store
-        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .router_mutation_record(&key)
         .expect("parent retained while receipts remain");
     let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = first.payload() else {
         panic!("bulk parent payload");
@@ -2192,7 +2195,7 @@ fn bulk_load_receipt_gc_step_deletes_bound_and_persists_cursor() {
             .expect("bounded receipt GC step");
         assert!(result.removed <= page);
         let record = store
-            .router_mutation_record(caller, key.graph_id, &key.client_key)
+            .router_mutation_record(&key)
             .expect("terminal parent retained while rows remain");
         let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = record.payload() else {
             panic!("bulk parent payload");
@@ -2208,11 +2211,7 @@ fn bulk_load_receipt_gc_step_deletes_bound_and_persists_cursor() {
         .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
         .expect("parent removal step");
     assert!(done.done);
-    assert!(
-        store
-            .router_mutation_record(caller, key.graph_id, &key.client_key)
-            .is_none()
-    );
+    assert!(store.router_mutation_record(&key).is_none());
 }
 
 #[test]
@@ -2251,7 +2250,7 @@ fn bulk_load_receipt_gc_rewinds_stale_cursor_before_parent_removal() {
     assert_eq!(rewound.removed, 0);
     assert!(!rewound.done);
     let record = store
-        .router_mutation_record(caller, key.graph_id, &key.client_key)
+        .router_mutation_record(&key)
         .expect("parent retained after rewind");
     let RouterMutationPayloadV1::BulkLoadCoordinator(coordinator) = record.payload() else {
         panic!("bulk parent payload");
@@ -2266,11 +2265,7 @@ fn bulk_load_receipt_gc_rewinds_stale_cursor_before_parent_removal() {
         .bulk_load_receipt_gc_step(caller, key.graph_id, &key.client_key, now)
         .expect("parent removal");
     assert!(done.done);
-    assert!(
-        store
-            .router_mutation_record(caller, key.graph_id, &key.client_key)
-            .is_none()
-    );
+    assert!(store.router_mutation_record(&key).is_none());
 }
 
 #[test]
@@ -2410,6 +2405,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let caller = graph_principal(1);
     let client_key = "ordered-transition";
     let public_fingerprint = [7; 32];
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.to_owned());
     store
         .reserve_mutation_id_for_client_key(
             caller,
@@ -2443,23 +2439,74 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         progress: OrderedEdgeBatchTargetProgressV1::CanonicalPending,
         projection_watermark: None,
     };
+    let reserved = store
+        .router_mutation_record(&key)
+        .expect("reserved edge record");
+    let err = store
+        .transition_to_ordered_edge_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedVertexBatch {
+                public_fingerprint,
+                public_item_count: 1,
+            },
+            Default::default(),
+            Default::default(),
+            target.clone(),
+        )
+        .expect_err("wrong edge identity family must be rejected");
+    assert_eq!(
+        err,
+        RouterError::InvalidArgument(
+            "ordered edge batch transition requires an OrderedEdgeBatch request identity".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after rejected admission"),
+        reserved
+    );
+    let err = store
+        .transition_to_ordered_edge_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint,
+                public_item_count: 2,
+            },
+            Default::default(),
+            Default::default(),
+            target.clone(),
+        )
+        .expect_err("mismatched edge item count must be rejected");
+    assert_eq!(
+        err,
+        RouterError::InvalidArgument(
+            "ordered public item count does not match Graph request".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("edge record after rejected count admission"),
+        reserved
+    );
     store
         .transition_to_ordered_edge_batch(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
+            &key,
             1,
-            public_fingerprint,
-            1,
+            RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint,
+                public_item_count: 1,
+            },
             Default::default(),
             Default::default(),
             target,
         )
         .expect("ordered transition");
 
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
-        .expect("ordered record");
+    let record = store.router_mutation_record(&key).expect("ordered record");
     assert!(!record.as_v1().routing_in_progress);
     assert!(matches!(
         record.as_v1().request_identity,
@@ -2482,33 +2529,13 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         hot_forward_vertices: Vec::new(),
     };
     store
-        .record_ordered_edge_batch_canonical_committed(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            receipt.clone(),
-        )
+        .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
         .expect("canonical completion");
     store
-        .record_ordered_edge_batch_canonical_committed(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            receipt.clone(),
-        )
+        .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
         .expect("idempotent canonical completion");
     store
-        .record_ordered_edge_batch_projection_pending(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-        )
+        .record_ordered_edge_batch_projection_pending(&key, 1, graph_fingerprint)
         .expect("projection pending");
     let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
         shard_id: ShardId::new(0),
@@ -2516,55 +2543,26 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     };
     store
         .record_ordered_edge_batch_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
+            &key,
             1,
             graph_fingerprint,
             watermark.clone(),
         )
         .expect("projection advanced");
     store
-        .record_ordered_edge_batch_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            watermark,
-        )
+        .record_ordered_edge_batch_projection_advanced(&key, 1, graph_fingerprint, watermark)
         .expect("idempotent projection advancement");
     store
-        .record_ordered_edge_batch_retirement_pending(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-        )
+        .record_ordered_edge_batch_retirement_pending(&key, 1, graph_fingerprint)
         .expect("retirement pending");
     store
-        .record_ordered_edge_batch_retired(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            receipt.clone(),
-        )
+        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
         .expect("retirement completion");
     store
-        .record_ordered_edge_batch_retired(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            receipt,
-        )
+        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt)
         .expect("idempotent retirement completion");
     let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .router_mutation_record(&key)
         .expect("completed ordered record");
     assert!(matches!(
         record.payload(),
@@ -2598,6 +2596,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let caller = graph_principal(1);
     let client_key = "ordered-mixed-transition";
     let public_fingerprint = [8; 32];
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.to_owned());
     store
         .reserve_mutation_id_for_client_key(
             caller,
@@ -2637,25 +2636,78 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         progress: OrderedMixedBatchTargetProgressV1::CanonicalPending,
         projection_watermark: None,
     };
+    let reserved = store
+        .router_mutation_record(&key)
+        .expect("reserved mixed record");
+    let err = store
+        .transition_to_ordered_mixed_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint,
+                public_item_count: 2,
+            },
+            Default::default(),
+            Default::default(),
+            target.clone(),
+        )
+        .expect_err("wrong mixed identity family must be rejected");
+    assert_eq!(
+        err,
+        RouterError::InvalidArgument(
+            "ordered mixed batch transition requires an OrderedMixedBatch request identity".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after rejected admission"),
+        reserved
+    );
+    let err = store
+        .transition_to_ordered_mixed_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedMixedBatch {
+                public_fingerprint,
+                public_operation_count: 2,
+                public_vertex_count: 2,
+                public_edge_count: 0,
+            },
+            Default::default(),
+            Default::default(),
+            target.clone(),
+        )
+        .expect_err("mismatched mixed phase counts must be rejected");
+    assert_eq!(
+        err,
+        RouterError::InvalidArgument(
+            "ordered mixed phase counts do not match Graph request".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("mixed record after rejected count admission"),
+        reserved
+    );
     store
         .transition_to_ordered_mixed_batch(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
+            &key,
             1,
-            public_fingerprint,
-            2,
-            1,
-            1,
+            RouterMutationRequestIdentityV1::OrderedMixedBatch {
+                public_fingerprint,
+                public_operation_count: 2,
+                public_vertex_count: 1,
+                public_edge_count: 1,
+            },
             Default::default(),
             Default::default(),
             target,
         )
         .expect("mixed transition");
 
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
-        .expect("mixed record");
+    let record = store.router_mutation_record(&key).expect("mixed record");
     assert!(!record.as_v1().routing_in_progress);
     assert!(matches!(
         record.as_v1().request_identity,
@@ -2682,17 +2734,10 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         allocated_vertex_ids: vec![7],
     };
     store
-        .record_ordered_mixed_batch_canonical_committed(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            receipt.clone(),
-        )
+        .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
         .expect("mixed canonical receipt");
     let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .router_mutation_record(&key)
         .expect("mixed canonical record");
     assert!(matches!(
         record.payload(),
@@ -2700,19 +2745,11 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
             if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalCommitted(ref persisted) if persisted == &receipt)
     ));
     store
-        .record_ordered_mixed_batch_projection_pending(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-        )
+        .record_ordered_mixed_batch_projection_pending(&key, 1, graph_fingerprint)
         .expect("mixed projection pending");
     store
         .record_ordered_mixed_batch_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
+            &key,
             1,
             graph_fingerprint,
             gleaph_graph_kernel::plan_exec::MutationTokenShard {
@@ -2722,7 +2759,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         )
         .expect("mixed projection advanced");
     let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .router_mutation_record(&key)
         .expect("mixed projected record");
     assert!(matches!(
         record.payload(),
@@ -2731,26 +2768,13 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
                 && replay.target.projection_watermark.is_some()
     ));
     store
-        .record_ordered_mixed_batch_retirement_pending(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-        )
+        .record_ordered_mixed_batch_retirement_pending(&key, 1, graph_fingerprint)
         .expect("mixed retirement pending");
     store
-        .record_ordered_mixed_batch_retired(
-            caller,
-            tenant_main_graph_id(),
-            client_key,
-            1,
-            graph_fingerprint,
-            receipt.clone(),
-        )
+        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
         .expect("mixed retirement complete");
     let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .router_mutation_record(&key)
         .expect("mixed completed record");
     assert!(matches!(
         record.payload(),
@@ -2760,6 +2784,212 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         } if persisted == &receipt
     ));
     assert_eq!(record.as_v1().completed_row_count, Some(2));
+}
+
+#[test]
+fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation() {
+    use crate::facade::stable::label_stats::{
+        OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+        RouterMutationRequestIdentityV1, RouterOrderedVertexBatchTargetV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{
+        GraphOrderedVertexBatchReceiptV1, OrderedVertexBatchGraphRequest,
+        ordered_vertex_batch_graph_request_fingerprint,
+    };
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let caller = graph_principal(1);
+    let client_key = "ordered-vertex-lifecycle";
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.to_owned());
+    let public_fingerprint = [9; 32];
+    store
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            public_fingerprint.to_vec(),
+        )
+        .expect("vertex reservation");
+
+    let request = OrderedVertexBatchGraphRequestV1 {
+        graph_id: tenant_main_graph_id(),
+        target_shard_id: ShardId::new(0),
+        target_graph_canister: graph_principal(9),
+        resolved_labels: Default::default(),
+        resolved_properties: Default::default(),
+        items: vec![OrderedVertexBatchGraphItemV1 {
+            resolved_vertex_labels: Vec::new(),
+            resolved_initial_properties: Vec::new(),
+        }],
+    };
+    let graph_request = OrderedVertexBatchGraphRequest::V1(request.clone());
+    let graph_fingerprint = ordered_vertex_batch_graph_request_fingerprint(&graph_request)
+        .expect("vertex Graph request fingerprint");
+    let target = RouterOrderedVertexBatchTargetV1 {
+        graph_request_fingerprint: graph_fingerprint,
+        request,
+        progress: OrderedVertexBatchTargetProgressV1::CanonicalPending,
+        projection_watermark: None,
+    };
+    let reserved = store
+        .router_mutation_record(&key)
+        .expect("reserved vertex record");
+    let err = store
+        .transition_to_ordered_vertex_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint,
+                public_item_count: 1,
+            },
+            Default::default(),
+            Default::default(),
+            target.clone(),
+        )
+        .expect_err("wrong vertex identity family must be rejected");
+    assert_eq!(
+        err,
+        RouterError::InvalidArgument(
+            "ordered vertex batch transition requires an OrderedVertexBatch request identity"
+                .into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after rejected admission"),
+        reserved
+    );
+    let err = store
+        .transition_to_ordered_vertex_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedVertexBatch {
+                public_fingerprint,
+                public_item_count: 2,
+            },
+            Default::default(),
+            Default::default(),
+            target.clone(),
+        )
+        .expect_err("mismatched vertex item count must be rejected");
+    assert_eq!(
+        err,
+        RouterError::InvalidArgument(
+            "ordered public vertex item count does not match Graph request".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("vertex record after rejected count admission"),
+        reserved
+    );
+    store
+        .transition_to_ordered_vertex_batch(
+            &key,
+            1,
+            RouterMutationRequestIdentityV1::OrderedVertexBatch {
+                public_fingerprint,
+                public_item_count: 1,
+            },
+            Default::default(),
+            Default::default(),
+            target,
+        )
+        .expect("vertex transition");
+
+    let record = store.router_mutation_record(&key).expect("vertex record");
+    assert_eq!(
+        record.as_v1().request_identity,
+        RouterMutationRequestIdentityV1::OrderedVertexBatch {
+            public_fingerprint,
+            public_item_count: 1,
+        }
+    );
+
+    let receipt = GraphOrderedVertexBatchReceiptV1 {
+        logical_vertex_count: 1,
+        emitted_delta_first_seq: None,
+        emitted_delta_last_seq: None,
+        hot_forward_vertices: Vec::new(),
+        allocated_vertex_ids: vec![7],
+    };
+    store
+        .record_ordered_vertex_batch_canonical_committed(
+            &key,
+            1,
+            graph_fingerprint,
+            receipt.clone(),
+        )
+        .expect("vertex canonical completion");
+
+    let before = store
+        .router_mutation_record(&key)
+        .expect("canonical record");
+    let err = store
+        .record_ordered_vertex_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            gleaph_graph_kernel::plan_exec::MutationTokenShard {
+                shard_id: ShardId::new(0),
+                label_stats_seq: None,
+            },
+        )
+        .expect_err("out-of-order projection advancement must be rejected");
+    assert_eq!(
+        err,
+        RouterError::Conflict(
+            "ordered vertex projection advancement conflicts with persisted progress".into()
+        )
+    );
+    assert_eq!(
+        store
+            .router_mutation_record(&key)
+            .expect("record after rejection"),
+        before,
+        "rejected phase transition must leave the durable record unchanged"
+    );
+
+    store
+        .record_ordered_vertex_batch_projection_pending(&key, 1, graph_fingerprint)
+        .expect("vertex projection pending");
+    let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(0),
+        label_stats_seq: None,
+    };
+    store
+        .record_ordered_vertex_batch_projection_advanced(
+            &key,
+            1,
+            graph_fingerprint,
+            watermark.clone(),
+        )
+        .expect("vertex projection advanced");
+    store
+        .record_ordered_vertex_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .expect("vertex retirement pending");
+    store
+        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .expect("vertex retirement complete");
+
+    let record = store
+        .router_mutation_record(&key)
+        .expect("completed vertex record");
+    assert!(matches!(
+        record.payload(),
+        RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+            receipt: persisted,
+            projection_watermark,
+        } if persisted == &receipt && projection_watermark == &watermark
+    ));
+    assert_eq!(record.as_v1().completed_row_count, Some(1));
 }
 
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
@@ -3066,7 +3296,7 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
     assert!(
         store
-            .router_mutation_record(caller, tenant_main_graph_id(), "rk-gc")
+            .router_mutation_record(&key)
             .expect("record")
             .is_terminal()
     );
@@ -3354,6 +3584,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
 
     let first = store
         .reserve_mutation_id_for_client_key(
@@ -3380,9 +3611,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
 
     store
         .record_router_mutation_shards(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
+            &key,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![RouterMutationShardV1::new(
@@ -3412,6 +3641,7 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
 
     let first = store
         .reserve_mutation_id_for_client_key(
@@ -3425,11 +3655,9 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     assert!(first.routing_owner);
 
     store
-        .abandon_router_mutation_routing_reservation(caller, tenant_main_graph_id(), "client-key-1")
+        .abandon_router_mutation_routing_reservation(&key)
         .expect("abandon reservation");
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
-        .expect("record");
+    let record = store.router_mutation_record(&key).expect("record");
     assert_eq!(record.as_v1().mutation_id, first.mutation_id);
     assert_eq!(record.as_v1().request_identity.request_fingerprint(), b"a");
     assert!(!record.as_v1().routing_in_progress);
@@ -3454,6 +3682,7 @@ fn router_mutation_journal_tracks_shard_completion() {
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
     store
         .reserve_mutation_id_for_client_key(
             caller,
@@ -3464,9 +3693,7 @@ fn router_mutation_journal_tracks_shard_completion() {
         .expect("mutation id");
     store
         .record_router_mutation_shards(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
+            &key,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![
@@ -3475,67 +3702,32 @@ fn router_mutation_journal_tracks_shard_completion() {
             ],
         )
         .expect("record shards");
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
-        .expect("record");
+    let record = store.router_mutation_record(&key).expect("record");
     assert_eq!(
         record.as_v1().resolved_labels,
         Some(ResolvedLabelTable::default())
     );
-    assert_eq!(
-        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
-        None
-    );
+    assert_eq!(store.router_mutation_completed_row_count(&key), None);
 
     store
-        .record_router_mutation_shard_completed(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(0),
-            2,
-        )
+        .record_router_mutation_shard_completed(&key, ShardId::new(0), 2)
         .expect("complete shard 0");
     store
-        .record_router_mutation_shard_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(0),
-        )
+        .record_router_mutation_shard_projection_advanced(&key, ShardId::new(0))
         .expect("advance projection shard 0");
-    assert_eq!(
-        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
-        None
-    );
+    assert_eq!(store.router_mutation_completed_row_count(&key), None);
 
     store
-        .record_router_mutation_shard_completed(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(1),
-            3,
-        )
+        .record_router_mutation_shard_completed(&key, ShardId::new(1), 3)
         .expect("complete shard 1");
     store
-        .record_router_mutation_shard_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(1),
-        )
+        .record_router_mutation_shard_projection_advanced(&key, ShardId::new(1))
         .expect("advance projection shard 1");
-    assert_eq!(
-        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
-        Some(5)
-    );
+    assert_eq!(store.router_mutation_completed_row_count(&key), Some(5));
 
     // ADR 0025 (E): once fully completed + projected, the heavy fields are dropped and
     // the final row count is pinned, so replay still returns Some(5) from a small record.
-    let compacted = store
-        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
-        .expect("record");
+    let compacted = store.router_mutation_record(&key).expect("record");
     assert_eq!(compacted.as_v1().completed_row_count, Some(5));
     assert!(
         compacted.shards().is_empty(),
@@ -3556,6 +3748,7 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
 
     store
         .reserve_mutation_id_for_client_key(
@@ -3571,9 +3764,7 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
     ];
     store
         .record_router_mutation_shards(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
+            &key,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             shards.clone(),
@@ -3582,31 +3773,21 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
 
     // Simulate the first shard completing before the saga retried.
     store
-        .record_router_mutation_shard_completed(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(0),
-            2,
-        )
+        .record_router_mutation_shard_completed(&key, ShardId::new(0), 2)
         .expect("complete shard 0");
 
     // A retry rebuilds the same envelope from the durable record. The writer must
     // accept it as idempotent, not conflict because the stored shard is completed.
     store
         .record_router_mutation_shards(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
+            &key,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             shards,
         )
         .expect("retry with the same envelope is idempotent");
 
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
-        .expect("record");
+    let record = store.router_mutation_record(&key).expect("record");
     let stored_shards = record.shards();
     assert_eq!(stored_shards.len(), 2);
     assert!(stored_shards[0].completed());
@@ -3656,6 +3837,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "client-key-1");
     store
         .reserve_mutation_id_for_client_key(
             caller,
@@ -3666,40 +3848,22 @@ fn router_mutation_journal_records_zero_shard_completion() {
         .expect("mutation id");
     store
         .record_router_mutation_completed_without_shards(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
+            &key,
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             0,
         )
         .expect("record zero-shard completion");
 
-    let record = store
-        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
-        .expect("record");
+    let record = store.router_mutation_record(&key).expect("record");
     assert_eq!(record.as_v1().completed_row_count, Some(0));
     assert!(record.shards().is_empty());
-    assert_eq!(
-        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
-        Some(0)
-    );
+    assert_eq!(store.router_mutation_completed_row_count(&key), Some(0));
     store
-        .record_router_mutation_shard_completed(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(0),
-            0,
-        )
+        .record_router_mutation_shard_completed(&key, ShardId::new(0), 0)
         .expect("terminal replay completion is idempotent");
     store
-        .record_router_mutation_shard_projection_advanced(
-            caller,
-            tenant_main_graph_id(),
-            "client-key-1",
-            ShardId::new(0),
-        )
+        .record_router_mutation_shard_projection_advanced(&key, ShardId::new(0))
         .expect("terminal replay projection is idempotent");
 }
 

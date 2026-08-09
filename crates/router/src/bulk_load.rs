@@ -25,8 +25,8 @@ use crate::facade::stable::bulk_load::{
     BulkLoadGraphReceiptV1, BulkLoadGraphRequestV1,
 };
 use crate::facade::stable::label_stats::{
-    BulkLoadCoordinatorV1, BulkLoadLifecycleV1, BulkLoadTargetV1, RouterMutationPayloadV1,
-    RouterMutationRecord, RouterMutationRequestIdentityV1,
+    BulkLoadCoordinatorV1, BulkLoadLifecycleV1, BulkLoadTargetV1, ClientMutationKey,
+    RouterMutationPayloadV1, RouterMutationRecord, RouterMutationRequestIdentityV1,
 };
 use crate::facade::store::RouterStore;
 use crate::facade::store::bulk_load::BulkLoadStartAdmission;
@@ -72,8 +72,9 @@ fn bulk_record(
     graph_id: GraphId,
     client_key: &str,
 ) -> Result<RouterMutationRecord, RouterError> {
+    let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
     let record = store
-        .router_mutation_record(caller, graph_id, client_key)
+        .router_mutation_record(&key)
         .ok_or_else(|| RouterError::NotFound(client_key.to_owned()))?;
     bulk_parent(&record)?;
     Ok(record)
@@ -119,7 +120,8 @@ fn start_target_for_key(
     graph_id: GraphId,
     client_bulk_key: &str,
 ) -> Result<BulkLoadTargetV1, RouterError> {
-    match store.router_mutation_record(caller, graph_id, client_bulk_key) {
+    let key = ClientMutationKey::new(caller, graph_id, client_bulk_key.to_owned());
+    match store.router_mutation_record(&key) {
         Some(record) => Ok(bulk_parent(&record)?.target.clone()),
         None => target_from_latest_shard(store, graph_id),
     }

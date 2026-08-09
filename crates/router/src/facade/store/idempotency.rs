@@ -406,14 +406,8 @@ impl RouterStore {
         })
     }
 
-    pub fn router_mutation_record(
-        &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-    ) -> Option<RouterMutationRecord> {
-        let key = client_mutation_key(caller, graph_id, client_key);
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key))
+    pub fn router_mutation_record(&self, key: &ClientMutationKey) -> Option<RouterMutationRecord> {
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(key))
     }
 
     /// Whether the record under `key` is the **same mutation** as `mutation_id` **and** has reached a
@@ -667,12 +661,9 @@ impl RouterStore {
     /// the independently encoded Graph request fingerprint before the routing lease is released.
     pub fn transition_to_ordered_edge_batch(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
-        public_fingerprint: [u8; 32],
-        public_item_count: u32,
+        request_identity: crate::facade::stable::label_stats::RouterMutationRequestIdentityV1,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         target: crate::facade::stable::label_stats::RouterOrderedEdgeBatchTargetV1,
@@ -680,6 +671,18 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
             RouterMutationRequestIdentityV1, RouterOrderedEdgeBatchReplayV1,
+        };
+        let (public_fingerprint, public_item_count) = match &request_identity {
+            RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint,
+                public_item_count,
+            } => (*public_fingerprint, *public_item_count),
+            _ => {
+                return Err(RouterError::InvalidArgument(
+                    "ordered edge batch transition requires an OrderedEdgeBatch request identity"
+                        .into(),
+                ));
+            }
         };
         target.validate()?;
         if target.request.items.len() != public_item_count as usize {
@@ -695,7 +698,7 @@ impl RouterStore {
                 "ordered Graph target must be pristine at admission".into(),
             ));
         }
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -729,10 +732,7 @@ impl RouterStore {
                     "ordered batch transition requires a pristine scalar reservation".into(),
                 ));
             }
-            v1.request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
-                public_fingerprint,
-                public_item_count,
-            };
+            v1.request_identity = request_identity;
             v1.resolved_labels = Some(resolved_labels);
             v1.resolved_properties = Some(resolved_properties);
             v1.payload = RouterMutationPayloadV1::OrderedEdgeBatch(Box::new(
@@ -755,12 +755,9 @@ impl RouterStore {
     /// cannot replay a request through the wrong Graph endpoint or receipt type.
     pub fn transition_to_ordered_vertex_batch(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
-        public_fingerprint: [u8; 32],
-        public_item_count: u32,
+        request_identity: crate::facade::stable::label_stats::RouterMutationRequestIdentityV1,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         target: crate::facade::stable::label_stats::RouterOrderedVertexBatchTargetV1,
@@ -768,6 +765,18 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
             RouterMutationRequestIdentityV1, RouterOrderedVertexBatchReplayV1,
+        };
+        let (public_fingerprint, public_item_count) = match &request_identity {
+            RouterMutationRequestIdentityV1::OrderedVertexBatch {
+                public_fingerprint,
+                public_item_count,
+            } => (*public_fingerprint, *public_item_count),
+            _ => {
+                return Err(RouterError::InvalidArgument(
+                    "ordered vertex batch transition requires an OrderedVertexBatch request identity"
+                        .into(),
+                ));
+            }
         };
         target.validate()?;
         if target.request.items.len() != public_item_count as usize {
@@ -783,7 +792,7 @@ impl RouterStore {
                 "ordered vertex Graph target must be pristine at admission".into(),
             ));
         }
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -817,10 +826,7 @@ impl RouterStore {
                     "ordered vertex batch transition requires a pristine scalar reservation".into(),
                 ));
             }
-            v1.request_identity = RouterMutationRequestIdentityV1::OrderedVertexBatch {
-                public_fingerprint,
-                public_item_count,
-            };
+            v1.request_identity = request_identity;
             v1.resolved_labels = Some(resolved_labels);
             v1.resolved_properties = Some(resolved_properties);
             v1.payload = RouterMutationPayloadV1::OrderedVertexBatch(Box::new(
@@ -843,14 +849,9 @@ impl RouterStore {
     /// immutable Graph operation table before the routing lease is released.
     pub fn transition_to_ordered_mixed_batch(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
-        public_fingerprint: [u8; 32],
-        public_operation_count: u32,
-        public_vertex_count: u32,
-        public_edge_count: u32,
+        request_identity: crate::facade::stable::label_stats::RouterMutationRequestIdentityV1,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         target: crate::facade::stable::label_stats::RouterOrderedMixedBatchTargetV1,
@@ -859,6 +860,26 @@ impl RouterStore {
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
             RouterMutationRequestIdentityV1, RouterOrderedMixedBatchReplayV1,
         };
+        let (public_fingerprint, public_operation_count, public_vertex_count, public_edge_count) =
+            match &request_identity {
+                RouterMutationRequestIdentityV1::OrderedMixedBatch {
+                    public_fingerprint,
+                    public_operation_count,
+                    public_vertex_count,
+                    public_edge_count,
+                } => (
+                    *public_fingerprint,
+                    *public_operation_count,
+                    *public_vertex_count,
+                    *public_edge_count,
+                ),
+                _ => {
+                    return Err(RouterError::InvalidArgument(
+                    "ordered mixed batch transition requires an OrderedMixedBatch request identity"
+                        .into(),
+                ));
+                }
+            };
         target.validate()?;
         if target.request.operations.len() != public_operation_count as usize {
             return Err(RouterError::InvalidArgument(
@@ -894,7 +915,7 @@ impl RouterStore {
                 "ordered mixed Graph target must be pristine at admission".into(),
             ));
         }
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -928,12 +949,7 @@ impl RouterStore {
                     "ordered mixed batch transition requires a pristine scalar reservation".into(),
                 ));
             }
-            v1.request_identity = RouterMutationRequestIdentityV1::OrderedMixedBatch {
-                public_fingerprint,
-                public_operation_count,
-                public_vertex_count,
-                public_edge_count,
-            };
+            v1.request_identity = request_identity;
             v1.resolved_labels = Some(resolved_labels);
             v1.resolved_properties = Some(resolved_properties);
             v1.payload = RouterMutationPayloadV1::OrderedMixedBatch(Box::new(
@@ -954,9 +970,7 @@ impl RouterStore {
     /// Persist the Graph-owned canonical receipt for an ordered vertex batch.
     pub fn record_ordered_vertex_batch_canonical_committed(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1,
@@ -967,7 +981,7 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1010,9 +1024,7 @@ impl RouterStore {
     /// Persist the Graph-owned canonical receipt for an ordered mixed batch.
     pub fn record_ordered_mixed_batch_canonical_committed(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1,
@@ -1023,7 +1035,7 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1070,16 +1082,14 @@ impl RouterStore {
 
     pub fn record_ordered_mixed_batch_projection_pending(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1121,9 +1131,7 @@ impl RouterStore {
 
     pub fn record_ordered_mixed_batch_projection_advanced(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         watermark: gleaph_graph_kernel::plan_exec::MutationTokenShard,
@@ -1131,7 +1139,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1182,16 +1190,14 @@ impl RouterStore {
 
     pub fn record_ordered_mixed_batch_retirement_pending(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
             OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1238,9 +1244,7 @@ impl RouterStore {
 
     pub fn record_ordered_mixed_batch_retired(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1,
@@ -1249,7 +1253,7 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1316,16 +1320,14 @@ impl RouterStore {
 
     pub fn record_ordered_vertex_batch_projection_pending(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1368,9 +1370,7 @@ impl RouterStore {
 
     pub fn record_ordered_vertex_batch_projection_advanced(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         watermark: gleaph_graph_kernel::plan_exec::MutationTokenShard,
@@ -1378,7 +1378,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1429,16 +1429,14 @@ impl RouterStore {
 
     pub fn record_ordered_vertex_batch_retirement_pending(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
             OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1486,9 +1484,7 @@ impl RouterStore {
 
     pub fn record_ordered_vertex_batch_retired(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1,
@@ -1497,7 +1493,7 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1569,9 +1565,7 @@ impl RouterStore {
     /// state, so a lost Router callback cannot overwrite a later projection or retirement state.
     pub fn record_ordered_edge_batch_canonical_committed(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1,
@@ -1582,7 +1576,7 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1628,16 +1622,14 @@ impl RouterStore {
     /// Mark an ordered batch as waiting for Router-owned projection convergence.
     pub fn record_ordered_edge_batch_projection_pending(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1679,9 +1671,7 @@ impl RouterStore {
     /// Persist the projection watermark after an ordered batch reaches all required projections.
     pub fn record_ordered_edge_batch_projection_advanced(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         watermark: gleaph_graph_kernel::plan_exec::MutationTokenShard,
@@ -1689,7 +1679,7 @@ impl RouterStore {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1742,16 +1732,14 @@ impl RouterStore {
     /// Persist that Router has begun the fingerprint-bound Graph retirement call.
     pub fn record_ordered_edge_batch_retirement_pending(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::{
             OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1798,9 +1786,7 @@ impl RouterStore {
     /// Finalize an ordered mutation after the Graph retirement acknowledgement is durable.
     pub fn record_ordered_edge_batch_retired(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
         receipt: gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1,
@@ -1809,7 +1795,7 @@ impl RouterStore {
         receipt
             .validate()
             .map_err(|error| RouterError::InvalidArgument(error.into()))?;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1876,15 +1862,13 @@ impl RouterStore {
     }
     pub fn record_router_mutation_shards(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         shards: Vec<RouterMutationShardV1>,
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1933,15 +1917,13 @@ impl RouterStore {
 
     pub fn record_router_mutation_completed_without_shards(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         row_count: u64,
     ) -> Result<(), RouterError> {
         use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1976,11 +1958,9 @@ impl RouterStore {
 
     pub fn abandon_router_mutation_routing_reservation(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -1993,13 +1973,11 @@ impl RouterStore {
 
     pub fn record_router_mutation_shard_completed(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         shard_id: ShardId,
         row_count: u64,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -2027,12 +2005,10 @@ impl RouterStore {
 
     pub fn record_router_mutation_shard_projection_advanced(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         shard_id: ShardId,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -2081,14 +2057,12 @@ impl RouterStore {
     #[cfg(feature = "pocket-ic-e2e")]
     pub fn test_insert_projection_pending_record(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
+        key: &ClientMutationKey,
         mutation_id: MutationId,
         row_count: u64,
         shards: &[gleaph_graph_kernel::federation::ShardRegistryEntry],
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, graph_id, client_key);
+        let key = key.clone();
         let highest = shards.iter().map(|shard| shard.shard_id).max();
         let mut record = RouterMutationRecord::new(mutation_id, ic_time_ns(), Vec::new());
         record.as_v1_mut().routing_in_progress = false;
@@ -2110,13 +2084,8 @@ impl RouterStore {
         Ok(())
     }
 
-    pub fn router_mutation_completed_row_count(
-        &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-    ) -> Option<u64> {
-        let record = self.router_mutation_record(caller, graph_id, client_key)?;
+    pub fn router_mutation_completed_row_count(&self, key: &ClientMutationKey) -> Option<u64> {
+        let record = self.router_mutation_record(key)?;
         if let Some(row_count) = record.as_v1().completed_row_count {
             return Some(row_count);
         }

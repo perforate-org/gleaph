@@ -1171,7 +1171,7 @@ mod tests {
         assert_eq!(coordinator.target, target);
         assert_eq!(
             store
-                .router_mutation_record(caller, GraphId::from_raw(1), "job")
+                .router_mutation_record(&client_mutation_key(caller, GraphId::from_raw(1), "job",))
                 .unwrap()
                 .as_v1()
                 .mutation_id,
@@ -1197,7 +1197,11 @@ mod tests {
         assert!(matches!(error, Err(RouterError::InvalidArgument(_))));
         assert!(
             store
-                .router_mutation_record(caller, GraphId::from_raw(1), "invalid")
+                .router_mutation_record(&client_mutation_key(
+                    caller,
+                    GraphId::from_raw(1),
+                    "invalid",
+                ))
                 .is_none()
         );
         let next_id = ROUTER_MUTATION_COUNTER.with_borrow(|counter| *counter.get());
@@ -1233,7 +1237,7 @@ mod tests {
         );
         assert!(
             store
-                .router_mutation_record(caller, graph_id, "counter-boundary")
+                .router_mutation_record(&client_mutation_key(caller, graph_id, "counter-boundary",))
                 .is_none()
         );
 
@@ -1251,7 +1255,7 @@ mod tests {
         );
         assert!(
             store
-                .router_mutation_record(caller, graph_id, "parent-boundary")
+                .router_mutation_record(&client_mutation_key(caller, graph_id, "parent-boundary",))
                 .is_some(),
             "host tests expose the exact post-parent trap boundary; PocketIC proves rollback"
         );
@@ -1481,7 +1485,7 @@ mod tests {
         assert!(second.done);
         assert!(
             store
-                .router_mutation_record(caller, graph_id, key)
+                .router_mutation_record(&client_mutation_key(caller, graph_id, key))
                 .is_none()
         );
     }

@@ -9,6 +9,8 @@ use ic_cdk::api::msg_caller;
 use ic_cdk_macros::{query, update};
 
 use crate::facade::auth;
+#[cfg(feature = "pocket-ic-e2e")]
+use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 use crate::types;
@@ -714,14 +716,8 @@ fn test_inject_projection_pending_saga(
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
-    store.test_insert_projection_pending_record(
-        caller,
-        graph_id,
-        &client_mutation_key,
-        mutation_id,
-        row_count,
-        &shards,
-    )?;
+    let key = ClientMutationKey::new(caller, graph_id, client_mutation_key);
+    store.test_insert_projection_pending_record(&key, mutation_id, row_count, &shards)?;
     crate::recovery::arm_if_needed();
     Ok(())
 }
@@ -772,7 +768,8 @@ fn test_bulk_load_start_probe(
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
     let counter = crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|value| *value.get());
-    let record = store.router_mutation_record(caller, graph_id, &client_bulk_key);
+    let key = ClientMutationKey::new(caller, graph_id, client_bulk_key);
+    let record = store.router_mutation_record(&key);
     let mutation_id = record.as_ref().map(|value| value.as_v1().mutation_id);
     let is_bulk_load = record.as_ref().is_some_and(|value| {
         matches!(

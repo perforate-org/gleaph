@@ -130,13 +130,12 @@ use nohash_hasher::IntSet;
 use std::collections::{HashMap, HashSet};
 
 use crate::execution_path::check_adhoc_execution_path;
-#[cfg(target_family = "wasm")]
-use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShardV1;
 use crate::facade::stable::label_stats::{
-    OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
-    OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1, RouterOrderedEdgeBatchTargetV1,
-    RouterOrderedMixedBatchTargetV1, RouterOrderedVertexBatchTargetV1,
+    ClientMutationKey, OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
+    OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1, RouterMutationRequestIdentityV1,
+    RouterOrderedEdgeBatchTargetV1, RouterOrderedMixedBatchTargetV1,
+    RouterOrderedVertexBatchTargetV1,
 };
 use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::uniqueness::{
@@ -154,6 +153,7 @@ use crate::federation::{
     split_label_and_property_anchors, try_aggregate_index_fast_path,
     try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
+
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_ordered_edge_batch_on_graph,
     execute_ordered_mixed_batch_on_graph, execute_ordered_vertex_batch_on_graph,
@@ -168,6 +168,10 @@ use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
 use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
+
+fn mutation_key_for(caller: Principal, graph_id: GraphId, client_key: &str) -> ClientMutationKey {
+    ClientMutationKey::new(caller, graph_id, client_key.to_owned())
+}
 
 pub(crate) type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
 
@@ -1056,6 +1060,7 @@ async fn execute_ordered_edge_batch_classified(
         caller,
         logical_graph_name.as_deref(),
     )?;
+    let mutation_key = mutation_key_for(caller, graph_id, &client_key);
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let endpoints = request
         .decode_same_shard_endpoints(&encoding_key)
@@ -1113,11 +1118,9 @@ async fn execute_ordered_edge_batch_classified(
         public_fingerprint.to_vec(),
     )?;
     if !reservation.routing_owner {
-        let record = store
-            .router_mutation_record(caller, graph_id, &client_key)
-            .ok_or_else(|| {
-                RouterError::Internal("ordered mutation reservation disappeared".into())
-            })?;
+        let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
+            RouterError::Internal("ordered mutation reservation disappeared".into())
+        })?;
         if !matches!(
             record.payload(),
             RouterMutationPayloadV1::OrderedEdgeBatch(_)
@@ -1145,22 +1148,22 @@ async fn execute_ordered_edge_batch_classified(
         projection_watermark: None,
     };
     if let Err(error) = store.transition_to_ordered_edge_batch(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
-        public_fingerprint,
-        public_item_count,
+        RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+            public_fingerprint,
+            public_item_count,
+        },
         resolved_labels,
         resolved_properties,
         target,
     ) {
-        store.abandon_router_mutation_routing_reservation(caller, graph_id, &client_key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key)?;
         return Err(error);
     }
 
     let graph_request = match store
-        .router_mutation_record(caller, graph_id, &client_key)
+        .router_mutation_record(&mutation_key)
         .and_then(|record| match record.payload() {
             RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
                 Some(replay.target.request.clone())
@@ -1204,9 +1207,7 @@ async fn execute_ordered_edge_batch_classified(
         }
     };
     store.record_ordered_edge_batch_canonical_committed(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         receipt.clone(),
@@ -1218,9 +1219,7 @@ async fn execute_ordered_edge_batch_classified(
         ));
     }
     store.record_ordered_edge_batch_projection_pending(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
     )?;
@@ -1233,9 +1232,7 @@ async fn execute_ordered_edge_batch_classified(
     )
     .await?;
     store.record_ordered_edge_batch_projection_advanced(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         gleaph_graph_kernel::plan_exec::MutationTokenShard {
@@ -1244,9 +1241,7 @@ async fn execute_ordered_edge_batch_classified(
         },
     )?;
     store.record_ordered_edge_batch_retirement_pending(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
     )?;
@@ -1277,15 +1272,13 @@ async fn execute_ordered_edge_batch_classified(
         ));
     }
     store.record_ordered_edge_batch_retired(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         ack.receipt,
     )?;
     let record = store
-        .router_mutation_record(caller, graph_id, &client_key)
+        .router_mutation_record(&mutation_key)
         .ok_or_else(|| RouterError::Internal("ordered mutation record disappeared".into()))?;
     Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
@@ -1325,6 +1318,7 @@ async fn execute_ordered_vertex_batch_classified(
     let store = RouterStore::new();
     let graph_id =
         crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
+    let mutation_key = mutation_key_for(caller, graph_id, &client_key);
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let target =
         crate::federation::latest_shard_routing(&store.list_live_shards_for_graph_id(graph_id)?)?
@@ -1357,11 +1351,9 @@ async fn execute_ordered_vertex_batch_classified(
         public_fingerprint.to_vec(),
     )?;
     if !reservation.routing_owner {
-        let record = store
-            .router_mutation_record(caller, graph_id, &client_key)
-            .ok_or_else(|| {
-                RouterError::Internal("ordered vertex mutation reservation disappeared".into())
-            })?;
+        let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
+            RouterError::Internal("ordered vertex mutation reservation disappeared".into())
+        })?;
         if !matches!(
             record.payload(),
             RouterMutationPayloadV1::OrderedVertexBatch(_)
@@ -1389,22 +1381,22 @@ async fn execute_ordered_vertex_batch_classified(
         projection_watermark: None,
     };
     if let Err(error) = store.transition_to_ordered_vertex_batch(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
-        public_fingerprint,
-        public_item_count,
+        RouterMutationRequestIdentityV1::OrderedVertexBatch {
+            public_fingerprint,
+            public_item_count,
+        },
         resolved_labels,
         resolved_properties,
         target,
     ) {
-        store.abandon_router_mutation_routing_reservation(caller, graph_id, &client_key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key)?;
         return Err(error);
     }
 
     let graph_request = store
-        .router_mutation_record(caller, graph_id, &client_key)
+        .router_mutation_record(&mutation_key)
         .and_then(|record| match record.payload() {
             RouterMutationPayloadV1::OrderedVertexBatch(replay) => {
                 Some(replay.target.request.clone())
@@ -1447,9 +1439,7 @@ async fn execute_ordered_vertex_batch_classified(
         }
     };
     store.record_ordered_vertex_batch_canonical_committed(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         receipt.clone(),
@@ -1461,9 +1451,7 @@ async fn execute_ordered_vertex_batch_classified(
         ));
     }
     store.record_ordered_vertex_batch_projection_pending(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
     )?;
@@ -1476,9 +1464,7 @@ async fn execute_ordered_vertex_batch_classified(
     )
     .await?;
     store.record_ordered_vertex_batch_projection_advanced(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         MutationTokenShard {
@@ -1487,9 +1473,7 @@ async fn execute_ordered_vertex_batch_classified(
         },
     )?;
     store.record_ordered_vertex_batch_retirement_pending(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
     )?;
@@ -1520,18 +1504,14 @@ async fn execute_ordered_vertex_batch_classified(
         ));
     }
     store.record_ordered_vertex_batch_retired(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         ack.receipt,
     )?;
-    let record = store
-        .router_mutation_record(caller, graph_id, &client_key)
-        .ok_or_else(|| {
-            RouterError::Internal("ordered vertex mutation record disappeared".into())
-        })?;
+    let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
+        RouterError::Internal("ordered vertex mutation record disappeared".into())
+    })?;
     Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
 
@@ -1610,6 +1590,7 @@ async fn execute_ordered_mixed_batch_classified(
     let store = RouterStore::new();
     let graph_id =
         crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
+    let mutation_key = mutation_key_for(caller, graph_id, &client_key);
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let target_shard_id = match request
         .existing_endpoint_shard(&encoding_key)
@@ -1655,11 +1636,9 @@ async fn execute_ordered_mixed_batch_classified(
         public_fingerprint.to_vec(),
     )?;
     if !reservation.routing_owner {
-        let record = store
-            .router_mutation_record(caller, graph_id, &client_key)
-            .ok_or_else(|| {
-                RouterError::Internal("ordered mixed mutation reservation disappeared".into())
-            })?;
+        let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
+            RouterError::Internal("ordered mixed mutation reservation disappeared".into())
+        })?;
         if !matches!(
             record.payload(),
             RouterMutationPayloadV1::OrderedMixedBatch(_)
@@ -1686,23 +1665,23 @@ async fn execute_ordered_mixed_batch_classified(
         projection_watermark: None,
     };
     if let Err(error) = store.transition_to_ordered_mixed_batch(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
-        public_fingerprint,
-        public_operation_count,
-        public_vertex_count,
-        public_edge_count,
+        RouterMutationRequestIdentityV1::OrderedMixedBatch {
+            public_fingerprint,
+            public_operation_count,
+            public_vertex_count,
+            public_edge_count,
+        },
         resolved_labels,
         resolved_properties,
         target,
     ) {
-        store.abandon_router_mutation_routing_reservation(caller, graph_id, &client_key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key)?;
         return Err(error);
     }
     let graph_request = store
-        .router_mutation_record(caller, graph_id, &client_key)
+        .router_mutation_record(&mutation_key)
         .and_then(|record| match record.payload() {
             RouterMutationPayloadV1::OrderedMixedBatch(replay) => {
                 Some(replay.target.request.clone())
@@ -1745,9 +1724,7 @@ async fn execute_ordered_mixed_batch_classified(
         }
     };
     store.record_ordered_mixed_batch_canonical_committed(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         receipt.clone(),
@@ -1759,9 +1736,7 @@ async fn execute_ordered_mixed_batch_classified(
         ));
     }
     store.record_ordered_mixed_batch_projection_pending(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
     )?;
@@ -1774,9 +1749,7 @@ async fn execute_ordered_mixed_batch_classified(
     )
     .await?;
     store.record_ordered_mixed_batch_projection_advanced(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         MutationTokenShard {
@@ -1785,9 +1758,7 @@ async fn execute_ordered_mixed_batch_classified(
         },
     )?;
     store.record_ordered_mixed_batch_retirement_pending(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
     )?;
@@ -1818,15 +1789,13 @@ async fn execute_ordered_mixed_batch_classified(
         ));
     }
     store.record_ordered_mixed_batch_retired(
-        caller,
-        graph_id,
-        &client_key,
+        &mutation_key,
         mutation_id,
         graph_request_fingerprint,
         ack.receipt,
     )?;
     let record = store
-        .router_mutation_record(caller, graph_id, &client_key)
+        .router_mutation_record(&mutation_key)
         .ok_or_else(|| RouterError::Internal("ordered mixed mutation record disappeared".into()))?;
     Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
@@ -2669,7 +2638,7 @@ pub(crate) fn attach_mutation_phase(
     let Some(key) = client_mutation_key else {
         return result;
     };
-    match store.router_mutation_record(caller, graph_id, key) {
+    match store.router_mutation_record(&mutation_key_for(caller, graph_id, key)) {
         Some(record) => result.with_phase(record.lifecycle_phase()),
         None => result,
     }
@@ -2811,9 +2780,10 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     };
     _instr_logger.mark("reserve");
     let mutation_id = mutation_reservation.map(|reservation| reservation.mutation_id);
+    let mutation_key = client_mutation_key.map(|key| mutation_key_for(caller, graph_id, key));
 
-    if has_dml && let Some(key) = client_mutation_key {
-        if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
+    if has_dml && let Some(key) = mutation_key.as_ref() {
+        if let Some(row_count) = store.router_mutation_completed_row_count(key) {
             return Ok(PrepareOutcome::Early(attach_mutation_phase(
                 GqlQueryResult::row_count_only(row_count),
                 store,
@@ -2825,7 +2795,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         // A brand-new mutation has no saga record on the Router, so there is no
         // durable projection to reconcile. Skip the Graph journal reads entirely in that case.
         // Replays and retries carry an existing record and still run reconciliation.
-        if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
+        if let Some(record) = store.router_mutation_record(key) {
             let targets: Vec<(Principal, MutationId)> = record
                 .shards()
                 .iter()
@@ -2846,14 +2816,14 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             }
             #[cfg(feature = "batch-instr-log")]
             let t0 = crate::current_instruction_counter();
-            reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
+            reconcile_router_mutation_projection(store, key, preflight).await?;
             #[cfg(feature = "batch-instr-log")]
             log_router_preflight(
                 "reconcile",
                 crate::current_instruction_counter().saturating_sub(t0),
             );
         }
-        if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
+        if let Some(row_count) = store.router_mutation_completed_row_count(key) {
             return Ok(PrepareOutcome::Early(attach_mutation_phase(
                 GqlQueryResult::row_count_only(row_count),
                 store,
@@ -2865,8 +2835,9 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     }
 
     _instr_logger.mark("replay");
-    let saved_record =
-        client_mutation_key.and_then(|key| store.router_mutation_record(caller, graph_id, key));
+    let saved_record = mutation_key
+        .as_ref()
+        .and_then(|key| store.router_mutation_record(key));
     let mut resolved_labels = match saved_record
         .as_ref()
         .and_then(|record| record.as_v1().resolved_labels.clone())
@@ -2995,8 +2966,8 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     // second check, a stale preflight path can dispatch a shard for a journal already compacted
     // with `completed_row_count`, and completion then reports a missing shard envelope.
     if has_dml
-        && let Some(key) = client_mutation_key
-        && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
+        && let Some(key) = mutation_key.as_ref()
+        && let Some(row_count) = store.router_mutation_completed_row_count(key)
     {
         return Ok(PrepareOutcome::Early(attach_mutation_phase(
             GqlQueryResult::row_count_only(row_count),
@@ -3067,10 +3038,8 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
                     }
                 };
                 if hits.is_empty() {
-                    if let Some(key) = client_mutation_key {
+                    if let Some(key) = mutation_key.as_ref() {
                         store.record_router_mutation_completed_without_shards(
-                            caller,
-                            graph_id,
                             key,
                             resolved_labels.clone(),
                             resolved_properties.clone(),
@@ -3180,7 +3149,8 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     // placed on one shard; a complete-row seeded bundle whose anchors fan out to many shards is
     // dispatched per shard below as a roll-forward saga — each shard atomic shard-locally, cross-shard
     // convergence roll-forward (no global rollback), resumed by idempotent retry / the recovery timer.
-    if persist_dispatch_envelope && let (Some(key), Some(_)) = (client_mutation_key, mutation_id) {
+    if persist_dispatch_envelope && let (Some(key), Some(_)) = (mutation_key.as_ref(), mutation_id)
+    {
         // Persist the envelope whenever this path has a mutation record. The store method is
         // idempotent and only fills an empty, non-terminal record, so this must not be gated on
         // the current call owning the routing lease: a retry can have a valid dispatch path while
@@ -3196,14 +3166,12 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             })
             .collect();
         store.record_router_mutation_shards(
-            caller,
-            graph_id,
             key,
             resolved_labels.clone(),
             resolved_properties.clone(),
             envelope_shards,
         )?;
-        if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
+        if let Some(record) = store.router_mutation_record(key) {
             let v1 = record.as_v1();
             if let Some(saved_resolved_labels) = v1.resolved_labels.clone() {
                 resolved_labels = saved_resolved_labels;
@@ -3423,6 +3391,7 @@ async fn execute_prepared_mutation(
     client_mutation_key: Option<&str>,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
+    let mutation_key = client_mutation_key.map(|key| mutation_key_for(caller, graph_id, key));
     let mode = prepared.mode;
     let has_dml = prepared.has_dml;
     let mutation_id = prepared.mutation_id;
@@ -3611,17 +3580,13 @@ async fn execute_prepared_mutation(
                         merge_mode.clone(),
                     )
                     .map_err(RouterError::InvalidArgument)?;
-                    if let Some(key) = client_mutation_key {
+                    if let Some(key) = mutation_key.as_ref() {
                         store.record_router_mutation_shard_completed(
-                            caller,
-                            graph_id,
                             key,
                             dispatch.shard_id,
                             entry.row_count(),
                         )?;
                         store.record_router_mutation_shard_projection_advanced(
-                            caller,
-                            graph_id,
                             key,
                             dispatch.shard_id,
                         )?;
@@ -3664,20 +3629,13 @@ async fn execute_prepared_mutation(
             )
             .await?;
         }
-        if let Some(key) = client_mutation_key {
+        if let Some(key) = mutation_key.as_ref() {
             store.record_router_mutation_shard_completed(
-                caller,
-                graph_id,
                 key,
                 dispatch.shard_id,
                 result.row_count,
             )?;
-            store.record_router_mutation_shard_projection_advanced(
-                caller,
-                graph_id,
-                key,
-                dispatch.shard_id,
-            )?;
+            store.record_router_mutation_shard_projection_advanced(key, dispatch.shard_id)?;
         }
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
             .map_err(RouterError::InvalidArgument)?;
@@ -3765,8 +3723,8 @@ async fn execute_prepared_mutation(
     #[cfg(feature = "batch-instr-log")]
     let router_journal_update_start = crate::current_instruction_counter();
 
-    if let Some(key) = client_mutation_key
-        && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
+    if let Some(key) = mutation_key.as_ref()
+        && let Some(row_count) = store.router_mutation_completed_row_count(key)
     {
         return Ok(attach_mutation_token(
             attach_mutation_phase(
@@ -3936,7 +3894,9 @@ fn release_routing_if_owner(
     if let (Some(key), Some(reservation)) = (client_mutation_key, mutation_reservation)
         && reservation.routing_owner
     {
-        store.abandon_router_mutation_routing_reservation(caller, graph_id, key)?;
+        store.abandon_router_mutation_routing_reservation(&mutation_key_for(
+            caller, graph_id, key,
+        ))?;
     }
     Ok(())
 }
@@ -4179,12 +4139,10 @@ pub(crate) async fn advance_label_stats_projection_through(
 
 async fn reconcile_router_mutation_projection(
     store: &RouterStore,
-    caller: Principal,
-    graph_id: GraphId,
-    client_key: &str,
+    key: &ClientMutationKey,
     preflight: Option<&PreflightContext>,
 ) -> Result<(), RouterError> {
-    let Some(record) = store.router_mutation_record(caller, graph_id, client_key) else {
+    let Some(record) = store.router_mutation_record(key) else {
         return Ok(());
     };
     for shard in record
@@ -4194,7 +4152,7 @@ async fn reconcile_router_mutation_projection(
     {
         let Some(entry) = recover_mutation_outcome(
             store,
-            graph_id,
+            key.graph_id,
             shard.graph_canister(),
             shard.shard_id(),
             record.as_v1().mutation_id,
@@ -4215,12 +4173,7 @@ async fn reconcile_router_mutation_projection(
                 shard.shard_id()
             )));
         }
-        store.record_router_mutation_shard_projection_advanced(
-            caller,
-            graph_id,
-            client_key,
-            shard.shard_id(),
-        )?;
+        store.record_router_mutation_shard_projection_advanced(key, shard.shard_id())?;
     }
     Ok(())
 }
@@ -4358,13 +4311,7 @@ async fn recover_ordered_edge_batch_record(
         target.progress,
         OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(_)
     ) {
-        store.record_ordered_edge_batch_projection_pending(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            mutation_id,
-            fingerprint,
-        )?;
+        store.record_ordered_edge_batch_projection_pending(key, mutation_id, fingerprint)?;
     }
     if matches!(
         target.progress,
@@ -4380,9 +4327,7 @@ async fn recover_ordered_edge_batch_record(
         )
         .await?;
         store.record_ordered_edge_batch_projection_advanced(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
+            key,
             mutation_id,
             fingerprint,
             gleaph_graph_kernel::plan_exec::MutationTokenShard {
@@ -4393,7 +4338,7 @@ async fn recover_ordered_edge_batch_record(
     }
 
     let current = store
-        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .router_mutation_record(key)
         .ok_or_else(|| RouterError::Internal("ordered recovery record disappeared".into()))?;
     if matches!(
         current.payload(),
@@ -4403,13 +4348,7 @@ async fn recover_ordered_edge_batch_record(
                 OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
             )
     ) {
-        store.record_ordered_edge_batch_retirement_pending(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            mutation_id,
-            fingerprint,
-        )?;
+        store.record_ordered_edge_batch_retirement_pending(key, mutation_id, fingerprint)?;
     }
 
     let ack = retire_ordered_mutation_on_graph(
@@ -4430,14 +4369,7 @@ async fn recover_ordered_edge_batch_record(
             "ordered retirement acknowledgement does not match durable target".into(),
         ));
     }
-    store.record_ordered_edge_batch_retired(
-        key.caller,
-        key.graph_id,
-        &key.client_key,
-        mutation_id,
-        fingerprint,
-        ack.receipt,
-    )
+    store.record_ordered_edge_batch_retired(key, mutation_id, fingerprint, ack.receipt)
 }
 
 #[cfg(target_family = "wasm")]
@@ -4483,13 +4415,7 @@ async fn recover_ordered_mixed_batch_record(
         target.progress,
         OrderedMixedBatchTargetProgressV1::CanonicalCommitted(_)
     ) {
-        store.record_ordered_mixed_batch_projection_pending(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            mutation_id,
-            fingerprint,
-        )?;
+        store.record_ordered_mixed_batch_projection_pending(key, mutation_id, fingerprint)?;
     }
     if matches!(
         target.progress,
@@ -4505,9 +4431,7 @@ async fn recover_ordered_mixed_batch_record(
         )
         .await?;
         store.record_ordered_mixed_batch_projection_advanced(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
+            key,
             mutation_id,
             fingerprint,
             MutationTokenShard {
@@ -4518,7 +4442,7 @@ async fn recover_ordered_mixed_batch_record(
     }
 
     let current = store
-        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .router_mutation_record(key)
         .ok_or_else(|| RouterError::Internal("ordered mixed recovery record disappeared".into()))?;
     if matches!(
         current.payload(),
@@ -4528,13 +4452,7 @@ async fn recover_ordered_mixed_batch_record(
                 OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_)
             )
     ) {
-        store.record_ordered_mixed_batch_retirement_pending(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            mutation_id,
-            fingerprint,
-        )?;
+        store.record_ordered_mixed_batch_retirement_pending(key, mutation_id, fingerprint)?;
     }
 
     let ack = retire_ordered_mixed_mutation_on_graph(
@@ -4555,14 +4473,7 @@ async fn recover_ordered_mixed_batch_record(
             "ordered mixed retirement acknowledgement does not match durable target".into(),
         ));
     }
-    store.record_ordered_mixed_batch_retired(
-        key.caller,
-        key.graph_id,
-        &key.client_key,
-        mutation_id,
-        fingerprint,
-        ack.receipt,
-    )
+    store.record_ordered_mixed_batch_retired(key, mutation_id, fingerprint, ack.receipt)
 }
 
 #[cfg(target_family = "wasm")]
@@ -4608,13 +4519,7 @@ async fn recover_ordered_vertex_batch_record(
         target.progress,
         OrderedVertexBatchTargetProgressV1::CanonicalCommitted(_)
     ) {
-        store.record_ordered_vertex_batch_projection_pending(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            mutation_id,
-            fingerprint,
-        )?;
+        store.record_ordered_vertex_batch_projection_pending(key, mutation_id, fingerprint)?;
     }
     if matches!(
         target.progress,
@@ -4630,9 +4535,7 @@ async fn recover_ordered_vertex_batch_record(
         )
         .await?;
         store.record_ordered_vertex_batch_projection_advanced(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
+            key,
             mutation_id,
             fingerprint,
             MutationTokenShard {
@@ -4642,11 +4545,9 @@ async fn recover_ordered_vertex_batch_record(
         )?;
     }
 
-    let current = store
-        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
-        .ok_or_else(|| {
-            RouterError::Internal("ordered vertex recovery record disappeared".into())
-        })?;
+    let current = store.router_mutation_record(key).ok_or_else(|| {
+        RouterError::Internal("ordered vertex recovery record disappeared".into())
+    })?;
     if matches!(
         current.payload(),
         RouterMutationPayloadV1::OrderedVertexBatch(replay)
@@ -4655,13 +4556,7 @@ async fn recover_ordered_vertex_batch_record(
                 OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
             )
     ) {
-        store.record_ordered_vertex_batch_retirement_pending(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            mutation_id,
-            fingerprint,
-        )?;
+        store.record_ordered_vertex_batch_retirement_pending(key, mutation_id, fingerprint)?;
     }
 
     let ack = retire_ordered_vertex_mutation_on_graph(
@@ -4682,14 +4577,7 @@ async fn recover_ordered_vertex_batch_record(
             "ordered vertex retirement acknowledgement does not match durable target".into(),
         ));
     }
-    store.record_ordered_vertex_batch_retired(
-        key.caller,
-        key.graph_id,
-        &key.client_key,
-        mutation_id,
-        fingerprint,
-        ack.receipt,
-    )
+    store.record_ordered_vertex_batch_retired(key, mutation_id, fingerprint, ack.receipt)
 }
 
 #[cfg(target_family = "wasm")]
@@ -4697,8 +4585,7 @@ pub(crate) async fn recover_mutation_record(
     store: &RouterStore,
     key: &ClientMutationKey,
 ) -> Result<(), RouterError> {
-    let Some(record) = store.router_mutation_record(key.caller, key.graph_id, &key.client_key)
-    else {
+    let Some(record) = store.router_mutation_record(key) else {
         return Ok(());
     };
     if record.is_terminal() {
@@ -4762,19 +4649,12 @@ pub(crate) async fn recover_mutation_record(
             Some(entry) => {
                 if !shard.completed() {
                     store.record_router_mutation_shard_completed(
-                        key.caller,
-                        key.graph_id,
-                        &key.client_key,
+                        key,
                         shard.shard_id(),
                         entry.row_count(),
                     )?;
                 }
-                store.record_router_mutation_shard_projection_advanced(
-                    key.caller,
-                    key.graph_id,
-                    &key.client_key,
-                    shard.shard_id(),
-                )?;
+                store.record_router_mutation_shard_projection_advanced(key, shard.shard_id())?;
             }
             None => {
                 store.record_router_mutation_last_error(
@@ -4793,6 +4673,7 @@ pub(crate) async fn recover_mutation_record(
 
 #[cfg(test)]
 mod tests {
+    use super::mutation_key_for;
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::future::Future;
@@ -5684,11 +5565,11 @@ mod tests {
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
-            .router_mutation_record(
+            .router_mutation_record(&mutation_key_for(
                 Principal::anonymous(),
                 tenant_main_graph_id(),
                 "client-key-1",
-            )
+            ))
             .expect("mutation record");
         assert_eq!(record.as_v1().mutation_id, 1);
         assert_eq!(
@@ -5761,11 +5642,11 @@ mod tests {
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
-            .router_mutation_record(
+            .router_mutation_record(&mutation_key_for(
                 Principal::anonymous(),
                 tenant_main_graph_id(),
                 "client-key-1",
-            )
+            ))
             .expect("mutation record");
         assert_eq!(record.as_v1().completed_row_count, Some(0));
         assert!(!record.as_v1().routing_in_progress);
@@ -5805,11 +5686,11 @@ mod tests {
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
-            .router_mutation_record(
+            .router_mutation_record(&mutation_key_for(
                 Principal::anonymous(),
                 tenant_main_graph_id(),
                 "client-key-1",
-            )
+            ))
             .expect("mutation record");
         assert_eq!(record.as_v1().mutation_id, 1);
         assert!(!record.as_v1().routing_in_progress);
@@ -6440,9 +6321,7 @@ mod tests {
         };
         store
             .record_router_mutation_shards(
-                caller,
-                graph_id,
-                key,
+                &mutation_key_for(caller, graph_id, key),
                 resolved_labels,
                 resolved_properties,
                 vec![

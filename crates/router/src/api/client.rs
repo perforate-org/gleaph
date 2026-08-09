@@ -6,6 +6,7 @@
 
 use ic_cdk_macros::{query, update};
 
+use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::gql;
 use crate::prepared;
 use crate::state::RouterError;
@@ -72,8 +73,9 @@ fn mutation_status_record(
     RouterError,
 > {
     let graph_id = crate::graph_context::resolve_graph_id_or_default(store, caller, graph_name)?;
+    let key = ClientMutationKey::new(caller, graph_id, client_mutation_key.to_owned());
     let record = store
-        .router_mutation_record(caller, graph_id, client_mutation_key)
+        .router_mutation_record(&key)
         .ok_or_else(|| RouterError::NotFound(client_mutation_key.to_owned()))?;
     Ok((graph_id, record))
 }
