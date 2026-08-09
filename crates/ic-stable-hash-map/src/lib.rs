@@ -21,6 +21,8 @@
 //! All mutation uses `&self` and [`Memory`](ic_stable_structures::Memory); avoid aliasing the same
 //! byte range with another mutating wrapper while an iterator is alive.
 
+#![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
+
 mod hash_map;
 mod header;
 mod memory;
