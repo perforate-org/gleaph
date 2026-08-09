@@ -32,9 +32,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
     VectorSubject,
 };
-use ic_stable_vector_page_store::kernel::{
-    dot_and_norm2_f32, l2_squared_f32, l2_squared_f32_early_exit,
-};
+use ic_stable_vector_page_store::kernel::{dot_f32, l2_squared_f32, l2_squared_f32_early_exit};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -101,13 +99,15 @@ fn score_row(
     match metric {
         VectorMetric::L2Squared => l2_squared_f32_early_exit(bytes, query, threshold),
         VectorMetric::Cosine => {
-            let (dot, v_norm2) = dot_and_norm2_f32(bytes, query);
-            // Fused finiteness: a non-finite component makes the dot/norm non-finite; skip it here
-            // (the zero-norm skip is unchanged).
-            if !dot.is_finite() || !v_norm2.is_finite() || v_norm2 == 0.0 {
+            // Stored rows are unit-normalized (cosine indexes store unit vectors), so cosine distance
+            // is 1 - dot/‖q‖ where q_norm = ‖query‖ is precomputed. `dot_f32` over the unit row and
+            // the raw query is the cosine similarity — no per-row norm computation.
+            let dot = dot_f32(bytes, query);
+            // Fused finiteness: a non-finite component makes the dot non-finite; skip it here.
+            if !dot.is_finite() {
                 return None;
             }
-            Some(1.0 - dot / (q_norm * v_norm2.sqrt()))
+            Some(1.0 - dot / q_norm)
         }
     }
 }
@@ -118,6 +118,30 @@ pub(super) fn encode_f32(vector: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out
+}
+
+/// Returns the unit-normalized encoding of the first `dims` f32 components of `bytes`, or `None` when
+/// the vector has zero norm (undefined for cosine). Used to establish the stored-row-unit invariant
+/// for cosine indexes (write path) and to normalize `op.bytes` for the idempotency comparison.
+pub(super) fn normalize_f32(bytes: &[u8], dims: usize) -> Option<Vec<u8>> {
+    let chunks = bytes[..dims * 4].as_chunks::<4>().0;
+    let norm_sq: f32 = chunks
+        .iter()
+        .map(|c| {
+            let x = f32::from_le_bytes(*c);
+            x * x
+        })
+        .sum();
+    if norm_sq == 0.0 {
+        return None;
+    }
+    let inv = 1.0 / norm_sq.sqrt();
+    let mut out = Vec::with_capacity(chunks.len() * 4);
+    for c in chunks {
+        let x = f32::from_le_bytes(*c) * inv;
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    Some(out)
 }
 
 /// One scored candidate. Ordered by `(distance, subject)` with `f32::total_cmp` so a max-heap evicts
@@ -722,12 +746,14 @@ mod tests {
     #[test]
     fn score_row_cosine_matches_scalar() {
         let q = vec![1.0f32, 2.0, 3.0, 4.0];
-        let v = vec![2.0f32, 0.0, 3.0, 1.0];
-        let bytes = row(&v);
-        let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let v = [2.0f32, 0.0, 3.0, 1.0];
+        // Cosine stores unit-normalized rows (invariant), so score against the normalized vector.
         let v_norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let dot: f32 = q.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-        let expected = 1.0 - dot / (q_norm * v_norm);
+        let vn: Vec<f32> = v.iter().map(|x| x / v_norm).collect();
+        let bytes = row(&vn);
+        let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let dot: f32 = q.iter().zip(vn.iter()).map(|(a, b)| a * b).sum();
+        let expected = 1.0 - dot / q_norm;
         let got =
             score_row(VectorMetric::Cosine, &bytes, &q, q_norm, f32::INFINITY).expect("cosine");
         assert!((got - expected).abs() < 1e-6);
@@ -736,8 +762,9 @@ mod tests {
     #[test]
     fn score_row_cosine_skips_non_finite_row() {
         let q = vec![0.0f32; 4];
-        // A NaN component makes dot/norm non-finite; the fused check skips it (no row_is_finite
-        // pre-pass). The zero-norm row is also skipped.
+        // A NaN/Inf component makes the dot non-finite; the fused check skips it (no row_is_finite
+        // pre-pass). Zero-norm rows are rejected at ingest and never stored, so they are not tested
+        // here.
         let nan = row(&[f32::NAN, 1.0, 1.0, 1.0]);
         assert_eq!(
             score_row(
@@ -752,11 +779,6 @@ mod tests {
         let inf = row(&[f32::INFINITY, 1.0, 1.0, 1.0]);
         assert_eq!(
             score_row(VectorMetric::Cosine, &inf, &q, 0.0, f32::INFINITY),
-            None
-        );
-        let zero = row(&[0.0f32; 4]);
-        assert_eq!(
-            score_row(VectorMetric::Cosine, &zero, &q, 0.0, f32::INFINITY),
             None
         );
     }

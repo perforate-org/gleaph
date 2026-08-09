@@ -87,6 +87,13 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
         )
         .expect("attach shard");
     for vid in 0..n {
+        // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value
+        // (vid 0 would be the zero vector).
+        let value = if metric == VectorMetric::Cosine {
+            (vid + 1) as f32
+        } else {
+            vid as f32
+        };
         let op = VectorEmbeddingSyncOp {
             index_id: INDEX_ID,
             embedding_name_id: 0,
@@ -98,7 +105,7 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
             encoding: VectorEncoding::F32,
             dims,
             metric,
-            bytes: vec_bytes(dims, vid as f32),
+            bytes: vec_bytes(dims, value),
             remove: false,
         };
         store

@@ -299,9 +299,11 @@ family: inverted index + uncompressed vectors + exact rerank).
   sums make early exit safe; no per-row norm is stored. Finiteness is **fused into the kernel**: a
   non-finite component makes the partial sum non-finite, which is skipped (returns no hit) in the same
   pass — there is no separate `row_is_finite` pre-scan on the L2 path.
-- **Cosine**: score is `1 − dot/(‖q‖·‖v‖)`; finiteness is fused into the dot+norm kernel result
-  (a non-finite component makes the dot/norm non-finite and the row is skipped) — no separate
-  `row_is_finite` pre-scan.
+- **Cosine**: indexes store **unit-normalized** rows (the vector is normalized at write; zero-norm
+  ingest is rejected fail-closed), so cosine distance is `1 − dot/‖q‖` — a single SIMD `dot_f32` over
+  the unit row and the raw query with `q_norm = ‖query‖` precomputed (no per-row norm computation,
+  no aux field). Finiteness is fused into the dot result (a non-finite component makes the dot
+  non-finite and the row is skipped) — no separate `row_is_finite` pre-scan.
 - The `dot + norms` formulation (FMA inner loop, precomputed `‖v‖²`) remains an opt-in alternative.
 - SIMD is `f32x4` with multi-accumulator batching; the scratch is 16-byte aligned and decoded by
   direct reinterpretation (no per-row `Vec<f32>` allocation). Partition routing (`assign_partition`),

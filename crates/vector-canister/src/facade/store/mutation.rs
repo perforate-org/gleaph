@@ -5,7 +5,7 @@
 //! same-version-different-payload conflict guard on a live row. See ADR 0031 Slice 2.
 
 use super::rebuild::rebuild_state_of;
-use super::search::{assign_partition, read_centroids_at};
+use super::search::{assign_partition, normalize_f32, read_centroids_at};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, INITIAL_INDEX_VERSION, VectorCanisterStore,
 };
@@ -61,6 +61,20 @@ fn take_injected_subject_insert_failure() -> bool {
         }
         None => false,
     })
+}
+
+/// Returns the bytes to store for `def`: for a cosine index the vector is unit-normalized (the
+/// stored-row-unit invariant), else the bytes verbatim. Zero-norm cosine vectors are rejected
+/// fail-closed (`InvalidQueryVector`).
+fn normalize_for_metric(
+    def: &VectorIndexDef,
+    bytes: &[u8],
+) -> Result<Vec<u8>, VectorCanisterError> {
+    if def.metric == VectorMetric::Cosine {
+        normalize_f32(bytes, def.dims as usize).ok_or(VectorCanisterError::InvalidQueryVector)
+    } else {
+        Ok(bytes.to_vec())
+    }
 }
 
 /// How a mutation must mirror its live effect across index versions during a rebuild (ADR 0031
@@ -246,8 +260,9 @@ impl VectorCanisterStore {
         subject: VectorSubject,
         bytes: &[u8],
     ) -> Result<SlotRef, VectorCanisterError> {
+        let stored = normalize_for_metric(def, bytes)?;
         PAGE_STORE.with_borrow_mut(|store| {
-            store.append_row(index_id, index_version, partition_id, def, subject, bytes)
+            store.append_row(index_id, index_version, partition_id, def, subject, &stored)
         })
     }
 
@@ -262,9 +277,25 @@ impl VectorCanisterStore {
         def: &VectorIndexDef,
         rows: &[(VectorSubject, &[u8])],
     ) -> Result<Vec<SlotRef>, VectorCanisterError> {
-        PAGE_STORE.with_borrow_mut(|store| {
-            store.append_rows(index_id, index_version, partition_id, def, rows)
-        })
+        if def.metric == VectorMetric::Cosine {
+            let normalized: Vec<(VectorSubject, Vec<u8>)> = rows
+                .iter()
+                .map(|(s, b)| {
+                    normalize_f32(b, def.dims as usize)
+                        .map(|nb| (*s, nb))
+                        .ok_or(VectorCanisterError::InvalidQueryVector)
+                })
+                .collect::<Result<_, _>>()?;
+            let refs: Vec<(VectorSubject, &[u8])> =
+                normalized.iter().map(|(s, b)| (*s, b.as_slice())).collect();
+            PAGE_STORE.with_borrow_mut(|store| {
+                store.append_rows(index_id, index_version, partition_id, def, &refs)
+            })
+        } else {
+            PAGE_STORE.with_borrow_mut(|store| {
+                store.append_rows(index_id, index_version, partition_id, def, rows)
+            })
+        }
     }
 
     /// Marks a slot tombstoned via the slab page store, which owns the `VectorPageMeta` live/
@@ -357,6 +388,18 @@ impl VectorCanisterStore {
         if op.bytes.len() != def.stride_bytes as usize {
             return Err(VectorCanisterError::ByteWidthMismatch);
         }
+        // Cosine stores unit-normalized rows: reject zero-norm ingest fail-closed and precompute the
+        // normalized form for the idempotency comparison below (the appends re-normalize via
+        // `append_slot`). `normalize_f32` is deterministic, so this equals the stored bytes for a
+        // byte-identical replay.
+        let normalized_op = if def.metric == VectorMetric::Cosine {
+            Some(
+                normalize_f32(&op.bytes, def.dims as usize)
+                    .ok_or(VectorCanisterError::InvalidQueryVector)?,
+            )
+        } else {
+            None
+        };
         let active = def.active_index_version;
         let mode = rebuild_mutation_mode(op.index_id);
         let key = SubjectKey::new(op.index_id, op.subject);
@@ -465,7 +508,13 @@ impl VectorCanisterStore {
                     .current_slot_for(active)
                     .expect("live entry has a slot");
                 let stored = self.read_slot_bytes(op.index_id, slot).unwrap_or_default();
-                if stored == op.bytes {
+                // Compare against the stored bytes; for cosine the stored row is unit-normalized, so
+                // compare against the normalized `op.bytes`.
+                let same = match &normalized_op {
+                    Some(norm) => stored == *norm,
+                    None => stored == op.bytes,
+                };
+                if same {
                     // Pure idempotent no-op: nothing changes. During `Cleaning` this intentionally
                     // does *not* collapse `shadow_slot -> slot` (collapse-on-touch only applies to
                     // state-changing mutations); search stays correct via `current_slot_for` and

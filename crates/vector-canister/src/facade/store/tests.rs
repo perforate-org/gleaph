@@ -1022,25 +1022,74 @@ fn cosine_nonfinite_query_fails_closed() {
 }
 
 #[test]
-fn cosine_zero_norm_indexed_vector_is_skipped() {
+fn cosine_zero_norm_indexed_vector_is_rejected() {
     let store = fresh_store();
-    store
+    // Zero-norm vectors have no cosine similarity; cosine ingest rejects them fail-closed instead
+    // of storing a non-normalizable row.
+    let err = store
         .vector_upsert(
             shard_canister(),
             &upsert_vec_from(7, 1, &[0.0f32; DIMS as usize], VectorMetric::Cosine),
         )
-        .unwrap();
-    let result = store
-        .vector_search(&search_metric_from(
-            &[1.0f32; DIMS as usize],
-            10,
-            VectorMetric::Cosine,
-        ))
-        .expect("search");
+        .expect_err("zero-norm cosine ingest must fail");
+    assert!(matches!(err, VectorCanisterError::InvalidQueryVector));
+}
+
+#[test]
+fn cosine_upsert_stores_unit_normalized_row() {
+    let store = fresh_store();
+    let v = [3.0f32, 4.0, 0.0, 0.0];
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
+        )
+        .expect("cosine upsert");
+    let slot = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .unwrap()
+        .slot
+        .expect("live");
+    let stored = store.read_slot_bytes(INDEX_ID, slot).expect("stored bytes");
+    let decoded = super::search::decode_f32(&stored);
+    // Stored row is unit-normalized and points in the input direction ([3,4,0,0]/5 = [0.6,0.8,0,0]).
+    let norm_sq: f32 = decoded.iter().map(|x| x * x).sum();
     assert!(
-        result.hits.is_empty(),
-        "zero-norm indexed vector has no cosine similarity"
+        (norm_sq - 1.0).abs() < 1e-5,
+        "stored row is unit, got {norm_sq}"
     );
+    assert!((decoded[0] - 0.6).abs() < 1e-5 && (decoded[1] - 0.8).abs() < 1e-5);
+}
+
+#[test]
+fn cosine_upsert_same_bytes_replay_is_noop() {
+    let store = fresh_store();
+    let v = [3.0f32, 4.0, 0.0, 0.0];
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
+        )
+        .expect("first upsert");
+    let slot1 = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .unwrap()
+        .slot
+        .expect("live");
+    // Replaying the same stamp + bytes is an idempotent no-op (the normalized comparison matches the
+    // stored unit row).
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &v, VectorMetric::Cosine),
+        )
+        .expect("idempotent replay");
+    let slot2 = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .unwrap()
+        .slot
+        .expect("live");
+    assert_eq!(slot2, slot1, "no new slot on idempotent replay");
 }
 
 #[test]
