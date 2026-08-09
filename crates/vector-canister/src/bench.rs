@@ -65,6 +65,13 @@ fn vec_bytes(dims: u16, value: f32) -> Vec<u8> {
 /// Fresh store with `n` width-`dims` vectors on shard 0; vector `i` is filled with the value `i` so
 /// the scored set is fully distinct.
 fn setup_search_store(dims: u16, n: u32) -> VectorCanisterStore {
+    setup_search_store_metric(dims, n, VectorMetric::L2Squared)
+}
+
+/// Like [`setup_search_store`] but seeds the index with the given metric, so a metric-mismatched
+/// request (e.g. a cosine search against an L2 index) is avoided and the metric's scoring path is
+/// exercised directly.
+fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
         .init_from_args(&VectorCanisterInitArgs {
@@ -90,7 +97,7 @@ fn setup_search_store(dims: u16, n: u32) -> VectorCanisterStore {
             mutation_id: 1,
             encoding: VectorEncoding::F32,
             dims,
-            metric: VectorMetric::L2Squared,
+            metric,
             bytes: vec_bytes(dims, vid as f32),
             remove: false,
         };
@@ -108,12 +115,24 @@ fn search_req(dims: u16, top_k: u32) -> VectorSearchRequest {
 /// Build a search request whose query vector is a constant `value` in every dimension. The exact-
 /// scan and centroid-cache benches use `0.0`; the ε₂ sweep uses [`SWEEP_QUERY`] (off any centroid).
 fn search_req_value(dims: u16, top_k: u32, value: f32) -> VectorSearchRequest {
+    search_req_metric_value(dims, top_k, value, VectorMetric::L2Squared)
+}
+
+/// Like [`search_req_value`] but with an explicit metric. Cosine benches pass a non-zero query value
+/// (a zero-norm query is rejected by the search boundary) and a `Cosine` metric matching the
+/// cosine-seeded store.
+fn search_req_metric_value(
+    dims: u16,
+    top_k: u32,
+    value: f32,
+    metric: VectorMetric,
+) -> VectorSearchRequest {
     VectorSearchRequest {
         index_id: INDEX_ID,
         query: vec_bytes(dims, value),
         encoding: VectorEncoding::F32,
         dims,
-        metric: VectorMetric::L2Squared,
+        metric,
         top_k,
         candidate_subjects: None,
     }
@@ -142,6 +161,28 @@ search_bench!(bench_vector_search_d768_k10, 768, 10);
 search_bench!(bench_vector_search_d768_k100, 768, 100);
 search_bench!(bench_vector_search_d1536_k10, 1536, 10);
 search_bench!(bench_vector_search_d1536_k100, 1536, 100);
+
+/// L2 metric-parameterized search bench over a cosine-seeded store (exact-scan path; cosine supports
+/// only the exact scan). Uses a non-zero query value so the cosine query passes the zero-norm guard.
+macro_rules! cosine_search_bench {
+    ($name:ident, $dims:expr, $top_k:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_search_store_metric($dims, SCAN_N, VectorMetric::Cosine);
+            let req = search_req_metric_value($dims, $top_k, 1.0, VectorMetric::Cosine);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = store.vector_search(black_box(&req)).expect("vector_search");
+                black_box(result);
+            })
+        }
+    };
+}
+
+cosine_search_bench!(bench_vector_search_cosine_d128_k10, 128, 10);
+cosine_search_bench!(bench_vector_search_cosine_d128_k100, 128, 100);
+cosine_search_bench!(bench_vector_search_cosine_d1536_k10, 1536, 10);
+cosine_search_bench!(bench_vector_search_cosine_d1536_k100, 1536, 100);
 
 /// Cost of one `VECTOR_SUBJECT_TO_ID` lookup — the freshness revalidation the partitioned scan does
 /// per row. Measures `SCAN_N` gets over a populated subject map so the per-get cost (stable BTreeMap

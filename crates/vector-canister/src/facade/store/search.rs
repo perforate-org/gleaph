@@ -93,24 +93,15 @@ fn vector_has_nonzero_norm(v: &[f32]) -> bool {
     norm_sq > 0.0
 }
 
-/// Returns `true` when the first `dims` f32 components of `bytes` are all finite. The stored row is
-/// `pad_stride_bytes` wide with the trailing pad zeroed (ADR 0064 §7), so only the `dims` bytes need
-/// checking.
-fn row_is_finite(bytes: &[u8], dims: usize) -> bool {
-    bytes[..dims * 4]
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .all(|c| f32::from_le_bytes(*c).is_finite())
-}
-
 /// Scores one stored row for `metric`, returning `None` when the row should be skipped: non-finite
 /// components, zero norm for cosine, or — for L2 — a partial distance that already exceeds
 /// `threshold` (the current k-th best). Uses the crate's SIMD kernels over the stored byte span.
 ///
 /// `q_norm` is the precomputed query norm (only meaningful for cosine). The L2 early exit is exact:
 /// partial sums are monotone, so a partial sum exceeding `threshold` means the full distance also
-/// does and the row cannot be in the top-k.
+/// does and the row cannot be in the top-k. For both L2 and cosine, finiteness is fused into the
+/// kernel result (a non-finite component makes the sum / dot / norm non-finite), so there is no
+/// separate `row_is_finite` pre-scan.
 fn score_row(
     metric: VectorMetric,
     bytes: &[u8],
@@ -119,15 +110,12 @@ fn score_row(
     threshold: f32,
 ) -> Option<f32> {
     match metric {
-        // L2 finiteness is fused into the early-exit kernel: a non-finite row yields a non-finite
-        // sum and is skipped (`None`) in the same pass, so no separate `row_is_finite` pre-scan.
         VectorMetric::L2Squared => l2_squared_f32_early_exit(bytes, query, threshold),
         VectorMetric::Cosine => {
-            if !row_is_finite(bytes, query.len()) {
-                return None;
-            }
             let (dot, v_norm2) = dot_and_norm2_f32(bytes, query);
-            if v_norm2 == 0.0 {
+            // Fused finiteness: a non-finite component makes the dot/norm non-finite; skip it here
+            // (the zero-norm skip is unchanged).
+            if !dot.is_finite() || !v_norm2.is_finite() || v_norm2 == 0.0 {
                 return None;
             }
             Some(1.0 - dot / (q_norm * v_norm2.sqrt()))
@@ -752,12 +740,30 @@ mod tests {
     }
 
     #[test]
-    fn row_is_finite_checks_dims_only() {
-        let mut bytes = row(&[1.0f32; 4]);
-        bytes.extend_from_slice(&[0u8; 16]); // pad
-        assert!(row_is_finite(&bytes, 4));
-        let mut bad = row(&[f32::NAN, 1.0, 1.0, 1.0]);
-        bad.extend_from_slice(&[0u8; 16]);
-        assert!(!row_is_finite(&bad, 4));
+    fn score_row_cosine_skips_non_finite_row() {
+        let q = vec![0.0f32; 4];
+        // A NaN component makes dot/norm non-finite; the fused check skips it (no row_is_finite
+        // pre-pass). The zero-norm row is also skipped.
+        let nan = row(&[f32::NAN, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            score_row(
+                VectorMetric::Cosine,
+                &nan,
+                &q,
+                q.iter().map(|x| x * x).sum::<f32>().sqrt(),
+                f32::INFINITY
+            ),
+            None
+        );
+        let inf = row(&[f32::INFINITY, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            score_row(VectorMetric::Cosine, &inf, &q, 0.0, f32::INFINITY),
+            None
+        );
+        let zero = row(&[0.0f32; 4]);
+        assert_eq!(
+            score_row(VectorMetric::Cosine, &zero, &q, 0.0, f32::INFINITY),
+            None
+        );
     }
 }
