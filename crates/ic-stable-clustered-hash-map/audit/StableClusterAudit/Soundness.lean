@@ -312,6 +312,14 @@ lemma relocateStep_preserves_clusterInvariant {s s' : State} {entry : Key} {valu
     relocateStep_preserves_entryAtCorrectBucket h hci.2.2 hremap hremap' hbucket
   ⟩
 
+-- The displaced entry stays at its home bucket: after a RelocateStep moves the occupant `t`
+-- from `position` (distance `tDist`) to `next` with distance `tDist + (next - position)`, its
+-- home bucket `position - tDist` is unchanged.
+lemma displaced_home_bucket (position next tDist : Nat) (hpos_le : position ≤ next)
+    (htdist_le : tDist ≤ position) :
+    next - (tDist + (next - position)) = position - tDist := by
+  omega
+
 -- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
 -- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
 -- `relocateStep_preserves_clusterInvariant`), so the invariant holds throughout the chain.
