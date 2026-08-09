@@ -17,8 +17,10 @@
 //!
 //! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 
+use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
 use crate::facade::{SearchTuning, VectorCanisterStore};
 use crate::init::VectorCanisterInitArgs;
+use crate::records::SubjectKey;
 use canbench_rs::bench;
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -140,6 +142,33 @@ search_bench!(bench_vector_search_d768_k10, 768, 10);
 search_bench!(bench_vector_search_d768_k100, 768, 100);
 search_bench!(bench_vector_search_d1536_k10, 1536, 10);
 search_bench!(bench_vector_search_d1536_k100, 1536, 100);
+
+/// Cost of one `VECTOR_SUBJECT_TO_ID` lookup — the freshness revalidation the partitioned scan does
+/// per row. Measures `SCAN_N` gets over a populated subject map so the per-get cost (stable BTreeMap
+/// node decode) is isolated from the row reads and scoring. Per-get = total / SCAN_N.
+#[bench(raw)]
+fn bench_subject_map_get_d128() -> canbench_rs::BenchResult {
+    let _store = setup_search_store(128, SCAN_N);
+    let subjects: Vec<VectorSubject> = (0..SCAN_N)
+        .map(|v| VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: v,
+        })
+        .collect();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_subject_map_get_d128");
+        let mut sum = 0u64;
+        VECTOR_SUBJECT_TO_ID.with_borrow(|m| {
+            for s in &subjects {
+                let key = SubjectKey::new(INDEX_ID, *s);
+                if let Some(e) = m.get(&key) {
+                    sum = sum.wrapping_add(e.stamp);
+                }
+            }
+        });
+        black_box(sum);
+    })
+}
 
 /// A constant-valued width-`dims` `f32` vector.
 fn cvec(dims: u16, value: f32) -> Vec<f32> {
