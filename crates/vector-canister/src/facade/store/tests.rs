@@ -2182,9 +2182,11 @@ fn post_publish_nlist_gt_1_upsert_assigns_nearest_partition() {
     let entry = store.subject_entry_for_test(INDEX_ID, subject(50)).unwrap();
     let slot = entry.slot.unwrap();
     assert_eq!(slot.index_version, TARGET_V as u32);
+    // Furthest-point seeding on values {0..3} with nlist=2 gives centroids [2.5 (p0), 0.5 (p1)], so
+    // a value-0 upsert lands in the nearest (0.5) partition, p1 — not the degenerate partition 0.
     assert_eq!(
-        slot.partition_id, 0,
-        "value 0 lands in centroid-0 partition"
+        slot.partition_id, 1,
+        "value 0 lands in the nearest-centroid partition"
     );
     let after = store
         .vector_search(&search_nonzero(0.0, 10))

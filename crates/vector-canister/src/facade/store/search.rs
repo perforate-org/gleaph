@@ -383,6 +383,13 @@ fn select_partitions(centroids: &[Vec<f32>], query: &[f32], eps_query: f32) -> V
         .enumerate()
         .map(|(p, c)| (l2_squared_f32(query, c), p as u32))
         .collect();
+    // A full scan (`eps_query = INF`) selects every partition. Special-case it: the generic
+    // `(1 + eps) * best` threshold degenerates to `INF * 0 = NaN` when the query sits exactly on a
+    // centroid (`best == 0`), which would filter out every partition.
+    if eps_query == f32::INFINITY {
+        scored.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        return scored.into_iter().map(|(_, p)| p).collect();
+    }
     let best = scored.iter().map(|(d, _)| *d).fold(f32::INFINITY, f32::min);
     let threshold = (1.0 + eps_query) * best;
     scored.retain(|(d, _)| *d <= threshold);
@@ -670,6 +677,20 @@ mod tests {
         assert_eq!(
             select_partitions(&centroids, &query, f32::INFINITY),
             vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn select_partitions_eps_inf_with_query_at_centroid_selects_all() {
+        // Regression: a full scan (`eps = INF`) must select every partition even when the query sits
+        // exactly on a centroid (`best == 0`). The old `(1 + INF) * best = INF * 0 = NaN` threshold
+        // filtered out all partitions, returning an empty scan.
+        let centroids = vec![vec![2.5f32; 4], vec![0.5f32; 4], vec![4.5f32; 4]];
+        let query = vec![2.5f32; 4];
+        assert_eq!(
+            select_partitions(&centroids, &query, f32::INFINITY),
+            vec![0, 1, 2],
+            "full scan selects every partition in (distance, partition) order"
         );
     }
 

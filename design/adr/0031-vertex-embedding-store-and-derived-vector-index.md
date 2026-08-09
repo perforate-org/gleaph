@@ -630,8 +630,13 @@ Invariants:
 3. `Training` runs deterministic k-means-lite only over the bounded candidate pool: exactly one
    iteration per `admin_vector_rebuild_step` (assign each candidate to its nearest current centroid,
    recompute centroids as the per-cluster mean), bounded so `candidate_count * nlist * dims <=
-MAX_REBUILD_TRAINING_DISTANCE_OPS` with transient `O(nlist * dims)` sums/counts. It runs at most
-   `MAX_REBUILD_TRAINING_ITERATIONS` iterations, keeps exactly `nlist` dimension-valid centroids (an
+MAX_REBUILD_TRAINING_DISTANCE_OPS` with transient `O(nlist * dims)` sums/counts. The initial centroids
+   are chosen deterministically by furthest-point (Maximin-D) selection over the pool (first the
+   max-L2-norm candidate, then each next the candidate farthest from the already-chosen set), which
+   spreads seeds across the data and, combined with the early-exit below, converges well-separated data
+   in a few iterations instead of the full cap. It runs at most `MAX_REBUILD_TRAINING_ITERATIONS`
+   iterations and exits early once an iteration leaves the centroids unchanged (a converged set
+   reproduces itself, so the exit is exact); it keeps exactly `nlist` dimension-valid centroids (an
    empty cluster keeps its previous centroid), and never scans the full subject map.
 4. Once `Training` finishes, it writes exactly `nlist` target centroids and transitions to the
    existing Slice 7 `Building` phase. `Building`, dual-write, O(1) publish, `Cleaning`, and `Aborting`

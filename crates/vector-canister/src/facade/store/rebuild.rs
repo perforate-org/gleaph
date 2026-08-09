@@ -261,6 +261,64 @@ fn is_subjects_done(cursor: &Option<SubjectScanCursor>) -> bool {
     matches!(cursor, Some(c) if c.slot == u64::MAX)
 }
 
+/// Deterministic furthest-point (Maximin-D) centroid seeding over the candidate pool.
+///
+/// The first centroid is the candidate with the largest L2 norm (Katsavounidis et al. 1994
+/// deterministic variant); each subsequent centroid is the candidate farthest from the already-chosen
+/// set (ties broken by candidate index). This spreads the initial centroids across the pool, which
+/// improves the k-means result and lets the early-convergence exit in [`VectorCanisterStore::training_step`]
+/// fire sooner. Cost is `O(nlist * n * dims)` — roughly one training iteration — so it is amortized by
+/// the reduction in iterations for separated data.
+fn furthest_point_seed(candidates: &[Vec<u8>], nlist: usize, dims: u16) -> Vec<Vec<u8>> {
+    let n = candidates.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n <= nlist {
+        return candidates.to_vec();
+    }
+
+    let zero: Vec<f32> = vec![0.0; dims as usize];
+    let norms: Vec<f32> = candidates
+        .iter()
+        .map(|c| page_l2_squared_f32(c, &zero))
+        .collect();
+    let mut dist = vec![f32::INFINITY; n];
+    let mut chosen = vec![false; n];
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(nlist);
+
+    // First centroid: max-L2-norm candidate (ties -> lowest index).
+    let first = (0..n)
+        .max_by(|&i, &j| norms[i].total_cmp(&norms[j]).then_with(|| j.cmp(&i)))
+        .expect("non-empty candidates");
+    chosen[first] = true;
+    let mut chosen_count = 1usize;
+    out.push(candidates[first].clone());
+    let first_decoded = decode_f32(&candidates[first]);
+    for i in 0..n {
+        dist[i] = page_l2_squared_f32(&candidates[i], &first_decoded);
+    }
+
+    // Subsequent: candidate farthest from the chosen set (ties -> lowest index).
+    while chosen_count < nlist {
+        let next = (0..n)
+            .filter(|&i| !chosen[i])
+            .max_by(|&i, &j| dist[i].total_cmp(&dist[j]).then_with(|| j.cmp(&i)))
+            .expect("more candidates than nlist");
+        chosen[next] = true;
+        chosen_count += 1;
+        out.push(candidates[next].clone());
+        let next_decoded = decode_f32(&candidates[next]);
+        for i in 0..n {
+            let d = page_l2_squared_f32(&candidates[i], &next_decoded);
+            if d < dist[i] {
+                dist[i] = d;
+            }
+        }
+    }
+    out
+}
+
 /// Deletes up to `max_work` page-meta entries of `(index_id, version)` from the slab page store,
 /// resuming after `cursor`. Returns `(next_cursor, exhausted)`; `exhausted` is true once no more
 /// pages of `version` remain. Slab bytes are left as dead space (ADR 0032: no tail rewind this
@@ -662,14 +720,15 @@ impl VectorCanisterStore {
         let dims = def.dims as usize;
         let nlist_usize = nlist as usize;
 
-        // Iteration 0: seed centroids from the first `nlist` distinct candidates.
+        // Iteration 0: seed centroids via deterministic furthest-point selection (spread across the
+        // pool) rather than the first `nlist` candidates, which can cluster together and stall
+        // convergence. The recompute below is deterministic (same assignment -> same mean), so if it
+        // leaves the centroids unchanged the assignment is stable and k-means has converged: a
+        // further iteration would reproduce the same centroids, so stopping early is exact.
         if centroids.is_empty() {
-            centroids = candidates.iter().take(nlist_usize).cloned().collect();
+            centroids = furthest_point_seed(&candidates, nlist_usize, def.dims);
         }
-        // The centroids used for this iteration's assignment. The recompute below is deterministic
-        // (same assignment -> same mean), so if it leaves them unchanged the assignment is stable and
-        // k-means has converged: a further iteration would reproduce the same centroids, so stopping
-        // early is exact.
+        // The centroids used for this iteration's assignment.
         let prev_centroids = centroids.clone();
 
         let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; nlist_usize];
