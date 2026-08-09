@@ -32,7 +32,6 @@ use gleaph_graph_kernel::vector_index::{
 use ic_stable_vector_page_store::kernel::{dot_and_norm2_f32, l2_squared_f32_early_exit};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::ops::Bound;
 
 /// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
 /// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`.
@@ -384,7 +383,14 @@ impl VectorCanisterStore {
         // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
         // Cosine only supports the exact-scan path in this slice.
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
-            Ok(self.exact_subject_scan(req, def.active_index_version, &query, def.metric, q_norm))
+            Ok(self.exact_subject_scan(
+                req,
+                def.active_index_version,
+                def.nlist,
+                &query,
+                def.metric,
+                q_norm,
+            ))
         } else if def.metric == VectorMetric::Cosine {
             Err(VectorCanisterError::MetricNotSupportedForPartitionScan)
         } else {
@@ -526,67 +532,75 @@ impl VectorCanisterStore {
     /// Slice 5 exact scan: walk every live subject of the index and score its current slot. The live
     /// slot is resolved via `current_slot_for(active)` (ADR 0031 Slice 7) so a post-publish exact
     /// fallback reads the new active version (`shadow_slot`), never the stale old `entry.slot`.
+    /// Bulk-reads the given partitions' page chains at the active version, re-validating each row
+    /// against the subject map (`fresh_row_candidate`) and scoring into the bounded top-k heap.
+    /// Shared by the exact fallback (walks `0..nlist`) and the partitioned scan (walks the
+    /// ε₂-selected partitions). Early-exit is order-independent, so the walk order does not change
+    /// the result.
+    fn scan_partitions(
+        &self,
+        index_id: u32,
+        active_index_version: u64,
+        partitions: impl Iterator<Item = u32>,
+        query: &[f32],
+        metric: VectorMetric,
+        q_norm: f32,
+        top_k: u32,
+    ) -> VectorSearchResult {
+        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut scratch = PageScratch::new();
+        PAGE_STORE.with_borrow(|store| {
+            for partition_id in partitions {
+                store.visit_partition_pages(
+                    index_id,
+                    active_index_version,
+                    partition_id,
+                    &mut scratch,
+                    |slot, info, bytes| {
+                        // The L2 early-exit threshold is the current k-th best, applied only once
+                        // the heap is full (a partial max before then would wrongly skip top-k
+                        // candidates).
+                        let threshold = if heap.len() as u32 == top_k {
+                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                        } else {
+                            f32::INFINITY
+                        };
+                        if let Some(candidate) = self.fresh_row_candidate(
+                            index_id, slot, info, query, bytes, metric, q_norm, threshold,
+                        ) {
+                            push_bounded(&mut heap, top_k, candidate);
+                        }
+                    },
+                );
+            }
+        });
+        finalize(heap)
+    }
+
+    /// Exact fallback scan: bulk-read every partition `0..nlist` at the active version and score each
+    /// row that is a live subject's current slot (`fresh_row_candidate` revalidation). Replaces the
+    /// former per-subject `read_row_bytes` loop. Walking all partitions covers the degenerate
+    /// `nlist = 1` case (all rows in partition 0) and a trained-then-cleared index (`nlist > 1`,
+    /// centroids missing) whose rows are spread across `0..nlist`. The deterministic top-k and
+    /// shadow/current-slot handling are unchanged.
     fn exact_subject_scan(
         &self,
         req: &VectorSearchRequest,
         active_index_version: u64,
+        nlist: u32,
         query: &[f32],
         metric: VectorMetric,
         q_norm: f32,
     ) -> VectorSearchResult {
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-
-        PAGE_STORE.with_borrow(|store| {
-            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                let lower = SubjectKey::index_lower(req.index_id);
-                for entry in subjects.range((Bound::Included(lower), Bound::Unbounded)) {
-                    let key = entry.key();
-                    if key.index_id != req.index_id {
-                        break; // index-major order: past this index's prefix.
-                    }
-                    let value = entry.value();
-                    if value.deleted {
-                        continue;
-                    }
-                    let Some(slot) = value.current_slot_for(active_index_version) else {
-                        continue;
-                    };
-                    let Some((vertex_id, bytes)) = store.read_row_bytes(req.index_id, slot) else {
-                        continue;
-                    };
-                    // Positional + payload validation: the row's packed vertex id must match the
-                    // subject-map key's vertex id.
-                    let VectorSubject::Vertex {
-                        shard_id: _,
-                        vertex_id: subject_vertex,
-                    } = key.subject;
-                    if vertex_id != subject_vertex {
-                        continue;
-                    }
-                    // The L2 early-exit threshold is the current k-th best, applied only once the
-                    // heap is full.
-                    let threshold = if heap.len() as u32 == req.top_k {
-                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                    } else {
-                        f32::INFINITY
-                    };
-                    let Some(distance) = score_row(metric, &bytes, query, q_norm, threshold) else {
-                        continue;
-                    };
-                    push_bounded(
-                        &mut heap,
-                        req.top_k,
-                        Candidate {
-                            distance,
-                            subject: key.subject,
-                            mutation_id: value.stamp,
-                        },
-                    );
-                }
-            });
-        });
-
-        finalize(heap)
+        self.scan_partitions(
+            req.index_id,
+            active_index_version,
+            0..nlist,
+            query,
+            metric,
+            q_norm,
+            req.top_k,
+        )
     }
 
     /// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
@@ -605,6 +619,7 @@ impl VectorCanisterStore {
             return self.exact_subject_scan(
                 req,
                 def.active_index_version,
+                def.nlist,
                 query,
                 def.metric,
                 q_norm,
@@ -612,42 +627,15 @@ impl VectorCanisterStore {
         };
         let active = def.active_index_version;
         let selected = select_partitions(&centroids, query, tuning.eps_query);
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-        let mut scratch = PageScratch::new();
-
-        PAGE_STORE.with_borrow(|store| {
-            for partition_id in selected {
-                store.visit_partition_pages(
-                    req.index_id,
-                    active,
-                    partition_id,
-                    &mut scratch,
-                    |slot, info, bytes| {
-                        // The L2 early-exit threshold is the current k-th best, applied only once
-                        // the heap is full.
-                        let threshold = if heap.len() as u32 == req.top_k {
-                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                        } else {
-                            f32::INFINITY
-                        };
-                        if let Some(candidate) = self.fresh_row_candidate(
-                            req.index_id,
-                            slot,
-                            info,
-                            query,
-                            bytes,
-                            def.metric,
-                            q_norm,
-                            threshold,
-                        ) {
-                            push_bounded(&mut heap, req.top_k, candidate);
-                        }
-                    },
-                );
-            }
-        });
-
-        finalize(heap)
+        self.scan_partitions(
+            req.index_id,
+            active,
+            selected.into_iter(),
+            query,
+            def.metric,
+            q_norm,
+            req.top_k,
+        )
     }
 
     /// Re-validates a visited page row against the subject map and, if it is the subject's current
