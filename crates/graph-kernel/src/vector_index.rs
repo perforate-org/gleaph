@@ -299,13 +299,11 @@ pub struct VectorSearchRequest {
 /// One scored search result. `distance` is the metric-specific internal raw value (smaller is
 /// nearer), not necessarily a public distance. For `L2Squared` it is the squared Euclidean distance;
 /// for `Cosine` it is `1 - cosine_similarity`. The Router converts this raw value to the
-/// user-facing scalar requested by `SCORE AS` or `DISTANCE AS`. `mutation_id` is the live subject
-/// clock so a caller can reason about freshness (ADR 0064 §5).
+/// user-facing scalar requested by `SCORE AS` or `DISTANCE AS`.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct VectorSearchHit {
     pub subject: VectorSubject,
     pub distance: f32,
-    pub mutation_id: u64,
 }
 
 /// Top-k search result, ordered by `(distance ascending, subject ascending)` as a deterministic
@@ -1031,11 +1029,7 @@ mod tests {
             shard_id: ShardId::new(shard),
             vertex_id: vertex,
         };
-        let hit = |subject, distance| VectorSearchHit {
-            subject,
-            distance,
-            mutation_id: 1,
-        };
+        let hit = |subject, distance| VectorSearchHit { subject, distance };
         let results = vec![
             VectorSearchResult {
                 hits: vec![hit(subject(0, 1), 0.5), hit(subject(0, 2), 0.3)],
@@ -1070,12 +1064,10 @@ mod tests {
                 VectorSearchHit {
                     subject: s1,
                     distance: 0.1,
-                    mutation_id: 1,
                 },
                 VectorSearchHit {
                     subject: s2,
                     distance: 0.2,
-                    mutation_id: 1,
                 },
             ],
         }];
@@ -1097,14 +1089,12 @@ mod tests {
                 hits: vec![VectorSearchHit {
                     subject,
                     distance: 0.5,
-                    mutation_id: 1,
                 }],
             },
             VectorSearchResult {
                 hits: vec![VectorSearchHit {
                     subject,
                     distance: 0.2,
-                    mutation_id: 1,
                 }],
             },
         ];
@@ -1187,7 +1177,6 @@ mod tests {
                     vertex_id: 42,
                 },
                 distance: 1.5,
-                mutation_id: 3,
             }],
         };
         let bytes = Encode!(&result).expect("encode result");
@@ -1248,7 +1237,6 @@ mod tests {
                     vertex_id: 42,
                 },
                 distance: 0.25,
-                mutation_id: 3,
             }],
         };
         let bytes = Encode!(&result).expect("encode result");

@@ -694,7 +694,6 @@ fn search_returns_inserted_vector() {
     let hit = &result.hits[0];
     assert_eq!(hit.subject, subject(7));
     assert_eq!(hit.distance, 0.0);
-    assert_eq!(hit.mutation_id, 1);
 }
 
 #[test]
@@ -764,7 +763,6 @@ fn search_returns_newest_slot_only() {
     let result = store.vector_search(&search_value(5.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].distance, 0.0);
-    assert_eq!(result.hits[0].mutation_id, 2);
     // The superseded (tombstoned) generation's value 1.0 is never scored.
     let stale = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(stale.hits.len(), 1);
@@ -786,7 +784,6 @@ fn search_reinsert_after_delete_returns_newer_incarnation_only() {
     let result = store.vector_search(&search_value(9.0, 10)).expect("search");
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].distance, 0.0);
-    assert_eq!(result.hits[0].mutation_id, 2);
 }
 
 #[test]
@@ -819,7 +816,7 @@ fn search_does_not_read_rows_of_a_different_index() {
 }
 
 #[test]
-fn search_skips_live_entry_without_resolvable_slot() {
+fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::{SubjectKey, SubjectMapEntry};
 
@@ -833,8 +830,9 @@ fn search_skips_live_entry_without_resolvable_slot() {
         .expect("live entry");
     assert!(entry.slot.is_some());
 
-    // Corrupt the entry into inconsistent drift: still live (not deleted) but with no resolvable
-    // current slot. Search resolves the live slot via `current_slot_for` and must skip it.
+    // The search no longer consults the subject map: it scores every non-tombstoned row, relying on
+    // the write-path invariant that a non-tombstoned row is the subject's current live slot. Even if
+    // the subject-map entry is corrupted (no resolvable slot), the non-tombstoned row is still scored.
     let drifted = SubjectMapEntry {
         slot: None,
         shadow_slot: None,
@@ -844,9 +842,10 @@ fn search_skips_live_entry_without_resolvable_slot() {
         .with_borrow_mut(|m| m.insert(SubjectKey::new(INDEX_ID, subject(7)), drifted));
 
     let result = store.vector_search(&search_value(1.0, 10)).expect("search");
-    assert!(
-        result.hits.is_empty(),
-        "live entry with no resolvable slot must not be scored"
+    assert_eq!(
+        result.hits.iter().map(|h| h.subject).collect::<Vec<_>>(),
+        vec![subject(7)],
+        "the non-tombstoned row is scored regardless of the subject-map entry"
     );
 }
 
@@ -1355,7 +1354,7 @@ fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
 }
 
 #[test]
-fn partition_scan_skips_deleted_subject_entry() {
+fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::{SubjectKey, SubjectMapEntry};
 
@@ -1370,6 +1369,9 @@ fn partition_scan_skips_deleted_subject_entry() {
     let entry = store
         .subject_entry_for_test(INDEX_ID, subject(1))
         .expect("seeded entry");
+    // The search no longer consults the subject map: it scores every non-tombstoned row, relying on
+    // the write-path invariant. Even if the subject-map entry is marked deleted (without the row being
+    // tombstoned, which the write path would do), the non-tombstoned row is still scored.
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
         m.insert(
             SubjectKey::new(INDEX_ID, subject(1)),
@@ -1382,14 +1384,14 @@ fn partition_scan_skips_deleted_subject_entry() {
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
-    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+    assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
 
-/// ADR 0032 meta/head drift: a row present in `VECTOR_PAGE_META`/slab but with no live
-/// `VECTOR_SUBJECT_TO_ID` entry (e.g. an append that committed slab+meta but not subject state) is
-/// skipped by the partition scan via the `current_slot_for` freshness check, never scored.
+/// The search scores every non-tombstoned row, relying on the write-path invariant that a
+/// non-tombstoned row in the active version is the subject's current live slot. A row with no
+/// `VECTOR_SUBJECT_TO_ID` entry (which the write path would never leave) is still scored.
 #[test]
-fn partition_scan_skips_missing_subject_entry() {
+fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::SubjectKey;
 
@@ -1401,17 +1403,17 @@ fn partition_scan_skips_missing_subject_entry() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    // Drop the subject-map entry for subject 1: its slab row now has no freshness backing.
+    // Drop the subject-map entry for subject 1: its slab row is still non-tombstoned and is scored.
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&SubjectKey::new(INDEX_ID, subject(1))));
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
-    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+    assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
 
 // --- ADR 0034 Slice 6: candidate allowlist ---
 #[test]
-fn partition_scan_skips_slot_drift() {
+fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::{SlotRef, SubjectKey, SubjectMapEntry};
 
@@ -1427,9 +1429,8 @@ fn partition_scan_skips_slot_drift() {
         .subject_entry_for_test(INDEX_ID, subject(1))
         .expect("seeded entry");
     let live_slot = entry.slot.expect("live slot");
-    // Point the subject map at an out-of-range slot (positional drift): the row physically present at
-    // the seeded position is scanned, but `current_slot_for` no longer matches it, so it is never
-    // scored.
+    // Point the subject map at an out-of-range slot (positional drift). The search no longer consults
+    // the subject map, so the non-tombstoned row at the seeded position is still scored.
     let drifted = SlotRef {
         slot: live_slot.slot + 10_000,
         ..live_slot
@@ -1446,7 +1447,7 @@ fn partition_scan_skips_slot_drift() {
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
-    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+    assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
 
 #[test]

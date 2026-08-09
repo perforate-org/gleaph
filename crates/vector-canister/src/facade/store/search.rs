@@ -1,24 +1,27 @@
 //! Read-only `ivf_flat` top-k search (ADR 0031 Slice 5 exact scan + Slice 6 partition-page scan).
 //!
-//! Two read paths share one freshness contract — `VECTOR_SUBJECT_TO_ID` is the source of truth for
-//! which subjects are live, at which slot, and at which `mutation_id` stamp:
+//! The partitioned and exact scans are **pure page-walks**: they bulk-read the selected partitions'
+//! page chains via the slab page store (ADR 0064 §7) and score every non-tombstoned row directly,
+//! with **no subject-map access**. The write path guarantees a non-tombstoned row in the active
+//! version is the subject's current live slot (re-upsert tombstones the old row, remove tombstones
+//! both active and shadow, publish cleans the old version), so the scored rows are exactly the live
+//! rows. The subject is rebuilt from the run-table shard plus the packed `VertexPayload` vertex id.
 //!
-//! - **Exact subject-map scan** (Slice 5): walk every live subject of the index and score its
-//!   current slot. Used when the index is degenerate (`nlist <= 1`) or its centroids are not ready.
+//! - **Exact scan** (Slice 5): walk every partition `0..nlist` at the active version. Used when the
+//!   index is degenerate (`nlist <= 1`) or its centroids are not ready.
 //! - **Partition-page scan** (Slice 6): score `query` against the index's centroids, select the
-//!   `nprobe` nearest partitions, and scan only those partitions' page chains via the slab page
-//!   store (ADR 0064 §7). Each candidate row's subject is rebuilt from the run-table shard plus the
-//!   packed `VertexPayload` vertex id (positional + payload validation) and re-validated against the
-//!   subject map so tombstoned / superseded / inconsistent rows are never scored.
+//!   ε₂-pruned partitions, and scan only those partitions' page chains.
+//! - **Filtered scan** (ADR 0034): a bounded candidate allowlist is resolved to its current slots via
+//!   `VECTOR_SUBJECT_TO_ID` (inherent to a bounded allowlist), then scored page-major.
 //!
-//! `nprobe` is the only recall knob: the selected partitions are scanned **in full**, so the result
-//! is the exact top-k over those partitions. There is no mid-scan page/candidate budget that could
+//! `eps_query` is the recall knob: the selected partitions are scanned **in full**, so the result is
+//! the exact top-k over those partitions. There is no mid-scan page/candidate budget that could
 //! silently truncate the result (`VectorSearchResult` carries no partial/cursor marker).
 //!
 //! [`SubjectMapEntry`]: crate::records::SubjectMapEntry
 
 use super::VectorCanisterStore;
-use crate::facade::stable::page_store::{PageScratch, RowInfo};
+use crate::facade::stable::page_store::PageScratch;
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
@@ -32,7 +35,6 @@ use gleaph_graph_kernel::vector_index::{
 use ic_stable_vector_page_store::kernel::{dot_and_norm2_f32, l2_squared_f32_early_exit};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::ops::Bound;
 
 /// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
 /// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`.
@@ -145,7 +147,6 @@ pub(super) fn encode_f32(vector: &[f32]) -> Vec<u8> {
 struct Candidate {
     distance: f32,
     subject: VectorSubject,
-    mutation_id: u64,
 }
 
 impl Ord for Candidate {
@@ -186,23 +187,22 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
         .map(|c| VectorSearchHit {
             subject: c.subject,
             distance: c.distance,
-            mutation_id: c.mutation_id,
         })
         .collect();
     VectorSearchResult { hits }
 }
 
-/// Scores a page-major-sorted list of `(page_key, subject, slot, stamp)` rows, bulk-reading each
-/// distinct page once into `scratch` and scoring from the zero-copy slice. Shared by the candidate
-/// (bounded allowlist) and exact (chunked subject-map) scans. The early-exit threshold is
-/// order-independent, so the walk order does not change the result.
+/// Scores a page-major-sorted list of `(page_key, subject, slot)` rows, bulk-reading each
+/// distinct page once into `scratch` and scoring from the zero-copy slice. Used by the candidate
+/// (bounded allowlist) scan. The early-exit threshold is order-independent, so the walk order does
+/// not change the result.
 fn score_sorted_rows(
     query: &[f32],
     metric: VectorMetric,
     q_norm: f32,
     top_k: u32,
     heap: &mut BinaryHeap<Candidate>,
-    rows: &[(PageKey, VectorSubject, SlotRef, u64)],
+    rows: &[(PageKey, VectorSubject, SlotRef)],
     scratch: &mut PageScratch,
 ) {
     PAGE_STORE.with_borrow(|store| {
@@ -216,14 +216,14 @@ fn score_sorted_rows(
             }
             if page_loaded {
                 let row_count = scratch.row_count();
-                for (_, subject, slot, stamp) in &rows[i..end] {
+                for (_, subject, slot) in &rows[i..end] {
                     // Defensive parity with `read_row_bytes`: a slot at/after `row_count` is
                     // uninitialized; a tombstoned row is not the live slot.
                     if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
                         continue;
                     }
                     // Positional + payload validation: the row's packed vertex id must match the
-                    // subject (the shard is known from the allowlist/subject-map key).
+                    // subject (the shard is known from the allowlist).
                     let vertex_id = scratch.row_info(slot.slot).vertex_id;
                     let VectorSubject::Vertex {
                         shard_id: _,
@@ -249,7 +249,6 @@ fn score_sorted_rows(
                         Candidate {
                             distance,
                             subject: *subject,
-                            mutation_id: *stamp,
                         },
                     );
                 }
@@ -257,6 +256,54 @@ fn score_sorted_rows(
             i = end;
         }
     });
+}
+
+/// Bulk-reads the given partitions' page chains at the active version and scores every
+/// non-tombstoned row directly, with **no subject-map access**. `visit_partition_pages` already skips
+/// tombstoned rows, and the write path guarantees a non-tombstoned row in the active version is the
+/// subject's current live slot (invariant: re-upsert tombstones the old row, remove tombstones both
+/// active and shadow, publish cleans the old version), so the scored rows are exactly the live rows.
+/// Shared by the partitioned scan (ε₂-selected partitions) and the exact fallback (`0..nlist`). The
+/// early-exit threshold is order-independent, so the walk order does not change the result.
+fn scan_partitions(
+    index_id: u32,
+    active_index_version: u64,
+    partitions: impl Iterator<Item = u32>,
+    query: &[f32],
+    metric: VectorMetric,
+    q_norm: f32,
+    top_k: u32,
+) -> VectorSearchResult {
+    let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+    let mut scratch = PageScratch::new();
+    PAGE_STORE.with_borrow(|store| {
+        for partition_id in partitions {
+            store.visit_partition_pages(
+                index_id,
+                active_index_version,
+                partition_id,
+                &mut scratch,
+                |_slot, info, bytes| {
+                    // The L2 early-exit threshold is the current k-th best, applied only once the
+                    // heap is full (a partial max before then would wrongly skip top-k candidates).
+                    let threshold = if heap.len() as u32 == top_k {
+                        heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
+                    } else {
+                        f32::INFINITY
+                    };
+                    let subject = VectorSubject::Vertex {
+                        shard_id: ShardId::new(info.shard_id),
+                        vertex_id: info.vertex_id,
+                    };
+                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
+                        return;
+                    };
+                    push_bounded(&mut heap, top_k, Candidate { distance, subject });
+                },
+            );
+        }
+    });
+    finalize(heap)
 }
 
 /// Reads centroids `0..nlist` for `(index_id, version)`, returning `None` unless exactly `nlist`
@@ -451,7 +498,14 @@ impl VectorCanisterStore {
         // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
         // Cosine only supports the exact-scan path in this slice.
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
-            Ok(self.exact_subject_scan(req, def.active_index_version, &query, def.metric, q_norm))
+            Ok(self.exact_subject_scan(
+                req,
+                def.active_index_version,
+                def.nlist,
+                &query,
+                def.metric,
+                q_norm,
+            ))
         } else if def.metric == VectorMetric::Cosine {
             Err(VectorCanisterError::MetricNotSupportedForPartitionScan)
         } else {
@@ -485,11 +539,12 @@ impl VectorCanisterStore {
     /// top-k heap. Deleted, stale, or superseded subjects are skipped silently; they represent
     /// derived-index drift rather than protocol violations.
     ///
-    /// Pass 1 resolves each live candidate's current slot and subject-map stamp; pass 2 groups those
-    /// slots by page and bulk-reads each distinct page once (via [`VectorSlabStore::load_page`] into a
-    /// reused [`PageScratch`]) instead of calling `read_row_bytes` once per candidate. The early-exit
-    /// threshold is order-independent (a partial sum already exceeding the k-th best proves the row
-    /// cannot be in the top-k), so the page-major order yields the same exact top-k.
+    /// Pass 1 resolves each live candidate's current slot via the subject map (inherent to a bounded
+    /// allowlist); pass 2 groups those slots by page and bulk-reads each distinct page once (via
+    /// [`VectorSlabStore::load_page`] into a reused [`PageScratch`]) instead of calling `read_row_bytes`
+    /// once per candidate. The early-exit threshold is order-independent (a partial sum already
+    /// exceeding the k-th best proves the row cannot be in the top-k), so the page-major order yields
+    /// the same exact top-k.
     fn candidate_subject_scan(
         &self,
         index_id: u32,
@@ -500,10 +555,8 @@ impl VectorCanisterStore {
         top_k: u32,
         q_norm: f32,
     ) -> Result<VectorSearchResult, VectorCanisterError> {
-        // Pass 1: resolve current slots and stamps. The list is bounded by
-        // `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`; the stamp is required to build each `Candidate`.
-        let mut rows: Vec<(PageKey, VectorSubject, SlotRef, u64)> =
-            Vec::with_capacity(candidates.len());
+        // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
+        let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
         VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
             for subject in candidates {
                 let key = SubjectKey::new(index_id, *subject);
@@ -522,14 +575,14 @@ impl VectorCanisterStore {
                     slot.partition_id,
                     slot.page_id,
                 );
-                rows.push((page_key, *subject, slot, value.stamp));
+                rows.push((page_key, *subject, slot));
             }
         });
         if rows.is_empty() {
             return Ok(VectorSearchResult { hits: Vec::new() });
         }
         // Pass 2: page-major order so each distinct page is bulk-read once.
-        rows.sort_by_key(|(page, _, slot, _)| (*page, slot.slot));
+        rows.sort_by_key(|(page, _, slot)| (*page, slot.slot));
 
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut scratch = PageScratch::new();
@@ -538,86 +591,35 @@ impl VectorCanisterStore {
         Ok(finalize(heap))
     }
 
-    /// Exact fallback scan: sequential-iterate the subject map, collect each live subject's current
-    /// slot + stamp into a bounded chunk, and bulk-read each distinct page once page-major (via
-    /// [`score_sorted_rows`]) instead of calling `read_row_bytes` once per subject. Keeping the
-    /// sequential subject-map iteration avoids the per-row random-`get` regression (plan 0213), and
-    /// chunking bounds the transient collection. The live slot is resolved via `current_slot_for(active)`
-    /// so a post-publish exact fallback reads the new active version (`shadow_slot`), never the stale
-    /// old `entry.slot`. The deterministic top-k and early-exit are unchanged.
+    /// Exact fallback scan: bulk-read every partition `0..nlist` at the active version and score each
+    /// non-tombstoned row directly (no subject-map access; the write path guarantees a non-tombstoned
+    /// row is the subject's current live slot). Walking all partitions covers the degenerate `nlist = 1`
+    /// case (all rows in partition 0) and a trained-then-cleared index (`nlist > 1`, centroids missing)
+    /// whose rows are spread across `0..nlist`. The deterministic top-k and shadow/current-slot handling
+    /// are unchanged.
     fn exact_subject_scan(
         &self,
         req: &VectorSearchRequest,
         active_index_version: u64,
+        nlist: u32,
         query: &[f32],
         metric: VectorMetric,
         q_norm: f32,
     ) -> VectorSearchResult {
-        // Chunking bounds the transient slot collection to SCAN_CHUNK entries (the same order as the
-        // bounded candidate allowlist), so a large degenerate index does not allocate O(subjects). A
-        // page whose rows straddle two chunks is bulk-read once per chunk it appears in (correct, a
-        // minor re-read). The heap accumulates the global top-k across chunks; early-exit is
-        // order-independent, so the result is unchanged.
-        const SCAN_CHUNK: usize = 4096;
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-        let mut rows: Vec<(PageKey, VectorSubject, SlotRef, u64)> = Vec::with_capacity(SCAN_CHUNK);
-        let mut scratch = PageScratch::new();
-
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            let lower = SubjectKey::index_lower(req.index_id);
-            for entry in subjects.range((Bound::Included(lower), Bound::Unbounded)) {
-                let key = entry.key();
-                if key.index_id != req.index_id {
-                    break; // index-major order: past this index's prefix.
-                }
-                let value = entry.value();
-                if value.deleted {
-                    continue;
-                }
-                let Some(slot) = value.current_slot_for(active_index_version) else {
-                    continue;
-                };
-                let page_key = PageKey::new(
-                    req.index_id,
-                    slot.index_version,
-                    slot.partition_id,
-                    slot.page_id,
-                );
-                rows.push((page_key, key.subject, slot, value.stamp));
-                if rows.len() >= SCAN_CHUNK {
-                    rows.sort_by_key(|(page, _, slot, _)| (*page, slot.slot));
-                    score_sorted_rows(
-                        query,
-                        metric,
-                        q_norm,
-                        req.top_k,
-                        &mut heap,
-                        &rows,
-                        &mut scratch,
-                    );
-                    rows.clear();
-                }
-            }
-        });
-        // Flush the final (partial) chunk.
-        if !rows.is_empty() {
-            rows.sort_by_key(|(page, _, slot, _)| (*page, slot.slot));
-            score_sorted_rows(
-                query,
-                metric,
-                q_norm,
-                req.top_k,
-                &mut heap,
-                &rows,
-                &mut scratch,
-            );
-        }
-
-        finalize(heap)
+        scan_partitions(
+            req.index_id,
+            active_index_version,
+            0..nlist,
+            query,
+            metric,
+            q_norm,
+            req.top_k,
+        )
     }
 
     /// Slice 6 partition-page scan: select the ε₂-pruned centroid partitions and scan their page
-    /// chains in full, re-validating each row against the subject map before scoring.
+    /// chains in full, scoring every non-tombstoned row directly (no subject-map access; the write
+    /// path guarantees a non-tombstoned row is the subject's current live slot).
     fn partition_page_scan(
         &self,
         req: &VectorSearchRequest,
@@ -632,6 +634,7 @@ impl VectorCanisterStore {
             return self.exact_subject_scan(
                 req,
                 def.active_index_version,
+                def.nlist,
                 query,
                 def.metric,
                 q_norm,
@@ -639,81 +642,15 @@ impl VectorCanisterStore {
         };
         let active = def.active_index_version;
         let selected = select_partitions(&centroids, query, tuning.eps_query);
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-        let mut scratch = PageScratch::new();
-
-        PAGE_STORE.with_borrow(|store| {
-            for partition_id in selected {
-                store.visit_partition_pages(
-                    req.index_id,
-                    active,
-                    partition_id,
-                    &mut scratch,
-                    |slot, info, bytes| {
-                        // The L2 early-exit threshold is the current k-th best, applied only once
-                        // the heap is full.
-                        let threshold = if heap.len() as u32 == req.top_k {
-                            heap.peek().map(|c| c.distance).unwrap_or(f32::INFINITY)
-                        } else {
-                            f32::INFINITY
-                        };
-                        if let Some(candidate) = self.fresh_row_candidate(
-                            req.index_id,
-                            slot,
-                            info,
-                            query,
-                            bytes,
-                            def.metric,
-                            q_norm,
-                            threshold,
-                        ) {
-                            push_bounded(&mut heap, req.top_k, candidate);
-                        }
-                    },
-                );
-            }
-        });
-
-        finalize(heap)
-    }
-
-    /// Re-validates a visited page row against the subject map and, if it is the subject's current
-    /// live slot, returns a scored candidate. The subject is rebuilt from the run-table shard and the
-    /// packed `VertexPayload` vertex id; `VECTOR_SUBJECT_TO_ID` remains the freshness source of truth.
-    /// Returns `None` for any missing/deleted subject entry or slot drift — the freshness contract
-    /// shared with the exact scan.
-    fn fresh_row_candidate(
-        &self,
-        index_id: u32,
-        slot: SlotRef,
-        info: &RowInfo,
-        query: &[f32],
-        bytes: &[u8],
-        metric: VectorMetric,
-        q_norm: f32,
-        threshold: f32,
-    ) -> Option<Candidate> {
-        let subject = VectorSubject::Vertex {
-            shard_id: ShardId::new(info.shard_id),
-            vertex_id: info.vertex_id,
-        };
-        let entry =
-            VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(index_id, subject)))?;
-        if entry.deleted {
-            return None;
-        }
-        // Pages are scanned at the active version, so the subject's live slot for that version
-        // (active `slot`, or `shadow_slot` once an atomic publish flips active onto the rebuilt one)
-        // must point at exactly this row (ADR 0064 §7 positional validation).
-        if entry.current_slot_for(slot.index_version) != Some(slot) {
-            return None;
-        }
-        let distance = score_row(metric, bytes, query, q_norm, threshold)?;
-        Some(Candidate {
-            distance,
-            subject,
-            mutation_id: entry.stamp,
-        })
+        scan_partitions(
+            req.index_id,
+            active,
+            selected.into_iter(),
+            query,
+            def.metric,
+            q_norm,
+            req.top_k,
+        )
     }
 }
 

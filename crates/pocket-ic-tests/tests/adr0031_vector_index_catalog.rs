@@ -810,7 +810,6 @@ fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
         "nearest subject must be the inserted graph vertex"
     );
     assert_eq!(nearest.distance, 0.0, "exact match has zero distance");
-    assert_eq!(nearest.mutation_id, 1);
     assert!(
         router_result.hits[1].distance > 0.0,
         "the second hit must be farther than the exact match"

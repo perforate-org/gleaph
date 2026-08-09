@@ -297,7 +297,6 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         "nearest subject must be the ingested vertex"
     );
     assert_eq!(nearest.distance, 0.0, "exact query has zero distance");
-    assert_eq!(nearest.mutation_id, 1);
 
     let expected_id = vertex_element_id(&env);
     let query = format!(
