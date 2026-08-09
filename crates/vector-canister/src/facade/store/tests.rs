@@ -1320,6 +1320,41 @@ fn partition_scan_default_eps_zero_used_by_vector_search() {
 }
 
 #[test]
+fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // A query midway between the two clusters (5.5) is nearest centroid 1 (dist 81 vs 121), so
+    // eps_query = 0 scans only partition 1 and drops the partition-0 members that are still in the
+    // true top-4. Raising eps past the boundary distance (121 / 81 - 1 ≈ 0.49) recovers full recall,
+    // matching the exact scan. This is the recall/cost tradeoff slice 6 tunes the default by.
+    let req = search_value(5.5, 4);
+    let eps0 = store.vector_search(&req).expect("default eps=0 search");
+    let eps05 = store
+        .vector_search_tuned(&req, tuned(0.5))
+        .expect("eps=0.5 search");
+    let exact = store
+        .vector_search_tuned(&req, tuned(f32::INFINITY))
+        .expect("eps=INF exact-parity search");
+    assert_eq!(
+        eps0.hits.len(),
+        2,
+        "eps=0 scans only the nearer partition and loses boundary recall"
+    );
+    let e: Vec<_> = exact.hits.iter().map(|h| (h.subject, h.distance)).collect();
+    let p: Vec<_> = eps05.hits.iter().map(|h| (h.subject, h.distance)).collect();
+    assert_eq!(
+        p, e,
+        "eps=0.5 scans both partitions and matches the exact top-4"
+    );
+}
+
+#[test]
 fn partition_scan_skips_deleted_subject_entry() {
     use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
     use crate::records::{SubjectKey, SubjectMapEntry};

@@ -1,14 +1,18 @@
-//! Vector-search benchmarks (ADR 0031 Slice 5 exact scan + Slice 6 partition-page scan).
+//! Vector-search benchmarks (ADR 0031 Slice 5 exact scan + Slice 6 ε₂/early-exit partition-page scan).
 //!
 //! The exact-scan benches establish the baseline cost of the degenerate `ivf_flat` exact scan —
-//! live subject-map scan + L2-squared scoring + bounded top-k. The Slice 6 benches measure the
-//! partition-page scan over **clustered** seeded datasets: `nprobe = nlist` is the parity point
-//! (scans every partition, same result set as exact), and lower `nprobe` skips populated partitions
-//! so the cost reduction is visible. The partition scan is *not* expected to match exact-scan
-//! instruction cost even at `nprobe = nlist` — it adds centroid scoring plus the per-row subject-map
-//! freshness re-validation (the row subject is rebuilt from the slab row-local locator, ADR 0032).
-//! `l2_squared_f32` is kept isolated in the store so a future SIMD variant can be benchmarked against
-//! these baselines.
+//! live subject-map scan + L2-squared scoring (crate early-exit kernel) + bounded top-k. The Slice 6
+//! benches measure the partition-page scan over **clustered** seeded datasets under ε₂ query-aware
+//! pruning: `eps_query = 0.0` scans only the nearest partition, `f32::INFINITY` is the exact-parity
+//! upper bound (scans every partition, same result set as exact), and intermediate values skip
+//! populated partitions so the cost reduction is visible. The partition scan is *not* expected to
+//! match exact-scan instruction cost even at `eps_query = INF` — it adds centroid scoring plus the
+//! per-row subject-map freshness re-validation (the row subject is rebuilt from the slab row-local
+//! locator, ADR 0032).
+//!
+//! The `bench_ivf_d1536_*` sweep covers the ADR 0064 §8 design target (`d = 1536`) across the nlist
+//! values that stay trainable at that width; it is the cost surface slice 6 tunes
+//! `DEFAULT_EPS_QUERY` by (recall is covered by the boundary-recall unit test).
 //!
 //! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 
@@ -31,6 +35,13 @@ const SCAN_N: u32 = 4096;
 /// Distance between adjacent cluster centroids — far larger than the in-cluster jitter so each
 /// seeded vector's nearest centroid is unambiguously its own cluster.
 const CLUSTER_SPACING: f32 = 1000.0;
+
+/// Query offset for the ε₂ sweep, placed between the first two clusters (45% of the way toward
+/// cluster 1). A query here makes `dist(q, c_best)` non-zero so raising `eps_query` selects
+/// progressively more partitions (0.0 → nearest only, 0.5 → two, 2.5 → three, INF → all). The zero
+/// vector previously used sits exactly on centroid 0, which pins `c_best = 0` and degenerates the
+/// whole sweep to a single-partition scan for every `eps_query`.
+const SWEEP_QUERY: f32 = CLUSTER_SPACING * 0.45;
 
 fn router() -> Principal {
     Principal::from_slice(&[9])
@@ -88,9 +99,15 @@ fn setup_search_store(dims: u16, n: u32) -> VectorCanisterStore {
 }
 
 fn search_req(dims: u16, top_k: u32) -> VectorSearchRequest {
+    search_req_value(dims, top_k, 0.0)
+}
+
+/// Build a search request whose query vector is a constant `value` in every dimension. The exact-
+/// scan and centroid-cache benches use `0.0`; the ε₂ sweep uses [`SWEEP_QUERY`] (off any centroid).
+fn search_req_value(dims: u16, top_k: u32, value: f32) -> VectorSearchRequest {
     VectorSearchRequest {
         index_id: INDEX_ID,
-        query: vec_bytes(dims, 0.0),
+        query: vec_bytes(dims, value),
         encoding: VectorEncoding::F32,
         dims,
         metric: VectorMetric::L2Squared,
@@ -120,6 +137,8 @@ search_bench!(bench_vector_search_d384_k10, 384, 10);
 search_bench!(bench_vector_search_d384_k100, 384, 100);
 search_bench!(bench_vector_search_d768_k10, 768, 10);
 search_bench!(bench_vector_search_d768_k100, 768, 100);
+search_bench!(bench_vector_search_d1536_k10, 1536, 10);
+search_bench!(bench_vector_search_d1536_k100, 1536, 100);
 
 /// A constant-valued width-`dims` `f32` vector.
 fn cvec(dims: u16, value: f32) -> Vec<f32> {
@@ -163,7 +182,9 @@ macro_rules! partitioned_bench {
         #[bench(raw)]
         fn $name() -> canbench_rs::BenchResult {
             let store = setup_partitioned_store($dims, SCAN_N, $nlist);
-            let req = search_req($dims, 10);
+            // The query sits between the first two clusters so the ε sweep actually varies how many
+            // partitions are scanned (see [`SWEEP_QUERY`]).
+            let req = search_req_value($dims, 10, SWEEP_QUERY);
             canbench_rs::bench_fn(|| {
                 let _scope = canbench_rs::bench_scope(stringify!($name));
                 let result = store
@@ -197,6 +218,20 @@ partitioned_bench!(bench_ivf_d384_nlist64_eps1, 384, 64, 1.0);
 partitioned_bench!(bench_ivf_d768_nlist16_eps0, 768, 16, 0.0);
 partitioned_bench!(bench_ivf_d768_nlist16_eps05, 768, 16, 0.5);
 partitioned_bench!(bench_ivf_d768_nlist64_eps1, 768, 64, 1.0);
+
+// d = 1536 design target (ADR 0064 §8): ε₂ sweep at the per-level nlist ceilings that remain
+// trainable at this width. With the query at [`SWEEP_QUERY`], eps_query = 0 scans only the nearest
+// partition, 0.5 scans two, and INF is the exact-parity upper bound (all partitions).
+partitioned_bench!(bench_ivf_d1536_nlist16_eps0, 1536, 16, 0.0);
+partitioned_bench!(bench_ivf_d1536_nlist16_eps05, 1536, 16, 0.5);
+partitioned_bench!(bench_ivf_d1536_nlist16_eps1, 1536, 16, 1.0);
+partitioned_bench!(bench_ivf_d1536_nlist16_epsinf, 1536, 16, f32::INFINITY);
+partitioned_bench!(bench_ivf_d1536_nlist64_eps0, 1536, 64, 0.0);
+partitioned_bench!(bench_ivf_d1536_nlist64_eps05, 1536, 64, 0.5);
+partitioned_bench!(bench_ivf_d1536_nlist64_eps1, 1536, 64, 1.0);
+partitioned_bench!(bench_ivf_d1536_nlist256_eps0, 1536, 256, 0.0);
+partitioned_bench!(bench_ivf_d1536_nlist256_eps05, 1536, 256, 0.5);
+partitioned_bench!(bench_ivf_d1536_nlist256_eps1, 1536, 256, 1.0);
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
 

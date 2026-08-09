@@ -35,7 +35,14 @@ use std::collections::BinaryHeap;
 use std::ops::Bound;
 
 /// Default ε₂ query-pruning factor when none is supplied. `0.0` scans only the nearest partition; a
-/// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`. Tunable in slice 6.
+/// larger value scans partitions within `(1 + eps_query) * dist(q, c_best)`.
+///
+/// Slice 6 decision: keep `0.0` (cost-minimal) as the default. The recall/cost tradeoff is real — a
+/// query near a partition boundary drops the adjacent partition's members at `0.0` (see the
+/// `partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers` test) — but raising the
+/// global default without a measured cost baseline would be speculative. `eps_query` is a
+/// per-definition setting, so operators can raise recall; the d=1536 canbench ε₂ sweep (bench.rs)
+/// supplies the cost data to confirm the final value.
 const DEFAULT_EPS_QUERY: f32 = 0.0;
 
 /// Internal, algorithm-specific search tuning. Never crosses the Router/kernel wire (the public

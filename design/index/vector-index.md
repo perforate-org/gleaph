@@ -437,10 +437,16 @@ canister's stable regions are rebuilt under the new layout.
 1. **Per-level `nlist` under the 8 MiB envelope**: the level-generic structure makes the ≈677 ceiling
    a per-training-job bound; a hierarchy restores trainable counts at `d = 1536`. A raw candidate
    region remains the documented fallback if per-job pools still bind.
-2. **Hierarchy deployment timing**: ships as `levels = 1` (flat behavior); enabling `levels = 2`
-   follows the scan-cost measurement at the target scale.
-3. **Scoring formulation**: canbench `(a)` dot+norms+pruning, `(b)` sub-square+early-exit (default),
-   `(c)` sub-square+bound, at `d=1536`.
+2. **Hierarchy deployment timing** (**Slice 6 decision: ship `levels = 1` / flat, defer `levels = 2`**):
+   the flat `ivf_flat` model stays the deployed form; enabling `levels = 2` (e.g. 64×64) follows the
+   scan-cost measurement at the target scale. No level-generic structure is introduced into the
+   definition config, partition keys, or search path until that measurement justifies it.
+3. **Scoring formulation** (**Slice 6: sub-square + early-exit is the default**): canbench `(a)`
+   dot+norms+pruning, `(b)` sub-square+early-exit (default), `(c)` sub-square+bound, at `d=1536`.
+   The ε₂ default is kept at `DEFAULT_EPS_QUERY = 0.0` (cost-minimal); the boundary-recall test
+   (`partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers`) documents the recall
+   cost of a single-partition default, and the `bench_ivf_d1536_*` ε₂ sweep measures the cost of
+   raising it before the value is confirmed.
 4. **Page size / slots per page**: config tuned by the scan-cost measurement.
 
 ## Related documents
