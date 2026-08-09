@@ -161,6 +161,52 @@ lemma relocateWrite_preserves_clusterOrdered {s s' : State} {entry : Key} {value
       have hiocc_sj : IsOccupied s j := (hocc_iff j h_j_pos).1 hiocc_j
       exact hco i j hicap_si hicap_sj hij hiocc_si hiocc_sj
 
+-- The base insert write keeps each entry at its correct bucket: the new entry sits at
+-- `bucket entry s.n`, and all other entries are unchanged. Requires a fresh insert with no
+-- resize in progress (`remapEnd = none`).
+lemma relocateWrite_preserves_entryAtCorrectBucket {s s' : State} {entry : Key} {value : Nat}
+    {position : Nat}
+    (h : RelocateWrite s s' entry value position) (hcorrect : EntryAtCorrectBucket s)
+    (hremap : s.remapEnd = none) (hremap' : s'.remapEnd = s.remapEnd) :
+    EntryAtCorrectBucket s' := by
+  have hbkt_pos : BucketAt s' position = bucket entry s.n := by
+    unfold BucketAt
+    rw [h.dist]
+    have hle : bucket entry s.n ≤ position := h.b_le_pos
+    omega
+  intro i hicap hiocc
+  by_cases hi_pos : i = position
+  · rw [hi_pos, hbkt_pos]
+    have heb : ExpectedBucket s' position = bucket entry s.n := by
+      simp [ExpectedBucket, h.keyAt, hremap', hremap, h.n.symm]
+    rw [heb]
+  · have hicap_s : i < capacity s.n := by simpa [h.n] using hicap
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.dist_other i hi_pos]
+      exact hiocc
+    have hc := hcorrect i hicap_s hiocc_s
+    have heb : ExpectedBucket s' i = ExpectedBucket s i := by
+      simp [ExpectedBucket, h.keyAt_other i hi_pos, hremap', hremap, h.n.symm]
+    rw [heb]
+    unfold BucketAt
+    rw [h.dist_other i hi_pos]
+    exact hc
+
+-- The base insert write preserves the full cluster invariant (a fresh insert with no
+-- resize in progress, at a valid insertion point).
+lemma relocateWrite_preserves_clusterInvariant {s s' : State} {entry : Key} {value : Nat}
+    {position : Nat}
+    (h : RelocateWrite s s' entry value position) (hci : ClusterInvariant s)
+    (hip : IsInsertionPoint s position (bucket entry s.n))
+    (hremap : s.remapEnd = none) (hremap' : s'.remapEnd = s.remapEnd) :
+    ClusterInvariant s' := by
+  exact ⟨
+    relocateWrite_preserves_distanceValid h hci.1,
+    relocateWrite_preserves_clusterOrdered h hci.2.1 hip,
+    relocateWrite_preserves_entryAtCorrectBucket h hci.2.2 hremap hremap'
+  ⟩
+
 lemma insert_preserves_invariant (h : ClusterInvariant s) (hstep : RelocateStep s s' entry value position) :
     ClusterInvariant s' := by
   sorry
