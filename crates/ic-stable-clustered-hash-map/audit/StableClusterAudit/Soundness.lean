@@ -320,6 +320,39 @@ lemma displaced_home_bucket (position next tDist : Nat) (hpos_le : position ≤ 
     next - (tDist + (next - position)) = position - tDist := by
   omega
 
+-- A slot strictly inside `endOfClusterFrom s b i` is occupied and at bucket `b` (it is part
+-- of bucket `b`'s cluster being scanned). Proved by strong induction on the scan length.
+lemma bucketAt_in_scan_aux (s : State) (b : Nat) :
+    ∀ m i i', capacity s.n - i = m → i ≤ i' → i' < endOfClusterFrom s b i → BucketAt s i' = b := by
+  intro m
+  induction m using Nat.strong_induction_on with
+  | h m ih =>
+      intro i i' hm hle hlt
+      by_cases hicap : i < capacity s.n
+      · by_cases hguard : IsOccupied s i ∧ BucketAt s i = b
+        · have hrecur : endOfClusterFrom s b i = endOfClusterFrom s b (i + 1) := by
+            rw [endOfClusterFrom]
+            simp [hicap, hguard]
+          have hlt' : i' < endOfClusterFrom s b (i + 1) := by simpa [hrecur] using hlt
+          by_cases hi' : i = i'
+          · subst hi'
+            exact hguard.2
+          · have hle' : i + 1 ≤ i' := by omega
+            have hm' : capacity s.n - (i + 1) < m := by omega
+            exact ih (capacity s.n - (i + 1)) hm' (i + 1) i' rfl hle' hlt'
+        · have heq : endOfClusterFrom s b i = i := by
+            rw [endOfClusterFrom]
+            simp [hicap, hguard]
+          omega
+      · have heq : endOfClusterFrom s b i = i := by
+          rw [endOfClusterFrom]
+          simp [hicap]
+        omega
+
+lemma bucketAt_in_scan (s : State) (b i i' : Nat) (hle : i ≤ i') (hlt : i' < endOfClusterFrom s b i) :
+    BucketAt s i' = b :=
+  bucketAt_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt
+
 -- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
 -- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
 -- `relocateStep_preserves_clusterInvariant`), so the invariant holds throughout the chain.
