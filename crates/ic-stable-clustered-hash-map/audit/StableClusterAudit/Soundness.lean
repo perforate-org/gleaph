@@ -382,6 +382,85 @@ lemma endOfClusterFrom_ge_aux (s : State) (b : Nat) :
 lemma endOfClusterFrom_ge (s : State) (b i : Nat) : i ≤ endOfClusterFrom s b i :=
   endOfClusterFrom_ge_aux s b (capacity s.n - i) i rfl
 
+-- The cluster scan does not pass the end of the table when it starts at or below capacity.
+lemma endOfClusterFrom_le_capacity_aux (s : State) (b : Nat) :
+    ∀ m i, capacity s.n - i = m → i ≤ capacity s.n → endOfClusterFrom s b i ≤ capacity s.n := by
+  intro m
+  induction m using Nat.strong_induction_on with
+  | h m ih =>
+      intro i hm hicap0
+      by_cases hicap : i < capacity s.n
+      · by_cases hguard : IsOccupied s i ∧ BucketAt s i = b
+        · have hrecur : endOfClusterFrom s b i = endOfClusterFrom s b (i + 1) := by
+            rw [endOfClusterFrom]
+            simp [hicap, hguard]
+          have hm' : capacity s.n - (i + 1) < m := by omega
+          have hicap0' : i + 1 ≤ capacity s.n := by omega
+          have hle := ih (capacity s.n - (i + 1)) hm' (i + 1) rfl hicap0'
+          rw [hrecur]
+          exact hle
+        · have heq : endOfClusterFrom s b i = i := by
+            rw [endOfClusterFrom]
+            simp [hicap, hguard]
+          rw [heq]
+          exact hicap0
+      · have heq : endOfClusterFrom s b i = i := by
+          rw [endOfClusterFrom]
+          simp [hicap]
+        rw [heq]
+        exact hicap0
+
+lemma endOfClusterFrom_le_capacity (s : State) (b i : Nat) (hicap : i ≤ capacity s.n) :
+    endOfClusterFrom s b i ≤ capacity s.n :=
+  endOfClusterFrom_le_capacity_aux s b (capacity s.n - i) i rfl hicap
+
+-- The end of the cluster containing `position` is an order boundary for that bucket:
+-- every occupied slot below it has a bucket ≤ the cluster's bucket and every occupied slot
+-- above it has a bucket ≥ it. This is what makes the relocation step order-preserving.
+lemma order_boundary_of_cluster_end {s : State} {position next tDist : Nat}
+    (hco : ClusterOrdered s) (hnext : next = endOfCluster s position)
+    (hocc : IsOccupied s position) (hdist : s.dist position = tDist)
+    (hpos_cap : position < capacity s.n) :
+    IsOrderBoundary s next (position - tDist) := by
+  have hbkt_pos : BucketAt s position = position - tDist := by
+    unfold BucketAt
+    rw [hdist]
+  have hpos_le_next : position ≤ next := by
+    rw [hnext]
+    unfold endOfCluster
+    exact endOfClusterFrom_ge s (BucketAt s position) position
+  have hnext_cap : next ≤ capacity s.n := by
+    rw [hnext]
+    unfold endOfCluster
+    exact endOfClusterFrom_le_capacity s (BucketAt s position) position (Nat.le_of_lt hpos_cap)
+  constructor
+  · intro i hi_next hiocc_i
+    by_cases hi_pos : i = position
+    · subst hi_pos
+      omega
+    · have hi_cap : i < capacity s.n := lt_of_lt_of_le hi_next hnext_cap
+      by_cases hi_lt : i < position
+      · have hle : BucketAt s i ≤ BucketAt s position :=
+          hco i position hi_cap hpos_cap hi_lt hiocc_i hocc
+        omega
+      · have hi_gt : position < i :=
+          Nat.lt_of_le_of_ne (Nat.le_of_not_gt hi_lt) (by intro h; exact hi_pos h.symm)
+        have hnext2 : endOfClusterFrom s (position - tDist) position = next := by
+          rw [hnext]
+          unfold endOfCluster
+          rw [hbkt_pos]
+        have hscan : i < endOfClusterFrom s (position - tDist) position := by
+          rw [hnext2]
+          exact hi_next
+        have hpos_le_i : position ≤ i := Nat.le_of_lt hi_gt
+        have hin : BucketAt s i = position - tDist :=
+          bucketAt_in_scan s (position - tDist) position i hpos_le_i hscan
+        omega
+  · intro i hi_next hicap_i hiocc_i
+    have hle : BucketAt s position ≤ BucketAt s i :=
+      hco position i hpos_cap hicap_i (lt_of_le_of_lt hpos_le_next hi_next) hocc hiocc_i
+    omega
+
 -- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
 -- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
 -- `relocateStep_preserves_clusterInvariant`), so the invariant holds throughout the chain.
