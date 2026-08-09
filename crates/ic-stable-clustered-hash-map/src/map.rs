@@ -39,7 +39,7 @@ use crate::memory::{
     grow_memory_to_at_least_bytes, read_u8, read_u32, read_u64, write_u8, write_u64,
 };
 use ic_stable_structures::{Memory, Storable};
-use rapidhash::v1::rapidhash_v1;
+use rapidhash::v3::{DEFAULT_RAPID_SECRETS, rapidhash_v3_inline};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
@@ -78,6 +78,12 @@ fn bucket(hash: u64, n: u8) -> u64 {
     let m = 64 - n;
     let fib = hash.wrapping_mul(FIB_CONST);
     (fib << m) >> m
+}
+
+/// Hashes key bytes with rapidhash V3 (deterministic constant seed). Keys are fixed-size, so the
+/// `_inline` specialization can constant-fold the length-dependent finalization branches.
+fn hash_key(key: &[u8]) -> u64 {
+    rapidhash_v3_inline::<true, false, false>(key, &DEFAULT_RAPID_SECRETS)
 }
 
 /// An in-memory entry used during insert relocation.
@@ -318,7 +324,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// During an in-place resize, also checks the previous table size in the mixed range (read-only).
     fn lookup_index(&self, key: &K) -> (Option<u64>, u64, u64) {
         let n = self.log2_buckets();
-        let hash = rapidhash_v1(&key.to_bytes());
+        let hash = hash_key(&key.to_bytes());
         let b = bucket(hash, n);
         if self.is_empty() {
             // Empty map: the first entry lands at its bucket with distance 0.
@@ -413,7 +419,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         if self.is_full() {
             self.size_up()?;
             let n = self.log2_buckets();
-            let b = bucket(rapidhash_v1(&key.to_bytes()), n);
+            let b = bucket(hash_key(&key.to_bytes()), n);
             let insert_position = self.find_insert_position(b);
             let entry = Entry {
                 key,
@@ -449,7 +455,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
                 if allow_size_up {
                     self.size_up()?;
                     let n = self.log2_buckets();
-                    let b = bucket(rapidhash_v1(&entry.key.to_bytes()), n);
+                    let b = bucket(hash_key(&entry.key.to_bytes()), n);
                     position = self.find_insert_position(b);
                     continue;
                 }
@@ -544,7 +550,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             if !self.is_empty_slot(position) {
                 let n = self.log2_buckets();
                 let key = self.read_key(position);
-                let new_bucket = bucket(rapidhash_v1(&key.to_bytes()), n);
+                let new_bucket = bucket(hash_key(&key.to_bytes()), n);
                 let current_bucket = self.bucket_by_position(position);
                 if current_bucket != new_bucket {
                     self.remap_position(position, key, new_bucket);
