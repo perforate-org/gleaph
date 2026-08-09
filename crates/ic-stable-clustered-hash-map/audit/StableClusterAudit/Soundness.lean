@@ -117,6 +117,50 @@ lemma relocateWrite_preserves_distanceValid {s s' : State} {entry : Key} {value 
     rw [h.dist_other i hpos]
     exact hvalid
 
+-- The base insert write keeps the ordered-cluster invariant, assuming `position` is a valid
+-- insertion point for the entry's bucket (as `find_insert_position` guarantees).
+lemma relocateWrite_preserves_clusterOrdered {s s' : State} {entry : Key} {value : Nat} {position : Nat}
+    (h : RelocateWrite s s' entry value position)
+    (hco : ClusterOrdered s) (hip : IsInsertionPoint s position (bucket entry s.n)) :
+    ClusterOrdered s' := by
+  have hbkt_pos : BucketAt s' position = bucket entry s.n := by
+    unfold BucketAt
+    rw [h.dist]
+    have hle : bucket entry s.n ≤ position := h.b_le_pos
+    omega
+  have hbkt_other : ∀ i, i ≠ position → BucketAt s' i = BucketAt s i := by
+    intro i hi_ne
+    unfold BucketAt
+    rw [h.dist_other i hi_ne]
+  have hocc_iff : ∀ i, i ≠ position → (IsOccupied s' i ↔ IsOccupied s i) := by
+    intro i hi_ne
+    unfold IsOccupied
+    rw [h.dist_other i hi_ne]
+  intro i j hicap_i hicap_j hij hiocc_i hiocc_j
+  by_cases h_i_pos : i = position
+  · by_cases h_j_pos : j = position
+    · exfalso
+      exact (ne_of_lt hij) (h_i_pos.trans h_j_pos.symm)
+    · rw [h_i_pos, hbkt_pos]
+      rw [hbkt_other j h_j_pos]
+      have hj_gt : position < j := by simpa [h_i_pos] using hij
+      have hicap_sj : j < capacity s.n := by simpa [h.n] using hicap_j
+      have hiocc_sj : IsOccupied s j := (hocc_iff j h_j_pos).1 hiocc_j
+      exact hip.2.2 j hj_gt hicap_sj hiocc_sj
+  · by_cases h_j_pos : j = position
+    · rw [h_j_pos, hbkt_pos]
+      rw [hbkt_other i h_i_pos]
+      have hi_lt : i < position := by simpa [h_j_pos] using hij
+      have hicap_si : i < capacity s.n := by simpa [h.n] using hicap_i
+      have hiocc_si : IsOccupied s i := (hocc_iff i h_i_pos).1 hiocc_i
+      exact hip.2.1 i hi_lt hiocc_si
+    · rw [hbkt_other i h_i_pos, hbkt_other j h_j_pos]
+      have hicap_si : i < capacity s.n := by simpa [h.n] using hicap_i
+      have hicap_sj : j < capacity s.n := by simpa [h.n] using hicap_j
+      have hiocc_si : IsOccupied s i := (hocc_iff i h_i_pos).1 hiocc_i
+      have hiocc_sj : IsOccupied s j := (hocc_iff j h_j_pos).1 hiocc_j
+      exact hco i j hicap_si hicap_sj hij hiocc_si hiocc_sj
+
 lemma insert_preserves_invariant (h : ClusterInvariant s) (hstep : RelocateStep s s' entry value position) :
     ClusterInvariant s' := by
   sorry

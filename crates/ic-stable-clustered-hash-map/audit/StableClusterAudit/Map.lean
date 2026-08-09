@@ -154,12 +154,22 @@ structure RelocateWrite (s s' : State) (entry : Key) (value : Nat) (position : N
   n : s.n = s'.n
   slotEmpty : s.dist position = EMPTY
   distFit : position - bucket entry s.n < EMPTY
+  b_le_pos : bucket entry s.n ≤ position
   keyAt : s'.keyAt position = some entry
   valAt : s'.valAt position = value
   dist : s'.dist position = position - bucket entry s.n
   keyAt_other : ∀ i, i ≠ position → s'.keyAt i = s.keyAt i
   valAt_other : ∀ i, i ≠ position → s'.valAt i = s.valAt i
   dist_other : ∀ i, i ≠ position → s'.dist i = s.dist i
+
+-- `position` is a valid insertion point for a new entry of bucket `b`: the slot is empty
+-- and every occupied slot below / above it has a bucket ≤ / ≥ `b`, so inserting at
+-- `position` keeps the table ordered. This is what `find_insert_position` guarantees.
+-- src/map.rs L309-L319.
+def IsInsertionPoint (s : State) (position b : Nat) : Prop :=
+  s.dist position = EMPTY ∧
+  (∀ i, i < position → IsOccupied s i → BucketAt s i ≤ b) ∧
+  (∀ i, i > position → i < capacity s.n → IsOccupied s i → b ≤ BucketAt s i)
 
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L491-L508.
