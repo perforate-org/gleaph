@@ -533,7 +533,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         let new_capacity = (1u64 << new_n) + new_n as u64;
         let key_size = self.key_size();
         let value_size = self.value_size();
-        let stride = key_size as u64 + value_size as u64 + 2;
+        let stride = self.entry_stride();
 
         let new_size = DATA_OFFSET + new_capacity * stride;
         grow_memory_to_at_least_bytes(&self.memory, new_size)
@@ -598,7 +598,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     /// Sets every slot's distance in `[start, end)` to [`EMPTY`] (the key/value bytes are left as
     /// garbage; they are only read when the slot is occupied). Writes in chunks so the clear is a few
-    /// large writes instead of one 2-byte write per slot.
+    /// large writes instead of one 4-byte write per slot.
     fn clear_region<M2: Memory>(memory: &M2, start: u64, end: u64, key_size: u32, value_size: u32) {
         const CHUNK: u64 = 64;
         let stride = key_size as u64 + value_size as u64 + 4;
@@ -710,6 +710,59 @@ mod tests {
             assert_eq!(map.get(&k), Some(k * 3), "key {k} survives resize");
         }
         assert_eq!(map.len(), 200);
+    }
+
+    #[test]
+    fn load_threshold_resize_allocates_the_canonical_entry_stride() {
+        const TARGET_LOG2_BUCKETS: u8 = 13;
+
+        let memory = VectorMemory::default();
+        let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
+        while map.log2_buckets() < TARGET_LOG2_BUCKETS {
+            map.size_up().expect("pre-grow fixture");
+        }
+        assert!(map.remap_step(u64::MAX), "empty pre-grow remap completes");
+
+        let threshold = (3 * map.buckets()) / 4;
+        let mut keys_by_bucket = vec![None; threshold as usize + 1];
+        let mut missing = keys_by_bucket.len();
+        for candidate in 0u64.. {
+            let home = bucket(hash_key(&candidate.to_bytes()), TARGET_LOG2_BUCKETS);
+            if home <= threshold && keys_by_bucket[home as usize].is_none() {
+                keys_by_bucket[home as usize] = Some(candidate);
+                missing -= 1;
+                if missing == 0 {
+                    break;
+                }
+            }
+        }
+
+        for (slot, key) in keys_by_bucket[..threshold as usize].iter().enumerate() {
+            let key = key.expect("key for each occupied home bucket");
+            map.write_entry(
+                slot as u64,
+                &Entry {
+                    key,
+                    value: key,
+                    distance: 0,
+                },
+            );
+        }
+        map.set_len(threshold);
+        assert!(map.is_full(), "fixture reaches the normal load threshold");
+        assert_eq!(memory.size(), 3, "fixture has minimal-page backing");
+
+        let trigger_key = keys_by_bucket[threshold as usize].expect("next home bucket key");
+        map.insert(trigger_key, trigger_key)
+            .expect("threshold insert grows the backing before clearing the new region");
+
+        let required_bytes = DATA_OFFSET + map.capacity() * map.entry_stride();
+        assert_eq!(map.log2_buckets(), TARGET_LOG2_BUCKETS + 1);
+        assert_eq!(map.len(), threshold + 1);
+        assert!(
+            memory.size() * crate::memory::WASM_PAGE_SIZE >= required_bytes,
+            "grown backing covers every canonical entry"
+        );
     }
 
     #[test]

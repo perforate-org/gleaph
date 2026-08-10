@@ -1,6 +1,8 @@
 # Verification Report
 
 Date (UTC): 2026-08-09
+Last updated: 2026-08-10
+Anchor timestamp: 2026-08-10 06:53:00 UTC +0000
 
 ## Target and version / Mode
 
@@ -96,11 +98,19 @@ Proved:
 
 The `RemapStep` result is relation-level because it postulates `keySet` and `len`; it is not a Rust refinement proof. Production `remap_position` can
 re-expand `remap_end`, and `ExpectedBucket` has not been proved a faithful invariant while
-a remap is active. The independent P1 / High `size_up` allocation defect is recorded in
-`GAP-2026-08-10-002`; no production resize assurance is inferred from these relations.
+a remap is active. The independent P1 / High `size_up` allocation defect recorded in
+`GAP-2026-08-10-002` is repaired in the current uncommitted worktree by deriving growth from
+the canonical `entry_stride()`; a focused normal-load-threshold regression covers the prior
+out-of-bounds write. This runtime evidence does not extend the Lean relations, and no production
+resize assurance is inferred from those relations.
 
 ## Findings (severity)
 
+- **High (now fixed in the current uncommitted worktree)**: `size_up` used a stale
+  `key_size + value_size + 2` growth stride while entry offsets and clearing used the canonical
+  `key_size + value_size + 4` stride. It now calls `entry_stride()`, and
+  `load_threshold_resize_allocates_the_canonical_entry_stride` exercises the previously failing
+  minimal-page `n = 13 → 14` normal threshold path.
 - **Medium (now fixed)**: u16 distance overflow could silently corrupt the persisted
   table when a single bucket's cluster exceeded 65535 entries (adversarial keys or very
   large, unluckily-clustered maps). **Resolution implemented in Rust**: distances are

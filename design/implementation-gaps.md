@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 02:23:18 UTC +0000
+Anchor timestamp: 2026-08-10 06:53:00 UTC +0000
 
 ## Status
 
@@ -69,33 +69,31 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-10-002 — `size_up` under-allocates the canonical entry stride
 
-- **Status:** Open
+- **Status:** Resolved in the current uncommitted worktree; fixing commit pending
 - **Severity:** P1 / High
 - **Owner:** `ic-stable-clustered-hash-map` entry allocation/layout and `size_up`
-- **Observed behavior:** `entry_stride()` uses the canonical `key_size + value_size + 4`
-  layout (`crates/ic-stable-clustered-hash-map/src/map.rs` L205-L207), but `size_up`
-  computes its growth target with stale `key_size + value_size + 2` stride (L526-L540).
+- **Observed behavior:** Before the repair, `entry_stride()` used the canonical
+  `key_size + value_size + 4` layout, but `size_up` computed its growth target with a stale
+  `key_size + value_size + 2` stride.
   At the `n = 13 → 14` capacity of 16,398, the stale `+ 2` target under-requests the
   canonical allocation by `2 * capacity = 2 * 16,398 = 32,796 bytes`.
 - **Expected or needed behavior:** Every growth target must cover the canonical allocation
   used by `entry_offset` / `entry_stride`, before clearing or writing the new region.
-- **Evidence:** `src/map.rs` L205-L222 defines the canonical stride and offsets; L430-L443
-  takes the normal load-threshold `size_up` path; L526-L540 allocates with the stale
-  `+ 2` stride. Separately, the physical backing is 344 bytes short only for a fresh
-  `u64`/`u64` map with empty/minimal-page backing, no earlier collision-triggered resize,
-  and the normal load-threshold resize on the 6,145th unique insert.
-- **Impact:** Pre-grown backing can mask that physical out-of-bounds access, and collisions
-  can trigger the stale-stride path earlier. Under a conforming `Memory` implementation
-  whose out-of-bounds access traps or panics, the failure does not silently corrupt the
-  pre-existing old-table bytes; this conclusion does not cover non-conforming memory
-  implementations. It does not mean that every backing or arbitrary key sequence fails on
-  its 6,145th unique insert.
-- **Next decision:** Rust repair is intentionally deferred. In a focused follow-on slice,
-  replace the duplicate calculation with `let stride = self.entry_stride()` and add a
-  regression using a fresh empty/minimal-page-backed `u64`/`u64` map, no prior
-  collision-triggered resize, and the normal threshold. The regression must prove the
-  canonical logical allocation is covered without assuming an arbitrary key sequence
-  reaches that path exactly at 6,145.
+- **Evidence:** `crates/ic-stable-clustered-hash-map/src/map.rs::size_up` now derives the growth
+  target from `self.entry_stride()`. The
+  `load_threshold_resize_allocates_the_canonical_entry_stride` regression starts from fresh
+  minimal-page backing, deterministically seeds a collision-free `n = 13` table at the normal
+  75% load threshold, triggers growth through public `insert`, and asserts that the backing covers
+  `DATA_OFFSET + capacity * entry_stride`. The focused test failed before the repair with
+  `VectorMemory` `write: out of bounds` and passes after it.
+- **Impact:** Before the repair, pre-grown backing could mask the physical out-of-bounds access,
+  and collisions could trigger the stale-stride path earlier. Under a conforming `Memory`
+  implementation whose out-of-bounds access traps or panics, the failure does not silently corrupt
+  the pre-existing old-table bytes; this conclusion does not cover non-conforming memory
+  implementations. The repaired path allocates from the canonical stride before clearing or
+  writing the grown region.
+- **Next decision:** None for the implementation. Record the primary-owned fixing commit after it
+  is created.
 
 ### GAP-2026-08-04-002 — Rust canister bindings for record parameters lack a Candid form
 
