@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 14:09:56 UTC +0000
+Anchor timestamp: 2026-08-10 20:31:08 UTC +0000
 
 ## Target and version / Mode
 
@@ -38,7 +38,8 @@ Mathlib):
 - Stage 4 — this report.
 
 The direct command `lake env lean StableClusterAudit/Soundness.lean` succeeds and its output
-contains exactly the two preserved `sorry` warnings for remove and remap.
+contains exactly the two preserved `sorry` warnings for the weak `UnRelocateStep` and
+`RemapStep` invariant-preservation declarations.
 
 ## Assumption list
 
@@ -105,9 +106,10 @@ content); added as axioms only if a proof required one:
   slot stale; `ClearCurrentHole` / `RemoveStop` model the terminal clear and guards; and
   inductive `RemoveRelocate` composes the continue/stop chain. Compiler-checked lemmas
   `RemoveContinue.oldTailUnchanged` and `RemoveRelocate.sameHeader` establish the stated
-  stale-tail and header facts. `removeRelocate_activeBoundary_counterexample` is
-  machine-checked and blocks faithful preservation while `remapEnd` is active under its
-  stated bucket premises; no no-remap preservation theorem is closed yet.
+  stale-tail and header facts. `removeRelocate_preserves_invariant` proves this faithful
+  chain preserves `ClusterInvariant` when the source is settled (`s.remapEnd = none`).
+  `removeRelocate_activeBoundary_counterexample` remains machine-checked and shows why
+  that settled premise cannot be dropped under the current `ExpectedBucket` invariant.
 - `UnRelocateStepWithStableHeader` is a narrower helper around the retained weak
   `UnRelocateStep`; it uses `SameRemoveHeader` but is not the faithful chain model.
 - `RelocateStep` modeled a complete move (writing the displaced entry at `next`); it is
@@ -132,7 +134,13 @@ Proved:
 - `unrelocateStepWithStableHeader_preserves_inBounds` proves only that the bounded
   stable-header helper cannot make a target-only slot in bounds. It closes the specific
   header/geometry counterexample route, not the slot and chain obligations needed for
-  removal invariant preservation.
+  the retained weak `UnRelocateStep` declaration.
+- `clearCurrentHole_preserves_clusterInvariant` proves that the terminal clear preserves
+  the invariant; `removeContinue_preserves_clusterInvariant` proves each faithful copy
+  step preserves it under `s.remapEnd = none`; and
+  `removeRelocate_preserves_invariant` composes those facts across the full bounded
+  `RemoveRelocate` chain. This is a settled inner-loop theorem, not active-remap or
+  end-to-end public `remove` refinement.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -142,7 +150,7 @@ Proved:
   `EntryAtCorrectBucket`; it does not refine the actual `lookupIndex`, a persisted memory
   image, or `init` / re-open behavior.
 
-Not proved, and false as currently stated:
+Remaining admitted weak-relation declarations, false as currently stated:
 
 - Target (b), remove: for any inhabited key domain, `remove_preserves_invariant` is
   refuted under the current weak `UnRelocateStep` relation. The machine-checked
@@ -150,8 +158,9 @@ Not proved, and false as currently stated:
   relation permits a valid source and invalid target; it identifies a Lean relation defect,
   not a Rust implementation defect. The faithful `RemoveContinue` / `RemoveStop` /
   `RemoveRelocate` model is now present, but `remove_preserves_invariant` still names the
-  retained weak relation and remains admitted; invariant preservation for the new chain
-  has not been stated or proved.
+  retained weak relation and remains admitted. Separately,
+  `removeRelocate_preserves_invariant` proves invariant preservation for the faithful
+  bounded chain under `s.remapEnd = none`.
 
 - Target (b), remap: `remap_step_preserves_invariant` is false under the current weak
   `RemapStep` relation. The machine-checked
@@ -192,16 +201,15 @@ resize assurance is inferred from those relations.
 
 | Target     | Theorem                                    | Why unproved / what is needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (b) remove | `remove_preserves_invariant`               | For any inhabited key domain, false under the retained weak `UnRelocateStep` relation, not merely deferred: `unrelocateStep_does_not_preserve_clusterInvariant` supplies a machine-checked counterexample for each supplied `k : Key`. `UnRelocateStepWithStableHeader` plus `unrelocateStepWithStableHeader_preserves_inBounds` closes only that counterexample's header/geometry route; the helper itself does not model the separately added faithful continue/stop/chain relation. `RemoveRelocate` now records that bounded chain, but its invariant preservation is not proved and the admitted theorem still targets `UnRelocateStep`. This identifies a Lean relation defect, not a Rust implementation defect. |
+| (b) remove | `remove_preserves_invariant`               | For any inhabited key domain, false under the retained weak `UnRelocateStep` relation, not merely deferred: `unrelocateStep_does_not_preserve_clusterInvariant` supplies a machine-checked counterexample for each supplied `k : Key`. `UnRelocateStepWithStableHeader` plus `unrelocateStepWithStableHeader_preserves_inBounds` closes only that counterexample's header/geometry route; the helper itself does not model the separately added faithful continue/stop/chain relation. The admitted theorem still targets `UnRelocateStep`; independently, `removeRelocate_preserves_invariant` proves the faithful bounded `RemoveRelocate` chain preserves `ClusterInvariant` under `s.remapEnd = none`. This identifies a Lean relation defect, not a Rust implementation defect. |
 | (b) remap  | `remap_step_preserves_invariant`           | False under the current weak `RemapStep` relation, not merely deferred: `remapStep_does_not_preserve_clusterInvariant` supplies a machine-checked counterexample. Strengthen the relation with the slot and invariant facts guaranteed by remapping before attempting the proof. `remap_preserves_entries` remains relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping. |
 
 These two theorem bodies remain admitted. `remap_step_preserves_invariant` is false under
 its current weak relation; `remove_preserves_invariant` has a counterexample for every
 supplied `k : Key` and is therefore false for any inhabited key domain. The conditional
-settled insert-chain theorem is closed. The faithful bounded remove-chain model is now
-present, but remove preservation must be restated and proved over it; remap invariant
-preservation still requires a stronger model. The two admitted theorem bodies are
-unchanged.
+settled insert-chain theorem and faithful settled remove-chain theorem are closed. Remap
+invariant preservation still requires a stronger model. The two weak-relation admitted
+theorem bodies are unchanged.
 
 ## Conclusion
 
@@ -209,11 +217,12 @@ The audit recorded a historical `u16` distance-overflow bug that was subsequentl
 in Rust with `u32` storage and insertion-time trapping. In the current Lean relations it
 proves `SizeUp` entry preservation, the relation-level `RemapStep` entry result (it postulates `keySet` and `len`, so it is not a Rust refinement proof), base-write and
 single-relocation-step invariant preservation, chain-maintenance lemmas, and the
-conditional settled insert-chain theorem. The remaining open items are strengthening
-the removal theorem to use and preserve invariants across the new bounded
-`RemoveRelocate` model, and strengthening `RemapStep` before proving remap invariant
-preservation. The retained weak `UnRelocateStep` has a relation counterexample for any
-inhabited key domain and `RemapStep` is refuted by a machine-checked counterexample.
+conditional settled insert-chain theorem. It also proves the faithful bounded
+`RemoveRelocate` chain preserves `ClusterInvariant` under `s.remapEnd = none`. Remaining
+work includes active-remap/public-remove refinement, retiring the retained weak
+`UnRelocateStep` declaration, and strengthening `RemapStep` before proving remap invariant
+preservation. The weak `UnRelocateStep` has a relation counterexample for any inhabited
+key domain and `RemapStep` is refuted by a machine-checked counterexample.
 Neither finding establishes a Rust implementation defect. The target (c) theorem is
 closed only at the abstract predicate level; actual lookup and persistence/re-open
 refinement remain outside that proof.
@@ -223,13 +232,15 @@ refinement remain outside that proof.
 This is **not yet a complete** operation-level verification. `insert_preserves_invariant`
 is conditional on a certified `InsertRelocateOK` settled chain and `remapEnd = none`; it
 does not cover Rust certificate construction, active-remap insertion, or mid-chain
-`size_up`. Remove and remap invariant preservation remain the two `sorry`s. The current
-`UnRelocateStep` relation has a counterexample for any inhabited key domain, and the
-current `RemapStep` relation is false; neither relation finding establishes a Rust defect.
+`size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
+declarations. The faithful bounded remove chain is separately proved invariant-preserving
+under `s.remapEnd = none`; active-remap and public-remove refinement remain outside that
+theorem. The current `UnRelocateStep` relation has a counterexample for any inhabited key
+domain, and the current `RemapStep` relation is false; neither relation finding establishes
+a Rust defect.
 The added stable-header helper and in-bounds theorem close only the remove
-counterexample's header/geometry route; they neither model the faithful chain nor close
-the removal theorem. The separate faithful `RemoveRelocate` model is not yet connected
-to an invariant-preservation theorem.
+counterexample's header/geometry route; they remain distinct from the faithful chain and
+do not close the weak `remove_preserves_invariant` declaration.
 The proved target (c) predicate equivalence
 does not cover the actual `lookupIndex`, persisted images, or `init` / re-open refinement,
 so the structure should not be presented as formally verified end-to-end.

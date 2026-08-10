@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 14:09:56 UTC +0000
+Anchor timestamp: 2026-08-10 20:31:08 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -46,10 +46,13 @@ A separate bounded model now records the faithful inner `remove_and_relocate` ex
 tail while leaving its old slot stale, `ClearCurrentHole` / `RemoveStop` model the terminal
 clear and guards, and inductive `RemoveRelocate` threads the chain. The compiler-checked
 `RemoveContinue.oldTailUnchanged` and `RemoveRelocate.sameHeader` lemmas establish the
-named local facts. The machine-checked `removeRelocate_activeBoundary_counterexample`
-blocks faithful preservation while `remapEnd` is active under its stated bucket premises;
-no no-remap preservation theorem is closed yet. The existing admitted removal theorem still
-targets `UnRelocateStep`.
+named local facts. `clearCurrentHole_preserves_clusterInvariant` and
+`removeContinue_preserves_clusterInvariant` establish the stop/continue cases, and the
+kernel-checked `removeRelocate_preserves_invariant` theorem proves the full faithful chain
+preserves `ClusterInvariant` under `s.remapEnd = none`. The machine-checked
+`removeRelocate_activeBoundary_counterexample` shows why that settled premise cannot be
+dropped under the current `ExpectedBucket` invariant. The existing admitted removal
+theorem still targets the weak `UnRelocateStep` relation.
 
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
@@ -64,8 +67,8 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Restate removal invariant preservation over the new `RemoveRelocate` chain, prove the
-   required per-step and chain invariants, and only then retire the weak
+1. Connect the settled `RemoveRelocate` theorem to a faithful public `remove` refinement,
+   decide how active-remap removal is represented, and retire the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.
 2. Strengthen `RemapStep` with the slot and invariant facts guaranteed by incremental
    remapping, then restate and prove `remap_step_preserves_invariant`.

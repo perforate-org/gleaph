@@ -1,7 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
-Anchor timestamp: 2026-08-10 14:09:56 UTC +0000
+Anchor timestamp: 2026-08-10 20:31:08 UTC +0000
 
 ## 1. Mode
 
@@ -61,10 +61,11 @@ counterexample's header/geometry route. The helper itself does not model faithfu
 continue/stop/chain behavior, does not close `remove_preserves_invariant`, and does not
 change the two remaining `sorry`s. Separately, `SameRemoveHeader`, `RemoveFrame`,
 `RemoveContinue`, `ClearCurrentHole`, `RemoveStop`, and inductive `RemoveRelocate` now
-model the bounded inner gap-fill chain. The machine-checked
-`removeRelocate_activeBoundary_counterexample` blocks faithful preservation while
-`remapEnd` is active under its stated bucket premises; no no-remap preservation theorem is
-closed yet.
+model the bounded inner gap-fill chain. The kernel-checked
+`removeRelocate_preserves_invariant` theorem proves that faithful chain preserves
+`ClusterInvariant` when `s.remapEnd = none`. The machine-checked
+`removeRelocate_activeBoundary_counterexample` shows why that settled premise cannot be
+dropped under the current `ExpectedBucket` invariant.
 
 **(c) Re-open mid-resize consistency.** A persisted state read back by `init` (header
 `len`, `log2_buckets`, `remap_end` + slots) reconstructs a valid map; `lookup_index`
@@ -110,5 +111,5 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
 - `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample,
   `UnRelocateStep` relation counterexample for each supplied `k : Key`, and machine-checked
   refutation of invariant preservation by the current `RemapStep` relation)
-- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; the admitted `remove_preserves_invariant` still targets that weak relation and the new faithful `RemoveRelocate` chain has no invariant-preservation proof; `remap_step_preserves_invariant` remains false under its weak relation; exactly these two `sorry`s remain)
+- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; `removeRelocate_preserves_invariant` proves the faithful bounded remove chain preserves `ClusterInvariant` under `s.remapEnd = none`; the admitted `remove_preserves_invariant` still targets that weak relation, `remap_step_preserves_invariant` remains false under its weak relation, and exactly these two `sorry`s remain)
 - `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)

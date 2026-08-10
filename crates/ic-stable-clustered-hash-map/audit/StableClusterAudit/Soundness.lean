@@ -325,8 +325,9 @@ lemma displaced_home_bucket (position next tDist : Nat) (hpos_le : position ≤ 
 
 -- A slot strictly inside `endOfClusterFrom s b i` is occupied and at bucket `b` (it is part
 -- of bucket `b`'s cluster being scanned). Proved by strong induction on the scan length.
-lemma bucketAt_in_scan_aux (s : State) (b : Nat) :
-    ∀ m i i', capacity s.n - i = m → i ≤ i' → i' < endOfClusterFrom s b i → BucketAt s i' = b := by
+lemma slot_in_scan_aux (s : State) (b : Nat) :
+    ∀ m i i', capacity s.n - i = m → i ≤ i' → i' < endOfClusterFrom s b i →
+      IsOccupied s i' ∧ BucketAt s i' = b := by
   intro m
   induction m using Nat.strong_induction_on with
   | h m ih =>
@@ -339,7 +340,7 @@ lemma bucketAt_in_scan_aux (s : State) (b : Nat) :
           have hlt' : i' < endOfClusterFrom s b (i + 1) := by simpa [hrecur] using hlt
           by_cases hi' : i = i'
           · subst hi'
-            exact hguard.2
+            exact hguard
           · have hle' : i + 1 ≤ i' := by omega
             have hm' : capacity s.n - (i + 1) < m := by omega
             exact ih (capacity s.n - (i + 1)) hm' (i + 1) i' rfl hle' hlt'
@@ -354,7 +355,11 @@ lemma bucketAt_in_scan_aux (s : State) (b : Nat) :
 
 lemma bucketAt_in_scan (s : State) (b i i' : Nat) (hle : i ≤ i') (hlt : i' < endOfClusterFrom s b i) :
     BucketAt s i' = b :=
-  bucketAt_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt
+  (slot_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt).2
+
+lemma occupied_in_scan (s : State) (b i i' : Nat) (hle : i ≤ i')
+    (hlt : i' < endOfClusterFrom s b i) : IsOccupied s i' :=
+  (slot_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt).1
 
 -- The cluster scan never returns a slot before where it started.
 lemma endOfClusterFrom_ge_aux (s : State) (b : Nat) :
@@ -530,6 +535,220 @@ lemma unrelocateStepWithStableHeader_preserves_inBounds {s s' : State} {position
   unfold InBounds
   rw [h.header.n]
 
+-- Clearing the final hole only removes one occupied slot. All remaining occupied slots
+-- retain their distances, ordering, keys, and active-remap interpretation.
+-- src/map.rs L506-L513.
+lemma clearCurrentHole_preserves_clusterInvariant {s s' : State} {position : Nat}
+    (h : ClearCurrentHole s s' position) (hci : ClusterInvariant s) :
+    ClusterInvariant s' := by
+  have hn : s'.n = s.n := h.frame.header.n
+  have hremap : s'.remapEnd = s.remapEnd := h.frame.header.remapEnd
+  constructor
+  · intro i hicap hiocc
+    have hi_ne : i ≠ position := by
+      intro hi
+      subst i
+      exact hiocc h.distAt_position
+    have hicap_s : i < capacity s.n := by simpa [hn] using hicap
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.frame.dist_other i hi_ne]
+      exact hiocc
+    rw [h.frame.dist_other i hi_ne]
+    exact hci.1 i hicap_s hiocc_s
+  · constructor
+    · intro i j hicap_i hicap_j hij hiocc_i hiocc_j
+      have hi_ne : i ≠ position := by
+        intro hi
+        subst i
+        exact hiocc_i h.distAt_position
+      have hj_ne : j ≠ position := by
+        intro hj
+        subst j
+        exact hiocc_j h.distAt_position
+      have hicap_si : i < capacity s.n := by simpa [hn] using hicap_i
+      have hicap_sj : j < capacity s.n := by simpa [hn] using hicap_j
+      have hiocc_si : IsOccupied s i := by
+        change s.dist i ≠ EMPTY
+        rw [← h.frame.dist_other i hi_ne]
+        exact hiocc_i
+      have hiocc_sj : IsOccupied s j := by
+        change s.dist j ≠ EMPTY
+        rw [← h.frame.dist_other j hj_ne]
+        exact hiocc_j
+      unfold BucketAt
+      rw [h.frame.dist_other i hi_ne, h.frame.dist_other j hj_ne]
+      exact hci.2.1 i j hicap_si hicap_sj hij hiocc_si hiocc_sj
+    · intro i hicap hiocc
+      have hi_ne : i ≠ position := by
+        intro hi
+        subst i
+        exact hiocc h.distAt_position
+      have hicap_s : i < capacity s.n := by simpa [hn] using hicap
+      have hiocc_s : IsOccupied s i := by
+        change s.dist i ≠ EMPTY
+        rw [← h.frame.dist_other i hi_ne]
+        exact hiocc
+      have hc := hci.2.2 i hicap_s hiocc_s
+      have hexpected : ExpectedBucket s' i = ExpectedBucket s i := by
+        simp [ExpectedBucket, h.frame.keyAt_other i hi_ne, hremap, hn]
+      rw [hexpected]
+      unfold BucketAt
+      rw [h.frame.dist_other i hi_ne]
+      exact hc
+
+-- In the continue branch, the copied tail and its stale source slot have the same home
+-- bucket. Under a settled header, both therefore satisfy the same expected-bucket rule;
+-- the copied slot also remains between the surrounding ordered clusters.
+-- src/map.rs L515-L520.
+lemma removeContinue_preserves_clusterInvariant {s s' : State} {position next : Nat}
+    (h : RemoveContinue s s' position next) (hci : ClusterInvariant s)
+    (hremap : s.remapEnd = none) : ClusterInvariant s' := by
+  have hn : s'.n = s.n := h.frame.header.n
+  have hremap' : s'.remapEnd = none := h.frame.header.remapEnd.trans hremap
+  have hstart_le_next : position + 1 ≤ next := Nat.add_one_le_iff.mpr h.position_lt_next
+  have htail :
+      next = endOfClusterFrom s (BucketAt s (position + 1)) (position + 1) - 1 := by
+    simpa [tailOfCluster, endOfCluster] using h.next_is_tail
+  have hend_pos :
+      0 < endOfClusterFrom s (BucketAt s (position + 1)) (position + 1) := by
+    omega
+  have hend :
+      endOfClusterFrom s (BucketAt s (position + 1)) (position + 1) = next + 1 := by
+    omega
+  have hnext_scan :
+      next < endOfClusterFrom s (BucketAt s (position + 1)) (position + 1) := by
+    omega
+  have hnext_occ : IsOccupied s next :=
+    occupied_in_scan s (BucketAt s (position + 1)) (position + 1) next
+      hstart_le_next hnext_scan
+  have hnext_valid : s.dist next ≤ next :=
+    hci.1 next h.next_lt_capacity hnext_occ
+  have hbucket_position : BucketAt s' position = BucketAt s next := by
+    unfold BucketAt
+    rw [h.distAt_position]
+    have hshift_le_position : s.dist next - (next - position) ≤ position := by omega
+    have hdist_parts : s.dist next - (next - position) + (next - position) = s.dist next :=
+      Nat.sub_add_cancel h.shift_le_tailDist
+    have hposition_parts :
+        position - (s.dist next - (next - position)) +
+            (s.dist next - (next - position)) = position :=
+      Nat.sub_add_cancel hshift_le_position
+    have hnext_parts : next - s.dist next + s.dist next = next :=
+      Nat.sub_add_cancel hnext_valid
+    omega
+  constructor
+  · intro i hicap hiocc
+    by_cases hi_pos : i = position
+    · subst i
+      rw [h.distAt_position]
+      omega
+    · have hicap_s : i < capacity s.n := by simpa [hn] using hicap
+      have hiocc_s : IsOccupied s i := by
+        change s.dist i ≠ EMPTY
+        rw [← h.frame.dist_other i hi_pos]
+        exact hiocc
+      rw [h.frame.dist_other i hi_pos]
+      exact hci.1 i hicap_s hiocc_s
+  · constructor
+    · intro i j hicap_i hicap_j hij hiocc_i hiocc_j
+      by_cases hi_pos : i = position
+      · subst i
+        rw [hbucket_position]
+        by_cases hj_le_next : j ≤ next
+        · have hstart_le_j : position + 1 ≤ j := by omega
+          have hj_scan :
+              j < endOfClusterFrom s (BucketAt s (position + 1)) (position + 1) := by
+            omega
+          have hbucket_j_scan :=
+            bucketAt_in_scan s (BucketAt s (position + 1)) (position + 1) j
+              hstart_le_j hj_scan
+          have hbucket_next_scan :=
+            bucketAt_in_scan s (BucketAt s (position + 1)) (position + 1) next
+              hstart_le_next hnext_scan
+          have hj_ne : j ≠ position := by omega
+          unfold BucketAt at hbucket_j_scan hbucket_next_scan ⊢
+          rw [h.frame.dist_other j hj_ne]
+          omega
+        · have hnext_lt_j : next < j := Nat.lt_of_not_ge hj_le_next
+          have hj_ne : j ≠ position := by omega
+          have hicap_sj : j < capacity s.n := by simpa [hn] using hicap_j
+          have hiocc_sj : IsOccupied s j := by
+            change s.dist j ≠ EMPTY
+            rw [← h.frame.dist_other j hj_ne]
+            exact hiocc_j
+          have hordered :=
+            hci.2.1 next j h.next_lt_capacity hicap_sj hnext_lt_j hnext_occ hiocc_sj
+          unfold BucketAt at hordered ⊢
+          rw [h.frame.dist_other j hj_ne]
+          exact hordered
+      · by_cases hj_pos : j = position
+        · subst j
+          rw [hbucket_position]
+          have hicap_si : i < capacity s.n := by simpa [hn] using hicap_i
+          have hiocc_si : IsOccupied s i := by
+            change s.dist i ≠ EMPTY
+            rw [← h.frame.dist_other i hi_pos]
+            exact hiocc_i
+          have hi_next : i < next := lt_trans hij h.position_lt_next
+          have hordered :=
+            hci.2.1 i next hicap_si h.next_lt_capacity hi_next hiocc_si hnext_occ
+          unfold BucketAt at hordered ⊢
+          rw [h.frame.dist_other i hi_pos]
+          exact hordered
+        · have hicap_si : i < capacity s.n := by simpa [hn] using hicap_i
+          have hicap_sj : j < capacity s.n := by simpa [hn] using hicap_j
+          have hiocc_si : IsOccupied s i := by
+            change s.dist i ≠ EMPTY
+            rw [← h.frame.dist_other i hi_pos]
+            exact hiocc_i
+          have hiocc_sj : IsOccupied s j := by
+            change s.dist j ≠ EMPTY
+            rw [← h.frame.dist_other j hj_pos]
+            exact hiocc_j
+          unfold BucketAt
+          rw [h.frame.dist_other i hi_pos, h.frame.dist_other j hj_pos]
+          exact hci.2.1 i j hicap_si hicap_sj hij hiocc_si hiocc_sj
+    · intro i hicap hiocc
+      by_cases hi_pos : i = position
+      · subst i
+        obtain ⟨tailKey, htail_key⟩ := h.next_key_present
+        have hcorrect_next := hci.2.2 next h.next_lt_capacity hnext_occ
+        have htarget_expected : ExpectedBucket s' position = bucket tailKey s.n := by
+          simp [ExpectedBucket, h.keyAt_position, htail_key, hremap', hn]
+        have hsource_expected : ExpectedBucket s next = bucket tailKey s.n := by
+          simp [ExpectedBucket, htail_key, hremap]
+        rw [hbucket_position, htarget_expected, ← hsource_expected]
+        exact hcorrect_next
+      · have hicap_s : i < capacity s.n := by simpa [hn] using hicap
+        have hiocc_s : IsOccupied s i := by
+          change s.dist i ≠ EMPTY
+          rw [← h.frame.dist_other i hi_pos]
+          exact hiocc
+        have hcorrect := hci.2.2 i hicap_s hiocc_s
+        have hexpected : ExpectedBucket s' i = ExpectedBucket s i := by
+          simp [ExpectedBucket, h.frame.keyAt_other i hi_pos, hremap', hremap, hn]
+        rw [hexpected]
+        unfold BucketAt
+        rw [h.frame.dist_other i hi_pos]
+        exact hcorrect
+
+-- Faithful settled-state result for the complete remove-gap loop. The settled premise is
+-- necessary for the current `ExpectedBucket`: the active-boundary counterexample below
+-- shows that moving a tail across `remapEnd` can otherwise change its expected table size.
+-- src/map.rs L504-L520.
+theorem removeRelocate_preserves_invariant {s s' : State} {position : Nat}
+    (hrel : RemoveRelocate s s' position) (hci : ClusterInvariant s)
+    (hremap : s.remapEnd = none) : ClusterInvariant s' := by
+  induction hrel with
+  | stop hstop =>
+      exact clearCurrentHole_preserves_clusterInvariant hstop.clear hci
+  | step hcontinue _rest ih =>
+      have hci_mid : ClusterInvariant _ :=
+        removeContinue_preserves_clusterInvariant hcontinue hci hremap
+      have hremap_mid : _ := hcontinue.frame.header.remapEnd.trans hremap
+      exact ih hci_mid hremap_mid
+
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by
   -- `UnRelocateStep` lacks the metadata and relocation-chain facts needed to prove removal preserves the invariant (src/map.rs L504-L520).
@@ -540,10 +759,9 @@ lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateSte
 
 -- The concrete remove loop can move a tail from above `remapEnd` to a position at or
 -- below it; the current abstract `ExpectedBucket` then changes table size solely because
--- the slot index changed. `RemoveRelocate` needs a settled-state premise (or a stronger
--- active-remap invariant) before preservation is derivable. This machine-checked
--- counterexample blocks faithful active-remap preservation; no no-remap preservation theorem
--- is closed yet. src/map.rs L421-L520.
+-- the slot index changed. The theorem above proves the settled `remapEnd = none` case;
+-- this machine-checked counterexample shows why that premise cannot simply be dropped
+-- without a stronger active-remap invariant. src/map.rs L421-L520.
 theorem removeRelocate_activeBoundary_counterexample (k : Key)
     (hold : bucket k 1 = 0) (hnew : bucket k 2 = 2) :
     ∃ s s' position,
