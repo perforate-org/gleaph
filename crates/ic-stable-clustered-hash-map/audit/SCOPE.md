@@ -1,7 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
-Anchor timestamp: 2026-08-10 22:42:04 UTC +0000
+Anchor timestamp: 2026-08-10 22:57:28 UTC +0000
 
 ## 1. Mode
 
@@ -80,10 +80,11 @@ an empty slot before an occupied entry, while `scanFor` stops at that empty slot
 no-holes / scan-contiguity strengthening or insertion-history relation is required.
 The explicit `NoHoles` strengthening and
 `lookupIndex_complete_of_noHoles` theorem now prove the completeness direction for
-settled states when `0 < len` is supplied. The Rust/insertion-history derivation of
-`NoHoles` and the model's `len`/occupancy linkage are still outside the audit.
-`clusterInvariant_does_not_imply_len_positive` machine-checks that the latter linkage
-cannot be inferred from the current invariant and key set.
+settled states when `LenCoherent` is supplied; `len_pos_of_lenCoherent_keySet` derives
+the positive-length fact needed by the scan. The Rust/insertion-history derivation of
+`NoHoles` and `LenCoherent` is still outside the audit.
+`clusterInvariant_does_not_imply_len_positive` machine-checks that the length/occupancy
+linkage cannot be inferred from the current invariant and key set.
 
 **(c) Re-open mid-resize consistency.** A persisted state read back by `init` (header
 `len`, `log2_buckets`, `remap_end` + slots) reconstructs a valid map; `lookup_index`
@@ -122,7 +123,7 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
 `audit/lakefile.lean`):
 
 - `Abstract.lean` (Stage 1: state model + invariants + assumptions, including the explicit
-  `NoHoles` strengthening required for lookup completeness)
+  `NoHoles` and `LenCoherent` strengthenings required for lookup completeness)
 - `Map.lean` (Stage 2: transcription of the map logic, including the bounded faithful
   `RemoveContinue` / `RemoveStop` / `RemoveRelocate` inner remove chain and compiler-checked
   stale-tail/header lemmas; the retained weak `UnRelocateStep` and its stable-header
@@ -132,5 +133,5 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
   refutation of invariant preservation by the current `RemapStep` relation, and the
   `lookupIndex_completeness_counterexample` hole/scan counterexample plus
   `clusterInvariant_does_not_imply_len_positive` length-coherence counterexample)
-- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; `removeRelocate_preserves_invariant` proves the faithful bounded remove chain under `s.remapEnd = none`; `publicRemoveSettled_preserves_invariant` proves the certificate-level settled found branch through the final `len - 1` update; `lookupIndex_some_implies_lookupFound` proves the settled lookup success direction, `publicRemoveSettled_lookupFound` forwards it through the public-remove certificate, and `lookupIndex_complete_of_noHoles` proves completeness under explicit `NoHoles` and positive `len`; the Rust justification of those assumptions remains open; the admitted `remove_preserves_invariant` still targets the weak relation, `remap_step_preserves_invariant` remains false under its weak relation, and exactly these two `sorry`s remain)
+- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; `removeRelocate_preserves_invariant` proves the faithful bounded remove chain under `s.remapEnd = none`; `publicRemoveSettled_preserves_invariant` proves the certificate-level settled found branch through the final `len - 1` update; `lookupIndex_some_implies_lookupFound` proves the settled lookup success direction, `publicRemoveSettled_lookupFound` forwards it through the public-remove certificate, and `lookupIndex_complete_of_noHoles` proves completeness under explicit `NoHoles` and `LenCoherent`; the Rust justification of those assumptions remains open; the admitted `remove_preserves_invariant` still targets the weak relation, `remap_step_preserves_invariant` remains false under its weak relation, and exactly these two `sorry`s remain)
 - `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)

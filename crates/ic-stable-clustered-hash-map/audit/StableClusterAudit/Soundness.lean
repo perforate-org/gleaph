@@ -416,8 +416,17 @@ lemma publicRemoveSettled_lookupFound {s s' : State} {key : Key}
   | found hlookup hsettled _relocate _setLen =>
       exact lookupIndex_some_implies_lookupFound hsettled hlookup
 
+lemma len_pos_of_lenCoherent_keySet {s : State} {k : Key}
+    (hlen : LenCoherent s) (hkeyset : KeySet s k) : 0 < s.len := by
+  rcases hkeyset with ⟨i, hicapi, hoci, _hkey⟩
+  rw [hlen]
+  apply Finset.card_pos.mpr
+  refine ⟨i, ?_⟩
+  simp [OccupiedSlots, hicapi, hoci]
+
 -- Lookup completeness needs the separately stated `NoHoles` condition and a positive
--- length because the abstract `State` does not yet link `len` to occupied-slot count.
+-- `LenCoherent` condition because the abstract `State` otherwise leaves `len` independent
+-- from the occupied-slot count.
 -- src/map.rs L325-L372.
 lemma scanFor_complete_aux (s : State) (key : Key) (b : Nat) (hci : ClusterInvariant s)
     (hno : NoHoles s) (hb : b = bucket key s.n) :
@@ -456,11 +465,12 @@ lemma scanFor_complete_aux (s : State) (key : Key) (b : Nat) (hci : ClusterInvar
           simp [hmatch, hrec]
 
 lemma lookupIndex_complete_of_noHoles {s : State}
-    (hci : ClusterInvariant s) (hno : NoHoles s) (hlen : 0 < s.len)
+    (hci : ClusterInvariant s) (hno : NoHoles s) (hlen : LenCoherent s)
     (hremap : s.remapEnd = none) :
     ∀ k, KeySet s k → ∃ i, lookupIndex s k = some i := by
   intro k hkeyset
   rcases hkeyset with ⟨i, hicapi, hoci, hkeyi⟩
+  have hlenPos : 0 < s.len := len_pos_of_lenCoherent_keySet hlen ⟨i, hicapi, hoci, hkeyi⟩
   have hbucketi : BucketAt s i = bucket k s.n := by
     have hcorrect := hci.2.2 i hicapi hoci
     simpa [ExpectedBucket, hkeyi, hremap] using hcorrect
@@ -472,7 +482,7 @@ lemma lookupIndex_complete_of_noHoles {s : State}
     (i - bucket k s.n) (bucket k s.n) i rfl le_rfl hb_i hicapi hoci hkeyi hbucketi
   refine ⟨j, ?_⟩
   unfold lookupIndex
-  simp [hlen.ne', hscan]
+  simp [hlenPos.ne', hscan]
 
 -- The cluster scan never returns a slot before where it started.
 lemma endOfClusterFrom_ge_aux (s : State) (b : Nat) :

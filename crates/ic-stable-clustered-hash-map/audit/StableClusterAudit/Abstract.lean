@@ -137,6 +137,15 @@ def NoHoles (s : State) : Prop :=
   ∀ i k, i < capacity s.n → IsOccupied s i → s.keyAt i = some k →
     ∀ j, bucket k s.n ≤ j → j < i → IsOccupied s j
 
+-- Explicit length/occupancy coherence for lookup completeness. The production map stores
+-- `len` in its header; the abstract invariant otherwise leaves it independent from slots.
+-- src/map.rs L101-L104, L193-L200.
+noncomputable def OccupiedSlots (s : State) : Finset Nat :=
+  (Finset.range (capacity s.n)).filter (fun i => IsOccupied s i)
+
+def LenCoherent (s : State) : Prop :=
+  s.len = (OccupiedSlots s).card
+
 /-!
 ## Target properties (SCOPE.md §4)
 -/
