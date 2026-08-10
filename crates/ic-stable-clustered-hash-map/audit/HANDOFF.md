@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 21:30:00 UTC +0000
+Anchor timestamp: 2026-08-10 21:47:48 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -71,6 +71,12 @@ of the `PublicRemoveSettled` certificate remain open.
 `publicRemoveSettled_lookupFound` exposes the same result directly from the public-remove
 certificate without strengthening the settled invariant assumptions.
 
+`lookupIndex_completeness_counterexample` now machine-checks the remaining model gap: an
+otherwise invariant settled state may place an occupied entry after an empty slot, so the
+modeled scan returns `none` even though the key is in `KeySet`. The next completeness proof
+must add a no-holes / scan-contiguity condition or an equivalent insertion-history relation;
+this counterexample is not a Rust reachability claim.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -84,7 +90,8 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Prove lookup completeness under a strengthened settled cluster model, then refine the
+1. Add and justify a no-holes / scan-contiguity settled model, prove lookup completeness
+   under it, then refine the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.

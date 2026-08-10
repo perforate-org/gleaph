@@ -87,6 +87,61 @@ example : ¬ (∀ s : State, (DistanceValid s ∧ ClusterOrdered s) → Distance
   exact badState_notDistanceBounded (h badState hv)
 
 /-!
+## Counterexample to lookup completeness under the current `ClusterInvariant`
+
+`ClusterInvariant` permits an empty slot between a bucket's home position and an occupied
+entry. The modeled `lookupIndex` stops at that empty slot, so the invariant does not imply
+that every key in `KeySet` is found. This is a structural model counterexample, not a claim
+that the Rust insertion loop reaches the state; the next lookup proof therefore needs a
+no-holes / scan-contiguity strengthening (or an equivalent insertion-history relation).
+
+Source: `src/map.rs` L334-L348 (the scan stops at `EMPTY`); modeled by `Map.lean`
+L75-L86 (`scanFor`).
+-/
+
+theorem lookupIndex_completeness_counterexample (k : Key) :
+    ∃ s,
+      ClusterInvariant s ∧
+      KeySet s k ∧
+      lookupIndex s k = none := by
+  let b := bucket k 1
+  let s : State :=
+    { n := 1, len := 1, remapEnd := none
+      dist := fun i => if i = b + 1 then 1 else EMPTY
+      keyAt := fun i => if i = b + 1 then some k else none
+      valAt := fun _ => 0 }
+  have hb : b < 2 := by
+    dsimp [b]
+    exact Nat.mod_lt _ (by decide)
+  refine ⟨s, ?_, ?_, ?_⟩
+  · constructor
+    · intro i hi hocc
+      dsimp [s] at hi hocc ⊢
+      norm_num [capacity] at hi
+      split_ifs at hocc ⊢ <;> omega
+    · constructor
+      · intro i j hi hj hij hiocc hjocc
+        dsimp [s] at hi hj hiocc hjocc ⊢
+        norm_num [capacity] at hi hj
+        split_ifs at hiocc hjocc ⊢ <;> omega
+      · intro i hi hocc
+        dsimp [s] at hi hocc ⊢
+        norm_num [capacity] at hi
+        by_cases heq : i = b + 1
+        · subst i
+          simp [BucketAt, ExpectedBucket, b]
+        · have hempty : (if i = b + 1 then 1 else EMPTY) = EMPTY := by simp [heq]
+          exact False.elim (hocc hempty)
+  · refine ⟨b + 1, ?_, ?_, ?_⟩
+    · dsimp [s, capacity]
+      omega
+    · dsimp [s, IsOccupied, EMPTY]
+      simp
+    · simp [s]
+  · dsimp [lookupIndex, s]
+    simp [scanFor, b]
+
+/-!
 ## Counterexample to invariant preservation by the current `UnRelocateStep` relation
 
 `UnRelocateStep` models the remove-and-relocate operation, but constrains only the

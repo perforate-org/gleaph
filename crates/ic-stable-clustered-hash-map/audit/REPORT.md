@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 21:30:00 UTC +0000
+Anchor timestamp: 2026-08-10 21:47:48 UTC +0000
 
 ## Target and version / Mode
 
@@ -31,7 +31,8 @@ Mathlib):
 - Stage 1 — `Abstract.lean`: state model, cluster invariants, target properties,
   assumptions.
 - Stage 1 adversarial — `Counterexamples.lean`: counterexamples to a claimed bound and
-  to invariant preservation by the current `UnRelocateStep` and `RemapStep` relations.
+  to invariant preservation by the current `UnRelocateStep` and `RemapStep` relations,
+  plus lookup completeness under the current `ClusterInvariant`.
 - Stage 2 — `Map.lean`: relation-level models of scanning, probing, insert/remove
   relocation, and incremental resize, with their stated assumptions.
 - Stage 3 — `Soundness.lean`: proofs of the target properties.
@@ -86,6 +87,13 @@ content); added as axioms only if a proof required one:
   route by preserving which slots are in bounds. The helper itself does not model the
   faithful continue/stop/chain behavior, does not close `remove_preserves_invariant`, and
   does not alter the two remaining `sorry`s.
+- **Lookup completeness counterexample (proved in Lean)**:
+  `lookupIndex_completeness_counterexample` constructs a settled state with a valid
+  `ClusterInvariant` and a key in `KeySet`, but an empty slot between the key's home bucket
+  and its occupied slot. The modeled scan therefore returns `none`. This is a Lean-model
+  structural counterexample, not evidence that Rust insertion reaches the state; a
+  no-holes / scan-contiguity condition or insertion-history relation is required before
+  proving lookup completeness.
 
 ### `Map.lean` (Stage 2 transcription — several under-specifications surfaced)
 
@@ -158,6 +166,10 @@ Proved:
   every stored key is found or that Rust's full lookup path constructs the remove certificate.
   `publicRemoveSettled_lookupFound` forwards that result through the public-remove
   certificate without adding a stronger invariant assumption.
+- The current `ClusterInvariant` does not imply lookup completeness: the machine-checked
+  `lookupIndex_completeness_counterexample` places an occupied entry after an empty slot
+  in an otherwise invariant state. The scan's stop-at-empty behavior is therefore not
+  derivable from the present invariant alone.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -237,8 +249,10 @@ single-relocation-step invariant preservation, chain-maintenance lemmas, and the
 conditional settled insert-chain theorem. It also proves the faithful bounded
 `RemoveRelocate` chain preserves `ClusterInvariant` under `s.remapEnd = none`, and a
 certificate-level settled found-branch bridge through the final public `len - 1` update.
-The concrete lookup success direction is also proved for settled scans. Remaining work
-includes lookup completeness and proving the leading `remap_step` constructs the remove
+The concrete lookup success direction is also proved for settled scans. Lookup completeness
+is refuted by the current invariant's hole-permitting model and requires a no-holes or
+equivalent insertion-history strengthening. Remaining work includes proving completeness
+under that strengthening and proving the leading `remap_step` constructs the remove
 certificate, handling active-remap and absent-key public branches, retiring the retained weak
 `UnRelocateStep` declaration, and strengthening `RemapStep` before proving remap invariant
 preservation. The weak `UnRelocateStep` has a relation counterexample for any inhabited
@@ -255,7 +269,7 @@ does not cover Rust certificate construction, active-remap insertion, or mid-cha
 `size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
 declarations. The faithful bounded remove chain and its certificate-level settled
 found-branch public-remove bridge are separately proved invariant-preserving under
-`s.remapEnd = none`; lookup completeness, construction of the certificate from leading
+`s.remapEnd = none`; lookup completeness under a strengthened no-holes model, construction of the certificate from leading
 `remap_step`, active-remap, absent-key, and persistence refinement remain outside those
 theorems. The current `UnRelocateStep` relation has a counterexample for any inhabited key
 domain, and the current `RemapStep` relation is false; neither relation finding establishes
