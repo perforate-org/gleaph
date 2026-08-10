@@ -16,8 +16,8 @@ re-open invariant (target 3).
 
 Components broken down by concern:
 
-- **Table state**: slots `[0, capacity)` each holding a `distance: u16` (or
-  `EMPTY = u16::MAX`) and, when occupied, a `(key, value)`; plus header fields
+- **Table state**: slots `[0, capacity)` each holding a `distance: u32` (or
+  `EMPTY = u32::MAX`) and, when occupied, a `(key, value)`; plus header fields
   `len`, `log2_buckets` (`n`), `remap_end`.
 - **Cluster / distance model**: `bucket_i = i - distance(i)`; clustering and the
   non-decreasing `bucket_i` ordering that makes probing correct and terminating.
@@ -39,6 +39,7 @@ Components broken down by concern:
 `size_up` triggered when `len >= 3/4 * buckets`), the map's entry set equals the set
 expected from the operation sequence. In particular, `size_up` + `remap_step` +
 `remap_position` must not lose, duplicate, or misplace any entry.
+In the current Lean status, `sizeUp_preserves_entries` proves the `SizeUp` relation, while `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`; it is not a Rust refinement proof of production `remap_step` or `remap_position`.
 
 **(b) Cluster integrity.** After every operation the table satisfies the cluster
 invariant: every occupied slot `i` has `distance(i) != EMPTY`, `bucket_i = i - distance(i)`
@@ -61,8 +62,8 @@ the key set is unchanged across re-open during a resize.
 - `rapidhash` v3 is treated as a **deterministic** function `hash : Key → Nat`, assumed
   collision-free enough for the invariants to hold; the hash internals are **not**
   verified.
-- Arithmetic bounds hold: `len`, `capacity` fit in `u64`; distances fit in `u16`
-  (`EMPTY = u16::MAX` is never a real distance).
+- Arithmetic bounds hold: `len`, `capacity` fit in `u64`; distances fit in `u32`
+  (`EMPTY = u32::MAX` is never a real distance).
 - The documented aliasing rule (`&self` mutation, no aliasing while an iterator is
   alive) is honored by callers.
 
@@ -83,7 +84,5 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
 - `Abstract.lean` (Stage 1: state model + invariants + assumptions)
 - `Map.lean` (Stage 2: transcription of the map logic)
 - `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample)
-- `Soundness.lean` (Stage 3: proofs — target (a) `size_up`/`remap` entry preservation
-  proved; target (b) step-level invariant preservation proved; the chain-level
-  maintenance for insert/remove/remap and target (c) are deferred with `sorry` + comments)
+- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; remove/remap and target (c) remain deferred with `sorry` + comments)
 - `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)

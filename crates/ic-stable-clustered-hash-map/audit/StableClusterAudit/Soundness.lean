@@ -502,11 +502,9 @@ lemma relocateStep_preserves_order_boundary {s s' : State} {entry : Key} {value 
     rw [h.dist_other i hi_ne]
     exact hle
 
--- The full `insert` is a chain (`InsertRelocate`) of relocation steps terminated by a
--- `RelocateWrite`. Each step preserves `ClusterInvariant` (see
--- `relocateStep_preserves_clusterInvariant`), and `InsertRelocateOK` carries the per-step
--- order-boundary / home-bucket well-formedness that `find_insert_position` and the loop
--- guarantee, so the invariant holds throughout the chain.
+-- Conditional theorem: a supplied, already-certified `InsertRelocateOK` settled
+-- `InsertRelocate` chain preserves `ClusterInvariant` under `remapEnd = none`; it does not prove
+-- Rust constructs the certificate, active-remap insertion, or mid-chain `size_up`.
 lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {position : Nat}
     {h : InsertRelocate s s' key value position} (hok : InsertRelocateOK h)
     (hci : ClusterInvariant s) (hremap : s.remapEnd = none) (hremap' : s'.remapEnd = s.remapEnd) :
@@ -514,13 +512,14 @@ lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {posit
   induction hok with
   | done hw hslot hbound =>
       exact relocateWrite_preserves_clusterInvariant hw hci ⟨hslot, hbound.1, hbound.2⟩ hremap hremap'
-  | step mid entryDist hstep hnext hbound hbucket _hprec hok_next =>
-      -- The `done` case and the per-step `ClusterInvariant` preservation are proved; closing
-      -- the step case needs the recursive IH, but Lean's dependent induction over the
-      -- index-typed `InsertRelocateOK h` marks that IH inaccessible (`hok_ih✝`). A manual
-      -- recursion / non-indexed chain encoding would expose it; the mathematical content is
-      -- otherwise complete (all maintenance lemmas and step-level preservation are proved).
-      sorry
+  | step mid entryDist hstep hnext hbound hbucket _hprec hok_next ih =>
+      have hci_mid : ClusterInvariant mid :=
+        relocateStep_preserves_clusterInvariant hstep hci hbound hremap hstep.remapEnd hbucket
+      have hremap_mid : mid.remapEnd = none :=
+        hstep.remapEnd.trans hremap
+      have hremap'_mid :=
+        hremap'.trans hstep.remapEnd.symm
+      exact ih hci_mid hremap_mid hremap'_mid
 
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by

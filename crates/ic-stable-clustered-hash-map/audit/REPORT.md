@@ -27,13 +27,13 @@ Mathlib):
 - Stage 1 — `Abstract.lean`: state model, cluster invariants, target properties,
   assumptions.
 - Stage 1 adversarial — `Counterexamples.lean`: counterexample to a claimed bound.
-- Stage 2 — `Map.lean`: line-by-line transcription of scanning, probing, insert/remove
-  relocation, and the incremental resize.
+- Stage 2 — `Map.lean`: relation-level models of scanning, probing, insert/remove
+  relocation, and incremental resize, with their stated assumptions.
 - Stage 3 — `Soundness.lean`: proofs of the target properties.
 - Stage 4 — this report.
 
-All modules build cleanly with `lake build`; the audit files contain no `sorry` except
-the four deferred targets documented below.
+The focused `StableClusterAudit.Soundness` Lake build succeeds; its only admitted theorem
+bodies are the three deferred targets documented below.
 
 ## Assumption list
 
@@ -65,16 +65,15 @@ content); added as axioms only if a proof required one:
 
 ### `Map.lean` (Stage 2 transcription — several under-specifications surfaced)
 
-- `RelocateWrite` set the written entry's distance to `0`; the faithful distance is
-  `position - bucket`. Fixed.
+- `RelocateWrite` set the written entry's distance to `0`; its relation now specifies
+  `position - bucket`.
 - `SizeUp` did not state the newly grown region is cleared (`clear_region`); without
   that, entry preservation is unprovable. Fixed (structure).
-- `RemapStep` did not state entry-set preservation, so target (a) for the remap was
-  unprovable; the invariant "remap preserves the entry set and count" was added.
+- `RemapStep` postulates `keySet` and `len`; `remap_preserves_entries` is therefore relation-level, not a Rust refinement proof of production `remap_step` or `remap_position`.
 - `RelocateStep` modeled a complete move (writing the displaced entry at `next`); it is
   in fact an **intermediate state** with the displaced entry in flight, and its distance
-  handling was wrong. Refactored into a faithful Type-valued structure (with `entryDist`
-  and a `remapEnd`-preservation field).
+  handling was wrong. Refactored into a Type-valued relation with `entryDist` and a
+  `remapEnd`-preservation field.
 - The `insert` loop is formalized as an `InsertRelocate` chain (relocation steps ended by
   a `RelocateWrite`) carrying per-step well-formedness in an inductive `InsertRelocateOK`
   (order boundary, home bucket, precedes-the-displaced property).
@@ -83,15 +82,22 @@ content); added as axioms only if a proof required one:
 
 Proved:
 
-- Target (a): `sizeUp_preserves_entries`, `remap_preserves_entries` — **fully proved**.
+- Target (a): `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is proved only for `RemapStep`, which postulates `keySet` and `len`, not a Rust refinement proof of production `remap_step` or `remap_position`.
 - Target (b), step level: `relocateWrite_preserves_clusterInvariant` (base write) and
   `relocateStep_preserves_clusterInvariant` (single relocation step) — **proved**.
 - The chain maintenance machinery — `displaced_home_bucket`, `bucketAt_in_scan`,
   `endOfClusterFrom_ge`/`_le_capacity`, `order_boundary_of_cluster_end`, and
   `relocateStep_preserves_order_boundary` (the boundary survives a relocation step) —
   **all proved**.
-- `insert_preserves_invariant` over the `InsertRelocateOK` chain: the `done` case is
-  proved and the `step` case is reduced to the recursive induction hypothesis.
+- `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
+  a supplied, already-certified settled chain preserves `ClusterInvariant` under
+  `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
+  during active remapping, or a relocation chain that enters `size_up` mid-chain.
+
+The `RemapStep` result is relation-level because it postulates `keySet` and `len`; it is not a Rust refinement proof. Production `remap_position` can
+re-expand `remap_end`, and `ExpectedBucket` has not been proved a faithful invariant while
+a remap is active. The independent P1 / High `size_up` allocation defect is recorded in
+`GAP-2026-08-10-002`; no production resize assurance is inferred from these relations.
 
 ## Findings (severity)
 
@@ -102,43 +108,40 @@ Proved:
   — on the IC a trap rolls back the whole message, so no partial corruption.
 - **Info**: the code comment "distances are bounded by the overflow area N" was
   inaccurate (non-structural); the audit's Lean counterexample documents why.
-- **Info**: several Stage 2 relations were under-specified; each was refined to a form
-  the proofs require, and each refinement is faithful to the implementation.
+- **Info**: several Stage 2 relations were under-specified. Their current form records
+  the local facts required by the corresponding proofs; it does not establish generic
+  implementation fidelity.
 
 ## List of `sorry` / unproven spots and interpretation
 
 | Target     | Theorem                                    | Why unproved / what is needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (b) insert | `insert_preserves_invariant` (`step` case) | The mathematical content is **complete**: the displaced entry stays at its home bucket (`displaced_home_bucket`) and the cluster end is an order boundary for it (`order_boundary_of_cluster_end`), which survives the step (`relocateStep_preserves_order_boundary`), all carried by `InsertRelocateOK`. The step case is reduced to the recursive IH, but Lean's dependent induction over the index-typed `InsertRelocateOK h` marks that IH inaccessible (`hok_ih✝`); closing it needs a non-indexed chain encoding (a Lean ergonomics issue, not a mathematical gap). |
 | (b) remove | `remove_preserves_invariant`               | Same relocation-chain maintenance for `remove_and_relocate`'s gap-fill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| (b) remap  | `remap_step_preserves_invariant`           | Same maintenance across the incremental remap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| (b) remap  | `remap_step_preserves_invariant`           | Deferred incremental-remap maintenance. `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping. |
 | (c) reopen | `reopen_consistent_of_cluster_invariant`   | Depends on target (b) being established; also needs `lookupIndex` to find exactly `KeySet` under both old/new mappings.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
-These are the residual core of the audit, not defects: the step-level invariant
-preservation is proved, and each remaining spot is a well-scoped induction/maintenance
-argument rather than an observed failure.
+These three theorem bodies are the residual core of the audit. The conditional settled
+insert-chain theorem is closed; remove, remap, and re-open remain unproved and are not
+evidence of end-to-end verification.
 
 ## Conclusion
 
-The audit **found and motivated a real latent correctness bug** — the `u16` distance
-overflow — which has since been fixed (`u32` storage + insertion-time trap, giving IC
-atomic rollback). It also **proved** the core structural properties: entry preservation
-across `size_up` and `remap` (target (a), fully), and the cluster invariant preservation
-for both the base insert write and a single relocation step (target (b), step level),
-plus the full chain-maintenance machinery for the insert loop. The remaining open items
-are the chain-level induction closure (blocked for insert only by a Lean dependent-
-induction IH-accessibility issue, with the mathematics otherwise complete), the remove
-and remap chain arguments, and the re-open consistency argument (target (c)).
+The audit recorded a historical `u16` distance-overflow bug that was subsequently fixed
+in Rust with `u32` storage and insertion-time trapping. In the current Lean relations it
+proves `SizeUp` entry preservation, the relation-level `RemapStep` entry result (it postulates `keySet` and `len`, so it is not a Rust refinement proof), base-write and
+single-relocation-step invariant preservation, chain-maintenance lemmas, and the
+conditional settled insert-chain theorem. The remaining open items are remove and remap
+chain arguments and re-open consistency (target (c)).
 
 ## Status against "formal proof of a trustworthy data structure"
 
-This is **not yet a complete** operation-level verification. Proved: entry preservation
-across resize (a), and the cluster invariant at the step level plus all the insert-chain
-maintenance lemmas. Not proved: the operation-level induction for insert's `step` case,
-remove, and remap, and target (c) (re-open / lookup correctness). These are the remaining
-`sorry`s, so the structure should not be presented as formally verified end-to-end yet.
+This is **not yet a complete** operation-level verification. `insert_preserves_invariant`
+is conditional on a certified `InsertRelocateOK` settled chain and `remapEnd = none`; it
+does not cover Rust certificate construction, active-remap insertion, or mid-chain
+`size_up`. Remove, remap, and re-open / lookup correctness remain the three `sorry`s, so
+the structure should not be presented as formally verified end-to-end.
 
-The transcriptions repeatedly proved the value of faithful, non-interpreted modeling:
-several under-specified relations (SizeUp's cleared region, RemapStep's entry
-preservation, RelocateWrite's distance, RelocateStep's in-flight semantics) only surfaced
-when the proofs could not go through, and each was corrected to match the implementation.
+The model exposes its local assumptions explicitly: `SizeUp` records a cleared grown
+region, `RemapStep` postulates `keySet` and `len` and is not a Rust refinement proof, `RelocateWrite` specifies its distance,
+and `RelocateStep` has in-flight semantics. These statements describe named relations,
+not an end-to-end or generic Rust-fidelity claim.
