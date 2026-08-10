@@ -224,7 +224,7 @@ inductive InsertRelocateOK : {s s' : State} → {key : Key} → {value : Nat} �
       InsertRelocateOK (InsertRelocate.step mid entryDist hstep hnext)
 
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
--- subtracting the shift from its distance. src/map.rs L491-L508.
+-- subtracting the shift from its distance. src/map.rs L504-L520.
 -- One step: the slot `position` is freed and the tail `next` of the cluster at
 -- `position + 1` is moved into it.
 def UnRelocateStep (s s' : State) (position : Nat) : Prop :=
@@ -238,6 +238,100 @@ def UnRelocateStep (s s' : State) (position : Nat) : Prop :=
     (∀ i, i ≠ position → i ≠ next → s'.keyAt i = s.keyAt i) ∧
     (∀ i, i ≠ position → i ≠ next → s'.valAt i = s.valAt i) ∧
     (∀ i, i ≠ position → i ≠ next → s'.dist i = s.dist i)
+
+-- The inner remove loop writes slots only. The public `remove` decrements `len` after
+-- `remove_and_relocate` returns, so `n`, `len`, and the active-remap boundary are stable
+-- throughout this relation. src/map.rs L497-L498, L504-L520.
+structure SameRemoveHeader (s s' : State) : Prop where
+  n : s'.n = s.n
+  len : s'.len = s.len
+  remapEnd : s'.remapEnd = s.remapEnd
+
+-- A single write performed by the remove loop changes at most the current hole. In the
+-- continue case this is important: `write_entry(position, tail)` does not clear the old
+-- tail slot. That stale duplicate becomes the next loop hole and is cleared or overwritten
+-- only by the following iteration. src/map.rs L515-L520.
+structure RemoveFrame (s s' : State) (position : Nat) : Prop where
+  header : SameRemoveHeader s s'
+  keyAt_other : ∀ i, i ≠ position → s'.keyAt i = s.keyAt i
+  valAt_other : ∀ i, i ≠ position → s'.valAt i = s.valAt i
+  dist_other : ∀ i, i ≠ position → s'.dist i = s.dist i
+
+-- Continue branch of `remove_and_relocate`. The current position is not the last slot,
+-- the following slot is occupied and displaced from its home bucket, and the tail of that
+-- cluster is copied into the current hole with its distance reduced by the shift. The old
+-- tail slot is deliberately untouched by this transition. src/map.rs L506-L510, L515-L520.
+structure RemoveContinue (s s' : State) (position next : Nat) : Prop where
+  frame : RemoveFrame s s' position
+  position_lt_last : position < capacity s.n - 1
+  nextDist_not_empty : s.dist (position + 1) ≠ EMPTY
+  nextDist_not_home : s.dist (position + 1) ≠ 0
+  next_is_tail : next = tailOfCluster s (position + 1)
+  position_lt_next : position < next
+  next_lt_capacity : next < capacity s.n
+  next_key_present : ∃ tailKey, s.keyAt next = some tailKey
+  keyAt_position : s'.keyAt position = s.keyAt next
+  valAt_position : s'.valAt position = s.valAt next
+  shift_le_tailDist : next - position ≤ s.dist next
+  distAt_position : s'.dist position = s.dist next - (next - position)
+
+-- `write_distance(position, EMPTY)` changes only the current distance cell; key/value
+-- bytes at the now-empty slot remain stale but are semantically ignored. src/map.rs
+-- L506-L513.
+structure ClearCurrentHole (s s' : State) (position : Nat) : Prop where
+  frame : RemoveFrame s s' position
+  position_lt_capacity : position < capacity s.n
+  keyAt_position : s'.keyAt position = s.keyAt position
+  valAt_position : s'.valAt position = s.valAt position
+  distAt_position : s'.dist position = EMPTY
+
+-- Stop branch: clear the current hole when it is the last table slot, or when the next
+-- slot is empty or is at its home bucket. The second disjunct carries the exact bound
+-- needed for the implementation's `position + 1` read. src/map.rs L506-L513.
+structure RemoveStop (s s' : State) (position : Nat) : Prop where
+  clear : ClearCurrentHole s s' position
+  guard : position = capacity s.n - 1 ∨
+    (position < capacity s.n - 1 ∧
+      (s.dist (position + 1) = EMPTY ∨ s.dist (position + 1) = 0))
+
+-- The complete bounded `remove_and_relocate` loop: either stop and clear the current
+-- hole, or copy the next cluster's tail into it and continue from the old tail slot.
+-- src/map.rs L504-L520.
+inductive RemoveRelocate : State → State → Nat → Prop where
+  | stop {s s' : State} {position : Nat} (h : RemoveStop s s' position) :
+      RemoveRelocate s s' position
+  | step {s mid s' : State} {position next : Nat}
+      (h : RemoveContinue s mid position next)
+      (rest : RemoveRelocate mid s' next) : RemoveRelocate s s' position
+
+-- Compiler-checked statement of the stale-tail behavior in the continue transition.
+-- src/map.rs L515-L520.
+lemma RemoveContinue.oldTailUnchanged {s s' : State} {position next : Nat}
+    (h : RemoveContinue s s' position next) :
+    s'.keyAt next = s.keyAt next ∧ s'.valAt next = s.valAt next ∧
+      s'.dist next = s.dist next := by
+  have hne : next ≠ position := Nat.ne_of_gt h.position_lt_next
+  exact ⟨h.frame.keyAt_other next hne, h.frame.valAt_other next hne,
+    h.frame.dist_other next hne⟩
+
+-- Header metadata is stable across the entire inner remove chain. The caller's later
+-- `set_len` is outside this relation. src/map.rs L497-L498, L504-L520.
+lemma RemoveRelocate.sameHeader {s s' : State} {position : Nat}
+    (h : RemoveRelocate s s' position) : SameRemoveHeader s s' := by
+  induction h with
+  | stop hstop => exact hstop.clear.frame.header
+  | step hcontinue _rest ih =>
+      exact
+        { n := ih.n.trans hcontinue.frame.header.n
+          len := ih.len.trans hcontinue.frame.header.len
+          remapEnd := ih.remapEnd.trans hcontinue.frame.header.remapEnd }
+
+-- Bounded helper retained for the intentionally weak one-step relation. It adds only
+-- header stability and does not turn `UnRelocateStep` into the faithful chain above.
+-- src/map.rs L504-L520.
+structure UnRelocateStepWithStableHeader (s s' : State) (position : Nat) : Prop where
+  header : SameRemoveHeader s s'
+  step : UnRelocateStep s s' position
 
 /-!
 ## Incremental resize (src/map.rs L510-L584)

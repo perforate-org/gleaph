@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 10:08:54 UTC +0000
+Anchor timestamp: 2026-08-10 12:47:56 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -34,6 +34,21 @@ invariant-breaking target. Consequently, `remove_preserves_invariant` is false f
 inhabited key domain, not merely deferred. This exposes a Lean relation defect, not a Rust
 implementation defect or evidence that the modeled counterexample is Rust-reachable.
 
+`UnRelocateStepWithStableHeader` now wraps the retained weak relation with
+`SameRemoveHeader`, and the compiler-checked
+`unrelocateStepWithStableHeader_preserves_inBounds` theorem proves source and target have
+the same in-bounds slots. This closes only the counterexample's header/geometry route.
+The helper itself does not model faithful continue/stop/chain behavior, does not close
+`remove_preserves_invariant`, and does not alter the two remaining `sorry`s.
+
+A separate bounded model now records the faithful inner `remove_and_relocate` execution:
+`RemoveFrame` restricts each write to the current hole, `RemoveContinue` copies the exact
+tail while leaving its old slot stale, `ClearCurrentHole` / `RemoveStop` model the terminal
+clear and guards, and inductive `RemoveRelocate` threads the chain. The compiler-checked
+`RemoveContinue.oldTailUnchanged` and `RemoveRelocate.sameHeader` lemmas establish the
+named local facts. No theorem yet proves that this chain preserves `ClusterInvariant`, and
+the existing admitted removal theorem still targets `UnRelocateStep`.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -47,8 +62,8 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Strengthen `UnRelocateStep` with faithful continue/stop/chain transitions and the
-   table-geometry and slot facts guaranteed by production gap-fill, then restate and prove
-   `remove_preserves_invariant`.
+1. Restate removal invariant preservation over the new `RemoveRelocate` chain, prove the
+   required per-step and chain invariants, and only then retire the weak
+   `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.
 2. Strengthen `RemapStep` with the slot and invariant facts guaranteed by incremental
    remapping, then restate and prove `remap_step_preserves_invariant`.

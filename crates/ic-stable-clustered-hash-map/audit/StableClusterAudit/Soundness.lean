@@ -521,9 +521,18 @@ lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {posit
         hremap'.trans hstep.remapEnd.symm
       exact ih hci_mid hremap_mid hremap'_mid
 
+-- The bounded helper prevents a target-only slot from becoming in-bounds through a header
+-- change. It is intentionally narrower than removal invariant preservation: the relation
+-- still lacks the faithful continue/stop chain and the slot facts needed for that proof.
+-- src/map.rs L504-L520.
+lemma unrelocateStepWithStableHeader_preserves_inBounds {s s' : State} {position i : Nat}
+    (h : UnRelocateStepWithStableHeader s s' position) : InBounds s i ↔ InBounds s' i := by
+  unfold InBounds
+  rw [h.header.n]
+
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by
-  -- `UnRelocateStep` lacks the metadata and relocation-chain facts needed to prove removal preserves the invariant (src/map.rs L491-L520).
+  -- `UnRelocateStep` lacks the metadata and relocation-chain facts needed to prove removal preserves the invariant (src/map.rs L504-L520).
   -- For every supplied key, Counterexamples.lean proves a machine-checked violating
   -- witness; if `Key` is empty, `UnRelocateStep` is uninhabited and that witness is
   -- unavailable, so the counterexample requires an inhabited key domain.
