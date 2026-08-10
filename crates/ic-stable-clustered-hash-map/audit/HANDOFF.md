@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 22:24:24 UTC +0000
+Anchor timestamp: 2026-08-10 22:42:04 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -82,6 +82,11 @@ The explicit `NoHoles` strengthening and
 when `ClusterInvariant`, `NoHoles`, `0 < s.len`, and `remapEnd = none` are supplied. The
 proof does not establish `NoHoles` from Rust insertion history or link `len` to the
 occupied-slot count; those are the next refinement obligations.
+
+`clusterInvariant_does_not_imply_len_positive` machine-checks the length side separately:
+the same invariant and `KeySet` witness remains valid after changing only `len` to zero.
+Any end-to-end completeness proof therefore needs both the no-holes condition and a
+cardinality/length coherence relation.
 
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from

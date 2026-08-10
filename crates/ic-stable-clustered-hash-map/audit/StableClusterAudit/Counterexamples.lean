@@ -141,6 +141,18 @@ theorem lookupIndex_completeness_counterexample (k : Key) :
   · dsimp [lookupIndex, s]
     simp [scanFor, b]
 
+-- The current abstract invariant also leaves `len` independent from occupied slots, so the
+-- positive-length premise in `lookupIndex_complete_of_noHoles` cannot be derived from
+-- `ClusterInvariant` and `KeySet` alone.
+theorem clusterInvariant_does_not_imply_len_positive (k : Key) :
+    ∃ s, ClusterInvariant s ∧ KeySet s k ∧ s.len = 0 := by
+  rcases lookupIndex_completeness_counterexample k with ⟨s, hci, hkeyset, _hlookup⟩
+  let s0 : State := { s with len := 0 }
+  refine ⟨s0, ?_, ?_, rfl⟩
+  · simpa [ClusterInvariant, DistanceValid, ClusterOrdered, EntryAtCorrectBucket,
+      BucketAt, ExpectedBucket, s0] using hci
+  · simpa [KeySet, IsOccupied, s0] using hkeyset
+
 /-!
 ## Counterexample to invariant preservation by the current `UnRelocateStep` relation
 

@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 22:24:24 UTC +0000
+Anchor timestamp: 2026-08-10 22:42:04 UTC +0000
 
 ## Target and version / Mode
 
@@ -175,6 +175,9 @@ Proved:
   `ClusterInvariant`, `NoHoles`, and `0 < s.len`. The theorem preserves the boundary
   honestly: the Rust/insertion-history proof of `NoHoles` and the model's `len`/occupancy
   coherence remain unproved.
+- `clusterInvariant_does_not_imply_len_positive` machine-checks the second boundary:
+  changing only `len` to zero preserves the current `ClusterInvariant` and `KeySet`.
+  Therefore positive length requires a separate cardinality/coherence relation.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
