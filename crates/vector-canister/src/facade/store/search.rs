@@ -21,7 +21,7 @@
 //! [`FixedSubjectMapEntry`]: crate::records::FixedSubjectMapEntry
 
 use super::VectorCanisterStore;
-use crate::facade::stable::page_store::PageScratch;
+use crate::facade::stable::page_store::{PageScratch, RowInfo};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_PARTITION_HEADS,
     VECTOR_SUBJECT_TO_ID,
@@ -31,9 +31,11 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
     VectorEncoding, VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult,
-    VectorSubject,
+    VectorSubject, decode_i8_to_f32,
 };
-use ic_stable_vector_page_store::kernel::{dot_f32, l2_squared_f32, l2_squared_f32_early_exit};
+use ic_stable_vector_page_store::kernel::{
+    dot_f32, dot_i8_f32, l2_squared_f32, l2_squared_f32_early_exit, l2_squared_i8_f32_early_exit,
+};
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -87,32 +89,65 @@ fn vector_has_nonzero_norm(v: &[f32]) -> bool {
 
 /// Scores one stored row for `metric`, returning `None` when the row should be skipped: non-finite
 /// components, zero norm for cosine, or — for L2 — a partial distance that already exceeds
-/// `threshold` (the current k-th best). Uses the crate's SIMD kernels over the stored byte span.
+/// `threshold` (the current k-th best). Uses the crate's kernels over the stored byte span.
 ///
-/// `q_norm` is the precomputed query norm (only meaningful for cosine). The L2 early exit is exact:
-/// partial sums are monotone, so a partial sum exceeding `threshold` means the full distance also
-/// does and the row cannot be in the top-k. For both L2 and cosine, finiteness is fused into the
-/// kernel result (a non-finite component makes the sum / dot / norm non-finite), so there is no
-/// separate `row_is_finite` pre-scan.
+/// `encoding` selects the kernel: `F32` scores the stored bytes as f32; `I8` dequantizes each
+/// component with the per-row `scale` (`v_i = bytes[i] as i8 * scale / 127`) in a fused kernel
+/// (no f32 materialization). `q_norm` is the precomputed query norm (only meaningful for cosine).
+/// The L2 early exit is exact: partial sums are monotone, so a partial sum exceeding `threshold`
+/// means the full distance also does and the row cannot be in the top-k. For both L2 and cosine,
+/// finiteness is fused into the kernel result (a non-finite component makes the sum / dot / norm
+/// non-finite), so there is no separate `row_is_finite` pre-scan.
 fn score_row(
     metric: VectorMetric,
+    encoding: VectorEncoding,
     bytes: &[u8],
+    scale: f32,
     query: &[f32],
     q_norm: f32,
     threshold: f32,
 ) -> Option<f32> {
     match metric {
-        VectorMetric::L2Squared => l2_squared_f32_early_exit(bytes, query, threshold),
+        VectorMetric::L2Squared => match encoding {
+            VectorEncoding::F32 => l2_squared_f32_early_exit(bytes, query, threshold),
+            VectorEncoding::I8 => l2_squared_i8_f32_early_exit(bytes, scale, query, threshold),
+        },
         VectorMetric::Cosine => {
             // Stored rows are unit-normalized (cosine indexes store unit vectors), so cosine distance
-            // is 1 - dot/‖q‖ where q_norm = ‖query‖ is precomputed. `dot_f32` over the unit row and
-            // the raw query is the cosine similarity — no per-row norm computation.
-            let dot = dot_f32(bytes, query);
+            // is 1 - dot/‖q‖ where q_norm = ‖query‖ is precomputed. For I8 the dot is dequantized in
+            // the fused kernel. `dot_f32`/`dot_i8_f32` over the row and the raw query is the cosine
+            // similarity — no per-row norm computation.
+            let dot = match encoding {
+                VectorEncoding::F32 => dot_f32(bytes, query),
+                VectorEncoding::I8 => dot_i8_f32(bytes, scale, query),
+            };
             // Fused finiteness: a non-finite component makes the dot non-finite; skip it here.
             if !dot.is_finite() {
                 return None;
             }
             Some(1.0 - dot / q_norm)
+        }
+    }
+}
+
+/// Reads the per-row quantization scale from `info` for an `I8` row (`0.0` for F32, which carries no
+/// scale in aux). The page store keeps aux opaque; only the search layer interprets it.
+fn row_scale(encoding: VectorEncoding, info: &RowInfo) -> f32 {
+    match encoding {
+        VectorEncoding::F32 => 0.0,
+        VectorEncoding::I8 => f32::from_le_bytes(info.aux[0..4].try_into().expect("4-byte scale")),
+    }
+}
+
+/// Dequantizes stored row bytes to the canonical f32 encoding used for partition assignment and
+/// centroid comparison. F32 rows pass through; I8 rows are dequantized with their aux scale. Used by
+/// the rebuild build path so its partition assignment is in the same f32 space as upsert.
+pub(super) fn stored_to_f32_bytes(def: &VectorIndexDef, bytes: &[u8], aux: &[u8; 8]) -> Vec<u8> {
+    match def.encoding {
+        VectorEncoding::F32 => bytes.to_vec(),
+        VectorEncoding::I8 => {
+            let scale = f32::from_le_bytes(aux[0..4].try_into().expect("4-byte scale"));
+            encode_f32(&decode_i8_to_f32(bytes, scale, def.dims as usize))
         }
     }
 }
@@ -207,6 +242,7 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
 fn score_sorted_rows(
     query: &[f32],
     metric: VectorMetric,
+    encoding: VectorEncoding,
     q_norm: f32,
     top_k: u32,
     heap: &mut BinaryHeap<Candidate>,
@@ -232,14 +268,15 @@ fn score_sorted_rows(
                     }
                     // Positional + payload validation: the row's packed vertex id must match the
                     // subject (the shard is known from the allowlist).
-                    let vertex_id = scratch.row_info(slot.slot).vertex_id;
+                    let info = scratch.row_info(slot.slot);
                     let VectorSubject::Vertex {
-                        shard_id: _,
                         vertex_id: subject_vertex,
+                        ..
                     } = *subject;
-                    if vertex_id != subject_vertex {
+                    if info.vertex_id != subject_vertex {
                         continue;
                     }
+                    let scale = row_scale(encoding, &info);
                     // The L2 early-exit threshold is the current k-th best, applied only once the
                     // heap is full (a partial max before then would wrongly skip top-k candidates).
                     let threshold = if heap.len() as u32 == top_k {
@@ -248,7 +285,9 @@ fn score_sorted_rows(
                         f32::INFINITY
                     };
                     let bytes = scratch.vec_slice(slot.slot);
-                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
+                    let Some(distance) =
+                        score_row(metric, encoding, bytes, scale, query, q_norm, threshold)
+                    else {
                         continue;
                     };
                     push_bounded(
@@ -279,6 +318,7 @@ fn scan_partitions(
     partitions: impl Iterator<Item = u32>,
     query: &[f32],
     metric: VectorMetric,
+    encoding: VectorEncoding,
     q_norm: f32,
     top_k: u32,
 ) -> VectorSearchResult {
@@ -303,7 +343,10 @@ fn scan_partitions(
                         shard_id: ShardId::new(info.shard_id),
                         vertex_id: info.vertex_id,
                     };
-                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
+                    let scale = row_scale(encoding, info);
+                    let Some(distance) =
+                        score_row(metric, encoding, bytes, scale, query, q_norm, threshold)
+                    else {
                         return;
                     };
                     push_bounded(&mut heap, top_k, Candidate { distance, subject });
@@ -338,6 +381,7 @@ pub(super) fn candidate_scan_with_membership(
     nlist: u32,
     query: &[f32],
     metric: VectorMetric,
+    encoding: VectorEncoding,
     q_norm: f32,
     candidates: &[VectorSubject],
     top_k: u32,
@@ -367,7 +411,10 @@ pub(super) fn candidate_scan_with_membership(
                     } else {
                         f32::INFINITY
                     };
-                    let Some(distance) = score_row(metric, bytes, query, q_norm, threshold) else {
+                    let scale = row_scale(encoding, info);
+                    let Some(distance) =
+                        score_row(metric, encoding, bytes, scale, query, q_norm, threshold)
+                    else {
                         return;
                     };
                     push_bounded(&mut heap, top_k, Candidate { distance, subject });
@@ -535,16 +582,14 @@ impl VectorCanisterStore {
         let Some(def) = VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&req.index_id)) else {
             return Ok(VectorSearchResult { hits: Vec::new() });
         };
-        // The request must agree with the stored definition; F32 encoding is the only supported
-        // encoding in this slice.
-        if req.encoding != VectorEncoding::F32
-            || req.encoding != def.encoding
-            || req.metric != def.metric
-            || req.dims != def.dims
-        {
+        // Model Y: the request must agree with the stored definition's encoding (F32 or I8) and
+        // metric/dims. The wire query bytes are always canonical F32 (`dims * 4`), independent of the
+        // stored encoding; `def.stride_bytes` is the stored width (`dims` for I8) and must NOT be
+        // used here.
+        if req.encoding != def.encoding || req.metric != def.metric || req.dims != def.dims {
             return Err(VectorCanisterError::DimensionMismatch);
         }
-        if req.query.len() != def.stride_bytes as usize {
+        if req.query.len() != req.dims as usize * 4 {
             return Err(VectorCanisterError::ByteWidthMismatch);
         }
 
@@ -575,6 +620,7 @@ impl VectorCanisterStore {
                     def.nlist,
                     &query,
                     def.metric,
+                    def.encoding,
                     q_norm,
                     candidates,
                     req.top_k,
@@ -585,6 +631,7 @@ impl VectorCanisterStore {
                 def.active_index_version,
                 &query,
                 def.metric,
+                def.encoding,
                 candidates,
                 req.top_k,
                 q_norm,
@@ -616,6 +663,7 @@ impl VectorCanisterStore {
                 def.nlist,
                 &query,
                 def.metric,
+                def.encoding,
                 q_norm,
             ))
         } else {
@@ -661,6 +709,7 @@ impl VectorCanisterStore {
         active_index_version: u64,
         query: &[f32],
         metric: VectorMetric,
+        encoding: VectorEncoding,
         candidates: &[VectorSubject],
         top_k: u32,
         q_norm: f32,
@@ -703,7 +752,16 @@ impl VectorCanisterStore {
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("filtered_score");
-            score_sorted_rows(query, metric, q_norm, top_k, &mut heap, &rows, &mut scratch);
+            score_sorted_rows(
+                query,
+                metric,
+                encoding,
+                q_norm,
+                top_k,
+                &mut heap,
+                &rows,
+                &mut scratch,
+            );
         }
 
         Ok(finalize(heap))
@@ -722,6 +780,7 @@ impl VectorCanisterStore {
         nlist: u32,
         query: &[f32],
         metric: VectorMetric,
+        encoding: VectorEncoding,
         q_norm: f32,
     ) -> VectorSearchResult {
         scan_partitions(
@@ -730,6 +789,7 @@ impl VectorCanisterStore {
             0..nlist,
             query,
             metric,
+            encoding,
             q_norm,
             req.top_k,
         )
@@ -755,6 +815,7 @@ impl VectorCanisterStore {
                 def.nlist,
                 query,
                 def.metric,
+                def.encoding,
                 q_norm,
             );
         };
@@ -772,6 +833,7 @@ impl VectorCanisterStore {
             selected.into_iter(),
             query,
             def.metric,
+            def.encoding,
             q_norm,
             req.top_k,
         )
@@ -856,17 +918,41 @@ mod tests {
         let bytes = row(&[1.0f32; 4]);
         // Threshold 1.0: the partial sum exceeds it -> None.
         assert_eq!(
-            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, 1.0),
+            score_row(
+                VectorMetric::L2Squared,
+                VectorEncoding::F32,
+                &bytes,
+                0.0,
+                &q,
+                0.0,
+                1.0
+            ),
             None
         );
         // Threshold 4.0: exact tie -> Some(4.0).
         assert_eq!(
-            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, 4.0),
+            score_row(
+                VectorMetric::L2Squared,
+                VectorEncoding::F32,
+                &bytes,
+                0.0,
+                &q,
+                0.0,
+                4.0
+            ),
             Some(4.0)
         );
         // Threshold INF: full sum.
         assert_eq!(
-            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, f32::INFINITY),
+            score_row(
+                VectorMetric::L2Squared,
+                VectorEncoding::F32,
+                &bytes,
+                0.0,
+                &q,
+                0.0,
+                f32::INFINITY
+            ),
             Some(4.0)
         );
     }
@@ -876,7 +962,15 @@ mod tests {
         let q = vec![0.0f32; 4];
         let bytes = row(&[f32::NAN, 1.0, 1.0, 1.0]);
         assert_eq!(
-            score_row(VectorMetric::L2Squared, &bytes, &q, 0.0, f32::INFINITY),
+            score_row(
+                VectorMetric::L2Squared,
+                VectorEncoding::F32,
+                &bytes,
+                0.0,
+                &q,
+                0.0,
+                f32::INFINITY
+            ),
             None
         );
     }
@@ -892,8 +986,16 @@ mod tests {
         let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
         let dot: f32 = q.iter().zip(vn.iter()).map(|(a, b)| a * b).sum();
         let expected = 1.0 - dot / q_norm;
-        let got =
-            score_row(VectorMetric::Cosine, &bytes, &q, q_norm, f32::INFINITY).expect("cosine");
+        let got = score_row(
+            VectorMetric::Cosine,
+            VectorEncoding::F32,
+            &bytes,
+            0.0,
+            &q,
+            q_norm,
+            f32::INFINITY,
+        )
+        .expect("cosine");
         assert!((got - expected).abs() < 1e-6);
     }
 
@@ -907,7 +1009,9 @@ mod tests {
         assert_eq!(
             score_row(
                 VectorMetric::Cosine,
+                VectorEncoding::F32,
                 &nan,
+                0.0,
                 &q,
                 q.iter().map(|x| x * x).sum::<f32>().sqrt(),
                 f32::INFINITY
@@ -916,7 +1020,15 @@ mod tests {
         );
         let inf = row(&[f32::INFINITY, 1.0, 1.0, 1.0]);
         assert_eq!(
-            score_row(VectorMetric::Cosine, &inf, &q, 0.0, f32::INFINITY),
+            score_row(
+                VectorMetric::Cosine,
+                VectorEncoding::F32,
+                &inf,
+                0.0,
+                &q,
+                0.0,
+                f32::INFINITY
+            ),
             None
         );
     }

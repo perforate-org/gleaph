@@ -265,7 +265,7 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
         labels,
         VectorIndexKind::IvfFlat,
         args.metric.unwrap_or(VectorMetric::L2Squared),
-        VectorEncoding::F32,
+        args.encoding.unwrap_or(VectorEncoding::F32),
         args.dims,
         target,
         args.if_not_exists,
@@ -335,9 +335,15 @@ async fn ingest_vertex_embeddings(
         })?
         .canister;
 
-    if def.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
+    // Model Y: the stored encoding may be F32 or I8; the wire embedding bytes are always canonical
+    // F32. The vector canister validates `op.encoding == def.encoding` and quantizes internally.
+    if !matches!(
+        def.encoding,
+        gleaph_graph_kernel::vector_index::VectorEncoding::F32
+            | gleaph_graph_kernel::vector_index::VectorEncoding::I8
+    ) {
         return Err(RouterError::InvalidArgument(format!(
-            "encoding {:?} is not supported for ingestion; only F32 is accepted",
+            "encoding {:?} is not supported for ingestion",
             def.encoding
         )));
     }

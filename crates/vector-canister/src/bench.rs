@@ -115,6 +115,51 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
     store
 }
 
+/// Like [`setup_search_store_metric`] but seeds an `I8` index (Model Y: the wire op bytes are still
+/// canonical F32; the canister quantizes at write). Benchmarks the fused i8×f32 scoring path.
+fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorCanisterStore {
+    let store = VectorCanisterStore::new();
+    store
+        .init_from_args(&VectorCanisterInitArgs {
+            router_canister: router(),
+        })
+        .expect("init");
+    store
+        .admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            shard_owner(),
+        )
+        .expect("attach shard");
+    for vid in 0..n {
+        // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value.
+        let value = if metric == VectorMetric::Cosine {
+            (vid + 1) as f32
+        } else {
+            vid as f32
+        };
+        let op = VectorEmbeddingSyncOp {
+            index_id: INDEX_ID,
+            embedding_name_id: 0,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: vid,
+            },
+            mutation_id: 1,
+            encoding: VectorEncoding::I8,
+            dims,
+            metric,
+            bytes: vec_bytes(dims, value),
+            remove: false,
+        };
+        store
+            .vector_upsert(shard_owner(), &op)
+            .expect("seed i8 vector");
+    }
+    store
+}
+
 fn search_req(dims: u16, top_k: u32) -> VectorSearchRequest {
     search_req_value(dims, top_k, 0.0)
 }
@@ -145,6 +190,47 @@ fn search_req_metric_value(
     }
 }
 
+/// An `I8`-index search request (Model Y: the query bytes are canonical F32; `encoding` names the
+/// stored/index encoding so the canister selects the fused i8×f32 kernels).
+fn i8_search_req_metric_value(
+    dims: u16,
+    top_k: u32,
+    value: f32,
+    metric: VectorMetric,
+) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(dims, value),
+        encoding: VectorEncoding::I8,
+        dims,
+        metric,
+        top_k,
+        candidate_subjects: None,
+    }
+}
+
+macro_rules! i8_search_bench {
+    ($name:ident, $dims:expr, $top_k:expr, $metric:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_i8_search_store_metric($dims, SCAN_N, $metric);
+            let value = if $metric == VectorMetric::Cosine {
+                1.0
+            } else {
+                0.0
+            };
+            let req = i8_search_req_metric_value($dims, $top_k, value, $metric);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = store
+                    .vector_search(black_box(&req))
+                    .expect("i8 vector_search");
+                black_box(result);
+            })
+        }
+    };
+}
+
 macro_rules! search_bench {
     ($name:ident, $dims:expr, $top_k:expr) => {
         #[bench(raw)]
@@ -168,6 +254,19 @@ search_bench!(bench_vector_search_d768_k10, 768, 10);
 search_bench!(bench_vector_search_d768_k100, 768, 100);
 search_bench!(bench_vector_search_d1536_k10, 1536, 10);
 search_bench!(bench_vector_search_d1536_k100, 1536, 100);
+
+i8_search_bench!(
+    bench_vector_search_i8_d1536_k10,
+    1536,
+    10,
+    VectorMetric::L2Squared
+);
+i8_search_bench!(
+    bench_vector_search_i8_d1536_k100,
+    1536,
+    100,
+    VectorMetric::L2Squared
+);
 
 /// L2 metric-parameterized search bench over a cosine-seeded store (exact-scan path; cosine supports
 /// only the exact scan). Uses a non-zero query value so the cosine query passes the zero-norm guard.

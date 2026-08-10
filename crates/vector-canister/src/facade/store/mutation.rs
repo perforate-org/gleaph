@@ -25,7 +25,7 @@ use crate::records::{
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
-    VectorSubject,
+    VectorSubject, quantize_f32_to_i8,
 };
 use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
 
@@ -63,17 +63,26 @@ fn take_injected_subject_insert_failure() -> bool {
     })
 }
 
-/// Returns the bytes to store for `def`: for a cosine index the vector is unit-normalized (the
-/// stored-row-unit invariant), else the bytes verbatim. Zero-norm cosine vectors are rejected
-/// fail-closed (`InvalidQueryVector`).
-fn normalize_for_metric(
+/// Returns the `(bytes, aux)` to store for `def`: cosine unit-normalizes (rejecting zero-norm), and
+/// `I8` quantizes to an i8 payload with a per-row scale in aux `[0..4]` (Model Y: the ingest bytes are
+/// always F32). `F32` stores bytes verbatim with zero aux.
+fn prepare_for_metric(
     def: &VectorIndexDef,
     bytes: &[u8],
-) -> Result<Vec<u8>, VectorCanisterError> {
-    if def.metric == VectorMetric::Cosine {
-        normalize_f32(bytes, def.dims as usize).ok_or(VectorCanisterError::InvalidQueryVector)
+) -> Result<(Vec<u8>, [u8; 8]), VectorCanisterError> {
+    let normalized = if def.metric == VectorMetric::Cosine {
+        normalize_f32(bytes, def.dims as usize).ok_or(VectorCanisterError::InvalidQueryVector)?
     } else {
-        Ok(bytes.to_vec())
+        bytes.to_vec()
+    };
+    match def.encoding {
+        VectorEncoding::F32 => Ok((normalized, [0u8; 8])),
+        VectorEncoding::I8 => {
+            let q = quantize_f32_to_i8(&normalized, def.dims as usize)?;
+            let mut aux = [0u8; 8];
+            aux[0..4].copy_from_slice(&q.scale.to_le_bytes());
+            Ok((q.bytes, aux))
+        }
     }
 }
 
@@ -260,42 +269,36 @@ impl VectorCanisterStore {
         subject: VectorSubject,
         bytes: &[u8],
     ) -> Result<SlotRef, VectorCanisterError> {
-        let stored = normalize_for_metric(def, bytes)?;
+        let (stored, aux) = prepare_for_metric(def, bytes)?;
         PAGE_STORE.with_borrow_mut(|store| {
-            store.append_row(index_id, index_version, partition_id, def, subject, &stored)
+            store.append_row(
+                index_id,
+                index_version,
+                partition_id,
+                def,
+                subject,
+                &stored,
+                &aux,
+            )
         })
     }
 
-    /// Batched append used by the rebuild shadow build: appends a whole partition's rows at once via
-    /// [`VectorSlabStore::append_rows`], which commits the page directory at page granularity instead
-    /// of per row. Returns one `SlotRef` per input row, in order.
+    /// Batched append used by the rebuild shadow build: appends already-stored rows (payload + aux)
+    /// via [`VectorSlabStore::append_rows`], which commits the page directory at page granularity
+    /// instead of per row. This is a **carry-forward** path: the caller passes the stored `(bytes,
+    /// aux)` as-is and it is written verbatim (no re-quantize), so a rebuilt `I8` row is never
+    /// double-quantized. Returns one `SlotRef` per input row, in order.
     pub(super) fn append_slot_batch(
         &self,
         index_id: u32,
         index_version: u64,
         partition_id: u32,
         def: &VectorIndexDef,
-        rows: &[(VectorSubject, &[u8])],
+        rows: &[(VectorSubject, &[u8], [u8; 8])],
     ) -> Result<Vec<SlotRef>, VectorCanisterError> {
-        if def.metric == VectorMetric::Cosine {
-            let normalized: Vec<(VectorSubject, Vec<u8>)> = rows
-                .iter()
-                .map(|(s, b)| {
-                    normalize_f32(b, def.dims as usize)
-                        .map(|nb| (*s, nb))
-                        .ok_or(VectorCanisterError::InvalidQueryVector)
-                })
-                .collect::<Result<_, _>>()?;
-            let refs: Vec<(VectorSubject, &[u8])> =
-                normalized.iter().map(|(s, b)| (*s, b.as_slice())).collect();
-            PAGE_STORE.with_borrow_mut(|store| {
-                store.append_rows(index_id, index_version, partition_id, def, &refs)
-            })
-        } else {
-            PAGE_STORE.with_borrow_mut(|store| {
-                store.append_rows(index_id, index_version, partition_id, def, rows)
-            })
-        }
+        PAGE_STORE.with_borrow_mut(|store| {
+            store.append_rows(index_id, index_version, partition_id, def, rows)
+        })
     }
 
     /// Marks a slot tombstoned via the slab page store, which owns the `VectorPageMeta` live/
@@ -307,7 +310,11 @@ impl VectorCanisterStore {
     }
 
     pub(super) fn read_slot_bytes(&self, index_id: u32, slot: SlotRef) -> Option<Vec<u8>> {
-        PAGE_STORE.with_borrow(|store| store.read_row_bytes(index_id, slot).map(|(_, bytes)| bytes))
+        PAGE_STORE.with_borrow(|store| {
+            store
+                .read_row_bytes(index_id, slot)
+                .map(|(_, bytes, _aux)| bytes)
+        })
     }
 
     /// Inserts a subject-map row, mapping the map's `OutOfMemory` to the canister's stable-grow
@@ -385,21 +392,12 @@ impl VectorCanisterStore {
         if op.encoding != def.encoding || op.dims != def.dims {
             return Err(VectorCanisterError::DimensionMismatch);
         }
-        if op.bytes.len() != def.stride_bytes as usize {
+        // Model Y: the wire embedding bytes are always canonical F32 (`dims * 4`), independent of the
+        // stored encoding. `def.stride_bytes` is the stored width (`dims` for I8), which must NOT be
+        // used here.
+        if op.bytes.len() != op.dims as usize * 4 {
             return Err(VectorCanisterError::ByteWidthMismatch);
         }
-        // Cosine stores unit-normalized rows: reject zero-norm ingest fail-closed and precompute the
-        // normalized form for the idempotency comparison below (the appends re-normalize via
-        // `append_slot`). `normalize_f32` is deterministic, so this equals the stored bytes for a
-        // byte-identical replay.
-        let normalized_op = if def.metric == VectorMetric::Cosine {
-            Some(
-                normalize_f32(&op.bytes, def.dims as usize)
-                    .ok_or(VectorCanisterError::InvalidQueryVector)?,
-            )
-        } else {
-            None
-        };
         let active = def.active_index_version;
         let mode = rebuild_mutation_mode(op.index_id);
         let key = SubjectKey::new(op.index_id, op.subject);
@@ -503,17 +501,18 @@ impl VectorCanisterStore {
                     // so this is a stale replay.
                     return Ok(());
                 }
-                // Same stamp on a live subject: idempotent no-op if the bytes match, else a conflict.
+                // Same stamp on a live subject: idempotent no-op if the stored payload matches the
+                // expected stored form of `op.bytes`, else a conflict. The expected form is exactly
+                // what `append_slot` stored: cosine-normalized and, for I8, quantized. Both are
+                // deterministic, so a byte-identical replay matches; a different payload conflicts.
                 let slot = entry
                     .current_slot_for(active)
                     .expect("live entry has a slot");
                 let stored = self.read_slot_bytes(op.index_id, slot).unwrap_or_default();
-                // Compare against the stored bytes; for cosine the stored row is unit-normalized, so
-                // compare against the normalized `op.bytes`.
-                let same = match &normalized_op {
-                    Some(norm) => stored == *norm,
-                    None => stored == op.bytes,
-                };
+                let expected = prepare_for_metric(&def, &op.bytes)?.0;
+                // Compare only the meaningful stored payload (`stride_bytes`); the page row carries
+                // trailing pad, so the stored slice is wider than `expected` for I8.
+                let same = stored.get(..def.stride_bytes as usize) == Some(expected.as_slice());
                 if same {
                     // Pure idempotent no-op: nothing changes. During `Cleaning` this intentionally
                     // does *not* collapse `shadow_slot -> slot` (collapse-on-touch only applies to

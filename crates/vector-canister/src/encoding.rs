@@ -89,9 +89,10 @@ impl EncodingRecord {
         let pad_stride_bytes = u32::from(dims).div_ceil(4) * 16;
         let (aux_bytes, binary_convention, kernel) = match encoding {
             // F32: default formulations need no per-row aux (sub-square + early exit for L2;
-            // normalized-dot only for cosine). I8 will carry a mandatory 4-byte scale; binary uses
-            // 0 aux and a popcount kernel — both arrive with their encoding variants.
+            // normalized-dot only for cosine). I8 carries a mandatory 4-byte per-row quantization
+            // scale and an upcast/fused scoring kernel. Binary uses 0 aux and a popcount kernel.
             VectorEncoding::F32 => (0, None, ScoringKernel::F32Dot),
+            VectorEncoding::I8 => (4, None, ScoringKernel::UpcastF32Dot),
         };
         let record = Self {
             encoding,
@@ -132,10 +133,14 @@ impl EncodingRecord {
         match (self.encoding, self.binary_convention) {
             (VectorEncoding::F32, None) => {}
             (VectorEncoding::F32, Some(_)) => return Err(EncodingError::BinaryConventionMismatch),
+            (VectorEncoding::I8, None) => {}
+            (VectorEncoding::I8, Some(_)) => return Err(EncodingError::BinaryConventionMismatch),
         }
         match (self.encoding, self.kernel) {
             (VectorEncoding::F32, ScoringKernel::F32Dot) => {}
             (VectorEncoding::F32, _) => return Err(EncodingError::KernelMismatch),
+            (VectorEncoding::I8, ScoringKernel::UpcastF32Dot) => {}
+            (VectorEncoding::I8, _) => return Err(EncodingError::KernelMismatch),
         }
         // The default aux widths do not depend on the metric; metric-dependent pruning aux is
         // opt-in and validated at configuration time, not here.
@@ -166,6 +171,18 @@ mod tests {
         assert_eq!(record.aux_bytes, 0);
         assert_eq!(record.meta_stride(), 4);
         assert_eq!(record.kernel, ScoringKernel::F32Dot);
+        assert_eq!(record.binary_convention, None);
+    }
+
+    #[test]
+    fn d1536_i8_widths() {
+        // d = 1536: stride 1·1536 = 1536; pad = ceil(1536/4)·16 = 6144; meta = 4 + 4 (scale) = 8.
+        let record = EncodingRecord::from_parts(VectorEncoding::I8, 1536).expect("valid");
+        assert_eq!(record.stride_bytes, 1536);
+        assert_eq!(record.pad_stride_bytes, 6144);
+        assert_eq!(record.aux_bytes, 4);
+        assert_eq!(record.meta_stride(), 8);
+        assert_eq!(record.kernel, ScoringKernel::UpcastF32Dot);
         assert_eq!(record.binary_convention, None);
     }
 

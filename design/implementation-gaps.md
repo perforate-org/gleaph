@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-05
-Anchor timestamp: 2026-08-05 01:48:42 UTC +0000
+Last updated: 2026-08-10
+Anchor timestamp: 2026-08-10 00:28:05 UTC +0000
 
 ## Status
 
@@ -46,6 +46,26 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-10-001 — Future row-copy migration must carry the I8 per-row scale
+
+- **Status:** Open
+- **Severity:** P2 (latent; no code path today)
+- **Owner:** vector canister slab page store / migration primitive
+- **Observed behavior:** With `VectorEncoding::I8` implemented (Slice 0242), stored rows are an i8
+  payload plus a per-row f32 scale in row-meta aux. The design's row-copy migration primitive
+  (`export_vector_rows` / `import_vector_rows`) is **not implemented**; grep confirms no such code
+  exists yet.
+- **Expected or needed behavior:** A future export/import that copies rows across canisters (shard
+  split, ADR 0031 multi-canister) must carry the per-row aux (scale) alongside the payload, or the
+  imported I8 rows would be decoded with a wrong/zero scale.
+- **Owner:** vector canister `PAGE_STORE` / `export_vector_rows` future slice.
+- **Evidence:** `crates/vector-canister/src/facade/stable/page_store.rs` (`read_row_bytes` returns
+  `(vertex_id, bytes, aux)`); `design/index/vector-index.md` §Multi-canister readiness.
+- **Impact:** Latent until migration is built; adding it without carrying aux would silently corrupt
+  I8 distances on the target canister.
+- **Next decision:** When the migration primitive slice is planned, require `export_vector_rows` /
+  `import_vector_rows` to round-trip the row aux.
 
 ### GAP-2026-08-04-002 — Rust canister bindings for record parameters lack a Candid form
 

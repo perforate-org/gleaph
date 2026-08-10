@@ -265,9 +265,15 @@ pub struct EncodingRecord {
 ```
 
 - **One index = one encoding = one dims = one stride** (different models → different indexes).
-- Scoring **materializes once per page read** into the f32 scratch (except binary, which scores via
-  `i64.popcnt` directly). `F16`/`Bf16`/`I8` upcast at page granularity, so upcast cost is amortized,
-  never per row.
+- **Scoring** uses fused kernels over the stored bytes. `I8` is **implemented** (Slice 0242): rows are
+  quantized once at write with a **per-row scale** (`i8_i = clamp(round(127·x_i/s))`, `s = max|x_i|`,
+  scale in row-meta aux 4) and scored with a fused i8×f32 kernel (`v_i = i8_i·scale/127`), with **no
+  page-level f32 materialization**. `F16`/`Bf16`/`U8` are future encodings; binary scores via
+  `i64.popcnt` directly.
+- **Wire query contract (Model Y)**: `encoding` in the op/request/definition means the **stored/index
+  encoding**; wire embedding and query bytes are **always canonical F32 (`dims*4`)**. The canister
+  quantizes internally; a separate `query_encoding` field is not needed unless an I8-on-wire query
+  (A2) is added later.
 - **Binary cosine**: `Bits01` → `n11·rq·rv` (`n11 = Σ popcnt(q∧v)`, per-row `rv = 1/√popcnt(v)`);
   `Signs` → `1 − 2H/d` (`H = Σ popcnt(q⊕v)`, cosine ≡ Hamming order, no sqrt). The convention is a
   per-model property.
@@ -278,13 +284,13 @@ pub struct EncodingRecord {
 
 ### Aux interpretation (RowAux)
 
-| encoding × metric        | aux_bytes | meaning                                         |
-| ------------------------ | --------- | ----------------------------------------------- |
-| F32 × L2 (default)       | 0         | sub-square SIMD + early exit; no norm, no bound |
-| F32 × cosine (default)   | 0         | normalized dot only                             |
-| I8                       | 4         | quantization scale (mandatory)                  |
-| opt-in row-level pruning | +4        | L2 bound `dist(v, c_p)` (sub-square path)       |
-| opt-in row-level pruning | 8         | cosine `(s_v, t_v)` or norm + bound             |
+| encoding × metric            | aux_bytes | meaning                                         |
+| ---------------------------- | --------- | ----------------------------------------------- |
+| F32 × L2 (default)           | 0         | sub-square SIMD + early exit; no norm, no bound |
+| F32 × cosine (default)       | 0         | normalized dot only                             |
+| I8 (implemented, Slice 0242) | 4         | per-row quantization scale (max-abs)            |
+| opt-in row-level pruning     | +4        | L2 bound `dist(v, c_p)` (sub-square path)       |
+| opt-in row-level pruning     | 8         | cosine `(s_v, t_v)` or norm + bound             |
 
 ## Search algorithm
 

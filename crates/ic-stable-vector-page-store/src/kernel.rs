@@ -14,7 +14,9 @@
     target_feature = "simd128"
 ))]
 use core::arch::wasm32::{
-    f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
+    f32x4_add, f32x4_convert_i32x4, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub,
+    i16x8_extend_high_i8x16, i16x8_extend_low_i8x16, i32x4_extend_high_i16x8,
+    i32x4_extend_low_i16x8, v128, v128_load,
 };
 #[cfg(all(
     target_family = "wasm",
@@ -22,8 +24,79 @@ use core::arch::wasm32::{
     target_feature = "simd128"
 ))]
 use core::arch::wasm64::{
-    f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub, v128_load,
+    f32x4_add, f32x4_convert_i32x4, f32x4_extract_lane, f32x4_mul, f32x4_splat, f32x4_sub,
+    i16x8_extend_high_i8x16, i16x8_extend_low_i8x16, i32x4_extend_high_i16x8,
+    i32x4_extend_low_i16x8, v128, v128_load,
 };
+
+/// Sums the four f32 lanes of `v`.
+#[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+#[inline(always)]
+fn f32x4_sum4(v: v128) -> f32 {
+    f32x4_extract_lane::<0>(v)
+        + f32x4_extract_lane::<1>(v)
+        + f32x4_extract_lane::<2>(v)
+        + f32x4_extract_lane::<3>(v)
+}
+
+/// Widens the 16 signed i8 bytes at `bytes[block*16..]` to four f32 lanes, scaled by `k`.
+#[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+#[inline(always)]
+fn i8_block_scaled(bytes: &[u8], block: usize, ksplat: v128) -> (v128, v128, v128, v128) {
+    let v = unsafe { v128_load(bytes[block * 16..].as_ptr().cast()) };
+    let lo16 = i16x8_extend_low_i8x16(v);
+    let hi16 = i16x8_extend_high_i8x16(v);
+    let a = i32x4_extend_low_i16x8(lo16);
+    let b = i32x4_extend_high_i16x8(lo16);
+    let c = i32x4_extend_low_i16x8(hi16);
+    let d = i32x4_extend_high_i16x8(hi16);
+    (
+        f32x4_mul(f32x4_convert_i32x4(a), ksplat),
+        f32x4_mul(f32x4_convert_i32x4(b), ksplat),
+        f32x4_mul(f32x4_convert_i32x4(c), ksplat),
+        f32x4_mul(f32x4_convert_i32x4(d), ksplat),
+    )
+}
+
+/// L2-squared contribution of the 16 components in `bytes[block*16..]` against the query f32 block.
+#[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+#[inline(always)]
+fn i8_l2_block(bytes: &[u8], query: &[f32], block: usize, ksplat: v128) -> v128 {
+    let (va, vb, vc, vd) = i8_block_scaled(bytes, block, ksplat);
+    let qa = unsafe { v128_load(query[block * 16..].as_ptr().cast()) };
+    let qb = unsafe { v128_load(query[block * 16 + 4..].as_ptr().cast()) };
+    let qc = unsafe { v128_load(query[block * 16 + 8..].as_ptr().cast()) };
+    let qd = unsafe { v128_load(query[block * 16 + 12..].as_ptr().cast()) };
+    let da = f32x4_sub(qa, va);
+    let db = f32x4_sub(qb, vb);
+    let dc = f32x4_sub(qc, vc);
+    let dd = f32x4_sub(qd, vd);
+    f32x4_add(
+        f32x4_mul(da, da),
+        f32x4_add(
+            f32x4_mul(db, db),
+            f32x4_add(f32x4_mul(dc, dc), f32x4_mul(dd, dd)),
+        ),
+    )
+}
+
+/// Dot-product contribution of the 16 components in `bytes[block*16..]` against the query f32 block.
+#[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+#[inline(always)]
+fn i8_dot_block(bytes: &[u8], query: &[f32], block: usize, ksplat: v128) -> v128 {
+    let (va, vb, vc, vd) = i8_block_scaled(bytes, block, ksplat);
+    let qa = unsafe { v128_load(query[block * 16..].as_ptr().cast()) };
+    let qb = unsafe { v128_load(query[block * 16 + 4..].as_ptr().cast()) };
+    let qc = unsafe { v128_load(query[block * 16 + 8..].as_ptr().cast()) };
+    let qd = unsafe { v128_load(query[block * 16 + 12..].as_ptr().cast()) };
+    f32x4_add(
+        f32x4_mul(qa, va),
+        f32x4_add(
+            f32x4_mul(qb, vb),
+            f32x4_add(f32x4_mul(qc, vc), f32x4_mul(qd, vd)),
+        ),
+    )
+}
 
 /// Squared L2 distance `Σ(q − v)²` over the first `query.len()` dims of `bytes`.
 ///
@@ -150,6 +223,142 @@ pub fn l2_squared_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) ->
             return None;
         }
         Some(sum)
+    }
+}
+
+/// Squared L2 distance `Σ(q − v)²` where `v` is an `I8`-quantized row with per-row `scale`:
+/// `v_i = bytes[i] as i8 as f32 * scale / 127`. Reads `query.len()` i8 bytes (the stored payload;
+/// any trailing pad is ignored). A `scale == 0` row (zero vector) dequantizes to all zeros.
+pub fn l2_squared_i8_f32(bytes: &[u8], scale: f32, query: &[f32]) -> f32 {
+    let k = scale / 127.0;
+    #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+    {
+        let ksplat = f32x4_splat(k);
+        let mut acc0 = f32x4_splat(0.0);
+        let mut acc1 = f32x4_splat(0.0);
+        let blocks = query.len() / 16;
+        let mut i = 0;
+        while i + 1 < blocks {
+            acc0 = f32x4_add(acc0, i8_l2_block(bytes, query, i, ksplat));
+            acc1 = f32x4_add(acc1, i8_l2_block(bytes, query, i + 1, ksplat));
+            i += 2;
+        }
+        if i < blocks {
+            acc0 = f32x4_add(acc0, i8_l2_block(bytes, query, i, ksplat));
+        }
+        let mut sum = f32x4_sum4(acc0) + f32x4_sum4(acc1);
+        for (b, q) in bytes[blocks * 16..]
+            .iter()
+            .take(query.len() - blocks * 16)
+            .zip(query[blocks * 16..].iter().copied())
+        {
+            let v = (*b as i8 as f32) * k;
+            let d = v - q;
+            sum += d * d;
+        }
+        sum
+    }
+    #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
+    {
+        bytes
+            .iter()
+            .take(query.len())
+            .zip(query.iter().copied())
+            .map(|(b, q)| {
+                let v = (*b as i8 as f32) * k;
+                let d = v - q;
+                d * d
+            })
+            .sum()
+    }
+}
+
+/// Squared L2 with dimension-blocked early exit for an `I8` row (see [`l2_squared_f32_early_exit`]).
+/// Monotone partial sums make the exit exact (checked at 16-block granularity in the SIMD path); a
+/// non-finite `threshold` never triggers it.
+pub fn l2_squared_i8_f32_early_exit(
+    bytes: &[u8],
+    scale: f32,
+    query: &[f32],
+    threshold: f32,
+) -> Option<f32> {
+    let k = scale / 127.0;
+    #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+    {
+        let ksplat = f32x4_splat(k);
+        let mut sum = 0.0;
+        let blocks = query.len() / 16;
+        for i in 0..blocks {
+            sum += f32x4_sum4(i8_l2_block(bytes, query, i, ksplat));
+            if sum > threshold {
+                return None;
+            }
+        }
+        for (b, q) in bytes[blocks * 16..]
+            .iter()
+            .take(query.len() - blocks * 16)
+            .zip(query[blocks * 16..].iter().copied())
+        {
+            let v = (*b as i8 as f32) * k;
+            let d = v - q;
+            sum += d * d;
+            if sum > threshold {
+                return None;
+            }
+        }
+        Some(sum)
+    }
+    #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
+    {
+        let mut sum = 0.0;
+        for (b, q) in bytes.iter().take(query.len()).zip(query.iter().copied()) {
+            let v = (*b as i8 as f32) * k;
+            let d = v - q;
+            sum += d * d;
+            if sum > threshold {
+                return None;
+            }
+        }
+        Some(sum)
+    }
+}
+
+/// Dot product `Σ q·v` for an `I8` row with per-row `scale` (`v_i = bytes[i] as i8 as f32 * scale / 127`).
+pub fn dot_i8_f32(bytes: &[u8], scale: f32, query: &[f32]) -> f32 {
+    let k = scale / 127.0;
+    #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+    {
+        let ksplat = f32x4_splat(k);
+        let mut acc0 = f32x4_splat(0.0);
+        let mut acc1 = f32x4_splat(0.0);
+        let blocks = query.len() / 16;
+        let mut i = 0;
+        while i + 1 < blocks {
+            acc0 = f32x4_add(acc0, i8_dot_block(bytes, query, i, ksplat));
+            acc1 = f32x4_add(acc1, i8_dot_block(bytes, query, i + 1, ksplat));
+            i += 2;
+        }
+        if i < blocks {
+            acc0 = f32x4_add(acc0, i8_dot_block(bytes, query, i, ksplat));
+        }
+        let mut sum = f32x4_sum4(acc0) + f32x4_sum4(acc1);
+        for (b, q) in bytes[blocks * 16..]
+            .iter()
+            .take(query.len() - blocks * 16)
+            .zip(query[blocks * 16..].iter().copied())
+        {
+            sum += (*b as i8 as f32) * k * q;
+        }
+        sum
+    }
+    #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
+    {
+        bytes
+            .iter()
+            .take(query.len())
+            .zip(query.iter().copied())
+            .map(|(b, q)| (*b as i8 as f32) * k * q)
+            .sum()
     }
 }
 
@@ -333,6 +542,67 @@ mod tests {
 
     fn f32_row(values: &[f32]) -> Vec<u8> {
         values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    /// Encodes an f32 vector to `I8` with the kernel's convention: `s = max|x|`, `i8_i = round(127*x/s)`
+    /// clamped to [-127, 127], bytes stored as i8 bit patterns.
+    fn i8_row(values: &[f32]) -> (Vec<u8>, f32) {
+        let s = values.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
+        let bytes = if s == 0.0 {
+            vec![0u8; values.len()]
+        } else {
+            values
+                .iter()
+                .map(|x| (((127.0 * x / s).round() as i32).clamp(-127, 127) as i8) as u8)
+                .collect()
+        };
+        (bytes, s)
+    }
+
+    #[test]
+    fn i8_kernels_match_naive_dequantized_f32() {
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let v: Vec<f32> = vec![2.0, 0.0, 3.0, 1.0, -1.0];
+        let (bytes, scale) = i8_row(&v);
+        let dec: Vec<f32> = bytes
+            .iter()
+            .map(|b| (*b as i8 as f32) * scale / 127.0)
+            .collect();
+        let expected_l2: f32 = q.iter().zip(&dec).map(|(q, v)| (q - v) * (q - v)).sum();
+        let expected_dot: f32 = q.iter().zip(&dec).map(|(q, v)| q * v).sum();
+        assert_eq!(l2_squared_i8_f32(&bytes, scale, &q), expected_l2);
+        assert_eq!(dot_i8_f32(&bytes, scale, &q), expected_dot);
+        // Early exit agrees with the full L2 when under the threshold.
+        assert_eq!(
+            l2_squared_i8_f32_early_exit(&bytes, scale, &q, f32::INFINITY),
+            Some(expected_l2)
+        );
+        // Early exit stops when the threshold is beaten.
+        assert_eq!(l2_squared_i8_f32_early_exit(&bytes, scale, &q, 0.0), None);
+    }
+
+    #[test]
+    fn i8_kernel_zero_scale_and_padding_are_ignored() {
+        // Zero vector: scale 0, all-zero i8 -> distance is the query's own norm.
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0];
+        let zero = i8_row(&[0.0, 0.0, 0.0]);
+        let expected: f32 = q.iter().map(|x| x * x).sum();
+        assert_eq!(l2_squared_i8_f32(&zero.0, zero.1, &q), expected);
+        // A padded row (payload then trailing garbage beyond `dims`) is scored over `dims` only.
+        let v = i8_row(&[1.0, 2.0]);
+        let mut padded = v.0.clone();
+        padded.extend_from_slice(&[99u8; 16]); // padding that must be ignored
+        assert_eq!(l2_squared_i8_f32(&padded, v.1, &q[..2]), {
+            let dec: Vec<f32> =
+                v.0.iter()
+                    .map(|b| (*b as i8 as f32) * v.1 / 127.0)
+                    .collect();
+            q[..2]
+                .iter()
+                .zip(&dec)
+                .map(|(q, v)| (q - v) * (q - v))
+                .sum()
+        });
     }
 
     #[test]

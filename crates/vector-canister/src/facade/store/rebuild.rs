@@ -19,7 +19,9 @@
 //! [`crate::records::FixedSubjectMapEntry::current_slot_for`] against `def.active_index_version`, which is
 //! the old version until the atomic publish.
 
-use super::search::{assign_partition, decode_f32, encode_f32, read_centroids_at};
+use super::search::{
+    assign_partition, decode_f32, encode_f32, read_centroids_at, stored_to_f32_bytes,
+};
 use super::{
     MAX_NLIST, MAX_REBUILD_SAMPLE_LIMIT, MAX_REBUILD_STATE_BYTES, MAX_REBUILD_STATE_OVERHEAD_BYTES,
     MAX_REBUILD_STEP_VECTOR_BYTES, MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS,
@@ -49,8 +51,8 @@ use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
 
 /// One subject awaiting its shadow row in the `Building` phase: key, owned subject entry, active
-/// slot the bytes were read from, and the active bytes.
-type ShadowPendingRow = (SubjectKey, FixedSubjectMapEntry, SlotRef, Vec<u8>);
+/// slot the bytes were read from, the active bytes, and the active row's aux (the `I8` scale).
+type ShadowPendingRow = (SubjectKey, FixedSubjectMapEntry, SlotRef, Vec<u8>, [u8; 8]);
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -372,7 +374,7 @@ impl VectorCanisterStore {
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorCanisterError::UnknownIndex)?;
-        if def.encoding != VectorEncoding::F32
+        if !matches!(def.encoding, VectorEncoding::F32 | VectorEncoding::I8)
             || (def.metric != VectorMetric::L2Squared && def.metric != VectorMetric::Cosine)
         {
             return Err(VectorCanisterError::InvalidRebuildParams);
@@ -384,9 +386,10 @@ impl VectorCanisterStore {
             return Err(VectorCanisterError::InvalidRebuildParams);
         }
         // Bound the combined durable rebuild state (candidate pool + trained centroids) and the
-        // per-iteration `Training` work; both scale with `dims` via `stride_bytes` (ADR 0031 Slice
-        // 8). `MAX_NLIST` alone bounds neither.
-        if !training_start_feasible(nlist, def.stride_bytes, def.dims) {
+        // per-iteration `Training` work; both scale with `dims`. Rebuild candidates and centroids are
+        // always canonical f32 (`dims * 4` bytes each), regardless of the stored encoding (an I8
+        // row is dequantized to f32 before sampling/training), so the budget uses the f32 width.
+        if !training_start_feasible(nlist, u32::from(def.dims) * 4, def.dims) {
             return Err(VectorCanisterError::InvalidRebuildParams);
         }
         if !matches!(rebuild_state_of(index_id), VectorRebuildStateRecord::Idle) {
@@ -581,7 +584,9 @@ impl VectorCanisterStore {
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
-        let pool_cap = candidate_pool_cap(nlist, def.stride_bytes, def.dims);
+        // Candidates are stored as canonical f32 (`dims * 4` bytes each), even for an I8 index (rows
+        // are dequantized before sampling), so the pool cap uses the f32 width.
+        let pool_cap = candidate_pool_cap(nlist, u32::from(def.dims) * 4, def.dims);
 
         let mut examined = 0u32;
         let mut last_cursor: Option<SubjectScanCursor> = None;
@@ -669,7 +674,12 @@ impl VectorCanisterStore {
                             if slot.slot >= row_count || scratch.is_tombstoned(slot.slot) {
                                 continue;
                             }
-                            live_bytes.push(scratch.vec_slice(slot.slot).to_vec());
+                            // Sampling trains on canonical f32: an `I8` row is dequantized with its
+                            // aux scale so centroids live in the same space the search scores in.
+                            let info = scratch.row_info(slot.slot);
+                            let bytes =
+                                stored_to_f32_bytes(&def, scratch.vec_slice(slot.slot), &info.aux);
+                            live_bytes.push(bytes);
                         }
                     }
                     i = end;
@@ -981,7 +991,8 @@ impl VectorCanisterStore {
                                 continue;
                             }
                             let bytes = scratch.vec_slice(slot.slot).to_vec();
-                            pending.push((*key, *entry, *slot, bytes));
+                            let aux = scratch.row_info(slot.slot).aux;
+                            pending.push((*key, *entry, *slot, bytes, aux));
                         }
                     }
                     i = end;
@@ -999,18 +1010,21 @@ impl VectorCanisterStore {
             // subject's live slot must be the one we read bytes from.
             let mut by_partition: Vec<Vec<ShadowPendingRow>> =
                 (0..nlist as usize).map(|_| Vec::new()).collect();
-            for (key, entry, active_slot, bytes) in pending {
-                let partition = assign_partition(&centroids, &bytes);
-                by_partition[partition as usize].push((key, entry, active_slot, bytes));
+            for (key, entry, active_slot, bytes, aux) in pending {
+                // Partition assignment is in f32 space (dequantizing an `I8` row with its aux scale),
+                // matching the upsert `active_partition` so pre- and post-rebuild assignment agree.
+                let assign_bytes = stored_to_f32_bytes(&def, &bytes, &aux);
+                let partition = assign_partition(&centroids, &assign_bytes);
+                by_partition[partition as usize].push((key, entry, active_slot, bytes, aux));
             }
             for (partition, bucket) in by_partition.into_iter().enumerate() {
                 if bucket.is_empty() {
                     continue;
                 }
                 let shadow_slots = {
-                    let rows: Vec<(VectorSubject, &[u8])> = bucket
+                    let rows: Vec<(VectorSubject, &[u8], [u8; 8])> = bucket
                         .iter()
-                        .map(|(key, _, _, bytes)| (key.subject, bytes.as_slice()))
+                        .map(|(key, _, _, bytes, aux)| (key.subject, bytes.as_slice(), *aux))
                         .collect();
                     self.append_slot_batch(
                         index_id,
@@ -1020,7 +1034,7 @@ impl VectorCanisterStore {
                         &rows,
                     )?
                 };
-                for (shadow_slot, (key, mut entry, active_slot, _)) in
+                for (shadow_slot, (key, mut entry, active_slot, _, _)) in
                     shadow_slots.into_iter().zip(bucket)
                 {
                     // Positional stale-read guard: the subject's current live slot must still be the

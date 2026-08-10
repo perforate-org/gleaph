@@ -640,6 +640,29 @@ mod tests {
     }
 
     #[test]
+    fn i8_encoding_registers_and_reads_back() {
+        // The Router catalog records the stored encoding (I8) so the vector canister's lazy
+        // `ensure_def_for_upsert` can create a matching def from the op's encoding.
+        let graph = GraphId::from_raw(920_300);
+        register_vector_index(
+            graph,
+            3,
+            EmbeddingNameId::from_raw(3),
+            vec![VertexLabelId::from_raw(1)],
+            VectorIndexKind::IvfFlat,
+            VectorMetric::L2Squared,
+            VectorEncoding::I8,
+            16,
+            None,
+            false,
+        )
+        .expect("register i8");
+        let def = get_vector_index(graph, 3).expect("def");
+        assert_eq!(def.encoding, VectorEncoding::I8);
+        assert_eq!(def.dims, 16);
+    }
+
+    #[test]
     fn registration_with_target_is_dispatch_blocked_until_ready() {
         let graph = GraphId::from_raw(920_002);
         let target = VectorIndexTarget {

@@ -30,6 +30,9 @@ use serde::{Deserialize, Serialize};
 pub enum VectorEncoding {
     /// IEEE-754 little-endian `f32` components; byte width is `dims * 4`.
     F32,
+    /// Signed `i8` components quantized with a per-row scale (`x_i ≈ i8_i * scale / 127`); the
+    /// scale is stored in row-meta aux. Byte width is `dims`.
+    I8,
 }
 
 impl VectorEncoding {
@@ -37,6 +40,7 @@ impl VectorEncoding {
     pub const fn component_bytes(self) -> u32 {
         match self {
             Self::F32 => 4,
+            Self::I8 => 1,
         }
     }
 
@@ -44,6 +48,62 @@ impl VectorEncoding {
     pub const fn stride_bytes(self, dims: u16) -> u32 {
         self.component_bytes() * dims as u32
     }
+}
+
+/// A vector quantized to `I8` with a per-row scale. `bytes` holds `dims` signed-`i8` bit patterns;
+/// `scale` is `max_i |x_i|` so decoding recovers `x_i ≈ bytes[i] as i8 as f32 * scale / 127`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuantizedI8Vector {
+    /// `dims` signed-`i8` bit patterns (the stored payload).
+    pub bytes: Vec<u8>,
+    /// Per-row quantization scale (`max_i |x_i|`).
+    pub scale: f32,
+}
+
+/// Quantizes an f32 vector (contiguous little-endian bytes) to `I8` with a per-row scale:
+/// `s = max_i |x_i|`, `i8_i = clamp(round(127 * x_i / s), -127, 127)`. Returns `Err` on non-finite
+/// components or a byte-length mismatch. A zero vector (scale 0) is valid: all-zero i8 and scale 0,
+/// which decodes back to the zero vector (valid for an L2 index; cosine zero-norm is rejected
+/// upstream by the caller).
+pub fn quantize_f32_to_i8(
+    bytes: &[u8],
+    dims: usize,
+) -> Result<QuantizedI8Vector, VectorCanisterError> {
+    if bytes.len() != dims * 4 {
+        return Err(VectorCanisterError::ByteWidthMismatch);
+    }
+    let chunks = bytes.as_chunks::<4>().0;
+    let mut scale = 0.0f32;
+    for chunk in chunks {
+        let x = f32::from_le_bytes(*chunk);
+        if !x.is_finite() {
+            return Err(VectorCanisterError::InvalidQueryVector);
+        }
+        scale = scale.max(x.abs());
+    }
+    let mut out = Vec::with_capacity(dims);
+    for chunk in chunks {
+        let x = f32::from_le_bytes(*chunk);
+        // scale == 0 (a zero vector) makes `127 * x / scale` NaN; guard it so a zero vector maps to
+        // all-zero i8 (decoding recovers the zero vector).
+        let q = if scale == 0.0 {
+            0i32
+        } else {
+            (127.0 * x / scale).round() as i32
+        };
+        out.push(q.clamp(-127, 127) as i8 as u8);
+    }
+    Ok(QuantizedI8Vector { bytes: out, scale })
+}
+
+/// Decodes an `I8`-quantized vector back to `f32` components: `x_i ≈ bytes[i] as i8 as f32 * scale / 127`.
+/// Reads the first `dims` bytes. A zero scale (zero vector) decodes to all-zero components.
+pub fn decode_i8_to_f32(bytes: &[u8], scale: f32, dims: usize) -> Vec<f32> {
+    bytes
+        .iter()
+        .take(dims)
+        .map(|b| (*b as i8 as f32) * scale / 127.0)
+        .collect()
 }
 
 /// Physical index structure for a derived vector index.
@@ -914,6 +974,65 @@ mod tests {
     fn encoding_stride_bytes() {
         assert_eq!(VectorEncoding::F32.component_bytes(), 4);
         assert_eq!(VectorEncoding::F32.stride_bytes(8), 32);
+        assert_eq!(VectorEncoding::I8.component_bytes(), 1);
+        assert_eq!(VectorEncoding::I8.stride_bytes(8), 8);
+    }
+
+    #[test]
+    fn quantize_i8_round_trip_preserves_relative_order() {
+        // Round-trip must preserve the nearest-neighbor order of a monotone query over the same
+        // vectors when compared to the original f32 (the search-parity contract).
+        let a = vec![1.0f32, 0.5, -2.0, 3.0];
+        let b = vec![1.0f32, 0.5, -2.0, 2.9];
+        let (qa, qb) = (quantize_i8(&a), quantize_i8(&b));
+        let (da, db) = (decode_i8(&qa), decode_i8(&qb));
+        let q = vec![1.0f32, 0.5, -2.0, 3.1];
+        let l2 = |v: &Vec<f32>| v.iter().zip(&q).map(|(x, y)| (x - y).powi(2)).sum::<f32>();
+        assert_eq!(l2(&a) < l2(&b), l2(&da) < l2(&db), "I8 preserves L2 order");
+    }
+
+    #[test]
+    fn quantize_i8_clamps_and_zero_vector() {
+        // Boundary: a value that rounds past 127 clamps to 127 (not an i8 overflow/wrap).
+        let v = vec![1.0f32, 2.0, 4.0]; // scale 4; 127*2/4 = 63.5 -> 64; 127*4/4 = 127
+        let q = quantize_f32_to_i8(&encode_f32_test(&v), 3).expect("quantize");
+        assert_eq!(q.bytes, vec![32u8, 64u8, 127u8]);
+        assert_eq!(q.scale, 4.0);
+        // Zero vector: scale 0, all-zero i8, decodes to zero.
+        let zero = vec![0.0f32, 0.0, 0.0];
+        let qz = quantize_f32_to_i8(&encode_f32_test(&zero), 3).expect("zero quantize");
+        assert_eq!(qz.scale, 0.0);
+        assert_eq!(qz.bytes, vec![0, 0, 0]);
+        assert_eq!(decode_i8_to_f32(&qz.bytes, qz.scale, 3), vec![0.0; 3]);
+    }
+
+    #[test]
+    fn quantize_i8_rejects_non_finite_and_wrong_width() {
+        let nan = vec![f32::NAN, 1.0, 2.0];
+        assert_eq!(
+            quantize_f32_to_i8(&encode_f32_test(&nan), 3),
+            Err(VectorCanisterError::InvalidQueryVector)
+        );
+        assert_eq!(
+            quantize_f32_to_i8(&encode_f32_test(&[1.0f32, 2.0]), 3),
+            Err(VectorCanisterError::ByteWidthMismatch)
+        );
+    }
+
+    fn encode_f32_test(v: &[f32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(v.len() * 4);
+        for x in v {
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+        out
+    }
+
+    fn quantize_i8(v: &[f32]) -> QuantizedI8Vector {
+        quantize_f32_to_i8(&encode_f32_test(v), v.len()).expect("quantize")
+    }
+
+    fn decode_i8(q: &QuantizedI8Vector) -> Vec<f32> {
+        decode_i8_to_f32(&q.bytes, q.scale, q.bytes.len())
     }
 
     #[test]

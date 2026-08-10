@@ -3669,6 +3669,7 @@ fn candidate_scan_with_membership_matches_resolve_based() {
             1,
             &qv,
             VectorMetric::L2Squared,
+            VectorEncoding::F32,
             &allowlist,
             5,
             0.0,
@@ -3680,6 +3681,7 @@ fn candidate_scan_with_membership_matches_resolve_based() {
         1,
         &qv,
         VectorMetric::L2Squared,
+        VectorEncoding::F32,
         0.0,
         &allowlist,
         5,
@@ -3715,4 +3717,283 @@ fn candidate_search_rejects_duplicate_subjects() {
     req.candidate_subjects = Some(vec![subject(7), subject(7)]);
     let err = store.vector_search(&req).expect_err("duplicate candidates");
     assert!(matches!(err, VectorCanisterError::InvalidSearchCandidates));
+}
+
+/// I8 scalar-quantization tests (B1+A1: per-row scale, F32 wire query; `VectorEncoding::I8`).
+mod i8_tests {
+    use super::*;
+    use crate::facade::stable::{PAGE_STORE, VECTOR_INDEX_DEFS};
+    use crate::records::SlotRef;
+
+    /// A distinct index id so an `I8` def is created without colliding with the F32 `INDEX_ID` fixtures.
+    const I8_INDEX: u32 = 7;
+
+    fn i8_bytes(values: &[f32]) -> Vec<u8> {
+        assert_eq!(values.len(), DIMS as usize, "component count mismatch");
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn i8_upsert(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        vertex_id: u32,
+        stamp: u64,
+        values: &[f32],
+        metric: VectorMetric,
+    ) {
+        store
+            .vector_upsert(
+                shard_canister(),
+                &VectorEmbeddingSyncOp {
+                    index_id,
+                    embedding_name_id: 0,
+                    subject: subject(vertex_id),
+                    mutation_id: stamp,
+                    encoding: VectorEncoding::I8,
+                    dims: DIMS,
+                    metric,
+                    bytes: i8_bytes(values),
+                    remove: false,
+                },
+            )
+            .expect("i8 upsert");
+    }
+
+    fn i8_search(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+        top_k: u32,
+    ) -> Vec<u32> {
+        let res = store
+            .vector_search(&VectorSearchRequest {
+                index_id,
+                query: i8_bytes(values),
+                encoding: VectorEncoding::I8,
+                dims: DIMS,
+                metric,
+                top_k,
+                candidate_subjects: None,
+            })
+            .expect("i8 search");
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    fn row_payload_aux(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        slot: SlotRef,
+    ) -> (Vec<u8>, [u8; 8]) {
+        let _ = store;
+        PAGE_STORE
+            .with_borrow(|s| s.read_row_bytes(index_id, slot))
+            .map(|(_, bytes, aux)| (bytes, aux))
+            .expect("row present")
+    }
+
+    #[test]
+    fn i8_ingest_and_search_parity_with_f32() {
+        let store = fresh_store();
+        let vectors: Vec<Vec<f32>> = vec![
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![4.0, 3.0, 2.0, 1.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![2.0, 2.0, 2.0, 0.0],
+        ];
+        for (i, v) in vectors.iter().enumerate() {
+            store
+                .vector_upsert(
+                    shard_canister(),
+                    &upsert_vec_from((i + 1) as u32, 1, v, VectorMetric::L2Squared),
+                )
+                .unwrap();
+            i8_upsert(
+                &store,
+                I8_INDEX,
+                (i + 1) as u32,
+                1,
+                v,
+                VectorMetric::L2Squared,
+            );
+        }
+        let q = [2.0f32, 2.0, 2.0, 2.0];
+        let f32_top = store
+            .vector_search(&VectorSearchRequest {
+                index_id: INDEX_ID,
+                query: i8_bytes(&q),
+                encoding: VectorEncoding::F32,
+                dims: DIMS,
+                metric: VectorMetric::L2Squared,
+                top_k: 4,
+                candidate_subjects: None,
+            })
+            .unwrap();
+        let f32_order: Vec<u32> = f32_top
+            .hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect();
+        let i8_order = i8_search(&store, I8_INDEX, &q, VectorMetric::L2Squared, 4);
+        assert_eq!(f32_order, i8_order, "I8 top-k ordering matches F32");
+    }
+
+    #[test]
+    fn i8_def_uses_meta8_and_consistent_slots_per_page() {
+        let store = fresh_store();
+        i8_upsert(
+            &store,
+            I8_INDEX,
+            1,
+            1,
+            &[1.0, 2.0, 3.0, 4.0],
+            VectorMetric::L2Squared,
+        );
+        let def = VECTOR_INDEX_DEFS.with_borrow(|d| d.get(&I8_INDEX)).unwrap();
+        assert_eq!(def.encoding, VectorEncoding::I8);
+        // I8 stores `dims` payload bytes plus a 4-byte scale in row-meta aux (meta stride 8).
+        assert_eq!(def.stride_bytes, DIMS as u32);
+        assert_eq!(def.meta_stride_bytes, 8);
+        assert_eq!(def.pad_stride_bytes, 16);
+        // `slots_per_page` is derived from `meta 8`; the page must fit at least one row.
+        assert!(def.slots_per_page >= 1);
+        // The I8 page meta reopens with `meta_stride 8` (encoding-agnostic open validation).
+        let page_meta = PAGE_STORE
+            .with_borrow(|s| s.page_meta_for_test(I8_INDEX, 1, 0, 0))
+            .expect("i8 page meta");
+        assert_eq!(page_meta.meta_stride, 8);
+    }
+
+    #[test]
+    fn i8_zero_l2_vector_is_accepted_and_nearest() {
+        let store = fresh_store();
+        i8_upsert(
+            &store,
+            I8_INDEX,
+            1,
+            1,
+            &[0.0, 0.0, 0.0, 0.0],
+            VectorMetric::L2Squared,
+        );
+        let top = i8_search(
+            &store,
+            I8_INDEX,
+            &[1.0, 1.0, 1.0, 1.0],
+            VectorMetric::L2Squared,
+            1,
+        );
+        assert_eq!(top, vec![1], "zero L2 I8 vector is nearest");
+    }
+
+    #[test]
+    fn i8_ingest_rejects_wrong_wire_width() {
+        let store = fresh_store();
+        i8_upsert(
+            &store,
+            I8_INDEX,
+            1,
+            1,
+            &[1.0, 2.0, 3.0, 4.0],
+            VectorMetric::L2Squared,
+        );
+        let err = store
+            .vector_upsert(
+                shard_canister(),
+                &VectorEmbeddingSyncOp {
+                    index_id: I8_INDEX,
+                    embedding_name_id: 0,
+                    subject: subject(2),
+                    mutation_id: 1,
+                    encoding: VectorEncoding::I8,
+                    dims: DIMS,
+                    metric: VectorMetric::L2Squared,
+                    bytes: vec![0u8; 3],
+                    remove: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, VectorCanisterError::ByteWidthMismatch);
+    }
+
+    #[test]
+    fn i8_idempotency_noop_then_conflict_on_different_payload() {
+        let store = fresh_store();
+        i8_upsert(
+            &store,
+            I8_INDEX,
+            1,
+            1,
+            &[1.0, 2.0, 3.0, 4.0],
+            VectorMetric::L2Squared,
+        );
+        // Byte-identical replay at the same stamp: no-op (no MutationStampConflict).
+        i8_upsert(
+            &store,
+            I8_INDEX,
+            1,
+            1,
+            &[1.0, 2.0, 3.0, 4.0],
+            VectorMetric::L2Squared,
+        );
+        // Same stamp, different payload: conflict.
+        let err = store
+            .vector_upsert(
+                shard_canister(),
+                &VectorEmbeddingSyncOp {
+                    index_id: I8_INDEX,
+                    embedding_name_id: 0,
+                    subject: subject(1),
+                    mutation_id: 1,
+                    encoding: VectorEncoding::I8,
+                    dims: DIMS,
+                    metric: VectorMetric::L2Squared,
+                    bytes: i8_bytes(&[5.0, 6.0, 7.0, 8.0]),
+                    remove: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, VectorCanisterError::MutationStampConflict);
+    }
+
+    #[test]
+    fn i8_rebuild_building_carries_bytes_and_scale() {
+        let store = fresh_store();
+        for (v, vals) in [
+            (1u32, [1.0f32, 2.0, 3.0, 4.0]),
+            (2, [4.0, 3.0, 2.0, 1.0]),
+            (3, [0.0, 1.0, 2.0, 3.0]),
+            (4, [3.0, 2.0, 1.0, 0.0]),
+        ] {
+            i8_upsert(&store, I8_INDEX, v, 1, &vals, VectorMetric::L2Squared);
+        }
+        store
+            .admin_start_vector_rebuild(router(), I8_INDEX, 2, 100)
+            .expect("start");
+        let status = drive_steps(&store, I8_INDEX);
+        assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+        // Every live subject's shadow row must carry the SAME (bytes, scale) as its active row: a
+        // double-quantize or a scale recompute would make these differ.
+        for v in 1..=4u32 {
+            let entry = store.subject_entry_for_test(I8_INDEX, subject(v)).unwrap();
+            let active = entry.slot.expect("active slot");
+            let shadow = entry.shadow_slot.expect("shadow slot");
+            let (active_bytes, active_aux) = row_payload_aux(&store, I8_INDEX, active);
+            let (shadow_bytes, shadow_aux) = row_payload_aux(&store, I8_INDEX, shadow);
+            assert_eq!(
+                active_bytes, shadow_bytes,
+                "I8 bytes carried forward (no double-quantize)"
+            );
+            assert_eq!(
+                active_aux, shadow_aux,
+                "I8 scale carried forward (not recomputed)"
+            );
+        }
+    }
 }

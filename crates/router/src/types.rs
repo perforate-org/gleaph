@@ -17,7 +17,7 @@ pub use gleaph_graph_kernel::provisioning::wire::{
 };
 pub use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
 use gleaph_graph_kernel::vector_index::{
-    VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
+    VectorEncoding, VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
     VectorMaintenanceStepResult, VectorMetric, VectorPartitionPageHealth, VectorRebuildStatus,
 };
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
@@ -1591,6 +1591,9 @@ pub struct RegisterVectorIndexArgs {
     pub labels: Vec<String>,
     /// Optional metric; defaults to `L2Squared` if omitted for wire stability.
     pub metric: Option<VectorMetric>,
+    /// Optional stored encoding; defaults to `F32` if omitted for wire stability (I8 = scalar
+    /// quantization). The wire embedding bytes are always canonical F32.
+    pub encoding: Option<VectorEncoding>,
     /// Optional single dispatch target; rejected if anonymous. Slice 3 stores it as inspect-only
     /// metadata and never pushes it to graph shards or enables dispatch.
     pub target: Option<Principal>,

@@ -139,6 +139,9 @@ impl Storable for VectorPageMeta {
 pub(crate) struct RowInfo {
     pub shard_id: u32,
     pub vertex_id: u32,
+    /// Row-meta aux bytes (0 | 4 | 8 meaningful; `meta_stride - 4`). For `I8` rows the first 4 bytes
+    /// hold the per-row quantization scale; the page store keeps aux opaque.
+    pub aux: [u8; 8],
 }
 
 /// Outcome of one bounded [`VectorSlabStore::drop_version_pages`] step.
@@ -298,6 +301,7 @@ impl PageScratch {
         RowInfo {
             shard_id: self.shard_of(slot),
             vertex_id: meta.vertex.vertex_id(),
+            aux: meta.aux,
         }
     }
 
@@ -545,8 +549,9 @@ impl VectorSlabStore {
         slot: u32,
         payload: VertexPayload,
         bytes: &[u8],
+        aux: &[u8; 8],
     ) {
-        let meta = RowMeta::new(payload, [0u8; 8]);
+        let meta = RowMeta::new(payload, *aux);
         let meta_range = layout.row_meta_range_at(slot);
         let mut meta_buf = [0u8; 12];
         meta.write_into(&mut meta_buf[..layout.meta_stride()], layout.meta_stride())
@@ -633,6 +638,7 @@ impl VectorSlabStore {
         def: &VectorIndexDef,
         subject: VectorSubject,
         bytes: &[u8],
+        aux: &[u8; 8],
     ) -> Result<SlotRef, VectorCanisterError> {
         // Test-only: simulate a slab `grow` failure before any state mutation (see seam above).
         #[cfg(test)]
@@ -721,7 +727,7 @@ impl VectorSlabStore {
             shard,
             run_capacity,
         );
-        self.write_row(meta.slab_offset, &layout, slot, payload, bytes);
+        self.write_row(meta.slab_offset, &layout, slot, payload, bytes, aux);
 
         // Commit directory: occupied_tail (slab header) -> page meta -> partition head (last).
         if need_new_page {
@@ -769,7 +775,7 @@ impl VectorSlabStore {
         index_version: u64,
         partition_id: u32,
         def: &VectorIndexDef,
-        rows: &[(VectorSubject, &[u8])],
+        rows: &[(VectorSubject, &[u8], [u8; 8])],
     ) -> Result<Vec<SlotRef>, VectorCanisterError> {
         // Test-only: simulate a slab `grow` failure before any state mutation (see `append_row`'s
         // seam). A batch that fails here leaves the partition head untouched.
@@ -796,7 +802,7 @@ impl VectorSlabStore {
         // the head/meta/page-header/run table from stable memory.
         let mut page: Option<OpenPageState> = None;
 
-        for (subject, bytes) in rows {
+        for (subject, bytes, aux) in rows {
             let VectorSubject::Vertex {
                 shard_id,
                 vertex_id,
@@ -900,7 +906,7 @@ impl VectorSlabStore {
                 }
             }
             // Infallible page writes (the page region is already reserved/grown).
-            self.write_row(base, &layout, slot, payload, bytes);
+            self.write_row(base, &layout, slot, payload, bytes, aux);
 
             meta.row_count += 1;
             meta.live_count += 1;
@@ -985,7 +991,11 @@ impl VectorSlabStore {
     /// Reads a slot's vector bytes + decoded vertex id, rejecting out-of-range and tombstoned slots.
     /// Callers resolve the subject from the map key and validate the returned `vertex_id` against
     /// `subject.vertex_id` (positional + payload validation; no row-carried id/generation).
-    pub(crate) fn read_row_bytes(&self, index_id: u32, slot: SlotRef) -> Option<(u32, Vec<u8>)> {
+    pub(crate) fn read_row_bytes(
+        &self,
+        index_id: u32,
+        slot: SlotRef,
+    ) -> Option<(u32, Vec<u8>, [u8; 8])> {
         let page_key = PageKey::new(
             index_id,
             slot.index_version as u64,
@@ -1009,7 +1019,7 @@ impl VectorSlabStore {
         let vec_start = meta.slab_offset + layout.vector_range_at(slot.slot).start as u64;
         let mut out = vec![0u8; layout.vector_stride()];
         self.slab.read(vec_start, &mut out);
-        Some((row_meta.vertex.vertex_id(), out))
+        Some((row_meta.vertex.vertex_id(), out, row_meta.aux))
     }
 
     /// Bulk-reads one specific page into `scratch`. Returns `false` when the page is absent from the
@@ -1382,6 +1392,11 @@ mod tests {
         subject_shard(0, v)
     }
 
+    /// Zero row-meta aux for F32 test rows (an `I8` row would carry its scale here).
+    fn zaux() -> [u8; 8] {
+        [0u8; 8]
+    }
+
     fn bytes(a: f32, b: f32) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&a.to_le_bytes());
@@ -1424,13 +1439,13 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let slot = store
-            .append_row(7, 1, 0, &d, subject(100), &bytes(1.0, 2.0))
+            .append_row(7, 1, 0, &d, subject(100), &bytes(1.0, 2.0), &zaux())
             .unwrap();
         assert_eq!(slot.page_id, 0);
         assert_eq!(slot.slot, 0);
 
         let store = open(&mm);
-        let (vertex_id, vec) = store
+        let (vertex_id, vec, _) = store
             .read_row_bytes(7, slot)
             .expect("row present after reopen");
         assert_eq!(vertex_id, 100);
@@ -1446,13 +1461,13 @@ mod tests {
         let d = def(2);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         let s1 = store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         let s2 = store
-            .append_row(1, 1, 0, &d, subject(3), &bytes(2.0, 2.0))
+            .append_row(1, 1, 0, &d, subject(3), &bytes(2.0, 2.0), &zaux())
             .unwrap();
         assert_eq!((s0.page_id, s0.slot), (0, 0));
         assert_eq!((s1.page_id, s1.slot), (0, 1));
@@ -1472,13 +1487,13 @@ mod tests {
         let d = def(16);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0), &zaux())
             .unwrap();
         let s1 = store
-            .append_row(1, 1, 0, &d, subject_shard(1, 2), &bytes(2.0, 0.0))
+            .append_row(1, 1, 0, &d, subject_shard(1, 2), &bytes(2.0, 0.0), &zaux())
             .unwrap();
         let s2 = store
-            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 0.0), &zaux())
             .unwrap();
 
         let mut seen: Vec<(u32, u32, u32)> = Vec::new();
@@ -1500,14 +1515,14 @@ mod tests {
         d.run_capacity = 2; // at most 2 runs per page
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0), &zaux())
             .unwrap();
         let s1 = store
-            .append_row(1, 1, 0, &d, subject_shard(1, 2), &bytes(2.0, 0.0))
+            .append_row(1, 1, 0, &d, subject_shard(1, 2), &bytes(2.0, 0.0), &zaux())
             .unwrap();
         // Third shard starts a new run, but run_capacity is full: roll a new page.
         let s2 = store
-            .append_row(1, 1, 0, &d, subject_shard(2, 3), &bytes(3.0, 0.0))
+            .append_row(1, 1, 0, &d, subject_shard(2, 3), &bytes(3.0, 0.0), &zaux())
             .unwrap();
         assert_eq!((s0.page_id, s1.page_id), (0, 0));
         assert_eq!(s2.page_id, 1, "run table full -> new page");
@@ -1530,9 +1545,9 @@ mod tests {
         let b2 = bytes(3.0, 4.0);
         let b3 = bytes(5.0, 6.0);
         let rows = vec![
-            (subject(1), b1.as_slice()),
-            (subject(2), b2.as_slice()),
-            (subject(3), b3.as_slice()),
+            (subject(1), b1.as_slice(), zaux()),
+            (subject(2), b2.as_slice(), zaux()),
+            (subject(3), b3.as_slice(), zaux()),
         ];
         let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
         assert_eq!(slots.len(), 3);
@@ -1545,7 +1560,7 @@ mod tests {
         for (slot, (vertex_id, expected)) in
             slots.iter().zip([(1u32, &b1), (2u32, &b2), (3u32, &b3)])
         {
-            let (got, vec) = store
+            let (got, vec, _) = store
                 .read_row_bytes(1, *slot)
                 .expect("row present after reopen");
             assert_eq!(got, vertex_id);
@@ -1564,9 +1579,9 @@ mod tests {
         let b2 = bytes(1.0, 1.0);
         let b3 = bytes(2.0, 2.0);
         let rows = vec![
-            (subject(1), b1.as_slice()),
-            (subject(2), b2.as_slice()),
-            (subject(3), b3.as_slice()),
+            (subject(1), b1.as_slice(), zaux()),
+            (subject(2), b2.as_slice(), zaux()),
+            (subject(3), b3.as_slice(), zaux()),
         ];
         let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
         assert_eq!((slots[0].page_id, slots[0].slot), (0, 0));
@@ -1591,9 +1606,9 @@ mod tests {
         let b2 = bytes(2.0, 0.0);
         let b3 = bytes(3.0, 0.0);
         let rows = vec![
-            (subject(1), b1.as_slice()),
-            (subject_shard(1, 2), b2.as_slice()),
-            (subject(3), b3.as_slice()),
+            (subject(1), b1.as_slice(), zaux()),
+            (subject_shard(1, 2), b2.as_slice(), zaux()),
+            (subject(3), b3.as_slice(), zaux()),
         ];
         let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
         assert_eq!(slots[0].page_id, 0);
@@ -1616,9 +1631,9 @@ mod tests {
         let b2 = bytes(2.0, 0.0);
         let b3 = bytes(3.0, 0.0);
         let rows = vec![
-            (subject(1), b1.as_slice()),
-            (subject_shard(1, 2), b2.as_slice()),
-            (subject_shard(2, 3), b3.as_slice()),
+            (subject(1), b1.as_slice(), zaux()),
+            (subject_shard(1, 2), b2.as_slice(), zaux()),
+            (subject_shard(2, 3), b3.as_slice(), zaux()),
         ];
         let slots = store.append_rows(1, 1, 0, &d, &rows).unwrap();
         assert_eq!((slots[0].page_id, slots[1].page_id), (0, 0));
@@ -1653,7 +1668,7 @@ mod tests {
         let b1 = bytes(1.0, 2.0);
         // The very next batch fails before any directory mutation (mirrors `append_row`'s seam).
         arm_append_failure(0);
-        let rows = vec![(subject(1), b1.as_slice())];
+        let rows = vec![(subject(1), b1.as_slice(), zaux())];
         let err = store.append_rows(1, 1, 0, &d, &rows).unwrap_err();
         assert_eq!(err, VectorCanisterError::StableGrowFailed);
         assert_eq!(head_live_len(1, 1, 0), 0);
@@ -1669,7 +1684,7 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 2.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 2.0), &zaux())
             .unwrap();
         let slot = SlotRef {
             index_version: 1,
@@ -1677,7 +1692,7 @@ mod tests {
             page_id: 0,
             slot: 0,
         };
-        let (_, vec) = store.read_row_bytes(1, slot).expect("row present");
+        let (_, vec, _) = store.read_row_bytes(1, slot).expect("row present");
         assert_eq!(vec.len(), 16);
         assert_eq!(&vec[8..], &[0u8; 8], "pad region is zeroed");
         // A reset + reappend over the same slab bytes still yields a finite row. The head allocator
@@ -1685,9 +1700,9 @@ mod tests {
         store.reset();
         clear_heads();
         store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(3.0, 4.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(3.0, 4.0), &zaux())
             .unwrap();
-        let (_, vec) = store
+        let (_, vec, _) = store
             .read_row_bytes(1, slot)
             .expect("row present after reset");
         assert_eq!(&vec[8..], &[0u8; 8], "pad stays zeroed across slab reuse");
@@ -1700,10 +1715,10 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let slot = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         assert_eq!(store.page_meta_for_test(1, 1, 0, 0).unwrap().live_count, 2);
 
@@ -1726,7 +1741,7 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let slot = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         let oob = SlotRef { slot: 9, ..slot };
         assert!(store.read_row_bytes(1, oob).is_none());
@@ -1741,13 +1756,13 @@ mod tests {
         let d = def(2); // 2 rows per page
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 0.0), &zaux())
             .unwrap();
         let s1 = store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(2.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(2.0, 0.0), &zaux())
             .unwrap();
         let s2 = store
-            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(3), &bytes(3.0, 0.0), &zaux())
             .unwrap();
         assert_eq!((s0.page_id, s1.page_id), (0, 0));
         assert_eq!(s2.page_id, 1, "third row rolls to page 1");
@@ -1779,10 +1794,10 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         store.tombstone_row(1, s0);
         let mut seen: Vec<(u32, u32)> = Vec::new();
@@ -1800,7 +1815,7 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         let tail_before = store.occupied_tail();
         let result = store.drop_version_pages(1, 1, None, 100);
@@ -1818,7 +1833,7 @@ mod tests {
         let mut store = open(&mm);
         for v in 0..3u32 {
             store
-                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0))
+                .append_row(1, 1, 0, &d, subject(v), &bytes(v as f32, 0.0), &zaux())
                 .unwrap();
         }
         // 3 rows at capacity 2 -> 2 pages; a budget of 1 removes one page per step.
@@ -1846,7 +1861,7 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         // Wipe the slab to all zero but keep the directory: partial layout must trap.
         let slab = mm.get(SLAB_ID);
@@ -1862,7 +1877,7 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         // Corrupt the directory: row_count > capacity.
         store.meta.insert(
@@ -1892,10 +1907,10 @@ mod tests {
         let d = def(2);
         let mut store = open(&mm);
         store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         let stats = store.stats_for_index(None);
         assert_eq!(stats.scope.page_count, 1);
@@ -1916,10 +1931,10 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         let before = store.stats_for_index(None);
         store.tombstone_row(1, s0);
@@ -1939,10 +1954,10 @@ mod tests {
         let d = def(4);
         let mut store = open(&mm);
         let s0 = store
-            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0))
+            .append_row(1, 1, 0, &d, subject(1), &bytes(0.0, 0.0), &zaux())
             .unwrap();
         store
-            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0))
+            .append_row(1, 1, 0, &d, subject(2), &bytes(1.0, 1.0), &zaux())
             .unwrap();
         store.tombstone_row(1, s0);
         let step = store

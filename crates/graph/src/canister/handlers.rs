@@ -1887,9 +1887,15 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
     if args.spec.embedding_name_id == 0 {
         return Err("embedding name id 0 is reserved".to_string());
     }
-    if args.spec.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
+    // Model Y: the stored encoding may be F32 or I8; `args.values` are always canonical F32. The
+    // vector canister quantizes internally; this gate only rejects unsupported encodings.
+    if !matches!(
+        args.spec.encoding,
+        gleaph_graph_kernel::vector_index::VectorEncoding::F32
+            | gleaph_graph_kernel::vector_index::VectorEncoding::I8
+    ) {
         return Err(format!(
-            "encoding {:?} is not supported for ingestion; only F32 is accepted",
+            "encoding {:?} is not supported for ingestion",
             args.spec.encoding
         ));
     }
