@@ -6,7 +6,7 @@ Date (UTC): 2026-08-09
 
 - **Target**: `ic-stable-clustered-hash-map` — `StableClusteredHashMap` (src/map.rs), a
   stable-memory clustered (Amble & Knuth ordered) hash table with incremental in-place
-  resize, at commit `cb74f70d1`.
+  resize, at commit `9b768b096`.
 - **Mode**: **audit**. An existing implementation was transcribed into Lean 4 (Mathlib
   v4.32.2) and its invariants proved / counterexamined.
 
@@ -23,6 +23,7 @@ Date (UTC): 2026-08-09
 
 The `lean-formal-audit` workflow, in `audit/StableClusterAudit/` (a Lake project with
 Mathlib):
+
 - Stage 1 — `Abstract.lean`: state model, cluster invariants, target properties,
   assumptions.
 - Stage 1 adversarial — `Counterexamples.lean`: counterexample to a claimed bound.
@@ -50,10 +51,12 @@ content); added as axioms only if a proof required one:
 ## Findings per file
 
 ### `Abstract.lean` (Stage 1)
+
 - **`DistanceBounded` (B4, "distances are bounded by the overflow area") is NOT a
   structural invariant.** Removed from `ClusterInvariant`; see `Counterexamples.lean`.
 
 ### `Counterexamples.lean` (Stage 1 adversarial)
+
 - **B4 counterexample (proved in Lean)**: a valid clustered table can hold an entry
   whose distance exceeds the overflow-area size `n`. E.g. `n = 3`, a bucket-0 cluster of
   5 entries has max distance `4 > 3`. Consequence: with the old `u16` storage, an
@@ -61,6 +64,7 @@ content); added as axioms only if a proof required one:
   marker and silently corrupting the table.
 
 ### `Map.lean` (Stage 2 transcription — several under-specifications surfaced)
+
 - `RelocateWrite` set the written entry's distance to `0`; the faithful distance is
   `position - bucket`. Fixed.
 - `SizeUp` did not state the newly grown region is cleared (`clear_region`); without
@@ -69,15 +73,25 @@ content); added as axioms only if a proof required one:
   unprovable; the invariant "remap preserves the entry set and count" was added.
 - `RelocateStep` modeled a complete move (writing the displaced entry at `next`); it is
   in fact an **intermediate state** with the displaced entry in flight, and its distance
-  handling was wrong. Refactored into a faithful Type-valued structure.
+  handling was wrong. Refactored into a faithful Type-valued structure (with `entryDist`
+  and a `remapEnd`-preservation field).
+- The `insert` loop is formalized as an `InsertRelocate` chain (relocation steps ended by
+  a `RelocateWrite`) carrying per-step well-formedness in an inductive `InsertRelocateOK`
+  (order boundary, home bucket, precedes-the-displaced property).
 
 ### `Soundness.lean` (Stage 3)
+
 Proved:
+
 - Target (a): `sizeUp_preserves_entries`, `remap_preserves_entries` — **fully proved**.
 - Target (b), step level: `relocateWrite_preserves_clusterInvariant` (base write) and
   `relocateStep_preserves_clusterInvariant` (single relocation step) — **proved**.
-- `insert_preserves_invariant` over the `InsertRelocate` chain: `done` case proved;
-  `step` case open (see below).
+- The chain maintenance machinery — `displaced_home_bucket`, `bucketAt_in_scan`,
+  `endOfClusterFrom_ge`/`_le_capacity`, `order_boundary_of_cluster_end`, and
+  `relocateStep_preserves_order_boundary` (the boundary survives a relocation step) —
+  **all proved**.
+- `insert_preserves_invariant` over the `InsertRelocateOK` chain: the `done` case is
+  proved and the `step` case is reduced to the recursive induction hypothesis.
 
 ## Findings (severity)
 
@@ -93,15 +107,15 @@ Proved:
 
 ## List of `sorry` / unproven spots and interpretation
 
-| Target | Theorem | Why unproved / what is needed |
-|---|---|---|
-| (b) insert | `insert_preserves_invariant` (`step` case) | Needs a chain **maintenance** argument: each displaced entry stays at its home bucket (`next - (tDist + (next-position)) = bucket t`) and `next` (the cluster end) is an order boundary for it. Step-level lemmas are proved; the chain induction is not closed. |
-| (b) remove | `remove_preserves_invariant` | Same relocation-chain maintenance for `remove_and_relocate`'s gap-fill. |
-| (b) remap | `remap_step_preserves_invariant` | Same maintenance across the incremental remap. |
-| (c) reopen | `reopen_consistent_of_cluster_invariant` | Depends on target (b) being established; also needs `lookupIndex` to find exactly `KeySet` under both old/new mappings. |
+| Target     | Theorem                                    | Why unproved / what is needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (b) insert | `insert_preserves_invariant` (`step` case) | The mathematical content is **complete**: the displaced entry stays at its home bucket (`displaced_home_bucket`) and the cluster end is an order boundary for it (`order_boundary_of_cluster_end`), which survives the step (`relocateStep_preserves_order_boundary`), all carried by `InsertRelocateOK`. The step case is reduced to the recursive IH, but Lean's dependent induction over the index-typed `InsertRelocateOK h` marks that IH inaccessible (`hok_ih✝`); closing it needs a non-indexed chain encoding (a Lean ergonomics issue, not a mathematical gap). |
+| (b) remove | `remove_preserves_invariant`               | Same relocation-chain maintenance for `remove_and_relocate`'s gap-fill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| (b) remap  | `remap_step_preserves_invariant`           | Same maintenance across the incremental remap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| (c) reopen | `reopen_consistent_of_cluster_invariant`   | Depends on target (b) being established; also needs `lookupIndex` to find exactly `KeySet` under both old/new mappings.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 These are the residual core of the audit, not defects: the step-level invariant
-preservation is proved, and each remaining spot is a well-scoped induction/mantainance
+preservation is proved, and each remaining spot is a well-scoped induction/maintenance
 argument rather than an observed failure.
 
 ## Conclusion
@@ -110,9 +124,19 @@ The audit **found and motivated a real latent correctness bug** — the `u16` di
 overflow — which has since been fixed (`u32` storage + insertion-time trap, giving IC
 atomic rollback). It also **proved** the core structural properties: entry preservation
 across `size_up` and `remap` (target (a), fully), and the cluster invariant preservation
-for both the base insert write and a single relocation step (target (b), step level). The
-remaining work is the chain-level maintenance induction for insert/remove/remap and the
-re-open consistency argument (target (c)).
+for both the base insert write and a single relocation step (target (b), step level),
+plus the full chain-maintenance machinery for the insert loop. The remaining open items
+are the chain-level induction closure (blocked for insert only by a Lean dependent-
+induction IH-accessibility issue, with the mathematics otherwise complete), the remove
+and remap chain arguments, and the re-open consistency argument (target (c)).
+
+## Status against "formal proof of a trustworthy data structure"
+
+This is **not yet a complete** operation-level verification. Proved: entry preservation
+across resize (a), and the cluster invariant at the step level plus all the insert-chain
+maintenance lemmas. Not proved: the operation-level induction for insert's `step` case,
+remove, and remap, and target (c) (re-open / lookup correctness). These are the remaining
+`sorry`s, so the structure should not be presented as formally verified end-to-end yet.
 
 The transcriptions repeatedly proved the value of faithful, non-interpreted modeling:
 several under-specified relations (SizeUp's cleared region, RemapStep's entry
