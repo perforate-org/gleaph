@@ -22,9 +22,9 @@ namespace StableClusterAudit
 /-!
 ## Target (a) — `size_up` preserves the entry set and count
 
-`size_up` (src/map.rs L510-L542) grows the table in place: the old region keeps its
+`size_up` (src/map.rs L526-L554) grows the table in place: the old region keeps its
 keys/values/distances verbatim, and the newly grown region is cleared (`clear_region`,
-src/map.rs L529-L536). `SizeUp` states exactly this, so the entry set is unchanged.
+src/map.rs L542-L549). `SizeUp` states exactly this, so the entry set is unchanged.
 -/
 
 -- `capacity` is strictly increasing, so the old region is inside the new one.
@@ -70,7 +70,7 @@ lemma sizeUp_preserves_entries (h : SizeUp s s') : ResizePreservesEntries s s' :
   exact ⟨sizeUp_preserves_keySet_eq h, sizeUp_preserves_len h⟩
 
 /-!
-## Target (a) continued — `remap` preserves the entry set (src/map.rs L544-L584)
+## Target (a) continued — `remap` preserves the entry set (src/map.rs L559-L597)
 
 `remap` relocates entries to their new buckets without adding or dropping any, so the
 entry set and count are preserved. `RemapStep` (Map.lean) states exactly this invariant
@@ -87,7 +87,7 @@ lemma remap_preserves_entries (h : RemapStep s s') : ResizePreservesEntries s s'
   exact ⟨h.keySet, h.len.symm⟩
 
 /-!
-## Target (b) — cluster invariant preserved by mutations (src/map.rs L411-L508)
+## Target (b) — cluster invariant preserved by mutations (src/map.rs L421-L520)
 
 `insert_and_relocate` / `remove_and_relocate` shift cluster tails. Proving that
 `ClusterOrdered` and `EntryAtCorrectBucket` are maintained through an arbitrary
@@ -538,9 +538,111 @@ lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateSte
   -- unavailable, so the counterexample requires an inhabited key domain.
   sorry
 
+-- The concrete remove loop can move a tail from above `remapEnd` to a position at or
+-- below it; the current abstract `ExpectedBucket` then changes table size solely because
+-- the slot index changed. `RemoveRelocate` needs a settled-state premise (or a stronger
+-- active-remap invariant) before preservation is derivable. This machine-checked
+-- counterexample blocks faithful active-remap preservation; no no-remap preservation theorem
+-- is closed yet. src/map.rs L421-L520.
+theorem removeRelocate_activeBoundary_counterexample (k : Key)
+    (hold : bucket k 1 = 0) (hnew : bucket k 2 = 2) :
+    ∃ s s' position,
+      ClusterInvariant s ∧ RemoveRelocate s s' position ∧ ¬ ClusterInvariant s' := by
+  let s : State :=
+    { n := 2, len := 2, remapEnd := some 2
+      dist := fun i => if i = 2 then 2 else if i = 3 then 1 else EMPTY
+      keyAt := fun i => if i = 2 ∨ i = 3 then some k else none
+      valAt := fun _ => 0 }
+  let mid : State :=
+    { n := 2, len := 2, remapEnd := some 2
+      dist := fun i => if i = 2 then 0 else if i = 3 then 1 else EMPTY
+      keyAt := fun i => if i = 2 ∨ i = 3 then some k else none
+      valAt := fun _ => 0 }
+  let s' : State :=
+    { n := 2, len := 2, remapEnd := some 2
+      dist := fun i => if i = 2 then 0 else EMPTY
+      keyAt := fun i => if i = 2 ∨ i = 3 then some k else none
+      valAt := fun _ => 0 }
+  refine ⟨s, s', 2, ?_, ?_, ?_⟩
+  · constructor
+    · intro i hi hocc
+      dsimp [s] at hi hocc ⊢
+      norm_num [capacity] at hi
+      split_ifs at hocc ⊢ <;> omega
+    · constructor
+      · intro i j hi hj hij hiocc hjocc
+        dsimp [s] at hi hj hiocc hjocc ⊢
+        norm_num [capacity] at hi hj
+        simp only [BucketAt] at hiocc hjocc ⊢
+        split_ifs at hiocc hjocc ⊢ <;> omega
+      · intro i hi hocc
+        dsimp [s] at hi hocc ⊢
+        norm_num [capacity] at hi
+        by_cases hi2 : i = 2
+        · subst i
+          simp [ExpectedBucket, hold]
+        · by_cases hi3 : i = 3
+          · subst i
+            norm_num [BucketAt, ExpectedBucket, hnew]
+          · simp [hi2, hi3] at hocc
+  · apply RemoveRelocate.step (mid := mid) (next := 3)
+    · refine
+        { frame := ?_, position_lt_last := ?_, nextDist_not_empty := ?_,
+          nextDist_not_home := ?_, next_is_tail := ?_, position_lt_next := ?_,
+          next_lt_capacity := ?_, next_key_present := ?_, keyAt_position := ?_,
+          valAt_position := ?_, shift_le_tailDist := ?_, distAt_position := ?_ }
+      · refine
+          { header := ?_, keyAt_other := ?_, valAt_other := ?_, dist_other := ?_ }
+        · exact ⟨rfl, rfl, rfl⟩
+        · intro i _hi
+          rfl
+        · intro i _hi
+          rfl
+        · intro i hi
+          simp [s, mid, hi]
+      · norm_num [s, capacity]
+      · norm_num [s, EMPTY]
+      · norm_num [s]
+      · change 3 = endOfClusterFrom s (BucketAt s 3) 3 - 1
+        have hbucket3 : BucketAt s 3 = 2 := by norm_num [s, BucketAt]
+        rw [hbucket3, endOfClusterFrom]
+        have hcap3 : 3 < capacity s.n := by norm_num [s, capacity]
+        simp only [hcap3, hbucket3, if_pos]
+        rw [endOfClusterFrom]
+        norm_num [s, capacity, IsOccupied, EMPTY]
+      · omega
+      · norm_num [s, capacity]
+      · exact ⟨k, by simp [s]⟩
+      · simp [s, mid]
+      · rfl
+      · norm_num [s]
+      · norm_num [s, mid]
+    · apply RemoveRelocate.stop
+      let hframe : RemoveFrame mid s' 3 := by
+        refine ⟨⟨rfl, rfl, rfl⟩, ?_, ?_, ?_⟩
+        · intro i hi
+          simp [mid, s', hi]
+        · intro i _hi
+          rfl
+        · intro i hi
+          simp [mid, s', hi]
+      let hclear : ClearCurrentHole mid s' 3 := by
+        refine ⟨hframe, ?_, ?_, ?_, ?_⟩
+        · norm_num [mid, capacity]
+        · simp [mid, s']
+        · rfl
+        · simp [s']
+      refine ⟨hclear, Or.inr ⟨?_, Or.inl ?_⟩⟩
+      · norm_num [mid, capacity]
+      · simp [mid]
+  · intro hinv
+    have hcorrect := hinv.2.2 2 (by norm_num [s', capacity]) (by
+      norm_num [s', IsOccupied, EMPTY])
+    norm_num [s', BucketAt, ExpectedBucket, hold] at hcorrect
+
 lemma remap_step_preserves_invariant (h : ClusterInvariant s) (hstep : RemapStep s s') :
     ClusterInvariant s' := by
-  -- `RemapStep` postulates only `keySet` and `len`, which underconstrains invariant preservation (src/map.rs L546-L596).
+  -- `RemapStep` postulates only `keySet` and `len`, which underconstrains invariant preservation (src/map.rs L559-L597).
   sorry
 
 /-!

@@ -1,6 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
+Anchor timestamp: 2026-08-10 14:09:56 UTC +0000
 
 ## 1. Mode
 
@@ -60,8 +61,10 @@ counterexample's header/geometry route. The helper itself does not model faithfu
 continue/stop/chain behavior, does not close `remove_preserves_invariant`, and does not
 change the two remaining `sorry`s. Separately, `SameRemoveHeader`, `RemoveFrame`,
 `RemoveContinue`, `ClearCurrentHole`, `RemoveStop`, and inductive `RemoveRelocate` now
-model the bounded inner gap-fill chain; its cluster-invariant preservation is not yet
-stated or proved.
+model the bounded inner gap-fill chain. The machine-checked
+`removeRelocate_activeBoundary_counterexample` blocks faithful preservation while
+`remapEnd` is active under its stated bucket premises; no no-remap preservation theorem is
+closed yet.
 
 **(c) Re-open mid-resize consistency.** A persisted state read back by `init` (header
 `len`, `log2_buckets`, `remap_end` + slots) reconstructs a valid map; `lookup_index`

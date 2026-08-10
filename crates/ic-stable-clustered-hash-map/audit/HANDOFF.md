@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 12:47:56 UTC +0000
+Anchor timestamp: 2026-08-10 14:09:56 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -46,8 +46,10 @@ A separate bounded model now records the faithful inner `remove_and_relocate` ex
 tail while leaving its old slot stale, `ClearCurrentHole` / `RemoveStop` model the terminal
 clear and guards, and inductive `RemoveRelocate` threads the chain. The compiler-checked
 `RemoveContinue.oldTailUnchanged` and `RemoveRelocate.sameHeader` lemmas establish the
-named local facts. No theorem yet proves that this chain preserves `ClusterInvariant`, and
-the existing admitted removal theorem still targets `UnRelocateStep`.
+named local facts. The machine-checked `removeRelocate_activeBoundary_counterexample`
+blocks faithful preservation while `remapEnd` is active under its stated bucket premises;
+no no-remap preservation theorem is closed yet. The existing admitted removal theorem still
+targets `UnRelocateStep`.
 
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from

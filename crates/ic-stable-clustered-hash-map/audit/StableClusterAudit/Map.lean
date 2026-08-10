@@ -334,7 +334,7 @@ structure UnRelocateStepWithStableHeader (s s' : State) (position : Nat) : Prop 
   step : UnRelocateStep s s' position
 
 /-!
-## Incremental resize (src/map.rs L510-L584)
+## Incremental resize (src/map.rs L523-L597)
 
 `size_up` doubles the bucket table and starts a remap (sets `remapEnd` to the previous
 capacity). `remap_position` relocates an entry whose bucket changed, and `remap_step`
@@ -344,7 +344,7 @@ preservation) and (c) (re-open) build on them.
 
 -- `size_up`: grows in place to `2^(n+1) + (n+1)`, keeping all entries, and starts the
 -- incremental remap at `remapEnd = prev_capacity`.
--- src/map.rs L513-L542.
+-- src/map.rs L526-L554.
 structure SizeUp (s s' : State) : Prop where
   n : s'.n = s.n + 1
   len : s'.len = s.len
@@ -353,13 +353,13 @@ structure SizeUp (s s' : State) : Prop where
   keyAt : ∀ i, s'.keyAt i = s.keyAt i
   valAt : ∀ i, s'.valAt i = s.valAt i
   -- old region keeps its distances; the newly grown region [capacity n, capacity (n+1))
-  -- is cleared (EMPTY), matching `clear_region` in src/map.rs L529-L536.
+  -- is cleared (EMPTY), matching `clear_region` in src/map.rs L542-L549.
   distOld : ∀ i, i < capacity s.n → s'.dist i = s.dist i
   distNew : ∀ i, capacity s.n ≤ i → i < capacity s'.n → s'.dist i = EMPTY
 
 -- `remap_step`: processes positions from the bottom of the mixed range, relocating
 -- entries whose bucket changed under the new size, until the boundary reaches 0.
--- src/map.rs L546-L564.
+-- src/map.rs L559-L597.
 -- A single remap of `position`: if the entry is not yet at its new bucket, remove it and
 -- reinsert at the new bucket; otherwise just shrink the boundary.
 def RemapOne (s s' : State) (position : Nat) : Prop :=
@@ -379,7 +379,7 @@ def RemapOne (s s' : State) (position : Nat) : Prop :=
 -- This is the invariant that makes target (a) hold for the remap. (The fine-grained
 -- `RemapOne` move below does not alone imply it, because the relocation chain displaces
 -- other entries; the implementation guarantees it by removing and re-inserting exactly one
--- entry.) src/map.rs L546-L564.
+-- entry.) src/map.rs L559-L597.
 structure RemapStep (s s' : State) : Prop where
   keySet : KeySet s = KeySet s'
   len : s'.len = s.len

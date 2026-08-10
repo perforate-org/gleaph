@@ -2,13 +2,15 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 12:47:56 UTC +0000
+Anchor timestamp: 2026-08-10 14:09:56 UTC +0000
 
 ## Target and version / Mode
 
 - **Target**: `ic-stable-clustered-hash-map` — `StableClusteredHashMap` (src/map.rs), a
   stable-memory clustered (Amble & Knuth ordered) hash table with incremental in-place
-  resize, at commit `9b768b096`.
+  resize; the current Rust source under audit is commit `c1dc31db7`.
+- **Provenance**: `9b768b096` is the initial clean/build-green Lean baseline, while
+  `a50670417` is the audit-artifact commit for the faithful remove-chain model.
 - **Mode**: **audit**. An existing implementation was transcribed into Lean 4 (Mathlib
   v4.32.2) and its invariants proved / counterexamined.
 
@@ -103,8 +105,9 @@ content); added as axioms only if a proof required one:
   slot stale; `ClearCurrentHole` / `RemoveStop` model the terminal clear and guards; and
   inductive `RemoveRelocate` composes the continue/stop chain. Compiler-checked lemmas
   `RemoveContinue.oldTailUnchanged` and `RemoveRelocate.sameHeader` establish the stated
-  stale-tail and header facts. No cluster-invariant preservation theorem has yet been
-  proved for this chain.
+  stale-tail and header facts. `removeRelocate_activeBoundary_counterexample` is
+  machine-checked and blocks faithful preservation while `remapEnd` is active under its
+  stated bucket premises; no no-remap preservation theorem is closed yet.
 - `UnRelocateStepWithStableHeader` is a narrower helper around the retained weak
   `UnRelocateStep`; it uses `SameRemoveHeader` but is not the faithful chain model.
 - `RelocateStep` modeled a complete move (writing the displaced entry at `next`); it is
