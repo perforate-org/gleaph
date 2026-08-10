@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 08:52:05 UTC +0000
+Anchor timestamp: 2026-08-10 10:08:54 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -27,8 +27,15 @@ that the current weak `RemapStep` relation admits an invariant-preserving source
 invariant-breaking target. Consequently, the named theorem
 `remap_step_preserves_invariant` is false as currently stated, not merely deferred.
 
+The machine-checked `unrelocateStep_does_not_preserve_clusterInvariant` counterexample
+is parameterized by a supplied `k : Key` and therefore requires an inhabited key domain.
+For each such key, the current weak `UnRelocateStep` relation admits a valid source and an
+invariant-breaking target. Consequently, `remove_preserves_invariant` is false for an
+inhabited key domain, not merely deferred. This exposes a Lean relation defect, not a Rust
+implementation defect or evidence that the modeled counterexample is Rust-reachable.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
-is repaired in the current uncommitted worktree: `size_up` derives its growth target from
+is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
 previous out-of-bounds write. This runtime evidence does not extend the Lean result;
 the proof still does not establish production resize safety.
@@ -40,6 +47,8 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. `remove_preserves_invariant` for the `UnRelocateStep` gap-fill chain.
+1. Strengthen `UnRelocateStep` with faithful continue/stop/chain transitions and the
+   table-geometry and slot facts guaranteed by production gap-fill, then restate and prove
+   `remove_preserves_invariant`.
 2. Strengthen `RemapStep` with the slot and invariant facts guaranteed by incremental
    remapping, then restate and prove `remap_step_preserves_invariant`.

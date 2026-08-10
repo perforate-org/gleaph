@@ -87,6 +87,90 @@ example : ¬ (∀ s : State, (DistanceValid s ∧ ClusterOrdered s) → Distance
   exact badState_notDistanceBounded (h badState hv)
 
 /-!
+## Counterexample to invariant preservation by the current `UnRelocateStep` relation
+
+`UnRelocateStep` models the remove-and-relocate operation, but constrains only the
+moved tail entry and slots other than `position` and `next`.  It does not require the
+target state to retain its table size or satisfy `ClusterInvariant`.  The following
+machine-checked witness moves one valid entry back to its home bucket while changing
+the table geometry and leaving an invalid in-bounds distance at slot 3.
+
+Source: `src/map.rs` L502-L520 (`remove_and_relocate` loop); modeled by `Map.lean`
+L230-L240 (`UnRelocateStep`).
+-/
+
+/-- The current weak `UnRelocateStep` relation does not preserve
+`ClusterInvariant`. -/
+theorem unrelocateStep_does_not_preserve_clusterInvariant (k : Key) :
+    ∃ s s' position,
+      ClusterInvariant s ∧ UnRelocateStep s s' position ∧ ¬ ClusterInvariant s' := by
+  let b := bucket k 1
+  let s : State :=
+    { n := 1, len := 1, remapEnd := none
+      dist := fun i => if i = 2 then 2 - b else if i = 3 then 4 else EMPTY
+      keyAt := fun i => if i = 2 then some k else none
+      valAt := fun _ => 0 }
+  let s' : State :=
+    { n := 2, len := 1, remapEnd := none
+      dist := fun i => if i = 1 then 1 - b else if i = 2 then EMPTY else if i = 3 then 4 else EMPTY
+      keyAt := fun i => if i = 1 then some k else none
+      valAt := fun _ => 0 }
+  have hb : b < 2 := by
+    dsimp [b]
+    exact Nat.mod_lt _ (by decide)
+  refine ⟨s, s', 1, ?_, ?_, ?_⟩
+  · constructor
+    · intro i hi hocc
+      dsimp [s] at hi hocc ⊢
+      norm_num [capacity] at hi
+      split_ifs at hocc ⊢ <;> omega
+    · constructor
+      · intro i j hi hj hij hiocc hjocc
+        dsimp [s] at hi hj hiocc hjocc ⊢
+        norm_num [capacity] at hi hj
+        simp only [BucketAt] at hiocc hjocc ⊢
+        split_ifs at hiocc hjocc ⊢ <;> omega
+      · intro i hi hocc
+        have hi3 : i < 3 := by simpa [s, capacity] using hi
+        change s.dist i ≠ EMPTY at hocc
+        by_cases hi2 : i = 2
+        · subst i
+          change 2 - (2 - b) = bucket k 1
+          have hback : 2 - (2 - b) = b := by omega
+          rw [hback]
+        · by_cases hi_last : i = 3
+          · omega
+          · have hempty : s.dist i = EMPTY := by simp [s, hi2, hi_last]
+            exact False.elim (hocc hempty)
+  · refine ⟨k, 0, 2 - b, 2, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · dsimp [s, tailOfCluster, endOfCluster, endOfClusterFrom, BucketAt]
+      have hback : 2 - (2 - b) = b := by omega
+      have hne : 2 - b ≠ EMPTY := by
+        have hle : 2 - b ≤ 2 := Nat.sub_le _ _
+        norm_num [EMPTY]
+        omega
+      simp [capacity, endOfClusterFrom, hback, IsOccupied, BucketAt, hne]
+    · simp [s]
+    · rfl
+    · simp [s]
+    · omega
+    · simp [s']
+    · rfl
+    · change 1 - b = (2 - b) - (2 - 1)
+      omega
+    · simp [s']
+    · intro i hi_pos hi_next
+      simp [s', s, hi_pos, hi_next]
+    · intro i hi_pos hi_next
+      rfl
+    · intro i hi_pos hi_next
+      simp [s', s, hi_pos, hi_next]
+  · intro h
+    have hd := h.1 3 (by norm_num [s', capacity])
+      (by simp [s', IsOccupied, EMPTY])
+    norm_num [s', EMPTY] at hd
+
+/-!
 ## Counterexample to invariant preservation by the current `RemapStep` relation
 
 `RemapStep` currently records only entry-set, length, and boundary preservation. The

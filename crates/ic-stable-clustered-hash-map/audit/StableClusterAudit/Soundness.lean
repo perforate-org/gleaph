@@ -524,6 +524,9 @@ lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {posit
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by
   -- `UnRelocateStep` lacks the metadata and relocation-chain facts needed to prove removal preserves the invariant (src/map.rs L491-L520).
+  -- For every supplied key, Counterexamples.lean proves a machine-checked violating
+  -- witness; if `Key` is empty, `UnRelocateStep` is uninhabited and that witness is
+  -- unavailable, so the counterexample requires an inhabited key domain.
   sorry
 
 lemma remap_step_preserves_invariant (h : ClusterInvariant s) (hstep : RemapStep s s') :

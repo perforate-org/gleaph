@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 08:52:05 UTC +0000
+Anchor timestamp: 2026-08-10 10:08:54 UTC +0000
 
 ## Target and version / Mode
 
@@ -29,7 +29,7 @@ Mathlib):
 - Stage 1 — `Abstract.lean`: state model, cluster invariants, target properties,
   assumptions.
 - Stage 1 adversarial — `Counterexamples.lean`: counterexamples to a claimed bound and
-  to invariant preservation by the current `RemapStep` relation.
+  to invariant preservation by the current `UnRelocateStep` and `RemapStep` relations.
 - Stage 2 — `Map.lean`: relation-level models of scanning, probing, insert/remove
   relocation, and incremental resize, with their stated assumptions.
 - Stage 3 — `Soundness.lean`: proofs of the target properties.
@@ -71,6 +71,13 @@ content); added as axioms only if a proof required one:
   `remapEnd`, while only the source satisfies `ClusterInvariant`. Therefore the named
   theorem `remap_step_preserves_invariant` is false under the current weak `RemapStep`
   relation; it is not merely a deferred proof.
+- **`UnRelocateStep` counterexample (proved in Lean)**:
+  `unrelocateStep_does_not_preserve_clusterInvariant` constructs, for every supplied
+  `k : Key`, a valid source and invalid target. The weak relation permits the target table
+  geometry to change and leaves an invalid in-bounds distance at slot 3. Thus, for an
+  inhabited key domain, it refutes `remove_preserves_invariant` under the current relation,
+  not merely as a deferred proof. This exposes a Lean relation defect, not a Rust
+  implementation defect or evidence that the modeled counterexample is Rust-reachable.
 
 ### `Map.lean` (Stage 2 transcription — several under-specifications surfaced)
 
@@ -82,6 +89,9 @@ content); added as axioms only if a proof required one:
   `remap_preserves_entries` is therefore relation-level, not a Rust refinement proof of
   production `remap_step` or `remap_position`, and the current relation admits the
   invariant-breaking counterexample above.
+- `UnRelocateStep` constrains only the moved tail entry and slots other than `position`
+  and `next`; it does not preserve table geometry or constrain all target slots, so it
+  admits the invariant-breaking counterexample above for any inhabited key domain.
 - `RelocateStep` modeled a complete move (writing the displaced entry at `next`); it is
   in fact an **intermediate state** with the displaced entry in flight, and its distance
   handling was wrong. Refactored into a Type-valued relation with `entryDist` and a
@@ -112,6 +122,13 @@ Proved:
 
 Not proved, and false as currently stated:
 
+- Target (b), remove: for any inhabited key domain, `remove_preserves_invariant` is
+  refuted under the current weak `UnRelocateStep` relation. The machine-checked
+  `unrelocateStep_does_not_preserve_clusterInvariant` counterexample shows that the
+  relation permits a valid source and invalid target; it identifies a Lean relation defect,
+  not a Rust implementation defect. The relation must be strengthened with the state facts
+  guaranteed by production gap-fill before this theorem can be proved.
+
 - Target (b), remap: `remap_step_preserves_invariant` is false under the current weak
   `RemapStep` relation. The machine-checked
   `remapStep_does_not_preserve_clusterInvariant` counterexample shows that preserving
@@ -122,14 +139,14 @@ Not proved, and false as currently stated:
 The `RemapStep` result is relation-level because it postulates `keySet` and `len`; it is not a Rust refinement proof. Production `remap_position` can
 re-expand `remap_end`, and `ExpectedBucket` has not been proved a faithful invariant while
 a remap is active. The independent P1 / High `size_up` allocation defect recorded in
-`GAP-2026-08-10-002` is repaired in the current uncommitted worktree by deriving growth from
+`GAP-2026-08-10-002` is repaired in commit `c1dc31db7` by deriving growth from
 the canonical `entry_stride()`; a focused normal-load-threshold regression covers the prior
 out-of-bounds write. This runtime evidence does not extend the Lean relations, and no production
 resize assurance is inferred from those relations.
 
 ## Findings (severity)
 
-- **High (now fixed in the current uncommitted worktree)**: `size_up` used a stale
+- **High (fixed in commit `c1dc31db7`)**: `size_up` used a stale
   `key_size + value_size + 2` growth stride while entry offsets and clearing used the canonical
   `key_size + value_size + 4` stride. It now calls `entry_stride()`, and
   `load_threshold_resize_allocates_the_canonical_entry_stride` exercises the previously failing
@@ -151,12 +168,14 @@ resize assurance is inferred from those relations.
 
 | Target     | Theorem                                    | Why unproved / what is needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (b) remove | `remove_preserves_invariant`               | Same relocation-chain maintenance for `remove_and_relocate`'s gap-fill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| (b) remove | `remove_preserves_invariant`               | For any inhabited key domain, false under the current weak `UnRelocateStep` relation, not merely deferred: `unrelocateStep_does_not_preserve_clusterInvariant` supplies a machine-checked counterexample for each supplied `k : Key`. This identifies a Lean relation defect, not a Rust implementation defect. Strengthen the relation with faithful continue/stop/chain transitions and the table-geometry and slot facts guaranteed by production gap-fill before attempting the proof. |
 | (b) remap  | `remap_step_preserves_invariant`           | False under the current weak `RemapStep` relation, not merely deferred: `remapStep_does_not_preserve_clusterInvariant` supplies a machine-checked counterexample. Strengthen the relation with the slot and invariant facts guaranteed by remapping before attempting the proof. `remap_preserves_entries` remains relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping. |
 
-These two theorem bodies remain admitted. The conditional settled insert-chain theorem
-is closed; remove invariant preservation remains unproved, while remap invariant
-preservation is false under the current relation and first requires a stronger model.
+These two theorem bodies remain admitted. `remap_step_preserves_invariant` is false under
+its current weak relation; `remove_preserves_invariant` has a counterexample for every
+supplied `k : Key` and is therefore false for any inhabited key domain. The conditional
+settled insert-chain theorem is closed; remove and remap invariant preservation first
+require stronger models.
 
 ## Conclusion
 
@@ -164,20 +183,22 @@ The audit recorded a historical `u16` distance-overflow bug that was subsequentl
 in Rust with `u32` storage and insertion-time trapping. In the current Lean relations it
 proves `SizeUp` entry preservation, the relation-level `RemapStep` entry result (it postulates `keySet` and `len`, so it is not a Rust refinement proof), base-write and
 single-relocation-step invariant preservation, chain-maintenance lemmas, and the
-conditional settled insert-chain theorem. The remaining open items are the remove chain
-argument and strengthening `RemapStep` before proving remap invariant preservation; the
-current theorem is refuted by a machine-checked counterexample. The target (c) theorem is
-closed only at the abstract predicate level; actual lookup and persistence/re-open
-refinement remain outside that proof.
+conditional settled insert-chain theorem. The remaining open items are strengthening
+`UnRelocateStep` and `RemapStep` before proving removal and remap invariant preservation;
+the former has a relation counterexample for any inhabited key domain and the latter is
+refuted by a machine-checked counterexample. Neither finding establishes a Rust
+implementation defect. The target (c) theorem is closed only at the abstract predicate
+level; actual lookup and persistence/re-open refinement remain outside that proof.
 
 ## Status against "formal proof of a trustworthy data structure"
 
 This is **not yet a complete** operation-level verification. `insert_preserves_invariant`
 is conditional on a certified `InsertRelocateOK` settled chain and `remapEnd = none`; it
 does not cover Rust certificate construction, active-remap insertion, or mid-chain
-`size_up`. Remove and remap invariant preservation remain the two `sorry`s, but they have
-different status: remove is unproved, whereas `remap_step_preserves_invariant` is false
-under the current weak `RemapStep` relation. The proved target (c) predicate equivalence
+`size_up`. Remove and remap invariant preservation remain the two `sorry`s. The current
+`UnRelocateStep` relation has a counterexample for any inhabited key domain, and the
+current `RemapStep` relation is false; neither relation finding establishes a Rust defect.
+The proved target (c) predicate equivalence
 does not cover the actual `lookupIndex`, persisted images, or `init` / re-open refinement,
 so the structure should not be presented as formally verified end-to-end.
 
