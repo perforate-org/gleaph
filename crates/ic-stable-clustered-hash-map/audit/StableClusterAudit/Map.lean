@@ -4,8 +4,8 @@ Stage 2 — Faithful transcription of the `StableClusteredHashMap` operations.
 Audit mode (SCOPE.md §1). Transcribes `src/map.rs` into Lean: cluster scanning,
 `lookup_index`, and the insert / remove / incremental-resize transitions. Abstract
 memory (get/set) per SCOPE §6; byte-level layout, allocation, and error paths are out
-of scope. Every definition cites the Rust line range. Proof obligations (termination,
-invariant preservation) are deferred to Stage 3 and left as `sorry` with comments.
+of scope. Every definition cites the Rust line range. Invariant-preservation obligations
+are handled in Stage 3, where residual obligations are marked with `sorry` and comments.
 -/
 
 import Mathlib

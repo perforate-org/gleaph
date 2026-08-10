@@ -19,7 +19,7 @@ reference.
 -/
 
 import Mathlib
-import StableClusterAudit.Abstract
+import StableClusterAudit.Map
 
 open StableCluster
 
@@ -85,3 +85,66 @@ example : ¬ (∀ s : State, (DistanceValid s ∧ ClusterOrdered s) → Distance
   intro h
   have hv : DistanceValid badState ∧ ClusterOrdered badState := ⟨badState_distanceValid, badState_clusterOrdered⟩
   exact badState_notDistanceBounded (h badState hv)
+
+/-!
+## Counterexample to invariant preservation by the current `RemapStep` relation
+
+`RemapStep` currently records only entry-set, length, and boundary preservation. The
+following smallest states show that those constraints do not imply preservation of the
+cluster invariant: both states have no keys and length zero, but the target state has an
+invalid occupied distance at its sole in-bounds slot.
+-/
+
+-- src/map.rs L546-L596 and Map.lean L289-L296: modeled remap relation under test.
+def remapGoodState : State :=
+  { n := 0
+    len := 0
+    remapEnd := none
+    dist := fun _ => EMPTY
+    keyAt := fun _ => none
+    valAt := fun _ => 0 }
+
+def remapBadState : State :=
+  { n := 0
+    len := 0
+    remapEnd := none
+    dist := fun i => if i = 0 then 1 else EMPTY
+    keyAt := fun _ => none
+    valAt := fun _ => 0 }
+
+-- Abstract.lean L128-L129: `ClusterInvariant` requires `DistanceValid`,
+-- `ClusterOrdered`, and `EntryAtCorrectBucket`.
+theorem remapGoodState_clusterInvariant : ClusterInvariant remapGoodState := by
+  constructor
+  · intro i _hib hoc
+    exact False.elim (hoc (by simp [remapGoodState]))
+  · constructor
+    · intro i _j _hibi _hibj _hij hoci _hocj
+      exact False.elim (hoci (by simp [remapGoodState]))
+    · intro i _hib hoc
+      exact False.elim (hoc (by simp [remapGoodState]))
+
+-- Map.lean L283-L296: `RemapStep` constrains only `KeySet`, `len`, and the
+-- `remapEnd` boundary; it does not constrain slot contents or require an invariant.
+theorem remapStep_good_bad : RemapStep remapGoodState remapBadState := by
+  refine { keySet := ?_, len := ?_, boundary := ?_ }
+  · funext k
+    apply propext
+    simp [KeySet, remapGoodState, remapBadState]
+  · rfl
+  · trivial
+
+-- Abstract.lean L99-L102, L128-L129: slot 0 is in bounds and occupied, but its
+-- distance is 1, so `DistanceValid` would require the false inequality `1 ≤ 0`.
+theorem remapBadState_not_clusterInvariant : ¬ ClusterInvariant remapBadState := by
+  intro hinv
+  have hdist := hinv.1 0 (by norm_num [capacity, remapBadState]) (by
+    norm_num [IsOccupied, remapBadState, EMPTY])
+  norm_num [remapBadState] at hdist
+
+/-- The current weak `RemapStep` relation does not preserve `ClusterInvariant`. -/
+theorem remapStep_does_not_preserve_clusterInvariant :
+    ¬ (∀ s s' : State, RemapStep s s' → ClusterInvariant s → ClusterInvariant s') := by
+  intro h
+  exact remapBadState_not_clusterInvariant
+    (h remapGoodState remapBadState remapStep_good_bad remapGoodState_clusterInvariant)

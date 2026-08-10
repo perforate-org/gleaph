@@ -48,11 +48,19 @@ non-decreasing; each entry lies in the cluster of its bucket. This makes
 `lookup_index` / `find_insert_position` correct and terminating. Distance fit in
 `u32` is _not_ part of this structural invariant (see `Counterexamples.lean`); it is
 enforced at insert by `checked_distance`, which traps on overflow.
+The current weak `RemapStep` relation does not constrain slot contents enough to preserve
+this invariant: `remapStep_does_not_preserve_clusterInvariant` is a machine-checked
+counterexample, so `remap_step_preserves_invariant` is false as currently stated rather
+than merely deferred.
 
 **(c) Re-open mid-resize consistency.** A persisted state read back by `init` (header
 `len`, `log2_buckets`, `remap_end` + slots) reconstructs a valid map; `lookup_index`
 finds entries under both the old (mixed range `[0, remap_end]`) and new mappings, so
 the key set is unchanged across re-open during a resize.
+The current Lean theorem is kernel-checked only at the abstract predicate level: it
+proves `KeySet` equivalence with the existential `LookupFound` predicate through
+`EntryAtCorrectBucket`, not a refinement of the actual `lookupIndex`, a persisted memory
+image, or `init` / re-open behavior.
 
 ## 5. Assumptions / threat model
 
@@ -83,6 +91,7 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
 
 - `Abstract.lean` (Stage 1: state model + invariants + assumptions)
 - `Map.lean` (Stage 2: transcription of the map logic)
-- `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample)
-- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; remove/remap and target (c) remain deferred with `sorry` + comments)
+- `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample and
+  machine-checked refutation of invariant preservation by the current `RemapStep` relation)
+- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; predicate-level target (c) is proved through `EntryAtCorrectBucket`; remove invariant preservation remains deferred with `sorry`, while the admitted `remap_step_preserves_invariant` is false under the current weak relation and requires model strengthening)
 - `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)

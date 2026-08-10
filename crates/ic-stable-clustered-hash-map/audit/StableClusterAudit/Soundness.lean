@@ -523,23 +523,34 @@ lemma insert_preserves_invariant {s s' : State} {key : Key} {value : Nat} {posit
 
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by
+  -- `UnRelocateStep` lacks the metadata and relocation-chain facts needed to prove removal preserves the invariant (src/map.rs L491-L520).
   sorry
 
 lemma remap_step_preserves_invariant (h : ClusterInvariant s) (hstep : RemapStep s s') :
     ClusterInvariant s' := by
+  -- `RemapStep` postulates only `keySet` and `len`, which underconstrains invariant preservation (src/map.rs L546-L596).
   sorry
 
 /-!
-## Target (c) — re-open consistency (src/map.rs L107-L126, L349-L370)
+## Target (c) — predicate-level re-open consistency
 
-A persisted state read back by `init` must satisfy the cluster invariant and its lookup
-must find exactly the stored keys. The `lookupIndex` transcription in `Map.lean` scans
-the new table then the mixed range; proving it finds exactly `KeySet` relies on the
-cluster invariant (target (b)) being established, which is not yet discharged.
+`ReopenConsistent` is an abstract state predicate: under `ClusterInvariant`, `KeySet` is
+equivalent to the existential `LookupFound` predicate through `EntryAtCorrectBucket`.
+The theorem below is kernel-checked at that level only. It does not refine the actual
+`lookupIndex`, a persisted memory image, or `init` / re-open behavior.
+
+The implementation boundary is `src/map.rs L107-L126, L349-L370`; this theorem does
+not establish that those concrete lookup or re-open paths realize the predicate.
 -/
 
 lemma reopen_consistent_of_cluster_invariant (h : ClusterInvariant s) :
     ReopenConsistent s := by
-  sorry
+  refine ⟨h, ?_⟩
+  intro k
+  constructor
+  · rintro ⟨i, hicap, hiocc, hkey⟩
+    exact ⟨i, hicap, hiocc, hkey, h.2.2 i hicap hiocc⟩
+  · rintro ⟨i, hicap, hiocc, hkey, _⟩
+    exact ⟨i, hicap, hiocc, hkey⟩
 
 end StableClusterAudit

@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 06:53:00 UTC +0000
+Anchor timestamp: 2026-08-10 08:52:05 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -22,14 +22,24 @@ insertion, or a relocation chain that enters `size_up` mid-chain.
 `sizeUp_preserves_entries` proves the `SizeUp` relation. By contrast, `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`; it is not a Rust refinement proof of production `remap_step` or `remap_position`. Production `remap_position` may re-expand `remap_end`, and
 `ExpectedBucket` is not yet proved a faithful invariant for active remapping.
 
+The machine-checked `remapStep_does_not_preserve_clusterInvariant` counterexample shows
+that the current weak `RemapStep` relation admits an invariant-preserving source and an
+invariant-breaking target. Consequently, the named theorem
+`remap_step_preserves_invariant` is false as currently stated, not merely deferred.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in the current uncommitted worktree: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
 previous out-of-bounds write. This runtime evidence does not extend the Lean result;
 the proof still does not establish production resize safety.
 
+`reopen_consistent_of_cluster_invariant` is now kernel-checked, but only at the abstract
+predicate level: it proves `KeySet` equivalence with the existential `LookupFound`
+predicate through `EntryAtCorrectBucket`. It does not refine the actual `lookupIndex`, a
+persisted memory image, or `init` / re-open behavior.
+
 ## Follow-on proofs
 
 1. `remove_preserves_invariant` for the `UnRelocateStep` gap-fill chain.
-2. `remap_step_preserves_invariant` for incremental remapping.
-3. `reopen_consistent_of_cluster_invariant` and the lookup / `KeySet` correspondence.
+2. Strengthen `RemapStep` with the slot and invariant facts guaranteed by incremental
+   remapping, then restate and prove `remap_step_preserves_invariant`.
