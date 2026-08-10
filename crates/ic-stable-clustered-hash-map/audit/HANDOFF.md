@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 21:05:36 UTC +0000
+Anchor timestamp: 2026-08-10 21:30:00 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -63,6 +63,14 @@ these certificates; it does not prove that the leading Rust `remap_step` or conc
 lookup constructs them, and it does not cover active-remap, absent-key, or persistence /
 re-open refinement.
 
+The settled lookup success direction is now closed by
+`lookupIndex_some_implies_lookupFound`: under `remapEnd = none`, a modeled successful
+scan returns an in-bounds occupied slot containing the requested key at its expected
+bucket. This is only a soundness direction; lookup completeness and the Rust construction
+of the `PublicRemoveSettled` certificate remain open.
+`publicRemoveSettled_lookupFound` exposes the same result directly from the public-remove
+certificate without strengthening the settled invariant assumptions.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -76,9 +84,9 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Refine the leading `remap_step` and concrete `lookup_index` into the
-   `PublicRemoveSettled` certificate, then cover the absent-key and active-remap public
-   branches before retiring the weak `UnRelocateStep`-targeted `remove_preserves_invariant`
-   obligation.
+1. Prove lookup completeness under a strengthened settled cluster model, then refine the
+   leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
+   and active-remap public branches before retiring the weak
+   `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.
 2. Strengthen `RemapStep` with the slot and invariant facts guaranteed by incremental
    remapping, then restate and prove `remap_step_preserves_invariant`.

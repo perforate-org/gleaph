@@ -361,6 +361,61 @@ lemma occupied_in_scan (s : State) (b i i' : Nat) (hle : i ≤ i')
     (hlt : i' < endOfClusterFrom s b i) : IsOccupied s i' :=
   (slot_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt).1
 
+-- A successful settled `lookupIndex` scan returns an in-bounds occupied slot with the
+-- requested key at its expected bucket. This is the concrete scan-result fact consumed by
+-- the public-remove certificate; it does not prove that every stored key is found.
+-- src/map.rs L325-L372.
+lemma scanFor_some_aux (s : State) (key : Key) (b : Nat) :
+    ∀ m start i, capacity s.n - start = m →
+      scanFor s key b start = some i →
+      i < capacity s.n ∧ IsOccupied s i ∧ BucketAt s i = b ∧ s.keyAt i = some key := by
+  intro m
+  induction m using Nat.strong_induction_on with
+  | h m ih =>
+      intro start i hm hscan
+      rw [scanFor] at hscan
+      by_cases hstart : start < capacity s.n
+      · simp only [hstart, ↓reduceIte] at hscan
+        by_cases hempty : s.dist start = EMPTY
+        · simp [hempty] at hscan
+        · simp only [hempty, ↓reduceIte] at hscan
+          by_cases hgreater : BucketAt s start > b
+          · simp [hgreater] at hscan
+          · simp only [hgreater, ↓reduceIte] at hscan
+            by_cases hmatch : BucketAt s start = b ∧ s.keyAt start = some key
+            · simp [hmatch] at hscan
+              subst i
+              exact ⟨hstart, hempty, hmatch.1, hmatch.2⟩
+            · simp [hmatch] at hscan
+              have hm' : capacity s.n - (start + 1) < m := by omega
+              exact ih (capacity s.n - (start + 1)) hm' (start + 1) i rfl hscan
+      · simp [hstart] at hscan
+
+lemma lookupIndex_some_implies_lookupFound {s : State} {key : Key} {i : Nat}
+    (hremap : s.remapEnd = none) (hlookup : lookupIndex s key = some i) :
+    LookupFound s key := by
+  unfold lookupIndex at hlookup
+  by_cases hlen : s.len = 0
+  · simp [hlen] at hlookup
+  · simp only [hlen, ↓reduceIte] at hlookup
+    simp only [hremap] at hlookup
+    cases hscan : scanFor s key (bucket key s.n) (bucket key s.n) with
+    | none => simp [hscan] at hlookup
+    | some j =>
+        have hs := scanFor_some_aux s key (bucket key s.n)
+          (capacity s.n - bucket key s.n) (bucket key s.n) j rfl hscan
+        simp [hscan] at hlookup
+        have hj : j = i := hlookup
+        subst j
+        refine ⟨i, hs.1, hs.2.1, hs.2.2.2, ?_⟩
+        simpa [ExpectedBucket, hs.2.2.2, hremap] using hs.2.2.1
+
+lemma publicRemoveSettled_lookupFound {s s' : State} {key : Key}
+    (h : PublicRemoveSettled s s' key) : LookupFound s key := by
+  cases h with
+  | found hlookup hsettled _relocate _setLen =>
+      exact lookupIndex_some_implies_lookupFound hsettled hlookup
+
 -- The cluster scan never returns a slot before where it started.
 lemma endOfClusterFrom_ge_aux (s : State) (b : Nat) :
     ∀ m i, capacity s.n - i = m → i ≤ endOfClusterFrom s b i := by
