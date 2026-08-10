@@ -274,6 +274,10 @@ pub struct EncodingRecord {
   encoding**; wire embedding and query bytes are **always canonical F32 (`dims*4`)**. The canister
   quantizes internally; a separate `query_encoding` field is not needed unless an I8-on-wire query
   (A2) is added later.
+- **Measured recall (Slice 0244)**: on deterministic synthetic data (d=256, 512 vectors, 32 queries)
+  I8 recall@10/recall@100 vs F32 exact-scan ground truth is **~0.99** for both L2-Gaussian
+  (0.9906 / 0.9934) and cosine-unit-sphere (0.9906 / 0.9947). Operators should still measure recall
+  on their own embedding distribution before adopting I8 (adoption is an operator decision).
 - **Binary cosine**: `Bits01` → `n11·rq·rv` (`n11 = Σ popcnt(q∧v)`, per-row `rv = 1/√popcnt(v)`);
   `Signs` → `1 − 2H/d` (`H = Σ popcnt(q⊕v)`, cosine ≡ Hamming order, no sqrt). The convention is a
   per-model property.

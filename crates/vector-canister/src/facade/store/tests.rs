@@ -3996,4 +3996,207 @@ mod i8_tests {
             );
         }
     }
+
+    // -------------------------------------------------------------------------------------------
+    // I8 vs F32 recall measurement. Adoption of I8 is an operator decision; this reports the
+    // quantization recall@k (top-k subject overlap against the F32 exact-scan ground truth) on
+    // representative synthetic distributions, and keeps a conservative floor as a regression guard.
+    // -------------------------------------------------------------------------------------------
+
+    /// Deterministic xorshift64 PRNG so the recall measurement is reproducible.
+    struct XorShift64(u64);
+
+    impl XorShift64 {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn unit(&mut self) -> f32 {
+            (self.next() as f32) / (u64::MAX as f32)
+        }
+
+        /// Standard-normal sample via Box–Muller.
+        fn gauss(&mut self) -> f32 {
+            let u1 = self.unit().max(f32::MIN_POSITIVE);
+            let u2 = self.unit();
+            (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
+        }
+    }
+
+    fn f32_upsert(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        vertex_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+    ) {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        store
+            .vector_upsert(
+                shard_canister(),
+                &VectorEmbeddingSyncOp {
+                    index_id,
+                    embedding_name_id: 0,
+                    subject: subject(vertex_id),
+                    mutation_id: 1,
+                    encoding: VectorEncoding::F32,
+                    dims: values.len() as u16,
+                    metric,
+                    bytes,
+                    remove: false,
+                },
+            )
+            .expect("f32 upsert");
+    }
+
+    fn f32_topk(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+        top_k: u32,
+    ) -> Vec<u32> {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let res = store
+            .vector_search(&VectorSearchRequest {
+                index_id,
+                query: bytes,
+                encoding: VectorEncoding::F32,
+                dims: values.len() as u16,
+                metric,
+                top_k,
+                candidate_subjects: None,
+            })
+            .expect("f32 search");
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    fn i8_upsert_d(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        vertex_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+    ) {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        store
+            .vector_upsert(
+                shard_canister(),
+                &VectorEmbeddingSyncOp {
+                    index_id,
+                    embedding_name_id: 0,
+                    subject: subject(vertex_id),
+                    mutation_id: 1,
+                    encoding: VectorEncoding::I8,
+                    dims: values.len() as u16,
+                    metric,
+                    bytes,
+                    remove: false,
+                },
+            )
+            .expect("i8 upsert");
+    }
+
+    fn i8_search_d(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+        top_k: u32,
+    ) -> Vec<u32> {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let res = store
+            .vector_search(&VectorSearchRequest {
+                index_id,
+                query: bytes,
+                encoding: VectorEncoding::I8,
+                dims: values.len() as u16,
+                metric,
+                top_k,
+                candidate_subjects: None,
+            })
+            .expect("i8 search");
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    fn overlap(a: &[u32], b: &[u32]) -> usize {
+        let set: std::collections::HashSet<u32> = b.iter().copied().collect();
+        a.iter().filter(|x| set.contains(x)).count()
+    }
+
+    /// Reports I8 vs F32 recall@k and asserts a conservative floor (regression guard; adoption of
+    /// I8 is the operator's decision, informed by the reported number).
+    fn run_recall(
+        store: &VectorCanisterStore,
+        dims: u16,
+        rng_seed: u64,
+        metric: VectorMetric,
+    ) -> (f32, f32) {
+        let n = 512u32;
+        let queries = 32u32;
+        let mut rng = XorShift64(rng_seed);
+        for v in 0..n {
+            let g: Vec<f32> = (0..dims).map(|_| rng.gauss()).collect();
+            let vals: Vec<f32> = if metric == VectorMetric::Cosine {
+                let norm = g.iter().map(|x| x * x).sum::<f32>().sqrt();
+                g.iter().map(|x| x / norm).collect()
+            } else {
+                g
+            };
+            f32_upsert(store, INDEX_ID, v, &vals, metric);
+            i8_upsert_d(store, I8_INDEX, v, &vals, metric);
+        }
+        let (mut r10, mut r100) = (0.0f32, 0.0f32);
+        for _ in 0..queries {
+            let g: Vec<f32> = (0..dims).map(|_| rng.gauss()).collect();
+            let q: Vec<f32> = if metric == VectorMetric::Cosine {
+                let norm = g.iter().map(|x| x * x).sum::<f32>().sqrt();
+                g.iter().map(|x| x / norm).collect()
+            } else {
+                g
+            };
+            let f = f32_topk(store, INDEX_ID, &q, metric, 100);
+            let i = i8_search_d(store, I8_INDEX, &q, metric, 100);
+            r10 += overlap(&f[..10], &i[..10]) as f32 / 10.0;
+            r100 += overlap(&f, &i) as f32 / 100.0;
+        }
+        (r10 / queries as f32, r100 / queries as f32)
+    }
+
+    #[test]
+    fn i8_recall_vs_f32_gaussian_l2() {
+        let store = fresh_store();
+        let (r10, r100) = run_recall(&store, 256, 0xDEAD_BEEF, VectorMetric::L2Squared);
+        eprintln!("I8 recall L2 gaussian d=256: recall@10={r10:.4} recall@100={r100:.4}");
+        assert!(
+            r10 >= 0.90 && r100 >= 0.90,
+            "I8 L2 recall too low: @10={r10} @100={r100}"
+        );
+    }
+
+    #[test]
+    fn i8_recall_vs_f32_unit_sphere_cosine() {
+        let store = fresh_store();
+        let (r10, r100) = run_recall(&store, 256, 0xFEED_FACE, VectorMetric::Cosine);
+        eprintln!("I8 recall cosine unit-sphere d=256: recall@10={r10:.4} recall@100={r100:.4}");
+        assert!(
+            r10 >= 0.90 && r100 >= 0.90,
+            "I8 cosine recall too low: @10={r10} @100={r100}"
+        );
+    }
 }
