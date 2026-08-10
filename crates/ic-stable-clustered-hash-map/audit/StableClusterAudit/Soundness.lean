@@ -424,6 +424,80 @@ lemma len_pos_of_lenCoherent_keySet {s : State} {k : Key}
   refine ⟨i, ?_⟩
   simp [OccupiedSlots, hicapi, hoci]
 
+-- A single terminating insert write changes the occupied-slot cardinality by one: the source
+-- position is empty, the target position is occupied, and all other distances are unchanged.
+-- src/map.rs L464-L466 (`write_entry` at an empty insertion position).
+lemma occupiedSlots_card_after_empty_write {s s' : State} {position : Nat}
+    (hn : s'.n = s.n) (hpos : position < capacity s.n)
+    (hslot : s.dist position = EMPTY) (hnew : s'.dist position ≠ EMPTY)
+    (hother : ∀ i, i ≠ position → s'.dist i = s.dist i) :
+    (OccupiedSlots s').card = (OccupiedSlots s).card + 1 := by
+  have hslots : OccupiedSlots s' = insert position (OccupiedSlots s) := by
+    ext i
+    by_cases hi : i = position
+    · subst i
+      simp [OccupiedSlots, hn, hpos, hslot, hnew]
+    · simp [OccupiedSlots, hn, hi, hother i hi]
+  have hnot : position ∉ OccupiedSlots s := by
+    simp [OccupiedSlots, hpos, hslot]
+  rw [hslots, Finset.card_insert_of_notMem hnot]
+
+-- A relocation step overwrites an occupied slot with another occupied entry and therefore keeps
+-- the occupied-slot cardinality unchanged. src/map.rs L468-L478 (`write_entry` over a hit slot).
+lemma occupiedSlots_card_after_occupied_write {s s' : State} {position : Nat}
+    (hn : s'.n = s.n) (hpos : position < capacity s.n)
+    (hsrc : s.dist position ≠ EMPTY) (hnew : s'.dist position ≠ EMPTY)
+    (hother : ∀ i, i ≠ position → s'.dist i = s.dist i) :
+    (OccupiedSlots s').card = (OccupiedSlots s).card := by
+  have hslots : OccupiedSlots s' = OccupiedSlots s := by
+    ext i
+    by_cases hi : i = position
+    · subst i
+      simp [OccupiedSlots, hn, hpos, hsrc, hnew]
+    · simp [OccupiedSlots, hn, hother i hi]
+  exact congrArg Finset.card hslots
+
+-- Each certified insert chain fills exactly one previously empty slot. The occupancy certificate
+-- is intentionally separate from `InsertRelocateOK`: the existing order certificate does not
+-- itself carry the in-bounds/non-empty facts required for this cardinality argument.
+-- src/map.rs L447-L487.
+lemma insertRelocate_preserves_occupiedCard {s s' : State} {key : Key} {value : Nat}
+    {position : Nat} {h : InsertRelocate s s' key value position}
+    (hok : InsertRelocateOccupancyOK h) :
+    (OccupiedSlots s').card = (OccupiedSlots s).card + 1 := by
+  induction hok with
+  | done hw hpos =>
+      apply occupiedSlots_card_after_empty_write hw.n.symm hpos hw.slotEmpty
+      · rw [hw.dist]
+        exact ne_of_lt hw.distFit
+      · exact hw.dist_other
+  | step mid entryDist hstep hnext hpos hentry hok ih =>
+      have hstep_card :=
+        occupiedSlots_card_after_occupied_write hstep.n.symm hpos
+          (by
+            rw [hstep.distT]
+            have hsum := hstep.tDistShifted
+            omega)
+          (by
+            rw [hstep.entryDistAt]
+            exact ne_of_lt hentry)
+          hstep.dist_other
+      rw [ih, hstep_card]
+
+-- The public insert length update is coherent once the preceding relocation chain carries the
+-- occupancy certificate. This is a settled, certificate-level bridge; Rust construction of both
+-- certificates and active-remap insertion remain outside the theorem. src/map.rs L424-L451.
+lemma publicInsertSettled_preserves_lenCoherent {s mid s' : State} {key : Key} {value : Nat}
+    {position : Nat} {h : InsertRelocate s mid key value position}
+    (hok : InsertRelocateOccupancyOK h) (hlen : LenCoherent s)
+    (hheader : mid.len = s.len)
+    (setLen : s' = {mid with len := mid.len + 1}) : LenCoherent s' := by
+  subst s'
+  unfold LenCoherent at hlen ⊢
+  have hcard := insertRelocate_preserves_occupiedCard hok
+  change mid.len + 1 = (OccupiedSlots mid).card
+  omega
+
 -- Lookup completeness needs the separately stated `NoHoles` condition and a positive
 -- `LenCoherent` condition because the abstract `State` otherwise leaves `len` independent
 -- from the occupied-slot count.

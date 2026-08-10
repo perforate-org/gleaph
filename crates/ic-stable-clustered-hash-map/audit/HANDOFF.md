@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 22:57:28 UTC +0000
+Anchor timestamp: 2026-08-10 23:42:29 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -89,6 +89,13 @@ the same invariant and `KeySet` witness remains valid after changing only `len` 
 Any end-to-end completeness proof therefore needs both the no-holes condition and a
 `LenCoherent` cardinality/length relation.
 
+`InsertRelocateOccupancyOK` records the explicit in-bounds and non-EMPTY slot facts needed
+for a cardinality proof separate from `InsertRelocateOK`. The kernel-checked
+`insertRelocate_preserves_occupiedCard` theorem shows that a certified chain adds exactly
+one occupied slot, and `publicInsertSettled_preserves_lenCoherent` carries that result
+through the final `len + 1` update when the chain header length is supplied. These
+certificate premises are not yet derived from Rust insertion history.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -102,7 +109,8 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Justify `NoHoles` and `LenCoherent` from Rust insertion history, then refine the
+1. Derive the `NoHoles`, `LenCoherent`, and insert-occupancy certificate premises from Rust
+   insertion history, then refine the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.

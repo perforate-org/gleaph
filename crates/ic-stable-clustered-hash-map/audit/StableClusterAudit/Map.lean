@@ -223,6 +223,25 @@ inductive InsertRelocateOK : {s s' : State} → {key : Key} → {value : Nat} �
       (hok : InsertRelocateOK hnext) :
       InsertRelocateOK (InsertRelocate.step mid entryDist hstep hnext)
 
+-- Length coherence is a cardinality fact about the slot writes, separate from the bucket-order
+-- obligations in `InsertRelocateOK`. The production insert writes one previously empty slot at
+-- the terminating `write_entry`; relocation steps overwrite occupied slots. These explicit bounds
+-- record the facts needed to derive that cardinality change from the chain. src/map.rs L447-L487.
+inductive InsertRelocateOccupancyOK : {s s' : State} → {key : Key} → {value : Nat} →
+    {position : Nat} → InsertRelocate s s' key value position → Prop where
+  | done {s s' : State} {key : Key} {value : Nat} {position : Nat}
+      (hw : RelocateWrite s s' key value position)
+      (hpos : position < capacity s.n) :
+      InsertRelocateOccupancyOK (InsertRelocate.done hw)
+  | step {s s' : State} {key : Key} {value : Nat} {position : Nat}
+      (mid : State) (entryDist : Nat)
+      (hstep : RelocateStep s mid key value entryDist position)
+      (hnext : InsertRelocate mid s' hstep.tKey hstep.tVal hstep.next)
+      (hpos : position < capacity s.n)
+      (hentry : entryDist < EMPTY)
+      (hok : InsertRelocateOccupancyOK hnext) :
+      InsertRelocateOccupancyOK (InsertRelocate.step mid entryDist hstep hnext)
+
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L504-L520.
 -- One step: the slot `position` is freed and the tail `next` of the cluster at
