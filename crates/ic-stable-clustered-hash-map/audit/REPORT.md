@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 21:47:48 UTC +0000
+Anchor timestamp: 2026-08-10 22:24:24 UTC +0000
 
 ## Target and version / Mode
 
@@ -170,6 +170,11 @@ Proved:
   `lookupIndex_completeness_counterexample` places an occupied entry after an empty slot
   in an otherwise invariant state. The scan's stop-at-empty behavior is therefore not
   derivable from the present invariant alone.
+- `NoHoles` is now an explicit strengthening, and
+  `lookupIndex_complete_of_noHoles` proves settled lookup completeness from
+  `ClusterInvariant`, `NoHoles`, and `0 < s.len`. The theorem preserves the boundary
+  honestly: the Rust/insertion-history proof of `NoHoles` and the model's `len`/occupancy
+  coherence remain unproved.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -250,9 +255,9 @@ conditional settled insert-chain theorem. It also proves the faithful bounded
 `RemoveRelocate` chain preserves `ClusterInvariant` under `s.remapEnd = none`, and a
 certificate-level settled found-branch bridge through the final public `len - 1` update.
 The concrete lookup success direction is also proved for settled scans. Lookup completeness
-is refuted by the current invariant's hole-permitting model and requires a no-holes or
-equivalent insertion-history strengthening. Remaining work includes proving completeness
-under that strengthening and proving the leading `remap_step` constructs the remove
+is refuted by the current invariant's hole-permitting model; it is now proved conditionally
+under `NoHoles` and positive `len`. Remaining work includes justifying that strengthening
+from Rust/insertion history and proving the leading `remap_step` constructs the remove
 certificate, handling active-remap and absent-key public branches, retiring the retained weak
 `UnRelocateStep` declaration, and strengthening `RemapStep` before proving remap invariant
 preservation. The weak `UnRelocateStep` has a relation counterexample for any inhabited
@@ -269,7 +274,7 @@ does not cover Rust certificate construction, active-remap insertion, or mid-cha
 `size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
 declarations. The faithful bounded remove chain and its certificate-level settled
 found-branch public-remove bridge are separately proved invariant-preserving under
-`s.remapEnd = none`; lookup completeness under a strengthened no-holes model, construction of the certificate from leading
+`s.remapEnd = none`; the Rust justification of `NoHoles` and `len` coherence, construction of the certificate from leading
 `remap_step`, active-remap, absent-key, and persistence refinement remain outside those
 theorems. The current `UnRelocateStep` relation has a counterexample for any inhabited key
 domain, and the current `RemapStep` relation is false; neither relation finding establishes

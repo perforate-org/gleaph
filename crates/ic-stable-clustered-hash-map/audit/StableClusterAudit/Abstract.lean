@@ -128,6 +128,15 @@ def DistanceBounded (s : State) : Prop :=
 def ClusterInvariant (s : State) : Prop :=
   DistanceValid s ∧ ClusterOrdered s ∧ EntryAtCorrectBucket s
 
+-- Lookup completeness needs a stronger structural fact than `ClusterInvariant` currently
+-- provides: an occupied entry must not have an empty slot between its home bucket and its
+-- stored position. This is stated separately because the current invariant intentionally
+-- permits holes and the counterexample in Counterexamples.lean relies on that gap.
+-- src/map.rs L334-L348 (scan stops at EMPTY).
+def NoHoles (s : State) : Prop :=
+  ∀ i k, i < capacity s.n → IsOccupied s i → s.keyAt i = some k →
+    ∀ j, bucket k s.n ≤ j → j < i → IsOccupied s j
+
 /-!
 ## Target properties (SCOPE.md §4)
 -/

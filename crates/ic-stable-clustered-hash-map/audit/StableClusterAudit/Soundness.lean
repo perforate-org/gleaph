@@ -416,6 +416,64 @@ lemma publicRemoveSettled_lookupFound {s s' : State} {key : Key}
   | found hlookup hsettled _relocate _setLen =>
       exact lookupIndex_some_implies_lookupFound hsettled hlookup
 
+-- Lookup completeness needs the separately stated `NoHoles` condition and a positive
+-- length because the abstract `State` does not yet link `len` to occupied-slot count.
+-- src/map.rs L325-L372.
+lemma scanFor_complete_aux (s : State) (key : Key) (b : Nat) (hci : ClusterInvariant s)
+    (hno : NoHoles s) (hb : b = bucket key s.n) :
+    ∀ d start i, i - start = d → b ≤ start → start ≤ i → i < capacity s.n →
+      IsOccupied s i → s.keyAt i = some key → BucketAt s i = b →
+      ∃ j, scanFor s key b start = some j := by
+  intro d
+  induction d using Nat.strong_induction_on with
+  | h d ih =>
+      intro start i hdist hbst hsi hicapi hoci hkeyi hbucketi
+      have hstartcap : start < capacity s.n := lt_of_le_of_lt hsi hicapi
+      by_cases hsame : start = i
+      · subst i
+        unfold scanFor
+        simp [hstartcap, hoci, hbucketi, hkeyi]
+      · have hstartlt : start < i := by omega
+        have hbst' : bucket key s.n ≤ start := by simpa [hb] using hbst
+        have hoccstart : IsOccupied s start :=
+          hno i key hicapi hoci hkeyi start hbst' hstartlt
+        have hbucketstart : BucketAt s start ≤ b := by
+          have hord := hci.2.1 start i hstartcap hicapi hstartlt hoccstart hoci
+          omega
+        unfold scanFor
+        simp only [hstartcap, ↓reduceIte]
+        have hdiststart : s.dist start ≠ EMPTY := hoccstart
+        simp only [hdiststart, ↓reduceIte]
+        have hnotgreater : ¬BucketAt s start > b := by omega
+        simp only [hnotgreater, ↓reduceIte]
+        by_cases hmatch : BucketAt s start = b ∧ s.keyAt start = some key
+        · exact ⟨start, by simp [hmatch]⟩
+        · have hnextle : start + 1 ≤ i := by omega
+          have hnextbst : b ≤ start + 1 := by omega
+          have hnextd : i - (start + 1) < d := by omega
+          have hrec := ih (i - (start + 1)) hnextd (start + 1) i rfl
+            hnextbst hnextle hicapi hoci hkeyi hbucketi
+          simp [hmatch, hrec]
+
+lemma lookupIndex_complete_of_noHoles {s : State}
+    (hci : ClusterInvariant s) (hno : NoHoles s) (hlen : 0 < s.len)
+    (hremap : s.remapEnd = none) :
+    ∀ k, KeySet s k → ∃ i, lookupIndex s k = some i := by
+  intro k hkeyset
+  rcases hkeyset with ⟨i, hicapi, hoci, hkeyi⟩
+  have hbucketi : BucketAt s i = bucket k s.n := by
+    have hcorrect := hci.2.2 i hicapi hoci
+    simpa [ExpectedBucket, hkeyi, hremap] using hcorrect
+  have hb_i : bucket k s.n ≤ i := by
+    have hdist := hci.1 i hicapi hoci
+    unfold BucketAt at hbucketi
+    omega
+  obtain ⟨j, hscan⟩ := scanFor_complete_aux s k (bucket k s.n) hci hno rfl
+    (i - bucket k s.n) (bucket k s.n) i rfl le_rfl hb_i hicapi hoci hkeyi hbucketi
+  refine ⟨j, ?_⟩
+  unfold lookupIndex
+  simp [hlen.ne', hscan]
+
 -- The cluster scan never returns a slot before where it started.
 lemma endOfClusterFrom_ge_aux (s : State) (b : Nat) :
     ∀ m i, capacity s.n - i = m → i ≤ endOfClusterFrom s b i := by

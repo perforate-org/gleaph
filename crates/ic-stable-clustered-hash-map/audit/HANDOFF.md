@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 21:47:48 UTC +0000
+Anchor timestamp: 2026-08-10 22:24:24 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -77,6 +77,12 @@ modeled scan returns `none` even though the key is in `KeySet`. The next complet
 must add a no-holes / scan-contiguity condition or an equivalent insertion-history relation;
 this counterexample is not a Rust reachability claim.
 
+The explicit `NoHoles` strengthening and
+`lookupIndex_complete_of_noHoles` now close the settled lookup completeness direction
+when `ClusterInvariant`, `NoHoles`, `0 < s.len`, and `remapEnd = none` are supplied. The
+proof does not establish `NoHoles` from Rust insertion history or link `len` to the
+occupied-slot count; those are the next refinement obligations.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -90,8 +96,7 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Add and justify a no-holes / scan-contiguity settled model, prove lookup completeness
-   under it, then refine the
+1. Justify `NoHoles` and `len` coherence from Rust insertion history, then refine the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.
