@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 20:31:08 UTC +0000
+Anchor timestamp: 2026-08-10 21:05:36 UTC +0000
 
 ## Target and version / Mode
 
@@ -110,6 +110,12 @@ content); added as axioms only if a proof required one:
   chain preserves `ClusterInvariant` when the source is settled (`s.remapEnd = none`).
   `removeRelocate_activeBoundary_counterexample` remains machine-checked and shows why
   that settled premise cannot be dropped under the current `ExpectedBucket` invariant.
+- `PublicRemoveSettled` and `publicRemoveSettled_preserves_invariant` connect that faithful
+  chain to a certificate-level, settled found branch of public `remove`. The theorem proves
+  `RemovePreservesInvariant`, a positive source length, the final `len - 1`, and preservation
+  of `n` and `remapEnd`. It consumes the modeled `lookupIndex` result and relocation
+  certificate; it does not prove that Rust's leading `remap_step` or concrete lookup
+  constructs them, and it does not cover active remapping, an absent key, or persistence.
 - `UnRelocateStepWithStableHeader` is a narrower helper around the retained weak
   `UnRelocateStep`; it uses `SameRemoveHeader` but is not the faithful chain model.
 - `RelocateStep` modeled a complete move (writing the displaced entry at `next`); it is
@@ -141,6 +147,11 @@ Proved:
   `removeRelocate_preserves_invariant` composes those facts across the full bounded
   `RemoveRelocate` chain. This is a settled inner-loop theorem, not active-remap or
   end-to-end public `remove` refinement.
+- `publicRemoveSettled_preserves_invariant` proves the settled found-branch certificate
+  preserves the invariant through the final public `len - 1` update and preserves the
+  state header. It consumes, rather than constructs, the lookup and relocation
+  certificates; leading `remap_step`, concrete lookup refinement, active-remap removal,
+  absent-key behavior, and persistence remain outside the theorem.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -207,9 +218,9 @@ resize assurance is inferred from those relations.
 These two theorem bodies remain admitted. `remap_step_preserves_invariant` is false under
 its current weak relation; `remove_preserves_invariant` has a counterexample for every
 supplied `k : Key` and is therefore false for any inhabited key domain. The conditional
-settled insert-chain theorem and faithful settled remove-chain theorem are closed. Remap
-invariant preservation still requires a stronger model. The two weak-relation admitted
-theorem bodies are unchanged.
+settled insert-chain theorem, faithful settled remove-chain theorem, and certificate-level
+settled found-branch public-remove bridge are closed. Remap invariant preservation still
+requires a stronger model. The two weak-relation admitted theorem bodies are unchanged.
 
 ## Conclusion
 
@@ -218,8 +229,10 @@ in Rust with `u32` storage and insertion-time trapping. In the current Lean rela
 proves `SizeUp` entry preservation, the relation-level `RemapStep` entry result (it postulates `keySet` and `len`, so it is not a Rust refinement proof), base-write and
 single-relocation-step invariant preservation, chain-maintenance lemmas, and the
 conditional settled insert-chain theorem. It also proves the faithful bounded
-`RemoveRelocate` chain preserves `ClusterInvariant` under `s.remapEnd = none`. Remaining
-work includes active-remap/public-remove refinement, retiring the retained weak
+`RemoveRelocate` chain preserves `ClusterInvariant` under `s.remapEnd = none`, and a
+certificate-level settled found-branch bridge through the final public `len - 1` update.
+Remaining work includes proving the leading `remap_step` and concrete lookup construct
+that certificate, handling active-remap and absent-key public branches, retiring the retained weak
 `UnRelocateStep` declaration, and strengthening `RemapStep` before proving remap invariant
 preservation. The weak `UnRelocateStep` has a relation counterexample for any inhabited
 key domain and `RemapStep` is refuted by a machine-checked counterexample.
@@ -233,9 +246,11 @@ This is **not yet a complete** operation-level verification. `insert_preserves_i
 is conditional on a certified `InsertRelocateOK` settled chain and `remapEnd = none`; it
 does not cover Rust certificate construction, active-remap insertion, or mid-chain
 `size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
-declarations. The faithful bounded remove chain is separately proved invariant-preserving
-under `s.remapEnd = none`; active-remap and public-remove refinement remain outside that
-theorem. The current `UnRelocateStep` relation has a counterexample for any inhabited key
+declarations. The faithful bounded remove chain and its certificate-level settled
+found-branch public-remove bridge are separately proved invariant-preserving under
+`s.remapEnd = none`; construction of the certificate from leading `remap_step` and
+concrete lookup, active-remap, absent-key, and persistence refinement remain outside those
+theorems. The current `UnRelocateStep` relation has a counterexample for any inhabited key
 domain, and the current `RemapStep` relation is false; neither relation finding establishes
 a Rust defect.
 The added stable-header helper and in-bounds theorem close only the remove

@@ -749,6 +749,31 @@ theorem removeRelocate_preserves_invariant {s s' : State} {position : Nat}
       have hremap_mid : _ := hcontinue.frame.header.remapEnd.trans hremap
       exact ih hci_mid hremap_mid
 
+-- Settled found-branch refinement for public `remove`. The certificate records the exact
+-- lookup-selected position, the faithful remove-gap chain, and the caller's final length
+-- decrement. The proof consumes that certificate; it does not prove that the preceding
+-- `remap_step` or concrete Rust lookup constructs it. src/map.rs L491-L520.
+theorem publicRemoveSettled_preserves_invariant {s s' : State} {key : Key}
+    (h : PublicRemoveSettled s s' key) :
+    RemovePreservesInvariant s s' ∧ 0 < s.len ∧ s'.len = s.len - 1 ∧
+      s'.n = s.n ∧ s'.remapEnd = none := by
+  cases h with
+  | found hlookup hsettled hrel hsetLen =>
+      have hheader := hrel.sameHeader
+      have hlen : 0 < s.len := by
+        apply Nat.pos_of_ne_zero
+        intro hzero
+        simp [lookupIndex, hzero] at hlookup
+      rw [hsetLen]
+      refine ⟨?_, hlen, ?_, ?_, ?_⟩
+      · intro hci
+        have hci_after := removeRelocate_preserves_invariant hrel hci hsettled
+        simpa [ClusterInvariant, DistanceValid, ClusterOrdered, EntryAtCorrectBucket,
+          IsOccupied, BucketAt, ExpectedBucket] using hci_after
+      · exact congrArg (fun len => len - 1) hheader.len
+      · exact hheader.n
+      · exact hheader.remapEnd.trans hsettled
+
 lemma remove_preserves_invariant (h : ClusterInvariant s) (hstep : UnRelocateStep s s' position) :
     ClusterInvariant s' := by
   -- `UnRelocateStep` lacks the metadata and relocation-chain facts needed to prove removal preserves the invariant (src/map.rs L504-L520).

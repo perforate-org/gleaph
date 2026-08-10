@@ -326,6 +326,20 @@ lemma RemoveRelocate.sameHeader {s s' : State} {position : Nat}
           len := ih.len.trans hcontinue.frame.header.len
           remapEnd := ih.remapEnd.trans hcontinue.frame.header.remapEnd }
 
+-- Certificate for the found branch of public `remove` after its leading `remap_step`.
+-- `s` is the state immediately before `lookup_index`; the settled field deliberately
+-- excludes an active resize because the current invariant is not preserved by every
+-- active-boundary remove chain. `lookup` records the concrete position selected by the
+-- modeled lookup without claiming here that the Rust lookup constructs this equality.
+-- After the faithful slot-relocation chain, the only remaining public-operation write is
+-- `set_len(len - 1)`, represented as an exact record update. src/map.rs L491-L520.
+inductive PublicRemoveSettled : State → State → Key → Prop where
+  | found {s s' : State} {key : Key} {position : Nat} {afterRelocate : State}
+      (lookup : lookupIndex s key = some position) (settled : s.remapEnd = none)
+      (relocate : RemoveRelocate s afterRelocate position)
+      (setLen : s' = { afterRelocate with len := afterRelocate.len - 1 }) :
+      PublicRemoveSettled s s' key
+
 -- Bounded helper retained for the intentionally weak one-step relation. It adds only
 -- header stability and does not turn `UnRelocateStep` into the faithful chain above.
 -- src/map.rs L504-L520.

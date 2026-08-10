@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 20:31:08 UTC +0000
+Anchor timestamp: 2026-08-10 21:05:36 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -54,6 +54,15 @@ preserves `ClusterInvariant` under `s.remapEnd = none`. The machine-checked
 dropped under the current `ExpectedBucket` invariant. The existing admitted removal
 theorem still targets the weak `UnRelocateStep` relation.
 
+`PublicRemoveSettled` and `publicRemoveSettled_preserves_invariant` now provide the
+smallest public-operation bridge for the settled found branch. The certificate records the
+modeled lookup-selected position, `s.remapEnd = none`, the faithful `RemoveRelocate`
+chain, and the final `{ mid with len := mid.len - 1 }` update. The theorem proves the
+invariant, `0 < s.len`, `len - 1`, and `n`/`remapEnd` header preservation. It consumes
+these certificates; it does not prove that the leading Rust `remap_step` or concrete
+lookup constructs them, and it does not cover active-remap, absent-key, or persistence /
+re-open refinement.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -67,8 +76,9 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Connect the settled `RemoveRelocate` theorem to a faithful public `remove` refinement,
-   decide how active-remap removal is represented, and retire the weak
-   `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.
+1. Refine the leading `remap_step` and concrete `lookup_index` into the
+   `PublicRemoveSettled` certificate, then cover the absent-key and active-remap public
+   branches before retiring the weak `UnRelocateStep`-targeted `remove_preserves_invariant`
+   obligation.
 2. Strengthen `RemapStep` with the slot and invariant facts guaranteed by incremental
    remapping, then restate and prove `remap_step_preserves_invariant`.
