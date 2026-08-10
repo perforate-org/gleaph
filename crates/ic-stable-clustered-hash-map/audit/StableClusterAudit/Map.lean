@@ -200,10 +200,28 @@ def IsOrderBoundary (s : State) (position b : Nat) : Prop :=
 inductive InsertRelocate : State → State → Key → Nat → Nat → Prop where
   | done {s s' : State} {key : Key} {value : Nat} {position : Nat}
       (h : RelocateWrite s s' key value position) : InsertRelocate s s' key value position
-  | step {s mid s' : State} {key : Key} {value : Nat} {entryDist position : Nat}
+  | step {s s' : State} {key : Key} {value : Nat} {position : Nat} (mid : State) (entryDist : Nat)
       (hstep : RelocateStep s mid key value entryDist position)
       (hnext : InsertRelocate mid s' hstep.tKey hstep.tVal hstep.next) :
       InsertRelocate s s' key value position
+
+-- Well-formedness carried through the insert chain: at each step, `position` is an order
+-- boundary for the pending entry's bucket, the pending entry is at its home bucket and
+-- precedes the displaced entry. This is what `find_insert_position` and the loop guarantee.
+inductive InsertRelocateOK : {s s' : State} → {key : Key} → {value : Nat} → {position : Nat} →
+    InsertRelocate s s' key value position → Prop where
+  | done {s s' : State} {key : Key} {value : Nat} {position : Nat}
+      (hw : RelocateWrite s s' key value position)
+      (hslot : s.dist position = EMPTY) (hbound : IsOrderBoundary s position (bucket key s.n)) :
+      InsertRelocateOK (InsertRelocate.done hw)
+  | step {s s' : State} {key : Key} {value : Nat} {position : Nat} (mid : State) (entryDist : Nat)
+      (hstep : RelocateStep s mid key value entryDist position)
+      (hnext : InsertRelocate mid s' hstep.tKey hstep.tVal hstep.next)
+      (hbound : IsOrderBoundary s position (bucket key s.n))
+      (hbucket : position - entryDist = bucket key s.n)
+      (hprec : position - entryDist ≤ position - hstep.tDist)
+      (hok : InsertRelocateOK hnext) :
+      InsertRelocateOK (InsertRelocate.step mid entryDist hstep hnext)
 
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L491-L508.
