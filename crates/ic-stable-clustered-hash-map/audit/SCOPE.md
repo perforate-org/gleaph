@@ -1,7 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
-Anchor timestamp: 2026-08-11 00:44:43 UTC +0000
+Anchor timestamp: 2026-08-11 01:00:18 UTC +0000
 
 ## 1. Mode
 
@@ -97,6 +97,9 @@ the Rust derivation of that prefix remain open.
 `relocateStep_preserves_noHoles` now proves the intermediate relocation write under the
 same explicit prefix and non-EMPTY distance premises; the pending displaced entry is not
 part of the intermediate state, and full-chain composition remains open.
+`InsertRelocateNoHolesOK` and `insertRelocate_preserves_noHoles` now compose those cases
+across the full certified insert chain. The per-step prefix and distance premises remain
+explicit and are not yet derived from Rust's scan loop.
 
 **(c) Re-open mid-resize consistency.** A persisted state read back by `init` (header
 `len`, `log2_buckets`, `remap_end` + slots) reconstructs a valid map; `lookup_index`
@@ -140,11 +143,12 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
   `RemoveContinue` / `RemoveStop` / `RemoveRelocate` inner remove chain and compiler-checked
   stale-tail/header lemmas; the retained weak `UnRelocateStep` and its stable-header
   helper remain distinct; `InsertRelocateOccupancyOK` records the explicit slot facts needed
-  for the length/cardinality bridge)
+  for the length/cardinality bridge, and `InsertRelocateNoHolesOK` records the per-step scan
+  prefixes needed for full-chain `NoHoles` preservation)
 - `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample,
   `UnRelocateStep` relation counterexample for each supplied `k : Key`, machine-checked
   refutation of invariant preservation by the current `RemapStep` relation, and the
   `lookupIndex_completeness_counterexample` hole/scan counterexample plus
   `clusterInvariant_does_not_imply_len_positive` length-coherence counterexample)
-- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; `insertRelocate_preserves_occupiedCard` proves the occupancy change for the explicit insert certificate, `publicInsertSettled_preserves_lenCoherent` proves the final `len + 1` bridge, and `relocateWrite_preserves_noHoles` / `relocateStep_preserves_noHoles` prove the terminating and intermediate no-holes cases under explicit prefix premises; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; `removeRelocate_preserves_invariant` proves the faithful bounded remove chain under `s.remapEnd = none`; `publicRemoveSettled_preserves_invariant` proves the certificate-level settled found branch through the final `len - 1` update; `lookupIndex_some_implies_lookupFound` proves the settled lookup success direction, `publicRemoveSettled_lookupFound` forwards it through the public-remove certificate, and `lookupIndex_complete_of_noHoles` proves completeness under explicit `NoHoles` and `LenCoherent`; the Rust justification of those assumptions remains open; the admitted `remove_preserves_invariant` still targets the weak relation, `remap_step_preserves_invariant` remains false under its weak relation, and exactly these two `sorry`s remain)
+- `Soundness.lean` (Stage 3: `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; `insertRelocate_preserves_occupiedCard` proves the occupancy change for the explicit insert certificate, `publicInsertSettled_preserves_lenCoherent` proves the final `len + 1` bridge, `relocateWrite_preserves_noHoles` / `relocateStep_preserves_noHoles` prove the terminating and intermediate no-holes cases, and `insertRelocate_preserves_noHoles` composes them across the certified chain under explicit prefix premises; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; `removeRelocate_preserves_invariant` proves the faithful bounded remove chain under `s.remapEnd = none`; `publicRemoveSettled_preserves_invariant` proves the certificate-level settled found branch through the final `len - 1` update; `lookupIndex_some_implies_lookupFound` proves the settled lookup success direction, `publicRemoveSettled_lookupFound` forwards it through the public-remove certificate, and `lookupIndex_complete_of_noHoles` proves completeness under explicit `NoHoles` and `LenCoherent`; the Rust justification of those assumptions remains open; the admitted `remove_preserves_invariant` still targets the weak relation, `remap_step_preserves_invariant` remains false under its weak relation, and exactly these two `sorry`s remain)
 - `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)

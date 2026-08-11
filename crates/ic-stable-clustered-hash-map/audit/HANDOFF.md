@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 00:44:43 UTC +0000
+Anchor timestamp: 2026-08-11 01:00:18 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -107,6 +107,11 @@ and non-EMPTY pending-distance premises. The displaced entry is pending rather t
 in that intermediate state, so the theorem is deliberately local; the inductive chain
 composition and Rust derivation of the premises remain open.
 
+`InsertRelocateNoHolesOK` and `insertRelocate_preserves_noHoles` now compose the terminating
+and relocation-step cases across the full certified chain. The per-step occupied prefixes
+and non-EMPTY distances remain explicit; this is a chain-level conditional theorem, not yet
+a derivation from Rust's `find_insert_position` execution.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -120,9 +125,8 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Compose the terminating and relocation-step `NoHoles` lemmas across the full insert chain,
-   then derive the `NoHoles`, `LenCoherent`, and insert-occupancy certificate premises from Rust
-   insertion history before refining the
+1. Derive the `NoHoles`, `LenCoherent`, and insert-occupancy/prefix certificate premises from
+   Rust insertion history before refining the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.

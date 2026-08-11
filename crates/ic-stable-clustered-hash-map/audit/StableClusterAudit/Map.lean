@@ -242,6 +242,27 @@ inductive InsertRelocateOccupancyOK : {s s' : State} → {key : Key} → {value 
       (hok : InsertRelocateOccupancyOK hnext) :
       InsertRelocateOccupancyOK (InsertRelocate.step mid entryDist hstep hnext)
 
+-- No-holes preservation needs one scan-contiguity fact for each pending entry in the chain:
+-- every slot from its home bucket to the current write position is occupied. This is separate
+-- from both the order certificate and the occupancy certificate because neither relation records
+-- the scan's stop-at-empty guard. src/map.rs L309-L319, L447-L487.
+inductive InsertRelocateNoHolesOK : {s s' : State} → {key : Key} → {value : Nat} →
+    {position : Nat} → InsertRelocate s s' key value position → Prop where
+  | done {s s' : State} {key : Key} {value : Nat} {position : Nat}
+      (hw : RelocateWrite s s' key value position)
+      (hpos : position < capacity s.n)
+      (hprefix : ∀ j, bucket key s.n ≤ j → j < position → IsOccupied s j) :
+      InsertRelocateNoHolesOK (InsertRelocate.done hw)
+  | step {s s' : State} {key : Key} {value : Nat} {position : Nat}
+      (mid : State) (entryDist : Nat)
+      (hstep : RelocateStep s mid key value entryDist position)
+      (hnext : InsertRelocate mid s' hstep.tKey hstep.tVal hstep.next)
+      (hpos : position < capacity s.n)
+      (hprefix : ∀ j, bucket key s.n ≤ j → j < position → IsOccupied s j)
+      (hentry : entryDist < EMPTY)
+      (hok : InsertRelocateNoHolesOK hnext) :
+      InsertRelocateNoHolesOK (InsertRelocate.step mid entryDist hstep hnext)
+
 -- `remove_and_relocate`: empties `position` and shifts the tail of the next cluster up,
 -- subtracting the shift from its distance. src/map.rs L504-L520.
 -- One step: the slot `position` is freed and the tail `next` of the cluster at

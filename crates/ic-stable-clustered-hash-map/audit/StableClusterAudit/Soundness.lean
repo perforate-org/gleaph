@@ -201,6 +201,20 @@ lemma relocateStep_preserves_noHoles {s s' : State} {entry : Key} {value : Nat}
       rw [h.dist_other j hjpos]
       exact hsource
 
+-- The explicit prefix certificate composes the terminating and intermediate cases across the
+-- entire insert relocation chain. It proves the structural scan condition, but does not yet
+-- derive the per-step prefixes from Rust's `find_insert_position` loop. src/map.rs L447-L487.
+lemma insertRelocate_preserves_noHoles {s s' : State} {key : Key} {value : Nat}
+    {position : Nat} {h : InsertRelocate s s' key value position}
+    (hok : InsertRelocateNoHolesOK h) (hno : NoHoles s) : NoHoles s' := by
+  induction hok with
+  | done hw hpos hprefix =>
+      exact relocateWrite_preserves_noHoles hw hno hpos hprefix
+  | step mid entryDist hstep hnext hpos hprefix hentry hok ih =>
+      have hno_mid : NoHoles mid :=
+        relocateStep_preserves_noHoles hstep hno hpos hprefix hentry
+      exact ih hno_mid
+
 -- The base insert write keeps the ordered-cluster invariant, assuming `position` is a valid
 -- insertion point for the entry's bucket (as `find_insert_position` guarantees).
 lemma relocateWrite_preserves_clusterOrdered {s s' : State} {entry : Key} {value : Nat} {position : Nat}
