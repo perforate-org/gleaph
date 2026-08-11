@@ -11,7 +11,7 @@ use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     labeled::InitialCapacities, lara::maintenance::DeferredConfig,
 };
-use ic_stable_memory_backend::{StableMemoryBackend, stable_memory_backend};
+use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::MemoryId;
 #[cfg(feature = "canbench_standard_manager")]
@@ -178,7 +178,7 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
 ))]
 const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[];
 
-pub(crate) type Memory = VirtualMemory<StableMemoryBackend>;
+pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
@@ -202,24 +202,24 @@ pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedI
 pub(crate) type StableCanonicalExportScopes = CanonicalExportScopeStore<Memory>;
 
 #[cfg(feature = "canbench_standard_manager")]
-fn init_memory_manager() -> MemoryManager<StableMemoryBackend> {
+fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
     MemoryManager::init_with_bucket_size(
-        stable_memory_backend(),
+        default_memory_impl(),
         GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
     )
 }
 
 #[cfg(not(feature = "canbench_standard_manager"))]
-fn init_memory_manager() -> MemoryManager<StableMemoryBackend> {
+fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
     MemoryManager::init_with_policies(
-        stable_memory_backend(),
+        default_memory_impl(),
         GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
         GRAPH_MEMORY_MANAGER_POLICIES,
     )
 }
 
 thread_local! {
-    static MEMORY_MANAGER: RefCell<MemoryManager<StableMemoryBackend>> =
+    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(init_memory_manager());
 }
 

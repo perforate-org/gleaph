@@ -2554,7 +2554,6 @@ dependencies = [
 name = "ic-stable-memory-backend"
 version = "0.1.0"
 dependencies = [
- "ic-cdk",
  "ic-stable-structures",
 ]
 

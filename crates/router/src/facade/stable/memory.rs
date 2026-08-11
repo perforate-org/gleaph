@@ -36,7 +36,7 @@ use crate::types::{
     RouterProvisioningRequest,
 };
 use candid::CandidType;
-use ic_stable_memory_backend::{StableMemoryBackend, stable_memory_backend};
+use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_structures::memory_manager::MemoryId;
 use ic_stable_structures::{BTreeMap, Cell};
 use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
 
-pub(crate) type Memory = VirtualMemory<StableMemoryBackend>;
+pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 // --- auth (canonical) ---
 const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(0);
@@ -358,9 +358,9 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
 ];
 
 thread_local! {
-    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<StableMemoryBackend>> =
+    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init_with_policies(
-            stable_memory_backend(),
+            default_memory_impl(),
             ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
             ROUTER_MEMORY_MANAGER_POLICIES,
         ));

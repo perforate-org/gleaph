@@ -591,9 +591,10 @@ to Durable Core is a separate future decision, not an implicit consequence of th
 **In progress (last verified 2026-08-11 UTC).** Router now accepts `Option<RouterUpgradeArgs>` in
 `post_upgrade`; empty `()` is interpreted as "preserve durable configuration" and only the
 `provision_canister` override is applied. Router, Graph, Graph Index, Vector, and Provision
-production memory roots now select `ic_stable_memory_backend::StableMemoryBackend`: wasm64 uses
-the `ic_cdk::stable` stable64 API, while native and wasm32 builds retain
-`ic_stable_structures::DefaultMemoryImpl`. This backend correction does not change `MemoryId`
+production memory roots now select `ic_stable_memory_backend::DefaultMemoryImpl`:
+`wasm64-unknown-unknown` builds use private direct `ic0` stable64 imports,
+`wasm32-unknown-unknown` retains `ic_stable_structures::DefaultMemoryImpl`, and native/WASI builds
+use `ic_stable_structures::VectorMemory`. This backend correction does not change `MemoryId`
 allocation, memory-manager formats, or persisted record bytes, and it does not establish an N-1
 compatibility reader or migration protocol. Existing reopen checks, typed layout registries, and
 selected same-Wasm upgrade tests are foundations only. Fixed Durable Core headers, owner-specific

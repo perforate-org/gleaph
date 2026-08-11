@@ -6,7 +6,7 @@
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
-use ic_stable_memory_backend::{StableMemoryBackend, stable_memory_backend};
+use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_structures::memory_manager::MemoryId;
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell};
 use ic_stable_variable_memory_manager::{
@@ -23,7 +23,7 @@ use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
 use gleaph_graph_kernel::index::PhysicalIndexId;
 
-pub(crate) type Memory = VariableVirtualMemory<StableMemoryBackend>;
+pub(crate) type Memory = VariableVirtualMemory<DefaultMemoryImpl>;
 
 const INDEX_ROUTER: MemoryId = MemoryId::new(0);
 const INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
@@ -164,9 +164,9 @@ pub(crate) enum ShardCanisterCatalogInsertError {
 }
 
 thread_local! {
-    pub(crate) static MEMORY_MANAGER: RefCell<VariableMemoryManager<StableMemoryBackend>> =
+    pub(crate) static MEMORY_MANAGER: RefCell<VariableMemoryManager<DefaultMemoryImpl>> =
         RefCell::new(VariableMemoryManager::init_with_policies(
-            stable_memory_backend(),
+            default_memory_impl(),
             INDEX_METADATA_BUCKET_PAGES,
             &[
                 (INDEX_ROUTER, INDEX_METADATA_BUCKET_PAGES),

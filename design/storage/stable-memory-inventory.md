@@ -32,9 +32,10 @@ Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 Planned production compatibility and migration policy: [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md).
 
 Physical backend: the Router, Graph, Graph Index, Vector, and Provision production memory roots use
-`ic_stable_memory_backend::StableMemoryBackend`. On wasm64 it delegates to the
-`ic_cdk::stable` stable64 API; native and wasm32 builds retain
-`ic_stable_structures::DefaultMemoryImpl`. This backend substitution does not change per-canister
+`ic_stable_memory_backend::DefaultMemoryImpl`. `wasm64-unknown-unknown` builds use private direct
+`ic0` stable64 imports, `wasm32-unknown-unknown` retains
+`ic_stable_structures::DefaultMemoryImpl`, and native/WASI builds use
+`ic_stable_structures::VectorMemory`. This backend substitution does not change per-canister
 `MemoryId` allocation, memory-manager formats, or persisted record bytes.
 
 ## Purpose
