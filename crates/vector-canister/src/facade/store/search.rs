@@ -34,7 +34,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorSubject, decode_i8_to_f32,
 };
 use ic_stable_vector_page_store::kernel::{
-    dot_f32_early_exit, dot_i8_f32, l2_squared_f32, l2_squared_f32_early_exit,
+    dot_f32_early_exit, dot_i8_f32_early_exit, l2_squared_f32, l2_squared_f32_early_exit,
     l2_squared_i8_f32_early_exit,
 };
 use rapidhash::{HashSetExt, RapidHashSet};
@@ -117,12 +117,14 @@ fn compute_suffix_norms(query: &[f32]) -> Vec<f32> {
 ///
 /// `q_norm` is the precomputed query norm (only meaningful for cosine). `suffix_norm` is the query's
 /// suffix-norm array (length `dims + 1`) used by the cosine early exit; L2 passes `&[]` and ignores
-/// it. The L2 early exit is exact: partial sums are monotone, so a partial sum exceeding `threshold`
-/// means the full distance also does and the row cannot be in the top-k. The cosine early exit is
-/// exact via Cauchy-Schwarz: for a unit-normalized row, `partial + suffix_norm[j]` is an upper bound
-/// on the final dot, so if that bound is below `q_norm * (1 - threshold)` the row cannot be in the
-/// top-k. For both L2 and cosine, finiteness is fused into the kernel result (a non-finite component
-/// makes the sum / dot / norm non-finite), so there is no separate `row_is_finite` pre-scan.
+/// it. `max_norm` is the conservative upper bound on the stored row norm used by the I8 cosine early
+/// exit (`1.0` for F32, which is exactly unit-normalized). The L2 early exit is exact: partial sums
+/// are monotone, so a partial sum exceeding `threshold` means the full distance also does and the row
+/// cannot be in the top-k. The cosine early exit is exact via Cauchy-Schwarz: for a row with norm
+/// `<= max_norm`, `partial + suffix_norm[j] * max_norm` is an upper bound on the final dot, so if that
+/// bound is below `q_norm * (1 - threshold)` the row cannot be in the top-k. For both L2 and cosine,
+/// finiteness is fused into the kernel result (a non-finite component makes the sum / dot / norm
+/// non-finite), so there is no separate `row_is_finite` pre-scan.
 fn score_row(
     metric: VectorMetric,
     encoding: VectorEncoding,
@@ -131,6 +133,7 @@ fn score_row(
     query: &[f32],
     q_norm: f32,
     suffix_norm: &[f32],
+    max_norm: f32,
     threshold: f32,
 ) -> Option<f32> {
     match metric {
@@ -141,8 +144,8 @@ fn score_row(
         VectorMetric::Cosine => {
             // Stored rows are unit-normalized (cosine indexes store unit vectors), so cosine distance
             // is 1 - dot/‖q‖ where q_norm = ‖query‖ is precomputed. For I8 the dot is dequantized in
-            // the fused kernel. `dot_f32_early_exit`/`dot_i8_f32` over the row and the raw query is
-            // the cosine similarity — no per-row norm computation.
+            // the fused kernel. `dot_f32_early_exit`/`dot_i8_f32_early_exit` over the row and the raw
+            // query is the cosine similarity — no per-row norm computation.
             let dot = match encoding {
                 VectorEncoding::F32 => {
                     // A row beats the k-th best distance `threshold` iff `1 - dot/‖q‖ < threshold`,
@@ -154,12 +157,17 @@ fn score_row(
                     dot_f32_early_exit(bytes, query, suffix_norm, dot_threshold)?
                 }
                 VectorEncoding::I8 => {
-                    let dot = dot_i8_f32(bytes, scale, query);
-                    // Fused finiteness: a non-finite component makes the dot non-finite; skip it here.
-                    if !dot.is_finite() {
-                        return None;
-                    }
-                    dot
+                    let dot_threshold = q_norm * (1.0 - threshold);
+                    // The I8 kernel fuses the finiteness check and uses the conservative `max_norm`
+                    // bound (I8 rows are only approximately unit-normalized).
+                    dot_i8_f32_early_exit(
+                        bytes,
+                        scale,
+                        query,
+                        suffix_norm,
+                        max_norm,
+                        dot_threshold,
+                    )?
                 }
             };
             Some(1.0 - dot / q_norm)
@@ -282,6 +290,7 @@ fn score_sorted_rows(
     encoding: VectorEncoding,
     q_norm: f32,
     suffix_norm: &[f32],
+    max_norm: f32,
     top_k: u32,
     heap: &mut BinaryHeap<Candidate>,
     rows: &[(PageKey, VectorSubject, SlotRef)],
@@ -331,6 +340,7 @@ fn score_sorted_rows(
                         query,
                         q_norm,
                         suffix_norm,
+                        max_norm,
                         threshold,
                     ) else {
                         continue;
@@ -366,6 +376,7 @@ fn scan_partitions(
     encoding: VectorEncoding,
     q_norm: f32,
     suffix_norm: &[f32],
+    max_norm: f32,
     top_k: u32,
 ) -> VectorSearchResult {
     let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
@@ -398,6 +409,7 @@ fn scan_partitions(
                         query,
                         q_norm,
                         suffix_norm,
+                        max_norm,
                         threshold,
                     ) else {
                         return;
@@ -437,6 +449,7 @@ pub(super) fn candidate_scan_with_membership(
     encoding: VectorEncoding,
     q_norm: f32,
     suffix_norm: &[f32],
+    max_norm: f32,
     candidates: &[VectorSubject],
     top_k: u32,
 ) -> VectorSearchResult {
@@ -474,6 +487,7 @@ pub(super) fn candidate_scan_with_membership(
                         query,
                         q_norm,
                         suffix_norm,
+                        max_norm,
                         threshold,
                     ) else {
                         return;
@@ -673,6 +687,14 @@ impl VectorCanisterStore {
         } else {
             Vec::new()
         };
+        // Conservative upper bound on the stored row norm for the I8 cosine early exit (I8 rows are
+        // only approximately unit-normalized: per-component quantization error <= 1/(2*127), so
+        // `norm(v) <= 1 + sqrt(dims)/(2*127)`). F32 rows are exactly unit-normalized (`1.0`).
+        let max_norm = if req.metric == VectorMetric::Cosine && req.encoding == VectorEncoding::I8 {
+            1.0 + (req.dims as f32).sqrt() / (2.0 * 127.0)
+        } else {
+            1.0
+        };
 
         // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
         // over current live vector slots. The receiving boundary validates count, vertex-only
@@ -691,6 +713,7 @@ impl VectorCanisterStore {
                     def.encoding,
                     q_norm,
                     &suffix_norm,
+                    max_norm,
                     candidates,
                     req.top_k,
                 ));
@@ -705,6 +728,7 @@ impl VectorCanisterStore {
                 req.top_k,
                 q_norm,
                 &suffix_norm,
+                max_norm,
             );
         }
 
@@ -736,9 +760,10 @@ impl VectorCanisterStore {
                 def.encoding,
                 q_norm,
                 &suffix_norm,
+                max_norm,
             ))
         } else {
-            Ok(self.partition_page_scan(req, &def, &query, tuning, q_norm, &suffix_norm))
+            Ok(self.partition_page_scan(req, &def, &query, tuning, q_norm, &suffix_norm, max_norm))
         }
     }
 
@@ -785,6 +810,7 @@ impl VectorCanisterStore {
         top_k: u32,
         q_norm: f32,
         suffix_norm: &[f32],
+        max_norm: f32,
     ) -> Result<VectorSearchResult, VectorCanisterError> {
         // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
         let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
@@ -830,6 +856,7 @@ impl VectorCanisterStore {
                 encoding,
                 q_norm,
                 suffix_norm,
+                max_norm,
                 top_k,
                 &mut heap,
                 &rows,
@@ -856,6 +883,7 @@ impl VectorCanisterStore {
         encoding: VectorEncoding,
         q_norm: f32,
         suffix_norm: &[f32],
+        max_norm: f32,
     ) -> VectorSearchResult {
         scan_partitions(
             req.index_id,
@@ -866,6 +894,7 @@ impl VectorCanisterStore {
             encoding,
             q_norm,
             suffix_norm,
+            max_norm,
             req.top_k,
         )
     }
@@ -881,6 +910,7 @@ impl VectorCanisterStore {
         tuning: SearchTuning,
         q_norm: f32,
         suffix_norm: &[f32],
+        max_norm: f32,
     ) -> VectorSearchResult {
         // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
         // if it somehow vanished between the gate and here.
@@ -894,6 +924,7 @@ impl VectorCanisterStore {
                 def.encoding,
                 q_norm,
                 suffix_norm,
+                max_norm,
             );
         };
         let active = def.active_index_version;
@@ -913,6 +944,7 @@ impl VectorCanisterStore {
             def.encoding,
             q_norm,
             suffix_norm,
+            max_norm,
             req.top_k,
         )
     }
@@ -1004,6 +1036,7 @@ mod tests {
                 &q,
                 0.0,
                 &[],
+                1.0,
                 1.0
             ),
             None
@@ -1018,6 +1051,7 @@ mod tests {
                 &q,
                 0.0,
                 &[],
+                1.0,
                 4.0
             ),
             Some(4.0)
@@ -1032,6 +1066,7 @@ mod tests {
                 &q,
                 0.0,
                 &[],
+                1.0,
                 f32::INFINITY
             ),
             Some(4.0)
@@ -1051,6 +1086,7 @@ mod tests {
                 &q,
                 0.0,
                 &[],
+                1.0,
                 f32::INFINITY
             ),
             None
@@ -1076,6 +1112,7 @@ mod tests {
             &q,
             q_norm,
             &compute_suffix_norms(&q),
+            1.0,
             f32::INFINITY,
         )
         .expect("cosine");
@@ -1098,6 +1135,7 @@ mod tests {
                 &q,
                 q.iter().map(|x| x * x).sum::<f32>().sqrt(),
                 &compute_suffix_norms(&q),
+                1.0,
                 f32::INFINITY
             ),
             None
@@ -1112,6 +1150,7 @@ mod tests {
                 &q,
                 0.0,
                 &compute_suffix_norms(&q),
+                1.0,
                 f32::INFINITY
             ),
             None
@@ -1135,6 +1174,7 @@ mod tests {
                 &q,
                 q_norm,
                 &sn,
+                1.0,
                 0.1
             ),
             None,
@@ -1150,6 +1190,7 @@ mod tests {
                 &q,
                 q_norm,
                 &sn,
+                1.0,
                 f32::INFINITY
             )
             .is_some(),
@@ -1173,6 +1214,7 @@ mod tests {
             &q,
             q_norm,
             &sn,
+            1.0,
             f32::INFINITY,
         )
         .expect("full cosine");
@@ -1184,10 +1226,99 @@ mod tests {
             &q,
             q_norm,
             &sn,
+            1.0,
             2.0,
         )
         .expect("early-exit cosine");
         assert_eq!(early, full, "loose threshold must not change the score");
+    }
+
+    /// Quantizes an f32 vector to the I8 convention (`s = max|x|`, `i8_i = round(127*x/s)`), returning
+    /// the bytes and scale for `score_row`'s I8 cosine path.
+    fn i8_row(values: &[f32]) -> (Vec<u8>, f32) {
+        let s = values.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
+        let bytes = values
+            .iter()
+            .map(|x| (x / s * 127.0).round().clamp(-127.0, 127.0) as i8 as u8)
+            .collect();
+        (bytes, s)
+    }
+
+    #[test]
+    fn score_row_cosine_i8_early_exit_skips_beyond_threshold() {
+        let q = vec![1.0f32, 2.0, 3.0, 4.0];
+        let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let sn = compute_suffix_norms(&q);
+        let max_norm = 1.0 + (q.len() as f32).sqrt() / (2.0 * 127.0);
+        // An anti-correlated I8 row cannot beat a tight cosine threshold -> None.
+        let (anti, anti_scale) = i8_row(&[-1.0f32, -1.0, -1.0, -1.0]);
+        assert_eq!(
+            score_row(
+                VectorMetric::Cosine,
+                VectorEncoding::I8,
+                &anti,
+                anti_scale,
+                &q,
+                q_norm,
+                &sn,
+                max_norm,
+                0.1
+            ),
+            None,
+            "anti-correlated I8 row cannot beat a tight cosine threshold"
+        );
+        // An infinite threshold (heap not full) never triggers the exit.
+        assert!(
+            score_row(
+                VectorMetric::Cosine,
+                VectorEncoding::I8,
+                &anti,
+                anti_scale,
+                &q,
+                q_norm,
+                &sn,
+                max_norm,
+                f32::INFINITY
+            )
+            .is_some(),
+            "infinite threshold never triggers the I8 cosine early exit"
+        );
+    }
+
+    #[test]
+    fn score_row_cosine_i8_early_exit_agrees_with_full_when_under_threshold() {
+        let q = vec![1.0f32, 2.0, 3.0, 4.0];
+        let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let sn = compute_suffix_norms(&q);
+        let max_norm = 1.0 + (q.len() as f32).sqrt() / (2.0 * 127.0);
+        // An aligned I8 row has a high dot; a loose threshold never triggers the exit, so the
+        // early-exit result equals the full dot.
+        let (aligned, aligned_scale) = i8_row(&[0.5f32, 0.5, 0.5, 0.5]);
+        let full = score_row(
+            VectorMetric::Cosine,
+            VectorEncoding::I8,
+            &aligned,
+            aligned_scale,
+            &q,
+            q_norm,
+            &sn,
+            max_norm,
+            f32::INFINITY,
+        )
+        .expect("full I8 cosine");
+        let early = score_row(
+            VectorMetric::Cosine,
+            VectorEncoding::I8,
+            &aligned,
+            aligned_scale,
+            &q,
+            q_norm,
+            &sn,
+            max_norm,
+            2.0,
+        )
+        .expect("early-exit I8 cosine");
+        assert_eq!(early, full, "loose threshold must not change the I8 score");
     }
 
     #[test]

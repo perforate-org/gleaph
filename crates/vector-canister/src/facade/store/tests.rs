@@ -3674,6 +3674,7 @@ fn candidate_scan_with_membership_matches_resolve_based() {
             5,
             0.0,
             &[],
+            1.0,
         )
         .expect("resolve-based");
     let membership = super::search::candidate_scan_with_membership(
@@ -3685,6 +3686,7 @@ fn candidate_scan_with_membership_matches_resolve_based() {
         VectorEncoding::F32,
         0.0,
         &[],
+        1.0,
         &allowlist,
         5,
     );

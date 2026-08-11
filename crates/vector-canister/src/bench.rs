@@ -161,11 +161,19 @@ fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> Vect
         )
         .expect("attach shard");
     for vid in 0..n {
-        // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value.
-        let value = if metric == VectorMetric::Cosine {
-            (vid + 1) as f32
+        // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value. Constant
+        // rows are degenerate for cosine (all rows at distance 0), so cosine uses varied-direction rows
+        // to exercise the early exit; the first `COSINE_ALIGNED_ROWS` rows are aligned with the query
+        // so the k-th best distance is small. Model Y: the wire op bytes are canonical F32; the
+        // canister quantizes to I8 at write.
+        let bytes = if metric == VectorMetric::Cosine {
+            if vid < COSINE_ALIGNED_ROWS {
+                vec_bytes(dims, 1.0)
+            } else {
+                vec_bytes_varied(dims, vid)
+            }
         } else {
-            vid as f32
+            vec_bytes(dims, vid as f32)
         };
         let op = VectorEmbeddingSyncOp {
             index_id: INDEX_ID,
@@ -178,7 +186,7 @@ fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> Vect
             encoding: VectorEncoding::I8,
             dims,
             metric,
-            bytes: vec_bytes(dims, value),
+            bytes,
             remove: false,
         };
         store
@@ -294,6 +302,19 @@ i8_search_bench!(
     1536,
     100,
     VectorMetric::L2Squared
+);
+
+i8_search_bench!(
+    bench_vector_search_cosine_i8_d1536_k10,
+    1536,
+    10,
+    VectorMetric::Cosine
+);
+i8_search_bench!(
+    bench_vector_search_cosine_i8_d1536_k100,
+    1536,
+    100,
+    VectorMetric::Cosine
 );
 
 /// L2 metric-parameterized search bench over a cosine-seeded store (exact-scan path; cosine supports
