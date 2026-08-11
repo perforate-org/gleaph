@@ -39,6 +39,16 @@ pub(crate) fn intern_embedding_name(
         .map_err(|e| catalog_error_to_router(e, "embedding name"))
 }
 
+/// Read-only capacity check for a later no-await catalog commit.
+pub(crate) fn preflight_embedding_name(
+    graph_id: GraphId,
+    name: &str,
+) -> Result<EmbeddingNameId, RouterError> {
+    ROUTER_EMBEDDING_NAME_CATALOG
+        .with_borrow(|catalog| catalog.peek_next_id(graph_id, name))
+        .map_err(|e| catalog_error_to_router(e, "embedding name"))
+}
+
 pub(crate) fn purge_graph_embedding_names(graph_id: GraphId) {
     ROUTER_EMBEDDING_NAME_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
 }

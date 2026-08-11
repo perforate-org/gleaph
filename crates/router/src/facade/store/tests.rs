@@ -5144,9 +5144,13 @@ pub(crate) mod graph_type_catalog_vocabulary {
         let name_id =
             crate::facade::stable::embedding_name_catalog::intern_embedding_name(graph_id, &name)
                 .expect("intern embedding name");
+        let index_name_id =
+            crate::facade::stable::index_name_catalog::intern_index_name(graph_id, &name)
+                .expect("intern index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
             index_id,
+            index_name_id,
             name_id,
             vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,

@@ -175,6 +175,24 @@ mod tests {
     }
 
     #[test]
+    fn vector_ddl_uses_the_same_index_ddl_authority() {
+        let read = principal(12);
+        upsert_role(read, Role::Read, 0);
+        assert!(matches!(
+            authorize_index_ddl(&read),
+            Err(RouterError::Forbidden)
+        ));
+
+        let manager = principal(13);
+        upsert_role(
+            manager,
+            Role::Manager,
+            ManagerCapability::PREPARE_REGISTER.bits(),
+        );
+        authorize_index_ddl(&manager).expect("vector DDL accepts the index-DDL manager capability");
+    }
+
+    #[test]
     fn stable_memory_diagnostics_are_admin_only() {
         let admin = principal(10);
         upsert_role(admin, Role::Admin, 0);

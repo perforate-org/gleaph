@@ -3,4 +3,7 @@
 //! The parser and statement types are owned by `gleaph-index-ddl` so migration tooling and Router
 //! cannot drift. Router keeps this narrow module as its internal import boundary.
 
-pub(crate) use gleaph_index_ddl::{IndexDdlStatement, IndexTarget, try_parse};
+pub(crate) use gleaph_index_ddl::{
+    IndexDdlStatement, IndexTarget, VectorIndexDdlStatement, VectorIndexTarget, try_parse,
+    try_parse_vector,
+};

@@ -220,7 +220,7 @@ async fn index_edge_property(
 /// definition was newly created. Production dispatch stays fail-closed until incarnation fencing.
 #[update]
 fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<bool, RouterError> {
-    use crate::facade::stable::{embedding_name_catalog, vector_index_catalog};
+    use crate::facade::stable::{embedding_name_catalog, index_name_catalog, vector_index_catalog};
     use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorIndexKind, VectorMetric};
 
     crate::rbac::authorize_index_ddl(&msg_caller())?;
@@ -254,6 +254,23 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
     // unknown label) before any durable write, so a rejected registration never allocates an embedding
     // name or a def.
     let labels = vector_index_catalog::resolve_vector_index_labels(&store, graph_id, &args.labels)?;
+    // The legacy numeric admin surface historically exposed the embedding name as its SEARCH name.
+    // Preserve that compatibility only here; semantic vector DDL stores a distinct logical name.
+    let compat_index_name = args.embedding_name.clone();
+    crate::index_catalog::ensure_vector_index_name_available(graph_id, &compat_index_name)?;
+    index_name_catalog::preflight_index_name(graph_id, &compat_index_name)?;
+    embedding_name_catalog::preflight_embedding_name(graph_id, &args.embedding_name)?;
+    if let Some(embedding_name_id) =
+        embedding_name_catalog::lookup_embedding_name_id(graph_id, &args.embedding_name)
+        && vector_index_catalog::get_vector_index_by_embedding_name_id(graph_id, embedding_name_id)
+            .is_some()
+    {
+        return Err(RouterError::Conflict(format!(
+            "embedding field already has a vector index: {}",
+            args.embedding_name
+        )));
+    }
+    let index_name_id = index_name_catalog::intern_index_name(graph_id, &compat_index_name)?;
     let embedding_name_id =
         embedding_name_catalog::intern_embedding_name(graph_id, &args.embedding_name)?;
     // Slice 3 supports exactly one variant of each physical parameter; the wire stays
@@ -261,6 +278,7 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
     vector_index_catalog::register_vector_index(
         graph_id,
         args.index_id,
+        index_name_id,
         embedding_name_id,
         labels,
         VectorIndexKind::IvfFlat,

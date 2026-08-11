@@ -172,7 +172,6 @@ fn graph_upper(graph_id: GraphId) -> Bound<VectorIndexKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::EmbeddingNameId;
     use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorIndexKind, VectorMetric};
 
     fn policy() -> VectorMaintenancePolicy {
@@ -201,10 +200,22 @@ mod tests {
     }
 
     fn register_def(graph_id: GraphId, index_id: u32) {
+        let index_name_id = crate::facade::stable::index_name_catalog::intern_index_name(
+            graph_id,
+            &format!("test_vector_index_{index_id}"),
+        )
+        .expect("intern vector index name");
+        let embedding_name_id =
+            crate::facade::stable::embedding_name_catalog::intern_embedding_name(
+                graph_id,
+                &format!("test_embedding_field_{index_id}"),
+            )
+            .expect("intern embedding field name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
             index_id,
-            EmbeddingNameId::from_raw(index_id as u16),
+            index_name_id,
+            embedding_name_id,
             vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             VectorMetric::L2Squared,

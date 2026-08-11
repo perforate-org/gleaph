@@ -28,7 +28,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorMetric, VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, e2e_insert_vertex, ensure_user_graph_type, gql_query_as_admin,
+    FederationEnv, GRAPH_NAME, e2e_insert_vertex, ensure_user_graph_type, gql_mutate_as_admin,
+    gql_mutate_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
     gql_query_with_params_as_admin, install_federation, install_single_shard_federation,
     install_vector_canister,
 };
@@ -44,6 +45,26 @@ const DIMS: u16 = 16;
 
 const TARGETLESS_INDEX_ID: u32 = 2;
 const TARGETLESS_EMBEDDING_NAME: &str = "adr0031_targetless_vec";
+
+const GQL_LOGICAL_INDEX_NAME: &str = "adr0065_document_embedding_idx";
+const GQL_EMBEDDING_FIELD: &str = "document_embedding_field";
+const GQL_CONFLICTING_EMBEDDING_FIELD: &str = "summary_embedding_field";
+
+fn gql_vector_index_ddl(embedding_field: &str) -> String {
+    format!(
+        "CREATE VECTOR INDEX {GQL_LOGICAL_INDEX_NAME} IF NOT EXISTS \
+         FOR (n:User) ON n.{embedding_field} \
+         OPTIONS {{ indexConfig: {{ dimensions: {DIMS}, similarity_function: 'l2_squared', encoding: 'f32', algorithm: 'ivf_flat' }} }}"
+    )
+}
+
+fn gql_vector_search_query(index_name: &str) -> String {
+    let query_bytes = "00".repeat(DIMS as usize * 4);
+    format!(
+        "MATCH (n) SEARCH n IN (VECTOR INDEX {index_name} FOR X'{query_bytes}' LIMIT 1) \
+         DISTANCE AS distance RETURN n, distance"
+    )
+}
 
 fn register(env: &FederationEnv, args: &RegisterVectorIndexArgs) -> Result<bool, RouterError> {
     let bytes = env
@@ -135,6 +156,96 @@ fn set_target(env: &FederationEnv, index_id: u32, target: Principal) -> Result<(
         )
         .expect("admin_set_vector_index_target call");
     Decode!(&bytes, Result<(), RouterError>).expect("decode set-target result")
+}
+
+#[test]
+fn gql_create_vector_index_nested_options_is_idempotent_and_fail_closed() {
+    let env = install_single_shard_federation();
+    ensure_user_graph_type(&env);
+    assert_ne!(
+        GQL_LOGICAL_INDEX_NAME, GQL_EMBEDDING_FIELD,
+        "the public logical index name must remain distinct from its embedding field"
+    );
+
+    // This is the Neo4j-shaped nested OPTIONS form on the real Router gql_mutate update path.
+    let create = gql_vector_index_ddl(GQL_EMBEDDING_FIELD);
+    assert_eq!(
+        gql_mutate_as_admin(&env, &create, "adr0065_vector_ddl_create"),
+        0,
+        "CREATE VECTOR INDEX is a rowless DDL mutation"
+    );
+
+    let after_create = list(&env).expect("list after CREATE VECTOR INDEX");
+    assert_eq!(after_create.len(), 1, "one vector definition was created");
+    let created = &after_create[0];
+    assert_ne!(created.index_id, 0, "Router allocated a physical index id");
+    assert_eq!(created.dims, DIMS, "nested dimensions option is persisted");
+    assert_eq!(
+        created.metric,
+        VectorMetric::L2Squared,
+        "nested similarity_function option is persisted"
+    );
+    assert!(
+        created.target.is_none(),
+        "GQL creation must not choose a vector-canister target"
+    );
+    assert_eq!(
+        created.activation_state,
+        VectorIndexActivationStateView::Registered,
+        "targetless GQL creation remains Registered"
+    );
+    let status = activation_status(&env, created.index_id).expect("targetless activation status");
+    assert_eq!(
+        status.activation_state,
+        VectorIndexActivationStateView::Registered,
+        "the targetless catalog definition remains Registered"
+    );
+    assert!(
+        status.blocked_reason.is_none(),
+        "Registered has no dispatch-block reason"
+    );
+
+    // SEARCH resolves the public logical index name before failing on the intentionally targetless
+    // definition. The embedding field is not a public SEARCH name.
+    let logical_search = gql_vector_search_query(GQL_LOGICAL_INDEX_NAME);
+    let logical_err = gql_query_as_admin_expect_err(&env, &logical_search);
+    assert!(
+        matches!(logical_err, RouterError::Conflict(_)),
+        "the logical index name must resolve to the targetless definition, got {logical_err:?}"
+    );
+    let embedding_search = gql_vector_search_query(GQL_EMBEDDING_FIELD);
+    let embedding_err = gql_query_as_admin_expect_err(&env, &embedding_search);
+    assert!(
+        matches!(embedding_err, RouterError::NotFound(_)),
+        "the embedding field must not be accepted as a logical SEARCH index name, got {embedding_err:?}"
+    );
+
+    // Use a fresh client mutation key: this proves IF NOT EXISTS exact-declaration semantics,
+    // rather than the Router's client-mutation-key replay cache.
+    assert_eq!(
+        gql_mutate_as_admin(&env, &create, "adr0065_vector_ddl_exact_replay"),
+        0,
+        "an exact IF NOT EXISTS replay is a rowless no-op"
+    );
+    assert_eq!(
+        list(&env).expect("list after exact replay"),
+        after_create,
+        "an exact replay must not allocate or mutate another vector definition"
+    );
+
+    // Same logical index name but a different embedding field is a conflicting declaration, even
+    // under IF NOT EXISTS. The full public catalog must remain byte-for-byte observationally equal.
+    let conflict = gql_vector_index_ddl(GQL_CONFLICTING_EMBEDDING_FIELD);
+    let err = gql_mutate_as_admin_expect_err(&env, &conflict, "adr0065_vector_ddl_conflict");
+    assert!(
+        matches!(err, RouterError::Conflict(_)),
+        "a mismatched declaration for one logical index must conflict, got {err:?}"
+    );
+    assert_eq!(
+        list(&env).expect("list after conflicting declaration"),
+        after_create,
+        "a rejected conflicting declaration must leave no catalog side effect"
+    );
 }
 
 #[test]

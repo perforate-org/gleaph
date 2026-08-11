@@ -200,7 +200,7 @@ async fn vector_search(
     query: Vec<u8>,
     top_k: u32,
 ) -> Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError> {
-    use crate::facade::stable::{embedding_name_catalog, vector_index_catalog};
+    use crate::facade::stable::{index_name_catalog, vector_index_catalog};
     use gleaph_graph_kernel::vector_index::{MAX_VECTOR_SEARCH_TOP_K, VectorSearchRequest};
 
     let store = crate::facade::store::RouterStore::new();
@@ -208,16 +208,10 @@ async fn vector_search(
         Some(name) => store.resolve_graph_id(name)?,
         None => crate::graph_context::resolve_default_graph_id(&store, ic_cdk::api::msg_caller())?,
     };
-    let embedding_name_id = embedding_name_catalog::lookup_embedding_name_id(graph_id, &index_name)
-        .ok_or_else(|| {
-            RouterError::NotFound(format!("vector index/embedding name {index_name}"))
-        })?;
-    let def = vector_index_catalog::list_vector_indexes(graph_id)
-        .into_iter()
-        .find(|d| d.embedding_name_id == embedding_name_id)
-        .ok_or_else(|| {
-            RouterError::NotFound(format!("vector index for embedding name {index_name}"))
-        })?;
+    let index_name_id = index_name_catalog::lookup_index_name_id(graph_id, &index_name)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {index_name}")))?;
+    let def = vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {index_name}")))?;
     // Prevalidate the public request against the Router-owned definition so user mistakes surface as
     // `InvalidArgument`, not as an opaque `Internal` from the downstream vector canister.
     if top_k == 0 || top_k > MAX_VECTOR_SEARCH_TOP_K {
@@ -485,9 +479,13 @@ mod tests {
         let name_id =
             crate::facade::stable::embedding_name_catalog::intern_embedding_name(graph_id, "vec5")
                 .expect("intern embedding name");
+        let index_name_id =
+            crate::facade::stable::index_name_catalog::intern_index_name(graph_id, "vec5")
+                .expect("intern index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
             5,
+            index_name_id,
             name_id,
             vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
@@ -502,6 +500,57 @@ mod tests {
         let err = futures::executor::block_on(super::vector_search(graph, name, query, top_k))
             .expect_err("no target");
         assert!(matches!(err, RouterError::Conflict(_)));
+    }
+
+    #[test]
+    fn router_vector_search_resolves_logical_name_not_embedding_field_name() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let embedding_name_id =
+            crate::facade::stable::embedding_name_catalog::intern_embedding_name(
+                graph_id,
+                "embedding_field",
+            )
+            .expect("intern embedding field name");
+        let index_name_id = crate::facade::stable::index_name_catalog::intern_index_name(
+            graph_id,
+            "logical_vector_idx",
+        )
+        .expect("intern logical vector index name");
+        crate::facade::stable::vector_index_catalog::register_vector_index(
+            graph_id,
+            61,
+            index_name_id,
+            embedding_name_id,
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+            16,
+            None,
+            false,
+        )
+        .expect("register targetless vector definition");
+
+        let logical_err = futures::executor::block_on(super::vector_search(
+            Some("tenant.main".into()),
+            "logical_vector_idx".into(),
+            vec![0; 64],
+            10,
+        ))
+        .expect_err("logical name resolves to the targetless definition");
+        assert!(matches!(logical_err, RouterError::Conflict(_)));
+
+        let embedding_err = futures::executor::block_on(super::vector_search(
+            Some("tenant.main".into()),
+            "embedding_field".into(),
+            vec![0; 64],
+            10,
+        ))
+        .expect_err("embedding field name is not a semantic index name");
+        assert!(matches!(embedding_err, RouterError::NotFound(_)));
     }
 
     #[test]
@@ -542,9 +591,13 @@ mod tests {
         let name_id =
             crate::facade::stable::embedding_name_catalog::intern_embedding_name(graph_id, "vec8")
                 .expect("intern I8 embedding name");
+        let index_name_id =
+            crate::facade::stable::index_name_catalog::intern_index_name(graph_id, "vec8")
+                .expect("intern I8 index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
             8,
+            index_name_id,
             name_id,
             vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,

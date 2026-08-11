@@ -22,3 +22,13 @@ pub(crate) fn intern_index_name(graph_id: GraphId, name: &str) -> Result<IndexNa
         .with_borrow_mut(|catalog| catalog.get_or_insert(graph_id, name))
         .map_err(|e| catalog_error_to_router(e, "index"))
 }
+
+/// Read-only capacity check for a later no-await catalog commit.
+pub(crate) fn preflight_index_name(
+    graph_id: GraphId,
+    name: &str,
+) -> Result<IndexNameId, RouterError> {
+    ROUTER_INDEX_NAME_CATALOG
+        .with_borrow(|catalog| catalog.peek_next_id(graph_id, name))
+        .map_err(|e| catalog_error_to_router(e, "index"))
+}

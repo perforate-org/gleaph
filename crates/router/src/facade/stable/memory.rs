@@ -132,6 +132,9 @@ pub(crate) const ROUTER_SCHEMA_MIGRATIONS: MemoryId = MemoryId::new(50);
 // --- physical-index catalog epoch fence (ADR 0059) ---
 pub(crate) const ROUTER_INDEX_CATALOG_EPOCH: MemoryId = MemoryId::new(51);
 
+// --- catalog: opaque vector physical id allocation (ADR 0065) ---
+const ROUTER_NEXT_VECTOR_INDEX_ID: MemoryId = MemoryId::new(52);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -266,6 +269,7 @@ pub(crate) type StableUniqueEffectPendingMap = BTreeMap<
 pub(crate) type StableEmbeddingNameCatalog =
     GraphScopedNameCatalog<EmbeddingNameId, Memory, Memory, DenseEmbeddingNamePolicy>;
 pub(crate) type StableVectorIndexMap = BTreeMap<VectorIndexKey, VectorIndexDefRecord, Memory>;
+pub(crate) type StableVectorIndexIdAllocator = Cell<u32, Memory>;
 pub(crate) type StableVectorMaintenancePolicyMap =
     BTreeMap<VectorIndexKey, VectorMaintenancePolicyRecord, Memory>;
 
@@ -355,6 +359,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_BULK_LOAD_CHUNK_RECEIPTS, 16),
     (ROUTER_SCHEMA_MIGRATIONS, 16),
     (ROUTER_INDEX_CATALOG_EPOCH, 1),
+    (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
 ];
 
 thread_local! {
@@ -516,6 +521,13 @@ pub(crate) fn init_vector_indexes() -> StableVectorIndexMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_INDEXES)))
 }
 
+pub(crate) fn init_next_vector_index_id() -> StableVectorIndexIdAllocator {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_NEXT_VECTOR_INDEX_ID)),
+        1,
+    )
+}
+
 pub(crate) fn init_vector_maintenance_policies() -> StableVectorMaintenancePolicyMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_MAINTENANCE_POLICIES)))
 }
@@ -601,22 +613,60 @@ pub(crate) fn init_edge_backfill_state() -> StableEdgeBackfillStateMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ic_stable_structures::VectorMemory;
     use std::collections::HashSet;
 
     #[test]
     fn initial_memory_policy_covers_each_router_region_once() {
-        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 52);
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 53);
         let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
             .iter()
             .map(|(id, _)| {
-                (0..=51)
+                (0..=52)
                     .find(|candidate| *id == MemoryId::new(*candidate))
                     .expect("policy id is in the Router layout")
             })
             .collect();
-        assert_eq!(ids.len(), 52);
-        for id in 0..=51 {
+        assert_eq!(ids.len(), 53);
+        for id in 0..=52 {
             assert!(ids.contains(&id));
         }
+    }
+
+    #[test]
+    fn vector_index_allocator_region_reopens_and_is_separate_from_epoch() {
+        let backing = VectorMemory::default();
+        let manager = MemoryManager::init_with_policies(
+            backing.clone(),
+            ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
+            &[
+                (ROUTER_INDEX_CATALOG_EPOCH, 1),
+                (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
+            ],
+        );
+        let mut epoch = Cell::init(manager.get(ROUTER_INDEX_CATALOG_EPOCH), 0u64);
+        let mut vector_id = Cell::init(manager.get(ROUTER_NEXT_VECTOR_INDEX_ID), 1u32);
+        epoch.set(73);
+        vector_id.set(41);
+        drop(epoch);
+        drop(vector_id);
+        drop(manager);
+
+        let reopened = MemoryManager::init_with_policies(
+            backing,
+            ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
+            &[
+                (ROUTER_INDEX_CATALOG_EPOCH, 1),
+                (ROUTER_NEXT_VECTOR_INDEX_ID, 1),
+            ],
+        );
+        let epoch = Cell::init(reopened.get(ROUTER_INDEX_CATALOG_EPOCH), 0u64);
+        let vector_id = Cell::init(reopened.get(ROUTER_NEXT_VECTOR_INDEX_ID), 1u32);
+        assert_eq!(*epoch.get(), 73, "epoch region must retain its own u64");
+        assert_eq!(
+            *vector_id.get(),
+            41,
+            "vector allocator region 52 must reopen its persisted u32"
+        );
     }
 }

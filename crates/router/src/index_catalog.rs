@@ -7,13 +7,19 @@ use gleaph_graph_kernel::federation::IndexPurgeKind;
 
 use crate::edge_index_direction::to_index_direction;
 use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
-use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
-use crate::facade::stable::indexed_catalog::{
-    create_named_index, drop_named_index, edge_index_uses_property_label, is_property_registered,
-    load_graph_stats,
+use crate::facade::stable::embedding_name_catalog::{
+    intern_embedding_name, lookup_embedding_name_id, preflight_embedding_name,
 };
+use crate::facade::stable::index_name_catalog::{
+    intern_index_name, lookup_index_name_id, preflight_index_name,
+};
+use crate::facade::stable::indexed_catalog::{
+    create_named_index, drop_named_index, edge_index_uses_property_label, get_named_index,
+    is_property_registered, load_graph_stats,
+};
+use crate::facade::stable::vector_index_catalog;
 use crate::facade::store::RouterStore;
-use crate::index_ddl::{IndexDdlStatement, IndexTarget};
+use crate::index_ddl::{IndexDdlStatement, IndexTarget, VectorIndexDdlStatement};
 use crate::planner_stats::{IndexCatalogEntry, RouterGraphStats};
 use crate::state::RouterError;
 
@@ -37,6 +43,121 @@ pub(crate) async fn execute_index_ddl_for_graph(
             if_exists,
         } => drop_index(graph_id, &index_name, if_exists).await,
     }
+}
+
+/// Execute Router-owned semantic vector DDL. This path is synchronous and performs no Graph or
+/// vector-canister call; creation commits one targetless `Registered` definition.
+pub(crate) fn execute_vector_index_ddl_for_graph(
+    graph_id: GraphId,
+    stmt: VectorIndexDdlStatement,
+) -> Result<(), RouterError> {
+    match stmt {
+        VectorIndexDdlStatement::Create {
+            index_name,
+            if_not_exists,
+            target,
+        } => create_vector_index(graph_id, &index_name, if_not_exists, &target),
+    }
+}
+
+/// Reject a new vector registration whose logical name is already owned by either index kind.
+/// Legacy admin registration calls this before interning its embedding/name compatibility alias.
+pub(crate) fn ensure_vector_index_name_available(
+    graph_id: GraphId,
+    index_name: &str,
+) -> Result<(), RouterError> {
+    let Some(index_name_id) = lookup_index_name_id(graph_id, index_name) else {
+        return Ok(());
+    };
+    if get_named_index(graph_id, index_name_id).is_some()
+        || vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id).is_some()
+    {
+        return Err(RouterError::Conflict(format!(
+            "logical index name is already registered: {index_name}"
+        )));
+    }
+    Ok(())
+}
+
+fn create_vector_index(
+    graph_id: GraphId,
+    index_name: &str,
+    if_not_exists: bool,
+    target: &crate::index_ddl::VectorIndexTarget,
+) -> Result<(), RouterError> {
+    if index_name.is_empty() || target.embedding_name.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "vector index and embedding field names must not be empty".into(),
+        ));
+    }
+    if target.dims == 0 {
+        return Err(RouterError::InvalidArgument(
+            "vector index dimensions must be positive".into(),
+        ));
+    }
+
+    let store = RouterStore::new();
+    let label_id = store.lookup_vertex_label_id(graph_id, &target.label)?;
+    let existing_index_name_id = lookup_index_name_id(graph_id, index_name);
+    let existing_embedding_name_id = lookup_embedding_name_id(graph_id, &target.embedding_name);
+
+    if let Some(index_name_id) = existing_index_name_id {
+        if get_named_index(graph_id, index_name_id).is_some() {
+            return Err(RouterError::Conflict(format!(
+                "index name already belongs to a property index: {index_name}"
+            )));
+        }
+        if let Some(existing) =
+            vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id)
+        {
+            let exact = existing_embedding_name_id == Some(existing.embedding_name_id)
+                && existing.labels == [label_id]
+                && existing.kind == target.kind
+                && existing.metric == target.metric
+                && existing.encoding == target.encoding
+                && existing.dims == target.dims;
+            if exact && if_not_exists {
+                return Ok(());
+            }
+            return Err(RouterError::Conflict(format!(
+                "vector index definition already exists with a different declaration: {index_name}"
+            )));
+        }
+    }
+
+    if let Some(embedding_name_id) = existing_embedding_name_id
+        && vector_index_catalog::get_vector_index_by_embedding_name_id(graph_id, embedding_name_id)
+            .is_some()
+    {
+        return Err(RouterError::Conflict(format!(
+            "embedding field already has a vector index: {}",
+            target.embedding_name
+        )));
+    }
+
+    // Prove every fallible allocation before the first durable write. The following commit region
+    // is synchronous and contains no recoverable validation or remote effect.
+    preflight_index_name(graph_id, index_name)?;
+    preflight_embedding_name(graph_id, &target.embedding_name)?;
+    vector_index_catalog::preflight_allocate_vector_index_id()?;
+
+    let index_name_id = intern_index_name(graph_id, index_name)?;
+    let embedding_name_id = intern_embedding_name(graph_id, &target.embedding_name)?;
+    let index_id = vector_index_catalog::allocate_vector_index_id()?;
+    vector_index_catalog::register_vector_index(
+        graph_id,
+        index_id,
+        index_name_id,
+        embedding_name_id,
+        vec![label_id],
+        target.kind,
+        target.metric,
+        target.encoding,
+        target.dims,
+        None,
+        false,
+    )?;
+    Ok(())
 }
 
 pub(crate) struct ResolvedIndexDefinition {
@@ -147,6 +268,14 @@ async fn create_index(
 ) -> Result<(), RouterError> {
     let resolved = resolve_index_definition(graph_id, target)?;
 
+    if let Some(index_name_id) = lookup_index_name_id(graph_id, index_name)
+        && vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id).is_some()
+    {
+        return Err(RouterError::Conflict(format!(
+            "index name already belongs to a vector index: {index_name}"
+        )));
+    }
+
     let index_name_id = intern_index_name(graph_id, index_name)?;
     // ADR 0023 D1: the router is the sole SSOT for index definitions. Shards learn
     // indexed-ness per operation from the router-supplied catalog, so CREATE INDEX
@@ -256,6 +385,8 @@ mod tests {
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
     use gleaph_gql_planner::GraphStats;
     use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorIndexKind, VectorMetric};
+    use gleaph_index_ddl::VectorIndexDdlParseError;
 
     fn register_test_graph(store: &RouterStore, name: &str) -> GraphId {
         let owner = candid::Principal::from_slice(&[1; 29]);
@@ -278,6 +409,259 @@ mod tests {
             )
             .expect("register graph");
         crate::facade::stable::graph_catalog::lookup_graph_id(name).expect("graph id")
+    }
+
+    fn register_vector_label(store: &RouterStore, graph_name: &str, label: &str) {
+        store
+            .admin_intern_vertex_label(candid::Principal::from_slice(&[1; 29]), graph_name, label)
+            .expect("intern vector label");
+    }
+
+    fn vector_statement(
+        index_name: &str,
+        embedding_name: &str,
+        dims: u16,
+        if_not_exists: bool,
+    ) -> VectorIndexDdlStatement {
+        VectorIndexDdlStatement::Create {
+            index_name: index_name.into(),
+            if_not_exists,
+            target: crate::index_ddl::VectorIndexTarget {
+                label: "Document".into(),
+                embedding_name: embedding_name.into(),
+                dims,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::F32,
+                kind: VectorIndexKind::IvfFlat,
+            },
+        }
+    }
+
+    #[test]
+    fn vector_ddl_registers_distinct_names_as_targetless_registered() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.ddl";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+
+        execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("document_embedding_idx", "embedding", 768, false),
+        )
+        .expect("create vector index");
+
+        let index_name_id =
+            lookup_index_name_id(graph_id, "document_embedding_idx").expect("logical index name");
+        let embedding_name_id =
+            lookup_embedding_name_id(graph_id, "embedding").expect("embedding field name");
+        let def = vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id)
+            .expect("vector definition");
+        assert_eq!(def.index_name_id, index_name_id);
+        assert_eq!(def.embedding_name_id, embedding_name_id);
+        assert_eq!(def.labels.len(), 1);
+        assert_eq!(def.dims, 768);
+        assert!(def.target.is_none());
+        assert_eq!(
+            def.activation_state,
+            vector_index_catalog::VectorIndexActivationState::Registered
+        );
+    }
+
+    #[test]
+    fn vector_ddl_if_not_exists_requires_exact_definition_without_side_effects() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.replay";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+
+        execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("document_embedding_idx", "embedding", 384, false),
+        )
+        .expect("initial create");
+        let next_before =
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("document_embedding_idx", "embedding", 384, true),
+        )
+        .expect("exact replay");
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before,
+            "exact replay must not allocate a physical id"
+        );
+
+        let err = execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("document_embedding_idx", "other_embedding", 385, true),
+        )
+        .expect_err("shape mismatch must conflict");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert_eq!(
+            lookup_embedding_name_id(graph_id, "other_embedding"),
+            None,
+            "conflict must not allocate an embedding field name"
+        );
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before,
+            "conflict must not allocate a physical id"
+        );
+
+        register_vector_label(&store, graph_name, "OtherDocument");
+        let base = crate::index_ddl::VectorIndexTarget {
+            label: "Document".into(),
+            embedding_name: "embedding".into(),
+            dims: 384,
+            metric: VectorMetric::Cosine,
+            encoding: VectorEncoding::F32,
+            kind: VectorIndexKind::IvfFlat,
+        };
+        let mut label_mismatch = base.clone();
+        label_mismatch.label = "OtherDocument".into();
+        let mut embedding_mismatch = base.clone();
+        embedding_mismatch.embedding_name = "other_embedding_single".into();
+        let mut dims_mismatch = base.clone();
+        dims_mismatch.dims = 385;
+        let mut metric_mismatch = base.clone();
+        metric_mismatch.metric = VectorMetric::L2Squared;
+        let mut encoding_mismatch = base;
+        encoding_mismatch.encoding = VectorEncoding::I8;
+        let original = vector_index_catalog::get_vector_index_by_name_id(
+            graph_id,
+            lookup_index_name_id(graph_id, "document_embedding_idx").expect("index name"),
+        )
+        .expect("original definition");
+        for (field, target) in [
+            ("label", label_mismatch),
+            ("embedding", embedding_mismatch),
+            ("dimensions", dims_mismatch),
+            ("metric", metric_mismatch),
+            ("encoding", encoding_mismatch),
+        ] {
+            let result = execute_vector_index_ddl_for_graph(
+                graph_id,
+                VectorIndexDdlStatement::Create {
+                    index_name: "document_embedding_idx".into(),
+                    if_not_exists: true,
+                    target,
+                },
+            );
+            assert!(
+                matches!(result, Err(RouterError::Conflict(_))),
+                "single-field {field} mismatch must conflict: {result:?}"
+            );
+            assert_eq!(
+                vector_index_catalog::get_vector_index(graph_id, original.index_id),
+                Some(original.clone()),
+                "field={field}: original definition must survive"
+            );
+            assert_eq!(
+                crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
+                next_before,
+                "field={field}: allocator must not advance"
+            );
+            assert_eq!(
+                lookup_index_name_id(graph_id, "document_embedding_idx"),
+                Some(original.index_name_id),
+                "field={field}: logical name mapping must remain canonical"
+            );
+            assert_eq!(
+                lookup_embedding_name_id(graph_id, "embedding"),
+                Some(original.embedding_name_id),
+                "field={field}: embedding name mapping must remain canonical"
+            );
+        }
+        assert_eq!(
+            lookup_embedding_name_id(graph_id, "other_embedding_single"),
+            None,
+            "embedding mismatch must not allocate its candidate name"
+        );
+
+        let invalid_kind = crate::index_ddl::try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding_idx IF NOT EXISTS
+               FOR (d:Document) ON d.embedding
+               OPTIONS { dimensions: 384, metric: "cosine", encoding: "f32", algorithm: "hnsw" }"#,
+        )
+        .expect("vector DDL detection")
+        .expect_err("unsupported kind must be rejected before Router registration");
+        assert!(matches!(
+            invalid_kind,
+            VectorIndexDdlParseError::InvalidOptionValue { .. }
+        ));
+        assert_eq!(
+            vector_index_catalog::get_vector_index(graph_id, original.index_id),
+            Some(original)
+        );
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before,
+            "unsupported kind must not allocate"
+        );
+    }
+
+    #[test]
+    fn vector_registration_rejects_property_index_logical_name_collision() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.name_collision";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "title",
+        );
+        let name = "embedding";
+        futures::executor::block_on(create_index(
+            graph_id,
+            name,
+            false,
+            &IndexTarget {
+                kind: IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "title".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create property index");
+        let err = ensure_vector_index_name_available(graph_id, name)
+            .expect_err("admin compatibility name must preflight before interning");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert_eq!(
+            lookup_embedding_name_id(graph_id, name),
+            None,
+            "preflight conflict must not allocate an embedding name"
+        );
+        let index_name_id = lookup_index_name_id(graph_id, name).expect("property index name");
+        let embedding_name_id = intern_embedding_name(graph_id, "embedding")
+            .expect("intern embedding name for direct registration");
+
+        let err = vector_index_catalog::register_vector_index(
+            graph_id,
+            77,
+            index_name_id,
+            embedding_name_id,
+            vec![
+                store
+                    .lookup_vertex_label_id(graph_id, "Document")
+                    .expect("label"),
+            ],
+            VectorIndexKind::IvfFlat,
+            VectorMetric::Cosine,
+            VectorEncoding::F32,
+            16,
+            None,
+            false,
+        )
+        .expect_err("cross-kind logical name must conflict");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert!(
+            vector_index_catalog::get_vector_index(graph_id, 77).is_none(),
+            "rejected registration must not persist a vector definition"
+        );
     }
 
     #[test]

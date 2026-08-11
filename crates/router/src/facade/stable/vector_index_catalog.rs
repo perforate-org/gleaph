@@ -22,14 +22,14 @@ use std::borrow::Cow;
 use std::ops::Bound;
 
 use candid::{CandidType, Decode, Encode, Principal};
-use gleaph_graph_kernel::entry::{EmbeddingNameId, GraphId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EmbeddingNameId, GraphId, IndexNameId, VertexLabelId};
 use gleaph_graph_kernel::vector_index::{
     IndexedEmbeddingCatalog, IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
 };
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 
-use crate::facade::stable::ROUTER_VECTOR_INDEXES;
+use crate::facade::stable::{ROUTER_NEXT_VECTOR_INDEX_ID, ROUTER_VECTOR_INDEXES};
 use crate::state::{RouterError, VectorActivationBlockReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,6 +125,8 @@ pub(crate) fn activation_block_reason(
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) struct VectorIndexDefRecord {
     pub index_id: u32,
+    /// Graph-scoped logical index name. This is distinct from the typed embedding field name.
+    pub index_name_id: IndexNameId,
     pub embedding_name_id: EmbeddingNameId,
     /// Creation-fixed label set the index is scoped to (ADR 0064 §Router catalog); change = drop +
     /// recreate. The graph uses it as the label-membership upper bound for vector presence.
@@ -138,10 +140,26 @@ pub(crate) struct VectorIndexDefRecord {
     pub activation_state: VectorIndexActivationState,
 }
 
-/// Versioned stable envelope (ADR 0007) so the record schema can evolve across upgrades.
+/// V1 stable shape retained only so upgrades fail with an explicit breaking-version diagnostic.
+#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
+struct VectorIndexDefRecordV1 {
+    index_id: u32,
+    embedding_name_id: EmbeddingNameId,
+    labels: Vec<VertexLabelId>,
+    kind: VectorIndexKind,
+    metric: VectorMetric,
+    encoding: VectorEncoding,
+    dims: u16,
+    target: Option<VectorIndexTarget>,
+    activation_state: VectorIndexActivationState,
+}
+
+/// Versioned stable envelope (ADR 0007). ADR 0065 deliberately makes V2 breaking because a
+/// distinct logical index name cannot be inferred from a V1 embedding name.
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum VectorIndexDefStableRecord {
-    V1(VectorIndexDefRecord),
+    V1(VectorIndexDefRecordV1),
+    V2(VectorIndexDefRecord),
 }
 
 impl Storable for VectorIndexKey {
@@ -179,20 +197,60 @@ impl Storable for VectorIndexDefRecord {
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Owned(
-            Encode!(&VectorIndexDefStableRecord::V1(self.clone()))
+            Encode!(&VectorIndexDefStableRecord::V2(self.clone()))
                 .expect("encode vector index def"),
         )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&VectorIndexDefStableRecord::V1(self)).expect("encode vector index def")
+        Encode!(&VectorIndexDefStableRecord::V2(self)).expect("encode vector index def")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), VectorIndexDefStableRecord).expect("decode vector index def")
         {
-            VectorIndexDefStableRecord::V1(v1) => v1,
+            VectorIndexDefStableRecord::V1(_) => panic!(
+                "vector index catalog V1 is incompatible with ADR 0065; reinstall with an empty V2 catalog"
+            ),
+            VectorIndexDefStableRecord::V2(v2) => v2,
         }
+    }
+}
+
+/// Read-only allocator preflight. Allocation is monotonic and zero is permanently invalid.
+pub(crate) fn preflight_allocate_vector_index_id() -> Result<(), RouterError> {
+    next_available_vector_index_id().map(|_| ())
+}
+
+/// Allocate one opaque physical vector-index id. IDs are never rewound or reused.
+pub(crate) fn allocate_vector_index_id() -> Result<u32, RouterError> {
+    let raw = next_available_vector_index_id()?;
+    ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow_mut(|next_id| {
+        next_id.set(raw + 1);
+        Ok(raw)
+    })
+}
+
+/// Find the first globally unused id at or after the allocator cursor. This explicitly bridges
+/// legacy caller-assigned ids: a breaking V2 install may still exercise the legacy admin surface,
+/// and a later DDL allocation must never collide with any definition it created.
+fn next_available_vector_index_id() -> Result<u32, RouterError> {
+    let mut raw = ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|next_id| *next_id.get());
+    if raw == 0 {
+        return Err(RouterError::Internal(
+            "vector index allocator stored zero".into(),
+        ));
+    }
+    loop {
+        let next = raw
+            .checked_add(1)
+            .ok_or_else(|| RouterError::IdExhausted("vector index id".into()))?;
+        let occupied = ROUTER_VECTOR_INDEXES
+            .with_borrow(|map| map.iter().any(|entry| entry.key().index_id == raw));
+        if !occupied {
+            return Ok(raw);
+        }
+        raw = next;
     }
 }
 
@@ -276,6 +334,7 @@ pub(crate) fn resolve_vector_index_labels(
 pub(crate) fn register_vector_index(
     graph_id: GraphId,
     index_id: u32,
+    index_name_id: IndexNameId,
     embedding_name_id: EmbeddingNameId,
     labels: Vec<VertexLabelId>,
     kind: VectorIndexKind,
@@ -289,6 +348,37 @@ pub(crate) fn register_vector_index(
     match preflight_register(graph_id, index_id, target, if_not_exists)? {
         RegisterPreflight::AlreadyExists => return Ok(false),
         RegisterPreflight::Proceed => {}
+    }
+
+    if super::index_name_catalog::index_name(graph_id, index_name_id).is_none() {
+        return Err(RouterError::InvalidArgument(format!(
+            "logical vector index name id {} is not registered in this graph",
+            index_name_id.raw()
+        )));
+    }
+    if super::embedding_name_catalog::embedding_name(graph_id, embedding_name_id).is_none() {
+        return Err(RouterError::InvalidArgument(format!(
+            "embedding field name id {} is not registered in this graph",
+            embedding_name_id.raw()
+        )));
+    }
+    if super::indexed_catalog::get_named_index(graph_id, index_name_id).is_some() {
+        return Err(RouterError::Conflict(format!(
+            "logical index name id {} already belongs to a property index",
+            index_name_id.raw()
+        )));
+    }
+
+    let index_name_conflict = ROUTER_VECTOR_INDEXES.with_borrow(|map| {
+        let start = VectorIndexKey::new(graph_id, 0);
+        map.range((Bound::Included(start), graph_upper(graph_id)))
+            .any(|entry| entry.value().index_name_id == index_name_id)
+    });
+    if index_name_conflict {
+        return Err(RouterError::Conflict(format!(
+            "logical index name id {} already has a vector index in this graph",
+            index_name_id.raw()
+        )));
     }
 
     // One vector index per embedding name per graph (ADR 0031 Slice 4): dispatch/backfill key by
@@ -313,6 +403,7 @@ pub(crate) fn register_vector_index(
     let activation_state = resolve_activation_state(target.is_some());
     let def = VectorIndexDefRecord {
         index_id,
+        index_name_id,
         embedding_name_id,
         labels,
         kind,
@@ -428,6 +519,17 @@ pub(crate) fn get_vector_index_by_embedding_name_id(
     list_vector_indexes(graph_id)
         .into_iter()
         .find(|def| def.embedding_name_id == embedding_name_id)
+}
+
+/// Resolve one vector definition by its graph-scoped logical name. The catalog enforces uniqueness
+/// at creation, so the bounded graph-local scan returns at most one record.
+pub(crate) fn get_vector_index_by_name_id(
+    graph_id: GraphId,
+    index_name_id: IndexNameId,
+) -> Option<VectorIndexDefRecord> {
+    list_vector_indexes(graph_id)
+        .into_iter()
+        .find(|def| def.index_name_id == index_name_id)
 }
 
 /// Fail closed unless the dynamic per-graph vector dispatch gate is satisfied for `def`.
@@ -582,13 +684,30 @@ fn graph_upper(graph_id: GraphId) -> Bound<VectorIndexKey> {
 mod tests {
     use super::*;
 
+    fn test_index_name_id(graph: GraphId, index_id: u32) -> IndexNameId {
+        super::super::index_name_catalog::intern_index_name(
+            graph,
+            &format!("test_vector_index_{index_id}"),
+        )
+        .expect("intern test vector index name")
+    }
+
+    fn test_embedding_name_id(graph: GraphId, index_id: u32) -> EmbeddingNameId {
+        super::super::embedding_name_catalog::intern_embedding_name(
+            graph,
+            &format!("test_embedding_field_{index_id}"),
+        )
+        .expect("intern test embedding field name")
+    }
+
     fn sample_def(graph: GraphId, index_id: u32, target: Option<VectorIndexTarget>) -> bool {
         // Distinct embedding-name id per index so the one-index-per-embedding-name invariant does
         // not collapse unrelated test definitions in the same graph.
         register_vector_index(
             graph,
             index_id,
-            EmbeddingNameId::from_raw(index_id as u16),
+            test_index_name_id(graph, index_id),
+            test_embedding_name_id(graph, index_id),
             vec![VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             VectorMetric::L2Squared,
@@ -610,9 +729,34 @@ mod tests {
     }
 
     #[test]
+    fn allocator_skips_legacy_caller_assigned_id() {
+        let graph = GraphId::from_raw(920_900);
+        let occupied = ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
+        register_vector_index(
+            graph,
+            occupied,
+            test_index_name_id(graph, occupied),
+            test_embedding_name_id(graph, occupied),
+            vec![VertexLabelId::from_raw(1)],
+            VectorIndexKind::IvfFlat,
+            VectorMetric::L2Squared,
+            VectorEncoding::F32,
+            16,
+            None,
+            false,
+        )
+        .expect("legacy registration at allocator cursor");
+
+        let allocated = allocate_vector_index_id().expect("allocate after legacy id");
+        assert_ne!(allocated, occupied);
+        assert!(allocated > occupied);
+    }
+
+    #[test]
     fn record_storable_roundtrip() {
         let record = VectorIndexDefRecord {
             index_id: 9,
+            index_name_id: IndexNameId::from_raw(4),
             embedding_name_id: EmbeddingNameId::from_raw(3),
             labels: vec![VertexLabelId::from_raw(1), VertexLabelId::from_raw(2)],
             kind: VectorIndexKind::IvfFlat,
@@ -628,6 +772,47 @@ mod tests {
             VectorIndexDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes())),
             record
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "vector index catalog V1 is incompatible with ADR 0065; reinstall with an empty V2 catalog"
+    )]
+    fn v1_stable_record_is_rejected_explicitly() {
+        let v1 = VectorIndexDefStableRecord::V1(VectorIndexDefRecordV1 {
+            index_id: 9,
+            embedding_name_id: EmbeddingNameId::from_raw(3),
+            labels: vec![VertexLabelId::from_raw(1)],
+            kind: VectorIndexKind::IvfFlat,
+            metric: VectorMetric::L2Squared,
+            encoding: VectorEncoding::F32,
+            dims: 8,
+            target: None,
+            activation_state: VectorIndexActivationState::Registered,
+        });
+        let bytes = Encode!(&v1).expect("encode V1 fixture");
+        let _ = VectorIndexDefRecord::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    fn registration_rejects_unmapped_embedding_name_without_inserting() {
+        let graph = GraphId::from_raw(920_901);
+        let err = register_vector_index(
+            graph,
+            1,
+            test_index_name_id(graph, 1),
+            EmbeddingNameId::from_raw(777),
+            vec![VertexLabelId::from_raw(1)],
+            VectorIndexKind::IvfFlat,
+            VectorMetric::L2Squared,
+            VectorEncoding::F32,
+            16,
+            None,
+            false,
+        )
+        .expect_err("unmapped embedding field id must fail closed");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+        assert!(get_vector_index(graph, 1).is_none());
     }
 
     #[test]
@@ -647,7 +832,8 @@ mod tests {
         register_vector_index(
             graph,
             3,
-            EmbeddingNameId::from_raw(3),
+            test_index_name_id(graph, 3),
+            test_embedding_name_id(graph, 3),
             vec![VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             VectorMetric::L2Squared,
@@ -715,7 +901,8 @@ mod tests {
             register_vector_index(
                 graph,
                 1,
-                EmbeddingNameId::from_raw(1),
+                test_index_name_id(graph, 1),
+                test_embedding_name_id(graph, 1),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
@@ -785,7 +972,8 @@ mod tests {
             register_vector_index(
                 graph,
                 1,
-                EmbeddingNameId::from_raw(1),
+                test_index_name_id(graph, 1),
+                test_embedding_name_id(graph, 1),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
@@ -801,7 +989,8 @@ mod tests {
             !register_vector_index(
                 graph,
                 1,
-                EmbeddingNameId::from_raw(1),
+                test_index_name_id(graph, 1),
+                test_embedding_name_id(graph, 1),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
@@ -821,7 +1010,8 @@ mod tests {
             register_vector_index(
                 graph,
                 1,
-                EmbeddingNameId::from_raw(5),
+                test_index_name_id(graph, 1),
+                test_embedding_name_id(graph, 5),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
@@ -837,7 +1027,8 @@ mod tests {
             register_vector_index(
                 graph,
                 2,
-                EmbeddingNameId::from_raw(5),
+                test_index_name_id(graph, 2),
+                test_embedding_name_id(graph, 5),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
@@ -854,7 +1045,8 @@ mod tests {
             register_vector_index(
                 other,
                 2,
-                EmbeddingNameId::from_raw(5),
+                test_index_name_id(other, 2),
+                test_embedding_name_id(other, 5),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,
@@ -977,7 +1169,8 @@ mod tests {
             register_vector_index(
                 graph,
                 2,
-                EmbeddingNameId::from_raw(2),
+                test_index_name_id(graph, 2),
+                test_embedding_name_id(graph, 2),
                 vec![VertexLabelId::from_raw(1)],
                 VectorIndexKind::IvfFlat,
                 VectorMetric::L2Squared,

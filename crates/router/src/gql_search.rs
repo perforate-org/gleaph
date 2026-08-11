@@ -45,7 +45,7 @@ use gleaph_graph_kernel::vector_index::{
 };
 
 use crate::RouterStore;
-use crate::facade::stable::{embedding_name_catalog, indexed_catalog, vector_index_catalog};
+use crate::facade::stable::{index_name_catalog, indexed_catalog, vector_index_catalog};
 use crate::federation::{
     empty_execute_plan_result, federated_merge_mode_from_plans, merge_execute_plan_result,
 };
@@ -1028,12 +1028,10 @@ fn resolve_vector_index(
     index_name_parts: &[Str],
 ) -> Result<(u32, vector_index_catalog::VectorIndexDefRecord), RouterError> {
     let name = index_name_parts.join(".");
-    let embedding_name_id = embedding_name_catalog::lookup_embedding_name_id(graph_id, &name)
-        .ok_or_else(|| RouterError::NotFound(format!("vector index/embedding name {name}")))?;
-    let def = vector_index_catalog::list_vector_indexes(graph_id)
-        .into_iter()
-        .find(|d| d.embedding_name_id == embedding_name_id)
-        .ok_or_else(|| RouterError::NotFound(format!("vector index for embedding name {name}")))?;
+    let index_name_id = index_name_catalog::lookup_index_name_id(graph_id, &name)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {name}")))?;
+    let def = vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {name}")))?;
     Ok((def.index_id, def))
 }
 
@@ -2992,9 +2990,11 @@ mod tests {
         encoding: VectorEncoding,
     ) {
         let name_id = embedding_name_catalog::intern_embedding_name(graph_id, "doc_vec").unwrap();
+        let index_name_id = index_name_catalog::intern_index_name(graph_id, "doc_vec").unwrap();
         vector_index_catalog::register_vector_index(
             graph_id,
             1,
+            index_name_id,
             name_id,
             vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
@@ -3021,6 +3021,40 @@ mod tests {
             vector_index_catalog::VectorIndexActivationState::Registered,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn resolve_vector_index_uses_logical_name_not_embedding_field_name() {
+        let graph_id = GraphId::from_raw(981_500);
+        let embedding_name_id =
+            embedding_name_catalog::intern_embedding_name(graph_id, "embedding_field").unwrap();
+        let index_name_id =
+            index_name_catalog::intern_index_name(graph_id, "logical_vector_idx").unwrap();
+        vector_index_catalog::register_vector_index(
+            graph_id,
+            91,
+            index_name_id,
+            embedding_name_id,
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+            VectorIndexKind::IvfFlat,
+            VectorMetric::Cosine,
+            VectorEncoding::F32,
+            3,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let logical_name = vec!["logical_vector_idx".into()];
+        let (index_id, def) = resolve_vector_index(graph_id, &logical_name).expect("logical name");
+        assert_eq!(index_id, 91);
+        assert_eq!(def.index_name_id, index_name_id);
+
+        let embedding_name = vec!["embedding_field".into()];
+        assert!(matches!(
+            resolve_vector_index(graph_id, &embedding_name),
+            Err(RouterError::NotFound(_))
+        ));
     }
 
     #[test]

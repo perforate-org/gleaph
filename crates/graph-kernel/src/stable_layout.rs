@@ -1148,6 +1148,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Cell<u64> global index catalog epoch fence advanced at prepare/seal/activate/drop (ADR 0059)",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_NEXT_VECTOR_INDEX_ID",
+            52,
+            StableMemoryClass::Canonical,
+            "catalog",
+            "Cell<u32> next never-issued opaque vector-index id; monotonic, globally collision-checked against legacy caller-assigned ids, and never rewound or reused (ADR 0065)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1727,8 +1735,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 52);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(51));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 53);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(52));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[20].symbol,
             "ROUTER_NEXT_PHYSICAL_INDEX_ID"
@@ -1775,6 +1783,14 @@ mod tests {
         );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[51].class,
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[52].symbol,
+            "ROUTER_NEXT_VECTOR_INDEX_ID"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[52].class,
             StableMemoryClass::Canonical
         );
     }

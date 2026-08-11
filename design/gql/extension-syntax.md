@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-07-29
-Anchor timestamp: 2026-07-29 10:48:56 UTC +0000
+Last updated: 2026-08-11
+Anchor timestamp: 2026-08-11 12:16:53 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; vector-index DDL remains planned.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 25 ordinary read access, nested fixed-size record paths, struct mutation, and field-level `COST BY`, and Slice 26 inline struct leaf-property indexes are implemented**; the narrow `CREATE VECTOR INDEX` vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; a focused PocketIC ingress E2E test passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -45,6 +45,7 @@ semantics.
 | Legacy edge weight function   | `GLEAPH.WEIGHT(e)`                                                        | Removed (ADR 0051 Phase B); use ordinary `e.<inline-property>` access and `COST BY e.<inline-property>`                                                                                                                                                                                        | Graph query executor                                                                        |
 | Edge insertion-order capability | Graph Type `ORDER BY INSERTION`; query `ORDER BY INSERTION(e)`          | Implemented (ADR 0052 Slices 1+2): Graph Type declaration resolves per label in the Router; `GLEAPH.SEQUENCE(e)` is removed; the query executes only for a single fixed label whose resolved policy is `Insertion` (fail-closed otherwise)                                                                                                                  | Router schema resolution + Graph edge storage/execution                              |
 | Edge-inline-property vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline property executor                                                |
+| Vector index DDL             | `CREATE VECTOR INDEX name FOR (v:Label) ON v.embedding OPTIONS { ... }`    | **Partially Implemented:** vendor parser, Router targetless registration, and logical-index-name resolution for GQL/direct vector search are implemented; focused PocketIC ingress E2E passed; remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain deferred                 | Router vendor DDL + vector-index catalog                                                     |
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property numeric range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property numeric range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided numeric range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 
@@ -366,12 +367,17 @@ Unfused use is rejected. Do not reuse this surface for vertex embedding search.
 
 ### Embeddings are not inline properties
 
-**Status:** Planned schema syntax; ADR 0031 storage and vector-index APIs are implemented in slices.
+**Status:** Planned schema syntax; the active storage contract is ADR 0064 and the current Router
+vector catalog/search surface is partial. It is not a prerequisite for the implemented v1 `CREATE VECTOR
+INDEX` contract.
 
-Embeddings belong to the canonical vertex embedding store and derived vector-index model. They are not
-edge inline property bytess and are not ordinary variable-size property-store values.
+Embeddings are derived model outputs, not edge inline properties and not ordinary variable-size
+property-store values. Under ADR 0064, the vector canister owns the only durable embedding-byte copy;
+Router owns definition metadata and Graph supplies vertex/label facts without becoming a byte store.
+The current stamp request still carries values through Graph for validation, so the metadata-only stamp
+boundary remains a prerequisite rather than an implemented guarantee.
 
-Target schema shape:
+Possible later standalone schema shape:
 
 ```gql
 CREATE VERTEX LABEL Document {
@@ -386,22 +392,45 @@ parser/type system better, but the semantic owner remains the embedding store, n
 
 ### Vector index DDL
 
-**Status:** Planned GQL syntax; Router admin APIs and vector-index catalog already exist.
+**Status:** Partially Implemented. The v1 vendor parser, Router-owned targetless registration, and
+logical-index-name resolution for GQL/direct vector search are implemented. The parser's 22 tests,
+check, clippy, format, and diff checks pass; focused PocketIC ingress test
+`gql_create_vector_index_nested_options_is_idempotent_and_fail_closed` passed (1 passed, 0 failed,
+6 filtered). Remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain
+deferred.
 
 Target shape:
 
 ```gql
-CREATE VECTOR INDEX document_embedding
+CREATE VECTOR INDEX document_embedding IF NOT EXISTS
 FOR (d:Document)
 ON d.embedding
 OPTIONS {
-  metric: "cosine",
-  algorithm: "ivf_flat"
+  indexConfig: {
+    dimensions: 768,
+    similarity_function: "cosine",
+    encoding: "f32",
+    algorithm: "ivf_flat"
+  }
 }
 ```
 
-The public DDL names a vector index and an embedding field. The Router remains the source of truth for
-vector-index definitions, embedding-name interning, activation state, policy, and target resolution.
+The public DDL names a logical vector index and a distinct Router-owned typed embedding field. In the
+first slice, the Router definition owns that embedding field plus immutable `dimensions` and
+`encoding` type/shape metadata; no standalone embedding-schema catalog is required. `ON d.embedding`
+does not create a Graph property or Graph-side byte storage, and each definition accepts exactly one
+known vertex label. The Router remains the source of truth for the definition, graph-scoped names,
+activation state, policy, and target resolution. CREATE registers a targetless `Registered` definition
+only; it makes no Graph or vector-canister call, does not provision remotely, and does not activate
+dispatch, train storage, or backfill existing vertices. See
+[ADR 0065](../adr/0065-create-vector-index-ddl.md).
+
+The final parser subset accepts either the flat `OPTIONS { dimensions, metric|similarity_function,
+encoding, algorithm }` Gleaph shorthand or the nested `OPTIONS { indexConfig: { dimensions,
+metric|similarity_function, encoding, algorithm } }` form. Only unprefixed keys are accepted.
+`metric` aliases `similarity_function`; specifying both is a duplicate conflict. String values accept
+single or double quotes. Backticked/dotted `vector.*` keys, including `vector.dimensions` and
+`vector.similarity_function`, are unsupported in this slice.
 
 `algorithm: "ivf_flat"` is the baseline. Other algorithms such as HNSW are future options and must not
 be implied by the initial syntax.
@@ -665,7 +694,8 @@ numeric comparison-domain mapping. For a non-leading filtered search the Router 
 one positive simple label for the searched binding from the top-level prefix.
 The Router:
 
-1. Resolves the embedding name from `VECTOR INDEX <name>` against the Router catalog.
+1. Resolves `<name>` as a logical vector-index name and obtains its typed embedding-field metadata
+   from the same Router definition.
 2. Evaluates `FOR $query` and `LIMIT n` from literals or parameters; both must be row-invariant.
 3. For a filtered search, proves an active vertex property index for the exact
    `(graph_id, label_id, property_id)` tuple for every equality arm and for the range property
@@ -791,8 +821,12 @@ CREATE VECTOR INDEX chunk_embedding
 FOR (chunk:Chunk)
 ON chunk.embedding
 OPTIONS {
-  metric: "cosine",
-  algorithm: "ivf_flat"
+  indexConfig: {
+    dimensions: 768,
+    similarity_function: "cosine",
+    encoding: "f32",
+    algorithm: "ivf_flat"
+  }
 }
 
 MATCH (chunk:Chunk)
@@ -841,8 +875,8 @@ Every stage that changes public syntax must update this document and add parser/
   `gleaph-gql`.
 - Do not make `gleaph-gql-planner` depend on GraphStore, Router stable state, or vector-index canister
   clients.
-- Router resolves vector-index names, embedding names, graph context, activation gates, and target
-  canisters.
+- Router resolves logical vector-index names and owns their typed embedding-field metadata, graph
+  context, activation gates, and target-canister routing.
 - Graph executes shard-local property access, inline property bytes decode, runtime functions, and
   shortest-path cost evaluation.
 - Vector Index executes ANN search and owns search/rebuild/maintenance internals.

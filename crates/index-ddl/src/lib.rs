@@ -8,6 +8,7 @@
 
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::index::IndexedPropertyKind;
+use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorIndexKind, VectorMetric};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IndexDdlStatement {
@@ -28,6 +29,52 @@ pub struct IndexTarget {
     pub label: String,
     pub property: String,
     pub edge_direction: Option<EdgeDirection>,
+}
+
+/// Gleaph-specific vertex vector-index DDL.
+///
+/// This is deliberately separate from [`IndexDdlStatement`]: property-index migration consumers
+/// must not accidentally acquire vector catalog semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VectorIndexDdlStatement {
+    Create {
+        index_name: String,
+        if_not_exists: bool,
+        target: VectorIndexTarget,
+    },
+}
+
+/// The complete, immutable shape declared by `CREATE VECTOR INDEX`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VectorIndexTarget {
+    pub label: String,
+    pub embedding_name: String,
+    pub dims: u16,
+    pub metric: VectorMetric,
+    pub encoding: VectorEncoding,
+    pub kind: VectorIndexKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum VectorIndexDdlParseError {
+    #[error("expected {0}")]
+    Expected(String),
+    #[error("unexpected trailing input")]
+    TrailingInput,
+    #[error("the ON variable must match the FOR pattern variable")]
+    VariableMismatch,
+    #[error("edge patterns are not supported in CREATE VECTOR INDEX")]
+    EdgePatternUnsupported,
+    #[error("missing required OPTIONS key: {0}")]
+    MissingOption(String),
+    #[error("duplicate OPTIONS key: {0}")]
+    DuplicateOption(String),
+    #[error("unsupported OPTIONS key: {0}")]
+    UnsupportedOption(String),
+    #[error("invalid value for OPTIONS key {option}: {value}")]
+    InvalidOptionValue { option: String, value: String },
+    #[error("dimensions must be a positive u16 integer")]
+    InvalidDimensions,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -100,6 +147,29 @@ pub fn try_parse(query: &str) -> Option<Result<Vec<IndexDdlStatement>, IndexDdlP
     Some(parse(&parse_input))
 }
 
+/// Returns `None` when the query is not `CREATE VECTOR INDEX` DDL.
+///
+/// Vector DDL has its own AST because its target names a vertex embedding field and its complete
+/// physical shape, rather than an ordinary property-index target.
+pub fn try_parse_vector(
+    query: &str,
+) -> Option<Result<VectorIndexDdlStatement, VectorIndexDdlParseError>> {
+    // `gleaph_gql` tokenization deliberately follows its ISO literal rules, while this vendor DDL
+    // contract uses quoted option values. Strip comments locally before recognition so comments
+    // do not make an otherwise valid vector declaration look like ordinary GQL.
+    let stripped = strip_vector_comments(query);
+    let trimmed = stripped.input.trim();
+    if !starts_with_vector_create(trimmed) {
+        return None;
+    }
+    if stripped.unterminated_block_comment {
+        return Some(Err(VectorIndexDdlParseError::Expected(
+            "closing block comment".into(),
+        )));
+    }
+    Some(parse_vector(trimmed))
+}
+
 /// Returns `None` when the query is not constraint DDL (caller should use standard GQL parsing).
 pub fn try_parse_constraint(
     query: &str,
@@ -126,6 +196,92 @@ fn first_two_idents_are(tokens: &[gleaph_gql::token::Spanned], first: &str, seco
             .is_some_and(|token| ident_is(&token.token, second))
 }
 
+struct StrippedVectorComments {
+    input: String,
+    unterminated_block_comment: bool,
+}
+
+fn starts_with_vector_create(input: &str) -> bool {
+    let mut cur = Cursor::new(input);
+    cur.consume_ascii_ci("CREATE")
+        && cur.consume_ascii_ci("VECTOR")
+        && cur.consume_ascii_ci("INDEX")
+}
+
+fn strip_vector_comments(query: &str) -> StrippedVectorComments {
+    let bytes = query.as_bytes();
+    let mut output = bytes.to_vec();
+    let mut pos = 0;
+    let mut string_quote = None;
+    let mut unterminated_block_comment = false;
+    while pos < bytes.len() {
+        if string_quote.is_some_and(|quote| bytes[pos] == quote) {
+            string_quote = None;
+            pos += 1;
+            continue;
+        }
+        if string_quote.is_some() {
+            pos += 1;
+            continue;
+        }
+        if bytes[pos] == b'"' || bytes[pos] == b'\'' {
+            string_quote = Some(bytes[pos]);
+            pos += 1;
+            continue;
+        }
+        if pos + 1 >= bytes.len() {
+            pos += 1;
+            continue;
+        }
+        let line_comment = (bytes[pos] == b'/' && bytes[pos + 1] == b'/')
+            || (bytes[pos] == b'-' && bytes[pos + 1] == b'-');
+        if line_comment {
+            let start = pos;
+            pos += 2;
+            while pos < bytes.len() && bytes[pos] != b'\n' && bytes[pos] != b'\r' {
+                pos += 1;
+            }
+            replace_comment_bytes(&mut output[start..pos]);
+            continue;
+        }
+        if bytes[pos] == b'/' && bytes[pos + 1] == b'*' {
+            let start = pos;
+            pos += 2;
+            let mut depth = 1;
+            while pos + 1 < bytes.len() && depth > 0 {
+                if bytes[pos] == b'/' && bytes[pos + 1] == b'*' {
+                    depth += 1;
+                    pos += 2;
+                } else if bytes[pos] == b'*' && bytes[pos + 1] == b'/' {
+                    depth -= 1;
+                    pos += 2;
+                } else {
+                    pos += 1;
+                }
+            }
+            if depth > 0 {
+                unterminated_block_comment = true;
+                pos = bytes.len();
+            }
+            replace_comment_bytes(&mut output[start..pos]);
+            continue;
+        }
+        pos += 1;
+    }
+    StrippedVectorComments {
+        input: String::from_utf8(output).expect("comment replacement preserves UTF-8 boundaries"),
+        unterminated_block_comment,
+    }
+}
+
+fn replace_comment_bytes(bytes: &mut [u8]) {
+    for byte in bytes {
+        if *byte != b'\n' && *byte != b'\r' {
+            *byte = b' ';
+        }
+    }
+}
+
 fn parse(query: &str) -> Result<Vec<IndexDdlStatement>, IndexDdlParseError> {
     let mut cur = Cursor::new(query);
     let mut statements = Vec::new();
@@ -140,6 +296,239 @@ fn parse(query: &str) -> Result<Vec<IndexDdlStatement>, IndexDdlParseError> {
         return Err(IndexDdlParseError::TrailingInput);
     }
     Ok(statements)
+}
+
+fn parse_vector(query: &str) -> Result<VectorIndexDdlStatement, VectorIndexDdlParseError> {
+    let mut cur = Cursor::new(query);
+    cur.skip_ws();
+    cur.expect_ascii_ci("CREATE")?;
+    cur.expect_ascii_ci("VECTOR")?;
+    cur.expect_ascii_ci("INDEX")?;
+    let index_name = cur.parse_ident()?;
+    let if_not_exists = if cur.try_consume_ascii_ci("IF") {
+        cur.expect_ascii_ci("NOT")?;
+        cur.expect_ascii_ci("EXISTS")?;
+        true
+    } else {
+        false
+    };
+    cur.expect_ascii_ci("FOR")?;
+    let (variable, label) = parse_vector_vertex_pattern(&mut cur)?;
+    cur.expect_ascii_ci("ON")?;
+    let (on_variable, embedding_name) = parse_vector_embedding_ref(&mut cur)?;
+    if on_variable != variable {
+        return Err(VectorIndexDdlParseError::VariableMismatch);
+    }
+    cur.expect_ascii_ci("OPTIONS")?;
+    let (dims, metric, encoding, kind) = parse_vector_options(&mut cur)?;
+    cur.try_consume(';');
+    cur.skip_ws();
+    if !cur.is_eof() {
+        return Err(VectorIndexDdlParseError::TrailingInput);
+    }
+    Ok(VectorIndexDdlStatement::Create {
+        index_name,
+        if_not_exists,
+        target: VectorIndexTarget {
+            label,
+            embedding_name,
+            dims,
+            metric,
+            encoding,
+            kind,
+        },
+    })
+}
+
+fn parse_vector_vertex_pattern(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, String), VectorIndexDdlParseError> {
+    cur.expect('(')?;
+    cur.skip_ws();
+    if cur.peek() == Some(')') {
+        return Err(VectorIndexDdlParseError::EdgePatternUnsupported);
+    }
+    let variable = cur.parse_ident()?;
+    cur.expect(':')?;
+    let label = cur.parse_ident()?;
+    cur.expect(')')?;
+    Ok((variable, label))
+}
+
+fn parse_vector_embedding_ref(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, String), VectorIndexDdlParseError> {
+    let variable = cur.parse_ident()?;
+    cur.expect('.')?;
+    let embedding_name = cur.parse_ident()?;
+    Ok((variable, embedding_name))
+}
+
+fn parse_vector_options(
+    cur: &mut Cursor<'_>,
+) -> Result<(u16, VectorMetric, VectorEncoding, VectorIndexKind), VectorIndexDdlParseError> {
+    cur.expect('{')?;
+    let mut options = ParsedVectorOptions::default();
+    parse_vector_option_map(cur, &mut options, true)?;
+
+    Ok((
+        options
+            .dims
+            .ok_or_else(|| VectorIndexDdlParseError::MissingOption("dimensions".into()))?,
+        options
+            .metric
+            .ok_or_else(|| VectorIndexDdlParseError::MissingOption("metric".into()))?,
+        options
+            .encoding
+            .ok_or_else(|| VectorIndexDdlParseError::MissingOption("encoding".into()))?,
+        options
+            .kind
+            .ok_or_else(|| VectorIndexDdlParseError::MissingOption("algorithm".into()))?,
+    ))
+}
+
+#[derive(Default)]
+struct ParsedVectorOptions {
+    dims: Option<u16>,
+    metric: Option<VectorMetric>,
+    encoding: Option<VectorEncoding>,
+    kind: Option<VectorIndexKind>,
+}
+
+fn parse_vector_option_map(
+    cur: &mut Cursor<'_>,
+    options: &mut ParsedVectorOptions,
+    allow_index_config: bool,
+) -> Result<(), VectorIndexDdlParseError> {
+    let mut index_config_seen = false;
+
+    loop {
+        cur.skip_ws();
+        if cur.try_consume('}') {
+            break;
+        }
+        let option = cur.parse_ident()?.to_ascii_lowercase();
+        cur.expect(':')?;
+        if option == "indexconfig" && allow_index_config {
+            if index_config_seen {
+                return Err(VectorIndexDdlParseError::DuplicateOption(option));
+            }
+            index_config_seen = true;
+            cur.expect('{')?;
+            parse_vector_option_map(cur, options, false)?;
+        } else {
+            parse_vector_option(cur, options, option)?;
+        }
+
+        cur.skip_ws();
+        if cur.try_consume('}') {
+            break;
+        }
+        cur.expect(',')?;
+        cur.skip_ws();
+        if cur.peek() == Some('}') {
+            return Err(VectorIndexDdlParseError::Expected("option name".into()));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_vector_option(
+    cur: &mut Cursor<'_>,
+    options: &mut ParsedVectorOptions,
+    option: String,
+) -> Result<(), VectorIndexDdlParseError> {
+    match option.as_str() {
+        "dimensions" => {
+            if options.dims.is_some() {
+                return Err(VectorIndexDdlParseError::DuplicateOption(option));
+            }
+            options.dims = Some(parse_vector_dimensions(cur)?);
+        }
+        "metric" | "similarity_function" => {
+            if options.metric.is_some() {
+                return Err(VectorIndexDdlParseError::DuplicateOption(option));
+            }
+            let value = parse_vector_option_string(cur)?;
+            options.metric = Some(match value.as_str() {
+                "l2_squared" => VectorMetric::L2Squared,
+                "cosine" => VectorMetric::Cosine,
+                _ => {
+                    return Err(VectorIndexDdlParseError::InvalidOptionValue { option, value });
+                }
+            });
+        }
+        "encoding" => {
+            if options.encoding.is_some() {
+                return Err(VectorIndexDdlParseError::DuplicateOption(option));
+            }
+            let value = parse_vector_option_string(cur)?;
+            options.encoding = Some(match value.as_str() {
+                "f32" => VectorEncoding::F32,
+                "i8" => VectorEncoding::I8,
+                _ => {
+                    return Err(VectorIndexDdlParseError::InvalidOptionValue { option, value });
+                }
+            });
+        }
+        "algorithm" => {
+            if options.kind.is_some() {
+                return Err(VectorIndexDdlParseError::DuplicateOption(option));
+            }
+            let value = parse_vector_option_string(cur)?;
+            options.kind = Some(match value.as_str() {
+                "ivf_flat" => VectorIndexKind::IvfFlat,
+                _ => {
+                    return Err(VectorIndexDdlParseError::InvalidOptionValue { option, value });
+                }
+            });
+        }
+        _ => return Err(VectorIndexDdlParseError::UnsupportedOption(option)),
+    }
+    Ok(())
+}
+
+fn parse_vector_dimensions(cur: &mut Cursor<'_>) -> Result<u16, VectorIndexDdlParseError> {
+    cur.skip_ws();
+    let start = cur.pos;
+    while matches!(cur.peek(), Some(ch) if ch.is_ascii_digit()) {
+        cur.pos += 1;
+    }
+    if start == cur.pos {
+        return Err(VectorIndexDdlParseError::InvalidDimensions);
+    }
+    let value = std::str::from_utf8(&cur.bytes[start..cur.pos])
+        .expect("ASCII digits are valid UTF-8")
+        .parse::<u16>()
+        .map_err(|_| VectorIndexDdlParseError::InvalidDimensions)?;
+    if value == 0 {
+        return Err(VectorIndexDdlParseError::InvalidDimensions);
+    }
+    Ok(value)
+}
+
+fn parse_vector_option_string(cur: &mut Cursor<'_>) -> Result<String, VectorIndexDdlParseError> {
+    cur.skip_ws();
+    let quote = match cur.peek() {
+        Some(quote @ ('"' | '\'')) => {
+            cur.pos += 1;
+            quote
+        }
+        _ => return Err(VectorIndexDdlParseError::Expected("quoted string".into())),
+    };
+    let start = cur.pos;
+    while let Some(ch) = cur.peek() {
+        if ch == quote {
+            let value = std::str::from_utf8(&cur.bytes[start..cur.pos])
+                .expect("string token is a UTF-8 substring")
+                .to_owned();
+            cur.pos += 1;
+            return Ok(value);
+        }
+        cur.pos += 1;
+    }
+    Err(VectorIndexDdlParseError::Expected("closing quote".into()))
 }
 
 fn parse_constraint(query: &str) -> Result<ConstraintDdlStatement, ConstraintDdlParseError> {
@@ -405,6 +794,12 @@ impl From<CursorExpected> for IndexDdlParseError {
 }
 
 impl From<CursorExpected> for ConstraintDdlParseError {
+    fn from(error: CursorExpected) -> Self {
+        Self::Expected(error.0)
+    }
+}
+
+impl From<CursorExpected> for VectorIndexDdlParseError {
     fn from(error: CursorExpected) -> Self {
         Self::Expected(error.0)
     }
@@ -694,6 +1089,217 @@ mod tests {
             panic!("expected comment between CREATE and INDEX");
         };
         assert_eq!(index_name, "person_age");
+    }
+
+    fn parse_vector_one(query: &str) -> VectorIndexDdlStatement {
+        try_parse_vector(query)
+            .expect("vector index DDL")
+            .expect("parse")
+    }
+
+    #[test]
+    fn parses_complete_neo4j_shaped_vector_index() {
+        assert_eq!(
+            parse_vector_one(
+                r#"// leading comment
+                   CREATE VECTOR INDEX document_embedding IF NOT EXISTS
+                   FOR (d:Document)
+                   ON d.embedding
+                   OPTIONS {
+                     DIMENSIONS: 768,
+                     MeTrIc: "cosine",
+                     encoding: "i8",
+                     algorithm: "ivf_flat"
+                   }; // trailing comment"#
+            ),
+            VectorIndexDdlStatement::Create {
+                index_name: "document_embedding".into(),
+                if_not_exists: true,
+                target: VectorIndexTarget {
+                    label: "Document".into(),
+                    embedding_name: "embedding".into(),
+                    dims: 768,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::I8,
+                    kind: VectorIndexKind::IvfFlat,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn vector_index_recognition_accepts_trivia_between_header_and_optional_keywords() {
+        let statement = parse_vector_one(
+            r#"CREATE
+               /* before vector */ VECTOR // before index
+               INDEX document_embedding IF
+               /* before not */ NOT -- before exists
+               EXISTS FOR (d:Document) ON d.embedding
+               OPTIONS { dimensions: 768, metric: "cosine", encoding: "i8", algorithm: "ivf_flat" }"#,
+        );
+        let VectorIndexDdlStatement::Create {
+            index_name,
+            if_not_exists,
+            ..
+        } = statement;
+        assert_eq!(index_name, "document_embedding");
+        assert!(if_not_exists);
+    }
+
+    #[test]
+    fn vector_index_recognition_requires_exact_keyword_boundaries() {
+        assert!(try_parse_vector("MATCH (n) RETURN n").is_none());
+        assert!(try_parse_vector("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
+        assert!(try_parse_vector("CREATE VECTOR INDEXED x").is_none());
+    }
+
+    #[test]
+    fn vector_index_rejects_unterminated_block_comment() {
+        assert_eq!(
+            try_parse_vector("CREATE VECTOR INDEX document_embedding /* unterminated")
+                .expect("vector index DDL")
+                .expect_err("unterminated block comment"),
+            VectorIndexDdlParseError::Expected("closing block comment".into())
+        );
+    }
+
+    #[test]
+    fn parses_neo4j_shaped_index_config_with_similarity_alias_and_single_quoted_values() {
+        assert_eq!(
+            parse_vector_one(
+                r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+                   OPTIONS { indexConfig: {
+                     dimensions: 768,
+                     similarity_function: 'cosine',
+                     encoding: 'i8',
+                     algorithm: 'ivf_flat'
+                   } }"#
+            ),
+            VectorIndexDdlStatement::Create {
+                index_name: "document_embedding".into(),
+                if_not_exists: false,
+                target: VectorIndexTarget {
+                    label: "Document".into(),
+                    embedding_name: "embedding".into(),
+                    dims: 768,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::I8,
+                    kind: VectorIndexKind::IvfFlat,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn vector_index_rejects_metric_alias_conflicts() {
+        assert_eq!(
+            try_parse_vector(
+                r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+                   OPTIONS { indexConfig: {
+                     dimensions: 768,
+                     metric: "cosine",
+                     similarity_function: "cosine",
+                     encoding: "i8",
+                     algorithm: "ivf_flat"
+                   } }"#
+            )
+            .expect("vector index DDL")
+            .expect_err("metric alias conflict"),
+            VectorIndexDdlParseError::DuplicateOption("similarity_function".into())
+        );
+    }
+
+    #[test]
+    fn vector_index_comment_stripping_preserves_single_quoted_values() {
+        assert_eq!(
+            try_parse_vector(
+                r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+                   OPTIONS {
+                     dimensions: 768,
+                     metric: 'not--valid',
+                     encoding: 'i8',
+                     algorithm: 'ivf_flat'
+                   }"#
+            )
+            .expect("vector index DDL")
+            .expect_err("invalid metric"),
+            VectorIndexDdlParseError::InvalidOptionValue {
+                option: "metric".into(),
+                value: "not--valid".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn vector_index_requires_exact_vertex_shape_and_all_options() {
+        let missing_option = try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+               OPTIONS { dimensions: 768, metric: "l2_squared", encoding: "f32" }"#,
+        )
+        .expect("vector index DDL")
+        .expect_err("missing algorithm");
+        assert_eq!(
+            missing_option,
+            VectorIndexDdlParseError::MissingOption("algorithm".into())
+        );
+
+        let edge_pattern = try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding FOR ()-[e:REL]->() ON e.embedding
+               OPTIONS { dimensions: 768, metric: "l2_squared", encoding: "f32", algorithm: "ivf_flat" }"#,
+        )
+        .expect("vector index DDL")
+        .expect_err("edge pattern");
+        assert_eq!(
+            edge_pattern,
+            VectorIndexDdlParseError::EdgePatternUnsupported
+        );
+
+        let variable_mismatch = try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON e.embedding
+               OPTIONS { dimensions: 768, metric: "l2_squared", encoding: "f32", algorithm: "ivf_flat" }"#,
+        )
+        .expect("vector index DDL")
+        .expect_err("variable mismatch");
+        assert_eq!(
+            variable_mismatch,
+            VectorIndexDdlParseError::VariableMismatch
+        );
+    }
+
+    #[test]
+    fn vector_index_rejects_invalid_or_duplicated_options() {
+        let duplicate = try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+               OPTIONS { dimensions: 768, dimensions: 512, metric: "l2_squared", encoding: "f32", algorithm: "ivf_flat" }"#,
+        )
+        .expect("vector index DDL")
+        .expect_err("duplicate dimensions");
+        assert_eq!(
+            duplicate,
+            VectorIndexDdlParseError::DuplicateOption("dimensions".into())
+        );
+
+        let unknown = try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+               OPTIONS { dimensions: 768, metric: "l2_squared", encoding: "f32", algorithm: "ivf_flat", nlist: 1 }"#,
+        )
+        .expect("vector index DDL")
+        .expect_err("unknown option");
+        assert_eq!(
+            unknown,
+            VectorIndexDdlParseError::UnsupportedOption("nlist".into())
+        );
+
+        let invalid_dimensions = try_parse_vector(
+            r#"CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding
+               OPTIONS { dimensions: 0, metric: "l2_squared", encoding: "f32", algorithm: "ivf_flat" }"#,
+        )
+        .expect("vector index DDL")
+        .expect_err("zero dimensions");
+        assert_eq!(
+            invalid_dimensions,
+            VectorIndexDdlParseError::InvalidDimensions
+        );
     }
 
     fn parse_constraint_ok(query: &str) -> ConstraintDdlStatement {

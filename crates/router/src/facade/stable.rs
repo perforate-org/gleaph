@@ -81,6 +81,11 @@ thread_local! {
         RefCell<memory::StablePhysicalIndexIdAllocator> =
         RefCell::new(memory::init_next_physical_index_id());
 
+    /// Next never-issued opaque vector-index id (ADR 0065). Zero is invalid and ids are not reused.
+    pub(crate) static ROUTER_NEXT_VECTOR_INDEX_ID:
+        RefCell<memory::StableVectorIndexIdAllocator> =
+        RefCell::new(memory::init_next_vector_index_id());
+
     /// Monotonic stale-request fence for physical-index catalog changes (ADR 0059).
     pub(crate) static ROUTER_INDEX_CATALOG_EPOCH: RefCell<memory::StableIndexCatalogEpoch> =
         RefCell::new(memory::init_index_catalog_epoch());

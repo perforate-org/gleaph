@@ -1974,6 +1974,37 @@ pub(crate) fn ensure_gql_query_result_payload(
     Ok(())
 }
 
+fn try_execute_vector_index_ddl<C, R>(
+    query: &str,
+    mode: GqlExecutionMode,
+    entrypoint: &str,
+    force: bool,
+    caller: C,
+    resolve_graph: R,
+) -> Option<Result<GqlQueryResult, RouterError>>
+where
+    C: FnOnce() -> Principal,
+    R: FnOnce(Principal) -> Result<GraphId, RouterError>,
+{
+    let ddl = crate::index_ddl::try_parse_vector(query)?;
+    Some((|| {
+        let caller = caller();
+        authorize_index_ddl(&caller)?;
+        if mode == GqlExecutionMode::Query && !force {
+            return Err(RouterError::ExecutionPathMismatch {
+                entrypoint: entrypoint.to_string(),
+                program_kind: "write".to_string(),
+                call_kind: "query".to_string(),
+                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+            });
+        }
+        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        let graph_id = resolve_graph(caller)?;
+        crate::index_catalog::execute_vector_index_ddl_for_graph(graph_id, stmt)?;
+        Ok(GqlQueryResult::row_count_only(0))
+    })())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_gql_unchecked(
     query: &str,
@@ -1985,6 +2016,15 @@ async fn run_gql_unchecked(
     read_mode: ReadMode,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
+    if let Some(result) =
+        try_execute_vector_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
+            let store = RouterStore::new();
+            crate::graph_context::resolve_default_graph_id(&store, caller)
+        })
+    {
+        return result;
+    }
+
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
         let caller = msg_caller();
         authorize_index_ddl(&caller)?;
@@ -4716,6 +4756,114 @@ mod tests {
             err.to_string()
                 .contains("test response exceeds the safe payload limit")
         );
+    }
+
+    #[test]
+    fn vector_ddl_ingress_enforces_rbac_before_catalog_side_effects() {
+        use gleaph_auth::{AuthRecord, ManagerCapability, Role};
+
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let admin = Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "Document")
+            .expect("intern vector label");
+        let query = r#"CREATE VECTOR INDEX document_embedding_idx
+            FOR (d:Document) ON d.embedding
+            OPTIONS { dimensions: 384, metric: "cosine", encoding: "f32", algorithm: "ivf_flat" }"#;
+        let next_before =
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        let anonymous = Principal::anonymous();
+        let anonymous_err = super::try_execute_vector_index_ddl(
+            query,
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || anonymous,
+            |_| Ok(graph_id),
+        )
+        .expect("vector DDL detected")
+        .expect_err("anonymous caller must be rejected");
+        assert!(matches!(anonymous_err, RouterError::Forbidden));
+
+        let read = Principal::self_authenticating([31; 32]);
+        crate::facade::stable::ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
+            auth.upsert_record(
+                read,
+                AuthRecord {
+                    role: Role::Read as u8,
+                    manager_caps: 0,
+                },
+            )
+            .expect("read auth record");
+        });
+        let read_err = super::try_execute_vector_index_ddl(
+            query,
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || read,
+            |_| Ok(graph_id),
+        )
+        .expect("vector DDL detected")
+        .expect_err("read caller must be rejected");
+        assert!(matches!(read_err, RouterError::Forbidden));
+        assert_eq!(
+            crate::facade::stable::index_name_catalog::lookup_index_name_id(
+                graph_id,
+                "document_embedding_idx"
+            ),
+            None
+        );
+        assert_eq!(
+            crate::facade::stable::embedding_name_catalog::lookup_embedding_name_id(
+                graph_id,
+                "embedding"
+            ),
+            None
+        );
+        assert!(
+            crate::facade::stable::vector_index_catalog::list_vector_indexes(graph_id).is_empty()
+        );
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
+            next_before
+        );
+
+        let manager = Principal::self_authenticating([32; 32]);
+        crate::facade::stable::ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
+            auth.upsert_record(
+                manager,
+                AuthRecord {
+                    role: Role::Manager as u8,
+                    manager_caps: ManagerCapability::PREPARE_REGISTER.bits(),
+                },
+            )
+            .expect("manager auth record");
+        });
+        let result = super::try_execute_vector_index_ddl(
+            query,
+            GqlExecutionMode::Update,
+            "gql_mutate",
+            false,
+            || manager,
+            |_| Ok(graph_id),
+        )
+        .expect("vector DDL detected")
+        .expect("manager with PREPARE_REGISTER may create");
+        assert_eq!(result.row_count, 0);
+        let index_name_id = crate::facade::stable::index_name_catalog::lookup_index_name_id(
+            graph_id,
+            "document_embedding_idx",
+        )
+        .expect("logical name created");
+        let def = crate::facade::stable::vector_index_catalog::get_vector_index_by_name_id(
+            graph_id,
+            index_name_id,
+        )
+        .expect("definition created");
+        assert!(def.target.is_none());
     }
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;
