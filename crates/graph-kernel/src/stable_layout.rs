@@ -176,13 +176,17 @@ pub enum RebuildPath {
     /// differential repair (`rebuild_reverse_adjacency`), so it is classified `Named` rather than
     /// `SyncCoUpdate`.
     SyncCoUpdate,
-    /// Rebuildable or backfillable from canonical state via a named entry point
-    /// (e.g. `rebuild_edge_aliases`, `backfill_label_postings`, `admin_label_stats_projection_step`).
+    /// Rebuildable or backfillable via a named live entry point or explicit recovery contract
+    /// (e.g. `rebuild_edge_aliases`, `backfill_label_postings`,
+    /// `admin_label_stats_projection_step`, `client_reingestion`).
+    ///
+    /// A recovery-contract name documents the required recovery mechanism; it is not necessarily
+    /// a callable API entry point.
     Named(&'static str),
 }
 
 impl RebuildPath {
-    /// The named rebuild/backfill entry point, if this region declares one.
+    /// The named rebuild/backfill entry point or explicit recovery contract, if declared.
     pub const fn named(self) -> Option<&'static str> {
         match self {
             Self::Named(name) => Some(name),
@@ -1337,15 +1341,17 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     ],
 };
 
-/// Graph-vector-index canister — degenerate `ivf_flat` derived index (ADR 0031 Slice 2).
+/// Vector canister — degenerate `ivf_flat` derived index (ADR 0031 Slice 2).
 ///
 /// Canonical regions (router auth, shard catalog, ownership, index defs) mirror `graph-index`.
-/// All search/page structures are `Derived`: durable derived index state rebuildable from the
-/// graph canonical [`VERTEX_EMBEDDINGS`](GRAPH_STABLE_LAYOUT) store via `vertex_embedding_backfill`,
-/// not a deletable cache. `IVF_CENTROIDS` (MemoryId 6) is reserved empty in Slice 2 to avoid a
-/// future `MemoryId` repack when Slice 4 populates centroid bytes.
+/// The vector canister is the sole durable owner of active Vector rows. Physical IVF projections
+/// (MemoryIds 5, 6, 9, 10, and 12) rebuild from those active rows through the live
+/// `admin_start_vector_rebuild` entry point. `VECTOR_SUBJECT_TO_ID` and `VECTOR_ROW_SLAB` declare
+/// the symbolic `client_reingestion` recovery contract, not an API: loss of their durable rows
+/// requires clients to re-ingest active vectors. `IVF_CENTROIDS` (MemoryId 6) is reserved empty in
+/// Slice 2 to avoid a future `MemoryId` repack when Slice 4 populates centroid bytes.
 pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
-    canister: "graph-vector-index",
+    canister: "vector-canister",
     regions: &[
         region(
             "VECTOR_INDEX_ROUTER",
@@ -1396,7 +1402,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "ivf centroid metadata",
             "Degenerate centroid cache/training state (nlist=1, centroid-not-ready); holds only \
              centroid-specific derived state, never restates active_index_version/nlist",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(
             "IVF_CENTROIDS",
@@ -1405,7 +1411,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "ivf centroids",
             "Reserved empty in Slice 2; (index_id, index_version, partition_id) → centroid bytes \
              once Slice 4 trains centroids",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(
             "VECTOR_SUBJECT_TO_ID",
@@ -1415,7 +1421,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "(index_id, subject) → FixedSubjectMapEntry { stamp, deleted, slot, shadow_slot }: \
              retained as a durable clock after delete; a stale remove cannot tombstone a newer reinsert \
              and a stale upsert cannot resurrect a removed vector (ADR 0064 §5)",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            RebuildPath::Named("client_reingestion"),
         ),
         region(
             "VECTOR_ID_TO_SLOT",
@@ -1434,7 +1440,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "partition heads",
             "(index_id, index_version, partition_id) → head { first_page, mutable_page, \
              page_count, live_len, next_page_id }: durable page allocator per partition/version",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(
             "VECTOR_PAGE_META",
@@ -1446,7 +1452,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
              page directory for the ADR 0064 §7 two-table slab page store (companion to VECTOR_ROW_SLAB \
              id 13). Fresh layout cutover (format version 1, breaking): no migration or compatibility \
              reader",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(
             "VECTOR_ID_TO_SUBJECT",
@@ -1465,7 +1471,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "vector rebuild lifecycle",
             "index_id → VectorRebuildStateRecord: bounded shadow-version rebuild state machine \
              (ADR 0031 Slice 7); reconstructible by re-running a rebuild from the active version",
-            RebuildPath::Named("vertex_embedding_backfill"),
+            RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(
             "VECTOR_ROW_SLAB",
@@ -1475,9 +1481,9 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "Raw stable memory holding two-table vector row pages (run table + packed VertexPayload \
              + pad-stride rows) behind a VSL/version-1 header (ADR 0064 §7); companion to \
              VECTOR_PAGE_META (id 10), opened as one composite store. Fresh layout cutover (format \
-             version 1, breaking): no migration or compatibility reader, distinct from the canonical \
-             vertex_embedding_backfill rebuild",
-            RebuildPath::Named("vertex_embedding_backfill"),
+             version 1, breaking): no migration or compatibility reader; total durable-row loss \
+             requires the symbolic client_reingestion recovery contract, not a live rebuild API",
+            RebuildPath::Named("client_reingestion"),
         ),
         region(
             "VECTOR_MAINTENANCE_STATE",
@@ -1507,9 +1513,19 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             16,
             StableMemoryClass::Maintenance,
             "subject-map GC resume cursor",
-            "Option<SubjectKey>: last examined subject-map key so a bounded GC step never starves \
+            "Option<DeletedSubjectKey>: last examined deleted-subjects-list key so a bounded GC step never starves \
              deleted entries that sort after a long run of live entries (ADR 0064 §5). Operational \
              bookkeeping, not a query-facing index or canonical fact: it carries no rebuild path",
+            RebuildPath::None,
+        ),
+        region(
+            "VECTOR_DELETED_SUBJECTS",
+            17,
+            StableMemoryClass::Maintenance,
+            "deleted-subjects GC list",
+            "(shard, tombstone stamp, subject) -> (): durable GC list with a stable key-based cursor; \
+             subject-map slot order is unstable under removal (ADR 0064 §5). Operational bookkeeping, \
+             not a query-facing index or canonical fact: it carries no rebuild path",
             RebuildPath::None,
         ),
     ],
@@ -1879,9 +1895,9 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 17);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 15);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(16));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 18);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.allocated_region_count(), 16);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(17));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -1987,6 +2003,19 @@ mod tests {
         );
         assert!(matches!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[16].rebuild,
+            RebuildPath::None
+        ));
+        // ADR 0064 §5: stable deleted-subjects GC list keyed by tombstone stamp and subject.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[17].symbol,
+            "VECTOR_DELETED_SUBJECTS"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[17].class,
+            StableMemoryClass::Maintenance
+        );
+        assert!(matches!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[17].rebuild,
             RebuildPath::None
         ));
     }

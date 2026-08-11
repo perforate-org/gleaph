@@ -588,14 +588,21 @@ to Durable Core is a separate future decision, not an implicit consequence of th
 
 ## Implementation status
 
-**In progress (last verified 2026-07-13 UTC).** Router now accepts `Option<RouterUpgradeArgs>` in
+**In progress (last verified 2026-08-11 UTC).** Router now accepts `Option<RouterUpgradeArgs>` in
 `post_upgrade`; empty `()` is interpreted as "preserve durable configuration" and only the
-`provision_canister` override is applied. Existing reopen checks, typed layout registries, and
+`provision_canister` override is applied. Router, Graph, Graph Index, Vector, and Provision
+production memory roots now select `ic_stable_memory_backend::StableMemoryBackend`: wasm64 uses
+the `ic_cdk::stable` stable64 API, while native and wasm32 builds retain
+`ic_stable_structures::DefaultMemoryImpl`. This backend correction does not change `MemoryId`
+allocation, memory-manager formats, or persisted record bytes, and it does not establish an N-1
+compatibility reader or migration protocol. Existing reopen checks, typed layout registries, and
 selected same-Wasm upgrade tests are foundations only. Fixed Durable Core headers, owner-specific
 bounded migration support, core record-version classification, and core N-1 fixtures are not yet
-implemented. Durable Graph interpretation metadata, including LARA's
-`default_label`, is also not yet bound to persisted state. Property Index and Vector Index remain
-Rebuildable Derived; Provision remains Experimental Control Plane.
+implemented. Durable Graph interpretation metadata, including LARA's `default_label`, is also not
+yet bound to persisted state. Property Index remains Rebuildable Derived. In the Vector canister,
+only physical IVF projections are Rebuildable Derived through live `admin_start_vector_rebuild` from
+active Vector rows; loss of the sole durable rows requires the symbolic `client_reingestion` recovery
+contract, not an API. Provision remains Experimental Control Plane.
 
 ## Cross-links
 
