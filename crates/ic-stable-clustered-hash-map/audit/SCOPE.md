@@ -1,7 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
-Anchor timestamp: 2026-08-11 06:17:35 UTC +0000
+Anchor timestamp: 2026-08-11 06:45:04 UTC +0000
 
 ## 1. Mode
 
@@ -123,6 +123,17 @@ trace projects to `InsertRelocate` and `InsertRelocateOccupancyOK`; it does not 
 Rust constructs the trace or refine public insert. The outer `size_up` path and initial
 checked distance, `InsertRelocateOK` ordering facts, `NoHoles`/`LenCoherent`, header/remap
 facts, active remapping, and the absent-key branch remain outside this bounded slice.
+`PublicInsertSettled` now packages the settled, absent-key, below-threshold normal-insert
+branch as a certificate-level relation: modeled `lookupIndex = none`, a caller-selected
+`findInsertPosition`, exact pending distance, a supplied no-resize `InsertRelocateTrace`
+that carries its `pendingDist < EMPTY` bound, stable `len`/`remapEnd`, and final `len + 1`.
+Its theorem,
+`publicInsertSettled_preserves_noHoles_and_lenCoherent`, proves only source-conditioned
+`NoHoles`, `LenCoherent`, final length, and `s'.remapEnd = none`. It does not prove
+`ClusterInvariant` or public Rust-insert refinement. Rust construction of the
+trace/certificate, semantic key completeness, an ordering / `InsertRelocateOK` bridge,
+outer or inner `size_up` modeling, active remap, and persistence / re-open proof remain
+outside this certificate slice.
 The abstract `freshState` models the cleared table after Rust `new`; its invariant,
 no-holes, length-coherence, and empty-key-set lemmas close only the initial base state,
 not persisted header validation or `init`.
@@ -160,10 +171,16 @@ image, or `init` / re-open behavior.
 
 ## 7. Deliverables
 
-Final validation for this bounded trace slice succeeded: `lake build
-StableClusterAudit.Map`, `lake build StableClusterAudit.Soundness`, and `lake build
-StableClusterAudit.Counterexamples` each exited 0; `Soundness` retained only the two
-pre-existing `sorry` warnings, and `git diff --check` exited 0.
+Final validation for the bounded certificate slice on the final Lean diff is
+**incomplete**. `lake build StableClusterAudit.Map` exited 0 with no warnings; `lake
+build StableClusterAudit.Soundness` exited 0 in 255 seconds and retained only the two
+pre-existing weak-relation `sorry` warnings. The direct file check `lake env lean
+StableClusterAudit/Counterexamples.lean` exited 0 in about 176 seconds with no output or
+warnings. It is not a completed `lake build StableClusterAudit.Counterexamples` gate:
+that command was silent and safely interrupted after 5:52.29 (exit 130 / SIGINT). Root
+`git diff --check` exited 0 with no output. From
+`/Users/yota/dev/gleaph/crates/ic-stable-clustered-hash-map/audit`, the exact remaining
+build gate is `lake build StableClusterAudit.Counterexamples`.
 
 Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; see
 `audit/lakefile.lean`):

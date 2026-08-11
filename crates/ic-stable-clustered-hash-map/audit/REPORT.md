@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 06:17:35 UTC +0000
+Anchor timestamp: 2026-08-11 06:45:04 UTC +0000
 
 ## Target and version / Mode
 
@@ -38,11 +38,17 @@ Mathlib):
 - Stage 3 — `Soundness.lean`: proofs of the target properties.
 - Stage 4 — this report.
 
-Final validation completed successfully: `lake build StableClusterAudit.Map`,
-`lake build StableClusterAudit.Soundness`, and `lake build
-StableClusterAudit.Counterexamples` each exited 0. `Soundness` emitted only the two
-pre-existing `sorry` warnings for the weak `UnRelocateStep` and `RemapStep`
-invariant-preservation declarations. `git diff --check` also exited 0.
+Final validation on the final Lean diff is **incomplete**. `lake build
+StableClusterAudit.Map` exited 0 with no warnings; `lake build
+StableClusterAudit.Soundness` exited 0 in 255 seconds and retained only the two
+pre-existing weak-relation `sorry` warnings (`UnRelocateStep` and `RemapStep`). The direct
+file check `lake env lean StableClusterAudit/Counterexamples.lean` exited 0 in about 176
+seconds with no output or warnings. It is not a completed `lake build
+StableClusterAudit.Counterexamples` gate: that command was silent and safely interrupted
+after 5:52.29 (exit 130 / SIGINT). Root `git diff --check` exited 0 with no output.
+Resume the exact remaining build gate from
+`/Users/yota/dev/gleaph/crates/ic-stable-clustered-hash-map/audit` with `lake build
+StableClusterAudit.Counterexamples`.
 
 ## Assumption list
 
@@ -146,6 +152,12 @@ content); added as axioms only if a proof required one:
   continuation has strict progress and a strictly in-capacity next position. Its terminal
   frame preserves the exact pending-distance/home-bucket equation. This deliberately
   excludes a mid-chain resize transition.
+- `PublicInsertSettled` is a **certificate-level only** relation for the settled,
+  absent-key, below-threshold normal-insert branch. It consumes caller-supplied lookup,
+  scan-position, exact pending-distance, a no-resize trace that carries its checked
+  distance bound, stable-header, and final `len + 1` facts. It does not model an outer
+  or inner `size_up`, active remapping, or Rust's construction of the trace or
+  public-operation certificate.
 
 ### `Soundness.lean` (Stage 3)
 
@@ -238,6 +250,14 @@ Proved:
   branch, initial checked distance, `InsertRelocateOK` ordering facts, `NoHoles`,
   `LenCoherent`, header/remap facts, active remapping, and the absent-key public branch
   remain open.
+- `PublicInsertSettled` and
+  `publicInsertSettled_preserves_noHoles_and_lenCoherent` consume the settled,
+  absent-key, below-threshold inputs above and prove only source-conditioned `NoHoles`,
+  `LenCoherent`, the final `len + 1`, and `s'.remapEnd = none`. This is not a
+  `ClusterInvariant` theorem and not a public Rust-insert refinement. Rust construction
+  of the trace/certificate, semantic key completeness, an ordering /
+  `InsertRelocateOK` bridge, outer or inner `size_up` modeling, active remap, and
+  persistence / re-open proof all remain outside the slice.
 - Target (c), predicate level: `reopen_consistent_of_cluster_invariant` is kernel-checked,
   but proves only `KeySet` equivalence with the existential `LookupFound` predicate through
   `EntryAtCorrectBucket`; it does not refine the actual `lookupIndex`, a persisted memory

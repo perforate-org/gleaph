@@ -408,6 +408,26 @@ inductive PublicRemoveSettled : State → State → Key → Prop where
       (setLen : s' = { afterRelocate with len := afterRelocate.len - 1 }) :
       PublicRemoveSettled s s' key
 
+-- Certificate for the settled, absent-key, below-threshold normal-insert branch. It records the
+-- caller-selected scan position and exact initial pending distance, then consumes a supplied
+-- no-resize relocation trace whose initial frame carries the checked-distance bound. The unchanged
+-- intermediate header and exact final `set_len` let the soundness theorem return a settled final
+-- remap header. This does not claim Rust constructs the certificate or trace, or cover the
+-- outer/inner `size_up` paths or active remapping. src/map.rs L88-L98
+-- (`checked_distance`), L179-L182 (`is_full`), L318-L329 (`find_insert_position`), L422-L453
+-- (`insert`), L460-L488 (`insert_and_relocate`).
+inductive PublicInsertSettled : State → State → Key → Nat → Prop where
+  | insert {s s' : State} {key : Key} {value : Nat} {position pendingDist : Nat} {mid : State}
+      (settled : s.remapEnd = none) (lookup : lookupIndex s key = none)
+      (belowFull : s.len < (3 * buckets s.n) / 4)
+      (findPosition : position = findInsertPosition s (bucket key s.n))
+      (pendingDistance : pendingDist = position - bucket key s.n)
+      (trace : InsertRelocateTrace s mid key value pendingDist position)
+      (sameLen : mid.len = s.len)
+      (sameRemap : mid.remapEnd = s.remapEnd)
+      (setLen : s' = { mid with len := mid.len + 1 }) :
+      PublicInsertSettled s s' key value
+
 -- Bounded helper retained for the intentionally weak one-step relation. It adds only
 -- header stability and does not turn `UnRelocateStep` into the faithful chain above.
 -- src/map.rs L504-L520.

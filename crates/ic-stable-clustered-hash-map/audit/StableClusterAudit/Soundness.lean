@@ -764,6 +764,31 @@ lemma publicInsertSettled_preserves_lenCoherent {s mid s' : State} {key : Key} {
   change mid.len + 1 = (OccupiedSlots mid).card
   omega
 
+-- Certificate-level settled normal-insert bridge. A supplied no-resize trace projects to the
+-- relocation and occupancy certificates; its caller-selected scan position supplies `NoHoles`,
+-- and the unchanged intermediate header plus final `set_len` supplies `LenCoherent`. The
+-- certificate also fixes the remap header, and this theorem returns that the final state remains
+-- settled alongside those two properties and the final length. It does not claim that Rust
+-- constructs the trace or cover resize, remapping, or active-remap branches.
+-- src/map.rs L88-L98 (`checked_distance`), L179-L182 (`is_full`), L318-L329
+-- (`find_insert_position`), L422-L453 (`insert`), L460-L488 (`insert_and_relocate`).
+theorem publicInsertSettled_preserves_noHoles_and_lenCoherent {s s' : State} {key : Key} {value : Nat}
+    (h : PublicInsertSettled s s' key value) (hno : NoHoles s) (hlen : LenCoherent s) :
+    NoHoles s' ∧ LenCoherent s' ∧ s'.len = s.len + 1 ∧ s'.remapEnd = none := by
+  cases h with
+  | insert settled _lookup _belowFull findPosition _pendingDistance trace sameLen sameRemap setLen =>
+      have hrel := insertRelocateOfTrace trace
+      have hocc : InsertRelocateOccupancyOK hrel := insertRelocateOccupancyOK_of_trace trace
+      have hnoMid := insertRelocate_preserves_noHoles_of_findPosition
+        (h := hrel) findPosition.symm hocc hno
+      have hlenFinal := publicInsertSettled_preserves_lenCoherent
+        (h := hrel) hocc hlen sameLen setLen
+      refine ⟨?_, hlenFinal, ?_, ?_⟩
+      · simpa [setLen, NoHoles, IsOccupied] using hnoMid
+      · rw [setLen, sameLen]
+      · rw [setLen]
+        exact sameRemap.trans settled
+
 -- Lookup completeness needs the separately stated `NoHoles` condition and a positive
 -- `LenCoherent` condition because the abstract `State` otherwise leaves `len` independent
 -- from the occupied-slot count.
