@@ -45,6 +45,9 @@ use ic_stable_vector_page_store::{
 use std::borrow::Cow;
 use std::ops::Bound as RangeBound;
 
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
+use canbench_rs::bench_scope;
+
 /// WASM stable-memory page size in bytes.
 const WASM_PAGE_SIZE: u64 = 65_536;
 
@@ -663,19 +666,26 @@ impl VectorSlabStore {
             VertexPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
 
         let head_key = PartitionKey::new(index_id, index_version, partition_id);
-        let mut head = VECTOR_PARTITION_HEADS
-            .with_borrow(|h| h.get(&head_key))
-            .unwrap_or_default();
+        let mut head = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("append_head_get");
+            VECTOR_PARTITION_HEADS
+                .with_borrow(|h| h.get(&head_key))
+                .unwrap_or_default()
+        };
 
         let need_new_page = if head.page_count == 0 {
             true
         } else {
             let mutable_key =
                 PageKey::new(index_id, index_version, partition_id, head.mutable_page);
-            let m = self
-                .meta
-                .get(&mutable_key)
-                .expect("mutable page meta present");
+            let m = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("append_meta_get");
+                self.meta
+                    .get(&mutable_key)
+                    .expect("mutable page meta present")
+            };
             m.row_count >= m.capacity || self.run_roll_required(&m, shard, run_capacity)
         };
 
@@ -683,8 +693,11 @@ impl VectorSlabStore {
             let page_id = head.next_page_id;
             let slab_offset = self.occupied_tail;
             // Fallible slab grow + page-header init BEFORE any directory mutation.
-            let header =
-                self.reserve_page(slab_offset, capacity, row_stride, meta_stride, run_capacity)?;
+            let header = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("append_reserve_page");
+                self.reserve_page(slab_offset, capacity, row_stride, meta_stride, run_capacity)?
+            };
             (
                 page_id,
                 VectorPageMeta {
@@ -702,16 +715,17 @@ impl VectorSlabStore {
         } else {
             let page_id = head.mutable_page;
             let mutable_key = PageKey::new(index_id, index_version, partition_id, page_id);
-            (
-                page_id,
-                self.meta.get(&mutable_key).expect("mutable page meta"),
-                self.read_page_header(
-                    self.meta
-                        .get(&mutable_key)
-                        .expect("mutable page meta")
-                        .slab_offset,
-                ),
-            )
+            let meta = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("append_meta_get");
+                self.meta.get(&mutable_key).expect("mutable page meta")
+            };
+            let header = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("append_header_read");
+                self.read_page_header(meta.slab_offset)
+            };
+            (page_id, meta, header)
         };
         let layout = PageLayout::new(&header).expect("valid page layout");
         debug_assert_eq!(meta.row_stride, row_stride, "page stride mismatch");
@@ -719,15 +733,23 @@ impl VectorSlabStore {
         let slot = meta.row_count;
         let page_key = PageKey::new(index_id, index_version, partition_id, page_id);
         // Infallible page writes (the page region is already reserved/grown).
-        self.write_run_for_append(
-            meta.slab_offset,
-            &layout,
-            &header,
-            slot,
-            shard,
-            run_capacity,
-        );
-        self.write_row(meta.slab_offset, &layout, slot, payload, bytes, aux);
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("append_run_write");
+            self.write_run_for_append(
+                meta.slab_offset,
+                &layout,
+                &header,
+                slot,
+                shard,
+                run_capacity,
+            );
+        }
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("append_row_write");
+            self.write_row(meta.slab_offset, &layout, slot, payload, bytes, aux);
+        }
 
         // Commit directory: occupied_tail (slab header) -> page meta -> partition head (last).
         if need_new_page {
@@ -735,7 +757,11 @@ impl VectorSlabStore {
         }
         meta.row_count += 1;
         meta.live_count += 1;
-        self.meta.insert(page_key, meta);
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("append_meta_insert");
+            self.meta.insert(page_key, meta);
+        }
 
         if need_new_page {
             if head.page_count == 0 {
@@ -746,7 +772,14 @@ impl VectorSlabStore {
             head.next_page_id = page_id + 1;
         }
         head.live_len += 1;
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.insert(head_key, head));
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("append_head_insert");
+            VECTOR_PARTITION_HEADS
+                .with_borrow_mut(|h| h.insert(head_key, head))
+                .map(|_| ())
+                .map_err(|_| VectorCanisterError::StableGrowFailed)?;
+        }
 
         Ok(SlotRef {
             index_version: index_version as u32,
@@ -836,7 +869,10 @@ impl VectorSlabStore {
                         PageKey::new(index_id, index_version, partition_id, page_id),
                         meta,
                     );
-                    VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.insert(head_key, head));
+                    VECTOR_PARTITION_HEADS
+                        .with_borrow_mut(|h| h.insert(head_key, head))
+                        .map(|_| ())
+                        .map_err(|_| VectorCanisterError::StableGrowFailed)?;
                 }
                 let page_id = head.next_page_id;
                 let slab_offset = self.occupied_tail;
@@ -935,7 +971,10 @@ impl VectorSlabStore {
                 meta,
             );
         }
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.insert(head_key, head));
+        VECTOR_PARTITION_HEADS
+            .with_borrow_mut(|h| h.insert(head_key, head))
+            .map(|_| ())
+            .map_err(|_| VectorCanisterError::StableGrowFailed)?;
 
         Ok(slots)
     }
@@ -982,7 +1021,7 @@ impl VectorSlabStore {
         VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
             if let Some(mut head) = h.get(&head_key) {
                 head.live_len = head.live_len.saturating_sub(1);
-                h.insert(head_key, head);
+                h.insert(head_key, head).expect("tombstone head insert");
             }
         });
         true

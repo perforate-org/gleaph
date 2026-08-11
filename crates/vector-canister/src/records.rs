@@ -539,18 +539,35 @@ pub struct PartitionHead {
 }
 
 impl Storable for PartitionHead {
-    const BOUND: Bound = Bound::Unbounded;
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 40,
+        is_fixed_size: true,
+    };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode PartitionHead"))
+        let mut out = [0u8; 40];
+        out[0..8].copy_from_slice(&self.first_page.to_le_bytes());
+        out[8..16].copy_from_slice(&self.mutable_page.to_le_bytes());
+        out[16..24].copy_from_slice(&self.page_count.to_le_bytes());
+        out[24..32].copy_from_slice(&self.live_len.to_le_bytes());
+        out[32..40].copy_from_slice(&self.next_page_id.to_le_bytes());
+        Cow::Owned(out.to_vec())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode PartitionHead")
+        self.to_bytes().into_owned()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), PartitionHead).expect("decode PartitionHead")
+        let b = bytes.as_ref();
+        assert_eq!(b.len(), 40, "PartitionHead expects exactly 40 bytes");
+        Self {
+            first_page: u64::from_le_bytes(b[0..8].try_into().expect("first_page")),
+            mutable_page: u64::from_le_bytes(b[8..16].try_into().expect("mutable_page")),
+            page_count: u64::from_le_bytes(b[16..24].try_into().expect("page_count")),
+            live_len: u64::from_le_bytes(b[24..32].try_into().expect("live_len")),
+            next_page_id: u64::from_le_bytes(b[32..40].try_into().expect("next_page_id")),
+        }
     }
 }
 

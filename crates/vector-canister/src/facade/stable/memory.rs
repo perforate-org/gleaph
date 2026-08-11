@@ -61,7 +61,8 @@ pub(crate) type StableCentroidMetaMap = BTreeMap<u32, IvfCentroidMeta, Memory>;
 pub(crate) type StableCentroidsMap = BTreeMap<PartitionKey, Vec<u8>, Memory>;
 pub(crate) type StableSubjectMap = StableClusteredHashMap<SubjectKey, FixedSubjectMapEntry, Memory>;
 pub(crate) type StableDeletedSubjectsMap = BTreeMap<DeletedSubjectKey, u8, Memory>;
-pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, Memory>;
+pub(crate) type StablePartitionHeadsMap =
+    StableClusteredHashMap<PartitionKey, PartitionHead, Memory>;
 pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
 pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
@@ -234,7 +235,16 @@ pub(crate) fn init_deleted_subjects() -> StableDeletedSubjectsMap {
 }
 
 pub(crate) fn init_partition_heads() -> StablePartitionHeadsMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_PARTITION_HEADS)))
+    let memory = MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_PARTITION_HEADS));
+    match StableClusteredHashMap::init(memory.clone()) {
+        Ok(map) => map,
+        // Empty (fresh) memory has no `CHM` magic; create the map like `BTreeMap::init` does for a
+        // fresh region. A non-zero wrong magic is genuine corruption.
+        Err(InitError::BadMagic { actual: [0, 0, 0] }) => {
+            StableClusteredHashMap::new(memory).expect("init partition heads")
+        }
+        Err(e) => panic!("init partition heads: {e}"),
+    }
 }
 
 pub(crate) fn init_page_meta() -> StablePageMetaMap {
