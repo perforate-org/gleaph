@@ -50,6 +50,19 @@ lemma freshState_keySet_empty (n : Nat) (k : Key) : ¬ KeySet (freshState n) k :
   rintro ⟨i, hi, hocc, hkey⟩
   simp [freshState, IsOccupied] at hocc
 
+-- Abstract.lean `ActivePlacementOK`; src/map.rs L336-L381, L560-L597.
+-- With no active boundary, the current-N placement branch implies the settled-state
+-- interpretation of `ExpectedBucket`.
+lemma activePlacementOK_settled_implies_entryAtCorrectBucket {s : State}
+    (hactive : ActivePlacementOK s) (hsettled : s.remapEnd = none) :
+    EntryAtCorrectBucket s := by
+  intro i hi hoccupied
+  obtain ⟨k, hkey, hcurrent | ⟨e, hactiveBoundary, _hiBoundary, _hn, _hold⟩⟩ :=
+    hactive i hi hoccupied
+  · simpa [ExpectedBucket, hkey, hsettled] using hcurrent
+  · rw [hsettled] at hactiveBoundary
+    contradiction
+
 /-!
 ## Target (a) — `size_up` preserves the entry set and count
 

@@ -302,6 +302,26 @@ theorem remapStep_does_not_preserve_clusterInvariant :
     (h remapGoodState remapBadState remapStep_good_bad remapGoodState_clusterInvariant)
 
 /-!
+## Guard-level counterexample to monotone remap boundaries
+
+This checks only the branch at `src/map.rs L594-L596`: it is not a claim that the
+chosen numeric triple is reachable from a Rust map. When `remap_end = 2`,
+`insert_position = 2`, and `last_affected = 3`, the guard selects `last_affected`, so
+the active boundary expands from 2 to 3. This contradicts the monotone `some`-to-`some`
+shape required by `RemapStep.boundary` (Map.lean L488-L490).
+-/
+
+theorem remapPosition_boundary_guard_expands :
+    let remapEnd := 2
+    let insertPosition := 2
+    let lastAffected := 3
+    let nextRemapEnd :=
+      if insertPosition ≤ remapEnd ∧ remapEnd < lastAffected then lastAffected else remapEnd
+    insertPosition ≤ remapEnd ∧ remapEnd < lastAffected ∧ nextRemapEnd = 3 ∧
+      ¬ nextRemapEnd < remapEnd := by
+  norm_num
+
+/-!
 ## Counterexample: occupancy traces do not supply the insertion-order certificate
 
 `findInsertPosition` only transcribes the scan that chooses the initial write position

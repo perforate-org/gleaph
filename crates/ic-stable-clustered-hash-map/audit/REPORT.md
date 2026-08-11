@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 08:32:40 UTC +0000
+Anchor timestamp: 2026-08-11 09:12:16 UTC +0000
 
 ## Target and version / Mode
 
@@ -38,17 +38,15 @@ Mathlib):
 - Stage 3 — `Soundness.lean`: proofs of the target properties.
 - Stage 4 — this report.
 
-Final validation on the final Lean diff is **incomplete**. `lake build
-StableClusterAudit.Map` exited 0 with no warnings; `lake build
-StableClusterAudit.Soundness` exited 0 in 255 seconds and retained only the two
-pre-existing weak-relation `sorry` warnings (`UnRelocateStep` and `RemapStep`). The direct
-file check `lake env lean StableClusterAudit/Counterexamples.lean` exited 0 in about 176
-seconds with no output or warnings. It is not a completed `lake build
-StableClusterAudit.Counterexamples` gate: that command was silent and safely interrupted
-after 5:52.29 (exit 130 / SIGINT). Root `git diff --check` exited 0 with no output.
-Resume the exact remaining build gate from
-`/Users/yota/dev/gleaph/crates/ic-stable-clustered-hash-map/audit` with `lake build
-StableClusterAudit.Counterexamples`.
+Validation for this prerequisite slice is split by command. `lake build
+StableClusterAudit.Abstract` exited 0 after 256 seconds. The attempted
+`lake build StableClusterAudit.Soundness` was safely interrupted after the no-output
+budget (exit 130), so that build gate is incomplete. After the Abstract artifact was
+built, direct `lake env lean StableClusterAudit/Soundness.lean` exited 0 with only the
+two pre-existing weak-relation `sorry` warnings, and direct
+`lake env lean StableClusterAudit/Counterexamples.lean` exited 0 with no output.
+Root `git diff --check` exited 0 with no output. No full Counterexamples Lake build is
+claimed for this slice.
 
 ## Assumption list
 
@@ -73,6 +71,10 @@ content); added as axioms only if a proof required one:
   `freshState_clusterInvariant`, `freshState_noHoles`, `freshState_lenCoherent`, and
   `freshState_keySet_empty` lemmas close the initial base state. They do not refine
   persisted header validation or the `init` path.
+- `ActivePlacementOK` ties every occupied slot to a key and permits current-`n` placement
+  everywhere plus old-`n-1` placement inside an active remap boundary. It is intentionally
+  parallel to, and not integrated into, `ClusterInvariant` or `RemapStep` until Rust
+  construction and preservation are proved.
 
 ### `Counterexamples.lean` (Stage 1 adversarial)
 
@@ -87,6 +89,11 @@ content); added as axioms only if a proof required one:
   `remapEnd`, while only the source satisfies `ClusterInvariant`. Therefore the named
   theorem `remap_step_preserves_invariant` is false under the current weak `RemapStep`
   relation; it is not merely a deferred proof.
+- **Boundary guard counterexample (proved in Lean)**:
+  `remapPosition_boundary_guard_expands` evaluates the production guard for
+  `remap_end = 2`, `insert_position = 2`, and `last_affected = 3`; it selects 3 and therefore
+  refutes strict decrease for that branch. This checks branch semantics only and does not
+  claim that the numeric state is Rust-reachable or prove remap preservation.
 - **`UnRelocateStep` counterexample (proved in Lean)**:
   `unrelocateStep_does_not_preserve_clusterInvariant` constructs, for every supplied
   `k : Key`, a valid source and invalid target. The weak relation permits the target table
@@ -125,6 +132,9 @@ content); added as axioms only if a proof required one:
   `remap_preserves_entries` is therefore relation-level, not a Rust refinement proof of
   production `remap_step` or `remap_position`, and the current relation admits the
   invariant-breaking counterexample above.
+- No `RemapPositionHistory` certificate was added. The existing trace has no
+  `last_affected` result index, and terminal `RelocateWrite` does not constrain `len` or
+  `remapEnd`; adding the certificate now would encode unproved implementation facts.
 - `UnRelocateStep` constrains only the moved tail entry and slots other than `position`
   and `next`; it does not preserve table geometry or constrain all target slots, so it
   admits the invariant-breaking counterexample above for any inhabited key domain.
@@ -172,6 +182,9 @@ content); added as axioms only if a proof required one:
 Proved:
 
 - Target (a): `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is proved only for `RemapStep`, which postulates `keySet` and `len`, not a Rust refinement proof of production `remap_step` or `remap_position`.
+- `activePlacementOK_settled_implies_entryAtCorrectBucket` proves that the active-placement
+  predicate implies the existing settled placement predicate when `remapEnd = none`.
+  It does not prove active-remap preservation or Rust refinement.
 - Target (b), step level: `relocateWrite_preserves_clusterInvariant` (base write) and
   `relocateStep_preserves_clusterInvariant` (single relocation step) — **proved**.
 - The chain maintenance machinery — `displaced_home_bucket`, `bucketAt_in_scan`,
@@ -293,8 +306,9 @@ Remaining admitted weak-relation declarations, false as currently stated:
   be proved.
 
 The `RemapStep` result is relation-level because it postulates `keySet` and `len`; it is not a Rust refinement proof. Production `remap_position` can
-re-expand `remap_end`, and `ExpectedBucket` has not been proved a faithful invariant while
-a remap is active. The independent P1 / High `size_up` allocation defect recorded in
+re-expand `remap_end`; the guard-level witness now checks that branch directly.
+`ActivePlacementOK` captures the two accepted placement classes, but has not been proved
+preserved by production remapping. The independent P1 / High `size_up` allocation defect recorded in
 `GAP-2026-08-10-002` is repaired in commit `c1dc31db7` by deriving growth from
 the canonical `entry_stride()`; a focused normal-load-threshold regression covers the prior
 out-of-bounds write. This runtime evidence does not extend the Lean relations, and no production

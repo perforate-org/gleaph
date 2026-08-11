@@ -115,6 +115,21 @@ def ClusterOrdered (s : State) : Prop :=
 def EntryAtCorrectBucket (s : State) : Prop :=
   ∀ i, i < capacity s.n → IsOccupied s i → BucketAt s i = ExpectedBucket s i
 
+-- Active remapping permits two placement classes. An occupied entry may already be at
+-- its current-N bucket, including inside the mixed-range boundary after relocation, or it
+-- may remain at its old-(N-1) bucket inside that boundary. Requiring the occupied slot to
+-- contain a key rules out abstract states that Rust cannot read as an entry.
+-- src/map.rs L336-L381: lookup scans the current-N bucket first, then the old-(N-1)
+-- bucket inside `[0, remap_end]` while a resize is active.
+-- src/map.rs L560-L597: remap reinserts at the current-N bucket and may re-expand
+-- `remap_end` when relocation crosses the active boundary.
+def ActivePlacementOK (s : State) : Prop :=
+  ∀ i, i < capacity s.n → IsOccupied s i →
+    ∃ k, s.keyAt i = some k ∧
+      (BucketAt s i = bucket k s.n ∨
+        ∃ e, s.remapEnd = some e ∧ i ≤ e ∧ 0 < s.n ∧
+          BucketAt s i = bucket k (s.n - 1))
+
 -- (B4) NOT a structural invariant. The claim "distances are bounded by the overflow
 --      area n" (old code comment) is false: a low bucket's cluster can grow past n
 --      (see Counterexamples.lean). Kept only for reference.
