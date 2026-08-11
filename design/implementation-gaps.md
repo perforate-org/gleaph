@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 13:32:49 UTC +0000
+Anchor timestamp: 2026-08-11 13:57:33 UTC +0000
 
 ## Status
 
@@ -49,7 +49,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-11-002 — Active-remap overflow can force a full remap drain in one insert
 
-- **Status:** Resolved in the current worktree; commit pending
+- **Status:** Resolved by commit `044e4f124`
 - **Severity:** P1 / High bounded-execution risk
 - **Owner:** `ic-stable-clustered-hash-map` capacity, incremental-remap, and mutation-atomicity
   invariants
@@ -77,10 +77,10 @@ defect from being rediscovered without its prior reasoning.
   a later position encounters OOM; operation-wide rollback of those completed maintenance steps is
   not part of the current contract. `remove` returns that OOM before deleting its requested key or
   decrementing length.
-- **Next decision:** Complete final independent approval and the scoped commit. Updating the Lean
-  model for persisted capacity, active-remap tail extension, and per-position OOM refinement is a
-  later formal-audit slice. If callers require operation-wide rollback of maintenance completed
-  before a subsequent OOM, specify that stronger transaction boundary separately.
+- **Next decision:** None for the implementation. Updating the Lean model for persisted capacity,
+  active-remap tail extension, and per-position OOM refinement is a later formal-audit slice. If
+  callers require operation-wide rollback of maintenance completed before a subsequent OOM, specify
+  that stronger transaction boundary separately.
 
 ### GAP-2026-08-11-001 — Inner resize leaves the pending insert distance stale
 

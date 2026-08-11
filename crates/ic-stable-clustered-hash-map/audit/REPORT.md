@@ -2,13 +2,14 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 09:12:16 UTC +0000
+Anchor timestamp: 2026-08-11 13:57:33 UTC +0000
 
 ## Target and version / Mode
 
 - **Target**: `ic-stable-clustered-hash-map` — `StableClusteredHashMap` (src/map.rs), a
   stable-memory clustered (Amble & Knuth ordered) hash table with incremental in-place
-  resize; the current Rust source under audit is commit `c1dc31db7`.
+  resize; this report audits the historical Rust snapshot at commit `c1dc31db7`. The current
+  repository HEAD is `044e4f124`, and subsequent changes there are not covered by this report.
 - **Provenance**: `9b768b096` is the initial clean/build-green Lean baseline, while
   `a50670417` is the audit-artifact commit for the faithful remove-chain model.
 - **Mode**: **audit**. An existing implementation was transcribed into Lean 4 (Mathlib
