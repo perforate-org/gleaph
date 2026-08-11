@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 02:00:52 UTC +0000
+Anchor timestamp: 2026-08-11 02:15:08 UTC +0000
 
 ## Target and version / Mode
 
@@ -190,7 +190,10 @@ Proved:
   the insertion-point prefix is explicitly occupied. The compiler-checked
   `findInsertPositionFrom_prefix` and `findInsertPosition_prefix` lemmas now extract the
   occupied prefix traversed by the initial Rust `find_insert_position` scan. Per-step
-  displaced-entry prefixes and their Rust derivation remain open.
+  `relocateStep_next_prefix_of_noHoles` derives the next pending entry's occupied prefix
+  from `NoHoles` and the end-of-cluster scan when the current position and pending distance
+  are bounded. Deriving those bounds from Rust and threading this lemma through the full
+  certificate remain open.
 - `relocateStep_preserves_noHoles` now proves the intermediate relocation write preserves
   `NoHoles` under the same explicit pending-entry prefix and non-EMPTY distance premises.
   The displaced entry is pending and therefore is intentionally not part of this
@@ -200,8 +203,9 @@ Proved:
   terminating and intermediate lemmas across the full insert chain. Each pending entry's
   occupied prefix and non-EMPTY write distance remain explicit certificate premises. The
   initial scan prefix is now derived from `findInsertPositionFrom_prefix` /
-  `findInsertPosition_prefix`; displaced-entry prefixes and distances are not yet derived
-  from Rust's relocation loop.
+  `findInsertPosition_prefix`; `relocateStep_next_prefix_of_noHoles` supplies the
+  conditional next-step prefix, but Rust's distance/bound derivation and certificate
+  construction remain open.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -285,8 +289,9 @@ The concrete lookup success direction is also proved for settled scans. A separa
 occupancy certificate now proves the `len + 1` cardinality bridge for settled insert chains,
 and the terminating/step `NoHoles` lemmas are now proved under explicit prefix premises,
 composed across the certified insert chain. The initial scan prefix is extracted from the
-Rust `find_insert_position` recursion; displaced-entry prefixes and distances still need
-an insertion-history proof.
+Rust `find_insert_position` recursion, and `relocateStep_next_prefix_of_noHoles` supplies
+the conditional next-step prefix. Rust's distance/bound derivation and certificate
+construction still need an insertion-history proof.
 Lookup completeness
 is refuted by the current invariant's hole-permitting and length-independent model; it is now
 proved conditionally under `NoHoles` and `LenCoherent`. Remaining work includes justifying both

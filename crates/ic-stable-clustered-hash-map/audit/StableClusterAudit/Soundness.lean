@@ -492,6 +492,44 @@ lemma occupied_in_scan (s : State) (b i i' : Nat) (hle : i ≤ i')
     (hlt : i' < endOfClusterFrom s b i) : IsOccupied s i' :=
   (slot_in_scan_aux s b (capacity s.n - i) i i' rfl hle hlt).1
 
+-- Once a pending entry displaces an occupied slot, the next pending entry's prefix is also
+-- occupied: `NoHoles` covers the range before the current position, while the end-of-cluster
+-- scan covers the range from the current position to `next`. The copied slot at `position`
+-- is occupied in the intermediate state, and all later scanned slots are unchanged.
+-- src/map.rs L468-L476.
+lemma relocateStep_next_prefix_of_noHoles {s mid : State} {entry : Key} {value entryDist position : Nat}
+    (h : RelocateStep s mid entry value entryDist position)
+    (hno : NoHoles s) (hpos : position < capacity s.n) (hentry : entryDist < EMPTY) :
+    ∀ j, bucket h.tKey mid.n ≤ j → j < h.next → IsOccupied mid j := by
+  intro j hkj hjnext
+  have htDist_lt : h.tDist < EMPTY := by
+    exact Nat.lt_of_le_of_lt (Nat.le_add_right _ _) h.tDistShifted
+  have hocc_pos : IsOccupied s position := by
+    change s.dist position ≠ EMPTY
+    rw [h.distT]
+    exact ne_of_lt htDist_lt
+  have hkj_s : bucket h.tKey s.n ≤ j := by
+    simpa [h.n] using hkj
+  by_cases hj_lt : j < position
+  · have hsource := hno position h.tKey hpos hocc_pos h.occT j hkj_s hj_lt
+    change mid.dist j ≠ EMPTY
+    rw [h.dist_other j (by omega)]
+    exact hsource
+  · have hj_ge : position ≤ j := Nat.le_of_not_gt hj_lt
+    by_cases hj_eq : j = position
+    · subst j
+      change mid.dist position ≠ EMPTY
+      rw [h.entryDistAt]
+      exact ne_of_lt hentry
+    · have hnext_scan : j < endOfCluster s position := by
+        simpa [h.next_is_end] using hjnext
+      have hscan : j < endOfClusterFrom s (BucketAt s position) position := by
+        simpa [endOfCluster] using hnext_scan
+      have hsource := occupied_in_scan s (BucketAt s position) position j hj_ge hscan
+      change mid.dist j ≠ EMPTY
+      rw [h.dist_other j hj_eq]
+      exact hsource
+
 -- A successful settled `lookupIndex` scan returns an in-bounds occupied slot with the
 -- requested key at its expected bucket. This is the concrete scan-result fact consumed by
 -- the public-remove certificate; it does not prove that every stored key is found.
