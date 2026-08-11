@@ -1074,7 +1074,11 @@ fn sync_batch_round(
 ) -> u32 {
     let baseline = crate::canister::instruction_counter();
     let mut applied = 0u32;
-    for operation in ops {
+    // Mirror the canister `vector_sync_batch` loop: process in bounded chunks, checking the
+    // instruction budget at each chunk boundary, and dispatch each chunk through the batched
+    // `vector_sync_batch_chunk` path (which falls back to per-row for non-fresh mixes).
+    const CHUNK: usize = 32;
+    while (applied as usize) < ops.len() {
         let exhausted = crate::canister::instruction_counter()
             .saturating_sub(baseline)
             .saturating_add(crate::canister::VECTOR_BATCH_RESERVE_INSTRUCTIONS)
@@ -1082,16 +1086,15 @@ fn sync_batch_round(
         if exhausted {
             break;
         }
-        if operation.remove {
-            store
-                .vector_remove(caller, operation)
-                .expect("vector remove");
-        } else {
-            store
-                .vector_upsert(caller, operation)
-                .expect("vector upsert");
+        let end = ((applied as usize) + CHUNK).min(ops.len());
+        let chunk = &ops[applied as usize..end];
+        let applied_in_chunk = store
+            .vector_sync_batch_chunk(caller, chunk)
+            .expect("vector sync batch chunk");
+        applied = applied.saturating_add(applied_in_chunk);
+        if applied_in_chunk == 0 {
+            break;
         }
-        applied = applied.saturating_add(1);
     }
     applied
 }

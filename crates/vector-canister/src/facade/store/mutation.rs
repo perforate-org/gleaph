@@ -734,6 +734,100 @@ impl VectorCanisterStore {
         }
     }
 
+    /// Applies a chunk of `vector_sync_batch` operations. Fast path: when every op is a fresh upsert
+    /// (no existing subject entry) into a degenerate `nlist == 1` index in `ActiveOnly` mode, the
+    /// rows are appended in one batched page-store call (amortizing the per-row page-directory commit)
+    /// and the subject entries are committed per row. Any other mix (existing subject, remove,
+    /// `nlist > 1`, or dual-write) falls back to the per-row `vector_upsert` / `vector_remove` path.
+    ///
+    /// Write-then-commit holds on the fast path: a failed subject-map commit at op `k` tombstones the
+    /// slots for ops `k..n` (whose subject entries did not commit), so the residual is tombstoned dead
+    /// rows rather than live-counted orphans. Returns the number of ops applied (always `chunk.len()`
+    /// on success).
+    pub fn vector_sync_batch_chunk(
+        &self,
+        caller: Principal,
+        chunk: &[VectorEmbeddingSyncOp],
+    ) -> Result<u32, VectorCanisterError> {
+        let first = &chunk[0];
+        let def =
+            self.ensure_def_for_upsert(first.index_id, first.encoding, first.dims, first.metric)?;
+        let mode = rebuild_mutation_mode(first.index_id);
+
+        // Fast-path eligibility: all ops are fresh upserts into a degenerate `nlist == 1` index in
+        // `ActiveOnly` mode (no shadow mirror). Any other case falls back to per-row.
+        let mut rows: Vec<(VectorSubject, Vec<u8>, [u8; 8])> = Vec::with_capacity(chunk.len());
+        let mut batchable = def.nlist <= 1 && matches!(mode, RebuildMutationMode::ActiveOnly);
+        if batchable {
+            for op in chunk {
+                if op.remove || op.index_id != first.index_id {
+                    batchable = false;
+                    break;
+                }
+                self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
+                if op.encoding != def.encoding || op.dims != def.dims {
+                    return Err(VectorCanisterError::DimensionMismatch);
+                }
+                if op.bytes.len() != op.dims as usize * 4 {
+                    return Err(VectorCanisterError::ByteWidthMismatch);
+                }
+                let key = SubjectKey::new(op.index_id, op.subject);
+                let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
+                if existing.is_some() {
+                    batchable = false;
+                    break;
+                }
+                let (stored, aux) = prepare_for_metric(&def, &op.bytes)?;
+                rows.push((op.subject, stored, aux));
+            }
+        }
+
+        if !batchable {
+            for op in chunk {
+                if op.remove {
+                    self.vector_remove(caller, op)?;
+                } else {
+                    self.vector_upsert(caller, op)?;
+                }
+            }
+            return Ok(chunk.len() as u32);
+        }
+
+        // Fast path: append all rows in one batched page-store call, then commit subject entries.
+        let active = def.active_index_version;
+        let row_refs: Vec<(VectorSubject, &[u8], [u8; 8])> = rows
+            .iter()
+            .map(|(s, b, a)| (*s, b.as_slice(), *a))
+            .collect();
+        let slots = self.append_slot_batch(
+            first.index_id,
+            active,
+            DEGENERATE_PARTITION_ID,
+            &def,
+            &row_refs,
+        )?;
+        for (i, op) in chunk.iter().enumerate() {
+            let key = SubjectKey::new(op.index_id, op.subject);
+            if let Err(err) = self.insert_subject_entry(
+                key,
+                FixedSubjectMapEntry {
+                    stamp: op.mutation_id,
+                    deleted: false,
+                    slot: Some(slots[i]),
+                    shadow_slot: None,
+                },
+            ) {
+                // The subject-map commit failed (OutOfMemory): tombstone the slots whose subject
+                // entries did not commit so the residual is tombstoned dead rows, not live orphans.
+                for slot in &slots[i..] {
+                    self.tombstone_slot(op.index_id, *slot);
+                }
+                return Err(err);
+            }
+        }
+        Ok(chunk.len() as u32)
+    }
+
     // --- Test-only inspection / setup helpers ---
 
     /// Creates an index def with an explicit page byte budget (test-only; production creates defs

@@ -412,6 +412,90 @@ fn vector_upsert_rejects_remove_flag() {
 }
 
 #[test]
+fn vector_sync_batch_chunk_all_fresh_upserts() {
+    let store = fresh_store();
+    let ops = vec![
+        upsert_op(1, 1, 0xAA),
+        upsert_op(2, 1, 0xBB),
+        upsert_op(3, 1, 0xCC),
+    ];
+    let applied = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap();
+    assert_eq!(applied, 3);
+    for vid in 1..=3 {
+        let entry = store
+            .subject_entry_for_test(INDEX_ID, subject(vid))
+            .unwrap();
+        assert!(!entry.deleted);
+        assert_eq!(entry.stamp, 1);
+        assert!(entry.slot.is_some());
+    }
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 3, "all three fresh rows are live");
+}
+
+#[test]
+fn vector_sync_batch_chunk_mixed_falls_back_per_row() {
+    let store = fresh_store();
+    // Pre-insert subject 1 so the batch is not all-fresh and must fall back to per-row.
+    store
+        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
+        .unwrap();
+    let ops = vec![upsert_op(1, 2, 0xBB), upsert_op(2, 1, 0xCC)];
+    let applied = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap();
+    assert_eq!(applied, 2);
+    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(e1.stamp, 2, "existing subject updated via Greater path");
+    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    assert_eq!(e2.stamp, 1, "fresh subject inserted");
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 2);
+}
+
+#[test]
+fn vector_sync_batch_chunk_remove_falls_back_per_row() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
+        .unwrap();
+    let ops = vec![remove_op(1, 2)];
+    let applied = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap();
+    assert_eq!(applied, 1);
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert!(entry.deleted);
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 0);
+}
+
+#[test]
+fn vector_sync_batch_chunk_subject_commit_failure_tombstones() {
+    let store = fresh_store();
+    let ops = vec![
+        upsert_op(1, 1, 0xAA),
+        upsert_op(2, 1, 0xBB),
+        upsert_op(3, 1, 0xCC),
+    ];
+    // Force the 2nd subject-map insert (op index 1) to fail after the batched append.
+    crate::facade::store::mutation::arm_subject_insert_failure(1);
+    let err = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap_err();
+    assert_eq!(err, VectorCanisterError::StableGrowFailed);
+    // Op 0 committed (live); ops 1..2 tombstoned (dead rows, no subject entry).
+    let e0 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert!(!e0.deleted);
+    assert!(store.subject_entry_for_test(INDEX_ID, subject(2)).is_none());
+    assert!(store.subject_entry_for_test(INDEX_ID, subject(3)).is_none());
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 1, "only op 0 is live; ops 1..2 tombstoned");
+}
+
+#[test]
 fn vector_remove_rejects_insert_flag() {
     let store = fresh_store();
     let mut op = remove_op(7, 1);

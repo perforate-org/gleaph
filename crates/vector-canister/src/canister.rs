@@ -74,7 +74,11 @@ pub(crate) fn vector_sync_batch(
     let store = VectorCanisterStore::new();
     let baseline = instruction_counter();
     let mut applied = 0u32;
-    for operation in &operations {
+    // Process the batch in bounded chunks so the per-op instruction-budget check becomes a per-chunk
+    // check with a valid resume point (`next_index` is a chunk boundary). A chunk is small enough
+    // that its append+commit stays far below the 100M reserve.
+    const CHUNK: usize = 32;
+    while (applied as usize) < operations.len() {
         let exhausted = instruction_counter()
             .saturating_sub(baseline)
             .saturating_add(VECTOR_BATCH_RESERVE_INSTRUCTIONS)
@@ -86,12 +90,13 @@ pub(crate) fn vector_sync_batch(
                 instruction_budget_exhausted: true,
             });
         }
-        if operation.remove {
-            store.vector_remove(caller, operation)?;
-        } else {
-            store.vector_upsert(caller, operation)?;
+        let end = ((applied as usize) + CHUNK).min(operations.len());
+        let chunk = &operations[applied as usize..end];
+        let applied_in_chunk = store.vector_sync_batch_chunk(caller, chunk)?;
+        applied = applied.saturating_add(applied_in_chunk);
+        if applied_in_chunk == 0 {
+            break; // safety: never spin on a no-progress chunk
         }
-        applied = applied.saturating_add(1);
     }
     // ADR 0064 §5: advance the caller's watermark to the max stamp in the batch, then run a bounded
     // GC step to drop deleted subject-map entries below the cutoff.
