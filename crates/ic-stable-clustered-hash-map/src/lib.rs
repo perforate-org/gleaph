@@ -1,5 +1,5 @@
 //! **Stable Clustered Hashing** in Internet Computer stable memory: current layout with magic **`CHM`**, a
-//! 64-byte header prefix following `ic-stable-structures`, a flattened chained hash table where items
+//! 128-byte metadata prefix, and a flattened chained hash table where items
 //! of the same bucket are clustered together (Amble & Knuth 1974, "Ordered Hash Tables").
 //!
 //! The main type is [`StableClusteredHashMap`].
@@ -13,17 +13,21 @@
 //!   operations (amortized **O(1)** per op). Relocation pressure grows and clears only the persisted
 //!   logical tail; it does not drain an active remap or introduce a third bucket mapping. A new-key
 //!   insert at the next threshold continues the bounded remap rather than starting another bucket
-//!   generation.
+//!   generation. Settled threshold inserts initialize the new region through a persisted bounded
+//!   cursor while old-N lookup remains active; the new mapping is published only after the region
+//!   is initialized and the cursor has reached its target.
 //! - [`StableClusteredHashMap::insert`] and [`StableClusteredHashMap::remove`] return [`InsertError`]
 //!   when the requested mutation and bounded remap maintenance encounter stable-memory growth or
 //!   capacity failure. The whole public operation is failure-atomic: logical map bytes, headers,
 //!   length, capacity, remap boundary, and key set remain unchanged and reopenable. Physical
 //!   stable-memory pages grown before a later failure are outside that logical rollback contract.
 //!   Active operations retain the direct path when a bounded empty suffix proves that maintenance
-//!   plus the request cannot require growth. Other growth-capable operations write once through an
-//!   undo transaction that snapshots each overwritten original logical block at most once and
-//!   restores those blocks on a returned error. A trap relies on the IC message rollback boundary;
-//!   the map does not add a write-ahead journal for process crashes outside that boundary.
+//!   plus the request cannot require growth. Pending resize operations grow and clear their next
+//!   bounded prefix before writing, so the request has an empty destination without a second growth
+//!   failure. Other growth-capable operations write once through an undo transaction that snapshots
+//!   each overwritten original logical block at most once and restores those blocks on a returned
+//!   error. A trap relies on the IC message rollback boundary; the map does not add a write-ahead
+//!   journal for process crashes outside that boundary.
 //!
 //! # Type parameters
 //!

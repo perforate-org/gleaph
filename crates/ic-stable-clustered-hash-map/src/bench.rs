@@ -6,6 +6,8 @@
 //! not have an equivalent B-tree operation.
 //! The active-remap tail case measures logical tail extension without bucket growth or a remap
 //! drain. A standalone settled inner-overflow case remains deferred pending a verified fixture.
+//! The N=13/N=16/N=20/N=23 threshold cases isolate one bounded settled-table initialization step;
+//! their large resident tables are constructed before the timed closure.
 
 use crate::{StableClusteredHashMap, map::canbench_fixtures};
 use canbench_rs::bench;
@@ -147,6 +149,45 @@ fn bench_clustered_insert_n13_threshold_resize() -> canbench_rs::BenchResult {
 
     fixture.assert_postconditions();
     result
+}
+
+fn bench_clustered_insert_threshold_scale(
+    log2_buckets: u8,
+    scope_name: &'static str,
+) -> canbench_rs::BenchResult {
+    let fixture = canbench_fixtures::threshold_resize_insert_at(log2_buckets);
+    let target = fixture.target;
+
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope_name);
+        black_box(
+            fixture
+                .map
+                .insert(target, target)
+                .expect("scale threshold-resize insert"),
+        );
+    });
+
+    fixture.assert_postconditions();
+    result
+}
+
+/// Cost of the settled threshold resize at N=16 (49,152 residents).
+#[bench(raw)]
+fn bench_clustered_insert_n16_threshold_resize() -> canbench_rs::BenchResult {
+    bench_clustered_insert_threshold_scale(16, "bench_clustered_insert_n16_threshold_resize")
+}
+
+/// Cost of the settled threshold resize at N=20 (786,432 residents).
+#[bench(raw)]
+fn bench_clustered_insert_n20_threshold_resize() -> canbench_rs::BenchResult {
+    bench_clustered_insert_threshold_scale(20, "bench_clustered_insert_n20_threshold_resize")
+}
+
+/// Cost of the settled threshold resize at N=23 (6,291,456 residents).
+#[bench(raw)]
+fn bench_clustered_insert_n23_threshold_resize() -> canbench_rs::BenchResult {
+    bench_clustered_insert_threshold_scale(23, "bench_clustered_insert_n23_threshold_resize")
 }
 
 /// Cost of extending a full logical tail while preserving the active remap and bucket count.

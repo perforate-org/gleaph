@@ -1,7 +1,7 @@
 //! Stable Clustered Hashing (Amble & Knuth 1974, "Ordered Hash Tables"): a flattened chained hash
 //! table where items of the same bucket are clustered together in the table.
 //!
-//! Layout (V1, `CHM` magic, 64-byte header prefix like `ic-stable-structures`):
+//! Layout (V1, `CHM` magic, 128-byte metadata prefix):
 //!
 //! ```text
 //! ---------------------------------------- <- Address 0
@@ -21,8 +21,15 @@
 //! ----------------------------------------
 //! Logical capacity       ↕ 8 bytes
 //! ----------------------------------------
-//! Reserved space         ↕ 27 bytes
-//! ---------------------------------------- <- Address 64
+//! Resize target capacity ↕ 8 bytes
+//! Resize clear cursor    ↕ 8 bytes
+//! Resize target N        ↕ 1 byte
+//! Resize state           ↕ 1 byte
+//! Resize remap start    ↕ 8 bytes
+//! ----------------------------------------
+//! Header extension      ↕ 64 bytes
+//!   future V1 metadata
+//! ---------------------------------------- <- Address 128
 //! Entries: [K + V + distance(u32); capacity]
 //!   capacity >= 2^N      (dynamic cleared relocation tail)
 //! ----------------------------------------
@@ -57,6 +64,8 @@ const FIB_CONST: u64 = 11400714819323198485;
 const DEFAULT_LOG2_BUCKETS: u8 = 3;
 /// Number of positions the incremental resize remaps per insert/remove step.
 const REMAP_BATCH: u64 = 64;
+/// Number of new slots initialized during one resize-maintenance step.
+const RESIZE_CLEAR_BATCH: u64 = 64;
 /// Amortized number of cleared slots added when relocation reaches the logical tail.
 const TAIL_GROWTH_CHUNK: u64 = 64;
 
@@ -242,8 +251,13 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             .checked_add(header.value_size as u64)
             .and_then(|size| size.checked_add(4))
             .ok_or(InitError::InvalidLayout)?;
-        let required = header
-            .capacity
+        let required_capacity = match header.resize_state {
+            header::ResizeState::Clearing => header.capacity,
+            header::ResizeState::Settled | header::ResizeState::Publishing => {
+                header.capacity.max(header.resize_target_capacity)
+            }
+        };
+        let required = required_capacity
             .checked_mul(stride)
             .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
             .ok_or(InitError::InvalidLayout)?;
@@ -251,17 +265,52 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
             .size()
             .checked_mul(WASM_PAGE_SIZE)
             .ok_or(InitError::InvalidLayout)?;
+        let resize_valid = match header.resize_state {
+            header::ResizeState::Settled => true,
+            header::ResizeState::Clearing => {
+                let Some(target_buckets) = 1u64.checked_shl(header.resize_target_log2 as u32)
+                else {
+                    return Err(InitError::InvalidLayout);
+                };
+                let Some(old_capacity) = header
+                    .resize_target_capacity
+                    .checked_sub(target_buckets / 2)
+                else {
+                    return Err(InitError::InvalidLayout);
+                };
+                header.resize_target_log2 == header.log2_buckets.saturating_add(1)
+                    && header.remap_end == u64::MAX
+                    && header.resize_target_capacity > header.capacity
+                    && header.resize_cursor == header.capacity
+                    && header.capacity >= old_capacity
+                    && header.resize_cursor <= header.resize_target_capacity
+                    && header.resize_remap_start >= old_capacity
+                    && header.resize_remap_start <= header.capacity
+            }
+            header::ResizeState::Publishing => {
+                header.resize_cursor == header.resize_target_capacity
+                    && header.capacity <= header.resize_target_capacity
+                    && header.resize_target_log2 >= header.log2_buckets
+                    && header.resize_target_log2 <= header.log2_buckets.saturating_add(1)
+                    && header.resize_remap_start < header.resize_target_capacity
+            }
+        };
         if header.capacity < buckets
             || header.len > header.capacity
             || (header.remap_end != u64::MAX && header.remap_end >= header.capacity)
+            || !resize_valid
             || allocated < required
         {
             return Err(InitError::InvalidLayout);
         }
-        Ok(Self {
+        let map = Self {
             memory,
             _marker: PhantomData,
-        })
+        };
+        if map.resize_state() == header::ResizeState::Publishing {
+            map.publish_resize().map_err(|_| InitError::InvalidLayout)?;
+        }
+        Ok(map)
     }
 
     /// Creates a fresh hash map, overwriting any existing layout in the region.
@@ -296,6 +345,63 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// Returns the persisted logical table capacity, including the cleared relocation tail.
     pub fn capacity(&self) -> u64 {
         read_u64(&self.memory, header::CAPACITY_OFFSET)
+    }
+
+    fn resize_state(&self) -> header::ResizeState {
+        header::ResizeState::from_u8(read_u8(&self.memory, header::RESIZE_STATE_OFFSET))
+            .expect("validated resize state")
+    }
+
+    fn set_resize_state(&self, state: header::ResizeState) {
+        write_u8(&self.memory, header::RESIZE_STATE_OFFSET, state as u8);
+    }
+
+    fn resize_target_capacity(&self) -> u64 {
+        read_u64(&self.memory, header::RESIZE_TARGET_CAPACITY_OFFSET)
+    }
+
+    fn set_resize_target_capacity(&self, capacity: u64) {
+        write_u64(
+            &self.memory,
+            header::RESIZE_TARGET_CAPACITY_OFFSET,
+            capacity,
+        );
+    }
+
+    fn resize_cursor(&self) -> u64 {
+        read_u64(&self.memory, header::RESIZE_CURSOR_OFFSET)
+    }
+
+    fn set_resize_cursor(&self, cursor: u64) {
+        write_u64(&self.memory, header::RESIZE_CURSOR_OFFSET, cursor);
+    }
+
+    fn resize_target_log2(&self) -> u8 {
+        read_u8(&self.memory, header::RESIZE_TARGET_LOG2_OFFSET)
+    }
+
+    fn set_resize_target_log2(&self, log2_buckets: u8) {
+        write_u8(
+            &self.memory,
+            header::RESIZE_TARGET_LOG2_OFFSET,
+            log2_buckets,
+        );
+    }
+
+    fn resize_remap_start(&self) -> u64 {
+        read_u64(&self.memory, header::RESIZE_REMAP_START_OFFSET)
+    }
+
+    fn set_resize_remap_start(&self, position: u64) {
+        write_u64(&self.memory, header::RESIZE_REMAP_START_OFFSET, position);
+    }
+
+    fn clear_resize_state(&self) {
+        self.set_resize_state(header::ResizeState::Settled);
+        self.set_resize_target_capacity(0);
+        self.set_resize_cursor(0);
+        self.set_resize_target_log2(0);
+        self.set_resize_remap_start(0);
     }
 
     /// Returns `true` when the map is empty.
@@ -545,6 +651,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// Clears the map in place, resetting it to a fresh empty state (used on canister init/reset).
     /// Keeps the current capacity; the table region is cleared and the length/remap state reset.
     pub fn clear_new(&mut self) {
+        self.abort_pending_resize();
         self.set_len(0);
         self.set_remap_end(u64::MAX);
         let key_size = self.key_size();
@@ -559,44 +666,37 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// requested insert leave the operation's logical bytes and header unchanged. Physical pages
     /// grown before a later failure are not rolled back.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        if self.resize_state() != header::ResizeState::Settled {
+            self.advance_resize_initialization()?;
+            return self.insert_after_maintenance(key, value);
+        }
         if self.remap_end() != u64::MAX {
             if self.active_operation_has_bounded_empty_suffix() {
-                return self.insert_unplanned(key, value);
+                self.remap_step(REMAP_BATCH)?;
+                return self.insert_after_maintenance(key, value);
             }
-            return self.run_transaction(|map| map.insert_transactional(key, value));
+            return self.run_transaction(|map| map.insert_active_transactional(key, value));
         }
-        if self.is_full() {
-            if let Some(idx) = self.lookup_index(&key).0 {
-                let prev = self.read_value(idx);
-                self.write_value(idx, &value);
-                return Ok(Some(prev));
-            }
-            return self.run_transaction(|map| map.insert_transactional(key, value));
+        if !self.is_full() {
+            return self.insert_after_maintenance(key, value);
         }
-        self.insert_unplanned(key, value)
+        // A settled full table must distinguish overwrite from a new-key resize. This is the only
+        // path that pays a lookup before maintenance; ordinary inserts retain one lookup.
+        if let Some(idx) = self.lookup_index(&key).0 {
+            let prev = self.read_value(idx);
+            self.write_value(idx, &value);
+            return Ok(Some(prev));
+        }
+        self.run_transaction(|map| map.insert_new_key_after_threshold(key, value))
     }
 
-    fn insert_unplanned(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
-        if self.remap_end() == u64::MAX && self.is_full() {
-            // A settled full table must distinguish overwrite from a new-key resize. This is the
-            // only path that pays a lookup before maintenance; ordinary inserts retain one lookup.
-            if let Some(idx) = self.lookup_index(&key).0 {
-                let prev = self.read_value(idx);
-                self.write_value(idx, &value);
-                return Ok(Some(prev));
-            }
-            self.size_up()?;
-        } else {
-            self.remap_step(REMAP_BATCH)?;
-        }
+    fn insert_active_transactional(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        self.remap_step_transactional(REMAP_BATCH)?;
         self.insert_after_maintenance(key, value)
     }
 
-    fn insert_transactional(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
-        if self.remap_end() == u64::MAX && self.is_full() {
-            return self.insert_unplanned(key, value);
-        }
-        self.remap_step_transactional(REMAP_BATCH)?;
+    fn insert_new_key_after_threshold(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        self.size_up()?;
         self.insert_after_maintenance(key, value)
     }
 
@@ -615,6 +715,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         };
         let last_affected = self.insert_and_relocate(entry, insert_position)?;
         self.adjust_remap_end(insert_position, last_affected);
+        self.adjust_resize_remap_start(last_affected);
         self.set_len(self.len() + 1);
         Ok(None)
     }
@@ -690,6 +791,9 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     /// Extends the logical tail in grow -> clear -> publish order.
     fn extend_tail(&self) -> Result<(), InsertError> {
+        if self.resize_state() != header::ResizeState::Settled {
+            return self.extend_pending_tail();
+        }
         let old_capacity = self.capacity();
         let new_capacity = old_capacity
             .checked_add(TAIL_GROWTH_CHUNK)
@@ -712,6 +816,34 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         Ok(())
     }
 
+    fn extend_pending_tail(&self) -> Result<(), InsertError> {
+        debug_assert_eq!(self.resize_state(), header::ResizeState::Clearing);
+        let old_capacity = self.capacity();
+        let target_capacity = self.resize_target_capacity();
+        let new_capacity = old_capacity
+            .checked_add(TAIL_GROWTH_CHUNK)
+            .ok_or(InsertError::CapacityOverflow)?;
+        if new_capacity >= target_capacity {
+            return Err(InsertError::CapacityOverflow);
+        }
+        let new_size = new_capacity
+            .checked_mul(self.entry_stride())
+            .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
+            .ok_or(InsertError::CapacityOverflow)?;
+        grow_memory_to_at_least_bytes(&self.memory, new_size)
+            .map_err(|_| InsertError::OutOfMemory)?;
+        Self::clear_region(
+            &self.memory,
+            old_capacity,
+            new_capacity,
+            self.key_size(),
+            self.value_size(),
+        );
+        self.set_capacity(new_capacity);
+        self.set_resize_cursor(new_capacity);
+        Ok(())
+    }
+
     /// Removes `key`, returning the previous value if present.
     ///
     /// Bounded remap maintenance and the requested removal are one logical operation. If their
@@ -719,6 +851,10 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     /// with logical bytes, header, length, capacity, remap boundary, and key set unchanged.
     /// Physical pages grown before a later failure are not rolled back.
     pub fn remove(&self, key: &K) -> Result<Option<V>, InsertError> {
+        if self.resize_state() != header::ResizeState::Settled {
+            self.advance_resize_initialization()?;
+            return self.remove_after_maintenance(key);
+        }
         if self.remap_end() != u64::MAX {
             if self.active_operation_has_bounded_empty_suffix() {
                 return self.remove_unplanned(key);
@@ -729,11 +865,18 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     }
 
     fn remove_unplanned(&self, key: &K) -> Result<Option<V>, InsertError> {
+        if self.resize_state() != header::ResizeState::Settled {
+            return self.remove_after_maintenance(key);
+        }
         self.remap_step(REMAP_BATCH)?;
         self.remove_after_maintenance(key)
     }
 
     fn remove_transactional(&self, key: &K) -> Result<Option<V>, InsertError> {
+        if self.resize_state() != header::ResizeState::Settled {
+            self.advance_resize_initialization()?;
+            return self.remove_after_maintenance(key);
+        }
         self.remap_step_transactional(REMAP_BATCH)?;
         self.remove_after_maintenance(key)
     }
@@ -840,9 +983,139 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         }
     }
 
+    /// Clears one bounded prefix of a pending resize. The logical capacity exposes only slots that
+    /// have already been initialized, so old-N lookup and relocation remain valid while clearing
+    /// is in progress.
+    fn advance_resize_initialization(&self) -> Result<(), InsertError> {
+        match self.resize_state() {
+            header::ResizeState::Settled => Ok(()),
+            header::ResizeState::Publishing => self.publish_resize(),
+            header::ResizeState::Clearing => {
+                let cursor = self.resize_cursor();
+                let target = self.resize_target_capacity();
+                if cursor > target || self.capacity() != cursor {
+                    return Err(InsertError::CapacityOverflow);
+                }
+                let remaining = target - cursor;
+                if remaining == 0 {
+                    return self.publish_resize();
+                }
+                // Leave at least one tail chunk for a relocation-triggered extension in the same
+                // operation. Clearing the final two chunks together is still a fixed bound.
+                let amount = if remaining <= RESIZE_CLEAR_BATCH * 2 {
+                    remaining
+                } else {
+                    RESIZE_CLEAR_BATCH
+                };
+                let next = cursor
+                    .checked_add(amount)
+                    .ok_or(InsertError::CapacityOverflow)?;
+                let next_size = next
+                    .checked_mul(self.entry_stride())
+                    .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
+                    .ok_or(InsertError::CapacityOverflow)?;
+                grow_memory_to_at_least_bytes(&self.memory, next_size)
+                    .map_err(|_| InsertError::OutOfMemory)?;
+                Self::clear_region(
+                    &self.memory,
+                    cursor,
+                    next,
+                    self.key_size(),
+                    self.value_size(),
+                );
+                self.set_capacity(next);
+                self.set_resize_cursor(next);
+                if next == target {
+                    self.publish_resize()
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Publishes a fully initialized target table. The publishing marker makes the header
+    /// recoverable if a canister is reopened between individual metadata writes.
+    fn publish_resize(&self) -> Result<(), InsertError> {
+        let target_capacity = self.resize_target_capacity();
+        let target_log2 = self.resize_target_log2();
+        let target_buckets = 1u64
+            .checked_shl(target_log2 as u32)
+            .ok_or(InsertError::CapacityOverflow)?;
+        if self.capacity() > target_capacity || self.resize_cursor() != target_capacity {
+            return Err(InsertError::CapacityOverflow);
+        }
+        let remap_start = self.resize_remap_start();
+        if remap_start >= target_capacity {
+            return Err(InsertError::CapacityOverflow);
+        }
+        if target_buckets == 0 {
+            return Err(InsertError::CapacityOverflow);
+        }
+        self.set_resize_state(header::ResizeState::Publishing);
+        self.set_capacity(target_capacity);
+        write_u8(&self.memory, header::LOG2_BUCKETS_OFFSET, target_log2);
+        self.set_remap_end(remap_start);
+        // Settled state is the commit marker. Metadata cleanup is deliberately after it so a
+        // reopen can finish an interrupted publication idempotently.
+        self.set_resize_state(header::ResizeState::Settled);
+        self.set_resize_target_capacity(0);
+        self.set_resize_cursor(0);
+        self.set_resize_target_log2(0);
+        self.set_resize_remap_start(0);
+        Ok(())
+    }
+
+    /// Aborts a not-yet-published resize for the explicit `clear_new` reset operation.
+    fn abort_pending_resize(&self) {
+        match self.resize_state() {
+            header::ResizeState::Settled => {}
+            header::ResizeState::Publishing => {
+                self.publish_resize().expect("valid pending resize");
+            }
+            header::ResizeState::Clearing => {
+                let old_buckets = self.buckets();
+                let old_capacity = self
+                    .resize_target_capacity()
+                    .checked_sub(old_buckets)
+                    .expect("valid pending resize capacity");
+                self.set_capacity(old_capacity);
+                self.set_remap_end(u64::MAX);
+                self.clear_resize_state();
+            }
+        }
+    }
+
+    #[cfg(any(test, feature = "canbench"))]
+    fn finish_resize_initialization_for_setup(&self) -> Result<(), InsertError> {
+        if self.resize_state() == header::ResizeState::Clearing {
+            let cursor = self.resize_cursor();
+            let target = self.resize_target_capacity();
+            let target_size = target
+                .checked_mul(self.entry_stride())
+                .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
+                .ok_or(InsertError::CapacityOverflow)?;
+            grow_memory_to_at_least_bytes(&self.memory, target_size)
+                .map_err(|_| InsertError::OutOfMemory)?;
+            Self::clear_region(
+                &self.memory,
+                cursor,
+                target,
+                self.key_size(),
+                self.value_size(),
+            );
+            self.set_capacity(target);
+            self.set_resize_cursor(target);
+        }
+        if self.resize_state() != header::ResizeState::Settled {
+            self.publish_resize()?;
+        }
+        Ok(())
+    }
+
     /// Doubles a settled table's buckets, preserving its current cleared tail reserve.
     fn size_up(&self) -> Result<(), InsertError> {
-        if self.remap_end() != u64::MAX {
+        if self.resize_state() != header::ResizeState::Settled || self.remap_end() != u64::MAX {
             unreachable!("insert pressure prevents bucket growth during an active remap");
         }
         let n = self.log2_buckets();
@@ -857,31 +1130,14 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         let new_capacity = new_buckets
             .checked_add(tail_reserve)
             .ok_or(InsertError::CapacityOverflow)?;
-        let key_size = self.key_size();
-        let value_size = self.value_size();
-        let stride = self.entry_stride();
-
-        let new_size = new_capacity
-            .checked_mul(stride)
-            .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
-            .ok_or(InsertError::CapacityOverflow)?;
-        grow_memory_to_at_least_bytes(&self.memory, new_size)
-            .map_err(|_| InsertError::OutOfMemory)?;
-
-        // Clear only the new region [prev_capacity, new_capacity).
-        Self::clear_region(
-            &self.memory,
-            prev_capacity,
-            new_capacity,
-            key_size,
-            value_size,
-        );
-
-        // Publish only after all fallible work and clearing are complete.
-        self.set_capacity(new_capacity);
-        write_u8(&self.memory, header::LOG2_BUCKETS_OFFSET, new_n);
-        self.set_remap_end(prev_capacity);
-        Ok(())
+        // Persist the target before clearing so a reopen can resume from the cursor. The old
+        // mapping and logical capacity remain visible until each cleared prefix is published.
+        self.set_resize_target_capacity(new_capacity);
+        self.set_resize_cursor(prev_capacity);
+        self.set_resize_target_log2(new_n);
+        self.set_resize_remap_start(prev_capacity);
+        self.set_resize_state(header::ResizeState::Clearing);
+        self.advance_resize_initialization()
     }
 
     /// Remaps up to `max_entries` positions from the bottom of the mixed range, relocating items
@@ -977,6 +1233,14 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         }
     }
 
+    fn adjust_resize_remap_start(&self, last_affected: u64) {
+        if self.resize_state() == header::ResizeState::Clearing
+            && last_affected >= self.resize_remap_start()
+        {
+            self.set_resize_remap_start(last_affected);
+        }
+    }
+
     /// Sets every slot's distance in `[start, end)` to [`EMPTY`] (the key/value bytes are left as
     /// garbage; they are only read when the slot is occupied). Writes in chunks so the clear is a few
     /// large writes instead of one 4-byte write per slot.
@@ -1054,10 +1318,51 @@ pub(crate) mod canbench_fixtures {
         }
     }
 
+    /// A settled threshold-resize fixture at a selected bucket exponent. Setup writes one valid
+    /// resident per old home bucket; the timed operation is the public insert that calls `size_up`.
+    pub(crate) struct ScaleResizeFixture {
+        pub(crate) map: BenchMap,
+        pub(crate) target: u64,
+        representatives: [(u64, u64); 4],
+        expected_len: u64,
+        expected_buckets: u64,
+        expected_capacity: u64,
+        expected_remap_end: u64,
+        expected_resize_state: header::ResizeState,
+        expected_target_capacity: u64,
+    }
+
+    impl ScaleResizeFixture {
+        pub(crate) fn assert_postconditions(&self) {
+            assert_eq!(self.map.get(&self.target), Some(self.target));
+            for (key, value) in self.representatives {
+                assert_eq!(self.map.get(&key), Some(value));
+            }
+            assert_eq!(self.map.len(), self.expected_len);
+            assert_eq!(self.map.buckets(), self.expected_buckets);
+            assert_eq!(self.map.capacity(), self.expected_capacity);
+            assert_eq!(self.map.resize_cursor(), self.expected_capacity);
+            assert_eq!(self.map.remap_end(), self.expected_remap_end);
+            assert_eq!(self.map.resize_state(), self.expected_resize_state);
+            assert_eq!(
+                self.map.resize_target_capacity(),
+                self.expected_target_capacity
+            );
+            for position in self.expected_capacity - RESIZE_CLEAR_BATCH..self.expected_capacity {
+                assert!(
+                    self.map.is_empty_slot(position),
+                    "bounded resize prefix slot {position} was not cleared"
+                );
+            }
+        }
+    }
+
     fn new_map_at_log2_buckets(log2_buckets: u8) -> BenchMap {
         let map = BenchMap::new(VectorMemory::default()).expect("create canbench fixture map");
         while map.log2_buckets() < log2_buckets {
             map.size_up().expect("pre-grow canbench fixture map");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow canbench initialization");
             assert!(
                 map.remap_step(u64::MAX)
                     .expect("pre-grow canbench fixture remap"),
@@ -1201,6 +1506,8 @@ pub(crate) mod canbench_fixtures {
         let previous_capacity = map.capacity();
         map.insert(trigger, trigger)
             .expect("start active-remap fixture");
+        map.finish_resize_initialization_for_setup()
+            .expect("finish active-remap fixture initialization");
         residents.push((trigger, trigger));
         assert_eq!(map.buckets(), 1 << (OLD_LOG2_BUCKETS + 1));
         assert_eq!(map.len(), POPULATED_OLD_BUCKETS + 1);
@@ -1222,16 +1529,18 @@ pub(crate) mod canbench_fixtures {
         }
     }
 
-    /// Reuses the one-key-per-home N=13 threshold construction from the stride regression.
-    pub(crate) fn n13_threshold_resize_insert() -> InsertFixture {
-        const TARGET_LOG2_BUCKETS: u8 = 13;
-
-        let map = new_map_at_log2_buckets(TARGET_LOG2_BUCKETS);
+    /// Creates a settled threshold resize at the requested bucket exponent.
+    pub(crate) fn threshold_resize_insert_at(log2_buckets: u8) -> ScaleResizeFixture {
+        assert!(
+            log2_buckets >= DEFAULT_LOG2_BUCKETS,
+            "scale fixture must use the map's supported bucket range"
+        );
+        let map = new_map_at_log2_buckets(log2_buckets);
         let threshold = map.resize_threshold();
         let mut keys_by_bucket = vec![None; threshold as usize + 1];
         let mut missing = keys_by_bucket.len();
         for candidate in 0u64.. {
-            let home = bucket(hash_key(&candidate.to_bytes()), TARGET_LOG2_BUCKETS);
+            let home = bucket(hash_key(&candidate.to_bytes()), log2_buckets);
             if home <= threshold && keys_by_bucket[home as usize].is_none() {
                 keys_by_bucket[home as usize] = Some(candidate);
                 missing -= 1;
@@ -1241,7 +1550,6 @@ pub(crate) mod canbench_fixtures {
             }
         }
 
-        let mut residents = Vec::with_capacity(threshold as usize);
         for (slot, key) in keys_by_bucket[..threshold as usize].iter().enumerate() {
             let key = key.expect("key for each occupied home bucket");
             map.write_entry(
@@ -1252,7 +1560,6 @@ pub(crate) mod canbench_fixtures {
                     distance: 0,
                 },
             );
-            residents.push((key, key));
         }
         map.set_len(threshold);
         assert!(map.is_full());
@@ -1260,20 +1567,31 @@ pub(crate) mod canbench_fixtures {
 
         let target = keys_by_bucket[threshold as usize].expect("threshold trigger key");
         assert_eq!(map.lookup_index(&target).0, None);
-        let expected_len = threshold + 1;
-        let expected_buckets = map.buckets() * 2;
-        let expected_capacity = map.capacity() + map.buckets();
-        let expected_remap_end = map.capacity();
-        InsertFixture {
+        let representatives = [
+            keys_by_bucket[0].expect("home zero resident"),
+            keys_by_bucket[threshold as usize / 3].expect("first representative resident"),
+            keys_by_bucket[threshold as usize * 2 / 3].expect("second representative resident"),
+            keys_by_bucket[threshold as usize - 1].expect("last resident"),
+        ]
+        .map(|key| (key, key));
+        let previous_capacity = map.capacity();
+        let previous_buckets = map.buckets();
+        ScaleResizeFixture {
             map,
             target,
-            residents,
-            expected_len,
-            expected_buckets,
-            expected_capacity,
-            remap_expectation: RemapExpectation::Exact(expected_remap_end),
-            expected_terminal_cluster: None,
+            representatives,
+            expected_len: threshold + 1,
+            expected_buckets: previous_buckets,
+            expected_capacity: previous_capacity + RESIZE_CLEAR_BATCH,
+            expected_remap_end: u64::MAX,
+            expected_resize_state: header::ResizeState::Clearing,
+            expected_target_capacity: previous_capacity + previous_buckets,
         }
+    }
+
+    /// Reuses the one-key-per-home N=13 threshold construction from the stride regression.
+    pub(crate) fn n13_threshold_resize_insert() -> ScaleResizeFixture {
+        threshold_resize_insert_at(13)
     }
 
     /// Creates an active N=10 remap with a full logical tail. The timed insert extends only that
@@ -1293,6 +1611,10 @@ pub(crate) mod canbench_fixtures {
                 .expect("active-remap fixture key search exhausted u64");
             map.insert(key, key)
                 .expect("grow active-remap fixture publicly");
+            if map.resize_state() != header::ResizeState::Settled {
+                map.finish_resize_initialization_for_setup()
+                    .expect("finish active-remap setup initialization");
+            }
         }
         assert_eq!(map.log2_buckets(), OLD_LOG2_BUCKETS);
         assert_eq!(map.remap_end(), u64::MAX);
@@ -1328,6 +1650,8 @@ pub(crate) mod canbench_fixtures {
         let previous_capacity = map.capacity();
         map.insert(trigger, trigger)
             .expect("start active-remap fixture publicly");
+        map.finish_resize_initialization_for_setup()
+            .expect("finish active-remap fixture initialization");
         assert_eq!(map.buckets(), 1 << NEW_LOG2_BUCKETS);
         assert_eq!(map.remap_end(), previous_capacity);
 
@@ -1661,6 +1985,19 @@ mod tests {
         }
     }
 
+    fn next_large_key_for_home_at(next_key: &mut u64, log2_buckets: u8, home: u64) -> LargeKey {
+        loop {
+            let candidate = *next_key;
+            *next_key = candidate.checked_add(1).expect("large-key search overflow");
+            let mut bytes = [0; 1024];
+            bytes[..8].copy_from_slice(&candidate.to_le_bytes());
+            let key = LargeKey(bytes);
+            if bucket(hash_key(&key.to_bytes()), log2_buckets) == home {
+                return key;
+            }
+        }
+    }
+
     fn next_large_key_for_old_and_new_home(
         next_key: &mut u64,
         old_n: u8,
@@ -1739,6 +2076,25 @@ mod tests {
     }
 
     #[test]
+    fn current_v1_header_uses_128_byte_data_boundary() {
+        let memory = VectorMemory::default();
+        let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
+
+        assert_eq!(header::HEADER_SIZE, 128);
+        assert_eq!(DATA_OFFSET, 128);
+        assert_eq!(map.entry_offset(0), 128);
+
+        let mut extension = [0u8; 64];
+        memory.read(64, &mut extension);
+        assert!(extension.iter().all(|byte| *byte == 0));
+
+        map.insert(1, 2).expect("insert");
+        drop(map);
+        let reopened = StableClusteredHashMap::<u64, u64, _>::init(memory).expect("reopen");
+        assert_eq!(reopened.get(&1), Some(2));
+    }
+
+    #[test]
     fn settled_relocation_extends_tail_without_bucket_growth() {
         let map = fresh();
         let home = map.buckets() - 1;
@@ -1779,9 +2135,13 @@ mod tests {
         let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
         while map.log2_buckets() < OLD_N {
             map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
             assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
         }
         map.size_up().expect("start active remap");
+        map.finish_resize_initialization_for_setup()
+            .expect("finish active-remap initialization");
         let initial_capacity = map.capacity();
         let initial_remap_end = map.remap_end();
         let mut next_key = 0;
@@ -1942,9 +2302,13 @@ mod tests {
         let map = StableClusteredHashMap::<LargeKey, u64, _>::new(memory.clone()).expect("new");
         while map.log2_buckets() < TAIL_OOM_OLD_N {
             map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
             assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
         }
         map.size_up().expect("start active remap");
+        map.finish_resize_initialization_for_setup()
+            .expect("finish active-remap initialization");
 
         let mut next_key = 0;
         let source = next_large_key_for_old_and_new_home(
@@ -2033,9 +2397,13 @@ mod tests {
         let map = StableClusteredHashMap::<LargeKey, u64, _>::new(memory.clone()).expect("new");
         while map.log2_buckets() < TAIL_OOM_OLD_N {
             map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
             assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
         }
         map.size_up().expect("start active remap");
+        map.finish_resize_initialization_for_setup()
+            .expect("finish active-remap initialization");
 
         let mut next_key = 0;
         let source = next_large_key_for_old_and_new_home(
@@ -2121,6 +2489,8 @@ mod tests {
                 assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
             }
             map.size_up().expect("grow fixture");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish grow fixture initialization");
         }
         assert_ne!(map.remap_end(), u64::MAX);
         assert!(map.active_operation_has_bounded_empty_suffix());
@@ -2296,9 +2666,13 @@ mod tests {
         let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
         while map.log2_buckets() < OLD_N {
             map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
             assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
         }
         map.size_up().expect("start active remap");
+        map.finish_resize_initialization_for_setup()
+            .expect("finish active-remap initialization");
 
         let mut next_key = 0;
         let resident = next_key_for_home(&mut next_key, NEW_N, TARGET_HOME);
@@ -2348,6 +2722,8 @@ mod tests {
         let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
         while map.log2_buckets() < TARGET_LOG2_BUCKETS {
             map.size_up().expect("pre-grow fixture");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow fixture initialization");
             assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
         }
 
@@ -2385,6 +2761,10 @@ mod tests {
         map.insert(trigger_key, trigger_key)
             .expect("threshold insert grows the backing before clearing the new region");
 
+        assert_eq!(map.log2_buckets(), TARGET_LOG2_BUCKETS);
+        assert_ne!(map.resize_state(), header::ResizeState::Settled);
+        map.finish_resize_initialization_for_setup()
+            .expect("finish threshold resize");
         let required_bytes = DATA_OFFSET + map.capacity() * map.entry_stride();
         assert_eq!(map.log2_buckets(), TARGET_LOG2_BUCKETS + 1);
         assert_eq!(map.capacity() - map.buckets(), tail_reserve);
@@ -2555,6 +2935,261 @@ mod tests {
         for k in 0..inserted + 200 {
             assert_eq!(map.get(&k), Some(k));
         }
+    }
+
+    #[test]
+    fn threshold_resize_clears_a_bounded_prefix_and_reopens() {
+        const LOG2_BUCKETS: u8 = 8;
+
+        let memory = VectorMemory::default();
+        let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
+        while map.log2_buckets() < LOG2_BUCKETS {
+            map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
+            assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
+        }
+
+        let old_capacity = map.capacity();
+        let threshold = map.resize_threshold();
+        let mut next_key = 0;
+        let mut keys = vec![None; threshold as usize + 1];
+        let mut missing = keys.len();
+        for candidate in 0u64.. {
+            let home = bucket(hash_key(&candidate.to_bytes()), LOG2_BUCKETS);
+            if home <= threshold && keys[home as usize].is_none() {
+                keys[home as usize] = Some(candidate);
+                missing -= 1;
+                if missing == 0 {
+                    break;
+                }
+            }
+        }
+        for (slot, key) in keys[..threshold as usize].iter().enumerate() {
+            let key = key.expect("resident key");
+            map.write_entry(
+                slot as u64,
+                &Entry {
+                    key,
+                    value: key,
+                    distance: 0,
+                },
+            );
+        }
+        map.set_len(threshold);
+
+        let target = keys[threshold as usize].expect("threshold target");
+        map.insert(target, target).expect("start pending resize");
+        assert_eq!(map.log2_buckets(), LOG2_BUCKETS);
+        assert_eq!(map.remap_end(), u64::MAX);
+        assert_eq!(map.resize_state(), header::ResizeState::Clearing);
+        assert_eq!(map.capacity(), old_capacity + RESIZE_CLEAR_BATCH);
+        assert_eq!(map.resize_cursor(), map.capacity());
+        assert_eq!(
+            map.resize_target_capacity(),
+            old_capacity + (1 << LOG2_BUCKETS)
+        );
+        for slot in old_capacity..map.capacity() {
+            assert!(map.is_empty_slot(slot), "clear prefix slot {slot}");
+        }
+        drop(map);
+
+        let reopened = StableClusteredHashMap::<u64, u64, _>::init(memory.clone()).expect("reopen");
+        assert_eq!(reopened.resize_state(), header::ResizeState::Clearing);
+        assert_eq!(reopened.capacity(), old_capacity + RESIZE_CLEAR_BATCH);
+        assert_eq!(reopened.get(&target), Some(target));
+
+        let progress_before = reopened.capacity();
+        let next = next_key_for_home(&mut next_key, LOG2_BUCKETS, 0);
+        reopened.insert(next, next).expect("advance pending resize");
+        assert!(reopened.capacity() > progress_before);
+        assert_eq!(reopened.get(&target), Some(target));
+        assert_eq!(reopened.get(&next), Some(next));
+    }
+
+    #[test]
+    fn pending_resize_clear_oom_rolls_back_cursor_and_reopens() {
+        const LOG2_BUCKETS: u8 = 8;
+
+        let memory = FailNextGrowMemory::new();
+        let map = StableClusteredHashMap::<LargeKey, u64, _>::new(memory.clone()).expect("new");
+        while map.log2_buckets() < LOG2_BUCKETS {
+            map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
+            assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
+        }
+
+        let threshold = map.resize_threshold();
+        let mut next_key = 0;
+        let mut residents = Vec::with_capacity(threshold as usize);
+        for home in 0..threshold {
+            let key = next_large_key_for_home_at(&mut next_key, LOG2_BUCKETS, home);
+            map.write_entry(
+                home,
+                &Entry {
+                    key: key.clone(),
+                    value: home,
+                    distance: 0,
+                },
+            );
+            residents.push((key, home));
+        }
+        map.set_len(threshold);
+        let target = next_large_key_for_home_at(&mut next_key, LOG2_BUCKETS, threshold);
+        map.insert(target.clone(), 99)
+            .expect("start pending resize");
+        let before_capacity = map.capacity();
+        let before_cursor = map.resize_cursor();
+        let before_bytes = memory.snapshot();
+        let retry = next_large_key_for_home_at(&mut next_key, LOG2_BUCKETS, 0);
+        memory.fail_next_grow();
+
+        assert_eq!(
+            map.insert(retry.clone(), 100),
+            Err(InsertError::OutOfMemory)
+        );
+        assert_eq!(map.capacity(), before_capacity);
+        assert_eq!(map.resize_cursor(), before_cursor);
+        assert_eq!(memory.snapshot(), before_bytes);
+        assert_eq!(map.get(&target), Some(99));
+        assert_eq!(map.get(&retry), None);
+        for (key, value) in &residents {
+            assert_eq!(map.get(key), Some(*value));
+        }
+        drop(map);
+
+        let reopened = StableClusteredHashMap::<LargeKey, u64, _>::init(memory).expect("reopen");
+        assert_eq!(reopened.capacity(), before_capacity);
+        assert_eq!(reopened.resize_cursor(), before_cursor);
+        assert_eq!(reopened.get(&target), Some(99));
+        assert_eq!(reopened.get(&retry), None);
+    }
+
+    #[test]
+    fn publishing_resize_marker_reopens_and_finishes_metadata_commit() {
+        const LOG2_BUCKETS: u8 = 8;
+
+        let memory = VectorMemory::default();
+        let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
+        while map.log2_buckets() < LOG2_BUCKETS {
+            map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
+            assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
+        }
+        let old_capacity = map.capacity();
+        let threshold = map.resize_threshold();
+        let mut keys = vec![None; threshold as usize + 1];
+        let mut missing = keys.len();
+        for candidate in 0u64.. {
+            let home = bucket(hash_key(&candidate.to_bytes()), LOG2_BUCKETS);
+            if home <= threshold && keys[home as usize].is_none() {
+                keys[home as usize] = Some(candidate);
+                missing -= 1;
+                if missing == 0 {
+                    break;
+                }
+            }
+        }
+        for (slot, key) in keys[..threshold as usize].iter().enumerate() {
+            let key = key.expect("resident key");
+            map.write_entry(
+                slot as u64,
+                &Entry {
+                    key,
+                    value: key,
+                    distance: 0,
+                },
+            );
+        }
+        map.set_len(threshold);
+        let target = keys[threshold as usize].expect("threshold target");
+        map.insert(target, target).expect("start pending resize");
+        let target_capacity = map.resize_target_capacity();
+        let target_log2 = map.resize_target_log2();
+        map.finish_resize_initialization_for_setup()
+            .expect("clear target region");
+
+        write_u64(&memory, header::CAPACITY_OFFSET, old_capacity);
+        write_u64(
+            &memory,
+            header::RESIZE_TARGET_CAPACITY_OFFSET,
+            target_capacity,
+        );
+        write_u64(&memory, header::RESIZE_CURSOR_OFFSET, target_capacity);
+        write_u8(&memory, header::RESIZE_TARGET_LOG2_OFFSET, target_log2);
+        write_u64(&memory, header::RESIZE_REMAP_START_OFFSET, old_capacity);
+        write_u8(
+            &memory,
+            header::RESIZE_STATE_OFFSET,
+            header::ResizeState::Publishing as u8,
+        );
+        write_u8(&memory, header::LOG2_BUCKETS_OFFSET, LOG2_BUCKETS);
+        write_u64(&memory, header::REMAP_END_OFFSET, u64::MAX);
+        drop(map);
+
+        let reopened = StableClusteredHashMap::<u64, u64, _>::init(memory).expect("reopen");
+        assert_eq!(reopened.resize_state(), header::ResizeState::Settled);
+        assert_eq!(reopened.log2_buckets(), target_log2);
+        assert_eq!(reopened.capacity(), target_capacity);
+        assert_eq!(reopened.remap_end(), old_capacity);
+        assert_eq!(reopened.get(&target), Some(target));
+    }
+
+    #[test]
+    fn clear_new_aborts_pending_resize_and_reopens_settled() {
+        const LOG2_BUCKETS: u8 = 8;
+
+        let memory = VectorMemory::default();
+        let mut map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
+        while map.log2_buckets() < LOG2_BUCKETS {
+            map.size_up().expect("pre-grow");
+            map.finish_resize_initialization_for_setup()
+                .expect("finish pre-grow initialization");
+            assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
+        }
+        let old_capacity = map.capacity();
+        let threshold = map.resize_threshold();
+        let mut keys = vec![None; threshold as usize + 1];
+        let mut missing = keys.len();
+        for candidate in 0u64.. {
+            let home = bucket(hash_key(&candidate.to_bytes()), LOG2_BUCKETS);
+            if home <= threshold && keys[home as usize].is_none() {
+                keys[home as usize] = Some(candidate);
+                missing -= 1;
+                if missing == 0 {
+                    break;
+                }
+            }
+        }
+        for (slot, key) in keys[..threshold as usize].iter().enumerate() {
+            let key = key.expect("resident key");
+            map.write_entry(
+                slot as u64,
+                &Entry {
+                    key,
+                    value: key,
+                    distance: 0,
+                },
+            );
+        }
+        map.set_len(threshold);
+        let target = keys[threshold as usize].expect("threshold target");
+        map.insert(target, target).expect("start pending resize");
+        assert_ne!(map.resize_state(), header::ResizeState::Settled);
+
+        map.clear_new();
+        assert_eq!(map.resize_state(), header::ResizeState::Settled);
+        assert_eq!(map.capacity(), old_capacity);
+        assert_eq!(map.len(), 0);
+        assert_eq!(map.remap_end(), u64::MAX);
+        drop(map);
+
+        let reopened = StableClusteredHashMap::<u64, u64, _>::init(memory).expect("reopen");
+        assert_eq!(reopened.resize_state(), header::ResizeState::Settled);
+        assert_eq!(reopened.capacity(), old_capacity);
+        assert!(reopened.is_empty());
     }
 
     #[test]

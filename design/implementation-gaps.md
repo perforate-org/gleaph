@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 15:02:04 UTC +0000
+Anchor timestamp: 2026-08-11 19:54:21 UTC +0000
 
 ## Status
 
@@ -47,6 +47,24 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-08-11-004 — Current V1 metadata boundary leaves too little extension space
+
+- **Status:** In progress
+- **Severity:** P2 / Persisted-layout capacity
+- **Owner:** `ic-stable-clustered-hash-map` header and entry-address invariants
+- **Observed behavior:** The current V1 metadata fields occupy bytes 0 through 62 and the table
+  entry boundary is now defined at byte 128. Fresh layout creation clears the complete metadata
+  extension.
+- **Expected or needed behavior:** Future persisted metadata must fit within the 128-byte current
+  V1 prefix without moving entries again.
+- **Evidence:** `header.rs::HEADER_SIZE`, `header.rs::DATA_OFFSET`, and the test
+  `current_v1_header_uses_128_byte_data_boundary` establish the boundary and initialization.
+- **Impact:** The map has space for additional persisted state while retaining the V1 version
+  number and fixed field offsets. The extra prefix is allocated once per map and does not change
+  entry stride or mutation algorithms.
+- **Next decision:** Complete the scoped Rust, reopen, benchmark, and documentation validation,
+  then mark this entry resolved with the fixing commit.
+
 ### GAP-2026-08-11-002 — Active-remap overflow can force a full remap drain in one insert
 
 - **Status:** In progress
@@ -75,18 +93,54 @@ defect from being rediscovered without its prior reasoning.
   `multi_boundary_active_remap_insert_oom_is_operation_atomic_and_retry_succeeds` and
   `multi_boundary_active_remap_remove_oom_is_operation_atomic_and_retry_succeeds` prove exact-byte,
   header, key-set, reopen, and successful-retry behavior when a later remap boundary needs growth.
-  The persisted unfiltered `canbench` run measures the generic clustered insert at 184.62M
-  instructions, a 3.63% improvement over the prior 191.58M baseline; the focused active-remap
-  fixtures remain within the noise threshold.
+  The current persisted unfiltered `canbench` run measures the generic clustered insert at
+  193.25M instructions, a 2.29% improvement over the previous bounded-resize baseline; the
+  focused active-remap fixtures remain within the noise threshold.
 - **Impact:** The table-sized active-remap fallback remains removed. A public `insert` or `remove`
   now either commits its bounded maintenance and requested mutation together or returns
   `OutOfMemory`/`CapacityOverflow` without changing logical map state. Stable-memory page count is
   physical allocation and need not shrink if an earlier grow succeeded before a later failure. The
   undo transaction covers returned errors; traps rely on the IC message rollback boundary, and the
   map adds no standalone write-ahead journal for process-crash recovery outside that boundary.
-- **Next decision:** Commit the current implementation after the final validation gate. Updating the
-  Lean model for persisted capacity, active-remap tail extension, and operation-wide OOM refinement
-  remains a later formal-audit slice.
+- **Next decision:** Keep the bounded active-remap contract as implemented. Capacity-scale settled
+  initialization is tracked separately in GAP-2026-08-11-003; updating the Lean model for persisted
+  capacity, active-remap tail extension, and operation-wide OOM refinement remains a later
+  formal-audit slice.
+
+### GAP-2026-08-11-003 — Settled `size_up` clears a capacity-scale region in one mutation
+
+- **Status:** In progress
+- **Severity:** P1 / High bounded-execution risk
+- **Owner:** `ic-stable-clustered-hash-map` settled resize initialization and persisted-capacity
+  invariants
+- **Observed behavior:** Active remap maintenance is bounded to `REMAP_BATCH = 64` positions and
+  production no longer drains a whole active remap. A settled threshold insert now persists a
+  target capacity and clear cursor, grows/clears only a bounded prefix, and retains the old N until
+  publication. Physical growth is also extended incrementally as the cursor advances.
+- **Expected or needed behavior:** The public mutation path must have a per-call initialization bound
+  independent of table capacity. New-region initialization is resumable and persisted: each
+  operation clears only a bounded chunk, reopen resumes from the cursor, the new bucket mapping is
+  not published before the entire region is initialized, and every pending mutation advances the
+  cursor or completes the resize.
+- **Evidence:** The owning paths are `header.rs::ResizeState`, `map.rs::advance_resize_initialization`,
+  `map.rs::publish_resize`, and `map.rs::clear_region`. The deterministic tests
+  `threshold_resize_clears_a_bounded_prefix_and_reopens`,
+  `pending_resize_clear_oom_rolls_back_cursor_and_reopens`,
+  `publishing_resize_marker_reopens_and_finishes_metadata_commit`, and
+  `clear_new_aborts_pending_resize_and_reopens_settled` cover cursor progress, reopen, OOM rollback,
+  metadata recovery, and reset behavior. The updated N=13/N=16/N=20/N=23 threshold fixtures keep
+  setup outside the timed closure and each measures 27,445 scoped instructions for the bounded
+  64-slot prefix; the exact persisted values are in
+  `crates/ic-stable-clustered-hash-map/canbench_results.yml`.
+- **Impact:** The capacity-scale `clear_region` write is no longer performed in one public mutation,
+  and the target mapping is not advertised until the cursor reaches the target. The scale benchmark
+  still includes host-side `VectorMemory` growth and transaction overhead, while long collision
+  chains remain input-dependent and are not bounded by this slice. Stable-memory pages grown before
+  a later returned error remain physical backing outside the logical rollback contract.
+- **Next decision:** Final Rust/benchmark validation is complete in the current worktree; mark this
+  entry resolved with the fixing commit. Keep the large-collision-chain bound and a direct N=24+
+  IC-representative measurement as separate follow-up work; do not reintroduce a full active-remap
+  drain.
 
 ### GAP-2026-08-11-001 — Inner resize leaves the pending insert distance stale
 

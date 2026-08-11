@@ -4,6 +4,8 @@
 clustered hashing (Amble & Knuth 1974, "Ordered Hash Tables") for compact storage and
 fast point lookups.
 
+The current V1 layout uses a 128-byte metadata prefix; table entries begin at byte 128.
+
 ## Operations
 
 - `get` / `insert` / `remove` / `contains_key` in **O(1)** amortized time (by key).
@@ -13,16 +15,20 @@ fast point lookups.
   small persisted tail chunk without changing the bucket mapping or draining active remap work.
   A new-key insert that reaches the next load threshold before the remap settles continues the
   bounded remap without starting another bucket generation.
+- Active remap maintenance and settled resize initialization are both bounded per mutation. A
+  settled threshold insert grows and clears only a fixed prefix of the new region; the persisted
+  cursor keeps old-N lookup valid until the new mapping is published.
 - `insert` and `remove` return `InsertError` when their requested mutation and bounded remap
   maintenance encounter stable-memory growth or capacity failure. The whole public operation is
   failure-atomic: `OutOfMemory` and `CapacityOverflow` leave the logical map bytes, header, length,
   capacity, remap boundary, and key set unchanged and reopenable. Stable-memory pages grown before a
   later failure are physical backing and are not part of that logical rollback contract. Active
   operations use the direct path when a bounded empty suffix proves that maintenance plus the
-  request cannot need growth; other growth-capable operations write once through an undo transaction
-  that snapshots each overwritten original logical block at most once and restores those blocks on a
-  returned error. A trap relies on the Internet Computer's message rollback boundary; this is not a
-  standalone write-ahead journal for process-crash recovery.
+  request cannot need growth; pending resize operations grow and clear their next prefix before
+  writing, leaving an empty destination for the request. Other growth-capable operations write once
+  through an undo transaction that snapshots each overwritten original logical block at most once
+  and restores those blocks on a returned error. A trap relies on the Internet Computer's message
+  rollback boundary; this is not a standalone write-ahead journal for process-crash recovery.
 - Iteration is in unordered slot order (`iter`, and `iter_from` for resumable bounded
   scans).
 
@@ -33,9 +39,26 @@ crate. Measured with canbench (`N = 4096`, per-op instructions):
 
 | operation | clustered | btree   | clustered vs btree |
 | --------- | --------- | ------- | ------------------ |
-| get       | ≈ 4.3k    | ≈ 26.5k | ~6.2x faster       |
-| insert    | ≈ 45.1k   | ≈ 60.1k | ~1.33x faster      |
-| remove    | ≈ 9.6k    | ≈ 57.3k | ~6.0x faster       |
+| get       | ≈ 4.3k    | ≈ 26.6k | ~6.3x faster       |
+| insert    | ≈ 47.2k   | ≈ 60.3k | ~1.28x faster      |
+| remove    | ≈ 10.0k   | ≈ 57.5k | ~5.8x faster       |
+
+The threshold-trigger benchmark measures the public insert that performs the settled resize. Setup
+is outside the timed closure, and each fixture stores one valid resident per old home bucket.
+
+| old N | residents | trigger scope (instructions) | clear in timed call (`u64/u64`) |
+| ----- | ---------: | ---------------------------: | -------------------------------: |
+| 13    |      6,144 |                       27,445 |                       1,280 B |
+| 16    |     49,152 |                       27,445 |                       1,280 B |
+| 20    |    786,432 |                       27,445 |                       1,280 B |
+| 23    |  6,291,456 |                       27,445 |                       1,280 B |
+
+The measured initialization work is now a fixed 64-slot prefix per call; the values above include
+the host-side `VectorMemory` growth and metadata overhead, not a table-sized clear. The full
+N=23→N=24→N=26 resize series remains spread across later operations; these threshold fixtures do
+not measure the total cost of completing that series. The Internet
+Computer currently documents a 40B update-call instruction limit, a 7B per-round execution-thread
+limit, and 500 GiB of stable memory per canister. See the [IC resource limits](https://docs.internetcomputer.org/references/resource-limits/).
 
 Use **clustered** when point lookups dominate and keys are fixed-size. Use
 **`StableBTreeMap`** when you need ordered iteration / range scans, or variable-size
