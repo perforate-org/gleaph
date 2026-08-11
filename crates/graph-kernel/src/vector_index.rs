@@ -48,6 +48,23 @@ impl VectorEncoding {
     pub const fn stride_bytes(self, dims: u16) -> u32 {
         self.component_bytes() * dims as u32
     }
+
+    /// Stable-storage discriminant.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::F32 => 0,
+            Self::I8 => 1,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`].
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::F32),
+            1 => Some(Self::I8),
+            _ => None,
+        }
+    }
 }
 
 /// A vector quantized to `I8` with a per-row scale. `bytes` holds `dims` signed-`i8` bit patterns;
@@ -119,6 +136,23 @@ pub enum VectorIndexKind {
     IvfFlat,
 }
 
+impl VectorIndexKind {
+    /// Stable-storage discriminant.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::IvfFlat => 0,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`].
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::IvfFlat),
+            _ => None,
+        }
+    }
+}
+
 /// Distance/similarity metric for vector scoring.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
@@ -146,6 +180,23 @@ impl VectorMetric {
         match self {
             Self::L2Squared => VectorOutputShape::Distance,
             Self::Cosine => VectorOutputShape::Score,
+        }
+    }
+
+    /// Stable-storage discriminant.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::L2Squared => 0,
+            Self::Cosine => 1,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`].
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::L2Squared),
+            1 => Some(Self::Cosine),
+            _ => None,
         }
     }
 

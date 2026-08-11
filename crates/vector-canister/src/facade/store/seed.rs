@@ -160,6 +160,8 @@ impl VectorCanisterStore {
         }
 
         // Persist the def last.
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
+        VECTOR_INDEX_DEFS
+            .with_borrow_mut(|defs| defs.insert(index_id, def))
+            .expect("seed def insert");
     }
 }

@@ -29,6 +29,9 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
 
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
+use canbench_rs::bench_scope;
+
 #[cfg(test)]
 thread_local! {
     /// Test-only fault-injection seam for [`VectorCanisterStore::insert_subject_entry`], mirroring the
@@ -211,12 +214,19 @@ impl VectorCanisterStore {
         dims: u16,
         metric: VectorMetric,
     ) -> Result<VectorIndexDef, VectorCanisterError> {
-        if let Some(def) = VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&index_id)) {
+        let existing = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _get_scope = bench_scope("sync_def_get");
+            VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&index_id))
+        };
+        if let Some(def) = existing {
             if def.metric != metric {
                 return Err(VectorCanisterError::MetricMismatch);
             }
             return Ok(def);
         }
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _create_scope = bench_scope("sync_def_create");
         // The encoding record is the single source of width truth (ADR 0064 §8): it validates the
         // (encoding, dims, metric) combination and derives the stored stride before any def or row
         // is written. `dimension_mismatch` maps any invalid combination (wire-unchanged).
@@ -246,7 +256,11 @@ impl VectorCanisterStore {
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
         };
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
+        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
+            defs.insert(index_id, def)
+                .map(|_| ())
+                .map_err(|_| VectorCanisterError::StableGrowFailed)
+        })?;
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(def)
     }
@@ -269,7 +283,13 @@ impl VectorCanisterStore {
         subject: VectorSubject,
         bytes: &[u8],
     ) -> Result<SlotRef, VectorCanisterError> {
-        let (stored, aux) = prepare_for_metric(def, bytes)?;
+        let (stored, aux) = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _prepare_scope = bench_scope("sync_prepare");
+            prepare_for_metric(def, bytes)?
+        };
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _append_scope = bench_scope("sync_append_row");
         PAGE_STORE.with_borrow_mut(|store| {
             store.append_row(
                 index_id,
@@ -329,6 +349,8 @@ impl VectorCanisterStore {
         if take_injected_subject_insert_failure() {
             return Err(VectorCanisterError::StableGrowFailed);
         }
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("sync_subject_insert");
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
             m.insert(key, entry)
                 .map(|_| ())
@@ -387,8 +409,16 @@ impl VectorCanisterStore {
         if op.remove {
             return Err(VectorCanisterError::MutationKindMismatch);
         }
-        self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
-        let def = self.ensure_def_for_upsert(op.index_id, op.encoding, op.dims, op.metric)?;
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _caller_scope = bench_scope("sync_caller_check");
+            self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
+        }
+        let def = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _def_scope = bench_scope("sync_def_ensure");
+            self.ensure_def_for_upsert(op.index_id, op.encoding, op.dims, op.metric)?
+        };
         if op.encoding != def.encoding || op.dims != def.dims {
             return Err(VectorCanisterError::DimensionMismatch);
         }
@@ -401,7 +431,11 @@ impl VectorCanisterStore {
         let active = def.active_index_version;
         let mode = rebuild_mutation_mode(op.index_id);
         let key = SubjectKey::new(op.index_id, op.subject);
-        let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
+        let existing = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _get_scope = bench_scope("sync_subject_get");
+            VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key))
+        };
 
         let Some(entry) = existing else {
             // New subject: allocate a fresh VectorId and create a live slot.
@@ -738,7 +772,11 @@ impl VectorCanisterStore {
             max_page_bytes,
             slots_per_page,
         };
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
+        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
+            defs.insert(index_id, def)
+                .map(|_| ())
+                .map_err(|_| VectorCanisterError::StableGrowFailed)
+        })?;
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(())
     }

@@ -56,7 +56,7 @@ pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
 pub(crate) type StableShardCanisterByShardMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
-pub(crate) type StableDefsMap = BTreeMap<u32, VectorIndexDef, Memory>;
+pub(crate) type StableDefsMap = StableClusteredHashMap<u32, VectorIndexDef, Memory>;
 pub(crate) type StableCentroidMetaMap = BTreeMap<u32, IvfCentroidMeta, Memory>;
 pub(crate) type StableCentroidsMap = BTreeMap<PartitionKey, Vec<u8>, Memory>;
 pub(crate) type StableSubjectMap = StableClusteredHashMap<SubjectKey, FixedSubjectMapEntry, Memory>;
@@ -196,7 +196,16 @@ pub(crate) fn init_ownership_config() -> StableOwnershipConfigCell {
 }
 
 pub(crate) fn init_defs() -> StableDefsMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_INDEX_DEFS)))
+    let memory = MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_INDEX_DEFS));
+    match StableClusteredHashMap::init(memory.clone()) {
+        Ok(map) => map,
+        // Empty (fresh) memory has no `CHM` magic; create the map like `BTreeMap::init` does for a
+        // fresh region. A non-zero wrong magic is genuine corruption.
+        Err(InitError::BadMagic { actual: [0, 0, 0] }) => {
+            StableClusteredHashMap::new(memory).expect("init defs")
+        }
+        Err(e) => panic!("init defs: {e}"),
+    }
 }
 
 pub(crate) fn init_centroid_meta() -> StableCentroidMetaMap {

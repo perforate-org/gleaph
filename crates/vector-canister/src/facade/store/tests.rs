@@ -3182,7 +3182,7 @@ fn set_active_version(index_id: u32, version: u64) {
     VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
         let mut def = defs.get(&index_id).expect("def");
         def.active_index_version = version;
-        defs.insert(index_id, def);
+        defs.insert(index_id, def).expect("set active version");
     });
 }
 

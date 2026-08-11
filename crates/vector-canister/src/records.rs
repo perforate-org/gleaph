@@ -226,18 +226,49 @@ pub struct VectorIndexDef {
 }
 
 impl Storable for VectorIndexDef {
-    const BOUND: Bound = Bound::Unbounded;
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 41,
+        is_fixed_size: true,
+    };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode VectorIndexDef"))
+        let mut out = [0u8; 41];
+        out[0] = self.kind.as_u8();
+        out[1] = self.encoding.as_u8();
+        out[2..4].copy_from_slice(&self.dims.to_le_bytes());
+        out[4] = self.metric.as_u8();
+        out[5..9].copy_from_slice(&self.nlist.to_le_bytes());
+        out[9..17].copy_from_slice(&self.active_index_version.to_le_bytes());
+        out[17..21].copy_from_slice(&self.stride_bytes.to_le_bytes());
+        out[21..25].copy_from_slice(&self.pad_stride_bytes.to_le_bytes());
+        out[25..29].copy_from_slice(&self.meta_stride_bytes.to_le_bytes());
+        out[29..33].copy_from_slice(&self.run_capacity.to_le_bytes());
+        out[33..37].copy_from_slice(&self.max_page_bytes.to_le_bytes());
+        out[37..41].copy_from_slice(&self.slots_per_page.to_le_bytes());
+        Cow::Owned(out.to_vec())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode VectorIndexDef")
+        self.to_bytes().into_owned()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), VectorIndexDef).expect("decode VectorIndexDef")
+        let b = bytes.as_ref();
+        assert_eq!(b.len(), 41, "VectorIndexDef expects exactly 41 bytes");
+        Self {
+            kind: VectorIndexKind::from_u8(b[0]).expect("valid kind"),
+            encoding: VectorEncoding::from_u8(b[1]).expect("valid encoding"),
+            dims: u16::from_le_bytes(b[2..4].try_into().expect("dims")),
+            metric: VectorMetric::from_u8(b[4]).expect("valid metric"),
+            nlist: u32::from_le_bytes(b[5..9].try_into().expect("nlist")),
+            active_index_version: u64::from_le_bytes(b[9..17].try_into().expect("version")),
+            stride_bytes: u32::from_le_bytes(b[17..21].try_into().expect("stride")),
+            pad_stride_bytes: u32::from_le_bytes(b[21..25].try_into().expect("pad")),
+            meta_stride_bytes: u32::from_le_bytes(b[25..29].try_into().expect("meta")),
+            run_capacity: u32::from_le_bytes(b[29..33].try_into().expect("run")),
+            max_page_bytes: u32::from_le_bytes(b[33..37].try_into().expect("max_page")),
+            slots_per_page: u32::from_le_bytes(b[37..41].try_into().expect("slots")),
+        }
     }
 }
 

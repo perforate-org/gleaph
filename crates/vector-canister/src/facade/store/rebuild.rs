@@ -1186,7 +1186,11 @@ impl VectorCanisterStore {
 
         def.active_index_version = target_index_version;
         def.nlist = nlist;
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
+        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
+            defs.insert(index_id, def)
+                .map(|_| ())
+                .map_err(|_| VectorCanisterError::StableGrowFailed)
+        })?;
         // The active centroid set just changed generation; drop any warmed heap entry so search does
         // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
         super::centroid_cache::invalidate(index_id);
