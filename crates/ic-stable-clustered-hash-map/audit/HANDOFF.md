@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 02:15:08 UTC +0000
+Anchor timestamp: 2026-08-11 02:22:19 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -104,8 +104,10 @@ That prefix premise is intentionally explicit because neither `RelocateWrite` no
 occupied prefix traversed by the initial Rust `find_insert_position` scan. Per-step
 `relocateStep_next_prefix_of_noHoles` derives the next pending entry's occupied prefix
 from `NoHoles` plus the end-of-cluster scan when the current position and pending distance
-are bounded. Deriving those bounds from Rust and threading this lemma through the full
-certificate remain open.
+are bounded. `insertRelocateNoHolesOK_of_occupancyOK` and
+`insertRelocate_preserves_noHoles_of_occupancyOK` now thread that conditional prefix
+through a complete chain when `InsertRelocateOccupancyOK` is supplied. Deriving the
+occupancy/bound certificates from Rust remains open.
 
 `relocateStep_preserves_noHoles` now covers the intermediate write under the same prefix
 and non-EMPTY pending-distance premises. The displaced entry is pending rather than present
@@ -119,7 +121,8 @@ a derivation of every displaced-entry prefix from Rust's `find_insert_position` 
 The initial scan prefix is now extracted by `findInsertPositionFrom_prefix` and
 `findInsertPosition_prefix`, and `relocateStep_next_prefix_of_noHoles` supplies the
 conditional next-step prefix. The Rust distance/bound derivation and certificate
-construction remain open.
+construction remain open, while the conditional propagation is closed by
+`insertRelocateNoHolesOK_of_occupancyOK`.
 
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
@@ -134,11 +137,12 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Derive the remaining `NoHoles`, `LenCoherent`, and per-step position/distance certificate
-   premises from Rust insertion history. The initial scan prefix is extracted by
+1. Derive the remaining `NoHoles`, `LenCoherent`, and per-step position/distance/occupancy
+   certificate premises from Rust insertion history. The initial scan prefix is extracted by
    `findInsertPositionFrom_prefix` / `findInsertPosition_prefix`, and
-   `relocateStep_next_prefix_of_noHoles` supplies the conditional next-step prefix; next
-   thread that lemma through the per-step end-of-cluster history before refining the
+   `relocateStep_next_prefix_of_noHoles` plus
+   `insertRelocateNoHolesOK_of_occupancyOK` now supply conditional per-step propagation;
+   next connect those certificates to the per-step end-of-cluster history before refining the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.

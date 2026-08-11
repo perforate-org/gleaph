@@ -530,6 +530,34 @@ lemma relocateStep_next_prefix_of_noHoles {s mid : State} {entry : Key} {value e
       rw [h.dist_other j hj_eq]
       exact hsource
 
+-- The occupancy certificate supplies the position and distance bounds needed to thread the
+-- prefix proof through every relocation step. The first prefix is supplied by the initial
+-- scan; each recursive prefix is derived by `relocateStep_next_prefix_of_noHoles`.
+lemma insertRelocateNoHolesOK_of_occupancyOK {s s' : State} {key : Key} {value : Nat}
+    {position : Nat} {h : InsertRelocate s s' key value position}
+    (hok : InsertRelocateOccupancyOK h) (hno : NoHoles s)
+    (hprefix : ∀ j, bucket key s.n ≤ j → j < position → IsOccupied s j) :
+    InsertRelocateNoHolesOK h := by
+  induction hok with
+  | done hw hpos =>
+      exact InsertRelocateNoHolesOK.done hw hpos hprefix
+  | step mid entryDist hstep hnext hpos hentry hok ih =>
+      have hno_mid : NoHoles mid :=
+        relocateStep_preserves_noHoles hstep hno hpos hprefix hentry
+      have hprefix_next :
+          ∀ j, bucket hstep.tKey mid.n ≤ j → j < hstep.next → IsOccupied mid j :=
+        relocateStep_next_prefix_of_noHoles hstep hno hpos hentry
+      exact InsertRelocateNoHolesOK.step mid entryDist hstep hnext hpos hprefix hentry
+        (ih hno_mid hprefix_next)
+
+lemma insertRelocate_preserves_noHoles_of_occupancyOK {s s' : State} {key : Key} {value : Nat}
+    {position : Nat} {h : InsertRelocate s s' key value position}
+    (hok : InsertRelocateOccupancyOK h) (hno : NoHoles s)
+    (hprefix : ∀ j, bucket key s.n ≤ j → j < position → IsOccupied s j) :
+    NoHoles s' := by
+  exact insertRelocate_preserves_noHoles
+    (insertRelocateNoHolesOK_of_occupancyOK hok hno hprefix) hno
+
 -- A successful settled `lookupIndex` scan returns an in-bounds occupied slot with the
 -- requested key at its expected bucket. This is the concrete scan-result fact consumed by
 -- the public-remove certificate; it does not prove that every stored key is found.
