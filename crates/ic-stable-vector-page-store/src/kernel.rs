@@ -415,6 +415,94 @@ pub fn dot_f32(bytes: &[u8], query: &[f32]) -> f32 {
     }
 }
 
+/// Dot product with an exact Cauchy-Schwarz early exit for cosine scoring of **unit-normalized**
+/// rows. Returns `None` as soon as the partial dot plus the query's remaining suffix norm cannot
+/// reach `dot_threshold` (the row cannot beat the running k-th best), `Some(dot)` when it can.
+///
+/// `suffix_norm[j] = sqrt(Σ_{i>=j} q_i²)` is the norm of the query's remaining components (length
+/// `query.len() + 1`, with `suffix_norm[query.len()] = 0`). Because the stored row is unit-normalized,
+/// the remaining contribution `Σ_{i>=j} q_i·v_i` is bounded by `suffix_norm[j]` (Cauchy-Schwarz), so
+/// `partial + suffix_norm[j]` is an upper bound on the final dot. If that bound is strictly below
+/// `dot_threshold`, the final dot is too, and the row cannot be in the top-k. A non-finite
+/// `dot_threshold` never triggers the exit (full dot returned). A non-finite component makes the
+/// partial dot NaN, which never triggers the strict `<` exit and is caught by the fused finiteness
+/// check at the end.
+pub fn dot_f32_early_exit(
+    bytes: &[u8],
+    query: &[f32],
+    suffix_norm: &[f32],
+    dot_threshold: f32,
+) -> Option<f32> {
+    debug_assert!(bytes.len() >= query.len() * 4);
+    debug_assert!(suffix_norm.len() > query.len());
+    #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+    {
+        // Two accumulators to hide SIMD latency (same structure as `dot_f32`), with the Cauchy-
+        // Schwarz bound checked at an adaptive granularity (~1/8 of the blocks, min 2, a multiple of
+        // 2 since the loop advances 2 blocks per iteration) so the full-dot path stays close to
+        // `dot_f32` when the exit never triggers and small dims still get an early exit.
+        // `suffix_norm[i*4]` is the norm of the query's remaining components after `i` blocks.
+        let chunks = query.len() / 4;
+        let early_exit_blocks = (chunks / 8).max(1) * 2;
+        let mut acc0 = f32x4_splat(0.0);
+        let mut acc1 = f32x4_splat(0.0);
+        let mut i = 0;
+        while i + 1 < chunks {
+            let v0 = unsafe { v128_load(bytes[i * 16..].as_ptr().cast()) };
+            let q0 = unsafe { v128_load(query[i * 4..].as_ptr().cast()) };
+            acc0 = f32x4_add(acc0, f32x4_mul(v0, q0));
+            let v1 = unsafe { v128_load(bytes[(i + 1) * 16..].as_ptr().cast()) };
+            let q1 = unsafe { v128_load(query[(i + 1) * 4..].as_ptr().cast()) };
+            acc1 = f32x4_add(acc1, f32x4_mul(v1, q1));
+            i += 2;
+            if i % early_exit_blocks == 0 {
+                let partial = f32x4_sum4(acc0) + f32x4_sum4(acc1);
+                if partial + suffix_norm[i * 4] < dot_threshold {
+                    return None;
+                }
+            }
+        }
+        if i < chunks {
+            let v = unsafe { v128_load(bytes[i * 16..].as_ptr().cast()) };
+            let q = unsafe { v128_load(query[i * 4..].as_ptr().cast()) };
+            acc0 = f32x4_add(acc0, f32x4_mul(v, q));
+        }
+        let mut sum = f32x4_sum4(acc0) + f32x4_sum4(acc1);
+        for (chunk, q) in bytes[chunks * 16..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(query[chunks * 4..].iter().copied())
+        {
+            sum += f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * q;
+        }
+        if !sum.is_finite() {
+            return None;
+        }
+        Some(sum)
+    }
+    #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
+    {
+        let mut sum = 0.0;
+        for (j, (chunk, q)) in bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(query.iter().copied())
+            .enumerate()
+        {
+            sum += f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * q;
+            if sum + suffix_norm[j + 1] < dot_threshold {
+                return None;
+            }
+        }
+        if !sum.is_finite() {
+            return None;
+        }
+        Some(sum)
+    }
+}
+
 /// Dot product plus row norm² in one pass (`Σ q·v`, `Σ v²`) for cosine scoring of unnormalized
 /// rows.
 pub fn dot_and_norm2_f32(bytes: &[u8], query: &[f32]) -> (f32, f32) {
@@ -670,6 +758,66 @@ mod tests {
         let q: Vec<f32> = vec![1.0, -2.0, 3.0];
         let v: Vec<f32> = vec![4.0, 5.0, 6.0];
         assert_eq!(dot_f32(&f32_row(&v), &q), 4.0 - 10.0 + 18.0);
+    }
+
+    fn suffix_norms(q: &[f32]) -> Vec<f32> {
+        let mut out = vec![0.0; q.len() + 1];
+        let mut acc = 0.0;
+        for j in (0..q.len()).rev() {
+            acc += q[j] * q[j];
+            out[j] = acc.sqrt();
+        }
+        out
+    }
+
+    #[test]
+    fn dot_early_exit_agrees_with_full_when_under_threshold() {
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let v: Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
+        let sn = suffix_norms(&q);
+        // dot = 5.0; a threshold below it never triggers the exit -> full dot returned.
+        assert_eq!(dot_f32_early_exit(&f32_row(&v), &q, &sn, 4.0), Some(5.0));
+        // `-INFINITY` (the production value when the heap is not full) likewise never triggers.
+        assert_eq!(
+            dot_f32_early_exit(&f32_row(&v), &q, &sn, f32::NEG_INFINITY),
+            Some(5.0)
+        );
+    }
+
+    #[test]
+    fn dot_early_exit_stops_when_threshold_beaten() {
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        // Anti-correlated row: the max possible dot (partial + suffix norm) drops below 10.0 early.
+        let v: Vec<f32> = vec![-1.0, -1.0, -1.0, -1.0];
+        let sn = suffix_norms(&q);
+        assert_eq!(dot_f32_early_exit(&f32_row(&v), &q, &sn, 10.0), None);
+    }
+
+    #[test]
+    fn dot_early_exit_nan_threshold_never_triggers() {
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let v: Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
+        let sn = suffix_norms(&q);
+        assert_eq!(
+            dot_f32_early_exit(&f32_row(&v), &q, &sn, f32::NAN),
+            Some(5.0)
+        );
+    }
+
+    #[test]
+    fn dot_early_exit_skips_non_finite_row() {
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let sn = suffix_norms(&q);
+        let v_nan = vec![f32::NAN, 1.0, 1.0, 1.0];
+        assert_eq!(
+            dot_f32_early_exit(&f32_row(&v_nan), &q, &sn, f32::INFINITY),
+            None
+        );
+        let v_inf = vec![f32::INFINITY, 1.0, 1.0, 1.0];
+        assert_eq!(
+            dot_f32_early_exit(&f32_row(&v_inf), &q, &sn, f32::INFINITY),
+            None
+        );
     }
 
     #[test]

@@ -35,6 +35,11 @@ use std::hint::black_box;
 const INDEX_ID: u32 = 1;
 const SCAN_N: u32 = 4096;
 
+/// Number of cosine exact-scan rows seeded exactly aligned with the query (`[1,1,..,1]`, distance 0).
+/// This makes the k-th best distance small so the Cauchy-Schwarz early exit is exercised on the
+/// remaining varied rows; must be >= the largest `top_k` used by the cosine exact-scan benches (100).
+const COSINE_ALIGNED_ROWS: u32 = 100;
+
 /// Distance between adjacent cluster centroids — far larger than the in-cluster jitter so each
 /// seeded vector's nearest centroid is unambiguously its own cluster.
 const CLUSTER_SPACING: f32 = 1000.0;
@@ -57,6 +62,22 @@ fn shard_owner() -> Principal {
 fn vec_bytes(dims: u16, value: f32) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(dims as usize * 4);
     for _ in 0..dims {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+/// A deterministic varied-direction vector for cosine exact-scan benches. Constant rows (all
+/// components equal) are degenerate for cosine: every row is unit-normalized to the same all-ones
+/// direction, so all rows sit at distance 0 and the Cauchy-Schwarz early exit never triggers. This
+/// pattern hashes `(vid, j)` into `[-1, 1]` per component, so each row has a distinct direction and
+/// the cosine similarity to a constant query varies widely (including anti-correlated rows),
+/// exercising the early exit.
+fn vec_bytes_varied(dims: u16, vid: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(dims as usize * 4);
+    for j in 0..dims {
+        let h = (vid.wrapping_mul(2654435761) ^ (j as u32).wrapping_mul(2246822519)) & 0xFFFF;
+        let value = (h as f32 / 65535.0) * 2.0 - 1.0;
         bytes.extend_from_slice(&value.to_le_bytes());
     }
     bytes
@@ -88,11 +109,18 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
         .expect("attach shard");
     for vid in 0..n {
         // Cosine stores unit-normalized rows and rejects zero-norm, so seed a non-zero value
-        // (vid 0 would be the zero vector).
-        let value = if metric == VectorMetric::Cosine {
-            (vid + 1) as f32
+        // (vid 0 would be the zero vector). Constant rows are degenerate for cosine (all rows at
+        // distance 0), so cosine uses varied-direction rows to exercise the early exit. The first
+        // `COSINE_ALIGNED_ROWS` rows are seeded exactly aligned with the query so the k-th best
+        // distance is small and the early exit triggers on the varied rows.
+        let bytes = if metric == VectorMetric::Cosine {
+            if vid < COSINE_ALIGNED_ROWS {
+                vec_bytes(dims, 1.0)
+            } else {
+                vec_bytes_varied(dims, vid)
+            }
         } else {
-            vid as f32
+            vec_bytes(dims, vid as f32)
         };
         let op = VectorEmbeddingSyncOp {
             index_id: INDEX_ID,
@@ -105,7 +133,7 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
             encoding: VectorEncoding::F32,
             dims,
             metric,
-            bytes: vec_bytes(dims, value),
+            bytes,
             remove: false,
         };
         store
@@ -354,10 +382,25 @@ fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore
     store
 }
 
+/// A deterministic varied-direction raw f32 vector (values in `[-1, 1]`) for cosine partitioned
+/// benches. The previous centroid construction `(c+1)*0.3 + j*0.01 + 1.0` is degenerate: for large
+/// `dims` the `j*0.01` gradient dominates, so every centroid/row points in the same direction and the
+/// cosine similarity to a constant query is uniformly high, which never exercises the early exit.
+fn varied_raw(dims: u16, seed: u32) -> Vec<f32> {
+    (0..dims)
+        .map(|j| {
+            let h = (seed.wrapping_mul(2654435761) ^ (j as u32).wrapping_mul(2246822519)) & 0xFFFF;
+            (h as f32 / 65535.0) * 2.0 - 1.0
+        })
+        .collect()
+}
+
 /// Seeds a trained, clustered cosine partitioned `ivf_flat` index: **unit** centroids in distinct
 /// directions (so L2-based partition selection is cosine-ordered), with `n` varied-direction vectors
 /// assigned round-robin to clusters. Cosine rows are unit-normalized at append, so each cluster holds
-/// unit vectors near its centroid direction; a smaller `eps_query` scans fewer populated clusters.
+/// unit vectors near its centroid direction; a smaller `eps_query` scans fewer populated clusters. The
+/// first `COSINE_ALIGNED_ROWS` rows are aligned with the query `[1,1,..,1]` (distance 0) so the k-th
+/// best distance is small and the Cauchy-Schwarz early exit triggers on the varied rows.
 fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
@@ -367,27 +410,26 @@ fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanist
         .expect("init");
     let centroids: Vec<Vec<f32>> = (0..nlist)
         .map(|c| {
-            let raw: Vec<f32> = (0..dims)
-                .map(|j| (c as f32 + 1.0) * 0.3 + j as f32 * 0.01 + 1.0)
-                .collect();
+            let raw = varied_raw(dims, c + 1);
             let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
             raw.iter().map(|x| x / norm).collect()
         })
         .collect();
     let vectors: Vec<(VectorSubject, Vec<f32>)> = (0..n)
         .map(|i| {
-            let c = (i % nlist) as usize;
-            let jitter = (i / nlist) as f32 * 0.001;
-            // Slightly perturb the centroid direction so every row is distinct but nearest to its
-            // own cluster.
-            let raw: Vec<f32> = centroids[c].iter().map(|x| x + jitter).collect();
-            (
-                VectorSubject::Vertex {
-                    shard_id: ShardId::new(0),
-                    vertex_id: i,
-                },
-                raw,
-            )
+            let subject = VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: i,
+            };
+            if i < COSINE_ALIGNED_ROWS {
+                // Aligned with the query `[1,1,..,1]` (distance 0) so the k-th best distance is small
+                // and the Cauchy-Schwarz early exit triggers on the varied rows below.
+                (subject, vec![1.0; dims as usize])
+            } else {
+                // Varied direction so the cosine similarity to the query varies (some rows far from
+                // the query), exercising the early exit.
+                (subject, varied_raw(dims, i + 1))
+            }
         })
         .collect();
     store.seed_ivf_with_metric_for_test(
