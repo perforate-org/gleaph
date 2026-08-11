@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 02:22:19 UTC +0000
+Anchor timestamp: 2026-08-11 02:28:29 UTC +0000
 
 ## Target and version / Mode
 
@@ -209,6 +209,10 @@ Proved:
   conditional next-step prefix, and `insertRelocateNoHolesOK_of_occupancyOK` propagates it
   through the chain. Rust's distance/bound derivation and certificate construction remain
   open.
+- `insertRelocate_preserves_noHoles_of_findPosition` supplies the initial prefix from an
+  explicit `findInsertPosition` result and closes the complete-chain `NoHoles` bridge when
+  the source `NoHoles` and `InsertRelocateOccupancyOK` certificate are supplied. The Rust
+  construction of those source and certificate premises remains open.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -294,8 +298,9 @@ and the terminating/step `NoHoles` lemmas are now proved under explicit prefix p
 composed across the certified insert chain. The initial scan prefix is extracted from the
 Rust `find_insert_position` recursion, and `relocateStep_next_prefix_of_noHoles` supplies
 the conditional next-step prefix. `insertRelocateNoHolesOK_of_occupancyOK` propagates it
-through a certified chain; Rust's distance/bound/occupancy certificate construction still
-needs an insertion-history proof.
+through a certified chain, while `insertRelocate_preserves_noHoles_of_findPosition` closes
+the scan-to-chain bridge. Rust's source-`NoHoles`, distance/bound/occupancy certificate
+construction still needs an insertion-history proof.
 Lookup completeness
 is refuted by the current invariant's hole-permitting and length-independent model; it is now
 proved conditionally under `NoHoles` and `LenCoherent`. Remaining work includes justifying both
@@ -317,7 +322,7 @@ does not cover Rust certificate construction, active-remap insertion, or mid-cha
 `size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
 declarations. The faithful bounded remove chain and its certificate-level settled
 found-branch public-remove bridge are separately proved invariant-preserving under
-`s.remapEnd = none`; the Rust justification of `NoHoles`, `LenCoherent`, and the displaced-entry insertion-prefix/distance premises, and construction of the occupancy and remove certificates from leading
+`s.remapEnd = none`; the Rust justification of source `NoHoles`, `LenCoherent`, and the displaced-entry position/distance/occupancy premises, and construction of the occupancy and remove certificates from leading
 `remap_step`, active-remap, absent-key, and persistence refinement remain outside those
 theorems. The current `UnRelocateStep` relation has a counterexample for any inhabited key
 domain, and the current `RemapStep` relation is false; neither relation finding establishes

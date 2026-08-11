@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 02:22:19 UTC +0000
+Anchor timestamp: 2026-08-11 02:28:29 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -123,6 +123,9 @@ The initial scan prefix is now extracted by `findInsertPositionFrom_prefix` and
 conditional next-step prefix. The Rust distance/bound derivation and certificate
 construction remain open, while the conditional propagation is closed by
 `insertRelocateNoHolesOK_of_occupancyOK`.
+`insertRelocate_preserves_noHoles_of_findPosition` now supplies the initial prefix from an
+explicit `findInsertPosition` result and closes the complete-chain `NoHoles` bridge when
+the source `NoHoles` and occupancy certificate are supplied.
 
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
@@ -137,12 +140,13 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Derive the remaining `NoHoles`, `LenCoherent`, and per-step position/distance/occupancy
-   certificate premises from Rust insertion history. The initial scan prefix is extracted by
+1. Derive the remaining source `NoHoles`, `LenCoherent`, and per-step
+   position/distance/occupancy certificate premises from Rust insertion history. The initial scan prefix is extracted by
    `findInsertPositionFrom_prefix` / `findInsertPosition_prefix`, and
    `relocateStep_next_prefix_of_noHoles` plus
    `insertRelocateNoHolesOK_of_occupancyOK` now supply conditional per-step propagation;
-   next connect those certificates to the per-step end-of-cluster history before refining the
+   `insertRelocate_preserves_noHoles_of_findPosition` closes the scan-to-chain bridge; next
+   connect the remaining certificates to the per-step end-of-cluster history before refining the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.

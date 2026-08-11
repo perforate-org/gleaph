@@ -558,6 +558,18 @@ lemma insertRelocate_preserves_noHoles_of_occupancyOK {s s' : State} {key : Key}
   exact insertRelocate_preserves_noHoles
     (insertRelocateNoHolesOK_of_occupancyOK hok hno hprefix) hno
 
+-- The public scan supplies the initial prefix directly. With the existing occupancy
+-- certificate, this closes the complete-chain `NoHoles` bridge for a settled insert.
+lemma insertRelocate_preserves_noHoles_of_findPosition
+    {s s' : State} {key : Key} {value : Nat} {position : Nat}
+    {h : InsertRelocate s s' key value position}
+    (hscan : findInsertPosition s (bucket key s.n) = position)
+    (hok : InsertRelocateOccupancyOK h) (hno : NoHoles s) :
+    NoHoles s' := by
+  have hprefix : ∀ j, bucket key s.n ≤ j → j < position → IsOccupied s j :=
+    findInsertPosition_prefix hscan
+  exact insertRelocate_preserves_noHoles_of_occupancyOK hok hno hprefix
+
 -- A successful settled `lookupIndex` scan returns an in-bounds occupied slot with the
 -- requested key at its expected bucket. This is the concrete scan-result fact consumed by
 -- the public-remove certificate; it does not prove that every stored key is found.
