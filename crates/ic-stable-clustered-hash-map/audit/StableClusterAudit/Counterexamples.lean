@@ -20,6 +20,7 @@ reference.
 
 import Mathlib
 import StableClusterAudit.Map
+import StableClusterAudit.Soundness
 
 open StableCluster
 
@@ -299,3 +300,130 @@ theorem remapStep_does_not_preserve_clusterInvariant :
   intro h
   exact remapBadState_not_clusterInvariant
     (h remapGoodState remapBadState remapStep_good_bad remapGoodState_clusterInvariant)
+
+/-!
+## Counterexample: occupancy traces do not supply the insertion-order certificate
+
+`findInsertPosition` only transcribes the scan that chooses the initial write position
+(`Map.lean` L48-L63; `src/map.rs` L421-L453). A no-resize `InsertRelocateTrace` records
+loop bounds and pending-distance fit (`Map.lean` L208-L234; `src/map.rs` L456-L488), and
+projects to the occupancy certificate (`Soundness.lean` L604-L628). Neither relation ties
+every occupied slot to a stored key, so `ClusterInvariant`, `NoHoles`, `LenCoherent`, the
+exact scan result, and that trace-derived certificate still do not imply the separate
+`IsOrderBoundary` premise required by `InsertRelocateOK` (`Map.lean` L236-L271).
+-/
+
+def insertOrderGapState : State :=
+  { n := 1
+    len := 1
+    remapEnd := none
+    dist := fun i => if i = 2 then 2 else EMPTY
+    keyAt := fun _ => none
+    valAt := fun _ => 0 }
+
+def insertOrderGapAfter (k : Key) : State :=
+  { n := 1
+    len := 1
+    remapEnd := none
+    dist := fun i => if i = 1 then 0 else insertOrderGapState.dist i
+    keyAt := fun i => if i = 1 then some k else insertOrderGapState.keyAt i
+    valAt := fun _ => 0 }
+
+lemma insertOrderGapState_clusterInvariant : ClusterInvariant insertOrderGapState := by
+  constructor
+  · intro i _hi hocc
+    by_cases htwo : i = 2
+    · subst i
+      norm_num [insertOrderGapState, EMPTY]
+    · exact False.elim (hocc (by simp [insertOrderGapState, htwo]))
+  · constructor
+    · intro i j _hi _hj hij hiocc hjocc
+      have hi2 : i = 2 := by
+        by_contra hne
+        exact hiocc (by simp [insertOrderGapState, hne])
+      have hj2 : j = 2 := by
+        by_contra hne
+        exact hjocc (by simp [insertOrderGapState, hne])
+      omega
+    · intro i _hi hiocc
+      have hi2 : i = 2 := by
+        by_contra hne
+        exact hiocc (by simp [insertOrderGapState, hne])
+      subst i
+      norm_num [BucketAt, ExpectedBucket, insertOrderGapState]
+
+lemma insertOrderGapState_noHoles : NoHoles insertOrderGapState := by
+  intro _i _k _hi _hocc hkey
+  simp [insertOrderGapState] at hkey
+
+lemma insertOrderGapState_lenCoherent : LenCoherent insertOrderGapState := by
+  norm_num [LenCoherent, OccupiedSlots, insertOrderGapState, capacity, EMPTY]
+
+lemma insertOrderGapState_findInsertPosition :
+    findInsertPosition insertOrderGapState 1 = 1 := by
+  native_decide
+
+lemma insertOrderGap_write (k : Key) (hk : bucket k 1 = 1) :
+    RelocateWrite insertOrderGapState (insertOrderGapAfter k) k 0 1 := by
+  refine
+    { n := rfl
+      slotEmpty := ?_
+      distFit := ?_
+      b_le_pos := ?_
+      keyAt := ?_
+      valAt := ?_
+      dist := ?_
+      keyAt_other := ?_
+      valAt_other := ?_
+      dist_other := ?_ }
+  · norm_num [insertOrderGapState, EMPTY]
+  · norm_num [insertOrderGapState, hk, EMPTY]
+  · simp [insertOrderGapState, hk]
+  · simp [insertOrderGapAfter]
+  · simp [insertOrderGapAfter]
+  · norm_num [insertOrderGapAfter, insertOrderGapState, hk]
+  · intro i hi
+    simp [insertOrderGapAfter, hi]
+  · intro i _hi
+    simp [insertOrderGapAfter, insertOrderGapState]
+  · intro i hi
+    simp [insertOrderGapAfter, hi]
+
+lemma insertOrderGap_not_orderBoundary (k : Key) (hk : bucket k 1 = 1) :
+    ¬ IsOrderBoundary insertOrderGapState 1 (bucket k insertOrderGapState.n) := by
+  intro hboundary
+  have hbad := hboundary.2 2 (by omega) (by norm_num [capacity, insertOrderGapState])
+    (by norm_num [IsOccupied, insertOrderGapState, EMPTY])
+  norm_num [BucketAt, insertOrderGapState, hk] at hbad
+
+/-- The current state and trace predicates leave the terminal insertion-order bridge
+unproved: their conjunction admits this machine-checked counterexample. -/
+theorem insertOrderGap_facts_do_not_imply_insertRelocateOK (k : Key)
+    (hk : bucket k 1 = 1) :
+    ∃ htrace : InsertRelocateTrace insertOrderGapState (insertOrderGapAfter k) k 0 0 1,
+      ClusterInvariant insertOrderGapState ∧
+      NoHoles insertOrderGapState ∧
+      LenCoherent insertOrderGapState ∧
+      findInsertPosition insertOrderGapState (bucket k insertOrderGapState.n) = 1 ∧
+      InsertRelocateOccupancyOK (StableClusterAudit.insertRelocateOfTrace htrace) ∧
+      ¬ InsertRelocateOK (StableClusterAudit.insertRelocateOfTrace htrace) := by
+  let hw : RelocateWrite insertOrderGapState (insertOrderGapAfter k) k 0 1 :=
+    insertOrderGap_write k hk
+  let htrace : InsertRelocateTrace insertOrderGapState (insertOrderGapAfter k) k 0 0 1 :=
+    InsertRelocateTrace.done hw
+      (by norm_num [insertOrderGapState, capacity])
+      (by norm_num [EMPTY])
+      (by norm_num [insertOrderGapState, hk])
+  refine ⟨htrace, insertOrderGapState_clusterInvariant, insertOrderGapState_noHoles,
+    insertOrderGapState_lenCoherent, ?_,
+    StableClusterAudit.insertRelocateOccupancyOK_of_trace htrace, ?_⟩
+  · simpa [insertOrderGapState, hk] using insertOrderGapState_findInsertPosition
+  · intro hok
+    have hprojection : StableClusterAudit.insertRelocateOfTrace htrace =
+        InsertRelocate.done hw := Subsingleton.elim _ _
+    rw [hprojection] at hok
+    cases hok with
+    | done _hwrite _hslot hboundary =>
+        exact insertOrderGap_not_orderBoundary k hk hboundary
+    | step _mid _entryDist _hstep _hnext _hboundary _hbucket _hprec _hok =>
+        exact insertOrderGap_not_orderBoundary k hk _hboundary

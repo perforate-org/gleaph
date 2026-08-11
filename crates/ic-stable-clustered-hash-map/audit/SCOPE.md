@@ -1,7 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
-Anchor timestamp: 2026-08-11 06:45:04 UTC +0000
+Anchor timestamp: 2026-08-11 08:32:40 UTC +0000
 
 ## 1. Mode
 
@@ -123,6 +123,14 @@ trace projects to `InsertRelocate` and `InsertRelocateOccupancyOK`; it does not 
 Rust constructs the trace or refine public insert. The outer `size_up` path and initial
 checked distance, `InsertRelocateOK` ordering facts, `NoHoles`/`LenCoherent`, header/remap
 facts, active remapping, and the absent-key branch remain outside this bounded slice.
+The machine-checked `insertOrderGap_facts_do_not_imply_insertRelocateOK` counterexample
+adds a separate limitation: `ClusterInvariant`, `NoHoles`, `LenCoherent`, an exact
+`findInsertPosition` result, and the trace-derived `InsertRelocateOccupancyOK` certificate
+still do not imply `InsertRelocateOK`. An occupied slot can have `keyAt = none`, while a
+later occupied slot has `BucketAt = 0` and breaks `IsOrderBoundary`. This is a
+Lean-model/refinement limitation, not a Rust-reachability claim. The smallest alternative is
+`OccupiedHasKey` plus an order-boundary theorem for the full scan result, or an explicit
+order certificate.
 `PublicInsertSettled` now packages the settled, absent-key, below-threshold normal-insert
 branch as a certificate-level relation: modeled `lookupIndex = none`, a caller-selected
 `findInsertPosition`, exact pending distance, a supplied no-resize `InsertRelocateTrace`
@@ -200,6 +208,8 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
   `UnRelocateStep` relation counterexample for each supplied `k : Key`, machine-checked
   refutation of invariant preservation by the current `RemapStep` relation, and the
   `lookupIndex_completeness_counterexample` hole/scan counterexample plus
-  `clusterInvariant_does_not_imply_len_positive` length-coherence counterexample)
+  `clusterInvariant_does_not_imply_len_positive` length-coherence counterexample, and the
+  insert order-boundary counterexample showing that the current structural, exact-scan, and
+  trace-derived occupancy premises do not imply `InsertRelocateOK`)
 - `Soundness.lean` (Stage 3: `freshState_clusterInvariant`, `freshState_noHoles`, `freshState_lenCoherent`, and `freshState_keySet_empty` close the cleared `new` base; `sizeUp_preserves_entries` is proved for `SizeUp`; `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`, not a Rust refinement proof of production remapping; target (b)'s certified settled insert chain is proved under `remapEnd = none`; `insertRelocate_preserves_occupiedCard` proves the occupancy change for the explicit insert certificate, `publicInsertSettled_preserves_lenCoherent` proves the final `len + 1` bridge, `relocateWrite_preserves_noHoles` / `relocateStep_preserves_noHoles` prove the terminating and intermediate no-holes cases, `insertRelocate_preserves_noHoles` composes them across the certified chain, and `findInsertPositionFrom_prefix` / `findInsertPosition_prefix` extract the initial occupied prefix from the Rust scan; `relocateStep_next_prefix_of_noHoles` derives a conditional next-step prefix from `NoHoles` and `endOfCluster`, `insertRelocateNoHolesOK_of_occupancyOK` / `insertRelocate_preserves_noHoles_of_occupancyOK` propagate it through a chain with `InsertRelocateOccupancyOK`, and `insertRelocate_preserves_noHoles_of_findPosition` closes the scan-to-chain `NoHoles` bridge under an explicit occupancy certificate; Rust source-history `NoHoles`, distance/bound/occupancy certificate construction remains open; predicate-level target (c) is proved through `EntryAtCorrectBucket`; `unrelocateStepWithStableHeader_preserves_inBounds` closes only the weak remove relation's header/geometry counterexample route; `removeRelocate_preserves_invariant` proves the faithful bounded remove chain under `s.remapEnd = none`; `publicRemoveSettled_preserves_invariant` proves the certificate-level settled found branch through the final `len - 1` update; `lookupIndex_some_implies_lookupFound` proves the settled lookup success direction, `publicRemoveSettled_lookupFound` forwards it through the public-remove certificate, and `lookupIndex_complete_of_noHoles` proves completeness under explicit `NoHoles` and `LenCoherent`; the Rust justification of those assumptions remains open; the admitted `remove_preserves_invariant` still targets the weak relation, `remap_step_preserves_invariant` remains false under its weak relation, and exactly these two `sorry`s remain)
 - `REPORT.md` (Stage 4: verification report — findings, severity, `sorry` interpretation)

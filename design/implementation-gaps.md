@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-10
-Anchor timestamp: 2026-08-10 06:53:00 UTC +0000
+Last updated: 2026-08-11
+Anchor timestamp: 2026-08-11 08:32:40 UTC +0000
 
 ## Status
 
@@ -46,6 +46,32 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-11-001 — Inner resize leaves the pending insert distance stale
+
+- **Status:** Resolved in the current uncommitted worktree; fixing commit pending
+- **Severity:** P1 / High
+- **Owner:** `ic-stable-clustered-hash-map` inner insert resize and pending-entry distance
+  invariant
+- **Observed behavior:** In the defective inner `insert_and_relocate` resize branch,
+  `size_up()` recalculates the pending entry's bucket and insertion position under the grown
+  mapping but leaves `entry.distance` from the prior mapping. The public insert returns `Ok`,
+  `len` increases, and iteration contains the entry, while `get` and `contains_key` fail both
+  immediately and after re-open.
+- **Expected or needed behavior:** After an inner resize, the pending entry's stored distance
+  must be the checked distance from its recomputed bucket to its recomputed position before
+  relocation or the terminal write continues.
+- **Evidence:** `crates/ic-stable-clustered-hash-map/src/map.rs::insert_and_relocate` is the
+  owning branch. The repair adds
+  `entry.distance = checked_distance(position - b)` immediately after the recomputed bucket and
+  position. The focused regression target
+  `map::tests::inner_resize_recomputes_relocated_entry_distance` covers successful insert,
+  `len`/iterator presence, and immediate plus `init`/re-open point lookup. The repair and
+  regression passed the focused Rust test, full crate library tests, format/check/clippy gates,
+  and independent review; the fixing commit is pending.
+- **Impact:** A successful public insert can persist an entry that iteration exposes but point
+  lookup cannot reach, and the inconsistency survives re-open.
+- **Next decision:** None for the implementation; record the fixing commit after it is created.
 
 ### GAP-2026-08-10-001 — Future row-copy migration must carry the I8 per-row scale
 

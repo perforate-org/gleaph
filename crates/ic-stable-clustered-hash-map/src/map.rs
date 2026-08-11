@@ -470,6 +470,7 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
                     let n = self.log2_buckets();
                     let b = bucket(hash_key(&entry.key.to_bytes()), n);
                     position = self.find_insert_position(b);
+                    entry.distance = checked_distance(position - b);
                     continue;
                 }
                 unreachable!("remap insert overflowed the table");
@@ -710,6 +711,53 @@ mod tests {
             assert_eq!(map.get(&k), Some(k * 3), "key {k} survives resize");
         }
         assert_eq!(map.len(), 200);
+    }
+
+    #[test]
+    fn inner_resize_recomputes_relocated_entry_distance() {
+        let memory = VectorMemory::default();
+        let trigger = 0u64;
+        let residents = [8u64, 26, 40, 49];
+
+        assert!(
+            residents.iter().all(|key| {
+                bucket(hash_key(&key.to_bytes()), DEFAULT_LOG2_BUCKETS) == 7
+                    && bucket(hash_key(&key.to_bytes()), DEFAULT_LOG2_BUCKETS + 1) == 7
+            }),
+            "residents occupy the initial table's final cluster"
+        );
+        assert_eq!(
+            bucket(hash_key(&trigger.to_bytes()), DEFAULT_LOG2_BUCKETS),
+            7,
+            "trigger starts at the residents' cluster"
+        );
+        assert_eq!(
+            bucket(hash_key(&trigger.to_bytes()), DEFAULT_LOG2_BUCKETS + 1),
+            15,
+            "trigger moves to the grown table's final bucket"
+        );
+
+        {
+            let map = StableClusteredHashMap::<u64, u64, _>::new(memory.clone()).expect("new");
+            for key in residents {
+                map.insert(key, key).expect("insert resident");
+            }
+            map.insert(trigger, trigger)
+                .expect("insert trigger through inner resize");
+
+            assert_eq!(map.get(&trigger), Some(trigger));
+            assert!(map.contains_key(&trigger));
+            assert_eq!(map.len(), residents.len() as u64 + 1);
+            assert!(
+                map.iter()
+                    .any(|(key, value)| key == trigger && value == trigger)
+            );
+        }
+
+        let map = StableClusteredHashMap::<u64, u64, _>::init(memory).expect("reopen");
+        assert_eq!(map.len(), residents.len() as u64 + 1);
+        assert_eq!(map.get(&trigger), Some(trigger));
+        assert!(map.contains_key(&trigger));
     }
 
     #[test]

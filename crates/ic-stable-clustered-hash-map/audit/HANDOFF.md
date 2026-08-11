@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 06:45:04 UTC +0000
+Anchor timestamp: 2026-08-11 08:32:40 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -32,6 +32,14 @@ This is a certificate-level projection, not a refinement proof that Rust constru
 trace or that public `insert` constructs either projected certificate. The outer `size_up`
 path and the initial checked distance, `InsertRelocateOK` ordering, `NoHoles`,
 `LenCoherent`, header/remap facts, active remapping, and the absent-key branch remain open.
+
+The machine-checked `insertOrderGap_facts_do_not_imply_insertRelocateOK` counterexample
+shows that `ClusterInvariant`, `NoHoles`, `LenCoherent`, an exact `findInsertPosition` result,
+and the trace-derived `InsertRelocateOccupancyOK` certificate still do not imply
+`InsertRelocateOK`. The model permits an occupied slot with `keyAt = none`; a later occupied
+slot with `BucketAt = 0` then breaks `IsOrderBoundary`. This is a model/refinement limitation,
+not evidence that Rust reaches the state. The smallest next route is `OccupiedHasKey` plus a
+full scan-result order-boundary theorem, or an explicit order certificate.
 
 `PublicInsertSettled` now records the settled, absent-key, below-threshold normal-insert
 branch by consuming `lookupIndex = none`, a caller-selected `findInsertPosition`, exact
@@ -183,7 +191,9 @@ persisted memory image, or `init` / re-open behavior.
 
 1. Derive the no-resize trace and source `NoHoles` / `LenCoherent` from arbitrary Rust
    insertion history, including the outer `size_up`/initial checked-distance boundary,
-   `InsertRelocateOK` ordering, header/remap facts, active-remap and absent-key branches;
+   header/remap facts, active-remap and absent-key branches; for the ordering bridge, add
+   `OccupiedHasKey` and prove an order-boundary theorem for the full
+   `findInsertPosition` scan result, or carry an explicit order certificate;
    then establish public-insert refinement. Derive the per-step
    position/distance/occupancy certificate premises from Rust insertion history. The initial scan prefix is extracted by
    `findInsertPositionFrom_prefix` / `findInsertPosition_prefix`, and

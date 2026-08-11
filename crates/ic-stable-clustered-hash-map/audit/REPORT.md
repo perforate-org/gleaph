@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 06:45:04 UTC +0000
+Anchor timestamp: 2026-08-11 08:32:40 UTC +0000
 
 ## Target and version / Mode
 
@@ -106,6 +106,14 @@ content); added as axioms only if a proof required one:
   structural counterexample, not evidence that Rust insertion reaches the state; a
   no-holes / scan-contiguity condition or insertion-history relation is required before
   proving lookup completeness.
+- **Insert order-boundary counterexample (proved in Lean)**:
+  `insertOrderGap_facts_do_not_imply_insertRelocateOK` shows that `ClusterInvariant`,
+  `NoHoles`, `LenCoherent`, an exact `findInsertPosition` result, and the trace-derived
+  `InsertRelocateOccupancyOK` certificate do not imply `InsertRelocateOK`. An occupied slot
+  may have `keyAt = none`, while a later occupied slot has `BucketAt = 0`, breaking
+  `IsOrderBoundary`. This is a Lean-model/refinement limitation, not evidence that Rust
+  reaches the state. The smallest remaining proof route is `OccupiedHasKey` plus a theorem
+  establishing the order boundary for the full scan result, or an explicit order certificate.
 
 ### `Map.lean` (Stage 2 transcription — several under-specifications surfaced)
 
@@ -247,16 +255,18 @@ Proved:
   `InsertRelocateTrace` projects to `InsertRelocate` and its
   `InsertRelocateOccupancyOK` certificate. This is certificate-level projection only, not
   Rust construction or public-insert refinement. In particular, the outer `size_up`
-  branch, initial checked distance, `InsertRelocateOK` ordering facts, `NoHoles`,
-  `LenCoherent`, header/remap facts, active remapping, and the absent-key public branch
-  remain open.
+  branch, initial checked distance, `NoHoles`, `LenCoherent`, header/remap facts, active
+  remapping, and the absent-key public branch remain open. The current structural, exact-scan,
+  and occupancy premises do not imply `InsertRelocateOK` ordering, as the machine-checked
+  order-boundary counterexample above demonstrates.
 - `PublicInsertSettled` and
   `publicInsertSettled_preserves_noHoles_and_lenCoherent` consume the settled,
   absent-key, below-threshold inputs above and prove only source-conditioned `NoHoles`,
   `LenCoherent`, the final `len + 1`, and `s'.remapEnd = none`. This is not a
   `ClusterInvariant` theorem and not a public Rust-insert refinement. Rust construction
   of the trace/certificate, semantic key completeness, an ordering /
-  `InsertRelocateOK` bridge, outer or inner `size_up` modeling, active remap, and
+  `InsertRelocateOK` bridge (refuted under the current predicates), outer or inner `size_up`
+  modeling, active remap, and
   persistence / re-open proof all remain outside the slice.
 - Target (c), predicate level: `reopen_consistent_of_cluster_invariant` is kernel-checked,
   but proves only `KeySet` equivalence with the existential `LookupFound` predicate through
