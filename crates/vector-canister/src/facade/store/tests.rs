@@ -539,6 +539,63 @@ fn vector_sync_batch_chunk_same_subject_flushes_run() {
 }
 
 #[test]
+fn vector_sync_batch_chunk_batches_live_greater_updates() {
+    let store = fresh_store();
+    // Pre-insert subjects 1 and 2.
+    store
+        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(2, 1, 0xBB))
+        .unwrap();
+    // Batch: live Greater updates for subjects 1 and 2 (newer stamp) plus a fresh subject 3.
+    let ops = vec![
+        upsert_op(1, 2, 0xCC),
+        upsert_op(2, 2, 0xDD),
+        upsert_op(3, 1, 0xEE),
+    ];
+    let applied = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap();
+    assert_eq!(applied, 3);
+    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(e1.stamp, 2);
+    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    assert_eq!(e2.stamp, 2);
+    let e3 = store.subject_entry_for_test(INDEX_ID, subject(3)).unwrap();
+    assert_eq!(e3.stamp, 1);
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 3, "updates in place + one fresh");
+}
+
+#[test]
+fn vector_sync_batch_chunk_greater_commit_failure_tombstones_committed_old_slots() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(1, 1, 0xAA))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(2, 1, 0xBB))
+        .unwrap();
+    // Batch: Greater update for subject 1, then Greater update for subject 2 (fails).
+    let ops = vec![upsert_op(1, 2, 0xCC), upsert_op(2, 2, 0xDD)];
+    // Force the 2nd subject-map insert (op index 1) to fail after the batched append.
+    crate::facade::store::mutation::arm_subject_insert_failure(1);
+    let err = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap_err();
+    assert_eq!(err, VectorCanisterError::StableGrowFailed);
+    // Subject 1 committed (stamp 2, new slot live, old slot tombstoned).
+    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(e1.stamp, 2);
+    // Subject 2's commit failed: its entry still points at the old slot (stamp 1, live).
+    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    assert_eq!(e2.stamp, 1);
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 2, "subject 1 new live, subject 2 old live");
+}
+
+#[test]
 fn vector_remove_rejects_insert_flag() {
     let store = fresh_store();
     let mut op = remove_op(7, 1);

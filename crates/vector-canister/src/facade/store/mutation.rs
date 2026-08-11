@@ -735,16 +735,17 @@ impl VectorCanisterStore {
     }
 
     /// Applies a chunk of `vector_sync_batch` operations. Within a degenerate `nlist == 1` index in
-    /// `ActiveOnly` mode, consecutive fresh upserts (no existing subject entry, distinct subjects) are
-    /// grouped into runs and each run is appended in one batched page-store call (amortizing the
-    /// per-row page-directory commit) before its subject entries are committed per row. Ops that are
-    /// not batchable (existing subject, remove, a subject already seen in the current run, a different
-    /// index, `nlist > 1`, or dual-write) are processed per-row via `vector_upsert` / `vector_remove`.
+    /// `ActiveOnly` mode, consecutive batchable upserts (fresh subjects, or live subjects with a newer
+    /// stamp — a live `Greater` update) with distinct subjects are grouped into runs and each run is
+    /// appended in one batched page-store call (amortizing the per-row page-directory commit) before
+    /// its subject entries are committed per row. Ops that are not batchable (remove, a different
+    /// index, a stale/equal/resurrect stamp, a subject already seen in the current run, `nlist > 1`, or
+    /// dual-write) are processed per-row via `vector_upsert` / `vector_remove`.
     ///
     /// Write-then-commit holds on each batched run: a failed subject-map commit at op `k` tombstones
-    /// the slots for ops `k..n` (whose subject entries did not commit), so the residual is tombstoned
-    /// dead rows rather than live-counted orphans. Returns the number of ops applied (always
-    /// `chunk.len()` on success).
+    /// the old slots of ops `0..k-1` (whose commits succeeded) and the new slots of ops `k..n` (whose
+    /// commits did not), so no live orphan is left and the residual is tombstoned dead rows. Returns the
+    /// number of ops applied (always `chunk.len()` on success).
     pub fn vector_sync_batch_chunk(
         &self,
         caller: Principal,
@@ -771,11 +772,16 @@ impl VectorCanisterStore {
         let mut applied = 0u32;
         let mut run_rows: Vec<(VectorSubject, Vec<u8>, [u8; 8])> = Vec::new();
         let mut run_ops: Vec<&VectorEmbeddingSyncOp> = Vec::new();
+        let mut run_keys: Vec<SubjectKey> = Vec::new();
+        let mut run_old_slots: Vec<Option<SlotRef>> = Vec::new();
         let mut run_subjects: Vec<SubjectKey> = Vec::new();
 
-        // Flush the current run of fresh upserts: batch-append its rows, then commit subject entries.
+        // Flush the current run: batch-append its rows, commit subject entries, then tombstone the
+        // superseded old slots (live Greater) only after all commits succeed (write-then-commit).
         let flush = |run_rows: &mut Vec<(VectorSubject, Vec<u8>, [u8; 8])>,
-                     run_ops: &mut Vec<&VectorEmbeddingSyncOp>|
+                     run_ops: &mut Vec<&VectorEmbeddingSyncOp>,
+                     run_keys: &mut Vec<SubjectKey>,
+                     run_old_slots: &mut Vec<Option<SlotRef>>|
          -> Result<(), VectorCanisterError> {
             if run_ops.is_empty() {
                 return Ok(());
@@ -792,9 +798,8 @@ impl VectorCanisterStore {
                 &row_refs,
             )?;
             for (i, op) in run_ops.iter().enumerate() {
-                let key = SubjectKey::new(op.index_id, op.subject);
                 if let Err(err) = self.insert_subject_entry(
-                    key,
+                    run_keys[i],
                     FixedSubjectMapEntry {
                         stamp: op.mutation_id,
                         deleted: false,
@@ -802,13 +807,20 @@ impl VectorCanisterStore {
                         shadow_slot: None,
                     },
                 ) {
-                    // The subject-map commit failed (OutOfMemory): tombstone the slots whose subject
-                    // entries did not commit so the residual is tombstoned dead rows, not live orphans.
+                    // Ops 0..i-1 committed: tombstone their old slots (write-then-commit allows this).
+                    for old in run_old_slots[..i].iter().flatten() {
+                        self.tombstone_slot(first.index_id, *old);
+                    }
+                    // Ops i..n did not commit: tombstone their new slots (dead rows).
                     for slot in &slots[i..] {
-                        self.tombstone_slot(op.index_id, *slot);
+                        self.tombstone_slot(first.index_id, *slot);
                     }
                     return Err(err);
                 }
+            }
+            // All commits succeeded: tombstone the superseded old slots.
+            for old in run_old_slots.iter().flatten() {
+                self.tombstone_slot(first.index_id, *old);
             }
             Ok(())
         };
@@ -816,10 +828,17 @@ impl VectorCanisterStore {
         for op in chunk {
             if op.remove || op.index_id != first.index_id {
                 // Flush the current run, then process this op per-row.
-                flush(&mut run_rows, &mut run_ops)?;
+                flush(
+                    &mut run_rows,
+                    &mut run_ops,
+                    &mut run_keys,
+                    &mut run_old_slots,
+                )?;
                 applied = applied.saturating_add(run_ops.len() as u32);
                 run_rows.clear();
                 run_ops.clear();
+                run_keys.clear();
+                run_old_slots.clear();
                 run_subjects.clear();
                 if op.remove {
                     self.vector_remove(caller, op)?;
@@ -837,25 +856,64 @@ impl VectorCanisterStore {
                 return Err(VectorCanisterError::ByteWidthMismatch);
             }
             let key = SubjectKey::new(op.index_id, op.subject);
-            let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
-            if existing.is_some() || run_subjects.contains(&key) {
-                // Flush the current run, then process this op per-row (its classification depends on
-                // the run's commits for a repeated subject, or on the pre-existing entry otherwise).
-                flush(&mut run_rows, &mut run_ops)?;
+            if run_subjects.contains(&key) {
+                // Repeated subject in the run: classification is order-dependent, flush and per-row.
+                flush(
+                    &mut run_rows,
+                    &mut run_ops,
+                    &mut run_keys,
+                    &mut run_old_slots,
+                )?;
                 applied = applied.saturating_add(run_ops.len() as u32);
                 run_rows.clear();
                 run_ops.clear();
+                run_keys.clear();
+                run_old_slots.clear();
                 run_subjects.clear();
                 self.vector_upsert(caller, op)?;
                 applied = applied.saturating_add(1);
                 continue;
             }
+            let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
+            // Classify: fresh (no entry) or live Greater (newer stamp on a live subject) are batchable.
+            let old_active_slot = match &existing {
+                None => None,
+                Some(entry) => {
+                    if op.mutation_id > entry.stamp && !entry.deleted {
+                        entry.current_slot_for(active)
+                    } else {
+                        // Not batchable (Less, Equal, resurrect, stale): flush and process per-row.
+                        flush(
+                            &mut run_rows,
+                            &mut run_ops,
+                            &mut run_keys,
+                            &mut run_old_slots,
+                        )?;
+                        applied = applied.saturating_add(run_ops.len() as u32);
+                        run_rows.clear();
+                        run_ops.clear();
+                        run_keys.clear();
+                        run_old_slots.clear();
+                        run_subjects.clear();
+                        self.vector_upsert(caller, op)?;
+                        applied = applied.saturating_add(1);
+                        continue;
+                    }
+                }
+            };
             let (stored, aux) = prepare_for_metric(&def, &op.bytes)?;
             run_rows.push((op.subject, stored, aux));
             run_ops.push(op);
+            run_keys.push(key);
+            run_old_slots.push(old_active_slot);
             run_subjects.push(key);
         }
-        flush(&mut run_rows, &mut run_ops)?;
+        flush(
+            &mut run_rows,
+            &mut run_ops,
+            &mut run_keys,
+            &mut run_old_slots,
+        )?;
         applied = applied.saturating_add(run_ops.len() as u32);
 
         Ok(applied)
