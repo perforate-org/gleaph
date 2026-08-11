@@ -20,6 +20,37 @@ open StableCluster
 namespace StableClusterAudit
 
 /-!
+## Fresh-table base state
+
+`new` clears the complete table before the first insert. The following lemmas establish the
+initial invariant, no-holes, and length/cardinality conditions used by insertion-history proofs.
+-/
+
+-- src/map.rs L135-L141 (`new` writes the header and clears every slot).
+lemma freshState_clusterInvariant (n : Nat) : ClusterInvariant (freshState n) := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro i hi hocc
+    simp [freshState, IsOccupied] at hocc
+  · intro i j hi hj hij hiocc hjocc
+    simp [freshState, IsOccupied] at hiocc
+  · intro i hi hocc
+    simp [freshState, IsOccupied] at hocc
+
+-- src/map.rs L135-L141 (`clear_region` writes `EMPTY` to every slot).
+lemma freshState_noHoles (n : Nat) : NoHoles (freshState n) := by
+  intro i k hi hocc hkey
+  simp [freshState, IsOccupied] at hocc
+
+-- src/map.rs L135-L141 (`new` initializes `len` to zero and clears every slot).
+lemma freshState_lenCoherent (n : Nat) : LenCoherent (freshState n) := by
+  simp [LenCoherent, OccupiedSlots, freshState, IsOccupied]
+
+-- src/map.rs L135-L141 (a freshly cleared table contains no key).
+lemma freshState_keySet_empty (n : Nat) (k : Key) : ¬ KeySet (freshState n) k := by
+  rintro ⟨i, hi, hocc, hkey⟩
+  simp [freshState, IsOccupied] at hocc
+
+/-!
 ## Target (a) — `size_up` preserves the entry set and count
 
 `size_up` (src/map.rs L526-L554) grows the table in place: the old region keeps its

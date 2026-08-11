@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 02:28:29 UTC +0000
+Anchor timestamp: 2026-08-11 05:37:59 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -127,6 +127,11 @@ construction remain open, while the conditional propagation is closed by
 explicit `findInsertPosition` result and closes the complete-chain `NoHoles` bridge when
 the source `NoHoles` and occupancy certificate are supplied.
 
+The abstract `freshState` now models the cleared table produced by Rust `new`. The
+compiler-checked `freshState_clusterInvariant`, `freshState_noHoles`,
+`freshState_lenCoherent`, and `freshState_keySet_empty` lemmas close the initial base state;
+they do not refine persisted header validation or `init`.
+
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
 the canonical `entry_stride()`, and a focused normal-load-threshold regression covers the
@@ -140,7 +145,7 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Derive the remaining source `NoHoles`, `LenCoherent`, and per-step
+1. Derive source `NoHoles` / `LenCoherent` after arbitrary insertion history, plus the per-step
    position/distance/occupancy certificate premises from Rust insertion history. The initial scan prefix is extracted by
    `findInsertPositionFrom_prefix` / `findInsertPosition_prefix`, and
    `relocateStep_next_prefix_of_noHoles` plus

@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 02:28:29 UTC +0000
+Anchor timestamp: 2026-08-11 05:37:59 UTC +0000
 
 ## Target and version / Mode
 
@@ -61,6 +61,10 @@ content); added as axioms only if a proof required one:
 
 - **`DistanceBounded` (B4, "distances are bounded by the overflow area") is NOT a
   structural invariant.** Removed from `ClusterInvariant`; see `Counterexamples.lean`.
+- `freshState` models the cleared table produced by Rust `new`. The compiler-checked
+  `freshState_clusterInvariant`, `freshState_noHoles`, `freshState_lenCoherent`, and
+  `freshState_keySet_empty` lemmas close the initial base state. They do not refine
+  persisted header validation or the `init` path.
 
 ### `Counterexamples.lean` (Stage 1 adversarial)
 
@@ -173,8 +177,8 @@ Proved:
 - `NoHoles` is now an explicit strengthening, and
   `lookupIndex_complete_of_noHoles` proves settled lookup completeness from
   `ClusterInvariant`, `NoHoles`, and `LenCoherent`. The theorem preserves the boundary
-  honestly: the Rust/insertion-history proof of `NoHoles` and `LenCoherent` remains
-  unproved.
+  honestly: the cleared `freshState` base is proved, but the Rust/insertion-history proof
+  after arbitrary operations of `NoHoles` and `LenCoherent` remains unproved.
 - `clusterInvariant_does_not_imply_len_positive` machine-checks the second boundary:
   changing only `len` to zero preserves the current `ClusterInvariant` and `KeySet`.
   `LenCoherent` supplies that separate cardinality relation and derives positive length
@@ -300,7 +304,8 @@ Rust `find_insert_position` recursion, and `relocateStep_next_prefix_of_noHoles`
 the conditional next-step prefix. `insertRelocateNoHolesOK_of_occupancyOK` propagates it
 through a certified chain, while `insertRelocate_preserves_noHoles_of_findPosition` closes
 the scan-to-chain bridge. Rust's source-`NoHoles`, distance/bound/occupancy certificate
-construction still needs an insertion-history proof.
+construction still needs an insertion-history proof. The fresh cleared-table base is now
+proved separately, so the remaining `NoHoles` gap is propagation from arbitrary history.
 Lookup completeness
 is refuted by the current invariant's hole-permitting and length-independent model; it is now
 proved conditionally under `NoHoles` and `LenCoherent`. Remaining work includes justifying both
@@ -322,7 +327,7 @@ does not cover Rust certificate construction, active-remap insertion, or mid-cha
 `size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
 declarations. The faithful bounded remove chain and its certificate-level settled
 found-branch public-remove bridge are separately proved invariant-preserving under
-`s.remapEnd = none`; the Rust justification of source `NoHoles`, `LenCoherent`, and the displaced-entry position/distance/occupancy premises, and construction of the occupancy and remove certificates from leading
+`s.remapEnd = none`; the Rust justification after arbitrary history of `NoHoles`, `LenCoherent`, and the displaced-entry position/distance/occupancy premises, and construction of the occupancy and remove certificates from leading
 `remap_step`, active-remap, absent-key, and persistence refinement remain outside those
 theorems. The current `UnRelocateStep` relation has a counterexample for any inhabited key
 domain, and the current `RemapStep` relation is false; neither relation finding establishes

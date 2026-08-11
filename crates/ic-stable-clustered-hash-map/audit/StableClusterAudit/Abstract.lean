@@ -146,6 +146,17 @@ noncomputable def OccupiedSlots (s : State) : Finset Nat :=
 def LenCoherent (s : State) : Prop :=
   s.len = (OccupiedSlots s).card
 
+-- Fresh storage after `new` writes the header and clears every slot. The abstract state keeps
+-- the same geometry while representing every cleared distance with `EMPTY`.
+-- src/map.rs L135-L141 (`new` writes the header and calls `clear_region`).
+def freshState (n : Nat) : State :=
+  { n := n
+    len := 0
+    remapEnd := none
+    dist := fun _ => EMPTY
+    keyAt := fun _ => none
+    valAt := fun _ => 0 }
+
 /-!
 ## Target properties (SCOPE.md §4)
 -/
