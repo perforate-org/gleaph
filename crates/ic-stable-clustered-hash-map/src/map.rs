@@ -178,7 +178,11 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     /// Returns `true` when the next unique-key insert triggers a resize.
     fn is_full(&self) -> bool {
-        self.len() >= (3 * self.buckets()) / 4
+        self.len() >= self.resize_threshold()
+    }
+
+    fn resize_threshold(&self) -> u64 {
+        (3 * self.buckets()) / 4
     }
 
     fn log2_buckets(&self) -> u8 {
@@ -619,6 +623,350 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     }
 }
 
+#[cfg(feature = "canbench")]
+pub(crate) mod canbench_fixtures {
+    use super::*;
+    use ic_stable_structures::VectorMemory;
+
+    type BenchMap = StableClusteredHashMap<u64, u64, VectorMemory>;
+
+    /// A map state and its complete post-insert contract for one focused canbench case.
+    pub(crate) struct InsertFixture {
+        pub(crate) map: BenchMap,
+        pub(crate) target: u64,
+        residents: Vec<(u64, u64)>,
+        expected_len: u64,
+        expected_buckets: u64,
+        expected_remap_end: u64,
+        expected_terminal_cluster: Option<(u64, u64)>,
+    }
+
+    impl InsertFixture {
+        /// Checks every seeded entry and selected structural postconditions after the timed public insert.
+        pub(crate) fn assert_postconditions(&self) {
+            assert_eq!(self.map.get(&self.target), Some(self.target));
+            for (key, value) in &self.residents {
+                assert_eq!(self.map.get(key), Some(*value));
+            }
+            assert_eq!(self.map.len(), self.expected_len);
+            assert_eq!(self.map.buckets(), self.expected_buckets);
+            assert_eq!(self.map.remap_end(), self.expected_remap_end);
+            if let Some((home, entries)) = self.expected_terminal_cluster {
+                assert_eq!(self.map.end_of_cluster_by_position(home), home + entries);
+                for slot in home..home + entries {
+                    assert_eq!(self.map.bucket_by_position(slot), home);
+                }
+            }
+        }
+    }
+
+    fn new_map_at_log2_buckets(log2_buckets: u8) -> BenchMap {
+        let map = BenchMap::new(VectorMemory::default()).expect("create canbench fixture map");
+        while map.log2_buckets() < log2_buckets {
+            map.size_up().expect("pre-grow canbench fixture map");
+        }
+        assert_eq!(map.log2_buckets(), log2_buckets);
+        assert!(
+            map.remap_step(u64::MAX),
+            "pre-grow canbench fixture remap completes"
+        );
+        assert_eq!(map.remap_end(), u64::MAX);
+        map
+    }
+
+    fn next_key_for_home(next_key: &mut u64, log2_buckets: u8, home: u64) -> u64 {
+        loop {
+            let candidate = *next_key;
+            *next_key = candidate
+                .checked_add(1)
+                .expect("canbench fixture key search exhausted u64");
+            if bucket(hash_key(&candidate.to_bytes()), log2_buckets) == home {
+                return candidate;
+            }
+        }
+    }
+
+    fn next_key_for_old_and_new_home(
+        next_key: &mut u64,
+        old_log2_buckets: u8,
+        old_home: u64,
+        new_home: u64,
+    ) -> u64 {
+        loop {
+            let candidate = *next_key;
+            *next_key = candidate
+                .checked_add(1)
+                .expect("canbench fixture key search exhausted u64");
+            if bucket(hash_key(&candidate.to_bytes()), old_log2_buckets) == old_home
+                && bucket(hash_key(&candidate.to_bytes()), old_log2_buckets + 1) == new_home
+            {
+                return candidate;
+            }
+        }
+    }
+
+    /// Creates a nonempty settled table whose target has a known empty home slot.
+    pub(crate) fn settled_direct_insert() -> InsertFixture {
+        let map = new_map_at_log2_buckets(DEFAULT_LOG2_BUCKETS);
+        let mut next_key = 0;
+        let resident = next_key_for_home(&mut next_key, DEFAULT_LOG2_BUCKETS, 0);
+        let target = next_key_for_home(&mut next_key, DEFAULT_LOG2_BUCKETS, 6);
+        map.insert(resident, resident)
+            .expect("seed direct-insert fixture");
+
+        let (found, insert_position, home) = map.lookup_index(&target);
+        assert_eq!(found, None);
+        assert_eq!(home, 6);
+        assert_eq!(insert_position, home);
+        assert!(map.is_empty_slot(insert_position));
+        assert!(!map.is_full());
+
+        let expected_len = map.len() + 1;
+        let expected_buckets = map.buckets();
+        InsertFixture {
+            map,
+            target,
+            residents: vec![(resident, resident)],
+            expected_len,
+            expected_buckets,
+            expected_remap_end: u64::MAX,
+            expected_terminal_cluster: None,
+        }
+    }
+
+    /// Creates five adjacent singleton clusters so the target relocates exactly four occupied slots.
+    pub(crate) fn settled_relocation_chain_insert() -> InsertFixture {
+        let map = new_map_at_log2_buckets(DEFAULT_LOG2_BUCKETS);
+        let mut next_key = 0;
+        let mut residents = Vec::with_capacity(5);
+        for home in 0..=4 {
+            let key = next_key_for_home(&mut next_key, DEFAULT_LOG2_BUCKETS, home);
+            map.insert(key, key).expect("seed relocation-chain fixture");
+            residents.push((key, key));
+        }
+        let target = next_key_for_home(&mut next_key, DEFAULT_LOG2_BUCKETS, 0);
+
+        assert_eq!(map.len(), 5);
+        assert!(!map.is_full());
+        for slot in 0..=4 {
+            assert_eq!(map.read_distance(slot), 0);
+        }
+        assert!(map.is_empty_slot(5));
+        let (found, insert_position, home) = map.lookup_index(&target);
+        assert_eq!(found, None);
+        assert_eq!(home, 0);
+        assert_eq!(insert_position, 1);
+
+        let expected_len = map.len() + 1;
+        let expected_buckets = map.buckets();
+        InsertFixture {
+            map,
+            target,
+            residents,
+            expected_len,
+            expected_buckets,
+            expected_remap_end: u64::MAX,
+            expected_terminal_cluster: None,
+        }
+    }
+
+    /// Creates an N=8 resize whose following insert performs exactly one 64-entry remap batch.
+    pub(crate) fn active_remap_batch_insert() -> InsertFixture {
+        const OLD_LOG2_BUCKETS: u8 = 8;
+        const POPULATED_OLD_BUCKETS: u64 = 192;
+
+        let map = new_map_at_log2_buckets(OLD_LOG2_BUCKETS);
+        let mut next_key = 0;
+        let mut residents = Vec::with_capacity(POPULATED_OLD_BUCKETS as usize + 1);
+        for old_home in 0..POPULATED_OLD_BUCKETS {
+            let key = next_key_for_old_and_new_home(
+                &mut next_key,
+                OLD_LOG2_BUCKETS,
+                old_home,
+                old_home + (1 << OLD_LOG2_BUCKETS),
+            );
+            map.insert(key, key).expect("seed active-remap fixture");
+            residents.push((key, key));
+        }
+        assert_eq!(map.len(), POPULATED_OLD_BUCKETS);
+        assert!(map.is_full());
+        for slot in 0..POPULATED_OLD_BUCKETS {
+            assert_eq!(map.read_distance(slot), 0);
+        }
+
+        let trigger = next_key_for_old_and_new_home(&mut next_key, OLD_LOG2_BUCKETS, 255, 255);
+        let target = next_key_for_old_and_new_home(&mut next_key, OLD_LOG2_BUCKETS, 254, 254);
+        assert_eq!(map.lookup_index(&trigger).0, None);
+        assert_eq!(map.lookup_index(&target).0, None);
+
+        let previous_capacity = map.capacity();
+        map.insert(trigger, trigger)
+            .expect("start active-remap fixture");
+        residents.push((trigger, trigger));
+        assert_eq!(map.buckets(), 1 << (OLD_LOG2_BUCKETS + 1));
+        assert_eq!(map.len(), POPULATED_OLD_BUCKETS + 1);
+        assert_eq!(map.remap_end(), previous_capacity);
+
+        let expected_len = map.len() + 1;
+        let expected_buckets = map.buckets();
+        let expected_remap_end = POPULATED_OLD_BUCKETS - REMAP_BATCH;
+        InsertFixture {
+            map,
+            target,
+            residents,
+            expected_len,
+            expected_buckets,
+            expected_remap_end,
+            expected_terminal_cluster: None,
+        }
+    }
+
+    /// Reuses the one-key-per-home N=13 threshold construction from the stride regression.
+    pub(crate) fn n13_threshold_resize_insert() -> InsertFixture {
+        const TARGET_LOG2_BUCKETS: u8 = 13;
+
+        let map = new_map_at_log2_buckets(TARGET_LOG2_BUCKETS);
+        let threshold = map.resize_threshold();
+        let mut keys_by_bucket = vec![None; threshold as usize + 1];
+        let mut missing = keys_by_bucket.len();
+        for candidate in 0u64.. {
+            let home = bucket(hash_key(&candidate.to_bytes()), TARGET_LOG2_BUCKETS);
+            if home <= threshold && keys_by_bucket[home as usize].is_none() {
+                keys_by_bucket[home as usize] = Some(candidate);
+                missing -= 1;
+                if missing == 0 {
+                    break;
+                }
+            }
+        }
+
+        let mut residents = Vec::with_capacity(threshold as usize);
+        for (slot, key) in keys_by_bucket[..threshold as usize].iter().enumerate() {
+            let key = key.expect("key for each occupied home bucket");
+            map.write_entry(
+                slot as u64,
+                &Entry {
+                    key,
+                    value: key,
+                    distance: 0,
+                },
+            );
+            residents.push((key, key));
+        }
+        map.set_len(threshold);
+        assert!(map.is_full());
+        assert_eq!(map.remap_end(), u64::MAX);
+
+        let target = keys_by_bucket[threshold as usize].expect("threshold trigger key");
+        assert_eq!(map.lookup_index(&target).0, None);
+        let expected_len = threshold + 1;
+        let expected_buckets = map.buckets() * 2;
+        let expected_remap_end = map.capacity();
+        InsertFixture {
+            map,
+            target,
+            residents,
+            expected_len,
+            expected_buckets,
+            expected_remap_end,
+            expected_terminal_cluster: None,
+        }
+    }
+
+    /// Creates an active N=10 remap whose timed insert must drain it before a second grow.
+    pub(crate) fn active_remap_overflow_full_drain_resize_insert() -> InsertFixture {
+        const OLD_LOG2_BUCKETS: u8 = 9;
+        const TERMINAL_HOME: u64 = 511;
+        const TERMINAL_NEW_HOME: u64 = 1023;
+        const TERMINAL_RESIDENTS: u64 = 10;
+
+        let map = new_map_at_log2_buckets(OLD_LOG2_BUCKETS);
+        let filler_homes = map
+            .resize_threshold()
+            .checked_sub(TERMINAL_RESIDENTS)
+            .expect("terminal residents fit below the resize threshold");
+        let mut next_key = 0;
+        let mut residents = Vec::with_capacity((filler_homes + TERMINAL_RESIDENTS + 1) as usize);
+        for old_home in 0..filler_homes {
+            let key = next_key_for_old_and_new_home(
+                &mut next_key,
+                OLD_LOG2_BUCKETS,
+                old_home,
+                old_home + (1 << OLD_LOG2_BUCKETS),
+            );
+            map.insert(key, key).expect("seed overflow filler");
+            residents.push((key, key));
+        }
+        for _ in 0..TERMINAL_RESIDENTS {
+            let key = next_key_for_old_and_new_home(
+                &mut next_key,
+                OLD_LOG2_BUCKETS,
+                TERMINAL_HOME,
+                TERMINAL_NEW_HOME,
+            );
+            map.insert(key, key).expect("seed terminal resident");
+            residents.push((key, key));
+        }
+
+        assert_eq!(map.len(), map.resize_threshold());
+        assert!(map.is_full());
+        for slot in 0..filler_homes {
+            assert_eq!(map.read_distance(slot), 0);
+        }
+        assert_eq!(
+            map.end_of_cluster_by_position(TERMINAL_HOME),
+            map.capacity()
+        );
+        for slot in TERMINAL_HOME..map.capacity() {
+            assert_eq!(map.bucket_by_position(slot), TERMINAL_HOME);
+        }
+
+        let trigger = next_key_for_old_and_new_home(
+            &mut next_key,
+            OLD_LOG2_BUCKETS,
+            TERMINAL_HOME,
+            TERMINAL_NEW_HOME,
+        );
+        // Keep the post-grow target away from the N=10 terminal cluster so postconditions can
+        // observe its eleven remapped entries without counting the final insert itself.
+        let target = loop {
+            let candidate = next_key_for_old_and_new_home(
+                &mut next_key,
+                OLD_LOG2_BUCKETS,
+                TERMINAL_HOME,
+                TERMINAL_NEW_HOME,
+            );
+            if bucket(hash_key(&candidate.to_bytes()), OLD_LOG2_BUCKETS + 2)
+                == (1 << (OLD_LOG2_BUCKETS + 2)) - 1
+            {
+                break candidate;
+            }
+        };
+
+        let previous_capacity = map.capacity();
+        map.insert(trigger, trigger)
+            .expect("start overflow-remap fixture");
+        residents.push((trigger, trigger));
+        assert_eq!(map.len(), filler_homes + TERMINAL_RESIDENTS + 1);
+        assert_eq!(map.buckets(), 1 << (OLD_LOG2_BUCKETS + 1));
+        assert_eq!(map.remap_end(), previous_capacity);
+        assert_eq!(map.lookup_index(&target).0, None);
+
+        let expected_len = map.len() + 1;
+        let expected_buckets = map.buckets() * 2;
+        let expected_remap_end = map.capacity();
+        InsertFixture {
+            map,
+            target,
+            residents,
+            expected_len,
+            expected_buckets,
+            expected_remap_end,
+            expected_terminal_cluster: Some((TERMINAL_NEW_HOME, TERMINAL_RESIDENTS + 1)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -771,7 +1119,7 @@ mod tests {
         }
         assert!(map.remap_step(u64::MAX), "empty pre-grow remap completes");
 
-        let threshold = (3 * map.buckets()) / 4;
+        let threshold = map.resize_threshold();
         let mut keys_by_bucket = vec![None; threshold as usize + 1];
         let mut missing = keys_by_bucket.len();
         for candidate in 0u64.. {
