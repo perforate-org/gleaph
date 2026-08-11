@@ -117,6 +117,48 @@ lemma relocateWrite_preserves_distanceValid {s s' : State} {entry : Key} {value 
     rw [h.dist_other i hpos]
     exact hvalid
 
+-- A terminating insert write preserves the no-holes scan condition when the insertion-point
+-- prefix is occupied. The explicit prefix fact is the part not carried by `RelocateWrite` or
+-- `InsertRelocateOK`; `find_insert_position` supplies it in the Rust loop. src/map.rs L309-L319,
+-- L464-L466.
+lemma relocateWrite_preserves_noHoles {s s' : State} {entry : Key} {value : Nat} {position : Nat}
+    (h : RelocateWrite s s' entry value position) (hno : NoHoles s)
+    (_hpos : position < capacity s.n)
+    (hprefix : ∀ j, bucket entry s.n ≤ j → j < position → IsOccupied s j) :
+    NoHoles s' := by
+  intro i k hicapi hiocc hkeyi j hkj hji
+  have hn : s'.n = s.n := h.n.symm
+  by_cases hipos : i = position
+  · subst i
+    have hkey : k = entry := by
+      apply Option.some.inj
+      calc
+        some k = s'.keyAt position := hkeyi.symm
+        _ = some entry := h.keyAt
+    have hkj' : bucket entry s.n ≤ j := by simpa [hkey, hn] using hkj
+    have hsource := hprefix j hkj' hji
+    change s'.dist j ≠ EMPTY
+    rw [h.dist_other j (by omega)]
+    exact hsource
+  · have hicapi_s : i < capacity s.n := by simpa [hn] using hicapi
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.dist_other i hipos]
+      exact hiocc
+    have hkey_s : s.keyAt i = some k := by
+      rw [← h.keyAt_other i hipos]
+      exact hkeyi
+    have hkj_s : bucket k s.n ≤ j := by simpa [hn] using hkj
+    have hsource := hno i k hicapi_s hiocc_s hkey_s j hkj_s hji
+    by_cases hjpos : j = position
+    · subst j
+      change s'.dist position ≠ EMPTY
+      rw [h.dist]
+      exact ne_of_lt h.distFit
+    · change s'.dist j ≠ EMPTY
+      rw [h.dist_other j hjpos]
+      exact hsource
+
 -- The base insert write keeps the ordered-cluster invariant, assuming `position` is a valid
 -- insertion point for the entry's bucket (as `find_insert_position` guarantees).
 lemma relocateWrite_preserves_clusterOrdered {s s' : State} {entry : Key} {value : Nat} {position : Nat}
