@@ -496,6 +496,49 @@ fn vector_sync_batch_chunk_subject_commit_failure_tombstones() {
 }
 
 #[test]
+fn vector_sync_batch_chunk_batches_runs_around_non_fresh() {
+    let store = fresh_store();
+    // Pre-insert subject 2 so the middle op is non-fresh and forces a run flush.
+    store
+        .vector_upsert(shard_canister(), &upsert_op(2, 1, 0xAA))
+        .unwrap();
+    let ops = vec![
+        upsert_op(1, 1, 0xBB),
+        upsert_op(2, 2, 0xCC),
+        upsert_op(3, 1, 0xDD),
+    ];
+    let applied = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap();
+    assert_eq!(applied, 3);
+    // Subjects 1 and 3 are fresh (batched); subject 2 updated via the per-row Greater path.
+    let e1 = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(e1.stamp, 1);
+    let e2 = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    assert_eq!(e2.stamp, 2);
+    let e3 = store.subject_entry_for_test(INDEX_ID, subject(3)).unwrap();
+    assert_eq!(e3.stamp, 1);
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 3);
+}
+
+#[test]
+fn vector_sync_batch_chunk_same_subject_flushes_run() {
+    let store = fresh_store();
+    // Two ops for the same subject in one chunk: the first is fresh, the second must be a Greater
+    // update (flush the run, process per-row) so the first slot is tombstoned, not orphaned.
+    let ops = vec![upsert_op(1, 1, 0xAA), upsert_op(1, 2, 0xBB)];
+    let applied = store
+        .vector_sync_batch_chunk(shard_canister(), &ops)
+        .unwrap();
+    assert_eq!(applied, 2);
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(entry.stamp, 2);
+    let head = store.partition_head_for_test(INDEX_ID, 1).unwrap();
+    assert_eq!(head.live_len, 1, "first slot tombstoned, second live");
+}
+
+#[test]
 fn vector_remove_rejects_insert_flag() {
     let store = fresh_store();
     let mut op = remove_op(7, 1);
