@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 08:32:40 UTC +0000
+Anchor timestamp: 2026-08-11 08:34:37 UTC +0000
 
 ## Status
 
@@ -49,7 +49,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-11-001 — Inner resize leaves the pending insert distance stale
 
-- **Status:** Resolved in the current uncommitted worktree; fixing commit pending
+- **Status:** Resolved by commit `1efac368d`
 - **Severity:** P1 / High
 - **Owner:** `ic-stable-clustered-hash-map` inner insert resize and pending-entry distance
   invariant
@@ -68,10 +68,11 @@ defect from being rediscovered without its prior reasoning.
   `map::tests::inner_resize_recomputes_relocated_entry_distance` covers successful insert,
   `len`/iterator presence, and immediate plus `init`/re-open point lookup. The repair and
   regression passed the focused Rust test, full crate library tests, format/check/clippy gates,
-  and independent review; the fixing commit is pending.
+  and independent review. The repair is recorded in commit `1efac368d`.
 - **Impact:** A successful public insert can persist an entry that iteration exposes but point
   lookup cannot reach, and the inconsistency survives re-open.
-- **Next decision:** None for the implementation; record the fixing commit after it is created.
+- **Next decision:** None for this defect; retain the focused regression with the owning map
+  implementation.
 
 ### GAP-2026-08-10-001 — Future row-copy migration must carry the I8 per-row scale
 
