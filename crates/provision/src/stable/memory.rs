@@ -7,17 +7,18 @@ use crate::types::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
+use ic_stable_memory_backend::{StableMemoryBackend, stable_memory_backend};
 use ic_stable_structures::{
-    DefaultMemoryImpl, StableBTreeMap, StableCell,
+    StableBTreeMap, StableCell,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::cell::RefCell;
 
-pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) type Memory = VirtualMemory<StableMemoryBackend>;
 
 thread_local! {
-    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
+    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<StableMemoryBackend>> =
+        RefCell::new(MemoryManager::init(stable_memory_backend()));
 }
 
 pub(crate) const DEPLOYMENT_TRUST: MemoryId = MemoryId::new(0);

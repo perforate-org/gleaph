@@ -8,8 +8,9 @@
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
+use ic_stable_memory_backend::{StableMemoryBackend, stable_memory_backend};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{BTreeMap, Cell, DefaultMemoryImpl};
+use ic_stable_structures::{BTreeMap, Cell};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -20,7 +21,7 @@ use crate::records::{
 };
 use ic_stable_clustered_hash_map::{InitError, StableClusteredHashMap};
 
-pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) type Memory = VirtualMemory<StableMemoryBackend>;
 
 const VECTOR_INDEX_ROUTER: MemoryId = MemoryId::new(0);
 const VECTOR_INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
@@ -172,8 +173,8 @@ pub(crate) enum ShardCanisterCatalogInsertError {
 }
 
 thread_local! {
-    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
+    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<StableMemoryBackend>> =
+        RefCell::new(MemoryManager::init(stable_memory_backend()));
 }
 
 pub(crate) fn init_router() -> StableRouterCell {

@@ -12,6 +12,7 @@ candid = { workspace = true }
 ic-cdk = { workspace = true }
 ic-cdk-macros = { workspace = true }
 ic-cdk-management-canister = { workspace = true }
+ic-stable-memory-backend = { workspace = true }
 ic-stable-structures = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

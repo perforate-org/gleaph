@@ -1901,6 +1901,7 @@ dependencies = [
  "ic-cdk-macros",
  "ic-cdk-timers",
  "ic-stable-lara",
+ "ic-stable-memory-backend",
  "ic-stable-roaring",
  "ic-stable-structures",
  "ic-stable-variable-memory-manager",
@@ -1942,6 +1943,7 @@ dependencies = [
  "gleaph-message-sizing",
  "ic-cdk",
  "ic-cdk-macros",
+ "ic-stable-memory-backend",
  "ic-stable-structures",
  "ic-stable-variable-memory-manager",
  "nohash-hasher",
@@ -2045,6 +2047,7 @@ dependencies = [
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-management-canister",
+ "ic-stable-memory-backend",
  "ic-stable-structures",
  "serde",
  "sha2 0.11.0",
@@ -2077,6 +2080,7 @@ dependencies = [
  "ic-cdk-macros",
  "ic-cdk-management-canister",
  "ic-cdk-timers",
+ "ic-stable-memory-backend",
  "ic-stable-structures",
  "ic-stable-variable-memory-manager",
  "nohash-hasher",
@@ -2098,6 +2102,7 @@ dependencies = [
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-clustered-hash-map",
+ "ic-stable-memory-backend",
  "ic-stable-structures",
  "ic-stable-vector-page-store",
  "rapidhash",
@@ -2543,6 +2548,14 @@ dependencies = [
  "ic-stable-roaring",
  "ic-stable-structures",
  "ic-stable-vec-deque",
+]
+
+[[package]]
+name = "ic-stable-memory-backend"
+version = "0.1.0"
+dependencies = [
+ "ic-cdk",
+ "ic-stable-structures",
 ]
 
 [[package]]

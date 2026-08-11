@@ -21,6 +21,7 @@ gleaph-message-sizing.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-clustered-hash-map.workspace = true
+ic-stable-memory-backend.workspace = true
 ic-stable-structures.workspace = true
 ic-stable-vector-page-store.workspace = true
 rapidhash.workspace = true

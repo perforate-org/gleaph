@@ -11,11 +11,12 @@ use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     labeled::InitialCapacities, lara::maintenance::DeferredConfig,
 };
+use ic_stable_memory_backend::{StableMemoryBackend, stable_memory_backend};
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::MemoryId;
 #[cfg(feature = "canbench_standard_manager")]
 use ic_stable_structures::memory_manager::{MemoryManager, VirtualMemory};
-use ic_stable_structures::{DefaultMemoryImpl, Memory as StableMemory, StableCell};
+use ic_stable_structures::{Memory as StableMemory, StableCell};
 #[cfg(not(feature = "canbench_standard_manager"))]
 use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
 use std::cell::RefCell;
@@ -177,7 +178,7 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
 ))]
 const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[];
 
-pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) type Memory = VirtualMemory<StableMemoryBackend>;
 
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
@@ -201,24 +202,24 @@ pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedI
 pub(crate) type StableCanonicalExportScopes = CanonicalExportScopeStore<Memory>;
 
 #[cfg(feature = "canbench_standard_manager")]
-fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
+fn init_memory_manager() -> MemoryManager<StableMemoryBackend> {
     MemoryManager::init_with_bucket_size(
-        DefaultMemoryImpl::default(),
+        stable_memory_backend(),
         GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
     )
 }
 
 #[cfg(not(feature = "canbench_standard_manager"))]
-fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
+fn init_memory_manager() -> MemoryManager<StableMemoryBackend> {
     MemoryManager::init_with_policies(
-        DefaultMemoryImpl::default(),
+        stable_memory_backend(),
         GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
         GRAPH_MEMORY_MANAGER_POLICIES,
     )
 }
 
 thread_local! {
-    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
+    static MEMORY_MANAGER: RefCell<MemoryManager<StableMemoryBackend>> =
         RefCell::new(init_memory_manager());
 }
 

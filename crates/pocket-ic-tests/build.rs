@@ -248,6 +248,16 @@ fn build_wasm(manifest_dir: &Path) {
     );
     println!(
         "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../ic-stable-memory-backend/src")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../vector-canister/src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         manifest_dir.join("../provision/src").display()
     );
     let status = Command::new("cargo")

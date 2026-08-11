@@ -64,6 +64,7 @@ half.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-cdk-timers.workspace = true
+ic-stable-memory-backend.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true

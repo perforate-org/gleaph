@@ -1,0 +1,9 @@
+[package]
+name = "ic-stable-memory-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ic-cdk.workspace = true
+ic-stable-structures.workspace = true
