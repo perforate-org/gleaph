@@ -1067,6 +1067,35 @@ fn sync_ops(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
         .collect()
 }
 
+/// A batch mixing existing-subject Greater updates (first `count/2` ops on pre-seeded subjects
+/// `0..count/2`) with fresh upserts (last `count/2` ops on subjects `count..count+count/2`). Exercises
+/// the run-splitting path: the existing ops are processed per-row while the fresh ops form a batched run.
+fn sync_ops_mixed(count: usize, dims: u16) -> Vec<VectorEmbeddingSyncOp> {
+    (0..count)
+        .map(|index| {
+            let (vertex_id, mutation_id) = if index < count / 2 {
+                (index as u32, 2) // existing subject, Greater update
+            } else {
+                (count as u32 + index as u32, 1) // fresh subject
+            };
+            VectorEmbeddingSyncOp {
+                index_id: INDEX_ID,
+                embedding_name_id: 0,
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id,
+                },
+                mutation_id,
+                encoding: VectorEncoding::F32,
+                dims,
+                metric: VectorMetric::L2Squared,
+                bytes: vec_bytes(dims, index as f32),
+                remove: false,
+            }
+        })
+        .collect()
+}
+
 fn sync_batch_round(
     store: &VectorCanisterStore,
     caller: Principal,
@@ -1117,6 +1146,18 @@ fn bench_vector_sync_batch_256() -> canbench_rs::BenchResult {
 fn bench_vector_sync_batch_256_768_dims() -> canbench_rs::BenchResult {
     let store = setup_search_store(768, 0);
     let ops = sync_ops(256, 768);
+    canbench_rs::bench_fn(|| {
+        let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
+        black_box(applied)
+    })
+}
+
+/// Mixed batch: 128 existing-subject Greater updates + 128 fresh upserts. Measures the run-splitting
+/// path (existing ops per-row, fresh run batched) versus the all-or-nothing per-row fallback.
+#[bench(raw)]
+fn bench_vector_sync_batch_256_768_dims_mixed() -> canbench_rs::BenchResult {
+    let store = setup_search_store(768, 128); // pre-seed 128 subjects
+    let ops = sync_ops_mixed(256, 768);
     canbench_rs::bench_fn(|| {
         let applied = sync_batch_round(black_box(&store), shard_owner(), black_box(&ops));
         black_box(applied)
