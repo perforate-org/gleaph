@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 01:00:18 UTC +0000
+Anchor timestamp: 2026-08-11 02:00:52 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -99,18 +99,22 @@ certificate premises are not yet derived from Rust insertion history.
 `relocateWrite_preserves_noHoles` now proves the terminating insert write preserves
 `NoHoles` when every slot from the new key's bucket to the insertion position is occupied.
 That prefix premise is intentionally explicit because neither `RelocateWrite` nor
-`InsertRelocateOK` records the scan's stop-at-empty fact. The relocation-step proof and
-Rust derivation of the prefix remain open.
+`InsertRelocateOK` records the scan's stop-at-empty fact. The compiler-checked
+`findInsertPositionFrom_prefix` and `findInsertPosition_prefix` lemmas now extract the
+occupied prefix traversed by the initial Rust `find_insert_position` scan. Per-step
+displaced-entry prefixes and their Rust derivation remain open.
 
 `relocateStep_preserves_noHoles` now covers the intermediate write under the same prefix
 and non-EMPTY pending-distance premises. The displaced entry is pending rather than present
 in that intermediate state, so the theorem is deliberately local; the inductive chain
-composition and Rust derivation of the premises remain open.
+composition is closed by the certificate below, while per-step Rust derivation remains open.
 
 `InsertRelocateNoHolesOK` and `insertRelocate_preserves_noHoles` now compose the terminating
 and relocation-step cases across the full certified chain. The per-step occupied prefixes
 and non-EMPTY distances remain explicit; this is a chain-level conditional theorem, not yet
-a derivation from Rust's `find_insert_position` execution.
+a derivation of every displaced-entry prefix from Rust's `find_insert_position` execution.
+The initial scan prefix is now extracted by `findInsertPositionFrom_prefix` and
+`findInsertPosition_prefix`.
 
 The independent P1 / High `size_up` allocation defect recorded in `GAP-2026-08-10-002`
 is repaired in commit `c1dc31db7`: `size_up` derives its growth target from
@@ -125,8 +129,10 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Derive the `NoHoles`, `LenCoherent`, and insert-occupancy/prefix certificate premises from
-   Rust insertion history before refining the
+1. Derive the remaining `NoHoles`, `LenCoherent`, and displaced-entry prefix/distance
+   certificate premises from Rust insertion history. The initial scan prefix is now
+   extracted by `findInsertPositionFrom_prefix` / `findInsertPosition_prefix`; next refine
+   the per-step end-of-cluster history before refining the
    leading `remap_step` into the `PublicRemoveSettled` certificate and cover the absent-key
    and active-remap public branches before retiring the weak
    `UnRelocateStep`-targeted `remove_preserves_invariant` obligation.

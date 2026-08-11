@@ -215,6 +215,39 @@ lemma insertRelocate_preserves_noHoles {s s' : State} {key : Key} {value : Nat}
         relocateStep_preserves_noHoles hstep hno hpos hprefix hentry
       exact ih hno_mid
 
+-- The Rust `find_insert_position` scan supplies the occupied-prefix premise for the first
+-- pending entry: every slot it traverses before returning is occupied and belongs no later than
+-- the requested bucket. This lemma extracts only the occupancy part needed by `NoHoles`.
+-- src/map.rs L309-L319.
+lemma findInsertPositionFrom_prefix (s : State) (b i : Nat) :
+    ∀ j, i ≤ j → j < findInsertPositionFrom s b i →
+      j < capacity s.n ∧ IsOccupied s j ∧ BucketAt s j ≤ b := by
+  intro j hij hjout
+  rw [findInsertPositionFrom.eq_1] at hjout
+  by_cases hcap : i < capacity s.n
+  · by_cases hcontinue : IsOccupied s i ∧ BucketAt s i ≤ b
+    · simp only [if_pos hcap, if_pos hcontinue] at hjout
+      by_cases hji : j = i
+      · subst j
+        exact ⟨hcap, hcontinue.1, hcontinue.2⟩
+      · have hrec := findInsertPositionFrom_prefix s b (i + 1) j (by omega) hjout
+        exact hrec
+    · simp only [if_pos hcap, if_neg hcontinue] at hjout
+      omega
+  · simp only [if_neg hcap] at hjout
+    omega
+termination_by capacity s.n - i
+decreasing_by omega
+
+lemma findInsertPosition_prefix {s : State} {b position : Nat}
+    (hpos : findInsertPosition s b = position) :
+    ∀ j, b ≤ j → j < position → IsOccupied s j := by
+  intro j hbj hjpos
+  have hscan : j < findInsertPosition s b := by simpa [hpos] using hjpos
+  have hscan' : j < findInsertPositionFrom s b b := by
+    simpa [findInsertPosition] using hscan
+  exact (findInsertPositionFrom_prefix s b b j hbj hscan').2.1
+
 -- The base insert write keeps the ordered-cluster invariant, assuming `position` is a valid
 -- insertion point for the entry's bucket (as `find_insert_position` guarantees).
 lemma relocateWrite_preserves_clusterOrdered {s s' : State} {entry : Key} {value : Nat} {position : Nat}

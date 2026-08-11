@@ -2,7 +2,7 @@
 
 Date (UTC): 2026-08-09
 Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 01:00:18 UTC +0000
+Anchor timestamp: 2026-08-11 02:00:52 UTC +0000
 
 ## Target and version / Mode
 
@@ -187,17 +187,21 @@ Proved:
   header premises are not derivable from the existing `InsertRelocateOK` relation or from
   Rust insertion history yet.
 - `relocateWrite_preserves_noHoles` proves the terminating write preserves `NoHoles` when
-  the insertion-point prefix is explicitly occupied. The prefix/scan fact is not carried
-  by `RelocateWrite` or `InsertRelocateOK`, so relocation-step preservation and the Rust
-  derivation of that prefix remain open.
+  the insertion-point prefix is explicitly occupied. The compiler-checked
+  `findInsertPositionFrom_prefix` and `findInsertPosition_prefix` lemmas now extract the
+  occupied prefix traversed by the initial Rust `find_insert_position` scan. Per-step
+  displaced-entry prefixes and their Rust derivation remain open.
 - `relocateStep_preserves_noHoles` now proves the intermediate relocation write preserves
   `NoHoles` under the same explicit pending-entry prefix and non-EMPTY distance premises.
   The displaced entry is pending and therefore is intentionally not part of this
-  intermediate-state theorem; composing the chain remains open.
+  intermediate-state theorem; `InsertRelocateNoHolesOK` composes the chain, while the
+  per-step Rust derivation remains open.
 - `InsertRelocateNoHolesOK` and `insertRelocate_preserves_noHoles` now compose the
   terminating and intermediate lemmas across the full insert chain. Each pending entry's
-  occupied prefix and non-EMPTY write distance remain explicit certificate premises; the
-  theorem does not derive them from Rust's scan loop.
+  occupied prefix and non-EMPTY write distance remain explicit certificate premises. The
+  initial scan prefix is now derived from `findInsertPositionFrom_prefix` /
+  `findInsertPosition_prefix`; displaced-entry prefixes and distances are not yet derived
+  from Rust's relocation loop.
 - `insert_preserves_invariant` over the `InsertRelocateOK` chain is proved conditionally:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
@@ -280,7 +284,9 @@ certificate-level settled found-branch bridge through the final public `len - 1`
 The concrete lookup success direction is also proved for settled scans. A separate
 occupancy certificate now proves the `len + 1` cardinality bridge for settled insert chains,
 and the terminating/step `NoHoles` lemmas are now proved under explicit prefix premises,
-composed across the certified insert chain, but those premises are not yet derived from Rust.
+composed across the certified insert chain. The initial scan prefix is extracted from the
+Rust `find_insert_position` recursion; displaced-entry prefixes and distances still need
+an insertion-history proof.
 Lookup completeness
 is refuted by the current invariant's hole-permitting and length-independent model; it is now
 proved conditionally under `NoHoles` and `LenCoherent`. Remaining work includes justifying both
@@ -302,7 +308,7 @@ does not cover Rust certificate construction, active-remap insertion, or mid-cha
 `size_up`. The two `sorry`s remain on the weak `UnRelocateStep` and `RemapStep`
 declarations. The faithful bounded remove chain and its certificate-level settled
 found-branch public-remove bridge are separately proved invariant-preserving under
-`s.remapEnd = none`; the Rust justification of `NoHoles`, `LenCoherent`, and the insertion-prefix premises, and construction of the occupancy and remove certificates from leading
+`s.remapEnd = none`; the Rust justification of `NoHoles`, `LenCoherent`, and the displaced-entry insertion-prefix/distance premises, and construction of the occupancy and remove certificates from leading
 `remap_step`, active-remap, absent-key, and persistence refinement remain outside those
 theorems. The current `UnRelocateStep` relation has a counterexample for any inhabited key
 domain, and the current `RemapStep` relation is false; neither relation finding establishes
