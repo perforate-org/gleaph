@@ -15,7 +15,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, install_federation, install_vector_canister,
+    FederationEnv, GRAPH_NAME, ensure_user_graph_type, install_federation, install_vector_canister,
 };
 use gleaph_router::types::{
     RegisterVectorIndexArgs, SetVectorMaintenancePolicyArgs, VectorMaintenanceStateView,
@@ -58,6 +58,7 @@ fn register(env: &FederationEnv, target: Principal) {
         dims: DIMS,
         labels: vec!["User".to_string()],
         metric: Some(VectorMetric::L2Squared),
+        encoding: None,
         target: Some(target),
         if_not_exists: false,
     };
@@ -328,6 +329,7 @@ fn router_vector_search(env: &FederationEnv, query_value: f32, top_k: u32) -> Ve
 #[test]
 fn router_push_drives_to_awaiting_publish_then_explicit_publish() {
     let env = install_federation();
+    ensure_user_graph_type(&env);
     let _vector = ready_activated_vector_with_tombstone(&env);
 
     // Disabled by default: with no policy yet, the push step is a clean no-op.
@@ -401,6 +403,7 @@ fn router_push_drives_to_awaiting_publish_then_explicit_publish() {
 #[test]
 fn disabled_policy_is_noop_and_rbac_enforced() {
     let env = install_federation();
+    ensure_user_graph_type(&env);
     let _vector = ready_activated_vector_with_tombstone(&env);
 
     // A stored-but-disabled policy is a no-op (distinct from absent).
@@ -421,6 +424,7 @@ fn disabled_policy_is_noop_and_rbac_enforced() {
 #[test]
 fn maintenance_state_survives_upgrade_and_reset_recovers() {
     let env = install_federation();
+    ensure_user_graph_type(&env);
     let vector = ready_activated_vector_with_tombstone(&env);
     set_policy(&env, &policy_args(true)).expect("enable policy");
 

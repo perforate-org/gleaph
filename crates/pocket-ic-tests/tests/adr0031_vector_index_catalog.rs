@@ -22,13 +22,13 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
-use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding,
     VectorMetric, VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_as_admin,
+    FederationEnv, GRAPH_NAME, e2e_insert_vertex, ensure_user_graph_type, gql_query_as_admin,
     gql_query_with_params_as_admin, install_federation, install_single_shard_federation,
     install_vector_canister,
 };
@@ -140,6 +140,7 @@ fn set_target(env: &FederationEnv, index_id: u32, target: Principal) -> Result<(
 #[test]
 fn dense_embedding_name_allocation_is_isolated_for_rejected_registrations() {
     let env = install_federation();
+    ensure_user_graph_type(&env);
     let target = env.index;
 
     let reg = |embedding_name: &str, index_id: u32, tgt: Option<Principal>, if_not_exists: bool| {
@@ -152,6 +153,7 @@ fn dense_embedding_name_allocation_is_isolated_for_rejected_registrations() {
                 dims: DIMS,
                 labels: vec!["User".to_string()],
                 metric: Some(VectorMetric::L2Squared),
+                encoding: None,
                 target: tgt,
                 if_not_exists,
             },
@@ -216,6 +218,7 @@ fn dense_embedding_name_allocation_is_isolated_for_rejected_registrations() {
 #[test]
 fn catalog_lifecycle_keeps_activation_fail_closed_and_rejects_anonymous_target() {
     let env = install_federation();
+    ensure_user_graph_type(&env);
     let target = env.index;
 
     // Scenario: targeted registration / resolve / list / activation-gate-disabled.
@@ -228,6 +231,7 @@ fn catalog_lifecycle_keeps_activation_fail_closed_and_rejects_anonymous_target()
             dims: DIMS,
             labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
+            encoding: None,
             target: Some(target),
             if_not_exists: false,
         },
@@ -280,6 +284,7 @@ fn catalog_lifecycle_keeps_activation_fail_closed_and_rejects_anonymous_target()
                 dims: DIMS,
                 labels: vec!["User".to_string()],
                 metric: Some(VectorMetric::L2Squared),
+                encoding: None,
                 target: None,
                 if_not_exists: false,
             },
@@ -429,6 +434,7 @@ fn fully_activate_single_shard_index(env: &FederationEnv, vector: Principal) {
 #[test]
 fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
     let env = install_federation();
+    ensure_user_graph_type(&env);
     let vector = install_vector_canister(&env.pic, env.router);
 
     register(
@@ -440,6 +446,7 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
             dims: DIMS,
             labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
+            encoding: None,
             target: Some(vector),
             if_not_exists: false,
         },
@@ -650,6 +657,7 @@ fn router_vector_search(
 #[test]
 fn vector_and_gql_search_reject_top_k_above_shared_bound() {
     let env = install_single_shard_federation();
+    ensure_user_graph_type(&env);
     let vector = install_vector_canister(&env.pic, env.router);
 
     register(
@@ -661,6 +669,7 @@ fn vector_and_gql_search_reject_top_k_above_shared_bound() {
             dims: DIMS,
             labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
+            encoding: None,
             target: Some(vector),
             if_not_exists: false,
         },
@@ -690,7 +699,7 @@ fn vector_and_gql_search_reject_top_k_above_shared_bound() {
             env.router,
             env.admin,
             "gql_query",
-            Encode!(&query, &params).expect("encode gql query"),
+            Encode!(&query, &params, &ReadMode::Eventual).expect("encode gql query"),
         )
         .expect("gql_query call");
     let rejected_gql: Result<GqlQueryResult, RouterError> =
@@ -759,6 +768,7 @@ fn extract_id_and_score(
 #[test]
 fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
     let env = install_single_shard_federation();
+    ensure_user_graph_type(&env);
     let vector = install_vector_canister(&env.pic, env.router);
 
     register(
@@ -770,6 +780,7 @@ fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
             dims: DIMS,
             labels: vec!["User".to_string()],
             metric: Some(VectorMetric::L2Squared),
+            encoding: None,
             target: Some(vector),
             if_not_exists: false,
         },
@@ -848,6 +859,7 @@ fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
 #[test]
 fn cosine_score_as_is_exact_and_distance_as_rejected_without_poisoning() {
     let env = install_single_shard_federation();
+    ensure_user_graph_type(&env);
     let vector = install_vector_canister(&env.pic, env.router);
 
     register(
@@ -859,6 +871,7 @@ fn cosine_score_as_is_exact_and_distance_as_rejected_without_poisoning() {
             dims: DIMS,
             labels: vec!["User".to_string()],
             metric: Some(VectorMetric::Cosine),
+            encoding: None,
             target: Some(vector),
             if_not_exists: false,
         },
@@ -919,7 +932,8 @@ fn cosine_score_as_is_exact_and_distance_as_rejected_without_poisoning() {
             env.router,
             env.admin,
             "gql_query",
-            Encode!(&distance_query.to_string(), &params).expect("encode gql_query"),
+            Encode!(&distance_query.to_string(), &params, &ReadMode::Eventual)
+                .expect("encode gql_query"),
         )
         .expect("gql_query call");
     let result: Result<GqlQueryResult, RouterError> =

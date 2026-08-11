@@ -4199,4 +4199,96 @@ mod i8_tests {
             "I8 cosine recall too low: @10={r10} @100={r100}"
         );
     }
+
+    fn i8_search_tuned(
+        store: &VectorCanisterStore,
+        index_id: u32,
+        values: &[f32],
+        metric: VectorMetric,
+        top_k: u32,
+        eps: f32,
+    ) -> Vec<u32> {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let res = store
+            .vector_search_tuned(
+                &VectorSearchRequest {
+                    index_id,
+                    query: bytes,
+                    encoding: VectorEncoding::I8,
+                    dims: values.len() as u16,
+                    metric,
+                    top_k,
+                    candidate_subjects: None,
+                },
+                tuned(eps),
+            )
+            .expect("i8 tuned search");
+        res.hits
+            .iter()
+            .map(|h| match h.subject {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect()
+    }
+
+    /// I8 rebuild runs the full lifecycle (start -> sampling -> training -> building ->
+    /// ReadyToPublish -> publish -> cleanup -> Idle) and search stays exact across publish/cleanup
+    /// (partition full scan at `eps = INF` equals the pre-publish exact scan).
+    #[test]
+    fn i8_rebuild_publish_cleanup_full_lifecycle() {
+        let store = fresh_store();
+        for (v, vals) in [
+            (1u32, [1.0f32, 2.0, 3.0, 4.0]),
+            (2, [4.0, 3.0, 2.0, 1.0]),
+            (3, [0.0, 1.0, 2.0, 3.0]),
+            (4, [3.0, 2.0, 1.0, 0.0]),
+        ] {
+            i8_upsert_d(&store, I8_INDEX, v, &vals, VectorMetric::L2Squared);
+        }
+        // Exact scan before rebuild (nlist=1).
+        let before = i8_search_d(
+            &store,
+            I8_INDEX,
+            &[1.5, 1.5, 1.5, 1.5],
+            VectorMetric::L2Squared,
+            10,
+        );
+        // Rebuild to nlist=2 and drive to ReadyToPublish.
+        store
+            .admin_start_vector_rebuild(router(), I8_INDEX, 2, 100)
+            .expect("start");
+        assert_eq!(
+            drive_steps(&store, I8_INDEX).phase,
+            VectorRebuildPhase::ReadyToPublish
+        );
+        // Publish switches active to the rebuilt nlist=2 partition scan.
+        store
+            .admin_publish_vector_rebuild(router(), I8_INDEX)
+            .expect("publish");
+        // Full partition scan (eps=INF) matches the pre-publish exact scan.
+        let after = i8_search_tuned(
+            &store,
+            I8_INDEX,
+            &[1.5, 1.5, 1.5, 1.5],
+            VectorMetric::L2Squared,
+            10,
+            f32::INFINITY,
+        );
+        assert_eq!(
+            before, after,
+            "I8 search parity across publish (full partition scan)"
+        );
+        // Cleanup to Idle (old version dropped).
+        drive_cleanup(&store, I8_INDEX);
+        // Search still works and matches after cleanup.
+        let after_cleanup = i8_search_tuned(
+            &store,
+            I8_INDEX,
+            &[1.5, 1.5, 1.5, 1.5],
+            VectorMetric::L2Squared,
+            10,
+            f32::INFINITY,
+        );
+        assert_eq!(before, after_cleanup, "I8 search survives cleanup");
+    }
 }

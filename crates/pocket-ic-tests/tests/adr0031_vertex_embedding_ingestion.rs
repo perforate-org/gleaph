@@ -9,25 +9,30 @@ use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::{
-    ElementIdEncodingKey, GlobalVertexId, ShardId, encode_global_vertex_id,
+    ElementIdEncodingKey, GlobalVertexId, RouterError, ShardId, encode_global_vertex_id,
 };
 use gleaph_graph_kernel::vector_index::{
-    VectorMetric, VectorSearchResult, VectorSubject, VertexEmbeddingProjectionOutcome,
+    VectorCentroidCacheStatus, VectorEncoding, VectorMetric, VertexEmbeddingProjectionOutcome,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_with_params_as_admin,
-    install_single_shard_federation, install_vector_canister, wasm_bytes,
+    FederationEnv, GRAPH_NAME, e2e_insert_vertex_with_label, ensure_user_graph_type,
+    gql_query_with_params_as_admin, install_single_shard_federation, install_vector_canister,
+    user_vertex_label_id, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingBatchArgs,
-    AdminIngestVertexEmbeddingBatchItem, RegisterVectorIndexArgs,
+    AdminIngestVertexEmbeddingBatchItem, RegisterVectorIndexArgs, VectorIndexActivationStatus,
 };
 
 const EMBEDDING_NAME: &str = "ingest_title_vec";
 const INDEX_ID: u32 = 1;
 const DIMS: u16 = 16;
 
-fn register(env: &FederationEnv, vector: Principal) {
+fn register_with_encoding(
+    env: &FederationEnv,
+    vector: Principal,
+    encoding: Option<VectorEncoding>,
+) {
     let args = RegisterVectorIndexArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         embedding_name: EMBEDDING_NAME.to_string(),
@@ -35,6 +40,7 @@ fn register(env: &FederationEnv, vector: Principal) {
         dims: DIMS,
         labels: vec!["User".to_string()],
         metric: Some(VectorMetric::L2Squared),
+        encoding,
         target: Some(vector),
         if_not_exists: false,
     };
@@ -54,6 +60,10 @@ fn register(env: &FederationEnv, vector: Principal) {
         created.expect("register succeeds"),
         "first registration must be newly created"
     );
+}
+
+fn register(env: &FederationEnv, vector: Principal) {
+    register_with_encoding(env, vector, None);
 }
 
 fn set_dispatch_activation(env: &FederationEnv, enabled: bool) {
@@ -209,29 +219,6 @@ fn ingest(
         .expect("ingest succeeds")
 }
 
-fn router_vector_search(env: &FederationEnv, value: f32, top_k: u32) -> VectorSearchResult {
-    let query = vec_bytes(value);
-    let bytes = env
-        .pic
-        .query_call(
-            env.router,
-            env.admin,
-            "vector_search",
-            Encode!(
-                &GRAPH_NAME.to_string(),
-                &EMBEDDING_NAME.to_string(),
-                &query,
-                &top_k
-            )
-            .expect("encode"),
-        )
-        .expect("vector search call");
-    let result: Result<VectorSearchResult, gleaph_graph_kernel::federation::RouterError> =
-        Decode!(&bytes, Result<VectorSearchResult, gleaph_graph_kernel::federation::RouterError>)
-            .expect("decode");
-    result.expect("search succeeds")
-}
-
 fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::IcWireValue {
     let result =
         gql_query_with_params_as_admin(env, "MATCH (v) RETURN ELEMENT_ID(v) AS v_id", vec![]);
@@ -250,14 +237,45 @@ fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::IcWireValue {
     columns.remove("v_id").expect("v_id column")
 }
 
+fn router_vector_index_status(env: &FederationEnv) -> VectorIndexActivationStatus {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "get_vector_index_status",
+            Encode!(&GRAPH_NAME.to_string(), &INDEX_ID).expect("encode vector index status"),
+        )
+        .expect("router vector index status call");
+    Decode!(&bytes, Result<VectorIndexActivationStatus, RouterError>)
+        .expect("decode router vector index status")
+        .expect("router vector index status succeeds")
+}
+
+fn router_vector_centroid_cache_status(env: &FederationEnv) -> VectorCentroidCacheStatus {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "get_vector_centroid_cache",
+            Encode!(&GRAPH_NAME.to_string()).expect("encode vector cache status"),
+        )
+        .expect("router vector cache status call");
+    Decode!(&bytes, Result<VectorCentroidCacheStatus, RouterError>)
+        .expect("decode router vector cache status")
+        .expect("router vector cache status succeeds")
+}
+
 #[test]
 fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
     let env = install_single_shard_federation();
     let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
     register(&env, vector);
     fully_activate(&env, vector);
 
-    let inserted = e2e_insert_vertex(&env, env.graph_source);
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
     let encoded = encode_vertex(&env, inserted.local_vertex_id);
 
     let result = ingest(&env, encoded, vec![6.0; DIMS as usize]);
@@ -269,6 +287,11 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         ),
         "projection should be applied on activated index"
     );
+
+    // The catalog snapshot is Router-owned. The cache status follows Router -> vector, so it
+    // reaches the vector's router-only guard before the later GQL search does.
+    let pre_upgrade_catalog = router_vector_index_status(&env);
+    let pre_upgrade_router_call = router_vector_centroid_cache_status(&env);
 
     // The ingestion path uses the Graph → vector-index sync boundary. The vector canister owns
     // the durable derived state, so an upgrade after the batch has been acknowledged must not
@@ -282,21 +305,16 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         )
         .expect("upgrade vector canister");
 
-    let search = router_vector_search(&env, 6.0, 10);
-    assert!(
-        !search.hits.is_empty(),
-        "ingested embedding must be searchable"
-    );
-    let nearest = &search.hits[0];
     assert_eq!(
-        nearest.subject,
-        VectorSubject::Vertex {
-            shard_id: ShardId::new(0),
-            vertex_id: inserted.local_vertex_id,
-        },
-        "nearest subject must be the ingested vertex"
+        router_vector_index_status(&env),
+        pre_upgrade_catalog,
+        "vector upgrade must not change the Router vector-index catalog"
     );
-    assert_eq!(nearest.distance, 0.0, "exact query has zero distance");
+    assert_eq!(
+        router_vector_centroid_cache_status(&env),
+        pre_upgrade_router_call,
+        "the vector canister must still authorize its configured Router after upgrade"
+    );
 
     let expected_id = vertex_element_id(&env);
     let query = format!(
@@ -333,10 +351,11 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
 fn invalid_ingestion_fails_closed_before_graph_call() {
     let env = install_single_shard_federation();
     let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
     register(&env, vector);
     fully_activate(&env, vector);
 
-    let inserted = e2e_insert_vertex(&env, env.graph_source);
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
 
     // Dimension mismatch: values length 2 vs registered dims 16.
     let args = AdminIngestVertexEmbeddingBatchArgs {
@@ -382,4 +401,62 @@ fn invalid_ingestion_fails_closed_before_graph_call() {
         vec![6.0; DIMS as usize],
     );
     assert_eq!(valid.embedding_version, 1);
+}
+
+/// I8 end-to-end: an I8-registered index accepts an F32 wire embedding through Router -> Graph stamp
+/// -> vector canister, quantizes at write, and returns the ingested vertex as the exact match.
+#[test]
+fn i8_canonical_ingestion_reaches_router_vector_search() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    // The vector registration labels must already exist in the Router's vertex-label catalog, which
+    // is populated by graph-type DDL (the federation fixture creates no graph type).
+    ensure_user_graph_type(&env);
+    register_with_encoding(&env, vector, Some(VectorEncoding::I8));
+    fully_activate(&env, vector);
+
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let encoded = encode_vertex(&env, inserted.local_vertex_id);
+
+    let result = ingest(&env, encoded, vec![6.0; DIMS as usize]);
+    assert!(
+        matches!(
+            result.projection_outcome,
+            VertexEmbeddingProjectionOutcome::Applied
+        ),
+        "I8 projection should be applied on an activated index"
+    );
+
+    // Router validates the query as canonical F32 (`dims*4`) and forwards `encoding = I8`; the
+    // vector canister selects the fused i8×f32 kernels. A constant vector quantizes losslessly, so
+    // the exact GQL search returns the ingested vertex at (near-)zero distance.
+    let expected_id = vertex_element_id(&env);
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN ELEMENT_ID(d) AS d_id, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(6.0)),
+    )])
+    .expect("encode params");
+    let gql = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(gql.row_count, 1, "I8 exact GQL search returns one row");
+    let rows_blob = gql.rows_blob.expect("rows blob");
+    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    assert_eq!(wire.rows.len(), 1);
+    let columns: std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue> =
+        wire.rows[0].columns.clone().into_iter().collect();
+    assert_eq!(
+        columns.get("d_id").expect("d_id column"),
+        &expected_id,
+        "I8 GQL must return the ingested vertex ELEMENT_ID"
+    );
+    let distance = match columns.get("distance").expect("distance column") {
+        gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+        other => panic!("distance must be Float64, got {other:?}"),
+    };
+    assert!(
+        (distance - 0.0f64).abs() < 1e-3,
+        "I8 exact match distance must be ~zero, got {distance}"
+    );
 }

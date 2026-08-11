@@ -2453,6 +2453,39 @@ pub fn federation_graph_element_id_encoding_key_bytes(env: &FederationEnv) -> [u
     graph_element_id_encoding_key(&env.pic, env.admin, env.router, GRAPH_NAME).0
 }
 
+/// Applies the `User` vertex-type DDL using a single-stage inline schema binding
+/// (`CREATE GRAPH <graph> { NODE ... }`) so vector-index registration labels resolve in the Router's
+/// vertex-label catalog.
+pub fn ensure_user_graph_type(env: &FederationEnv) {
+    gql_mutate_as_admin(
+        env,
+        "CREATE GRAPH gleaph.pocket_ic { NODE User AS user }",
+        "pocket_ic_test_ensure_user_graph_type",
+    );
+}
+
+/// Resolves the `User` vertex-label id for the registered graph (created by [`ensure_user_graph_type`])
+/// so vector-ingestion tests can insert a `User`-labeled vertex (the graph-side label requirement of
+/// a vector index registered against the `User` label).
+pub fn user_vertex_label_id(env: &FederationEnv) -> u16 {
+    use gleaph_graph_kernel::entry::VertexLabelId;
+    use gleaph_graph_kernel::federation::RouterError;
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "lookup_vertex_label_id",
+            Encode!(&GRAPH_NAME.to_string(), &"User".to_string()).expect("encode"),
+        )
+        .expect("lookup_vertex_label_id");
+    let result: Result<VertexLabelId, RouterError> =
+        Decode!(&bytes, Result<VertexLabelId, RouterError>).expect("decode");
+    result
+        .expect("User label must exist after ensure_user_graph_type")
+        .raw()
+}
+
 /// Register and fully activate a single-shard vector index for the social demo graph.
 ///
 /// Registers `embedding_name` with dimension `dims` and `L2Squared` metric, enables global vector
@@ -2471,6 +2504,7 @@ pub fn fully_activate_social_vector_index(
         dims,
         labels: vec!["User".to_string()],
         metric: Some(VectorMetric::L2Squared),
+        encoding: None,
         target: Some(vector),
         if_not_exists: false,
     };

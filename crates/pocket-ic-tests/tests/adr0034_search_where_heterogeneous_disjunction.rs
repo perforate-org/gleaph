@@ -71,6 +71,7 @@ fn register_vector_index(env: &FederationEnv, metric: VectorMetric, target: Prin
         dims: DIMS,
         labels: vec!["Document".to_string()],
         metric: Some(metric),
+        encoding: None,
         target: Some(target),
         if_not_exists: false,
     };
