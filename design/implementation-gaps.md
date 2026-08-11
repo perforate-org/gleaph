@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 13:57:33 UTC +0000
+Anchor timestamp: 2026-08-11 15:02:04 UTC +0000
 
 ## Status
 
@@ -49,7 +49,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-11-002 — Active-remap overflow can force a full remap drain in one insert
 
-- **Status:** Resolved by commit `044e4f124`
+- **Status:** In progress
 - **Severity:** P1 / High bounded-execution risk
 - **Owner:** `ic-stable-clustered-hash-map` capacity, incremental-remap, and mutation-atomicity
   invariants
@@ -57,30 +57,36 @@ defect from being rediscovered without its prior reasoning.
   settled table, preserves the existing tail reserve while doubling buckets, and contains no
   active-remap drain. Normal and remap relocation preflight the full chain and extend a cleared
   64-slot tail before the first destructive write. `REMAP_BATCH = 64` counts every examined
-  position. Public `insert` and `remove` return `InsertError` when bounded remap maintenance cannot
-  extend the tail.
+  position. Public `insert` and `remove` keep the direct path when the final `REMAP_BATCH + 1` slots
+  are empty, which bounds all maintenance relocations plus the requested insert without growth.
+  Other growth-capable operations write directly through a block-granular undo transaction. It
+  snapshots each overwritten block below the operation's initial logical capacity at most once,
+  delegates exact growth and writes to the backing memory, and restores those disjoint blocks if the
+  operation returns an error. Writes in a newly grown logical tail need no snapshot because restoring
+  the original header makes them unreachable.
 - **Expected or needed behavior:** No public mutation should perform a table-sized remap fallback.
   Capacity pressure must be handled before relocation writes begin, preserve the current two-mapping
   (`N` / `N-1`) mixed-lookup contract, and leave the key set and header recoverable if stable-memory
-  growth fails. A failed public mutation must return the exact maintenance error before changing
-  the requested key or length.
+  growth fails. A failed public mutation must return the exact maintenance error with the whole
+  operation's logical bytes, header, length, capacity, remap boundary, and key set unchanged.
 - **Evidence:** `header.rs::CAPACITY_OFFSET` and `map.rs::capacity` establish the persisted source of
   truth. `extend_tail`, `insert_and_relocate`, `remap_position`, and settled-only `size_up` enforce
   grow -> clear -> publish ordering and preserve N/N-1 lookup.
-  `later_remap_tail_grow_oom_preserves_earlier_boundary_progress_and_reopens` proves that an earlier
-  boundary remains committed before a later OOM, and
-  `remove_returns_exact_remap_oom_without_deleting_key_and_reopens` proves the public error, length,
-  requested-key, and reopen contract.
-- **Impact:** The table-sized active-remap fallback is removed. Capacity growth failure is atomic at
-  each relocation boundary: grow failure occurs before that relocation changes slots or publishes
-  capacity. A bounded `remap_step` may already have completed earlier independent positions before
-  a later position encounters OOM; operation-wide rollback of those completed maintenance steps is
-  not part of the current contract. `remove` returns that OOM before deleting its requested key or
-  decrementing length.
-- **Next decision:** None for the implementation. Updating the Lean model for persisted capacity,
-  active-remap tail extension, and per-position OOM refinement is a later formal-audit slice. If
-  callers require operation-wide rollback of maintenance completed before a subsequent OOM, specify
-  that stronger transaction boundary separately.
+  `multi_boundary_active_remap_insert_oom_is_operation_atomic_and_retry_succeeds` and
+  `multi_boundary_active_remap_remove_oom_is_operation_atomic_and_retry_succeeds` prove exact-byte,
+  header, key-set, reopen, and successful-retry behavior when a later remap boundary needs growth.
+  The persisted unfiltered `canbench` run measures the generic clustered insert at 184.62M
+  instructions, a 3.63% improvement over the prior 191.58M baseline; the focused active-remap
+  fixtures remain within the noise threshold.
+- **Impact:** The table-sized active-remap fallback remains removed. A public `insert` or `remove`
+  now either commits its bounded maintenance and requested mutation together or returns
+  `OutOfMemory`/`CapacityOverflow` without changing logical map state. Stable-memory page count is
+  physical allocation and need not shrink if an earlier grow succeeded before a later failure. The
+  undo transaction covers returned errors; traps rely on the IC message rollback boundary, and the
+  map adds no standalone write-ahead journal for process-crash recovery outside that boundary.
+- **Next decision:** Commit the current implementation after the final validation gate. Updating the
+  Lean model for persisted capacity, active-remap tail extension, and operation-wide OOM refinement
+  remains a later formal-audit slice.
 
 ### GAP-2026-08-11-001 — Inner resize leaves the pending insert distance stale
 

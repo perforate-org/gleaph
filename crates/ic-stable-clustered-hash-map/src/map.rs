@@ -45,7 +45,9 @@ use crate::memory::{
 use ic_stable_structures::{Memory, Storable};
 use rapidhash::v3::{DEFAULT_RAPID_SECRETS, rapidhash_v3_inline};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 /// Empty marker: `u32::MAX` is never a real distance (distances are checked at insert).
 const EMPTY: u32 = u32::MAX;
@@ -111,6 +113,106 @@ struct Entry<K, V> {
     key: K,
     value: V,
     distance: u32,
+}
+
+const TRANSACTION_BLOCK_SIZE: u64 = 1024;
+
+struct UndoBlock {
+    index: u64,
+    offset: u64,
+    bytes: Vec<u8>,
+}
+
+/// Direct-write memory that retains the original bytes needed to undo a returned mutation error.
+/// Each pre-operation logical block is copied at most once; writes in a newly published tail need
+/// no undo record because restoring the original header makes those bytes unreachable.
+struct UndoMemory<'a, M: Memory> {
+    base: &'a M,
+    protected_bytes: u64,
+    blocks: Rc<RefCell<Vec<UndoBlock>>>,
+}
+
+impl<'a, M: Memory> UndoMemory<'a, M> {
+    fn new(base: &'a M, protected_bytes: u64) -> Self {
+        Self {
+            base,
+            protected_bytes,
+            blocks: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn snapshot_block(&self, index: u64) {
+        if self
+            .blocks
+            .borrow()
+            .binary_search_by_key(&index, |block| block.index)
+            .is_ok()
+        {
+            return;
+        }
+        let offset = index
+            .checked_mul(TRANSACTION_BLOCK_SIZE)
+            .expect("transaction block address overflow");
+        let mut bytes = vec![0; TRANSACTION_BLOCK_SIZE as usize];
+        self.base.read(offset, &mut bytes);
+        let mut blocks = self.blocks.borrow_mut();
+        let position = blocks
+            .binary_search_by_key(&index, |block| block.index)
+            .expect_err("transaction block was absent before snapshot");
+        blocks.insert(
+            position,
+            UndoBlock {
+                index,
+                offset,
+                bytes,
+            },
+        );
+    }
+
+    fn rollback(&self) {
+        for block in self.blocks.borrow_mut().drain(..) {
+            self.base.write(block.offset, &block.bytes);
+        }
+    }
+}
+
+impl<M: Memory> Clone for UndoMemory<'_, M> {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base,
+            protected_bytes: self.protected_bytes,
+            blocks: Rc::clone(&self.blocks),
+        }
+    }
+}
+
+impl<M: Memory> Memory for UndoMemory<'_, M> {
+    fn size(&self) -> u64 {
+        self.base.size()
+    }
+
+    fn grow(&self, pages: u64) -> i64 {
+        self.base.grow(pages)
+    }
+
+    fn read(&self, offset: u64, dst: &mut [u8]) {
+        self.base.read(offset, dst);
+    }
+
+    fn write(&self, offset: u64, src: &[u8]) {
+        let end = offset
+            .checked_add(src.len() as u64)
+            .expect("transaction write address overflow");
+        let snapshot_end = end.min(self.protected_bytes);
+        if offset < snapshot_end {
+            let first = offset / TRANSACTION_BLOCK_SIZE;
+            let last = (snapshot_end - 1) / TRANSACTION_BLOCK_SIZE;
+            for index in first..=last {
+                self.snapshot_block(index);
+            }
+        }
+        self.base.write(offset, src);
+    }
 }
 
 /// Stable clustered hash map over a [`Memory`] region.
@@ -452,7 +554,29 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
     }
 
     /// Inserts `key`/`value`, returning the previous value if the key was present.
+    ///
+    /// If stable-memory growth or capacity arithmetic fails, bounded remap maintenance and the
+    /// requested insert leave the operation's logical bytes and header unchanged. Physical pages
+    /// grown before a later failure are not rolled back.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        if self.remap_end() != u64::MAX {
+            if self.active_operation_has_bounded_empty_suffix() {
+                return self.insert_unplanned(key, value);
+            }
+            return self.run_transaction(|map| map.insert_transactional(key, value));
+        }
+        if self.is_full() {
+            if let Some(idx) = self.lookup_index(&key).0 {
+                let prev = self.read_value(idx);
+                self.write_value(idx, &value);
+                return Ok(Some(prev));
+            }
+            return self.run_transaction(|map| map.insert_transactional(key, value));
+        }
+        self.insert_unplanned(key, value)
+    }
+
+    fn insert_unplanned(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
         if self.remap_end() == u64::MAX && self.is_full() {
             // A settled full table must distinguish overwrite from a new-key resize. This is the
             // only path that pays a lookup before maintenance; ordinary inserts retain one lookup.
@@ -465,6 +589,18 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         } else {
             self.remap_step(REMAP_BATCH)?;
         }
+        self.insert_after_maintenance(key, value)
+    }
+
+    fn insert_transactional(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
+        if self.remap_end() == u64::MAX && self.is_full() {
+            return self.insert_unplanned(key, value);
+        }
+        self.remap_step_transactional(REMAP_BATCH)?;
+        self.insert_after_maintenance(key, value)
+    }
+
+    fn insert_after_maintenance(&self, key: K, value: V) -> Result<Option<V>, InsertError> {
         let (found, insert_position, b) = self.lookup_index(&key);
         if let Some(idx) = found {
             let prev = self.read_value(idx);
@@ -578,11 +714,31 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 
     /// Removes `key`, returning the previous value if present.
     ///
-    /// Bounded remap maintenance runs first. If that maintenance cannot grow the relocation tail,
-    /// the exact [`InsertError`] is returned before `key` is looked up or removed and before the
-    /// map length changes. Remap boundaries completed earlier in the same call remain committed.
+    /// Bounded remap maintenance and the requested removal are one logical operation. If their
+    /// stable-memory growth or capacity arithmetic fails, the exact [`InsertError`] is returned
+    /// with logical bytes, header, length, capacity, remap boundary, and key set unchanged.
+    /// Physical pages grown before a later failure are not rolled back.
     pub fn remove(&self, key: &K) -> Result<Option<V>, InsertError> {
+        if self.remap_end() != u64::MAX {
+            if self.active_operation_has_bounded_empty_suffix() {
+                return self.remove_unplanned(key);
+            }
+            return self.run_transaction(|map| map.remove_transactional(key));
+        }
+        self.remove_unplanned(key)
+    }
+
+    fn remove_unplanned(&self, key: &K) -> Result<Option<V>, InsertError> {
         self.remap_step(REMAP_BATCH)?;
+        self.remove_after_maintenance(key)
+    }
+
+    fn remove_transactional(&self, key: &K) -> Result<Option<V>, InsertError> {
+        self.remap_step_transactional(REMAP_BATCH)?;
+        self.remove_after_maintenance(key)
+    }
+
+    fn remove_after_maintenance(&self, key: &K) -> Result<Option<V>, InsertError> {
         let (idx, _, _) = self.lookup_index(key);
         let Some(idx) = idx else {
             return Ok(None);
@@ -591,6 +747,76 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         self.remove_and_relocate(idx);
         self.set_len(self.len() - 1);
         Ok(Some(prev))
+    }
+
+    /// Proves that one bounded maintenance batch plus a requested insert cannot consume every
+    /// empty suffix slot. Each remapped entry can fill at most one empty slot and the requested
+    /// insert can fill one more; remove is covered conservatively by the same bound.
+    fn active_operation_has_bounded_empty_suffix(&self) -> bool {
+        const STACK_BYTES: usize = 4096;
+        let required = REMAP_BATCH + 1;
+        let capacity = self.capacity();
+        if capacity < required {
+            return false;
+        }
+        if !self.is_empty_slot(capacity - 1) {
+            return false;
+        }
+        let remaining = required - 1;
+        let stride = self.entry_stride();
+        let Some(byte_len) = remaining.checked_mul(stride) else {
+            return false;
+        };
+        let Ok(byte_len) = usize::try_from(byte_len) else {
+            return false;
+        };
+        if byte_len > STACK_BYTES {
+            return (capacity - required..capacity - 1)
+                .all(|position| self.is_empty_slot(position));
+        }
+        let Some(offset) = (capacity - required)
+            .checked_mul(stride)
+            .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
+        else {
+            return false;
+        };
+        let distance_offset = self.key_size() as usize + self.value_size() as usize;
+        let stride = stride as usize;
+        let mut bytes = [0; STACK_BYTES];
+        self.memory.read(offset, &mut bytes[..byte_len]);
+        (0..remaining as usize).all(|index| {
+            let start = index * stride + distance_offset;
+            u32::from_le_bytes(bytes[start..start + 4].try_into().expect("distance width")) == EMPTY
+        })
+    }
+
+    /// Runs a growth-capable mutation directly while snapshotting each overwritten logical block
+    /// once. A returned error restores the original blocks; pages and bytes beyond the original
+    /// logical capacity remain unreachable after the header rollback. A trap relies on the IC's
+    /// message-level rollback, as do the map's distance-overflow assertions.
+    fn run_transaction<R>(
+        &self,
+        operation: impl FnOnce(
+            &StableClusteredHashMap<K, V, UndoMemory<'_, M>>,
+        ) -> Result<R, InsertError>,
+    ) -> Result<R, InsertError> {
+        let protected_bytes = self
+            .capacity()
+            .checked_mul(self.entry_stride())
+            .and_then(|bytes| DATA_OFFSET.checked_add(bytes))
+            .ok_or(InsertError::CapacityOverflow)?;
+        let undo_memory = UndoMemory::new(&self.memory, protected_bytes);
+        let transaction_map = StableClusteredHashMap {
+            memory: undo_memory.clone(),
+            _marker: PhantomData,
+        };
+        match operation(&transaction_map) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                undo_memory.rollback();
+                Err(error)
+            }
+        }
     }
 
     /// Eager remove: empty the slot and fill the gap by moving the tail of the next cluster up
@@ -680,6 +906,29 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         Ok(self.remap_end() == u64::MAX)
     }
 
+    /// Transactional counterpart to [`Self::remap_step`]. The undo boundary permits source-gap
+    /// filling before the post-removal insertion preflight, so a remapped chain is traversed once
+    /// instead of once before and once after the source removal.
+    fn remap_step_transactional(&self, max_entries: u64) -> Result<bool, InsertError> {
+        let mut left = max_entries;
+        while self.remap_end() != u64::MAX && left > 0 {
+            let position = self.remap_end();
+            left -= 1;
+            if !self.is_empty_slot(position) {
+                let n = self.log2_buckets();
+                let key = self.read_key(position);
+                let new_bucket = bucket(hash_key(&key.to_bytes()), n);
+                let current_bucket = self.bucket_by_position(position);
+                if current_bucket != new_bucket {
+                    self.remap_position_transactional(position, key, new_bucket)?;
+                    continue;
+                }
+            }
+            self.set_remap_end(position.wrapping_sub(1));
+        }
+        Ok(self.remap_end() == u64::MAX)
+    }
+
     /// Relocates the item at `position` to `new_bucket`, expanding `remap_end` if the relocation
     /// pushed an item across the boundary. `key` is already read by the caller, so it is not re-read.
     fn remap_position(&self, position: u64, key: K, new_bucket: u64) -> Result<(), InsertError> {
@@ -687,6 +936,27 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
         if self.relocation_reaches_capacity(insert_position) {
             self.extend_tail()?;
         }
+        let value = self.read_value(position);
+        self.remove_and_relocate(position);
+        let insert_position = self.find_insert_position(new_bucket);
+        let entry = Entry {
+            key,
+            value,
+            distance: checked_distance(insert_position - new_bucket),
+        };
+        let last_affected = self.insert_and_relocate(entry, insert_position)?;
+        self.adjust_remap_end(insert_position, last_affected);
+        Ok(())
+    }
+
+    /// Transactional remap position. Source removal is intentionally before the only insertion
+    /// preflight; [`Self::run_transaction`] restores it if tail growth then returns an error.
+    fn remap_position_transactional(
+        &self,
+        position: u64,
+        key: K,
+        new_bucket: u64,
+    ) -> Result<(), InsertError> {
         let value = self.read_value(position);
         self.remove_and_relocate(position);
         let insert_position = self.find_insert_position(new_bucket);
@@ -1749,8 +2019,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn later_remap_tail_grow_oom_preserves_earlier_boundary_progress_and_reopens() {
+    struct MultiBoundaryRemapOomFixture {
+        memory: FailNextGrowMemory,
+        map: StableClusteredHashMap<LargeKey, u64, FailNextGrowMemory>,
+        source: LargeKey,
+        earlier: LargeKey,
+        terminal: Vec<(LargeKey, u64)>,
+        next_key: u64,
+    }
+
+    fn multi_boundary_remap_oom_fixture() -> MultiBoundaryRemapOomFixture {
         let memory = FailNextGrowMemory::new();
         let map = StableClusteredHashMap::<LargeKey, u64, _>::new(memory.clone()).expect("new");
         while map.log2_buckets() < TAIL_OOM_OLD_N {
@@ -1825,56 +2103,114 @@ mod tests {
         map.set_len(terminal.len() as u64 + 2);
         map.set_remap_end(TAIL_OOM_OLD_HOME);
 
+        MultiBoundaryRemapOomFixture {
+            memory,
+            map,
+            source,
+            earlier,
+            terminal,
+            next_key,
+        }
+    }
+
+    #[test]
+    fn active_remap_bounded_empty_suffix_proves_direct_operation_needs_no_growth() {
+        let map = fresh();
+        while map.capacity() < REMAP_BATCH + 1 {
+            if map.remap_end() != u64::MAX {
+                assert!(map.remap_step(u64::MAX).expect("settle pre-grow"));
+            }
+            map.size_up().expect("grow fixture");
+        }
+        assert_ne!(map.remap_end(), u64::MAX);
+        assert!(map.active_operation_has_bounded_empty_suffix());
+        let before_capacity = map.capacity();
+
+        assert_eq!(map.insert(1, 1), Ok(None));
+        assert_eq!(map.capacity(), before_capacity);
+        assert_eq!(map.get(&1), Some(1));
+    }
+
+    #[test]
+    fn multi_boundary_active_remap_insert_oom_is_operation_atomic_and_retry_succeeds() {
+        let MultiBoundaryRemapOomFixture {
+            memory,
+            map,
+            source,
+            earlier,
+            terminal,
+            mut next_key,
+        } = multi_boundary_remap_oom_fixture();
+        let requested = next_large_key_for_old_and_new_home(&mut next_key, TAIL_OOM_OLD_N, 0, 0);
+
         let before_capacity = map.capacity();
         let before_len = map.len();
+        let before_buckets = map.buckets();
+        let before_remap_end = map.remap_end();
+        let before_bytes = memory.snapshot();
         assert!(map.is_empty_slot(before_capacity - 1));
+        assert!(
+            !map.active_operation_has_bounded_empty_suffix(),
+            "one empty terminal slot does not cover multiple relocations"
+        );
         assert_eq!(map.get(&earlier), Some(2));
         memory.fail_next_grow();
 
-        assert_eq!(map.remap_step(3), Err(InsertError::OutOfMemory));
         assert_eq!(
-            map.remap_end(),
-            TAIL_OOM_OLD_HOME - 1,
-            "the earlier relocation boundary remains committed"
+            map.insert(requested.clone(), 99),
+            Err(InsertError::OutOfMemory)
         );
+        assert_eq!(memory.snapshot(), before_bytes);
+        assert_eq!(map.remap_end(), before_remap_end);
         assert_eq!(map.capacity(), before_capacity);
         assert_eq!(map.len(), before_len);
+        assert_eq!(map.buckets(), before_buckets);
+        assert_eq!(map.get(&requested), None);
         assert_eq!(map.get(&source), Some(1));
         assert_eq!(map.get(&earlier), Some(2));
-        assert_eq!(map.read_key(before_capacity - 1), earlier);
         for (key, value) in &terminal {
             assert_eq!(map.get(key), Some(*value));
         }
-        assert_eq!(map.remap_step(1), Ok(false), "retry continues the remap");
-        let retry_capacity = map.capacity();
-        assert!(retry_capacity > before_capacity);
-        assert_eq!(map.get(&source), Some(1));
         drop(map);
 
-        let reopened =
-            StableClusteredHashMap::<LargeKey, u64, _>::init(memory).expect("reopen after OOM");
-        assert_eq!(reopened.remap_end(), TAIL_OOM_OLD_HOME - 1);
-        assert_eq!(reopened.capacity(), retry_capacity);
+        let reopened = StableClusteredHashMap::<LargeKey, u64, _>::init(memory.clone())
+            .expect("reopen after OOM");
+        assert_eq!(reopened.remap_end(), before_remap_end);
+        assert_eq!(reopened.capacity(), before_capacity);
         assert_eq!(reopened.len(), before_len);
+        assert_eq!(reopened.buckets(), before_buckets);
+        assert_eq!(reopened.get(&requested), None);
         assert_eq!(reopened.get(&source), Some(1));
         assert_eq!(reopened.get(&earlier), Some(2));
-        assert_eq!(reopened.read_key(before_capacity - 1), earlier);
+        for (key, value) in &terminal {
+            assert_eq!(reopened.get(key), Some(*value));
+        }
+
+        assert_eq!(reopened.insert(requested.clone(), 99), Ok(None));
+        assert!(reopened.capacity() > before_capacity);
+        assert_eq!(reopened.len(), before_len + 1);
+        assert_eq!(reopened.get(&requested), Some(99));
+        assert_eq!(reopened.get(&source), Some(1));
+        assert_eq!(reopened.get(&earlier), Some(2));
         for (key, value) in terminal {
             assert_eq!(reopened.get(&key), Some(value));
         }
     }
 
     #[test]
-    fn remove_returns_exact_remap_oom_without_deleting_key_and_reopens() {
-        let RemapTailOomFixture {
+    fn multi_boundary_active_remap_remove_oom_is_operation_atomic_and_retry_succeeds() {
+        let MultiBoundaryRemapOomFixture {
             memory,
             map,
             source,
+            earlier,
             terminal,
-        } = remap_tail_oom_fixture();
+            ..
+        } = multi_boundary_remap_oom_fixture();
         let requested = terminal[0].0.clone();
         let requested_value = terminal[0].1;
         let before_len = map.len();
+        let before_buckets = map.buckets();
         let before_capacity = map.capacity();
         let before_remap_end = map.remap_end();
         let before_bytes = memory.snapshot();
@@ -1882,24 +2218,37 @@ mod tests {
 
         assert_eq!(map.remove(&requested), Err(InsertError::OutOfMemory));
         assert_eq!(map.len(), before_len);
+        assert_eq!(map.buckets(), before_buckets);
         assert_eq!(map.capacity(), before_capacity);
         assert_eq!(map.remap_end(), before_remap_end);
         assert_eq!(memory.snapshot(), before_bytes);
         assert_eq!(map.get(&requested), Some(requested_value));
         assert_eq!(map.get(&source), Some(1));
+        assert_eq!(map.get(&earlier), Some(2));
         for (key, value) in &terminal {
             assert_eq!(map.get(key), Some(*value));
         }
         drop(map);
 
-        let reopened =
-            StableClusteredHashMap::<LargeKey, u64, _>::init(memory).expect("reopen after remove");
+        let reopened = StableClusteredHashMap::<LargeKey, u64, _>::init(memory.clone())
+            .expect("reopen after remove OOM");
         assert_eq!(reopened.len(), before_len);
+        assert_eq!(reopened.buckets(), before_buckets);
         assert_eq!(reopened.capacity(), before_capacity);
         assert_eq!(reopened.remap_end(), before_remap_end);
         assert_eq!(reopened.get(&requested), Some(requested_value));
         assert_eq!(reopened.get(&source), Some(1));
-        for (key, value) in terminal {
+        assert_eq!(reopened.get(&earlier), Some(2));
+        for (key, value) in &terminal {
+            assert_eq!(reopened.get(key), Some(*value));
+        }
+
+        assert_eq!(reopened.remove(&requested), Ok(Some(requested_value)));
+        assert_eq!(reopened.len(), before_len - 1);
+        assert_eq!(reopened.get(&requested), None);
+        assert_eq!(reopened.get(&source), Some(1));
+        assert_eq!(reopened.get(&earlier), Some(2));
+        for (key, value) in terminal.into_iter().skip(1) {
             assert_eq!(reopened.get(&key), Some(value));
         }
     }
