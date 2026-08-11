@@ -1,8 +1,8 @@
 # Verification Report
 
 Date (UTC): 2026-08-09
-Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 05:37:59 UTC +0000
+Last updated: 2026-08-11
+Anchor timestamp: 2026-08-11 06:17:35 UTC +0000
 
 ## Target and version / Mode
 
@@ -38,9 +38,11 @@ Mathlib):
 - Stage 3 — `Soundness.lean`: proofs of the target properties.
 - Stage 4 — this report.
 
-The direct command `lake env lean StableClusterAudit/Soundness.lean` succeeds and its output
-contains exactly the two preserved `sorry` warnings for the weak `UnRelocateStep` and
-`RemapStep` invariant-preservation declarations.
+Final validation completed successfully: `lake build StableClusterAudit.Map`,
+`lake build StableClusterAudit.Soundness`, and `lake build
+StableClusterAudit.Counterexamples` each exited 0. `Soundness` emitted only the two
+pre-existing `sorry` warnings for the weak `UnRelocateStep` and `RemapStep`
+invariant-preservation declarations. `git diff --check` also exited 0.
 
 ## Assumption list
 
@@ -137,6 +139,13 @@ content); added as axioms only if a proof required one:
 - The `insert` loop is formalized as an `InsertRelocate` chain (relocation steps ended by
   a `RelocateWrite`) carrying per-step well-formedness in an inductive `InsertRelocateOK`
   (order boundary, home bucket, precedes-the-displaced property).
+- An independent no-resize `InsertRelocateTrace` now records the bounded inner-loop
+  execution at certificate level: every current position is below capacity, every pending
+  distance is below `EMPTY`, a relocation frame is tied to its `RelocateStep`, the next
+  pending distance is exactly the displaced distance plus `next - position`, and the
+  continuation has strict progress and a strictly in-capacity next position. Its terminal
+  frame preserves the exact pending-distance/home-bucket equation. This deliberately
+  excludes a mid-chain resize transition.
 
 ### `Soundness.lean` (Stage 3)
 
@@ -221,6 +230,14 @@ Proved:
   a supplied, already-certified settled chain preserves `ClusterInvariant` under
   `remapEnd = none`. It does not prove that Rust constructs `InsertRelocateOK`, insertion
   during active remapping, or a relocation chain that enters `size_up` mid-chain.
+- `insertRelocateOfTrace` and `insertRelocateOccupancyOK_of_trace` prove that a supplied
+  no-resize
+  `InsertRelocateTrace` projects to `InsertRelocate` and its
+  `InsertRelocateOccupancyOK` certificate. This is certificate-level projection only, not
+  Rust construction or public-insert refinement. In particular, the outer `size_up`
+  branch, initial checked distance, `InsertRelocateOK` ordering facts, `NoHoles`,
+  `LenCoherent`, header/remap facts, active remapping, and the absent-key public branch
+  remain open.
 - Target (c), predicate level: `reopen_consistent_of_cluster_invariant` is kernel-checked,
   but proves only `KeySet` equivalence with the existential `LookupFound` predicate through
   `EntryAtCorrectBucket`; it does not refine the actual `lookupIndex`, a persisted memory

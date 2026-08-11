@@ -601,6 +601,32 @@ lemma insertRelocate_preserves_noHoles_of_findPosition
     findInsertPosition_prefix hscan
   exact insertRelocate_preserves_noHoles_of_occupancyOK hok hno hprefix
 
+-- A no-resize execution trace projects to the existing weak relocation-chain relation.
+-- The strict position bounds exclude the `size_up` branch; the projection intentionally erases
+-- the execution-only distance and bound evidence. src/map.rs L460-L488.
+theorem insertRelocateOfTrace {s s' : State} {key : Key} {value pendingDist position : Nat}
+    (htrace : InsertRelocateTrace s s' key value pendingDist position) :
+    InsertRelocate s s' key value position := by
+  induction htrace with
+  | done hw _hpos _hentry _hdist =>
+      exact InsertRelocate.done hw
+  | step mid hstep _hpos _hentry _nextDist _hnextDist _hprogress _hnextPos hnext ih =>
+      exact InsertRelocate.step mid _ hstep ih
+
+-- The same trace constructs the occupancy certificate needed by the cardinality and `NoHoles`
+-- bridges: terminal writes are in bounds, and every intermediate pending distance is real.
+-- src/map.rs L467-L488.
+lemma insertRelocateOccupancyOK_of_trace
+    {s s' : State} {key : Key} {value pendingDist position : Nat}
+    (htrace : InsertRelocateTrace s s' key value pendingDist position) :
+    InsertRelocateOccupancyOK (insertRelocateOfTrace htrace) := by
+  induction htrace with
+  | done hw hpos _hentry _hdist =>
+      exact InsertRelocateOccupancyOK.done hw hpos
+  | step mid hstep hpos hentry _nextDist _hnextDist _hprogress _hnextPos hnext ih =>
+      exact InsertRelocateOccupancyOK.step mid _ hstep (insertRelocateOfTrace hnext)
+        hpos hentry ih
+
 -- A successful settled `lookupIndex` scan returns an in-bounds occupied slot with the
 -- requested key at its expected bucket. This is the concrete scan-result fact consumed by
 -- the public-remove certificate; it does not prove that every stored key is found.

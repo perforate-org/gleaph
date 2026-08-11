@@ -205,6 +205,34 @@ inductive InsertRelocate : State → State → Key → Nat → Nat → Prop wher
       (hnext : InsertRelocate mid s' hstep.tKey hstep.tVal hstep.next) :
       InsertRelocate s s' key value position
 
+-- Faithful no-resize execution trace for `insert_and_relocate`. The normal insert computes its
+-- initial pending distance at src/map.rs L445-L451, and `checked_distance` enforces the strict
+-- `EMPTY` bound at L88-L98. Every loop frame starts inside the table, explicitly excluding the
+-- `position >= capacity` / `size_up` branch at L467-L476.
+inductive InsertRelocateTrace : State → State → Key → Nat → Nat → Nat → Prop where
+  -- Empty-slot terminal write, src/map.rs L477-L480. The equality keeps the pending-distance
+  -- index faithful to the distance written by `RelocateWrite`.
+  | done {s s' : State} {key : Key} {value pendingDist position : Nat}
+      (hw : RelocateWrite s s' key value position)
+      (hpos : position < capacity s.n)
+      (hentry : pendingDist < EMPTY)
+      (hdist : pendingDist = position - bucket key s.n) :
+      InsertRelocateTrace s s' key value pendingDist position
+  -- Occupied-slot relocation, src/map.rs L481-L487. Passing `pendingDist` directly to
+  -- `RelocateStep` ties the current in-memory entry's distance to the modeled write; the strict
+  -- progress and capacity bounds record that the next loop frame remains in this no-resize trace.
+  | step {s s' : State} {key : Key} {value pendingDist position : Nat}
+      (mid : State)
+      (hstep : RelocateStep s mid key value pendingDist position)
+      (hpos : position < capacity s.n)
+      (hentry : pendingDist < EMPTY)
+      (nextDist : Nat)
+      (hnextDist : nextDist = hstep.tDist + (hstep.next - position))
+      (hprogress : position < hstep.next)
+      (hnextPos : hstep.next < capacity mid.n)
+      (hnext : InsertRelocateTrace mid s' hstep.tKey hstep.tVal nextDist hstep.next) :
+      InsertRelocateTrace s s' key value pendingDist position
+
 -- Well-formedness carried through the insert chain: at each step, `position` is an order
 -- boundary for the pending entry's bucket, the pending entry is at its home bucket and
 -- precedes the displaced entry. This is what `find_insert_position` and the loop guarantee.

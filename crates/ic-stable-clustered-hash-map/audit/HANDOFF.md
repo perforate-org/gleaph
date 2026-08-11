@@ -1,7 +1,7 @@
 # Resolved historical provenance: `insert_preserves_invariant`
 
-Last updated: 2026-08-10
-Anchor timestamp: 2026-08-11 05:37:59 UTC +0000
+Last updated: 2026-08-11
+Anchor timestamp: 2026-08-11 06:17:35 UTC +0000
 
 This file records the historical proof handoff; it is not current implementation guidance.
 
@@ -18,6 +18,25 @@ This file records the historical proof handoff; it is not current implementation
 already-certified `InsertRelocateOK` chain. The result is conditional on
 `remapEnd = none`; it does not prove Rust constructs the certificate, active-remap
 insertion, or a relocation chain that enters `size_up` mid-chain.
+
+The bounded no-resize inner-loop slice is now independently represented by
+`InsertRelocateTrace`. Each frame certifies `position < capacity` and
+`pendingDist < EMPTY`; a relocation frame is tied directly to `RelocateStep`, the next
+pending distance is exactly the displaced distance plus `next - position`, and the next
+frame has strict progress and a strict capacity bound. The terminal frame records exact
+pending-distance fidelity to the key's home bucket. `Soundness.lean` proves
+`insertRelocateOfTrace` and `insertRelocateOccupancyOK_of_trace`, projecting this supplied
+trace to `InsertRelocate` and `InsertRelocateOccupancyOK`.
+
+This is a certificate-level projection, not a refinement proof that Rust constructs the
+trace or that public `insert` constructs either projected certificate. The outer `size_up`
+path and the initial checked distance, `InsertRelocateOK` ordering, `NoHoles`,
+`LenCoherent`, header/remap facts, active remapping, and the absent-key branch remain open.
+
+Final validation for this slice succeeded: `lake build StableClusterAudit.Map`,
+`lake build StableClusterAudit.Soundness`, and `lake build
+StableClusterAudit.Counterexamples` each exited 0; `Soundness` retained only the two
+pre-existing `sorry` warnings, and `git diff --check` exited 0.
 
 `sizeUp_preserves_entries` proves the `SizeUp` relation. By contrast, `remap_preserves_entries` is relation-level because `RemapStep` postulates `keySet` and `len`; it is not a Rust refinement proof of production `remap_step` or `remap_position`. Production `remap_position` may re-expand `remap_end`, and
 `ExpectedBucket` is not yet proved a faithful invariant for active remapping.
@@ -145,7 +164,10 @@ persisted memory image, or `init` / re-open behavior.
 
 ## Follow-on proofs
 
-1. Derive source `NoHoles` / `LenCoherent` after arbitrary insertion history, plus the per-step
+1. Derive the no-resize trace and source `NoHoles` / `LenCoherent` from arbitrary Rust
+   insertion history, including the outer `size_up`/initial checked-distance boundary,
+   `InsertRelocateOK` ordering, header/remap facts, active-remap and absent-key branches;
+   then establish public-insert refinement. Derive the per-step
    position/distance/occupancy certificate premises from Rust insertion history. The initial scan prefix is extracted by
    `findInsertPositionFrom_prefix` / `findInsertPosition_prefix`, and
    `relocateStep_next_prefix_of_noHoles` plus

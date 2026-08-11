@@ -1,7 +1,7 @@
 # Stage 0 — Scope (Lean Formal Audit of `StableClusteredHashMap`)
 
 Date (UTC): 2026-08-10
-Anchor timestamp: 2026-08-11 05:37:59 UTC +0000
+Anchor timestamp: 2026-08-11 06:17:35 UTC +0000
 
 ## 1. Mode
 
@@ -115,6 +115,14 @@ chain. Rust's distance/bound derivation and certificate construction remain open
 `insertRelocate_preserves_noHoles_of_findPosition` supplies the initial prefix from an
 explicit `findInsertPosition` result and closes the complete-chain `NoHoles` bridge when
 the source `NoHoles` and occupancy certificate are supplied.
+`InsertRelocateTrace` is now a separate no-resize certificate for the bounded inner insert
+loop. It records `position < capacity`, `pendingDist < EMPTY`, the direct
+`RelocateStep` tie, the exact next pending-distance equation, strict progress and strict
+next-capacity bounds, and terminal distance fidelity. `Soundness.lean` proves that this
+trace projects to `InsertRelocate` and `InsertRelocateOccupancyOK`; it does not prove that
+Rust constructs the trace or refine public insert. The outer `size_up` path and initial
+checked distance, `InsertRelocateOK` ordering facts, `NoHoles`/`LenCoherent`, header/remap
+facts, active remapping, and the absent-key branch remain outside this bounded slice.
 The abstract `freshState` models the cleared table after Rust `new`; its invariant,
 no-holes, length-coherence, and empty-key-set lemmas close only the initial base state,
 not persisted header validation or `init`.
@@ -152,6 +160,11 @@ image, or `init` / re-open behavior.
 
 ## 7. Deliverables
 
+Final validation for this bounded trace slice succeeded: `lake build
+StableClusterAudit.Map`, `lake build StableClusterAudit.Soundness`, and `lake build
+StableClusterAudit.Counterexamples` each exited 0; `Soundness` retained only the two
+pre-existing `sorry` warnings, and `git diff --check` exited 0.
+
 Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; see
 `audit/lakefile.lean`):
 
@@ -163,7 +176,9 @@ Lean artifacts under `audit/StableClusterAudit/` (a Lake project with Mathlib; s
   stale-tail/header lemmas; the retained weak `UnRelocateStep` and its stable-header
   helper remain distinct; `InsertRelocateOccupancyOK` records the explicit slot facts needed
   for the length/cardinality bridge, and `InsertRelocateNoHolesOK` records the per-step scan
-  prefixes needed for full-chain `NoHoles` preservation)
+  prefixes needed for full-chain `NoHoles` preservation; the independent no-resize
+  `InsertRelocateTrace` records current/next bounds, pending-distance fidelity, strict
+  progress, and the exact displacement-distance transition)
 - `Counterexamples.lean` (Stage 1 adversarial: B4 non-structural counterexample,
   `UnRelocateStep` relation counterexample for each supplied `k : Key`, machine-checked
   refutation of invariant preservation by the current `RemapStep` relation, and the
