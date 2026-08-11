@@ -1266,9 +1266,9 @@ impl<K: Storable + PartialEq, V: Storable, M: Memory> StableClusteredHashMap<K, 
 #[cfg(feature = "canbench")]
 pub(crate) mod canbench_fixtures {
     use super::*;
-    use ic_stable_structures::VectorMemory;
+    use ic_stable_structures::DefaultMemoryImpl;
 
-    type BenchMap = StableClusteredHashMap<u64, u64, VectorMemory>;
+    type BenchMap = StableClusteredHashMap<u64, u64, DefaultMemoryImpl>;
 
     /// A map state and its complete post-insert contract for one focused canbench case.
     #[derive(Clone, Copy)]
@@ -1358,7 +1358,7 @@ pub(crate) mod canbench_fixtures {
     }
 
     fn new_map_at_log2_buckets(log2_buckets: u8) -> BenchMap {
-        let map = BenchMap::new(VectorMemory::default()).expect("create canbench fixture map");
+        let map = BenchMap::new(DefaultMemoryImpl::default()).expect("create canbench fixture map");
         while map.log2_buckets() < log2_buckets {
             map.size_up().expect("pre-grow canbench fixture map");
             map.finish_resize_initialization_for_setup()
@@ -1602,7 +1602,8 @@ pub(crate) mod canbench_fixtures {
         const OLD_HOME: u64 = (1 << OLD_LOG2_BUCKETS) - 1;
         const NEW_HOME: u64 = (1 << NEW_LOG2_BUCKETS) - 1;
 
-        let mut map = BenchMap::new(VectorMemory::default()).expect("create active-remap fixture");
+        let mut map =
+            BenchMap::new(DefaultMemoryImpl::default()).expect("create active-remap fixture");
         let mut next_key = 0u64;
         while map.log2_buckets() < OLD_LOG2_BUCKETS || map.remap_end() != u64::MAX {
             let key = next_key;

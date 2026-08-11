@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 19:54:21 UTC +0000
+Anchor timestamp: 2026-08-11 20:22:23 UTC +0000
 
 ## Status
 
@@ -93,9 +93,10 @@ defect from being rediscovered without its prior reasoning.
   `multi_boundary_active_remap_insert_oom_is_operation_atomic_and_retry_succeeds` and
   `multi_boundary_active_remap_remove_oom_is_operation_atomic_and_retry_succeeds` prove exact-byte,
   header, key-set, reopen, and successful-retry behavior when a later remap boundary needs growth.
-  The current persisted unfiltered `canbench` run measures the generic clustered insert at
-  193.25M instructions, a 2.29% improvement over the previous bounded-resize baseline; the
-  focused active-remap fixtures remain within the noise threshold.
+  The current persisted unfiltered `canbench` run uses `DefaultMemoryImpl` and measures the generic
+  clustered insert at 66.99M instructions on the wasm32 canbench target; the focused active-remap
+  fixtures also complete under the target-selected stable-memory backend. This is a new baseline
+  and is not directly comparable with the former explicit-`VectorMemory` artifact.
 - **Impact:** The table-sized active-remap fallback remains removed. A public `insert` or `remove`
   now either commits its bounded maintenance and requested mutation together or returns
   `OutOfMemory`/`CapacityOverflow` without changing logical map state. Stable-memory page count is
@@ -129,13 +130,13 @@ defect from being rediscovered without its prior reasoning.
   `publishing_resize_marker_reopens_and_finishes_metadata_commit`, and
   `clear_new_aborts_pending_resize_and_reopens_settled` cover cursor progress, reopen, OOM rollback,
   metadata recovery, and reset behavior. The updated N=13/N=16/N=20/N=23 threshold fixtures keep
-  setup outside the timed closure and each measures 27,445 scoped instructions for the bounded
+  setup outside the timed closure and each measures 17,574 scoped instructions for the bounded
   64-slot prefix; the exact persisted values are in
   `crates/ic-stable-clustered-hash-map/canbench_results.yml`.
 - **Impact:** The capacity-scale `clear_region` write is no longer performed in one public mutation,
   and the target mapping is not advertised until the cursor reaches the target. The scale benchmark
-  still includes host-side `VectorMemory` growth and transaction overhead, while long collision
-  chains remain input-dependent and are not bounded by this slice. Stable-memory pages grown before
+  still includes target-selected stable-memory growth and transaction overhead, while long
+  collision chains remain input-dependent and are not bounded by this slice. Stable-memory pages grown before
   a later returned error remain physical backing outside the logical rollback contract.
 - **Next decision:** Final Rust/benchmark validation is complete in the current worktree; mark this
   entry resolved with the fixing commit. Keep the large-collision-chain bound and a direct N=24+

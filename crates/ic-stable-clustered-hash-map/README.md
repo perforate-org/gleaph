@@ -39,22 +39,22 @@ crate. Measured with canbench (`N = 4096`, per-op instructions):
 
 | operation | clustered | btree   | clustered vs btree |
 | --------- | --------- | ------- | ------------------ |
-| get       | ≈ 4.3k    | ≈ 26.6k | ~6.3x faster       |
-| insert    | ≈ 47.2k   | ≈ 60.3k | ~1.28x faster      |
-| remove    | ≈ 10.0k   | ≈ 57.5k | ~5.8x faster       |
+| get       | ≈ 1.4k    | ≈ 17.6k | ~12.4x faster      |
+| insert    | ≈ 16.4k   | ≈ 41.7k | ~2.55x faster      |
+| remove    | ≈ 3.1k    | ≈ 39.2k | ~12.6x faster      |
 
 The threshold-trigger benchmark measures the public insert that performs the settled resize. Setup
 is outside the timed closure, and each fixture stores one valid resident per old home bucket.
 
 | old N | residents | trigger scope (instructions) | clear in timed call (`u64/u64`) |
 | ----- | ---------: | ---------------------------: | -------------------------------: |
-| 13    |      6,144 |                       27,445 |                       1,280 B |
-| 16    |     49,152 |                       27,445 |                       1,280 B |
-| 20    |    786,432 |                       27,445 |                       1,280 B |
-| 23    |  6,291,456 |                       27,445 |                       1,280 B |
+| 13    |      6,144 |                       17,574 |                       1,280 B |
+| 16    |     49,152 |                       17,574 |                       1,280 B |
+| 20    |    786,432 |                       17,574 |                       1,280 B |
+| 23    |  6,291,456 |                       17,574 |                       1,280 B |
 
 The measured initialization work is now a fixed 64-slot prefix per call; the values above include
-the host-side `VectorMemory` growth and metadata overhead, not a table-sized clear. The full
+the target-selected stable-memory growth and metadata overhead, not a table-sized clear. The full
 N=23→N=24→N=26 resize series remains spread across later operations; these threshold fixtures do
 not measure the total cost of completing that series. The Internet
 Computer currently documents a 40B update-call instruction limit, a 7B per-round execution-thread

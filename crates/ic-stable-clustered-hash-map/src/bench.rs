@@ -11,21 +11,21 @@
 
 use crate::{StableClusteredHashMap, map::canbench_fixtures};
 use canbench_rs::bench;
-use ic_stable_structures::{StableBTreeMap, VectorMemory};
+use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
 use std::hint::black_box;
 
 const N: u64 = 4096;
 
-fn setup_clustered() -> StableClusteredHashMap<u64, u64, VectorMemory> {
-    let map = StableClusteredHashMap::new(VectorMemory::default()).expect("new");
+fn setup_clustered() -> StableClusteredHashMap<u64, u64, DefaultMemoryImpl> {
+    let map = StableClusteredHashMap::new(DefaultMemoryImpl::default()).expect("new");
     for k in 0..N {
         map.insert(k, k).expect("insert");
     }
     map
 }
 
-fn setup_btree() -> StableBTreeMap<u64, u64, VectorMemory> {
-    let mut map = StableBTreeMap::init(VectorMemory::default());
+fn setup_btree() -> StableBTreeMap<u64, u64, DefaultMemoryImpl> {
+    let mut map = StableBTreeMap::init(DefaultMemoryImpl::default());
     for k in 0..N {
         map.insert(k, k);
     }
@@ -67,7 +67,7 @@ fn bench_btree_get() -> canbench_rs::BenchResult {
 /// Cost of `N` inserts into a fresh map (includes resizes).
 #[bench(raw)]
 fn bench_clustered_insert() -> canbench_rs::BenchResult {
-    let map = StableClusteredHashMap::new(VectorMemory::default()).expect("new");
+    let map = StableClusteredHashMap::new(DefaultMemoryImpl::default()).expect("new");
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_clustered_insert");
         for k in 0..N {
@@ -213,7 +213,7 @@ fn bench_clustered_insert_active_remap_tail_extension() -> canbench_rs::BenchRes
 /// Cost of `N` inserts into a fresh `StableBTreeMap` (includes rebalancing).
 #[bench(raw)]
 fn bench_btree_insert() -> canbench_rs::BenchResult {
-    let mut map = StableBTreeMap::init(VectorMemory::default());
+    let mut map = StableBTreeMap::init(DefaultMemoryImpl::default());
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_btree_insert");
         for k in 0..N {
