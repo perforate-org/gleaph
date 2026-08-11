@@ -44,7 +44,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorSlabStatsStep, VectorSubject,
 };
 use ic_stable_structures::Storable;
-use ic_stable_vector_page_store::kernel::l2_squared_f32;
+use ic_stable_vector_page_store::kernel::{l2_squared_f32, l2_squared_f32_early_exit};
 
 use super::recommend_partition_maintenance;
 use rapidhash::{HashSetExt, RapidHashSet};
@@ -802,10 +802,13 @@ impl VectorCanisterStore {
                 let mut best = 0usize;
                 let mut best_d = f32::INFINITY;
                 for (p, centroid) in decoded_centroids.iter().enumerate() {
-                    // SIMD L2 over the candidate's encoded bytes and the decoded centroid (4 dims per
-                    // `v128` op) instead of the scalar L2; the candidate is still decoded below for the
-                    // mean accumulation.
-                    let d = l2_squared_f32(cand, centroid);
+                    // Centroid-level early exit: a centroid whose partial L2 already exceeds the
+                    // running best cannot be the nearest (L2 partial sums are monotone), so skip it.
+                    // A tie does not trigger the strict-exceeds exit, preserving the lowest-id
+                    // tie-break; a non-finite centroid is skipped (a NaN distance never beats `best_d`).
+                    let Some(d) = l2_squared_f32_early_exit(cand, centroid, best_d) else {
+                        continue;
+                    };
                     if d < best_d {
                         best_d = d;
                         best = p;

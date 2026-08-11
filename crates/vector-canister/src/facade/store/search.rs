@@ -547,9 +547,14 @@ pub(super) fn assign_partition(centroids: &[Vec<f32>], bytes: &[u8]) -> u32 {
     let mut best = 0u32;
     let mut best_d = f32::INFINITY;
     for (p, centroid) in centroids.iter().enumerate() {
-        // SIMD L2 over the encoded row bytes and the decoded centroid (same kernel and tie-break as
-        // `training_step`), avoiding a `decode_f32` allocation and the scalar per-centroid loop.
-        let d = l2_squared_f32(bytes, centroid);
+        // Centroid-level early exit: a centroid whose partial L2 already exceeds the running best
+        // cannot be the nearest (L2 partial sums are monotone), so skip it. A tie (partial == best)
+        // does not trigger the strict-exceeds exit, so the full distance is computed and the lowest-id
+        // tie-break is preserved. A non-finite centroid returns `None` and is skipped, matching the
+        // original (a NaN distance never beats `best_d`).
+        let Some(d) = l2_squared_f32_early_exit(bytes, centroid, best_d) else {
+            continue;
+        };
         if d < best_d {
             best_d = d;
             best = p as u32;
@@ -1330,5 +1335,19 @@ mod tests {
         // Exact tie keeps the lowest partition id.
         let tie = vec![vec![3.0f32; 4], vec![3.0f32; 4]];
         assert_eq!(assign_partition(&tie, &row(&[3.0f32; 4])), 0);
+    }
+
+    #[test]
+    fn assign_partition_early_exit_matches_full_scan() {
+        // Many centroids; the early exit skips far ones but must find the same nearest as a full scan.
+        let centroids: Vec<Vec<f32>> = (0..8).map(|c| vec![c as f32 * 10.0; 4]).collect();
+        // Value 0 is nearest to centroid 0 (distance 0).
+        assert_eq!(assign_partition(&centroids, &row(&[0.0f32; 4])), 0);
+        // Value 25 is equidistant to centroids 2 and 3; the lowest id wins.
+        assert_eq!(assign_partition(&centroids, &row(&[25.0f32; 4])), 2);
+        // Value 35 is nearest to centroid 3 (distance 0).
+        assert_eq!(assign_partition(&centroids, &row(&[35.0f32; 4])), 3);
+        // Value 70 is nearest to centroid 7 (distance 0).
+        assert_eq!(assign_partition(&centroids, &row(&[70.0f32; 4])), 7);
     }
 }
