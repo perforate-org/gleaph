@@ -159,6 +159,48 @@ lemma relocateWrite_preserves_noHoles {s s' : State} {entry : Key} {value : Nat}
       rw [h.dist_other j hjpos]
       exact hsource
 
+-- A relocation step also preserves `NoHoles` when the pending entry's home-to-position prefix
+-- is occupied and its written distance is a real (non-EMPTY) distance. The displaced occupant
+-- is pending rather than present in the intermediate state, so this lemma is intentionally about
+-- the slots that the step has actually written. src/map.rs L468-L478.
+lemma relocateStep_preserves_noHoles {s s' : State} {entry : Key} {value : Nat}
+    {entryDist position : Nat} (h : RelocateStep s s' entry value entryDist position)
+    (hno : NoHoles s) (_hpos : position < capacity s.n)
+    (hprefix : ∀ j, bucket entry s.n ≤ j → j < position → IsOccupied s j)
+    (hentry : entryDist < EMPTY) : NoHoles s' := by
+  intro i k hicapi hiocc hkeyi j hkj hji
+  have hn : s'.n = s.n := h.n.symm
+  by_cases hipos : i = position
+  · subst i
+    have hkey : k = entry := by
+      apply Option.some.inj
+      calc
+        some k = s'.keyAt position := hkeyi.symm
+        _ = some entry := h.entryAt
+    have hkj' : bucket entry s.n ≤ j := by simpa [hkey, hn] using hkj
+    have hsource := hprefix j hkj' hji
+    change s'.dist j ≠ EMPTY
+    rw [h.dist_other j (by omega)]
+    exact hsource
+  · have hicapi_s : i < capacity s.n := by simpa [hn] using hicapi
+    have hiocc_s : IsOccupied s i := by
+      change s.dist i ≠ EMPTY
+      rw [← h.dist_other i hipos]
+      exact hiocc
+    have hkey_s : s.keyAt i = some k := by
+      rw [← h.keyAt_other i hipos]
+      exact hkeyi
+    have hkj_s : bucket k s.n ≤ j := by simpa [hn] using hkj
+    have hsource := hno i k hicapi_s hiocc_s hkey_s j hkj_s hji
+    by_cases hjpos : j = position
+    · subst j
+      change s'.dist position ≠ EMPTY
+      rw [h.entryDistAt]
+      exact ne_of_lt hentry
+    · change s'.dist j ≠ EMPTY
+      rw [h.dist_other j hjpos]
+      exact hsource
+
 -- The base insert write keeps the ordered-cluster invariant, assuming `position` is a valid
 -- insertion point for the entry's bucket (as `find_insert_position` guarantees).
 lemma relocateWrite_preserves_clusterOrdered {s s' : State} {entry : Key} {value : Nat} {position : Nat}
