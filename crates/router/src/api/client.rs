@@ -225,10 +225,13 @@ async fn vector_search(
             "top_k must be in 1..={MAX_VECTOR_SEARCH_TOP_K}"
         )));
     }
-    let expected_bytes = def.encoding.stride_bytes(def.dims) as usize;
+    // Model Y: the wire query bytes are always canonical F32 (`dims * 4`), independent of the stored
+    // encoding (`I8` stores `dims` bytes, so `def.encoding.stride_bytes(def.dims)` would wrongly
+    // reject an I8 search).
+    let expected_bytes = def.dims as usize * 4;
     if query.len() != expected_bytes {
         return Err(RouterError::InvalidArgument(format!(
-            "query byte length {} does not match dims*stride {}",
+            "query byte length {} does not match dims*4 {}",
             query.len(),
             expected_bytes
         )));
@@ -525,5 +528,62 @@ mod tests {
         ))
         .expect_err("byte length mismatch");
         assert!(matches!(err, RouterError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn router_vector_search_i8_uses_canonical_f32_wire_width() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        // Keep the later dispatch gate closed so it observes that the canonical query passed the
+        // local shape validation without requiring a vector canister fixture.
+        crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(false);
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        let name_id =
+            crate::facade::stable::embedding_name_catalog::intern_embedding_name(graph_id, "vec8")
+                .expect("intern I8 embedding name");
+        crate::facade::stable::vector_index_catalog::register_vector_index(
+            graph_id,
+            8,
+            name_id,
+            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+            gleaph_graph_kernel::vector_index::VectorEncoding::I8,
+            16,
+            Some(
+                crate::facade::stable::vector_index_catalog::VectorIndexTarget {
+                    canister: graph_principal(7),
+                },
+            ),
+            false,
+        )
+        .expect("register I8 vector index");
+
+        // I8 is the stored encoding only: the 16-dimensional wire query remains 16 F32 values.
+        let err = futures::executor::block_on(super::vector_search(
+            Some("tenant.main".into()),
+            "vec8".into(),
+            vec![0; 16 * 4],
+            10,
+        ))
+        .expect_err("canonical F32 query reaches the disabled dispatch gate");
+        assert!(matches!(
+            err,
+            RouterError::VectorDispatchActivationBlocked(_)
+        ));
+
+        // The stored I8 stride is not a valid wire-query width.
+        let err = futures::executor::block_on(super::vector_search(
+            Some("tenant.main".into()),
+            "vec8".into(),
+            vec![0; 16],
+            10,
+        ))
+        .expect_err("I8-width query must be rejected before dispatch");
+        assert_eq!(
+            err,
+            RouterError::InvalidArgument("query byte length 16 does not match dims*4 64".into())
+        );
     }
 }

@@ -337,13 +337,14 @@ pub const MAX_VECTOR_SEARCH_FILTER_CANDIDATES: usize = 4096;
 
 /// Read-only exact top-k vector search over a derived `ivf_flat` index (ADR 0031 Slice 5).
 ///
-/// `query` carries `dims` components encoded as `encoding` (`encoding.stride_bytes(dims)` bytes).
+/// `query` carries canonical F32 components (`dims * 4` bytes), independent of the stored index
+/// `encoding`; the vector canister applies any required quantization internally.
 /// Slice 5 is the degenerate exact baseline: `encoding == F32`, `metric == L2Squared`, single
 /// partition, exact scoring; centroid pruning / `nprobe` arrive in Slice 6+.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct VectorSearchRequest {
     pub index_id: u32,
-    /// `dims * encoding.component_bytes()` bytes of the query vector.
+    /// `dims * 4` bytes of a canonical F32 query vector, independent of the stored `encoding`.
     pub query: Vec<u8>,
     pub encoding: VectorEncoding,
     pub dims: u16,

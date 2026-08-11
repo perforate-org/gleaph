@@ -115,10 +115,13 @@ where
             "SEARCH LIMIT must be in 1..={MAX_VECTOR_SEARCH_TOP_K}"
         )));
     }
-    let expected_bytes = def.encoding.stride_bytes(def.dims) as usize;
+    // Model Y: the wire query bytes are always canonical F32 (`dims * 4`), independent of the stored
+    // encoding (`I8` stores `dims` bytes, so `def.encoding.stride_bytes(def.dims)` would wrongly
+    // reject an I8 search).
+    let expected_bytes = def.dims as usize * 4;
     if query.len() != expected_bytes {
         return Err(RouterError::InvalidArgument(format!(
-            "SEARCH query byte length {} does not match dims*stride {}",
+            "SEARCH query byte length {} does not match dims*4 {}",
             query.len(),
             expected_bytes
         )));
@@ -2975,9 +2978,18 @@ mod tests {
     }
 
     fn register_vector_index_for_test(
+        store: &RouterStore,
+        graph_id: GraphId,
+        metric: VectorMetric,
+    ) {
+        register_vector_index_for_test_with_encoding(store, graph_id, metric, VectorEncoding::F32);
+    }
+
+    fn register_vector_index_for_test_with_encoding(
         _store: &RouterStore,
         graph_id: GraphId,
         metric: VectorMetric,
+        encoding: VectorEncoding,
     ) {
         let name_id = embedding_name_catalog::intern_embedding_name(graph_id, "doc_vec").unwrap();
         vector_index_catalog::register_vector_index(
@@ -2987,7 +2999,7 @@ mod tests {
             vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             VectorIndexKind::IvfFlat,
             metric,
-            VectorEncoding::F32,
+            encoding,
             3,
             None,
             false,
@@ -3009,6 +3021,87 @@ mod tests {
             vector_index_catalog::VectorIndexActivationState::Registered,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn try_execute_gql_search_i8_forwards_canonical_f32_query() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test_with_encoding(
+            &store,
+            graph_id,
+            VectorMetric::L2Squared,
+            VectorEncoding::I8,
+        );
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None::<VectorSearchRequest>));
+        let observed_by_search = observed.clone();
+
+        let err = pollster::block_on(try_execute_gql_search(
+            &search_plan_with_output(SearchOutputKind::Distance, "distance"),
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            move |_target, request| {
+                *observed_by_search.lock().expect("record vector request") = Some(request);
+                std::future::ready(Err(RouterError::Internal(
+                    "I8 canonical F32 query reached vector search".into(),
+                )))
+            },
+        ))
+        .expect_err("canonical query reaches vector search");
+        assert_eq!(
+            err,
+            RouterError::Internal("I8 canonical F32 query reached vector search".into())
+        );
+        let request = observed
+            .lock()
+            .expect("read vector request")
+            .take()
+            .expect("canonical query was forwarded");
+        assert_eq!(request.encoding, VectorEncoding::I8);
+        assert_eq!(request.dims, 3);
+        assert_eq!(request.query.len(), 3 * 4);
+    }
+
+    #[test]
+    fn try_execute_gql_search_i8_rejects_stored_stride_query_width() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test_with_encoding(
+            &store,
+            graph_id,
+            VectorMetric::L2Squared,
+            VectorEncoding::I8,
+        );
+
+        let err = pollster::block_on(try_execute_gql_search(
+            &search_plan_with_distance(),
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ))
+        .expect_err("I8-width query must be rejected before vector search");
+        assert_eq!(
+            err,
+            RouterError::InvalidArgument(
+                "SEARCH query byte length 3 does not match dims*4 12".into()
+            )
+        );
     }
 
     #[test]
