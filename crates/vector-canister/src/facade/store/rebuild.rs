@@ -348,7 +348,9 @@ fn drop_version_pages(
 fn drop_version_heads_and_centroids(index_id: u32, version: u64, nlist: u32) {
     VECTOR_PARTITION_HEADS.with_borrow_mut(|heads| {
         for p in 0..nlist {
-            heads.remove(&PartitionKey::new(index_id, version, p));
+            heads
+                .remove(&PartitionKey::new(index_id, version, p))
+                .expect("remove retired partition head");
         }
     });
     IVF_CENTROIDS.with_borrow_mut(|centroids| {

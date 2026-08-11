@@ -1703,7 +1703,10 @@ fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
         &clustered_vectors(),
     );
     // Drop the subject-map entry for subject 1: its slab row is still non-tombstoned and is scored.
-    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&SubjectKey::new(INDEX_ID, subject(1))));
+    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+        m.remove(&SubjectKey::new(INDEX_ID, subject(1)))
+            .expect("remove subject-map fixture")
+    });
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");

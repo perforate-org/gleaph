@@ -99,7 +99,8 @@ pub(crate) fn gc_subjects_step(budget: u32) -> u32 {
 
     for key in &to_remove {
         VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| m.remove(key));
-        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&key.subject));
+        VECTOR_SUBJECT_TO_ID
+            .with_borrow_mut(|m| m.remove(&key.subject).expect("remove collected subject"));
     }
     // Persist the resume cursor: the last examined key if the scan was budget-bounded, else wrap to
     // the start (None) so the next step scans from the beginning again.

@@ -8,8 +8,15 @@ fast point lookups.
 
 - `get` / `insert` / `remove` / `contains_key` in **O(1)** amortized time (by key).
 - Growing when `len >= 3/4 * buckets` rehashes **incrementally**: the remap is spread
-  across subsequent operations (amortized **O(1)** per op), so there is no
-  stop-the-world rehash.
+  across subsequent operations (amortized **O(1)** per op). Bucket doubling requires a settled
+  remap. If relocation reaches the current logical capacity, the map first grows and clears a
+  small persisted tail chunk without changing the bucket mapping or draining active remap work.
+  A new-key insert that reaches the next load threshold before the remap settles continues the
+  bounded remap without starting another bucket generation.
+- `insert` and `remove` return `InsertError` when bounded remap maintenance cannot extend that tail.
+  Each relocation boundary is failure-atomic and the map remains valid and reopenable. Earlier
+  completed boundaries remain committed, while the failing boundary and the requested mutation do
+  not run.
 - Iteration is in unordered slot order (`iter`, and `iter_from` for resumable bounded
   scans).
 
@@ -21,7 +28,7 @@ crate. Measured with canbench (`N = 4096`, per-op instructions):
 | operation | clustered | btree   | clustered vs btree |
 | --------- | --------- | ------- | ------------------ |
 | get       | ≈ 4.2k    | ≈ 26.6k | ~6.3x faster       |
-| insert    | ≈ 39k     | ≈ 60.3k | ~1.5x faster       |
+| insert    | ≈ 44.0k   | ≈ 60.3k | ~1.37x faster      |
 | remove    | ≈ 9.4k    | ≈ 57.4k | ~6.1x faster       |
 
 Use **clustered** when point lookups dominate and keys are fixed-size. Use
@@ -35,9 +42,9 @@ use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_clustered_hash_map::StableClusteredHashMap;
 
 let map = StableClusteredHashMap::<u64, u64, _>::new(DefaultMemoryImpl::default()).unwrap();
-map.insert(1, 10);
+map.insert(1, 10).unwrap();
 assert_eq!(map.get(&1), Some(10));
-assert_eq!(map.remove(&1), Some(10));
+assert_eq!(map.remove(&1).unwrap(), Some(10));
 assert!(map.is_empty());
 ```
 

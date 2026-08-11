@@ -17,6 +17,8 @@ pub(crate) const LOG2_BUCKETS_OFFSET: u64 = 12;
 pub(crate) const KEY_SIZE_OFFSET: u64 = 13;
 pub(crate) const VALUE_SIZE_OFFSET: u64 = 17;
 pub(crate) const REMAP_END_OFFSET: u64 = 21;
+/// Logical table capacity, including the dynamically extensible collision tail.
+pub(crate) const CAPACITY_OFFSET: u64 = 29;
 
 /// Failure opening existing memory with [`crate::StableClusteredHashMap::init`].
 #[derive(PartialEq, Eq, Debug)]
@@ -64,6 +66,8 @@ pub(crate) struct Header {
     pub value_size: u32,
     /// Boundary of the in-place incremental resize's mixed range; `u64::MAX` = no resize in progress.
     pub remap_end: u64,
+    /// Logical number of allocated entry slots. This is the capacity source of truth.
+    pub capacity: u64,
 }
 
 /// Reads and validates the header at the start of `memory`.
@@ -86,11 +90,18 @@ pub(crate) fn read_header<M: Memory>(m: &M) -> Result<Header, InitError> {
         key_size: read_u32(m, KEY_SIZE_OFFSET),
         value_size: read_u32(m, VALUE_SIZE_OFFSET),
         remap_end: read_u64(m, REMAP_END_OFFSET),
+        capacity: read_u64(m, CAPACITY_OFFSET),
     })
 }
 
-/// Writes a fresh header (len 0) with the given log2 bucket count and element sizes.
-pub(crate) fn write_header<M: Memory>(m: &M, log2_buckets: u8, key_size: u32, value_size: u32) {
+/// Writes a fresh header (len 0) with the given table geometry and element sizes.
+pub(crate) fn write_header<M: Memory>(
+    m: &M,
+    log2_buckets: u8,
+    key_size: u32,
+    value_size: u32,
+    capacity: u64,
+) {
     m.write(0, &MAGIC);
     write_u32(m, VERSION_OFFSET, LAYOUT_VERSION as u32);
     write_u64(m, LEN_OFFSET, 0);
@@ -98,4 +109,5 @@ pub(crate) fn write_header<M: Memory>(m: &M, log2_buckets: u8, key_size: u32, va
     write_u32(m, KEY_SIZE_OFFSET, key_size);
     write_u32(m, VALUE_SIZE_OFFSET, value_size);
     write_u64(m, REMAP_END_OFFSET, u64::MAX);
+    write_u64(m, CAPACITY_OFFSET, capacity);
 }

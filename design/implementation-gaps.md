@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 08:34:37 UTC +0000
+Anchor timestamp: 2026-08-11 13:32:49 UTC +0000
 
 ## Status
 
@@ -46,6 +46,41 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-11-002 — Active-remap overflow can force a full remap drain in one insert
+
+- **Status:** Resolved in the current worktree; commit pending
+- **Severity:** P1 / High bounded-execution risk
+- **Owner:** `ic-stable-clustered-hash-map` capacity, incremental-remap, and mutation-atomicity
+  invariants
+- **Observed behavior:** The header stores logical capacity at offset 29. `size_up()` accepts only a
+  settled table, preserves the existing tail reserve while doubling buckets, and contains no
+  active-remap drain. Normal and remap relocation preflight the full chain and extend a cleared
+  64-slot tail before the first destructive write. `REMAP_BATCH = 64` counts every examined
+  position. Public `insert` and `remove` return `InsertError` when bounded remap maintenance cannot
+  extend the tail.
+- **Expected or needed behavior:** No public mutation should perform a table-sized remap fallback.
+  Capacity pressure must be handled before relocation writes begin, preserve the current two-mapping
+  (`N` / `N-1`) mixed-lookup contract, and leave the key set and header recoverable if stable-memory
+  growth fails. A failed public mutation must return the exact maintenance error before changing
+  the requested key or length.
+- **Evidence:** `header.rs::CAPACITY_OFFSET` and `map.rs::capacity` establish the persisted source of
+  truth. `extend_tail`, `insert_and_relocate`, `remap_position`, and settled-only `size_up` enforce
+  grow -> clear -> publish ordering and preserve N/N-1 lookup.
+  `later_remap_tail_grow_oom_preserves_earlier_boundary_progress_and_reopens` proves that an earlier
+  boundary remains committed before a later OOM, and
+  `remove_returns_exact_remap_oom_without_deleting_key_and_reopens` proves the public error, length,
+  requested-key, and reopen contract.
+- **Impact:** The table-sized active-remap fallback is removed. Capacity growth failure is atomic at
+  each relocation boundary: grow failure occurs before that relocation changes slots or publishes
+  capacity. A bounded `remap_step` may already have completed earlier independent positions before
+  a later position encounters OOM; operation-wide rollback of those completed maintenance steps is
+  not part of the current contract. `remove` returns that OOM before deleting its requested key or
+  decrementing length.
+- **Next decision:** Complete final independent approval and the scoped commit. Updating the Lean
+  model for persisted capacity, active-remap tail extension, and per-position OOM refinement is a
+  later formal-audit slice. If callers require operation-wide rollback of maintenance completed
+  before a subsequent OOM, specify that stronger transaction boundary separately.
 
 ### GAP-2026-08-11-001 — Inner resize leaves the pending insert distance stale
 
@@ -96,7 +131,7 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-10-002 — `size_up` under-allocates the canonical entry stride
 
-- **Status:** Resolved in the current uncommitted worktree; fixing commit pending
+- **Status:** Resolved by commit `c1dc31db7`
 - **Severity:** P1 / High
 - **Owner:** `ic-stable-clustered-hash-map` entry allocation/layout and `size_up`
 - **Observed behavior:** Before the repair, `entry_stride()` used the canonical

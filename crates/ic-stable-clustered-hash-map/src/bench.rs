@@ -4,8 +4,8 @@
 //! hash-map crates). The general `get`/`insert`/`remove` cases have matching B-tree cases for
 //! side-by-side comparisons. Clustered-only cases isolate its resize and remap mechanics, which do
 //! not have an equivalent B-tree operation.
-//! The active-remap overflow case covers the full-drain fallback. A standalone settled
-//! inner-overflow case remains deferred pending a separately verified fixture.
+//! The active-remap tail case measures logical tail extension without bucket growth or a remap
+//! drain. A standalone settled inner-overflow case remains deferred pending a verified fixture.
 
 use crate::{StableClusteredHashMap, map::canbench_fixtures};
 use canbench_rs::bench;
@@ -109,7 +109,7 @@ fn bench_clustered_insert_settled_relocation_chain() -> canbench_rs::BenchResult
     result
 }
 
-/// Cost of one insert after an N=8 resize has started its exact 64-entry remap batch.
+/// Cost of one insert that examines an exact 64-position batch of an active N=8 remap.
 #[bench(raw)]
 fn bench_clustered_insert_active_remap_batch() -> canbench_rs::BenchResult {
     let fixture = canbench_fixtures::active_remap_batch_insert();
@@ -149,21 +149,19 @@ fn bench_clustered_insert_n13_threshold_resize() -> canbench_rs::BenchResult {
     result
 }
 
-/// Cost of active-remap overflow: the remap batch fills the terminal cluster, drains, then grows.
+/// Cost of extending a full logical tail while preserving the active remap and bucket count.
 #[bench(raw)]
-fn bench_clustered_insert_active_remap_overflow_full_drain_resize() -> canbench_rs::BenchResult {
-    let fixture = canbench_fixtures::active_remap_overflow_full_drain_resize_insert();
+fn bench_clustered_insert_active_remap_tail_extension() -> canbench_rs::BenchResult {
+    let fixture = canbench_fixtures::active_remap_tail_extension_insert();
     let target = fixture.target;
 
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope(
-            "bench_clustered_insert_active_remap_overflow_full_drain_resize",
-        );
+        let _scope = canbench_rs::bench_scope("bench_clustered_insert_active_remap_tail_extension");
         black_box(
             fixture
                 .map
                 .insert(target, target)
-                .expect("active-remap overflow fallback insert"),
+                .expect("active-remap tail-extension insert"),
         );
     });
 
@@ -190,7 +188,7 @@ fn bench_clustered_remove() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_clustered_remove");
         for k in 0..N {
-            map.remove(&k);
+            map.remove(&k).expect("remove");
         }
     })
 }

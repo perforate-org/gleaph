@@ -175,7 +175,7 @@ impl VectorCanisterStore {
                     self.tombstone_slot(key.index_id, slot);
                 }
             }
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key));
+            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key).expect("remove purged subject"));
         }
 
         let resume_key = if exhausted {

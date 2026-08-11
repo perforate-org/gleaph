@@ -1,4 +1,4 @@
-//! **Stable Clustered Hashing** in Internet Computer stable memory: V1 layout with magic **`CHM`**, a
+//! **Stable Clustered Hashing** in Internet Computer stable memory: current layout with magic **`CHM`**, a
 //! 64-byte header prefix following `ic-stable-structures`, a flattened chained hash table where items
 //! of the same bucket are clustered together (Amble & Knuth 1974, "Ordered Hash Tables").
 //!
@@ -8,9 +8,16 @@
 //!
 //! - **O(1)** amortized [`StableClusteredHashMap::get`], [`StableClusteredHashMap::insert`],
 //!   [`StableClusteredHashMap::remove`], [`StableClusteredHashMap::contains_key`] (by key).
-//! - Growing when `len >= 3/4 * buckets` grows the table in place to a `2^(N+1) + (N+1)` layout
-//!   and rehashes entries incrementally: the remap is spread across subsequent operations
-//!   (amortized **O(1)** per op) rather than a single stop-the-world pass.
+//! - Growing when `len >= 3/4 * buckets` doubles a settled table's buckets while preserving its
+//!   dynamic collision-tail reserve, then rehashes entries incrementally across subsequent
+//!   operations (amortized **O(1)** per op). Relocation pressure grows and clears only the persisted
+//!   logical tail; it does not drain an active remap or introduce a third bucket mapping. A new-key
+//!   insert at the next threshold continues the bounded remap rather than starting another bucket
+//!   generation.
+//! - [`StableClusteredHashMap::insert`] and [`StableClusteredHashMap::remove`] return [`InsertError`]
+//!   when bounded remap maintenance cannot extend the relocation tail. Each relocation boundary is
+//!   failure-atomic and leaves reopenable state. Earlier completed boundaries remain committed;
+//!   the failing boundary and the requested mutation do not run.
 //!
 //! # Type parameters
 //!

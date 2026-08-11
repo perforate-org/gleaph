@@ -38,97 +38,97 @@ benches:
   bench_clustered_get:
     total:
       calls: 1
-      instructions: 17414156
+      instructions: 17420364
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_get:
         calls: 1
-        instructions: 17413161
+        instructions: 17419369
         heap_increase: 0
         stable_memory_increase: 0
   bench_clustered_insert:
     total:
       calls: 1
-      instructions: 161763590
+      instructions: 177840206
       heap_increase: 5
       stable_memory_increase: 0
     scopes:
       bench_clustered_insert:
         calls: 1
-        instructions: 161762595
+        instructions: 177839211
         heap_increase: 5
         stable_memory_increase: 0
   bench_clustered_insert_active_remap_batch:
     total:
       calls: 1
-      instructions: 940874
+      instructions: 105903
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_insert_active_remap_batch:
         calls: 1
-        instructions: 939869
+        instructions: 104898
         heap_increase: 0
         stable_memory_increase: 0
-  bench_clustered_insert_active_remap_overflow_full_drain_resize:
+  bench_clustered_insert_active_remap_tail_extension:
     total:
       calls: 1
-      instructions: 5265684
+      instructions: 117575
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_clustered_insert_active_remap_overflow_full_drain_resize:
+      bench_clustered_insert_active_remap_tail_extension:
         calls: 1
-        instructions: 5264679
+        instructions: 116580
         heap_increase: 0
         stable_memory_increase: 0
   bench_clustered_insert_n13_threshold_resize:
     total:
       calls: 1
-      instructions: 664160
+      instructions: 665755
       heap_increase: 9
       stable_memory_increase: 0
     scopes:
       bench_clustered_insert_n13_threshold_resize:
         calls: 1
-        instructions: 663165
+        instructions: 664760
         heap_increase: 9
         stable_memory_increase: 0
   bench_clustered_insert_settled_direct:
     total:
       calls: 1
-      instructions: 8428
+      instructions: 8798
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_insert_settled_direct:
         calls: 1
-        instructions: 7423
+        instructions: 7793
         heap_increase: 0
         stable_memory_increase: 0
   bench_clustered_insert_settled_relocation_chain:
     total:
       calls: 1
-      instructions: 48548
+      instructions: 51510
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_insert_settled_relocation_chain:
         calls: 1
-        instructions: 47543
+        instructions: 50505
         heap_increase: 0
         stable_memory_increase: 0
   bench_clustered_remove:
     total:
       calls: 1
-      instructions: 38593160
+      instructions: 38638551
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_clustered_remove:
         calls: 1
-        instructions: 38592165
+        instructions: 38637556
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.7.0
