@@ -2551,6 +2551,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-stable-linear-hash-map"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "ic-cdk",
+ "ic-stable-structures",
+ "rapidhash",
+]
+
+[[package]]
 name = "ic-stable-memory-backend"
 version = "0.1.0"
 dependencies = [

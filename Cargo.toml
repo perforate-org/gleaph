@@ -28,6 +28,7 @@ members = [
     "crates/ic-stable-variable-memory-manager",
     "crates/ic-stable-vec-deque",
     "crates/ic-stable-clustered-hash-map",
+    "crates/ic-stable-linear-hash-map",
     "crates/index-ddl",
     "crates/instruction-budget",
     "crates/pocket-ic-tests",
@@ -76,6 +77,7 @@ ic-stable-memory-backend = { path = "crates/ic-stable-memory-backend" }
 ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 ic-stable-clustered-hash-map = { path = "crates/ic-stable-clustered-hash-map" }
+ic-stable-linear-hash-map = { path = "crates/ic-stable-linear-hash-map" }
 
 base64 = "0.23"
 bitflags = "2.13.1"
