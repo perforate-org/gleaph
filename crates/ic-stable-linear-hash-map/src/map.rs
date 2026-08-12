@@ -128,6 +128,23 @@ enum InsertPlan<V> {
     },
 }
 
+/// A remove operation fully planned from one observed even epoch.
+///
+/// The matching key, decoded previous value, and replacement metadata are all resolved before
+/// the mutation epoch becomes odd, so user-defined key or value operations cannot leave an
+/// interrupted mutation behind.
+enum RemovePlan<V> {
+    Absent,
+    Remove {
+        observed_epoch: u64,
+        bucket: u64,
+        slot: u32,
+        occupancy: u8,
+        len: u64,
+        previous: V,
+    },
+}
+
 struct PreparedEntry {
     bucket: u64,
     slot: u32,
@@ -183,7 +200,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         memory.write(header.journal_offset, &vec![0; journal_bytes as usize]);
         for bucket in 0..INITIAL_BUCKETS {
             memory.write(
-                Self::bucket_offset(header, bucket),
+                Self::bucket_base(header, bucket),
                 &[0; BUCKET_HEADER_BYTES as usize],
             );
         }
@@ -398,7 +415,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             .map_err(|_| MutationError::CapacityOverflow)?;
         let mut source_page = vec![0; page_bytes];
         self.memory.read(
-            Self::bucket_offset(self.header, source_bucket),
+            Self::bucket_base(self.header, source_bucket),
             &mut source_page,
         );
         let source_occupancy = Self::page_occupancy(&source_page);
@@ -410,9 +427,9 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             if source_occupancy & (1 << slot) == 0 {
                 continue;
             }
-            let entry = Self::page_entry_offset(self.header, slot);
-            let key_end = entry + self.header.key_size as usize;
-            let stored_key = K::from_bytes(Cow::Borrowed(&source_page[entry..key_end]));
+            let key = Self::page_key_offset(self.header, slot);
+            let key_end = key + self.header.key_size as usize;
+            let stored_key = K::from_bytes(Cow::Borrowed(&source_page[key..key_end]));
             let hash_input = stored_key.stable_hash_bytes();
             let routes = Self::candidate_buckets_from_bytes_at(
                 hash_input.as_ref(),
@@ -425,10 +442,13 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             }
             let destination_slot = Self::first_empty(new_occupancy)
                 .expect("at most one full source bucket moves into an empty bucket");
-            let destination = Self::page_entry_offset(self.header, destination_slot);
-            let end = destination + self.header.entry_stride as usize;
-            new_page[destination..end]
-                .copy_from_slice(&source_page[entry..entry + self.header.entry_stride as usize]);
+            let destination_key = Self::page_key_offset(self.header, destination_slot);
+            let destination_value = Self::page_value_offset(self.header, destination_slot);
+            let value = Self::page_value_offset(self.header, slot);
+            new_page[destination_key..destination_key + self.header.key_size as usize]
+                .copy_from_slice(&source_page[key..key_end]);
+            new_page[destination_value..destination_value + self.header.value_size as usize]
+                .copy_from_slice(&source_page[value..value + self.header.value_size as usize]);
             retained &= !(1 << slot);
             new_occupancy |= 1 << destination_slot;
         }
@@ -543,12 +563,10 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             } => {
                 grow_to_bytes(&self.memory, grow_to).map_err(Self::map_grow_error)?;
                 let mutation = self.begin_mutation_at(observed_epoch)?;
-                self.memory.write(
-                    Self::bucket_offset(self.header, source_bucket),
-                    &source_page,
-                );
                 self.memory
-                    .write(Self::bucket_offset(self.header, new_bucket), &new_page);
+                    .write(Self::bucket_base(self.header, source_bucket), &source_page);
+                self.memory
+                    .write(Self::bucket_base(self.header, new_bucket), &new_page);
                 if let Some(target) = target {
                     self.write_key_bytes(target.bucket, target.slot, &target.key);
                     self.write_value_bytes(target.bucket, target.slot, &target.value);
@@ -569,22 +587,71 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     }
 
     pub fn remove(&self, key: &K) -> Result<Option<V>, MutationError> {
-        let hash_input = key.stable_hash_bytes();
-        let hash_bytes = hash_input.as_ref();
-        let mutation = self.begin_mutation()?;
-        let hot = control::read_hot(&self.memory, self.header.control_offset);
-        let candidates = self.candidate_buckets_for_bytes_with_hot(hash_bytes, hot);
-        let Some((bucket, slot, occupancy, previous)) =
-            self.find_value_in_candidates(candidates, key)
-        else {
-            mutation.finish();
-            return Ok(None);
-        };
-        self.write_occupancy(bucket, occupancy & !(1 << slot));
-        let len = hot.len - 1;
-        control::write_len(&self.memory, self.header.control_offset, len);
-        mutation.finish();
-        Ok(Some(previous))
+        let plan = self.plan_remove(key)?;
+        self.apply_remove(plan)
+    }
+
+    fn plan_remove(&self, key: &K) -> Result<RemovePlan<V>, MutationError> {
+        let control = control::read(&self.memory, self.header.control_offset);
+        if !control.mutation_epoch.is_multiple_of(2) {
+            return Err(MutationError::InProgress);
+        }
+        let observed_epoch = control.mutation_epoch;
+        let planned = (|| {
+            let hash_input = key.stable_hash_bytes();
+            let candidates = self.candidate_buckets_for_bytes_at(
+                hash_input.as_ref(),
+                control.hash_seed,
+                control,
+            );
+            let Some((bucket, slot, occupancy, previous)) =
+                self.find_value_in_candidates(candidates, key)
+            else {
+                return Ok(RemovePlan::Absent);
+            };
+            Ok(RemovePlan::Remove {
+                observed_epoch,
+                bucket,
+                slot,
+                occupancy,
+                len: control
+                    .len
+                    .checked_sub(1)
+                    .ok_or(MutationError::CapacityOverflow)?,
+                previous,
+            })
+        })();
+        match planned {
+            Ok(RemovePlan::Absent) => {
+                self.ensure_epoch(observed_epoch)?;
+                Ok(RemovePlan::Absent)
+            }
+            Ok(plan) => Ok(plan),
+            Err(error) => {
+                self.ensure_epoch(observed_epoch)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn apply_remove(&self, plan: RemovePlan<V>) -> Result<Option<V>, MutationError> {
+        match plan {
+            RemovePlan::Absent => Ok(None),
+            RemovePlan::Remove {
+                observed_epoch,
+                bucket,
+                slot,
+                occupancy,
+                len,
+                previous,
+            } => {
+                let mutation = self.begin_mutation_at(observed_epoch)?;
+                self.write_occupancy(bucket, occupancy & !(1 << slot));
+                control::write_len(&self.memory, self.header.control_offset, len);
+                mutation.finish();
+                Ok(Some(previous))
+            }
+        }
     }
 
     fn expected_header() -> Result<Header, InitError> {
@@ -593,8 +660,12 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         }
         let key_size = K::BOUND.max_size();
         let value_size = V::BOUND.max_size();
-        let entry_stride = u64::from(key_size)
-            .checked_add(u64::from(value_size))
+        let value_slab_offset = BUCKET_HEADER_BYTES
+            .checked_add(
+                u64::from(BUCKET_SIZE)
+                    .checked_mul(u64::from(key_size))
+                    .ok_or(InitError::InvalidLayout)?,
+            )
             .ok_or(InitError::InvalidLayout)?;
         let control_offset = HEADER_SIZE;
         let journal_offset = control_offset
@@ -602,14 +673,15 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             .ok_or(InitError::InvalidLayout)?;
         let buckets_offset = journal_offset
             .checked_add(
-                8u64.checked_add(entry_stride)
+                8u64.checked_add(u64::from(key_size))
+                    .and_then(|bytes| bytes.checked_add(u64::from(value_size)))
                     .ok_or(InitError::InvalidLayout)?,
             )
             .ok_or(InitError::InvalidLayout)?;
-        let bucket_page_stride = BUCKET_HEADER_BYTES
+        let bucket_page_stride = value_slab_offset
             .checked_add(
                 u64::from(BUCKET_SIZE)
-                    .checked_mul(entry_stride)
+                    .checked_mul(u64::from(value_size))
                     .ok_or(InitError::InvalidLayout)?,
             )
             .ok_or(InitError::InvalidLayout)?;
@@ -621,7 +693,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             control_bytes: CONTROL_BYTES,
             journal_offset,
             buckets_offset,
-            entry_stride,
+            value_slab_offset,
             bucket_page_stride,
         })
     }
@@ -655,7 +727,12 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     fn candidate_buckets(&self, key: &K) -> (u64, u64) {
         let hot = control::read_hot(&self.memory, self.header.control_offset);
         let bytes = key.stable_hash_bytes();
-        self.candidate_buckets_for_bytes_with_hot(bytes.as_ref(), hot)
+        Self::candidate_buckets_from_bytes_at(
+            bytes.as_ref(),
+            &self.secrets_for_seed(hot.hash_seed),
+            hot.level,
+            hot.split_cursor,
+        )
     }
 
     #[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
@@ -672,19 +749,6 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         let first = linear_bucket(hash(bytes, &secrets[0]), level, split_cursor);
         let second = linear_bucket(hash(bytes, &secrets[1]), level, split_cursor);
         (first, second)
-    }
-
-    fn candidate_buckets_for_bytes_with_hot(
-        &self,
-        bytes: &[u8],
-        hot: control::HotControl,
-    ) -> (u64, u64) {
-        Self::candidate_buckets_from_bytes_at(
-            bytes,
-            &self.secrets_for_seed(hot.hash_seed),
-            hot.level,
-            hot.split_cursor,
-        )
     }
 
     fn candidate_buckets_for_bytes_at(
@@ -750,9 +814,12 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         candidates: (u64, u64),
         key: &K,
     ) -> Option<(u64, u32, u8, V)> {
-        let bucket_entries_bytes = u64::from(BUCKET_SIZE) * self.header.entry_stride;
-        if bucket_entries_bytes <= BULK_SCAN_MAX_BYTES {
-            return self.find_in_small_candidates(candidates, key, bucket_entries_bytes as usize);
+        if self.header.bucket_page_stride <= BULK_SCAN_MAX_BYTES {
+            return self.find_in_small_candidates(
+                candidates,
+                key,
+                self.header.bucket_page_stride as usize,
+            );
         }
         let occupancies = self.candidate_occupancies(candidates);
         self.find_in_candidates(candidates, occupancies, key)
@@ -908,15 +975,19 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         page[..2].copy_from_slice(&u16::from(occupancy).to_le_bytes());
     }
 
-    fn page_entry_offset(header: Header, slot: u32) -> usize {
-        BUCKET_HEADER_BYTES as usize + slot as usize * header.entry_stride as usize
+    fn page_key_offset(header: Header, slot: u32) -> usize {
+        BUCKET_HEADER_BYTES as usize + slot as usize * header.key_size as usize
+    }
+
+    fn page_value_offset(header: Header, slot: u32) -> usize {
+        header.value_slab_offset as usize + slot as usize * header.value_size as usize
     }
 
     fn write_page_entry(page: &mut [u8], header: Header, slot: u32, key: &[u8], value: &[u8]) {
-        let entry = Self::page_entry_offset(header, slot);
-        let key_end = entry + header.key_size as usize;
-        page[entry..key_end].copy_from_slice(key);
-        page[key_end..key_end + header.value_size as usize].copy_from_slice(value);
+        let key_offset = Self::page_key_offset(header, slot);
+        let value_offset = Self::page_value_offset(header, slot);
+        page[key_offset..key_offset + header.key_size as usize].copy_from_slice(key);
+        page[value_offset..value_offset + header.value_size as usize].copy_from_slice(value);
     }
 
     fn secrets_for_seed(&self, seed: u64) -> [RapidSecrets; 2] {
@@ -939,12 +1010,11 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         &self,
         candidates: (u64, u64),
         key: &K,
-        bucket_entries_bytes: usize,
+        page_bytes: usize,
     ) -> Option<(u64, u32, u8, V)> {
-        let page_bytes = BUCKET_HEADER_BYTES as usize + bucket_entries_bytes;
         let mut page = read_exact_to_vec_uninit(
             &self.memory,
-            Self::bucket_offset(self.header, candidates.0),
+            Self::bucket_base(self.header, candidates.0),
             page_bytes,
         );
         self.find_in_small_page(key, &page)
@@ -953,7 +1023,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
                 (candidates.1 != candidates.0)
                     .then(|| {
                         self.memory
-                            .read(Self::bucket_offset(self.header, candidates.1), &mut page);
+                            .read(Self::bucket_base(self.header, candidates.1), &mut page);
                         self.find_in_small_page(key, &page)
                             .map(|(slot, occupancy, value)| (candidates.1, slot, occupancy, value))
                     })
@@ -967,15 +1037,18 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         let mut occupied = occupancy;
         while occupied != 0 {
             let slot = occupied.trailing_zeros();
-            let entry =
-                BUCKET_HEADER_BYTES as usize + slot as usize * self.header.entry_stride as usize;
-            let key_end = entry + self.header.key_size as usize;
-            if K::from_bytes(Cow::Borrowed(&page[entry..key_end])) == *key {
-                let value_end = key_end + self.header.value_size as usize;
+            let key_offset = Self::page_key_offset(self.header, slot);
+            let value_offset = Self::page_value_offset(self.header, slot);
+            if K::from_bytes(Cow::Borrowed(
+                &page[key_offset..key_offset + self.header.key_size as usize],
+            )) == *key
+            {
                 return Some((
                     slot,
                     occupancy,
-                    V::from_bytes(Cow::Borrowed(&page[key_end..value_end])),
+                    V::from_bytes(Cow::Borrowed(
+                        &page[value_offset..value_offset + self.header.value_size as usize],
+                    )),
                 ));
             }
             occupied &= occupied - 1;
@@ -1003,15 +1076,8 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         if occupancies.0 == 0 && occupancies.1 == 0 {
             return None;
         }
-        let bucket_bytes = u64::from(BUCKET_SIZE) * self.header.entry_stride;
-        let mut buffer = vec![
-            0;
-            if bucket_bytes <= BULK_SCAN_MAX_BYTES {
-                bucket_bytes
-            } else {
-                u64::from(self.header.key_size)
-            } as usize
-        ];
+        let mut buffer =
+            vec![0; self.header.value_slab_offset as usize - BUCKET_HEADER_BYTES as usize];
         self.find_in_bucket(first, occupancies.0, key, &mut buffer)
             .map(|slot| (first, slot, occupancies.0))
             .or_else(|| {
@@ -1024,34 +1090,17 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             })
     }
 
-    fn find_in_bucket(
-        &self,
-        bucket: u64,
-        occupancy: u8,
-        key: &K,
-        entries: &mut [u8],
-    ) -> Option<u32> {
+    fn find_in_bucket(&self, bucket: u64, occupancy: u8, key: &K, keys: &mut [u8]) -> Option<u32> {
         if occupancy == 0 {
             return None;
         }
-        let bucket_entries = Self::bucket_offset(self.header, bucket) + BUCKET_HEADER_BYTES;
-        let bulk_scan = entries.len() > self.header.key_size as usize;
-        if bulk_scan {
-            self.memory.read(bucket_entries, entries);
-        }
+        let keys_base = Self::keys_base(self.header, bucket);
+        self.memory.read(keys_base, keys);
         let mut occupied = occupancy;
         while occupied != 0 {
             let slot = occupied.trailing_zeros();
-            let key_bytes = if bulk_scan {
-                let start = slot as usize * self.header.entry_stride as usize;
-                &entries[start..start + self.header.key_size as usize]
-            } else {
-                self.memory.read(
-                    bucket_entries + u64::from(slot) * self.header.entry_stride,
-                    &mut *entries,
-                );
-                &*entries
-            };
+            let start = slot as usize * self.header.key_size as usize;
+            let key_bytes = &keys[start..start + self.header.key_size as usize];
             if K::from_bytes(Cow::Borrowed(key_bytes)) == *key {
                 return Some(slot);
             }
@@ -1072,14 +1121,14 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
 
     fn write_occupancy(&self, bucket: u64, occupancy: u8) {
         self.memory.write(
-            Self::bucket_offset(self.header, bucket),
+            Self::bucket_base(self.header, bucket),
             &u16::from(occupancy).to_le_bytes(),
         );
     }
 
     fn occupancy_byte(memory: &M, header: Header, bucket: u64) -> u8 {
         let mut occupancy = [0; 2];
-        memory.read(Self::bucket_offset(header, bucket), &mut occupancy);
+        memory.read(Self::bucket_base(header, bucket), &mut occupancy);
         u16::from_le_bytes(occupancy) as u8
     }
 
@@ -1090,7 +1139,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     ) -> Result<(), InitError> {
         for bucket in 0..physical_buckets {
             let mut bucket_header = [0; BUCKET_HEADER_BYTES as usize];
-            memory.read(Self::bucket_offset(header, bucket), &mut bucket_header);
+            memory.read(Self::bucket_base(header, bucket), &mut bucket_header);
             let occupancy = u16::from_le_bytes([bucket_header[0], bucket_header[1]]);
             if occupancy & !0x00ff != 0 || bucket_header[2..].iter().any(|byte| *byte != 0) {
                 return Err(InitError::InvalidLayout);
@@ -1099,33 +1148,40 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         Ok(())
     }
 
-    fn bucket_offset(header: Header, bucket: u64) -> u64 {
+    fn bucket_base(header: Header, bucket: u64) -> u64 {
         header.buckets_offset + bucket * header.bucket_page_stride
     }
 
-    fn entry_offset(&self, bucket: u64, slot: u32) -> u64 {
-        Self::bucket_offset(self.header, bucket)
-            + BUCKET_HEADER_BYTES
-            + u64::from(slot) * self.header.entry_stride
+    fn keys_base(header: Header, bucket: u64) -> u64 {
+        Self::bucket_base(header, bucket) + BUCKET_HEADER_BYTES
+    }
+
+    fn key_offset(&self, bucket: u64, slot: u32) -> u64 {
+        Self::keys_base(self.header, bucket) + u64::from(slot) * u64::from(self.header.key_size)
+    }
+
+    fn values_base(header: Header, bucket: u64) -> u64 {
+        Self::bucket_base(header, bucket) + header.value_slab_offset
+    }
+
+    fn value_offset(&self, bucket: u64, slot: u32) -> u64 {
+        Self::values_base(self.header, bucket) + u64::from(slot) * u64::from(self.header.value_size)
     }
 
     fn read_value(&self, bucket: u64, slot: u32) -> V {
         read_storable(
             &self.memory,
-            self.entry_offset(bucket, slot) + u64::from(self.header.key_size),
+            self.value_offset(bucket, slot),
             self.header.value_size,
         )
     }
 
     fn write_key_bytes(&self, bucket: u64, slot: u32, key: &[u8]) {
-        self.memory.write(self.entry_offset(bucket, slot), key);
+        self.memory.write(self.key_offset(bucket, slot), key);
     }
 
     fn write_value_bytes(&self, bucket: u64, slot: u32, value: &[u8]) {
-        self.memory.write(
-            self.entry_offset(bucket, slot) + u64::from(self.header.key_size),
-            value,
-        );
+        self.memory.write(self.value_offset(bucket, slot), value);
     }
 
     fn checked_storable_bytes<'a, T: Storable>(
@@ -1284,9 +1340,12 @@ pub(crate) mod canbench_probe {
         }
 
         pub(crate) fn probe_bucket_value(&self, key: u64, route: Route) -> Option<u64> {
-            let bucket_entries_bytes = u64::from(BUCKET_SIZE) * self.header.entry_stride;
-            self.find_in_small_candidates(route.candidates, &key, bucket_entries_bytes as usize)
-                .map(|(_, _, _, value)| value)
+            self.find_in_small_candidates(
+                route.candidates,
+                &key,
+                self.header.bucket_page_stride as usize,
+            )
+            .map(|(_, _, _, value)| value)
         }
 
         pub(crate) fn probe_insert_control_route_lookup(&self, key: u64) -> Mutation {
@@ -1313,7 +1372,7 @@ pub(crate) mod canbench_probe {
                 bucket,
                 slot,
                 occupancy,
-                len: hot.len,
+                len: control::read_len(&self.memory, self.header.control_offset),
             }
         }
 
@@ -1328,12 +1387,17 @@ pub(crate) mod canbench_probe {
             value: u64,
             mutation: Mutation,
         ) -> bool {
-            let mut bytes = [0; 16];
+            let mut stored_key = [0; 8];
+            let mut stored_value = [0; 8];
             self.memory.read(
-                self.entry_offset(mutation.bucket, mutation.slot),
-                &mut bytes,
+                self.key_offset(mutation.bucket, mutation.slot),
+                &mut stored_key,
             );
-            bytes[..8] == key.to_be_bytes() && bytes[8..] == value.to_be_bytes()
+            self.memory.read(
+                self.value_offset(mutation.bucket, mutation.slot),
+                &mut stored_value,
+            );
+            stored_key == key.to_be_bytes() && stored_value == value.to_be_bytes()
         }
 
         pub(crate) fn probe_insert_metadata_publish(&self, mutation: Mutation) {
@@ -1351,7 +1415,7 @@ pub(crate) mod canbench_probe {
                     bucket,
                     slot,
                     occupancy,
-                    len: hot.len,
+                    len: control::read_len(&self.memory, self.header.control_offset),
                 },
                 value,
             )
@@ -1379,6 +1443,7 @@ mod tests {
         inner: VectorMemory,
         read_calls: Rc<Cell<u64>>,
         read_bytes: Rc<Cell<u64>>,
+        read_ranges: Rc<RefCell<Vec<(u64, usize)>>>,
         write_calls: Rc<Cell<u64>>,
         write_bytes: Rc<Cell<u64>>,
     }
@@ -1396,6 +1461,61 @@ mod tests {
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct RoutingKey(u64);
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Width3Key([u8; 3]);
+
+    impl Storable for Width3Key {
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            Cow::Borrowed(&self.0)
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.0.to_vec()
+        }
+
+        fn from_bytes(bytes: Cow<[u8]>) -> Self {
+            Self(bytes.as_ref().try_into().expect("fixed-width Width3Key"))
+        }
+
+        const BOUND: ic_stable_structures::storable::Bound =
+            ic_stable_structures::storable::Bound::Bounded {
+                max_size: 3,
+                is_fixed_size: true,
+            };
+    }
+
+    impl StableHashKey for Width3Key {
+        const HASH_ENCODING_ID: u64 = 0x4c48_4d00_0000_3005;
+        type HashBytes<'a> = [u8; 3];
+
+        fn stable_hash_bytes(&self) -> Self::HashBytes<'_> {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Width5Value([u8; 5]);
+
+    impl Storable for Width5Value {
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            Cow::Borrowed(&self.0)
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.0.to_vec()
+        }
+
+        fn from_bytes(bytes: Cow<[u8]>) -> Self {
+            Self(bytes.as_ref().try_into().expect("fixed-width Width5Value"))
+        }
+
+        const BOUND: ic_stable_structures::storable::Bound =
+            ic_stable_structures::storable::Bound::Bounded {
+                max_size: 5,
+                is_fixed_size: true,
+            };
+    }
 
     impl Storable for RoutingKey {
         fn to_bytes(&self) -> Cow<'_, [u8]> {
@@ -1568,6 +1688,7 @@ mod tests {
             self.read_calls.set(self.read_calls.get() + 1);
             self.read_bytes
                 .set(self.read_bytes.get() + dst.len() as u64);
+            self.read_ranges.borrow_mut().push((offset, dst.len()));
             self.inner.read(offset, dst);
         }
 
@@ -1628,8 +1749,58 @@ mod tests {
     fn reset_counts(memory: &CountingMemory) {
         memory.read_calls.set(0);
         memory.read_bytes.set(0);
+        memory.read_ranges.borrow_mut().clear();
         memory.write_calls.set(0);
         memory.write_bytes.set(0);
+    }
+
+    fn read_overlaps(range: (u64, usize), start: u64, len: u64) -> bool {
+        let end = range.0 + range.1 as u64;
+        range.0 < start + len && start < end
+    }
+
+    fn seed_large_second_candidate_fixture(
+        map: &StableLinearHashMap<u64, [u8; 2048], CountingMemory>,
+    ) -> (u64, [u8; 2048], u64) {
+        let target = (1u64..)
+            .find(|key| {
+                let candidates = map.candidate_buckets(key);
+                candidates.0 != candidates.1
+            })
+            .expect("distinct target candidates");
+        let candidates = map.candidate_buckets(&target);
+        let mut residents = Vec::new();
+        for (bucket, marker) in [(candidates.0, 0x31), (candidates.1, 0x51)] {
+            for slot in 0..2u32 {
+                let key = (target + 1..)
+                    .find(|key| {
+                        !residents.contains(key) && *key != target && {
+                            let routes = map.candidate_buckets(key);
+                            routes.0 == bucket || routes.1 == bucket
+                        }
+                    })
+                    .expect("candidate resident");
+                map.write_key_bytes(bucket, slot, key.to_bytes().as_ref());
+                map.write_value_bytes(bucket, slot, &[marker + slot as u8; 2048]);
+                map.write_occupancy(bucket, (1 << (slot + 1)) - 1);
+                residents.push(key);
+            }
+        }
+        let target_slot = 2;
+        let target_value = [0x91; 2048];
+        map.write_key_bytes(candidates.1, target_slot, target.to_bytes().as_ref());
+        map.write_value_bytes(candidates.1, target_slot, &target_value);
+        map.write_occupancy(candidates.1, 0b111);
+        control::write_len(&map.memory, map.header.control_offset, 5);
+
+        let miss = (target + 1..)
+            .find(|key| {
+                *key != target
+                    && !residents.contains(key)
+                    && map.candidate_buckets(key) == candidates
+            })
+            .expect("miss with the same candidates");
+        (target, target_value, miss)
     }
 
     fn read_bytes(memory: &VectorMemory, offset: u64, len: usize) -> Vec<u8> {
@@ -1821,14 +1992,14 @@ mod tests {
                 control_bytes: 64,
                 journal_offset: 128,
                 buckets_offset: 152,
-                entry_stride: 16,
+                value_slab_offset: 72,
                 bucket_page_stride: 136,
             }
         );
 
         let expected_header = [
             b'L', b'H', b'M', 1, 8, 0, 0, 0, 8, 0, 0, 0, 8, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 64,
-            0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 152, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 152, 0, 0, 0, 0, 0, 0, 0, 72, 0, 0, 0,
             0, 0, 0, 0, 136, 0, 0, 0, 0, 0, 0, 0,
         ];
         assert_eq!(read_bytes(&memory, 0, 64), expected_header);
@@ -1841,6 +2012,236 @@ mod tests {
         assert_eq!(read_bytes(&memory, 64, 64), expected_control);
         assert_eq!(read_bytes(&memory, 128, 24), vec![0; 24]);
         assert_eq!(read_bytes(&memory, 152, 8 * 136), vec![0; 8 * 136]);
+    }
+
+    #[test]
+    fn asymmetric_width_soa_layout_and_reopen_are_exact() {
+        type AsymmetricMap = StableLinearHashMap<Width3Key, Width5Value, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = AsymmetricMap::new_with_hash_seed(memory.clone(), 313).expect("new asymmetric");
+        let header = map.header();
+        assert_eq!(header.key_size, 3);
+        assert_eq!(header.value_size, 5);
+        assert_eq!(header.value_slab_offset, 8 + 8 * 3);
+        assert_eq!(header.value_slab_offset, 32);
+        assert_eq!(header.bucket_page_stride, 32 + 8 * 5);
+        assert_eq!(header.bucket_page_stride, 72);
+
+        let (key_a, forced_bucket) = (0u32..=0x00ff_ffff)
+            .map(|candidate| {
+                Width3Key([
+                    (candidate >> 16) as u8,
+                    (candidate >> 8) as u8,
+                    candidate as u8,
+                ])
+            })
+            .find_map(|candidate| {
+                let routes = map.candidate_buckets(&candidate);
+                (routes.0 == routes.1).then_some((candidate, routes.0))
+            })
+            .expect("single-bucket asymmetric key");
+        let key_b = (0u32..=0x00ff_ffff)
+            .map(|candidate| {
+                Width3Key([
+                    (candidate >> 16) as u8,
+                    (candidate >> 8) as u8,
+                    candidate as u8,
+                ])
+            })
+            .find(|candidate| {
+                *candidate != key_a
+                    && map.candidate_buckets(candidate) == (forced_bucket, forced_bucket)
+            })
+            .expect("same single-bucket asymmetric key");
+        let value_a = Width5Value([0xa1, 0xa2, 0xa3, 0xa4, 0xa5]);
+        let value_b = Width5Value([0xb1, 0xb2, 0xb3, 0xb4, 0xb5]);
+        assert_eq!(map.insert(key_a.clone(), value_a.clone()), Ok(None));
+        assert_eq!(map.insert(key_b.clone(), value_b.clone()), Ok(None));
+        let (bucket_a, slot_a, _) = map.find(&key_a).expect("first stored key");
+        let (bucket_b, slot_b, _) = map.find(&key_b).expect("second stored key");
+        assert_eq!(bucket_a, bucket_b);
+        assert_ne!(slot_a, slot_b);
+
+        let base = header.buckets_offset + bucket_a * header.bucket_page_stride;
+        let key_a_offset = base + 8 + u64::from(slot_a) * 3;
+        let key_b_offset = base + 8 + u64::from(slot_b) * 3;
+        let value_a_offset = base + 32 + u64::from(slot_a) * 5;
+        let value_b_offset = base + 32 + u64::from(slot_b) * 5;
+        assert_eq!(read_bytes(&memory, key_a_offset, 3), key_a.0);
+        assert_eq!(read_bytes(&memory, key_b_offset, 3), key_b.0);
+        assert_eq!(read_bytes(&memory, value_a_offset, 5), value_a.0);
+        assert_eq!(read_bytes(&memory, value_b_offset, 5), value_b.0);
+        assert_ne!(
+            read_bytes(&memory, key_a_offset, 3),
+            read_bytes(&memory, key_b_offset, 3)
+        );
+        assert_ne!(
+            read_bytes(&memory, value_a_offset, 5),
+            read_bytes(&memory, value_b_offset, 5)
+        );
+        assert!(key_a_offset + 3 <= base + 32);
+        assert!(key_b_offset + 3 <= base + 32);
+        assert!(value_a_offset >= base + 32);
+        assert!(value_b_offset >= base + 32);
+        assert_eq!(map.get(&key_a), Ok(Some(value_a.clone())));
+        assert_eq!(map.get(&key_b), Ok(Some(value_b.clone())));
+
+        let reopened = AsymmetricMap::init(memory).expect("reopen asymmetric");
+        assert_eq!(reopened.header(), header);
+        assert_eq!(reopened.get(&key_a), Ok(Some(value_a)));
+        assert_eq!(reopened.get(&key_b), Ok(Some(value_b)));
+    }
+
+    #[test]
+    fn asymmetric_width_split_preserves_pairing_and_reopens() {
+        type AsymmetricMap = StableLinearHashMap<Width3Key, Width5Value, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = AsymmetricMap::new_with_hash_seed(memory.clone(), 313).expect("new asymmetric");
+        let control = map.control_region().expect("initial control");
+        let secrets = hash_secrets(control.hash_seed);
+        let next = AsymmetricMap::next_geometry(control).expect("next geometry");
+        let source = control.split_cursor;
+        let new_bucket = source + (1u64 << control.level);
+        let mut occupied = vec![0u8; control.physical_buckets as usize];
+        let mut residents = Vec::new();
+
+        for should_move in [true, false] {
+            for ordinal in 0..4u8 {
+                let key = (1u32..=0x00ff_ffff)
+                    .map(|candidate| {
+                        Width3Key([
+                            (candidate >> 16) as u8,
+                            (candidate >> 8) as u8,
+                            candidate as u8,
+                        ])
+                    })
+                    .find(|candidate| {
+                        !residents.iter().any(|(key, _)| key == candidate) && {
+                            let before = AsymmetricMap::candidate_buckets_from_bytes_at(
+                                &candidate.stable_hash_bytes(),
+                                &secrets,
+                                control.level,
+                                control.split_cursor,
+                            );
+                            let after = AsymmetricMap::candidate_buckets_from_bytes_at(
+                                &candidate.stable_hash_bytes(),
+                                &secrets,
+                                next.0,
+                                next.1,
+                            );
+                            (before.0 == source || before.1 == source)
+                                && ((after.0 != source && after.1 != source) == should_move)
+                                && (!should_move || after.0 == new_bucket || after.1 == new_bucket)
+                        }
+                    })
+                    .expect("asymmetric source resident");
+                let value = Width5Value([
+                    if should_move { 0xa0 } else { 0xb0 } | ordinal,
+                    key.0[0] ^ 0x11,
+                    key.0[1] ^ 0x22,
+                    key.0[2] ^ 0x44,
+                    0xf0 | ordinal,
+                ]);
+                let slot =
+                    AsymmetricMap::first_empty(occupied[source as usize]).expect("source capacity");
+                map.write_key_bytes(source, slot, key.to_bytes().as_ref());
+                map.write_value_bytes(source, slot, value.to_bytes().as_ref());
+                occupied[source as usize] |= 1 << slot;
+                map.write_occupancy(source, occupied[source as usize]);
+                residents.push((key, value));
+            }
+        }
+
+        for (bucket, count) in [
+            (1u64, 6usize),
+            (2, 6),
+            (3, 6),
+            (4, 6),
+            (5, 6),
+            (6, 5),
+            (7, 5),
+        ] {
+            for ordinal in 0..count {
+                let key = (1u32..=0x00ff_ffff)
+                    .map(|candidate| {
+                        Width3Key([
+                            (candidate >> 16) as u8,
+                            (candidate >> 8) as u8,
+                            candidate as u8,
+                        ])
+                    })
+                    .find(|candidate| {
+                        !residents.iter().any(|(key, _)| key == candidate) && {
+                            let routes = AsymmetricMap::candidate_buckets_from_bytes_at(
+                                &candidate.stable_hash_bytes(),
+                                &secrets,
+                                control.level,
+                                control.split_cursor,
+                            );
+                            routes.0 == bucket || routes.1 == bucket
+                        }
+                    })
+                    .expect("asymmetric threshold resident");
+                let value = Width5Value([
+                    0xc0 | bucket as u8,
+                    ordinal as u8,
+                    key.0[0] ^ 0x33,
+                    key.0[1] ^ 0x55,
+                    key.0[2] ^ 0xaa,
+                ]);
+                let slot = AsymmetricMap::first_empty(occupied[bucket as usize])
+                    .expect("threshold bucket capacity");
+                map.write_key_bytes(bucket, slot, key.to_bytes().as_ref());
+                map.write_value_bytes(bucket, slot, value.to_bytes().as_ref());
+                occupied[bucket as usize] |= 1 << slot;
+                map.write_occupancy(bucket, occupied[bucket as usize]);
+                residents.push((key, value));
+            }
+        }
+        assert_eq!(residents.len(), 48);
+
+        let threshold =
+            AsymmetricMap::split_threshold(control.physical_buckets).expect("split threshold");
+        control::write_len(&memory, map.header.control_offset, threshold);
+        let target = (1u32..=0x00ff_ffff)
+            .map(|candidate| {
+                Width3Key([
+                    (candidate >> 16) as u8,
+                    (candidate >> 8) as u8,
+                    candidate as u8,
+                ])
+            })
+            .find(|candidate| {
+                !residents.iter().any(|(key, _)| key == candidate)
+                    && AsymmetricMap::candidate_buckets_from_bytes_at(
+                        &candidate.stable_hash_bytes(),
+                        &secrets,
+                        next.0,
+                        next.1,
+                    ) == (new_bucket, new_bucket)
+            })
+            .expect("new-bucket target");
+        let target_value = Width5Value([0xcc, 0x01, 0x23, 0x45, 0x67]);
+
+        assert_eq!(map.insert(target.clone(), target_value.clone()), Ok(None));
+        assert_eq!(
+            map.control_region()
+                .expect("post-split control")
+                .physical_buckets,
+            9
+        );
+        for (key, value) in &residents {
+            assert_eq!(map.get(key), Ok(Some(value.clone())));
+        }
+        assert_eq!(map.get(&target), Ok(Some(target_value.clone())));
+
+        let reopened = AsymmetricMap::init(memory).expect("reopen asymmetric split");
+        for (key, value) in residents {
+            assert_eq!(reopened.get(&key), Ok(Some(value)));
+        }
+        assert_eq!(reopened.get(&target), Ok(Some(target_value)));
     }
 
     #[test]
@@ -1861,7 +2262,7 @@ mod tests {
 
         let (bucket, slot, _) = map.find(&key).expect("stored key");
         assert_eq!(
-            read_bytes(&memory, map.entry_offset(bucket, slot), 8),
+            read_bytes(&memory, map.key_offset(bucket, slot), 8),
             key.0.to_le_bytes()
         );
         drop(map);
@@ -2120,6 +2521,98 @@ mod tests {
         assert_eq!(reader.get(&reentrant), Err(MutationError::InProgress));
         assert_eq!(reader.get(&CallbackKey::plain(7)), Ok(Some(70)));
         assert_eq!(reader.get(&CallbackKey::plain(8)), Ok(Some(80)));
+    }
+
+    #[test]
+    fn remove_key_callback_panics_before_the_epoch_becomes_odd() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = CallbackMap::new(memory.clone()).expect("new callback map");
+        assert_eq!(map.insert(CallbackKey::plain(7), 70), Ok(None));
+        let bytes_before = allocated_bytes(&memory);
+        let epoch_before = map.control_region().expect("idle control").mutation_epoch;
+        let panicking = CallbackKey {
+            value: 7,
+            on_hash: Some(Rc::new(|| panic!("remove key callback"))),
+            on_eq: None,
+        };
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = map.remove(&panicking);
+            }))
+            .is_err()
+        );
+        assert_eq!(allocated_bytes(&memory), bytes_before);
+        assert_eq!(
+            map.control_region().expect("still idle").mutation_epoch,
+            epoch_before
+        );
+        assert_eq!(map.get(&CallbackKey::plain(7)), Ok(Some(70)));
+        drop(map);
+        let reopened = CallbackMap::init(memory).expect("reopen after callback panic");
+        assert_eq!(reopened.get(&CallbackKey::plain(7)), Ok(Some(70)));
+    }
+
+    #[test]
+    fn remove_equality_callback_panics_before_the_epoch_becomes_odd() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = CallbackMap::new(memory.clone()).expect("new callback map");
+        assert_eq!(map.insert(CallbackKey::plain(7), 70), Ok(None));
+        let bytes_before = allocated_bytes(&memory);
+        let epoch_before = map.control_region().expect("idle control").mutation_epoch;
+        let panicking = CallbackKey {
+            value: 7,
+            on_hash: None,
+            on_eq: Some(Rc::new(|| panic!("remove equality callback"))),
+        };
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| map.remove(&panicking)))
+                .is_err()
+        );
+        assert_eq!(allocated_bytes(&memory), bytes_before);
+        assert_eq!(
+            map.control_region().expect("still idle").mutation_epoch,
+            epoch_before
+        );
+        assert_eq!(map.get(&CallbackKey::plain(7)), Ok(Some(70)));
+        let reopened = CallbackMap::init(memory).expect("reopen after equality callback panic");
+        assert_eq!(reopened.get(&CallbackKey::plain(7)), Ok(Some(70)));
+    }
+
+    #[test]
+    fn completed_alias_mutation_supersedes_remove_without_outer_write() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let nested = Rc::new(CallbackMap::new(memory.clone()).expect("new nested handle"));
+        assert_eq!(nested.insert(CallbackKey::plain(7), 70), Ok(None));
+        let outer = CallbackMap::init(memory).expect("open outer handle");
+        let nested_for_callback = nested.clone();
+        let attempted = Rc::new(Cell::new(false));
+        let attempted_for_callback = attempted.clone();
+        let reentrant = CallbackKey {
+            value: 7,
+            on_hash: Some(Rc::new(move || {
+                if !attempted_for_callback.replace(true) {
+                    assert_eq!(
+                        nested_for_callback.insert(CallbackKey::plain(8), 80),
+                        Ok(None)
+                    );
+                }
+            })),
+            on_eq: None,
+        };
+
+        assert_eq!(outer.remove(&reentrant), Err(MutationError::InProgress));
+        assert!(attempted.get());
+        assert_eq!(outer.get(&CallbackKey::plain(7)), Ok(Some(70)));
+        assert_eq!(outer.get(&CallbackKey::plain(8)), Ok(Some(80)));
+        assert_eq!(outer.len(), Ok(2));
     }
 
     #[test]
@@ -2946,17 +3439,26 @@ mod tests {
 
         let memory = CountingMemory::default();
         let map = LargeValueMap::new_with_hash_seed(memory.clone(), 73).expect("new");
-        let key = (1u64..)
-            .find(|key| {
-                let candidates = map.candidate_buckets(key);
-                candidates.0 != candidates.1
-            })
-            .expect("distinct candidates");
-        assert_eq!(map.insert(key, [7; 2048]), Ok(None));
+        let (key, _, miss) = seed_large_second_candidate_fixture(&map);
+        let header = map.header();
+        let candidates = map.candidate_buckets(&key);
+        let value_slabs = [candidates.0, candidates.1].map(|bucket| {
+            (
+                StableLinearHashMap::<u64, [u8; 2048], CountingMemory>::values_base(header, bucket),
+                u64::from(BUCKET_SIZE) * u64::from(header.value_size),
+            )
+        });
 
-        memory.read_bytes.set(0);
-        assert_eq!(map.contains_key(&key), Ok(true));
-        assert_eq!(memory.read_bytes.get(), 68);
+        for (probe, expected) in [(key, true), (miss, false)] {
+            reset_counts(&memory);
+            assert_eq!(map.contains_key(&probe), Ok(expected));
+            assert!(memory.read_ranges.borrow().iter().all(|range| {
+                value_slabs
+                    .iter()
+                    .all(|&(start, len)| !read_overlaps(*range, start, len))
+            }));
+            assert_eq!(memory.write_calls.get(), 0);
+        }
     }
 
     #[test]
@@ -2986,7 +3488,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.insert(7, 71), Ok(Some(70)));
         assert_eq!(memory.read_calls.get(), 6);
-        assert_eq!(memory.read_bytes.get(), 64 + 2 + 2 + 128 + 8 + 8);
+        assert_eq!(memory.read_bytes.get(), 64 + 2 + 2 + 64 + 8 + 8);
         assert_eq!(memory.write_calls.get(), 3);
         assert_eq!(memory.write_bytes.get(), 8 + 8 + 8);
         assert_eq!(map.get(&7), Ok(Some(71)));
@@ -3092,7 +3594,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.remove(&key), Ok(Some(970)));
         assert_eq!(memory.read_calls.get(), 3);
-        assert_eq!(memory.read_bytes.get(), 8 + 40 + 136);
+        assert_eq!(memory.read_bytes.get(), 64 + 136 + 8);
         assert_eq!(memory.write_calls.get(), 4);
         assert_eq!(memory.write_bytes.get(), 8 + 2 + 8 + 8);
         assert_eq!(map.len(), Ok(0));
@@ -3127,7 +3629,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.remove(&key), Ok(Some(1_010)));
         assert_eq!(memory.read_calls.get(), 4);
-        assert_eq!(memory.read_bytes.get(), 8 + 40 + 2 * 136);
+        assert_eq!(memory.read_bytes.get(), 64 + 2 * 136 + 8);
         assert_eq!(memory.write_calls.get(), 4);
         assert_eq!(memory.write_bytes.get(), 8 + 2 + 8 + 8);
         assert_eq!(map.get(&filler), Ok(Some(1_011)));
@@ -3139,18 +3641,32 @@ mod tests {
 
         let memory = CountingMemory::default();
         let map = LargeValueMap::new_with_hash_seed(memory.clone(), 103).expect("new");
-        let key = (1u64..)
-            .find(|key| {
-                let candidates = map.candidate_buckets(key);
-                candidates.0 != candidates.1
-            })
-            .expect("distinct candidates");
-        assert_eq!(map.insert(key, [3; 2048]), Ok(None));
+        let (key, value, _) = seed_large_second_candidate_fixture(&map);
+        let (bucket, slot, _) = map.find(&key).expect("second-candidate target");
+        let candidates = map.candidate_buckets(&key);
+        assert_eq!(bucket, candidates.1);
+        let matched_value = map.value_offset(bucket, slot);
+        let value_slabs = [candidates.0, candidates.1].map(|candidate| {
+            (
+                LargeValueMap::values_base(map.header, candidate),
+                u64::from(BUCKET_SIZE) * u64::from(map.header.value_size),
+            )
+        });
 
         reset_counts(&memory);
-        assert_eq!(map.remove(&key), Ok(Some([3; 2048])));
-        assert_eq!(memory.read_calls.get(), 6);
-        assert_eq!(memory.read_bytes.get(), 8 + 40 + 2 + 2 + 8 + 2048);
+        assert_eq!(map.remove(&key), Ok(Some(value)));
+        let value_reads = memory
+            .read_ranges
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|range| {
+                value_slabs
+                    .iter()
+                    .any(|&(start, len)| read_overlaps(*range, start, len))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(value_reads, vec![(matched_value, 2048)]);
         assert_eq!(memory.write_calls.get(), 4);
         assert_eq!(memory.write_bytes.get(), 8 + 2 + 8 + 8);
     }
@@ -3161,17 +3677,42 @@ mod tests {
 
         let memory = CountingMemory::default();
         let map = LargeValueMap::new_with_hash_seed(memory.clone(), 89).expect("new");
-        let key = (1u64..)
-            .find(|key| {
-                let candidates = map.candidate_buckets(key);
-                candidates.0 != candidates.1
-            })
-            .expect("distinct candidates");
-        assert_eq!(map.insert(key, [9; 2048]), Ok(None));
+        let (key, value, miss) = seed_large_second_candidate_fixture(&map);
+        let (bucket, slot, _) = map.find(&key).expect("second-candidate target");
+        let candidates = map.candidate_buckets(&key);
+        assert_eq!(bucket, candidates.1);
+        let matched_value = map.value_offset(bucket, slot);
+        let value_slabs = [candidates.0, candidates.1].map(|candidate| {
+            (
+                LargeValueMap::values_base(map.header, candidate),
+                u64::from(BUCKET_SIZE) * u64::from(map.header.value_size),
+            )
+        });
 
-        memory.read_bytes.set(0);
-        assert_eq!(map.get(&key), Ok(Some([9; 2048])));
-        assert_eq!(memory.read_bytes.get(), 16 + 40 + 2 + 2 + 8 + 2048);
+        reset_counts(&memory);
+        assert_eq!(map.get(&key), Ok(Some(value)));
+        let value_reads = memory
+            .read_ranges
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|range| {
+                value_slabs
+                    .iter()
+                    .any(|&(start, len)| read_overlaps(*range, start, len))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(value_reads, vec![(matched_value, 2048)]);
+        assert_eq!(memory.write_calls.get(), 0);
+
+        reset_counts(&memory);
+        assert_eq!(map.get(&miss), Ok(None));
+        assert!(memory.read_ranges.borrow().iter().all(|range| {
+            value_slabs
+                .iter()
+                .all(|&(start, len)| !read_overlaps(*range, start, len))
+        }));
+        assert_eq!(memory.write_calls.get(), 0);
     }
 
     #[test]

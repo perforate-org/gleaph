@@ -15,7 +15,6 @@ pub(crate) const INITIAL_MUTATION_EPOCH: u64 = 0;
 
 #[derive(Clone, Copy)]
 pub(crate) struct HotControl {
-    pub(crate) len: u64,
     pub(crate) level: u8,
     pub(crate) split_cursor: u64,
     pub(crate) hash_seed: u64,
@@ -69,7 +68,6 @@ pub(crate) fn read_hot<M: Memory>(memory: &M, offset: u64) -> HotControl {
     let mut bytes = [0; (HASH_SEED_OFFSET + 8) as usize];
     memory.read(offset, &mut bytes);
     HotControl {
-        len: u64::from_le_bytes(bytes[0..8].try_into().expect("fixed length field")),
         level: bytes[LEVEL_OFFSET as usize],
         split_cursor: u64::from_le_bytes(
             bytes[SPLIT_CURSOR_OFFSET as usize..SPLIT_CURSOR_OFFSET as usize + 8]

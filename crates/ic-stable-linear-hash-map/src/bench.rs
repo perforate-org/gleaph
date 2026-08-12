@@ -6,6 +6,7 @@ use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
 use std::hint::black_box;
 
 const N: usize = 48;
+const LARGE_N: u64 = 16;
 #[cfg(target_family = "wasm")]
 const SPLIT_SEED: u64 = 211;
 #[cfg(target_family = "wasm")]
@@ -80,6 +81,128 @@ fn populated_btree(entries: &[(u64, u64)]) -> StableBTreeMap<u64, u64, DefaultMe
         assert_eq!(map.get(&key), Some(value));
     }
     map
+}
+
+fn large_value(key: u64) -> [u8; 2048] {
+    [key as u8; 2048]
+}
+
+fn populated_large() -> StableLinearHashMap<u64, [u8; 2048], DefaultMemoryImpl> {
+    let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 317)
+        .expect("new large-value map");
+    for key in 0..LARGE_N {
+        assert_eq!(map.insert(key, large_value(key)), Ok(None));
+    }
+    assert_eq!(map.len(), Ok(LARGE_N));
+    for key in 0..LARGE_N {
+        assert_eq!(map.get(&key), Ok(Some(large_value(key))));
+    }
+    map
+}
+
+#[bench(raw)]
+fn bench_linear_contains_miss_large_16() -> canbench_rs::BenchResult {
+    let map = populated_large();
+    let misses = [
+        u64::MAX - 15,
+        u64::MAX - 14,
+        u64::MAX - 13,
+        u64::MAX - 12,
+        u64::MAX - 11,
+        u64::MAX - 10,
+        u64::MAX - 9,
+        u64::MAX - 8,
+        u64::MAX - 7,
+        u64::MAX - 6,
+        u64::MAX - 5,
+        u64::MAX - 4,
+        u64::MAX - 3,
+        u64::MAX - 2,
+        u64::MAX - 1,
+        u64::MAX,
+    ];
+    for key in misses {
+        assert_eq!(map.contains_key(&key), Ok(false));
+    }
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_linear_contains_miss_large_16");
+        for key in misses {
+            let _ = black_box(map.contains_key(&black_box(key)));
+        }
+    });
+    assert_eq!(map.len(), Ok(LARGE_N));
+    let reopened = StableLinearHashMap::<u64, [u8; 2048], _>::init(map.into_memory())
+        .expect("reopen large miss fixture");
+    for key in 0..LARGE_N {
+        assert_eq!(reopened.get(&key), Ok(Some(large_value(key))));
+    }
+    result
+}
+
+#[bench(raw)]
+fn bench_linear_get_hit_large_16() -> canbench_rs::BenchResult {
+    let map = populated_large();
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_linear_get_hit_large_16");
+        for key in 0..LARGE_N {
+            let _ = black_box(map.get(&black_box(key)));
+        }
+    });
+    assert_eq!(map.len(), Ok(LARGE_N));
+    for key in 0..LARGE_N {
+        assert_eq!(map.get(&key), Ok(Some(large_value(key))));
+    }
+    let reopened = StableLinearHashMap::<u64, [u8; 2048], _>::init(map.into_memory())
+        .expect("reopen large get fixture");
+    for key in 0..LARGE_N {
+        assert_eq!(reopened.get(&key), Ok(Some(large_value(key))));
+    }
+    result
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_linear_insert_split_move_4_large() -> canbench_rs::BenchResult {
+    let (&target, residents) = SPLIT_MOVE_4.split_last().expect("large split fixture");
+    let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), SPLIT_SEED)
+        .expect("new large split map");
+    for &key in residents {
+        assert_eq!(map.insert(key, large_value(key)), Ok(None));
+    }
+    let before = map.control_region().expect("pre-split control");
+    assert_eq!(
+        (
+            before.level,
+            before.split_cursor,
+            before.physical_buckets,
+            before.len
+        ),
+        (3, 0, 8, 48)
+    );
+    assert_eq!(map.get(&target), Ok(None));
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_linear_insert_split_move_4_large");
+        black_box(map.insert(black_box(target), black_box(large_value(target))))
+    });
+    let after = map.control_region().expect("post-split control");
+    assert_eq!(
+        (
+            after.level,
+            after.split_cursor,
+            after.physical_buckets,
+            after.len
+        ),
+        (3, 1, 9, 49)
+    );
+    for &key in &SPLIT_MOVE_4 {
+        assert_eq!(map.get(&key), Ok(Some(large_value(key))));
+    }
+    let reopened = StableLinearHashMap::<u64, [u8; 2048], _>::init(map.into_memory())
+        .expect("reopen large split fixture");
+    for &key in &SPLIT_MOVE_4 {
+        assert_eq!(reopened.get(&key), Ok(Some(large_value(key))));
+    }
+    result
 }
 
 #[cfg(target_family = "wasm")]

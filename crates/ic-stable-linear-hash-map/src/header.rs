@@ -15,7 +15,7 @@ const CONTROL_OFFSET_OFFSET: u64 = 16;
 const CONTROL_BYTES_OFFSET: u64 = 24;
 const JOURNAL_OFFSET_OFFSET: u64 = 32;
 const BUCKETS_OFFSET_OFFSET: u64 = 40;
-const ENTRY_STRIDE_OFFSET: u64 = 48;
+const VALUE_SLAB_OFFSET_OFFSET: u64 = 48;
 const BUCKET_PAGE_STRIDE_OFFSET: u64 = 56;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,13 +27,14 @@ pub struct Header {
     pub control_bytes: u64,
     pub journal_offset: u64,
     pub buckets_offset: u64,
-    pub entry_stride: u64,
+    pub value_slab_offset: u64,
     pub bucket_page_stride: u64,
 }
 
 impl Header {
     pub fn journal_bytes(self) -> Option<u64> {
-        8u64.checked_add(self.entry_stride)
+        8u64.checked_add(u64::from(self.key_size))?
+            .checked_add(u64::from(self.value_size))
     }
 }
 
@@ -106,7 +107,7 @@ pub(crate) fn read<M: Memory>(memory: &M) -> Result<Header, InitError> {
         control_bytes: read_u64(memory, CONTROL_BYTES_OFFSET),
         journal_offset: read_u64(memory, JOURNAL_OFFSET_OFFSET),
         buckets_offset: read_u64(memory, BUCKETS_OFFSET_OFFSET),
-        entry_stride: read_u64(memory, ENTRY_STRIDE_OFFSET),
+        value_slab_offset: read_u64(memory, VALUE_SLAB_OFFSET_OFFSET),
         bucket_page_stride: read_u64(memory, BUCKET_PAGE_STRIDE_OFFSET),
     })
 }
@@ -121,6 +122,6 @@ pub(crate) fn write<M: Memory>(memory: &M, header: Header) {
     write_u64(memory, CONTROL_BYTES_OFFSET, header.control_bytes);
     write_u64(memory, JOURNAL_OFFSET_OFFSET, header.journal_offset);
     write_u64(memory, BUCKETS_OFFSET_OFFSET, header.buckets_offset);
-    write_u64(memory, ENTRY_STRIDE_OFFSET, header.entry_stride);
+    write_u64(memory, VALUE_SLAB_OFFSET_OFFSET, header.value_slab_offset);
     write_u64(memory, BUCKET_PAGE_STRIDE_OFFSET, header.bucket_page_stride);
 }
