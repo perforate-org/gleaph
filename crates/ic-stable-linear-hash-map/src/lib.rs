@@ -1,10 +1,9 @@
-//! Experimental fixed-geometry bucketized two-choice linear hash map in Internet Computer stable
-//! memory. Incremental linear splitting remains planned.
+//! Experimental bucketized two-choice linear hash map in Internet Computer stable memory.
 //!
 //! V1 stores fixed-size keys and values in one linear bucket universe. One persisted hash seed plus
 //! domain separation derives two candidates for each key. New entries use the less-loaded
-//! candidate; ties use the first. Every bucket has [`BUCKET_SIZE`] slots. V1 deliberately has no
-//! resize path.
+//! candidate; ties use the first. Every bucket has [`BUCKET_SIZE`] slots. An absent insert that
+//! would exceed 75% load performs at most one synchronous, bounded linear split.
 
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
 

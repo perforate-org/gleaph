@@ -16,6 +16,8 @@ pub(crate) const INITIAL_MUTATION_EPOCH: u64 = 0;
 #[derive(Clone, Copy)]
 pub(crate) struct HotControl {
     pub(crate) len: u64,
+    pub(crate) level: u8,
+    pub(crate) split_cursor: u64,
     pub(crate) hash_seed: u64,
 }
 
@@ -68,6 +70,12 @@ pub(crate) fn read_hot<M: Memory>(memory: &M, offset: u64) -> HotControl {
     memory.read(offset, &mut bytes);
     HotControl {
         len: u64::from_le_bytes(bytes[0..8].try_into().expect("fixed length field")),
+        level: bytes[LEVEL_OFFSET as usize],
+        split_cursor: u64::from_le_bytes(
+            bytes[SPLIT_CURSOR_OFFSET as usize..SPLIT_CURSOR_OFFSET as usize + 8]
+                .try_into()
+                .expect("fixed split cursor field"),
+        ),
         hash_seed: u64::from_le_bytes(
             bytes[HASH_SEED_OFFSET as usize..HASH_SEED_OFFSET as usize + 8]
                 .try_into()
@@ -117,4 +125,23 @@ pub(crate) fn write_hash_seed<M: Memory>(memory: &M, offset: u64, seed: u64) {
 
 pub(crate) fn write_mutation_epoch<M: Memory>(memory: &M, offset: u64, epoch: u64) {
     write_u64(memory, offset + MUTATION_EPOCH_OFFSET, epoch);
+}
+
+/// Publishes settled split metadata while the caller owns an odd mutation epoch.
+///
+/// This deliberately does not reuse [`write`]: that initialization helper clears the complete
+/// control page before rewriting it and could expose an even epoch between writes.  Each field
+/// below is independent of the epoch field, which remains odd until `MutationGuard::finish`.
+pub(crate) fn publish_split<M: Memory>(
+    memory: &M,
+    offset: u64,
+    level: u8,
+    split_cursor: u64,
+    physical_buckets: u64,
+    len: u64,
+) {
+    memory.write(offset + LEVEL_OFFSET, &[level]);
+    write_u64(memory, offset + SPLIT_CURSOR_OFFSET, split_cursor);
+    write_u64(memory, offset + PHYSICAL_BUCKETS_OFFSET, physical_buckets);
+    write_u64(memory, offset + LEN_OFFSET, len);
 }

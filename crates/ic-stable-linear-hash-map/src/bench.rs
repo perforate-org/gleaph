@@ -6,6 +6,33 @@ use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
 use std::hint::black_box;
 
 const N: usize = 48;
+#[cfg(target_family = "wasm")]
+const SPLIT_SEED: u64 = 211;
+#[cfg(target_family = "wasm")]
+const SPLIT_MOVE_0: [u64; 49] = [
+    29, 60, 118, 162, 229, 318, 354, 365, 84, 114, 197, 206, 262, 339, 107, 122, 376, 416, 605,
+    622, 61, 71, 130, 198, 381, 384, 39, 42, 91, 110, 132, 246, 7, 28, 69, 83, 101, 108, 98, 131,
+    217, 235, 281, 38, 173, 223, 237, 240, 215,
+];
+#[cfg(target_family = "wasm")]
+const SPLIT_MOVE_4: [u64; 49] = [
+    215, 265, 887, 1017, 29, 60, 118, 162, 84, 114, 197, 206, 262, 339, 107, 122, 376, 416, 605,
+    622, 61, 71, 130, 198, 381, 384, 39, 42, 91, 110, 132, 246, 7, 28, 69, 83, 101, 108, 98, 131,
+    217, 235, 281, 38, 173, 223, 237, 240, 1313,
+];
+#[cfg(target_family = "wasm")]
+const SPLIT_MOVE_8: [u64; 49] = [
+    215, 265, 887, 1017, 1313, 1445, 1718, 1758, 84, 114, 197, 206, 262, 339, 107, 122, 376, 416,
+    605, 622, 61, 71, 130, 198, 381, 384, 39, 42, 91, 110, 132, 246, 7, 28, 69, 83, 101, 108, 98,
+    131, 217, 235, 281, 38, 173, 223, 237, 240, 118,
+];
+#[cfg(target_family = "wasm")]
+const SPLIT_ROLLOVER: [u64; 91] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
+    74, 75, 77, 78, 80, 81, 82, 83, 84, 86, 87, 88, 89, 90, 91, 92, 76,
+];
 
 fn fixture_value(key: u64) -> u64 {
     key ^ 0xa5a5
@@ -53,6 +80,158 @@ fn populated_btree(entries: &[(u64, u64)]) -> StableBTreeMap<u64, u64, DefaultMe
         assert_eq!(map.get(&key), Some(value));
     }
     map
+}
+
+#[cfg(target_family = "wasm")]
+fn split_benchmark(
+    scope: &'static str,
+    seed: u64,
+    keys: &[u64],
+    expected_before: (u8, u64, u64, u64),
+    expected_after: (u8, u64, u64, u64),
+    expected_moves: usize,
+) -> canbench_rs::BenchResult {
+    let (&target, residents) = keys.split_last().expect("split fixture has a target");
+    let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), seed)
+        .expect("new split benchmark map");
+    for &key in residents {
+        assert_eq!(map.insert(key, fixture_value(key)), Ok(None));
+    }
+    let before = map.control_region().expect("idle pre-split control");
+    assert_eq!(
+        (
+            before.level,
+            before.split_cursor,
+            before.physical_buckets,
+            before.len
+        ),
+        expected_before
+    );
+    assert_eq!(map.get(&target), Ok(None));
+    let source = before.split_cursor;
+    let new_bucket = source + (1u64 << before.level);
+    assert_eq!(map.probe_bucket_occupancy(source), u8::MAX);
+    let source_keys = residents
+        .iter()
+        .copied()
+        .filter(|key| map.probe_resident_bucket(*key) == source)
+        .collect::<Vec<_>>();
+    assert_eq!(source_keys.len(), 8);
+    for &key in &source_keys {
+        let routes = map.probe_candidates(key);
+        assert!(routes.0 == source || routes.1 == source);
+    }
+    let target_routes = map.probe_candidates(target);
+    assert!(target_routes.0 < before.physical_buckets);
+    assert!(target_routes.1 < before.physical_buckets);
+    for &key in residents {
+        assert_eq!(map.get(&key), Ok(Some(fixture_value(key))));
+    }
+
+    let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), seed)
+        .expect("new equivalent preflight map");
+    for &key in residents {
+        assert_eq!(preflight.insert(key, fixture_value(key)), Ok(None));
+    }
+    assert_eq!(preflight.insert(target, fixture_value(target)), Ok(None));
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        black_box(map.insert(black_box(target), black_box(fixture_value(target))))
+    });
+
+    let after = map.control_region().expect("idle post-split control");
+    assert_eq!(
+        (
+            after.level,
+            after.split_cursor,
+            after.physical_buckets,
+            after.len
+        ),
+        expected_after
+    );
+    let target_bucket = map.probe_resident_bucket(target);
+    assert_eq!(
+        map.probe_bucket_occupancy(source).count_ones() as usize,
+        8 - expected_moves + usize::from(target_bucket == source)
+    );
+    assert_eq!(
+        map.probe_bucket_occupancy(new_bucket).count_ones() as usize,
+        expected_moves + usize::from(target_bucket == new_bucket)
+    );
+    let moved = source_keys
+        .iter()
+        .filter(|key| map.probe_resident_bucket(**key) == new_bucket)
+        .count();
+    assert_eq!(moved, expected_moves);
+    for &key in &source_keys {
+        let routes = map.probe_candidates(key);
+        let bucket = map.probe_resident_bucket(key);
+        assert!(routes.0 == bucket || routes.1 == bucket);
+    }
+    let target_routes = map.probe_candidates(target);
+    assert!(target_routes.0 == target_bucket || target_routes.1 == target_bucket);
+    for &key in keys {
+        assert_eq!(map.get(&key), Ok(Some(fixture_value(key))));
+    }
+    let reopened = StableLinearHashMap::<u64, u64, _>::init(map.into_memory())
+        .expect("reopen split benchmark map");
+    assert_eq!(reopened.control_region(), Ok(after));
+    for &key in keys {
+        assert_eq!(reopened.get(&key), Ok(Some(fixture_value(key))));
+    }
+    result
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_linear_insert_split_move_0() -> canbench_rs::BenchResult {
+    split_benchmark(
+        "bench_linear_insert_split_move_0",
+        SPLIT_SEED,
+        &SPLIT_MOVE_0,
+        (3, 0, 8, 48),
+        (3, 1, 9, 49),
+        0,
+    )
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_linear_insert_split_move_4() -> canbench_rs::BenchResult {
+    split_benchmark(
+        "bench_linear_insert_split_move_4",
+        SPLIT_SEED,
+        &SPLIT_MOVE_4,
+        (3, 0, 8, 48),
+        (3, 1, 9, 49),
+        4,
+    )
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_linear_insert_split_move_8() -> canbench_rs::BenchResult {
+    split_benchmark(
+        "bench_linear_insert_split_move_8",
+        SPLIT_SEED,
+        &SPLIT_MOVE_8,
+        (3, 0, 8, 48),
+        (3, 1, 9, 49),
+        8,
+    )
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_linear_insert_split_round_rollover() -> canbench_rs::BenchResult {
+    split_benchmark(
+        "bench_linear_insert_split_round_rollover",
+        233,
+        &SPLIT_ROLLOVER,
+        (3, 7, 15, 90),
+        (4, 0, 16, 91),
+        4,
+    )
 }
 
 #[bench(raw)]

@@ -1,7 +1,7 @@
 # ic-stable-linear-hash-map
 
-Experimental fixed-geometry bucketized two-choice linear hash map for Internet Computer stable
-memory. Incremental linear splitting remains planned.
+Experimental bucketized two-choice linear hash map for Internet Computer stable memory. V1 includes
+one bounded, synchronous incremental split on an absent insert that would exceed 75% load.
 
 ## Implemented V1 boundary
 
@@ -12,11 +12,12 @@ memory. Incremental linear splitting remains planned.
 - A separate 64-byte `ControlRegion` owns mutable length, linear-hashing level/split cursors,
   physical bucket count, one persisted hash seed, split/journal state, an odd/even mutation epoch,
   and the persisted `StableHashKey::HASH_ENCODING_ID`.
-- One inactive journal slot sized to `8 metadata bytes + one entry payload` is allocated for future
-  recovery work. Its first eight bytes will own future journal progress; V1 has no journal protocol.
-  Reopen fails closed if split, journal, or mutation state is non-idle.
+- One inactive journal slot sized to `8 metadata bytes + one entry payload` remains reserved for
+  future recovery work. The bounded split does not use it or persist an active phase. Reopen fails
+  closed if split, journal, or mutation state is non-idle.
 - The table starts at linear-hashing level 3 with 8 physical buckets, `split_cursor = 0`, and
-  `B = 8` slots per bucket. Occupancy belongs to each bucket page.
+  `B = 8` slots per bucket. Each split appends exactly one bucket, advances the cursor, and promotes
+  the level at round rollover. Occupancy belongs to each bucket page.
 - Each key derives two candidates in the same linear bucket universe from the persisted hash seed
   with domain separation. Insert chooses the less-loaded candidate; ties choose the first.
 - `get`, `contains_key`, `insert`, update, and `remove` inspect only those two candidates. Live
@@ -29,13 +30,21 @@ memory. Incremental linear splitting remains planned.
   versions, and equal keys to produce identical bytes. `HASH_ENCODING_ID` identifies that routing
   encoding and is validated on reopen. V1 routing identity is additionally frozen by layout version
   1, the literal routing vectors in the unit tests, RapidHash V3 exact mode, and the two fixed domain
-  constants. Changing any of those routing inputs requires an explicit rehash/layout decision.
+  constants. Dynamic power-of-two bucket reduction uses equivalent bit masks, with modulo
+  equivalence checked at geometry boundaries and deterministic samples. Changing any of those
+  routing inputs requires an explicit rehash/layout decision.
   Stored key bytes remain owned by `Storable`; insert validates the exact persisted key and value
   widths before it acquires the mutation epoch.
-- A mutator pre-encodes its key/value payloads and routing bytes, then acquires the persisted epoch
-  with an even-to-odd transition before it reads live control, decodes a stored key/value, compares
-  keys, or publishes a write. It publishes the next even epoch on success and ordinary errors such
-  as `TablePressure`; epoch exhaustion fails before changing control. A panic leaves an odd epoch,
+- An insert pre-encodes its key/value payloads and routing bytes, then reads one authoritative
+  persisted `ControlRegion` snapshot to plan all decoding, equality callbacks, routing, checked
+  arithmetic, and final bucket images against its even epoch. A successful direct mutation
+  revalidates that epoch exactly once immediately before changing it to odd; a split additionally
+  grows stable memory for the appended bucket before that revalidation. A planning error still
+  revalidates the observed epoch before it is returned, so an alias mutation supersedes a stale
+  `TablePressure` or capacity error. Returned errors, including `TablePressure`, `OutOfMemory`, and
+  `CapacityOverflow`, leave logical bytes and the epoch unchanged. The guarded apply phase performs
+  writes only and publishes geometry and length before the next even epoch. A panic after the odd
+  publication leaves an odd epoch,
   which makes reopen return `RecoveryRequired` until a future journal recovery protocol exists.
   Reads reject an odd epoch and compare the same even epoch before and after lookup, so a nested
   mutation that completes during `stable_hash_bytes`, decoding, or equality comparison invalidates
@@ -53,9 +62,13 @@ memory. Incremental linear splitting remains planned.
   `read_unsafe` preserve the same observable result and read accounting. Large-value lookup keeps
   the occupancy-plus-key fallback.
 
-V1 does not resize, relocate, iterate, recover, or provide migration compatibility. An insert returns
-`MutationError::TablePressure` only when both candidate buckets for that key are full. This is an
-experimental storage foundation, not yet integrated into a canister owner.
+An overwrite never splits. An absent insert below 75% load uses the existing two candidates. At or
+above 75% load it plans exactly the next linear split, redistributes at most the source bucket's
+eight entries under the post-split routes, and then places the requested entry. If its two
+post-split candidates are still full, it returns `MutationError::TablePressure` without growing,
+splitting, or advancing the epoch. V1 does not iterate, recover an interrupted generic-memory write,
+shrink, or provide migration compatibility. This remains an experimental storage foundation, not
+yet integrated into a canister owner.
 
 ## Validation
 
@@ -67,24 +80,30 @@ cargo clippy -p ic-stable-linear-hash-map --all-targets --all-features -- -D war
 Focused canbench runs compare Linear Hash Map and `StableBTreeMap` get/insert/remove in the same
 binary, using the same 48 successful `u64` key/value pairs, operation counts, and
 `DefaultMemoryImpl`. Setup and semantic checks remain outside the measured closures. The current
-non-persist epoch-protected run measured Linear scope instructions of 80.62K get, 146.18K insert,
-and 76.48K remove (81.63K, 147.18K, and 77.49K totals). The same run measured `StableBTreeMap`
+non-persist bounded-split optimization run measured Linear scope instructions of 96.68K get, 175.26K
+insert, and 89.44K remove (97.68K, 176.27K, and 90.45K totals). Against the immediately preceding
+bounded-split diagnostic run, these scopes improved 3.75%, 4.25%, and 5.33% respectively. The prior
+foundation run measured `StableBTreeMap`
 scope instructions of 375.19K get, 1.18M insert, and 1.09M remove (376.19K, 1.19M, and 1.09M
-totals). There is no persisted result artifact, so this run is diagnostic rather than an accepted
-baseline. The prior epoch-free Linear figures of 78.89K get, 139.60K insert, and 72.25K remove are
-retained only as historical comparisons.
+totals); B-tree was not rerun for this split slice. There is no persisted result artifact, so these
+runs are diagnostic rather than an accepted baseline. Earlier Linear figures are historical only.
+
+Four public-insert split fixtures use frozen literal keys and keep setup, geometry/value checks, and
+reopen checks outside timing. The current non-persist optimization run measured scope instructions
+of 3.75K for zero moves, 4.09K for four moves, 3.75K for eight moves, and 4.05K for round rollover
+(4.76K, 5.09K, 4.76K, and 5.05K totals). These are diagnostic results, not a persisted baseline.
 
 Three additional raw component probes use one aggregate `bench_scope` per phase over all 48 items.
-The current get phase measured 122.44K total instructions: 3.172K seed, 26.73K route, and 51.83K
-bucket. The insert phase measured 83.99K total: 46.16K control, 20.16K payload, and 13.99K
-metadata. The remove phase measured 84.30K total: 68.11K control and 14.09K metadata. Disjoint
-get-route diagnostics were key encoding 3.27K, cache borrow/seed check 2.83K, first hash 9.73K,
-second hash 9.65K, and bucket mapping 2.69K instructions. Prepared route inputs are created outside
-timing; postconditions require their reconstructed route to equal the production route for every
-fixture key. These probes deliberately bypass the public mutation epoch protocol to isolate
-components, so they are non-additive diagnostics and do not replace epoch-protected direct-map
-totals. Mutation probes use distinct `VirtualMemory` regions over `DefaultMemoryImpl`; their
-translation overhead is part of every mutation phase.
+The current raw get probes measured 129.63K total instructions: 3.172K seed, 33.93K route, and
+51.83K bucket. Insert measured 93.54K total: 55.71K control, 20.16K payload, and 13.99K metadata.
+Remove measured 96.68K total: 80.50K control and 14.09K metadata. Disjoint get-route diagnostics
+were key encoding 3.27K, cache borrow/seed check 2.83K, first hash 9.73K, second hash 9.65K, and
+bucket mapping 2.69K instructions. Prepared route inputs are created outside timing; postconditions
+require their reconstructed route to equal the production route for every fixture key. These probes
+deliberately bypass the public mutation epoch protocol to isolate components, so they are
+non-additive diagnostics and do not replace epoch-protected direct-map totals. Mutation probes use
+distinct `VirtualMemory` regions over `DefaultMemoryImpl`; their translation overhead is part of
+every mutation phase.
 
 This initial slice does
 not create a

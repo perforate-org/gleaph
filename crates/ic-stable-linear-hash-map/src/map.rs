@@ -1,7 +1,7 @@
 use crate::StableHashKey;
 use crate::control;
 use crate::header::{self, CONTROL_BYTES, ControlRegion, HEADER_SIZE, Header, InitError};
-use crate::memory::grow_to_bytes;
+use crate::memory::{GrowError, grow_to_bytes};
 use ic_stable_structures::{Memory, Storable};
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_inline};
 use std::borrow::Cow;
@@ -34,6 +34,10 @@ pub enum MutationError {
     InvalidKeyEncoding,
     /// `V::to_bytes()` did not match the fixed value width recorded by the header.
     InvalidValueEncoding,
+    /// Growing stable memory for one appended bucket was rejected by the memory implementation.
+    OutOfMemory,
+    /// Geometry or stable-memory capacity arithmetic overflowed before a mutation began.
+    CapacityOverflow,
 }
 
 impl fmt::Display for MutationError {
@@ -52,6 +56,8 @@ impl fmt::Display for MutationError {
                     "value serialization did not match the fixed-width header"
                 )
             }
+            Self::OutOfMemory => write!(f, "failed to allocate one linear hash map bucket"),
+            Self::CapacityOverflow => write!(f, "linear hash map capacity arithmetic overflowed"),
         }
     }
 }
@@ -83,6 +89,51 @@ struct CachedHashSecrets {
 struct MutationGuard<'a, K: StableHashKey, V: Storable, M: Memory> {
     map: &'a StableLinearHashMap<K, V, M>,
     completed_epoch: u64,
+}
+
+/// A fully prepared public insert bound to the even epoch that supplied its bytes and geometry.
+///
+/// Planning owns every fallible read, decode, equality comparison, routing calculation, and
+/// placement decision.  Applying this value performs writes only after the same epoch is changed
+/// to odd.
+enum InsertPlan<V> {
+    Overwrite {
+        observed_epoch: u64,
+        bucket: u64,
+        slot: u32,
+        value: Vec<u8>,
+        previous: V,
+    },
+    DirectInsert {
+        observed_epoch: u64,
+        bucket: u64,
+        slot: u32,
+        occupancy: u8,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        len: u64,
+    },
+    SplitInsert {
+        observed_epoch: u64,
+        source_bucket: u64,
+        source_page: Vec<u8>,
+        new_bucket: u64,
+        new_page: Vec<u8>,
+        target: Option<PreparedEntry>,
+        level: u8,
+        split_cursor: u64,
+        physical_buckets: u64,
+        len: u64,
+        grow_to: u64,
+    },
+}
+
+struct PreparedEntry {
+    bucket: u64,
+    slot: u32,
+    occupancy: u8,
+    key: Vec<u8>,
+    value: Vec<u8>,
 }
 
 impl<K: StableHashKey, V: Storable, M: Memory> MutationGuard<'_, K, V, M> {
@@ -244,15 +295,15 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
 
     pub fn get(&self, key: &K) -> Result<Option<V>, MutationError> {
         self.read_consistent(|| {
-            let hash_seed = control::read_hash_seed(&self.memory, self.header.control_offset);
-            self.get_with_seed(key, hash_seed)
+            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            self.get_with_hot(key, hot)
         })
     }
 
     pub fn contains_key(&self, key: &K) -> Result<bool, MutationError> {
         self.read_consistent(|| {
-            let hash_seed = control::read_hash_seed(&self.memory, self.header.control_offset);
-            self.find_with_seed(key, hash_seed).is_some()
+            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            self.find_with_hot(key, hot).is_some()
         })
     }
 
@@ -261,86 +312,260 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             &key,
             self.header.key_size,
             MutationError::InvalidKeyEncoding,
-        )?;
+        )?
+        .into_owned();
         let hash_input = key.stable_hash_bytes();
-        let hash_bytes = hash_input.as_ref();
+        let hash_bytes = hash_input.as_ref().to_vec();
         let value_bytes = Self::checked_storable_bytes(
             &value,
             self.header.value_size,
             MutationError::InvalidValueEncoding,
-        )?;
-        let mutation = self.begin_mutation()?;
-        let hot = control::read_hot(&self.memory, self.header.control_offset);
-        let candidates = self.candidate_buckets_for_bytes(hash_bytes, hot.hash_seed);
-        self.insert_with_candidates(
-            &key,
-            hot,
-            key_bytes.as_ref(),
-            value_bytes.as_ref(),
-            candidates,
-            mutation,
-        )
+        )?
+        .into_owned();
+        let plan = self.plan_insert(&key, &hash_bytes, key_bytes, value_bytes)?;
+        self.apply_insert(plan)
     }
 
-    fn insert_with_candidates(
+    fn plan_insert(
         &self,
         key: &K,
-        hot: control::HotControl,
-        key_bytes: &[u8],
-        value_bytes: &[u8],
-        candidates: (u64, u64),
-        mutation: MutationGuard<'_, K, V, M>,
-    ) -> Result<Option<V>, MutationError> {
-        let occupancies = self.candidate_occupancies(candidates);
-        if let Some((bucket, slot, _)) = self.find_in_candidates(candidates, occupancies, key) {
-            let previous = self.read_value(bucket, slot);
-            self.write_value_bytes(bucket, slot, value_bytes);
-            mutation.finish();
-            return Ok(Some(previous));
+        hash_bytes: &[u8],
+        key_bytes: Vec<u8>,
+        value_bytes: Vec<u8>,
+    ) -> Result<InsertPlan<V>, MutationError> {
+        let control = control::read(&self.memory, self.header.control_offset);
+        if !control.mutation_epoch.is_multiple_of(2) {
+            return Err(MutationError::InProgress);
         }
-        let first_load = occupancies.0.count_ones();
-        let second_load = occupancies.1.count_ones();
-        let preferred = if first_load <= second_load {
-            candidates.0
-        } else {
-            candidates.1
-        };
-        let alternate = if preferred == candidates.0 {
-            candidates.1
-        } else {
-            candidates.0
-        };
-        let preferred_occupancy = if preferred == candidates.0 {
-            occupancies.0
-        } else {
-            occupancies.1
-        };
-        let alternate_occupancy = if alternate == candidates.0 {
-            occupancies.0
-        } else {
-            occupancies.1
-        };
-        let placement = Self::first_empty(preferred_occupancy)
-            .map(|slot| (preferred, slot, preferred_occupancy))
-            .or_else(|| {
-                Self::first_empty(alternate_occupancy)
-                    .map(|slot| (alternate, slot, alternate_occupancy))
-            })
-            .ok_or(MutationError::TablePressure);
-        let (bucket, slot, occupancy) = match placement {
-            Ok(parts) => parts,
-            Err(error) => {
-                mutation.finish();
-                return Err(error);
+        let observed_epoch = control.mutation_epoch;
+        let planned = (|| {
+            let candidates =
+                self.candidate_buckets_for_bytes_at(hash_bytes, control.hash_seed, control);
+            let occupancies = self.candidate_occupancies(candidates);
+            if let Some((bucket, slot, _)) = self.find_in_candidates(candidates, occupancies, key) {
+                let previous = self.read_value(bucket, slot);
+                return Ok(InsertPlan::Overwrite {
+                    observed_epoch,
+                    bucket,
+                    slot,
+                    value: value_bytes,
+                    previous,
+                });
             }
-        };
-        self.write_key_bytes(bucket, slot, key_bytes);
-        self.write_value_bytes(bucket, slot, value_bytes);
-        self.write_occupancy(bucket, occupancy | (1 << slot));
-        let len = hot.len + 1;
-        control::write_len(&self.memory, self.header.control_offset, len);
-        mutation.finish();
-        Ok(None)
+            let threshold = Self::split_threshold(control.physical_buckets)?;
+            if control.len < threshold {
+                let (bucket, slot, occupancy) = Self::choose_placement(candidates, occupancies)
+                    .ok_or(MutationError::TablePressure)?;
+                return Ok(InsertPlan::DirectInsert {
+                    observed_epoch,
+                    bucket,
+                    slot,
+                    occupancy,
+                    key: key_bytes,
+                    value: value_bytes,
+                    len: control
+                        .len
+                        .checked_add(1)
+                        .ok_or(MutationError::CapacityOverflow)?,
+                });
+            }
+
+            self.plan_split_insert(observed_epoch, control, hash_bytes, key_bytes, value_bytes)
+        })();
+        match planned {
+            Ok(plan) => Ok(plan),
+            Err(error) => {
+                self.ensure_epoch(observed_epoch)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn plan_split_insert(
+        &self,
+        observed_epoch: u64,
+        control: ControlRegion,
+        hash_bytes: &[u8],
+        key_bytes: Vec<u8>,
+        value_bytes: Vec<u8>,
+    ) -> Result<InsertPlan<V>, MutationError> {
+        let (level, split_cursor, physical_buckets) = Self::next_geometry(control)?;
+        let source_bucket = control.split_cursor;
+        let new_bucket = source_bucket
+            .checked_add(Self::base_buckets(control.level).ok_or(MutationError::CapacityOverflow)?)
+            .ok_or(MutationError::CapacityOverflow)?;
+        let page_bytes = usize::try_from(self.header.bucket_page_stride)
+            .map_err(|_| MutationError::CapacityOverflow)?;
+        let mut source_page = vec![0; page_bytes];
+        self.memory.read(
+            Self::bucket_offset(self.header, source_bucket),
+            &mut source_page,
+        );
+        let source_occupancy = Self::page_occupancy(&source_page);
+        let mut new_page = vec![0; page_bytes];
+        let secrets = self.secrets_for_seed(control.hash_seed);
+        let mut retained = source_occupancy;
+        let mut new_occupancy = 0u8;
+        for slot in 0..BUCKET_SIZE {
+            if source_occupancy & (1 << slot) == 0 {
+                continue;
+            }
+            let entry = Self::page_entry_offset(self.header, slot);
+            let key_end = entry + self.header.key_size as usize;
+            let stored_key = K::from_bytes(Cow::Borrowed(&source_page[entry..key_end]));
+            let hash_input = stored_key.stable_hash_bytes();
+            let routes = Self::candidate_buckets_from_bytes_at(
+                hash_input.as_ref(),
+                &secrets,
+                level,
+                split_cursor,
+            );
+            if routes.0 == source_bucket || routes.1 == source_bucket {
+                continue;
+            }
+            let destination_slot = Self::first_empty(new_occupancy)
+                .expect("at most one full source bucket moves into an empty bucket");
+            let destination = Self::page_entry_offset(self.header, destination_slot);
+            let end = destination + self.header.entry_stride as usize;
+            new_page[destination..end]
+                .copy_from_slice(&source_page[entry..entry + self.header.entry_stride as usize]);
+            retained &= !(1 << slot);
+            new_occupancy |= 1 << destination_slot;
+        }
+        Self::set_page_occupancy(&mut source_page, retained);
+        Self::set_page_occupancy(&mut new_page, new_occupancy);
+
+        let candidates = self.candidate_buckets_for_bytes_at(
+            hash_bytes,
+            control.hash_seed,
+            ControlRegion {
+                level,
+                split_cursor,
+                physical_buckets,
+                ..control
+            },
+        );
+        let occupancies = Self::planned_occupancies(
+            candidates,
+            source_bucket,
+            retained,
+            new_bucket,
+            new_occupancy,
+            &self.memory,
+            self.header,
+        );
+        let (bucket, slot, occupancy) =
+            Self::choose_placement(candidates, occupancies).ok_or(MutationError::TablePressure)?;
+        let target = (bucket != source_bucket && bucket != new_bucket).then_some(PreparedEntry {
+            bucket,
+            slot,
+            occupancy,
+            key: key_bytes.clone(),
+            value: value_bytes.clone(),
+        });
+        if bucket == source_bucket {
+            Self::write_page_entry(
+                &mut source_page,
+                self.header,
+                slot,
+                &key_bytes,
+                &value_bytes,
+            );
+            Self::set_page_occupancy(&mut source_page, retained | (1 << slot));
+        } else if bucket == new_bucket {
+            Self::write_page_entry(&mut new_page, self.header, slot, &key_bytes, &value_bytes);
+            Self::set_page_occupancy(&mut new_page, new_occupancy | (1 << slot));
+        }
+        let grow_to = self
+            .bucket_end(physical_buckets)
+            .ok_or(MutationError::CapacityOverflow)?;
+        Ok(InsertPlan::SplitInsert {
+            observed_epoch,
+            source_bucket,
+            source_page,
+            new_bucket,
+            new_page,
+            target,
+            level,
+            split_cursor,
+            physical_buckets,
+            len: control
+                .len
+                .checked_add(1)
+                .ok_or(MutationError::CapacityOverflow)?,
+            grow_to,
+        })
+    }
+
+    fn apply_insert(&self, plan: InsertPlan<V>) -> Result<Option<V>, MutationError> {
+        match plan {
+            InsertPlan::Overwrite {
+                observed_epoch,
+                bucket,
+                slot,
+                value,
+                previous,
+            } => {
+                let mutation = self.begin_mutation_at(observed_epoch)?;
+                self.write_value_bytes(bucket, slot, &value);
+                mutation.finish();
+                Ok(Some(previous))
+            }
+            InsertPlan::DirectInsert {
+                observed_epoch,
+                bucket,
+                slot,
+                occupancy,
+                key,
+                value,
+                len,
+            } => {
+                let mutation = self.begin_mutation_at(observed_epoch)?;
+                self.write_key_bytes(bucket, slot, &key);
+                self.write_value_bytes(bucket, slot, &value);
+                self.write_occupancy(bucket, occupancy | (1 << slot));
+                control::write_len(&self.memory, self.header.control_offset, len);
+                mutation.finish();
+                Ok(None)
+            }
+            InsertPlan::SplitInsert {
+                observed_epoch,
+                source_bucket,
+                source_page,
+                new_bucket,
+                new_page,
+                target,
+                level,
+                split_cursor,
+                physical_buckets,
+                len,
+                grow_to,
+            } => {
+                grow_to_bytes(&self.memory, grow_to).map_err(Self::map_grow_error)?;
+                let mutation = self.begin_mutation_at(observed_epoch)?;
+                self.memory.write(
+                    Self::bucket_offset(self.header, source_bucket),
+                    &source_page,
+                );
+                self.memory
+                    .write(Self::bucket_offset(self.header, new_bucket), &new_page);
+                if let Some(target) = target {
+                    self.write_key_bytes(target.bucket, target.slot, &target.key);
+                    self.write_value_bytes(target.bucket, target.slot, &target.value);
+                    self.write_occupancy(target.bucket, target.occupancy | (1 << target.slot));
+                }
+                control::publish_split(
+                    &self.memory,
+                    self.header.control_offset,
+                    level,
+                    split_cursor,
+                    physical_buckets,
+                    len,
+                );
+                mutation.finish();
+                Ok(None)
+            }
+        }
     }
 
     pub fn remove(&self, key: &K) -> Result<Option<V>, MutationError> {
@@ -348,7 +573,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         let hash_bytes = hash_input.as_ref();
         let mutation = self.begin_mutation()?;
         let hot = control::read_hot(&self.memory, self.header.control_offset);
-        let candidates = self.candidate_buckets_for_bytes(hash_bytes, hot.hash_seed);
+        let candidates = self.candidate_buckets_for_bytes_with_hot(hash_bytes, hot);
         let Some((bucket, slot, occupancy, previous)) =
             self.find_value_in_candidates(candidates, key)
         else {
@@ -408,12 +633,16 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         {
             return Err(InitError::RecoveryRequired);
         }
-        let capacity = INITIAL_BUCKETS
+        let base = Self::base_buckets(control.level).ok_or(InitError::InvalidLayout)?;
+        let expected_buckets = base
+            .checked_add(control.split_cursor)
+            .ok_or(InitError::InvalidLayout)?;
+        let capacity = expected_buckets
             .checked_mul(u64::from(BUCKET_SIZE))
             .ok_or(InitError::InvalidLayout)?;
-        if control.level != INITIAL_LEVEL
-            || control.split_cursor != 0
-            || control.physical_buckets != INITIAL_BUCKETS
+        if control.level < INITIAL_LEVEL
+            || control.split_cursor >= base
+            || control.physical_buckets != expected_buckets
             || control.len > capacity
             || control.split_work_cursor != 0
         {
@@ -424,21 +653,54 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
 
     #[cfg(test)]
     fn candidate_buckets(&self, key: &K) -> (u64, u64) {
-        let hash_seed = control::read_hash_seed(&self.memory, self.header.control_offset);
+        let hot = control::read_hot(&self.memory, self.header.control_offset);
         let bytes = key.stable_hash_bytes();
-        self.candidate_buckets_for_bytes(bytes.as_ref(), hash_seed)
+        self.candidate_buckets_for_bytes_with_hot(bytes.as_ref(), hot)
     }
 
+    #[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
     fn candidate_buckets_from_bytes(bytes: &[u8], secrets: &[RapidSecrets; 2]) -> (u64, u64) {
-        let first = linear_bucket(hash(bytes, &secrets[0]), INITIAL_LEVEL, 0);
-        let second = linear_bucket(hash(bytes, &secrets[1]), INITIAL_LEVEL, 0);
+        Self::candidate_buckets_from_bytes_at(bytes, secrets, INITIAL_LEVEL, 0)
+    }
+
+    fn candidate_buckets_from_bytes_at(
+        bytes: &[u8],
+        secrets: &[RapidSecrets; 2],
+        level: u8,
+        split_cursor: u64,
+    ) -> (u64, u64) {
+        let first = linear_bucket(hash(bytes, &secrets[0]), level, split_cursor);
+        let second = linear_bucket(hash(bytes, &secrets[1]), level, split_cursor);
         (first, second)
     }
 
-    fn candidate_buckets_for_bytes(&self, bytes: &[u8], seed: u64) -> (u64, u64) {
+    fn candidate_buckets_for_bytes_with_hot(
+        &self,
+        bytes: &[u8],
+        hot: control::HotControl,
+    ) -> (u64, u64) {
+        Self::candidate_buckets_from_bytes_at(
+            bytes,
+            &self.secrets_for_seed(hot.hash_seed),
+            hot.level,
+            hot.split_cursor,
+        )
+    }
+
+    fn candidate_buckets_for_bytes_at(
+        &self,
+        bytes: &[u8],
+        seed: u64,
+        control: ControlRegion,
+    ) -> (u64, u64) {
         let cached = self.hash_secrets.borrow();
         if cached.seed == seed {
-            return Self::candidate_buckets_from_bytes(bytes, &cached.secrets);
+            return Self::candidate_buckets_from_bytes_at(
+                bytes,
+                &cached.secrets,
+                control.level,
+                control.split_cursor,
+            );
         }
         drop(cached);
 
@@ -449,30 +711,36 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
                 secrets: hash_secrets(seed),
             };
         }
-        Self::candidate_buckets_from_bytes(bytes, &cached.secrets)
+        Self::candidate_buckets_from_bytes_at(
+            bytes,
+            &cached.secrets,
+            control.level,
+            control.split_cursor,
+        )
     }
 
     #[cfg(test)]
     fn find(&self, key: &K) -> Option<(u64, u32, u8)> {
-        let seed = control::read_hash_seed(&self.memory, self.header.control_offset);
-        self.find_with_seed(key, seed)
+        let hot = control::read_hot(&self.memory, self.header.control_offset);
+        self.find_with_hot(key, hot)
     }
 
-    fn find_with_seed(&self, key: &K, seed: u64) -> Option<(u64, u32, u8)> {
-        let candidates = self.candidate_buckets_for_key(key, seed);
+    fn find_with_hot(&self, key: &K, hot: control::HotControl) -> Option<(u64, u32, u8)> {
+        let candidates =
+            self.candidate_buckets_for_key_at(key, hot.hash_seed, hot.level, hot.split_cursor);
         let occupancies = self.candidate_occupancies(candidates);
         self.find_in_candidates(candidates, occupancies, key)
     }
 
     #[inline(always)]
-    fn get_with_seed(&self, key: &K, seed: u64) -> Option<V> {
-        self.find_value_with_seed(key, seed)
+    fn get_with_hot(&self, key: &K, hot: control::HotControl) -> Option<V> {
+        self.find_value_with_hot(key, hot)
             .map(|(_, _, _, value)| value)
     }
 
-    #[inline(always)]
-    fn find_value_with_seed(&self, key: &K, seed: u64) -> Option<(u64, u32, u8, V)> {
-        let candidates = self.candidate_buckets_for_key(key, seed);
+    fn find_value_with_hot(&self, key: &K, hot: control::HotControl) -> Option<(u64, u32, u8, V)> {
+        let candidates =
+            self.candidate_buckets_for_key_at(key, hot.hash_seed, hot.level, hot.split_cursor);
         self.find_value_in_candidates(candidates, key)
     }
 
@@ -493,9 +761,20 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             })
     }
 
-    fn candidate_buckets_for_key(&self, key: &K, seed: u64) -> (u64, u64) {
+    fn candidate_buckets_for_key_at(
+        &self,
+        key: &K,
+        seed: u64,
+        level: u8,
+        split_cursor: u64,
+    ) -> (u64, u64) {
         let bytes = key.stable_hash_bytes();
-        self.candidate_buckets_for_bytes(bytes.as_ref(), seed)
+        Self::candidate_buckets_from_bytes_at(
+            bytes.as_ref(),
+            &self.secrets_for_seed(seed),
+            level,
+            split_cursor,
+        )
     }
 
     fn read_consistent<T>(&self, read: impl FnOnce() -> T) -> Result<T, MutationError> {
@@ -518,12 +797,141 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     fn begin_mutation(&self) -> Result<MutationGuard<'_, K, V, M>, MutationError> {
         let epoch = self.idle_epoch()?;
         let completed = epoch.checked_add(2).ok_or(MutationError::EpochExhausted)?;
+        control::write_mutation_epoch(&self.memory, self.header.control_offset, epoch + 1);
+        Ok(MutationGuard {
+            map: self,
+            completed_epoch: completed,
+        })
+    }
+
+    fn begin_mutation_at(
+        &self,
+        observed_epoch: u64,
+    ) -> Result<MutationGuard<'_, K, V, M>, MutationError> {
+        let epoch = self.idle_epoch()?;
+        if epoch != observed_epoch {
+            return Err(MutationError::InProgress);
+        }
+        let completed = epoch.checked_add(2).ok_or(MutationError::EpochExhausted)?;
         let in_progress = epoch + 1;
         control::write_mutation_epoch(&self.memory, self.header.control_offset, in_progress);
         Ok(MutationGuard {
             map: self,
             completed_epoch: completed,
         })
+    }
+
+    fn ensure_epoch(&self, observed_epoch: u64) -> Result<(), MutationError> {
+        (control::read_mutation_epoch(&self.memory, self.header.control_offset) == observed_epoch)
+            .then_some(())
+            .ok_or(MutationError::InProgress)
+    }
+
+    fn split_threshold(physical_buckets: u64) -> Result<u64, MutationError> {
+        physical_buckets
+            .checked_mul(u64::from(BUCKET_SIZE))
+            .and_then(|capacity| capacity.checked_div(4))
+            .and_then(|quarter| quarter.checked_mul(3))
+            .ok_or(MutationError::CapacityOverflow)
+    }
+
+    fn base_buckets(level: u8) -> Option<u64> {
+        (level < 63).then(|| 1u64 << level)
+    }
+
+    fn next_geometry(control: ControlRegion) -> Result<(u8, u64, u64), MutationError> {
+        let base = Self::base_buckets(control.level).ok_or(MutationError::CapacityOverflow)?;
+        let physical_buckets = control
+            .physical_buckets
+            .checked_add(1)
+            .ok_or(MutationError::CapacityOverflow)?;
+        if control.split_cursor.checked_add(1) == Some(base) {
+            let level = control
+                .level
+                .checked_add(1)
+                .filter(|level| *level < 63)
+                .ok_or(MutationError::CapacityOverflow)?;
+            Ok((level, 0, physical_buckets))
+        } else {
+            Ok((control.level, control.split_cursor + 1, physical_buckets))
+        }
+    }
+
+    fn map_grow_error(error: GrowError) -> MutationError {
+        match error {
+            GrowError::OutOfMemory => MutationError::OutOfMemory,
+            GrowError::CapacityOverflow => MutationError::CapacityOverflow,
+        }
+    }
+
+    fn choose_placement(candidates: (u64, u64), occupancies: (u8, u8)) -> Option<(u64, u32, u8)> {
+        let (preferred, preferred_occupancy, alternate, alternate_occupancy) =
+            if occupancies.0.count_ones() <= occupancies.1.count_ones() {
+                (candidates.0, occupancies.0, candidates.1, occupancies.1)
+            } else {
+                (candidates.1, occupancies.1, candidates.0, occupancies.0)
+            };
+        Self::first_empty(preferred_occupancy)
+            .map(|slot| (preferred, slot, preferred_occupancy))
+            .or_else(|| {
+                Self::first_empty(alternate_occupancy)
+                    .map(|slot| (alternate, slot, alternate_occupancy))
+            })
+    }
+
+    fn planned_occupancies(
+        candidates: (u64, u64),
+        source_bucket: u64,
+        source_occupancy: u8,
+        new_bucket: u64,
+        new_occupancy: u8,
+        memory: &M,
+        header: Header,
+    ) -> (u8, u8) {
+        let occupancy = |bucket| {
+            if bucket == source_bucket {
+                source_occupancy
+            } else if bucket == new_bucket {
+                new_occupancy
+            } else {
+                Self::occupancy_byte(memory, header, bucket)
+            }
+        };
+        (occupancy(candidates.0), occupancy(candidates.1))
+    }
+
+    fn page_occupancy(page: &[u8]) -> u8 {
+        u16::from_le_bytes([page[0], page[1]]) as u8
+    }
+
+    fn set_page_occupancy(page: &mut [u8], occupancy: u8) {
+        page[..2].copy_from_slice(&u16::from(occupancy).to_le_bytes());
+    }
+
+    fn page_entry_offset(header: Header, slot: u32) -> usize {
+        BUCKET_HEADER_BYTES as usize + slot as usize * header.entry_stride as usize
+    }
+
+    fn write_page_entry(page: &mut [u8], header: Header, slot: u32, key: &[u8], value: &[u8]) {
+        let entry = Self::page_entry_offset(header, slot);
+        let key_end = entry + header.key_size as usize;
+        page[entry..key_end].copy_from_slice(key);
+        page[key_end..key_end + header.value_size as usize].copy_from_slice(value);
+    }
+
+    fn secrets_for_seed(&self, seed: u64) -> [RapidSecrets; 2] {
+        let cached = self.hash_secrets.borrow();
+        if cached.seed == seed {
+            cached.secrets
+        } else {
+            hash_secrets(seed)
+        }
+    }
+
+    fn bucket_end(&self, physical_buckets: u64) -> Option<u64> {
+        self.header
+            .buckets_offset
+            .checked_add(physical_buckets.checked_mul(self.header.bucket_page_stride)?)
     }
 
     #[inline(always)]
@@ -756,13 +1164,11 @@ fn read_exact_to_vec_uninit<M: Memory>(memory: &M, offset: u64, count: usize) ->
 }
 
 fn linear_bucket(hash: u64, level: u8, split_cursor: u64) -> u64 {
-    let base = 1u64 << level;
-    let bucket = hash % base;
+    // Valid persisted geometry keeps `level < 63`, so both power-of-two masks fit in `u64`.
+    let base_mask = (1u64 << level) - 1;
+    let bucket = hash & base_mask;
     if bucket < split_cursor {
-        let doubled_base = base
-            .checked_mul(2)
-            .expect("validated level leaves room to double");
-        hash % doubled_base
+        hash & ((base_mask << 1) | 1)
     } else {
         bucket
     }
@@ -809,6 +1215,24 @@ pub(crate) mod canbench_probe {
     }
 
     impl<M: Memory> StableLinearHashMap<u64, u64, M> {
+        pub(crate) fn probe_candidates(&self, key: u64) -> (u64, u64) {
+            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            self.candidate_buckets_for_key_at(&key, hot.hash_seed, hot.level, hot.split_cursor)
+        }
+
+        pub(crate) fn probe_bucket_occupancy(&self, bucket: u64) -> u8 {
+            Self::occupancy_byte(&self.memory, self.header, bucket)
+        }
+
+        pub(crate) fn probe_resident_bucket(&self, key: u64) -> u64 {
+            self.find_with_hot(
+                &key,
+                control::read_hot(&self.memory, self.header.control_offset),
+            )
+            .expect("benchmark resident exists")
+            .0
+        }
+
         pub(crate) fn probe_seed(&self) -> u64 {
             control::read_hash_seed(&self.memory, self.header.control_offset)
         }
@@ -816,7 +1240,10 @@ pub(crate) mod canbench_probe {
         pub(crate) fn probe_route_hash(&self, key: u64, seed: u64) -> Route {
             let bytes = key.stable_hash_bytes();
             Route {
-                candidates: self.candidate_buckets_for_bytes(bytes.as_ref(), seed),
+                candidates: Self::candidate_buckets_from_bytes(
+                    bytes.as_ref(),
+                    &self.secrets_for_seed(seed),
+                ),
             }
         }
 
@@ -917,7 +1344,7 @@ pub(crate) mod canbench_probe {
         pub(crate) fn probe_remove_control_route_bucket_value(&self, key: u64) -> (Mutation, u64) {
             let hot = control::read_hot(&self.memory, self.header.control_offset);
             let (bucket, slot, occupancy, value) = self
-                .find_value_with_seed(&key, hot.hash_seed)
+                .find_value_with_hot(&key, hot)
                 .expect("diagnostic fixture contains key");
             (
                 Mutation {
@@ -945,6 +1372,7 @@ mod tests {
     use std::rc::Rc;
 
     type Map = StableLinearHashMap<u64, u64, VectorMemory>;
+    type GrowCallback = Rc<dyn Fn()>;
 
     #[derive(Clone, Default)]
     struct CountingMemory {
@@ -953,6 +1381,17 @@ mod tests {
         read_bytes: Rc<Cell<u64>>,
         write_calls: Rc<Cell<u64>>,
         write_bytes: Rc<Cell<u64>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct FailpointMemory {
+        inner: VectorMemory,
+        fail_grow: Rc<Cell<bool>>,
+        fail_write: Rc<Cell<Option<u64>>>,
+        writes: Rc<Cell<u64>>,
+        size_override: Rc<Cell<Option<u64>>>,
+        after_grow: Rc<RefCell<Option<GrowCallback>>>,
+        epoch_read_override: Rc<Cell<Option<u64>>>,
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1140,6 +1579,52 @@ mod tests {
         }
     }
 
+    impl Memory for FailpointMemory {
+        fn size(&self) -> u64 {
+            if let Some(size) = self.size_override.get() {
+                size
+            } else if self.fail_grow.get() {
+                0
+            } else {
+                self.inner.size()
+            }
+        }
+
+        fn grow(&self, pages: u64) -> i64 {
+            if self.fail_grow.get() {
+                -1
+            } else {
+                let previous = self.inner.grow(pages);
+                if previous != -1
+                    && let Some(callback) = self.after_grow.borrow().as_ref()
+                {
+                    callback();
+                }
+                previous
+            }
+        }
+
+        fn read(&self, offset: u64, dst: &mut [u8]) {
+            if offset == 64 + 48
+                && dst.len() == 8
+                && let Some(epoch) = self.epoch_read_override.take()
+            {
+                dst.copy_from_slice(&epoch.to_le_bytes());
+                return;
+            }
+            self.inner.read(offset, dst);
+        }
+
+        fn write(&self, offset: u64, src: &[u8]) {
+            let write = self.writes.get() + 1;
+            self.writes.set(write);
+            if self.fail_write.get() == Some(write) {
+                panic!("injected stable-memory write failure");
+            }
+            self.inner.write(offset, src);
+        }
+    }
+
     fn reset_counts(memory: &CountingMemory) {
         memory.read_calls.set(0);
         memory.read_bytes.set(0);
@@ -1160,6 +1645,166 @@ mod tests {
             usize::try_from(memory.size() * crate::memory::WASM_PAGE_SIZE)
                 .expect("allocated byte length"),
         )
+    }
+
+    #[derive(Clone, Copy)]
+    enum SplitTarget {
+        Source,
+        New,
+        Unaffected,
+    }
+
+    fn place_fixture_entry<M: Memory>(
+        map: &StableLinearHashMap<u64, u64, M>,
+        occupancies: &mut [u8],
+        residents: &mut Vec<(u64, u64)>,
+        used: &mut Vec<u64>,
+        bucket: u64,
+        key: u64,
+    ) {
+        let slot = StableLinearHashMap::<u64, u64, M>::first_empty(occupancies[bucket as usize])
+            .expect("fixture bucket capacity");
+        let value = key ^ 0xa5a5_a5a5_a5a5_a5a5;
+        let key_bytes = key.to_bytes();
+        let value_bytes = value.to_bytes();
+        map.write_key_bytes(bucket, slot, key_bytes.as_ref());
+        map.write_value_bytes(bucket, slot, value_bytes.as_ref());
+        occupancies[bucket as usize] |= 1 << slot;
+        map.write_occupancy(bucket, occupancies[bucket as usize]);
+        used.push(key);
+        residents.push((key, value));
+    }
+
+    fn seed_threshold_split_fixture<M: Memory>(
+        map: &StableLinearHashMap<u64, u64, M>,
+        level: u8,
+        split_cursor: u64,
+        physical_buckets: u64,
+        move_count: usize,
+        target_kind: SplitTarget,
+    ) -> (Vec<(u64, u64)>, Vec<u64>, u64) {
+        assert!(move_count <= BUCKET_SIZE as usize);
+        map.memory.write(map.header.control_offset + 8, &[level]);
+        map.memory
+            .write(map.header.control_offset + 16, &split_cursor.to_le_bytes());
+        map.memory.write(
+            map.header.control_offset + 24,
+            &physical_buckets.to_le_bytes(),
+        );
+        let seed = control::read_hash_seed(&map.memory, map.header.control_offset);
+        let secrets = hash_secrets(seed);
+        let (next_level, next_cursor, _) = StableLinearHashMap::<u64, u64, M>::next_geometry(
+            control::read(&map.memory, map.header.control_offset),
+        )
+        .expect("next fixture geometry");
+        let source = split_cursor;
+        let new_bucket = source + (1u64 << level);
+        let mut used = Vec::new();
+        let mut residents = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut occupancies = vec![0u8; physical_buckets as usize];
+
+        for should_move in [true, false] {
+            let count = if should_move {
+                move_count
+            } else {
+                BUCKET_SIZE as usize - move_count
+            };
+            for _ in 0..count {
+                let key = (1u64..1 << 20)
+                    .find(|key| {
+                        if used.contains(key) {
+                            return false;
+                        }
+                        let before =
+                            StableLinearHashMap::<u64, u64, M>::candidate_buckets_from_bytes_at(
+                                &key.stable_hash_bytes(),
+                                &secrets,
+                                level,
+                                split_cursor,
+                            );
+                        let after =
+                            StableLinearHashMap::<u64, u64, M>::candidate_buckets_from_bytes_at(
+                                &key.stable_hash_bytes(),
+                                &secrets,
+                                next_level,
+                                next_cursor,
+                            );
+                        (before.0 == source || before.1 == source)
+                            && ((after.0 != source && after.1 != source) == should_move)
+                            && (!should_move || after.0 == new_bucket || after.1 == new_bucket)
+                    })
+                    .expect("bounded source-key search");
+                source_keys.push(key);
+                place_fixture_entry(
+                    map,
+                    &mut occupancies,
+                    &mut residents,
+                    &mut used,
+                    source,
+                    key,
+                );
+            }
+        }
+
+        let threshold = StableLinearHashMap::<u64, u64, M>::split_threshold(physical_buckets)
+            .expect("fixture threshold");
+        let mut bucket = 0;
+        while residents.len() < threshold as usize {
+            bucket = (bucket + 1) % physical_buckets;
+            if bucket == source || occupancies[bucket as usize] == u8::MAX {
+                continue;
+            }
+            let key = (1u64..1 << 20)
+                .find(|key| {
+                    if used.contains(key) {
+                        return false;
+                    }
+                    let routes =
+                        StableLinearHashMap::<u64, u64, M>::candidate_buckets_from_bytes_at(
+                            &key.stable_hash_bytes(),
+                            &secrets,
+                            level,
+                            split_cursor,
+                        );
+                    routes.0 == bucket || routes.1 == bucket
+                })
+                .expect("bounded filler-key search");
+            place_fixture_entry(
+                map,
+                &mut occupancies,
+                &mut residents,
+                &mut used,
+                bucket,
+                key,
+            );
+        }
+        control::write_len(&map.memory, map.header.control_offset, threshold);
+
+        let target = (1u64..1 << 20)
+            .find(|key| {
+                if used.contains(key) {
+                    return false;
+                }
+                let routes = StableLinearHashMap::<u64, u64, M>::candidate_buckets_from_bytes_at(
+                    &key.stable_hash_bytes(),
+                    &secrets,
+                    next_level,
+                    next_cursor,
+                );
+                match target_kind {
+                    SplitTarget::Source => routes == (source, source),
+                    SplitTarget::New => routes == (new_bucket, new_bucket),
+                    SplitTarget::Unaffected => {
+                        routes.0 == routes.1
+                            && routes.0 != source
+                            && routes.0 != new_bucket
+                            && occupancies[routes.0 as usize] != u8::MAX
+                    }
+                }
+            })
+            .expect("bounded target-key search");
+        (residents, source_keys, target)
     }
 
     #[test]
@@ -1279,7 +1924,7 @@ mod tests {
     }
 
     #[test]
-    fn reentrant_mutation_from_key_equality_is_rejected_and_outer_update_completes() {
+    fn alias_mutation_during_insert_planning_invalidates_plan_without_outer_write() {
         type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
 
         let memory = VectorMemory::default();
@@ -1290,14 +1935,12 @@ mod tests {
         let nested_for_callback = nested.clone();
         let attempted_for_callback = attempted.clone();
         let callback: Rc<dyn Fn()> = Rc::new(move || {
-            attempted_for_callback.set(true);
-            assert_eq!(
-                nested_for_callback.get(&CallbackKey::plain(7)),
-                Err(MutationError::InProgress)
-            );
+            if attempted_for_callback.replace(true) {
+                return;
+            }
             assert_eq!(
                 nested_for_callback.insert(CallbackKey::plain(8), 80),
-                Err(MutationError::InProgress)
+                Ok(None)
             );
         });
         let reentrant = CallbackKey {
@@ -1306,10 +1949,151 @@ mod tests {
             on_eq: Some(callback),
         };
 
-        assert_eq!(outer.insert(reentrant, 71), Ok(Some(70)));
+        let epoch_before = outer.control_region().expect("idle control").mutation_epoch;
+        assert_eq!(outer.insert(reentrant, 71), Err(MutationError::InProgress));
         assert!(attempted.get());
-        assert_eq!(outer.get(&CallbackKey::plain(7)), Ok(Some(71)));
-        assert_eq!(outer.get(&CallbackKey::plain(8)), Ok(None));
+        assert_eq!(outer.get(&CallbackKey::plain(7)), Ok(Some(70)));
+        assert_eq!(outer.get(&CallbackKey::plain(8)), Ok(Some(80)));
+        let control = outer
+            .control_region()
+            .expect("idle control after alias write");
+        assert_eq!(control.len, 2);
+        assert_eq!(control.mutation_epoch, epoch_before + 2);
+    }
+
+    #[test]
+    fn alias_mutation_supersedes_direct_pressure_error_without_outer_write() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let nested = Rc::new(
+            CallbackMap::new_with_hash_seed(memory.clone(), 59).expect("new nested handle"),
+        );
+        let target_value = 0;
+        let pair = nested.candidate_buckets(&CallbackKey::plain(target_value));
+        let required = if pair.0 == pair.1 { 8 } else { 16 };
+        let colliders = (1u64..)
+            .filter(|candidate| nested.candidate_buckets(&CallbackKey::plain(*candidate)) == pair)
+            .take(required)
+            .collect::<Vec<_>>();
+        for &key in &colliders {
+            assert_eq!(nested.insert(CallbackKey::plain(key), key), Ok(None));
+        }
+        let outer = CallbackMap::init(memory).expect("open outer handle");
+        let nested_key = colliders[0];
+        let attempted = Rc::new(Cell::new(false));
+        let attempted_for_callback = attempted.clone();
+        let nested_for_callback = nested.clone();
+        let callback: Rc<dyn Fn()> = Rc::new(move || {
+            if !attempted_for_callback.replace(true) {
+                assert_eq!(
+                    nested_for_callback.insert(CallbackKey::plain(nested_key), 99_001),
+                    Ok(Some(nested_key))
+                );
+            }
+        });
+        let target = CallbackKey {
+            value: target_value,
+            on_hash: None,
+            on_eq: Some(callback),
+        };
+        let before = outer.control_region().expect("pre-pressure control");
+
+        assert_eq!(outer.insert(target, 99_002), Err(MutationError::InProgress));
+        assert!(attempted.get());
+        assert_eq!(outer.get(&CallbackKey::plain(target_value)), Ok(None));
+        assert_eq!(outer.get(&CallbackKey::plain(nested_key)), Ok(Some(99_001)));
+        let after = outer.control_region().expect("post-pressure control");
+        assert_eq!(after.len, before.len);
+        assert_eq!(after.physical_buckets, before.physical_buckets);
+        assert_eq!(after.split_cursor, before.split_cursor);
+        assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
+    }
+
+    #[test]
+    fn alias_mutation_supersedes_split_pressure_error_without_outer_write() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
+
+        const RESIDENTS: [u64; 48] = [
+            215, 265, 887, 1017, 29, 60, 118, 162, 84, 114, 197, 206, 262, 339, 107, 122, 376, 416,
+            605, 622, 61, 71, 130, 198, 381, 384, 39, 42, 91, 110, 132, 246, 7, 28, 69, 83, 101,
+            108, 98, 131, 217, 235, 281, 38, 173, 223, 237, 240,
+        ];
+        let memory = VectorMemory::default();
+        let nested = Rc::new(
+            CallbackMap::new_with_hash_seed(memory.clone(), 211).expect("new nested handle"),
+        );
+        for key in RESIDENTS {
+            assert_eq!(nested.insert(CallbackKey::plain(key), key), Ok(None));
+        }
+        let secrets = hash_secrets(211);
+        let pressure_bucket = 1;
+        let mut occupancy = CallbackMap::occupancy_byte(&memory, nested.header, pressure_bucket);
+        let mut used = RESIDENTS.to_vec();
+        while occupancy != u8::MAX {
+            let key = (1u64..1 << 20)
+                .find(|key| {
+                    !used.contains(key)
+                        && CallbackMap::candidate_buckets_from_bytes_at(
+                            &key.to_be_bytes(),
+                            &secrets,
+                            3,
+                            0,
+                        ) == (pressure_bucket, pressure_bucket)
+                })
+                .expect("pressure filler");
+            let slot = CallbackMap::first_empty(occupancy).expect("free pressure slot");
+            nested.write_key_bytes(
+                pressure_bucket,
+                slot,
+                CallbackKey::plain(key).to_bytes().as_ref(),
+            );
+            nested.write_value_bytes(pressure_bucket, slot, key.to_bytes().as_ref());
+            occupancy |= 1 << slot;
+            nested.write_occupancy(pressure_bucket, occupancy);
+            used.push(key);
+        }
+        control::write_len(&memory, nested.header.control_offset, used.len() as u64);
+        let target_value = (1u64..1 << 20)
+            .find(|key| {
+                !used.contains(key)
+                    && CallbackMap::candidate_buckets_from_bytes_at(
+                        &key.to_be_bytes(),
+                        &secrets,
+                        3,
+                        1,
+                    ) == (pressure_bucket, pressure_bucket)
+            })
+            .expect("pressured target");
+        let outer = CallbackMap::init(memory).expect("open outer handle");
+        let nested_key = RESIDENTS[0];
+        let attempted = Rc::new(Cell::new(false));
+        let attempted_for_callback = attempted.clone();
+        let nested_for_callback = nested.clone();
+        let callback: Rc<dyn Fn()> = Rc::new(move || {
+            if !attempted_for_callback.replace(true) {
+                assert_eq!(
+                    nested_for_callback.insert(CallbackKey::plain(nested_key), 99_101),
+                    Ok(Some(nested_key))
+                );
+            }
+        });
+        let target = CallbackKey {
+            value: target_value,
+            on_hash: None,
+            on_eq: Some(callback),
+        };
+        let before = outer.control_region().expect("pre-split-pressure control");
+
+        assert_eq!(outer.insert(target, 99_102), Err(MutationError::InProgress));
+        assert!(attempted.get());
+        assert_eq!(outer.get(&CallbackKey::plain(target_value)), Ok(None));
+        assert_eq!(outer.get(&CallbackKey::plain(nested_key)), Ok(Some(99_101)));
+        let after = outer.control_region().expect("post-split-pressure control");
+        assert_eq!(after.len, before.len);
+        assert_eq!(after.physical_buckets, before.physical_buckets);
+        assert_eq!(after.split_cursor, before.split_cursor);
+        assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
     }
 
     #[test]
@@ -1540,19 +2324,352 @@ mod tests {
         }
         let before = map.len().expect("idle len");
         let bytes_before = allocated_bytes(&map.memory);
-        let epoch_before = control::read_mutation_epoch(&map.memory, map.header.control_offset);
         assert!(before < 8 * u64::from(BUCKET_SIZE));
         assert_eq!(map.insert(target, 999), Err(MutationError::TablePressure));
-        let mut expected_bytes = bytes_before;
-        let epoch_offset = (map.header.control_offset + 48) as usize;
-        expected_bytes[epoch_offset..epoch_offset + 8]
-            .copy_from_slice(&(epoch_before + 2).to_le_bytes());
-        assert_eq!(allocated_bytes(&map.memory), expected_bytes);
+        assert_eq!(allocated_bytes(&map.memory), bytes_before);
         assert_eq!(map.len(), Ok(before));
         assert_eq!(map.get(&target), Ok(None));
         for key in colliders {
             assert_eq!(map.get(&key), Ok(Some(key + 1000)));
         }
+    }
+
+    fn assert_split_fixture(move_count: usize, target_kind: SplitTarget) {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 211).expect("new split fixture");
+        let (residents, source_keys, target) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, move_count, target_kind);
+        let epoch_before = map
+            .control_region()
+            .expect("pre-split control")
+            .mutation_epoch;
+        assert_eq!(map.insert(target, 9_999), Ok(None));
+        let control = map.control_region().expect("post-split control");
+        assert_eq!(
+            (
+                control.level,
+                control.split_cursor,
+                control.physical_buckets
+            ),
+            (3, 1, 9)
+        );
+        assert_eq!(control.len, 49);
+        assert_eq!(control.mutation_epoch, epoch_before + 2);
+        let moved = source_keys
+            .iter()
+            .filter(|key| map.find(key).expect("resident after split").0 == 8)
+            .count();
+        assert_eq!(moved, move_count);
+        for &(key, value) in &residents {
+            assert_eq!(map.get(&key), Ok(Some(value)));
+        }
+        assert_eq!(map.get(&target), Ok(Some(9_999)));
+
+        let reopened = Map::init(memory).expect("reopen split fixture");
+        assert_eq!(reopened.get(&target), Ok(Some(9_999)));
+        for (key, value) in residents {
+            assert_eq!(reopened.get(&key), Ok(Some(value)));
+        }
+    }
+
+    #[test]
+    fn split_redistributes_zero_source_entries_and_places_target_in_new_bucket() {
+        assert_split_fixture(0, SplitTarget::New);
+    }
+
+    #[test]
+    fn split_redistributes_four_source_entries_and_places_target_in_new_bucket() {
+        assert_split_fixture(4, SplitTarget::New);
+    }
+
+    #[test]
+    fn split_redistributes_all_source_entries_and_reopens() {
+        assert_split_fixture(8, SplitTarget::Source);
+    }
+
+    #[test]
+    fn split_places_target_in_unaffected_bucket_and_reopens() {
+        assert_split_fixture(4, SplitTarget::Unaffected);
+    }
+
+    #[test]
+    fn split_threshold_boundaries_and_overwrite_do_not_split_early() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory, 211).expect("new threshold fixture");
+        let (mut residents, _, projected_over_target) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        let (removed_key, removed_value) = residents.pop().expect("resident below threshold");
+        assert_eq!(map.remove(&removed_key), Ok(Some(removed_value)));
+        assert_eq!(map.len(), Ok(47));
+        assert_eq!(map.insert(removed_key, removed_value), Ok(None));
+        let equal = map.control_region().expect("exact threshold");
+        assert_eq!(
+            (equal.split_cursor, equal.physical_buckets, equal.len),
+            (0, 8, 48)
+        );
+        assert_eq!(
+            map.insert(removed_key, removed_value + 1),
+            Ok(Some(removed_value))
+        );
+        let overwritten = map.control_region().expect("overwrite at threshold");
+        assert_eq!(
+            (
+                overwritten.split_cursor,
+                overwritten.physical_buckets,
+                overwritten.len
+            ),
+            (0, 8, 48)
+        );
+        assert_eq!(map.insert(projected_over_target, 30_001), Ok(None));
+        let split = map.control_region().expect("projected-over split");
+        assert_eq!(
+            (split.split_cursor, split.physical_buckets, split.len),
+            (1, 9, 49)
+        );
+    }
+
+    #[test]
+    fn post_split_pressure_rejects_before_grow_or_epoch_change() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 239).expect("new pressure fixture");
+        let (mut residents, _, _) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        let secrets = hash_secrets(239);
+        let bucket = 1;
+        let mut occupancy = Map::occupancy_byte(&memory, map.header, bucket);
+        let mut used = residents.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+        while occupancy != u8::MAX {
+            let key = (1u64..1 << 20)
+                .find(|key| {
+                    !used.contains(key)
+                        && Map::candidate_buckets_from_bytes_at(
+                            &key.stable_hash_bytes(),
+                            &secrets,
+                            3,
+                            0,
+                        ) == (bucket, bucket)
+                })
+                .expect("pressure filler");
+            let mut occupancies = vec![0; 8];
+            occupancies[bucket as usize] = occupancy;
+            place_fixture_entry(
+                &map,
+                &mut occupancies,
+                &mut residents,
+                &mut used,
+                bucket,
+                key,
+            );
+            occupancy = occupancies[bucket as usize];
+        }
+        control::write_len(&memory, map.header.control_offset, residents.len() as u64);
+        let target = (1u64..1 << 20)
+            .find(|key| {
+                !used.contains(key)
+                    && Map::candidate_buckets_from_bytes_at(
+                        &key.stable_hash_bytes(),
+                        &secrets,
+                        3,
+                        1,
+                    ) == (bucket, bucket)
+            })
+            .expect("pressured target");
+        let bytes_before = allocated_bytes(&memory);
+        let size_before = memory.size();
+        assert_eq!(
+            map.insert(target, 30_101),
+            Err(MutationError::TablePressure)
+        );
+        assert_eq!(memory.size(), size_before);
+        assert_eq!(allocated_bytes(&memory), bytes_before);
+    }
+
+    #[test]
+    fn split_redistribution_decodes_stored_keys_for_canonical_hash_bytes() {
+        type RoutingMap = StableLinearHashMap<RoutingKey, u64, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = RoutingMap::new_with_hash_seed(memory.clone(), 211).expect("new routing fixture");
+        let secrets = hash_secrets(211);
+        let mut keys = Vec::new();
+        for bucket in 0..8 {
+            let count = if bucket == 0 {
+                8
+            } else if bucket <= 5 {
+                6
+            } else {
+                5
+            };
+            for _ in 0..count {
+                let key = (1u64..1 << 20)
+                    .find(|key| {
+                        !keys.contains(key)
+                            && RoutingMap::candidate_buckets_from_bytes_at(
+                                &key.to_be_bytes(),
+                                &secrets,
+                                3,
+                                0,
+                            ) == (bucket, bucket)
+                            && (bucket != 0
+                                || RoutingMap::candidate_buckets_from_bytes_at(
+                                    &key.to_be_bytes(),
+                                    &secrets,
+                                    3,
+                                    1,
+                                ) == (8, 8))
+                    })
+                    .expect("bounded routing fixture search");
+                assert_eq!(map.insert(RoutingKey(key), key ^ 0x55aa), Ok(None));
+                keys.push(key);
+            }
+        }
+        assert_eq!(keys.len(), 48);
+        let target = (1u64..1 << 20)
+            .find(|key| {
+                !keys.contains(key)
+                    && RoutingMap::candidate_buckets_from_bytes_at(
+                        &key.to_be_bytes(),
+                        &secrets,
+                        3,
+                        1,
+                    ) == (0, 0)
+            })
+            .expect("bounded target search");
+        assert_eq!(map.insert(RoutingKey(target), target ^ 0x55aa), Ok(None));
+        for &key in &keys[..8] {
+            assert_eq!(map.find(&RoutingKey(key)).expect("moved key").0, 8);
+        }
+        let reopened = RoutingMap::init(memory).expect("reopen routing fixture");
+        for key in keys.into_iter().chain([target]) {
+            assert_eq!(reopened.get(&RoutingKey(key)), Ok(Some(key ^ 0x55aa)));
+        }
+    }
+
+    #[test]
+    fn split_rollover_promotes_level_and_resets_cursor() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 223).expect("new rollover fixture");
+        let (residents, _, target) =
+            seed_threshold_split_fixture(&map, 3, 7, 15, 4, SplitTarget::New);
+        assert_eq!(map.insert(target, 22_300), Ok(None));
+        let control = map.control_region().expect("rollover control");
+        assert_eq!(
+            (
+                control.level,
+                control.split_cursor,
+                control.physical_buckets
+            ),
+            (4, 0, 16)
+        );
+        assert_eq!(control.len, 91);
+        assert_eq!(map.get(&target), Ok(Some(22_300)));
+        let reopened = Map::init(memory).expect("reopen rollover");
+        for (key, value) in residents {
+            assert_eq!(reopened.get(&key), Ok(Some(value)));
+        }
+        assert_eq!(reopened.get(&target), Ok(Some(22_300)));
+    }
+
+    #[test]
+    fn split_grow_failure_leaves_logical_bytes_and_epoch_unchanged() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        let memory = FailpointMemory::default();
+        let map = FailMap::new_with_hash_seed(memory.clone(), 227).expect("new OOM fixture");
+        let (residents, _, target) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        let bytes_before = allocated_bytes(&memory.inner);
+        let control_before = map.control_region().expect("pre-OOM control");
+        memory.fail_grow.set(true);
+        assert_eq!(map.insert(target, 22_700), Err(MutationError::OutOfMemory));
+        memory.fail_grow.set(false);
+        assert_eq!(allocated_bytes(&memory.inner), bytes_before);
+        assert_eq!(map.control_region(), Ok(control_before));
+        assert_eq!(map.get(&target), Ok(None));
+        for (key, value) in residents {
+            assert_eq!(map.get(&key), Ok(Some(value)));
+        }
+    }
+
+    #[test]
+    fn every_split_apply_write_boundary_leaves_odd_epoch_and_reopen_fails_closed() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        for fail_write in 2..=11 {
+            let memory = FailpointMemory::default();
+            let map = FailMap::new_with_hash_seed(memory.clone(), 229).expect("new panic fixture");
+            let (_, _, target) =
+                seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::Unaffected);
+            memory.writes.set(0);
+            memory.fail_write.set(Some(fail_write));
+            let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = map.insert(target, 22_900);
+            }));
+            assert!(trapped.is_err(), "write boundary {fail_write}");
+            memory.fail_write.set(None);
+            assert_eq!(
+                control::read_mutation_epoch(&memory, map.header.control_offset) & 1,
+                1,
+                "write boundary {fail_write}"
+            );
+            assert!(matches!(
+                FailMap::init(memory),
+                Err(InitError::RecoveryRequired)
+            ));
+        }
+    }
+
+    #[test]
+    fn split_capacity_overflow_is_prewrite_atomic() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        let memory = FailpointMemory::default();
+        let map = FailMap::new_with_hash_seed(memory.clone(), 241).expect("new overflow fixture");
+        let (_, _, target) = seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        let bytes_before = allocated_bytes(&memory.inner);
+        let control_before = map.control_region().expect("pre-overflow control");
+        memory.size_override.set(Some(u64::MAX));
+        assert_eq!(
+            map.insert(target, 30_201),
+            Err(MutationError::CapacityOverflow)
+        );
+        memory.size_override.set(None);
+        assert_eq!(allocated_bytes(&memory.inner), bytes_before);
+        assert_eq!(map.control_region(), Ok(control_before));
+    }
+
+    #[test]
+    fn alias_mutation_after_split_grow_invalidates_guard_without_outer_write() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        let memory = FailpointMemory::default();
+        let map = FailMap::new_with_hash_seed(memory.clone(), 243).expect("new alias fixture");
+        let (residents, _, target) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        let control_before = map.control_region().expect("pre-alias control");
+        let original_size = memory.inner.size();
+        let callback_memory = memory.clone();
+        *memory.after_grow.borrow_mut() = Some(Rc::new(move || {
+            callback_memory
+                .epoch_read_override
+                .set(Some(control_before.mutation_epoch + 2));
+        }));
+        memory.size_override.set(Some(0));
+        assert_eq!(map.insert(target, 30_301), Err(MutationError::InProgress));
+        memory.size_override.set(None);
+        memory.after_grow.borrow_mut().take();
+        assert_eq!(memory.inner.size(), original_size + 1);
+        assert_eq!(map.control_region(), Ok(control_before));
+        assert_eq!(map.get(&target), Ok(None));
+        for (key, value) in residents {
+            assert_eq!(map.get(&key), Ok(Some(value)));
+        }
+        let appended = read_bytes(
+            &memory.inner,
+            original_size * crate::memory::WASM_PAGE_SIZE,
+            crate::memory::WASM_PAGE_SIZE as usize,
+        );
+        assert!(appended.iter().all(|byte| *byte == 0));
     }
 
     #[test]
@@ -1605,7 +2722,7 @@ mod tests {
     }
 
     #[test]
-    fn reopen_rejects_unimplemented_geometry() {
+    fn reopen_accepts_midround_geometry_and_rejects_invalid_geometry() {
         let smaller_memory = VectorMemory::default();
         let smaller = Map::new(smaller_memory.clone()).expect("new smaller fixture");
         smaller_memory.write(smaller.header.control_offset + 8, &[2]);
@@ -1619,8 +2736,65 @@ mod tests {
         let split = Map::new(split_memory.clone()).expect("new split fixture");
         split_memory.write(split.header.control_offset + 16, &1u64.to_le_bytes());
         split_memory.write(split.header.control_offset + 24, &9u64.to_le_bytes());
+        let reopened = Map::init(split_memory).expect("reopen mid-round geometry");
+        let control = reopened.control_region().expect("idle mid-round control");
+        assert_eq!(control.level, 3);
+        assert_eq!(control.split_cursor, 1);
+        assert_eq!(control.physical_buckets, 9);
+        assert_eq!(control.len, 0);
+
+        let invalid_cursor_memory = VectorMemory::default();
+        let invalid_cursor = Map::new(invalid_cursor_memory.clone()).expect("new cursor fixture");
+        invalid_cursor_memory.write(
+            invalid_cursor.header.control_offset + 16,
+            &8u64.to_le_bytes(),
+        );
+        invalid_cursor_memory.write(
+            invalid_cursor.header.control_offset + 24,
+            &16u64.to_le_bytes(),
+        );
         assert!(matches!(
-            Map::init(split_memory),
+            Map::init(invalid_cursor_memory),
+            Err(InitError::InvalidLayout)
+        ));
+
+        let mismatch_memory = VectorMemory::default();
+        let mismatch = Map::new(mismatch_memory.clone()).expect("new mismatch fixture");
+        mismatch_memory.write(mismatch.header.control_offset + 16, &1u64.to_le_bytes());
+        assert!(matches!(
+            Map::init(mismatch_memory),
+            Err(InitError::InvalidLayout)
+        ));
+
+        let high_memory = VectorMemory::default();
+        let high = Map::new(high_memory.clone()).expect("new high fixture");
+        high_memory.write(high.header.control_offset + 8, &[63]);
+        assert!(matches!(
+            Map::init(high_memory),
+            Err(InitError::InvalidLayout)
+        ));
+
+        let rollover_memory = VectorMemory::default();
+        let rollover = Map::new(rollover_memory.clone()).expect("new rollover fixture");
+        rollover_memory.write(rollover.header.control_offset + 8, &[4]);
+        rollover_memory.write(rollover.header.control_offset + 24, &16u64.to_le_bytes());
+        let reopened = Map::init(rollover_memory).expect("valid settled rollover");
+        assert_eq!(
+            reopened
+                .control_region()
+                .expect("rollover control")
+                .physical_buckets,
+            16
+        );
+
+        let extent_memory = FailpointMemory::default();
+        let extent = StableLinearHashMap::<u64, u64, _>::new(extent_memory.clone())
+            .expect("new extent fixture");
+        extent_memory.write(extent.header.control_offset + 8, &[9]);
+        extent_memory.write(extent.header.control_offset + 24, &512u64.to_le_bytes());
+        extent_memory.size_override.set(Some(1));
+        assert!(matches!(
+            StableLinearHashMap::<u64, u64, _>::init(extent_memory),
             Err(InitError::InvalidLayout)
         ));
     }
@@ -1632,7 +2806,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_bucket_matches_reference_for_validated_levels_and_split_cursors() {
+    fn linear_bucket_matches_reference_at_geometry_boundaries_and_samples() {
         fn modulo_bucket(hash: u64, level: u8, split_cursor: u64) -> u64 {
             let base = 1u64 << level;
             let bucket = hash % base;
@@ -1643,37 +2817,42 @@ mod tests {
             }
         }
 
-        for level in INITIAL_LEVEL..=12 {
+        for level in INITIAL_LEVEL..=62 {
             let base = 1u64 << level;
-            for split_cursor in 0..base {
-                for hash in 0..(base * 2) {
+            let doubled = base * 2;
+            for split_cursor in [0, 1, base / 2, base - 1] {
+                let boundary_hashes = [
+                    0,
+                    1,
+                    split_cursor.saturating_sub(1),
+                    split_cursor,
+                    split_cursor + 1,
+                    base - 1,
+                    base,
+                    base + 1,
+                    doubled - 1,
+                    doubled,
+                    0x0123_4567_89ab_cdef,
+                    0xfedc_ba98_7654_3210,
+                    u64::MAX - 1,
+                    u64::MAX,
+                ];
+                for hash in boundary_hashes {
                     assert_eq!(
                         linear_bucket(hash, level, split_cursor),
                         modulo_bucket(hash, level, split_cursor),
                         "hash={hash:#018x}, level={level}, split_cursor={split_cursor}"
                     );
                 }
-            }
-        }
-
-        const HASHES: [u64; 8] = [
-            0,
-            1,
-            0x0123_4567_89ab_cdef,
-            0xfedc_ba98_7654_3210,
-            u64::MAX - 1,
-            u64::MAX,
-            1 << 62,
-            (1 << 62) + 1,
-        ];
-        for level in 13..=62 {
-            let base = 1u64 << level;
-            for split_cursor in [0, 1, base / 2, base - 1] {
-                for hash in HASHES {
+                let mut sample = u64::from(level) << 56 | split_cursor;
+                for _ in 0..64 {
+                    sample = sample
+                        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                        .wrapping_add(0xbf58_476d_1ce4_e5b9);
                     assert_eq!(
-                        linear_bucket(hash, level, split_cursor),
-                        modulo_bucket(hash, level, split_cursor),
-                        "hash={hash:#018x}, level={level}, split_cursor={split_cursor}"
+                        linear_bucket(sample, level, split_cursor),
+                        modulo_bucket(sample, level, split_cursor),
+                        "hash={sample:#018x}, level={level}, split_cursor={split_cursor}"
                     );
                 }
             }
@@ -1777,7 +2956,40 @@ mod tests {
 
         memory.read_bytes.set(0);
         assert_eq!(map.contains_key(&key), Ok(true));
-        assert_eq!(memory.read_bytes.get(), 36);
+        assert_eq!(memory.read_bytes.get(), 68);
+    }
+
+    #[test]
+    fn direct_insert_reads_one_authoritative_control_snapshot_then_one_epoch_recheck() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 73).expect("new");
+
+        reset_counts(&memory);
+        assert_eq!(map.insert(7, 70), Ok(None));
+        assert_eq!(memory.read_calls.get(), 4);
+        assert_eq!(memory.read_bytes.get(), 64 + 2 + 2 + 8);
+        assert_eq!(memory.write_calls.get(), 6);
+        assert_eq!(memory.write_bytes.get(), 8 + 8 + 8 + 2 + 8 + 8);
+        assert_eq!(map.get(&7), Ok(Some(70)));
+    }
+
+    #[test]
+    fn overwrite_reads_one_authoritative_control_snapshot_then_one_epoch_recheck() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 79).expect("new");
+        assert_eq!(map.insert(7, 70), Ok(None));
+
+        reset_counts(&memory);
+        assert_eq!(map.insert(7, 71), Ok(Some(70)));
+        assert_eq!(memory.read_calls.get(), 6);
+        assert_eq!(memory.read_bytes.get(), 64 + 2 + 2 + 128 + 8 + 8);
+        assert_eq!(memory.write_calls.get(), 3);
+        assert_eq!(memory.write_bytes.get(), 8 + 8 + 8);
+        assert_eq!(map.get(&7), Ok(Some(71)));
     }
 
     #[test]
@@ -1801,7 +3013,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(Some(790)));
         assert_eq!(memory.read_calls.get(), 4);
-        assert_eq!(memory.read_bytes.get(), 16 + 8 + 136);
+        assert_eq!(memory.read_bytes.get(), 16 + 40 + 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
     }
@@ -1833,7 +3045,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(Some(830)));
         assert_eq!(memory.read_calls.get(), 5);
-        assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
+        assert_eq!(memory.read_bytes.get(), 16 + 40 + 2 * 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
     }
@@ -1854,7 +3066,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(None));
         assert_eq!(memory.read_calls.get(), 5);
-        assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
+        assert_eq!(memory.read_bytes.get(), 16 + 40 + 2 * 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
     }
@@ -1959,7 +3171,7 @@ mod tests {
 
         memory.read_bytes.set(0);
         assert_eq!(map.get(&key), Ok(Some([9; 2048])));
-        assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 + 2 + 8 + 2048);
+        assert_eq!(memory.read_bytes.get(), 16 + 40 + 2 + 2 + 8 + 2048);
     }
 
     #[test]
