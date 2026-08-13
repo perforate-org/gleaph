@@ -1,9 +1,15 @@
 use crate::StableLinearHashMap;
 use canbench_rs::bench;
 #[cfg(target_family = "wasm")]
+use ic_stable_structures::Storable;
+#[cfg(target_family = "wasm")]
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
 use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+#[cfg(target_family = "wasm")]
+use std::cell::RefCell;
 use std::hint::black_box;
+#[cfg(target_family = "wasm")]
+use std::rc::Rc;
 
 const N: usize = 48;
 const LARGE_N: u64 = 16;
@@ -98,6 +104,227 @@ fn populated_large() -> StableLinearHashMap<u64, [u8; 2048], DefaultMemoryImpl> 
         assert_eq!(map.get(&key), Ok(Some(large_value(key))));
     }
     map
+}
+
+#[cfg(target_family = "wasm")]
+fn one_hop_movable_fixture<V: Storable + Clone>(
+    map: &StableLinearHashMap<u64, V, DefaultMemoryImpl>,
+    value: impl Fn(u64) -> V,
+) -> (u64, Vec<(u64, V)>, u64, u64) {
+    let target = (1u64..)
+        .find(|key| {
+            let candidates = map.probe_experimental_candidates(*key);
+            candidates.0 != candidates.1
+        })
+        .expect("distinct target candidates");
+    let candidates = map.probe_experimental_candidates(target);
+    let (moved, destination) = (1u64..)
+        .find_map(|key| {
+            let routes = map.probe_experimental_candidates(key);
+            let destination = if routes.0 == candidates.0 && routes.1 != candidates.0 {
+                routes.1
+            } else if routes.1 == candidates.0 && routes.0 != candidates.0 {
+                routes.0
+            } else {
+                return None;
+            };
+            (key != target && destination != candidates.0 && destination != candidates.1)
+                .then_some((key, destination))
+        })
+        .expect("movable resident");
+    let mut occupancies = [0u8; 8];
+    let mut used = vec![target];
+    let mut residents = Vec::new();
+    let place = |bucket: u64,
+                 key: u64,
+                 occupancies: &mut [u8; 8],
+                 used: &mut Vec<u64>,
+                 residents: &mut Vec<(u64, V)>| {
+        let occupancy = occupancies[bucket as usize];
+        let slot = (!occupancy).trailing_zeros();
+        let resident_value = value(key);
+        map.probe_experimental_place(bucket, slot, occupancy, key, resident_value.clone());
+        occupancies[bucket as usize] |= 1 << slot;
+        used.push(key);
+        residents.push((key, resident_value));
+    };
+    place(
+        candidates.0,
+        moved,
+        &mut occupancies,
+        &mut used,
+        &mut residents,
+    );
+    for bucket in [candidates.0, candidates.1] {
+        while occupancies[bucket as usize] != u8::MAX {
+            let key = (1u64..)
+                .find(|key| {
+                    !used.contains(key) && {
+                        let routes = map.probe_experimental_candidates(*key);
+                        routes.0 == bucket || routes.1 == bucket
+                    }
+                })
+                .expect("candidate filler");
+            place(bucket, key, &mut occupancies, &mut used, &mut residents);
+        }
+    }
+    map.probe_experimental_set_len(residents.len() as u64);
+    (target, residents, moved, destination)
+}
+
+#[cfg(target_family = "wasm")]
+fn one_hop_exhausted_fixture(
+    map: &StableLinearHashMap<u64, u64, DefaultMemoryImpl>,
+) -> (u64, Vec<(u64, u64)>) {
+    let target = (1u64..)
+        .find(|key| {
+            let candidates = map.probe_experimental_candidates(*key);
+            candidates.0 != candidates.1
+        })
+        .expect("distinct exhausted target");
+    let candidates = map.probe_experimental_candidates(target);
+    let keys = (target + 1..)
+        .filter(|key| map.probe_experimental_candidates(*key) == candidates)
+        .take(16)
+        .collect::<Vec<_>>();
+    let mut occupancies = [0u8; 8];
+    let mut residents = Vec::new();
+    for key in keys {
+        let bucket = if occupancies[candidates.0 as usize] != u8::MAX {
+            candidates.0
+        } else {
+            candidates.1
+        };
+        let occupancy = occupancies[bucket as usize];
+        let slot = (!occupancy).trailing_zeros();
+        let value = fixture_value(key);
+        map.probe_experimental_place(bucket, slot, occupancy, key, value);
+        occupancies[bucket as usize] |= 1 << slot;
+        residents.push((key, value));
+    }
+    map.probe_experimental_set_len(residents.len() as u64);
+    (target, residents)
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_experimental_one_hop_movable() -> canbench_rs::BenchResult {
+    let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 443)
+        .expect("new preflight map");
+    let (preflight_target, _, _, _) = one_hop_movable_fixture(&preflight, fixture_value);
+    assert_eq!(
+        preflight.experimental_insert_one_hop(preflight_target, fixture_value(preflight_target)),
+        Ok(None)
+    );
+
+    let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 443)
+        .expect("new measured map");
+    let (target, residents, moved, destination) = one_hop_movable_fixture(&map, fixture_value);
+    let before = map.control_region().expect("pre-measurement control");
+    let measured = Rc::new(RefCell::new(None));
+    let measured_in_scope = measured.clone();
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_experimental_one_hop_movable");
+        *measured_in_scope.borrow_mut() = Some(black_box(
+            map.experimental_insert_one_hop(black_box(target), black_box(fixture_value(target))),
+        ));
+    });
+    assert_eq!(measured.borrow().as_ref(), Some(&Ok(None)));
+    let after = map.control_region().expect("post-measurement control");
+    assert_eq!(after.len, before.len + 1);
+    assert_eq!(
+        (after.level, after.split_cursor, after.physical_buckets),
+        (before.level, before.split_cursor, before.physical_buckets)
+    );
+    assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
+    assert_eq!(map.get(&target), Ok(Some(fixture_value(target))));
+    assert_eq!(map.probe_experimental_resident_bucket(moved), destination);
+    for &(key, value) in &residents {
+        assert_eq!(map.get(&key), Ok(Some(value)));
+    }
+    let reopened =
+        StableLinearHashMap::<u64, u64, _>::init(map.into_memory()).expect("reopen movable map");
+    assert_eq!(reopened.get(&target), Ok(Some(fixture_value(target))));
+    result
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_experimental_one_hop_exhausted() -> canbench_rs::BenchResult {
+    let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 449)
+        .expect("new exhausted map");
+    let (target, residents) = one_hop_exhausted_fixture(&map);
+    assert_eq!(
+        map.experimental_insert_one_hop(target, fixture_value(target)),
+        Err(crate::MutationError::TablePressure)
+    );
+    let before = map.control_region().expect("pre-measurement control");
+    let measured = Rc::new(RefCell::new(None));
+    let measured_in_scope = measured.clone();
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_experimental_one_hop_exhausted");
+        *measured_in_scope.borrow_mut() = Some(black_box(
+            map.experimental_insert_one_hop(black_box(target), black_box(fixture_value(target))),
+        ));
+    });
+    assert_eq!(
+        measured.borrow().as_ref(),
+        Some(&Err(crate::MutationError::TablePressure))
+    );
+    assert_eq!(
+        map.control_region().expect("post-measurement control"),
+        before
+    );
+    assert_eq!(map.get(&target), Ok(None));
+    for &(key, value) in &residents {
+        assert_eq!(map.get(&key), Ok(Some(value)));
+    }
+    let reopened =
+        StableLinearHashMap::<u64, u64, _>::init(map.into_memory()).expect("reopen exhausted map");
+    assert_eq!(reopened.get(&target), Ok(None));
+    result
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_experimental_one_hop_movable_large_value() -> canbench_rs::BenchResult {
+    let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 457)
+        .expect("new large preflight map");
+    let (preflight_target, _, _, _) = one_hop_movable_fixture(&preflight, large_value);
+    assert_eq!(
+        preflight.experimental_insert_one_hop(preflight_target, large_value(preflight_target)),
+        Ok(None)
+    );
+
+    let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 457)
+        .expect("new large measured map");
+    let (target, residents, moved, destination) = one_hop_movable_fixture(&map, large_value);
+    let before = map.control_region().expect("pre-measurement control");
+    let measured = Rc::new(RefCell::new(None));
+    let measured_in_scope = measured.clone();
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_experimental_one_hop_movable_large_value");
+        *measured_in_scope.borrow_mut() = Some(black_box(
+            map.experimental_insert_one_hop(black_box(target), black_box(large_value(target))),
+        ));
+    });
+    assert_eq!(measured.borrow().as_ref(), Some(&Ok(None)));
+    let after = map.control_region().expect("post-measurement control");
+    assert_eq!(after.len, before.len + 1);
+    assert_eq!(
+        (after.level, after.split_cursor, after.physical_buckets),
+        (before.level, before.split_cursor, before.physical_buckets)
+    );
+    assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
+    assert_eq!(map.get(&target), Ok(Some(large_value(target))));
+    assert_eq!(map.probe_experimental_resident_bucket(moved), destination);
+    for &(key, ref value) in &residents {
+        assert_eq!(map.get(&key), Ok(Some(*value)));
+    }
+    let reopened = StableLinearHashMap::<u64, [u8; 2048], _>::init(map.into_memory())
+        .expect("reopen large movable map");
+    assert_eq!(reopened.get(&target), Ok(Some(large_value(target))));
+    result
 }
 
 #[bench(raw)]
