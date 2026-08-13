@@ -285,6 +285,61 @@ pub struct VectorSyncBatchProgress {
     pub instruction_budget_exhausted: bool,
 }
 
+/// Terminal admission result for a vector index-definition table that cannot accept another row.
+///
+/// This marker is intentionally distinct from allocation and transport failures: a caller can
+/// classify it as a terminal item outcome without parsing storage diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct IndexDefinitionTablePressure;
+
+/// Vector's definition store could not be opened or safely served.
+///
+/// This marker represents the availability boundary only. Existing vector endpoints do not yet
+/// transport it; they continue to use their legacy error/progress contracts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct IndexDefinitionStoreUnavailable;
+
+/// A bounded vector-index synchronization result with either a committed prefix or one terminal
+/// definition-table admission failure.
+///
+/// The caller must validate this decoded wire value against the submitted operation count before
+/// changing its outbox. `Terminal` acknowledges exactly the prefix before `failed_index`; it does
+/// not acknowledge the failed item or any suffix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorSyncBatchOutcome {
+    /// A non-terminal committed prefix. `applied` may equal the submitted operation count.
+    Progress { applied: u32 },
+    /// One terminal definition-table admission failure after an exact committed prefix.
+    Terminal {
+        applied: u32,
+        failed_index: u32,
+        error: IndexDefinitionTablePressure,
+    },
+}
+
+impl VectorSyncBatchOutcome {
+    /// Checks the decoded outcome against the operation slice that produced it.
+    ///
+    /// Candid decoding admits all `u32` values, so the consuming boundary must call this before
+    /// removing an acknowledged prefix or acting on a terminal item.
+    pub fn validate(&self, operation_count: usize) -> Result<(), &'static str> {
+        let operation_count = u32::try_from(operation_count)
+            .map_err(|_| "vector sync batch operation count exceeds u32")?;
+        match *self {
+            Self::Progress { applied } if applied <= operation_count => Ok(()),
+            Self::Progress { .. } => Err("vector sync batch progress exceeds operation count"),
+            Self::Terminal {
+                applied,
+                failed_index,
+                ..
+            } if applied == failed_index && applied < operation_count => Ok(()),
+            Self::Terminal { .. } => {
+                Err("vector sync batch terminal requires failed_index == applied < operation_count")
+            }
+        }
+    }
+}
+
 /// One indexed embedding definition supplied ephemerally by the Router (Slice 3).
 ///
 /// Slice 2 defines the type only; the graph never persists an indexed-embedding registry. A
@@ -1678,6 +1733,80 @@ mod tests {
         assert_eq!(
             Decode!(&bytes, VectorSyncBatchProgress).expect("decode progress"),
             progress
+        );
+    }
+
+    #[test]
+    fn vector_sync_batch_outcome_candid_roundtrip_and_validates_progress() {
+        let outcome = VectorSyncBatchOutcome::Progress { applied: 3 };
+        let bytes = Encode!(&outcome).expect("encode outcome");
+        let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode outcome");
+        assert_eq!(decoded, outcome);
+        assert_eq!(decoded.validate(3), Ok(()));
+    }
+
+    #[test]
+    fn vector_sync_batch_outcome_terminal_at_zero_candid_roundtrip_and_validates() {
+        let outcome = VectorSyncBatchOutcome::Terminal {
+            applied: 0,
+            failed_index: 0,
+            error: IndexDefinitionTablePressure,
+        };
+        let bytes = Encode!(&outcome).expect("encode outcome");
+        let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode outcome");
+        assert_eq!(decoded, outcome);
+        assert_eq!(decoded.validate(1), Ok(()));
+    }
+
+    #[test]
+    fn vector_sync_batch_outcome_terminal_after_nonempty_prefix_candid_roundtrip_and_validates() {
+        let outcome = VectorSyncBatchOutcome::Terminal {
+            applied: 2,
+            failed_index: 2,
+            error: IndexDefinitionTablePressure,
+        };
+        let bytes = Encode!(&outcome).expect("encode outcome");
+        let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode outcome");
+        assert_eq!(decoded, outcome);
+        assert_eq!(decoded.validate(3), Ok(()));
+    }
+
+    #[test]
+    fn vector_sync_batch_outcome_rejects_malformed_decoded_invariants() {
+        let malformed_terminal = VectorSyncBatchOutcome::Terminal {
+            applied: 1,
+            failed_index: 2,
+            error: IndexDefinitionTablePressure,
+        };
+        let bytes = Encode!(&malformed_terminal).expect("encode malformed terminal");
+        let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode malformed terminal");
+        assert_eq!(
+            decoded.validate(3),
+            Err("vector sync batch terminal requires failed_index == applied < operation_count")
+        );
+
+        assert_eq!(
+            VectorSyncBatchOutcome::Progress { applied: 4 }.validate(3),
+            Err("vector sync batch progress exceeds operation count")
+        );
+        assert_eq!(
+            VectorSyncBatchOutcome::Terminal {
+                applied: 3,
+                failed_index: 3,
+                error: IndexDefinitionTablePressure,
+            }
+            .validate(3),
+            Err("vector sync batch terminal requires failed_index == applied < operation_count")
+        );
+    }
+
+    #[test]
+    fn index_definition_store_unavailable_candid_roundtrip() {
+        let marker = IndexDefinitionStoreUnavailable;
+        let bytes = Encode!(&marker).expect("encode unavailable marker");
+        assert_eq!(
+            Decode!(&bytes, IndexDefinitionStoreUnavailable).expect("decode unavailable marker"),
+            marker
         );
     }
 }
