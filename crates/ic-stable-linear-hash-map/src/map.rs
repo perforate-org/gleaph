@@ -1007,6 +1007,9 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
                 let Some(destination_slot) = Self::first_empty(destination_occupancy) else {
                     continue;
                 };
+                if (destination_bucket, destination_slot) < (source_bucket, source_slot) {
+                    continue;
+                }
                 Self::write_page_entry(
                     &mut destination_page,
                     self.header,
@@ -3178,6 +3181,8 @@ mod tests {
             .find(|key| {
                 let candidates = map.candidate_buckets(key);
                 candidates.0 != candidates.1
+                    && (0..physical_buckets)
+                        .any(|bucket| bucket > candidates.0 && bucket != candidates.1)
             })
             .expect("distinct target candidates");
         let candidates = map.candidate_buckets(&target);
@@ -3206,7 +3211,7 @@ mod tests {
                             );
                         reference.0 != destination && reference.1 != destination
                     });
-                (destination != candidates.0 && destination != candidates.1 && current_only)
+                (destination > candidates.0 && destination != candidates.1 && current_only)
                     .then_some((key, destination))
             })
             .expect("movable first-source resident");
@@ -4406,6 +4411,84 @@ mod tests {
             reopened.scrub_step(cursor, u64::MAX),
             Ok(ScrubStep::Complete(_))
         ));
+    }
+
+    #[test]
+    fn one_hop_skips_backward_relocation_and_uses_next_forward_candidate() {
+        let memory = VectorMemory::default();
+        let map = Map::new(memory.clone()).expect("new ordered fixture");
+        let key_for_candidates = |expected: (u64, u64)| {
+            (1u64..1 << 20)
+                .find(|key| map.candidate_buckets(key) == expected)
+                .expect("bounded candidate search")
+        };
+        let target = key_for_candidates((4, 0));
+        let backward = key_for_candidates((4, 1));
+        let forward = key_for_candidates((4, 7));
+
+        let mut occupancies = vec![0u8; INITIAL_BUCKETS as usize];
+        let mut residents = Vec::new();
+        let mut used = vec![target];
+        place_fixture_entry(
+            &map,
+            &mut occupancies,
+            &mut residents,
+            &mut used,
+            4,
+            backward,
+        );
+        place_fixture_entry(
+            &map,
+            &mut occupancies,
+            &mut residents,
+            &mut used,
+            4,
+            forward,
+        );
+        for bucket in [4, 0] {
+            while occupancies[bucket as usize] != u8::MAX {
+                let key = (1u64..1 << 20)
+                    .find(|key| {
+                        !used.contains(key) && {
+                            let routes = map.candidate_buckets(key);
+                            routes.0 == bucket || routes.1 == bucket
+                        }
+                    })
+                    .expect("candidate filler");
+                place_fixture_entry(
+                    &map,
+                    &mut occupancies,
+                    &mut residents,
+                    &mut used,
+                    bucket,
+                    key,
+                );
+            }
+        }
+        control::write_len(
+            &map.memory,
+            map.header.control_offset,
+            residents.len() as u64,
+        );
+
+        let physical_slot =
+            |bucket: u64, slot: u32| bucket * u64::from(BUCKET_SIZE) + u64::from(slot);
+        assert!(physical_slot(1, 0) < physical_slot(4, 0));
+        assert!(physical_slot(7, 0) > physical_slot(4, 1));
+        assert_eq!(Map::occupancy_byte(&memory, map.header, 1), 0);
+        assert_eq!(Map::occupancy_byte(&memory, map.header, 7), 0);
+
+        assert_eq!(map.insert(target, 90_041), Ok(None));
+        let backward_position = map.find(&backward).expect("backward resident remains");
+        assert_eq!((backward_position.0, backward_position.1), (4, 0));
+        let forward_position = map.find(&forward).expect("forward resident relocated");
+        assert_eq!((forward_position.0, forward_position.1), (7, 0));
+        let target_position = map.find(&target).expect("inserted target");
+        assert_eq!((target_position.0, target_position.1), (4, 1));
+        assert_eq!(Map::occupancy_byte(&memory, map.header, 1), 0);
+        for (key, value) in residents {
+            assert_eq!(map.get(&key), Ok(Some(value)));
+        }
     }
 
     fn assert_one_hop_uses_current_geometry(
