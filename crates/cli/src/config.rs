@@ -63,6 +63,7 @@ pub struct ConfigEnv {
     pub network: Option<String>,
     pub canister: Option<String>,
     pub identity: Option<String>,
+    pub router: Option<String>,
     pub fetch_root_key: Option<bool>,
 }
 
@@ -84,6 +85,7 @@ impl ConfigEnv {
                 "GLEAPH_NETWORK" => env.network = Some(value),
                 "GLEAPH_CANISTER" => env.canister = Some(value),
                 "GLEAPH_IDENTITY" => env.identity = Some(value),
+                "GLEAPH_ROUTER" => env.router = Some(value),
                 "GLEAPH_FETCH_ROOT_KEY" => {
                     env.fetch_root_key = Some(match value.as_str() {
                         "true" => true,
@@ -577,6 +579,7 @@ mod tests {
                 ("GLEAPH_NETWORK", "local"),
                 ("GLEAPH_CANISTER", "aaaaa-aa"),
                 ("GLEAPH_IDENTITY", "id.pem"),
+                ("GLEAPH_ROUTER", "prod"),
                 ("GLEAPH_FETCH_ROOT_KEY", "true"),
                 ("UNRELATED", "x"),
             ]
@@ -587,6 +590,7 @@ mod tests {
         assert_eq!(env.network.as_deref(), Some("local"));
         assert_eq!(env.canister.as_deref(), Some("aaaaa-aa"));
         assert_eq!(env.identity.as_deref(), Some("id.pem"));
+        assert_eq!(env.router.as_deref(), Some("prod"));
         assert_eq!(env.fetch_root_key, Some(true));
     }
 

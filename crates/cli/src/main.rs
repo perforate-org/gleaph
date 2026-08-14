@@ -255,7 +255,7 @@ fn required_remote(
         // No explicit canister: resolve the Router id from the Account canister
         // (ADR 0068). The explicit `--canister` / GLEAPH_CANISTER / config path is
         // preserved for backward compatibility.
-        None => resolve_router_from_account(&options, loaded)?,
+        None => resolve_router_from_account(&options, env, loaded)?,
     };
     Ok(ResolvedRemote {
         canister,
@@ -267,10 +267,12 @@ fn required_remote(
 
 /// Resolve the Router canister id from the Account canister when no explicit canister is given.
 /// Reads the platform-fixed Account id from `.gleaph/data/mappings/<env>.ids.json`, then calls
-/// `Account.resolve_router` with the default router id. The resolved id is cached in
-/// `.gleaph/cache/account/<env>.router.json` and reused on subsequent runs.
+/// `Account.resolve_router` with the router name (`GLEAPH_ROUTER`, default "default"). The
+/// resolved id is cached in `.gleaph/cache/account/<env>.router.json` and reused on subsequent
+/// runs.
 fn resolve_router_from_account(
     options: &config::RemoteOptions,
+    env: &ConfigEnv,
     loaded: Option<&LoadedConfig>,
 ) -> Result<String, CliError> {
     let loaded = loaded.ok_or_else(|| {
@@ -278,6 +280,7 @@ fn resolve_router_from_account(
             "no gleaph.toml; cannot resolve the Router from the Account canister".into(),
         )
     })?;
+    let router_name = env.router.as_deref().unwrap_or("default");
     if let Some(cached) = config::read_router_cache(loaded, &options.network) {
         return Ok(cached);
     }
@@ -296,7 +299,7 @@ fn resolve_router_from_account(
         options.fetch_root_key,
     )
     .map_err(CliError::Message)?;
-    let router = remote::resolve_router_id(&transport, &account_principal, "default")
+    let router = remote::resolve_router_id(&transport, &account_principal, router_name)
         .map_err(CliError::Message)?;
     let router_text = router.to_text();
     config::write_router_cache(loaded, &options.network, &router_text);
@@ -324,7 +327,7 @@ fn resolve_codegen(
     if args.manifest.is_none() && args.canister.is_none() {
         args.canister = match remote.canister {
             Some(c) => Some(c),
-            None => Some(resolve_router_from_account(&remote, loaded)?),
+            None => Some(resolve_router_from_account(&remote, env, loaded)?),
         };
     }
     // The graph selects the Router-side manifest source, so `--manifest` suppresses it
