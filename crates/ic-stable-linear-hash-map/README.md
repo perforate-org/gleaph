@@ -120,47 +120,40 @@ cargo test -p ic-stable-linear-hash-map --lib
 cargo clippy -p ic-stable-linear-hash-map --all-targets --all-features -- -D warnings
 ```
 
-Focused canbench runs compare Linear Hash Map and `StableBTreeMap` get/insert/remove in the same
-binary, using the same 48 successful `u64` key/value pairs, operation counts, and
-`DefaultMemoryImpl` for the measured maps. Probe and preflight maps use isolated `VectorMemory`,
-so they cannot consume the measured stable-memory region. Setup and semantic checks remain outside
-the measured closures. The first
-persisted SoA baseline measures Linear scope instructions of 96.07K get, 163.35K insert, and 80.33K
-remove (97.07K, 164.36K, and 81.34K totals). The prior AoS run of the same three named benches
-measured 96.68K, 175.26K, and 89.44K scope instructions (97.68K, 176.27K, and 90.45K totals).
-The persisted artifact measures `StableBTreeMap` scope instructions of 374.98K get, 1.186M insert,
-and 1.086M remove (375.99K, 1.187M, and 1.087M totals). The persisted artifact contains the 16
-baseline benchmark entries measured before the one-hop diagnostics were added; the prior AoS Linear
-figures are historical only.
-The fixture-separation repair can change total setup instructions relative to that pre-separation
-artifact; operation-scope values remain the primary comparison, and the artifact is intentionally
-not rewritten by this repair.
+The general canbench cases compare Linear Hash Map and `StableBTreeMap` get/insert/remove in the
+same binary, using the same 4,096 successful `u64` key/value pairs, operation counts, and
+`DefaultMemoryImpl` for the measured maps. This is the same cardinality used by the clustered-hash
+map's general cases, so the three implementations can be compared without a fixture-size mismatch.
+Probe and preflight maps use isolated `VectorMemory`, so they cannot consume the measured
+stable-memory region. Setup and semantic checks remain outside the measured closures.
+
+The persisted 4,096-entry baseline measures Linear scope instructions of 8.46M get, 25.66M insert,
+and 7.45M remove (8.46M, 25.66M, and 7.46M totals). The matching `StableBTreeMap` cases measure
+76.97M get, 174.36M insert, and 167.91M remove (76.97M, 174.36M, and 167.92M totals). These are
+operation totals over 4,096 calls, not per-operation values; divide by 4,096 when comparing
+single-operation cost. The source keeps separate 48-entry phase and 64-slot physical-scan
+diagnostics because those cases intentionally isolate bounded internal work rather than general
+map throughput.
+
+`canbench_results.yml` is refreshed with the unfiltered `canbench --persist` run and contains 20
+entries, including the six 4,096-entry Linear/BTree comparison cases and the bounded diagnostics.
 
 Four public-insert split fixtures use frozen literal keys and keep setup, geometry/value checks, and
-reopen checks outside timing. The persisted SoA baseline measures scope/total instructions of
-3.60K/4.60K for zero moves, 3.89K/4.90K for four moves, 3.60K/4.60K for eight moves, and
-3.86K/4.87K for round rollover.
+reopen checks outside timing. Their current scope and total instruction values are recorded in
+`canbench_results.yml`; they are intentionally separate from the 4,096-entry throughput cases.
 
 Large-value SoA diagnostics use `u64` keys and `[u8; 2048]` values with `DefaultMemoryImpl`.
-Sixteen contains misses measured 33.64K scope / 35.12K total instructions; sixteen get hits measured
-239.30K / 242.31K. A public split moving four large values measured 117.00K / 118.00K. Setup,
-semantic checks, and reopen verification remain outside timing. These are new named benches with no
-comparable AoS baseline.
+Setup, semantic checks, and reopen verification remain outside timing. These cases are diagnostics
+for large payload behavior and have no corresponding clustered-hash-map throughput case.
 
 Three additional raw component probes use one aggregate `bench_scope` per phase over all 48 items.
-The persisted raw get probe measures 128.86K total instructions: 3.172K seed, 33.93K route, and
-51.06K bucket. Insert measures 99.35K total: 61.57K control, 20.12K payload, and 13.99K metadata.
-Remove measures 102.97K total: 86.78K control and 14.09K metadata. Disjoint get-route diagnostics
-were key encoding 3.27K, cache borrow/seed check 2.83K, first hash 9.73K, second hash 9.65K, and
-bucket mapping 2.69K instructions. Prepared route inputs are created outside timing; postconditions
-require their reconstructed route to equal the production route for every fixture key. These probes
-deliberately bypass the public mutation epoch protocol to isolate components, so they are
-non-additive diagnostics and do not replace epoch-protected direct-map totals. Mutation probes use
-distinct `VirtualMemory` regions over `DefaultMemoryImpl`; their translation overhead is part of
-every mutation phase.
+Prepared route inputs are created outside timing; postconditions require their reconstructed route
+to equal the production route for every fixture key. These probes deliberately bypass the public
+mutation epoch protocol to isolate components, so they are non-additive diagnostics and do not
+replace epoch-protected direct-map totals. Mutation probes use distinct `VirtualMemory` regions
+over `DefaultMemoryImpl`; their translation overhead is part of every mutation phase. Current
+values remain in `canbench_results.yml`.
 
-`canbench_results.yml` is the first unfiltered persisted baseline and contains 16 entries. The source
-also declares three focused one-hop diagnostics (movable `u64`, exhausted, and movable
+The source also declares three focused one-hop diagnostics (movable `u64`, exhausted, and movable
 large-value) plus one bounded 64-physical-slot scan benchmark. Setup and semantic checks stay
-outside the measured scan closure. These four benchmarks are intentionally unpersisted in this
-change and are not part of that baseline.
+outside the measured scan closure; all four are included in the current 20-entry persisted artifact.

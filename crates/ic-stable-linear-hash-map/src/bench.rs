@@ -3,9 +3,9 @@ use crate::StableLinearHashMap;
 use crate::StableMapValue;
 use canbench_rs::bench;
 #[cfg(target_family = "wasm")]
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
-#[cfg(target_family = "wasm")]
 use ic_stable_structures::Storable;
+#[cfg(target_family = "wasm")]
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
 use ic_stable_structures::{DefaultMemoryImpl, Memory, StableBTreeMap, VectorMemory};
 #[cfg(target_family = "wasm")]
 use std::cell::RefCell;
@@ -13,7 +13,10 @@ use std::hint::black_box;
 #[cfg(target_family = "wasm")]
 use std::rc::Rc;
 
-const N: usize = 48;
+const GENERAL_N: usize = 4096;
+#[cfg(target_family = "wasm")]
+const PHASE_N: usize = 48;
+const SCAN_N: usize = 48;
 const LARGE_N: u64 = 16;
 #[cfg(target_family = "wasm")]
 const SPLIT_SEED: u64 = 211;
@@ -47,16 +50,16 @@ fn fixture_value(key: u64) -> u64 {
     key ^ 0xa5a5
 }
 
-fn fixture_entries() -> Vec<(u64, u64)> {
+fn fixture_entries(count: usize) -> Vec<(u64, u64)> {
     let probe = StableLinearHashMap::<u64, u64, VectorMemory>::new(VectorMemory::default())
         .expect("new probe map");
-    let mut entries = Vec::with_capacity(N);
+    let mut entries = Vec::with_capacity(count);
     for candidate in 0u64.. {
         let value = fixture_value(candidate);
         match probe.insert(candidate, value) {
             Ok(None) => {
                 entries.push((candidate, value));
-                if entries.len() == N {
+                if entries.len() == count {
                     break;
                 }
             }
@@ -64,7 +67,7 @@ fn fixture_entries() -> Vec<(u64, u64)> {
             Err(_) => {}
         }
     }
-    assert_eq!(entries.len(), N);
+    assert_eq!(entries.len(), count);
     entries
 }
 
@@ -591,14 +594,14 @@ fn bench_linear_insert_split_round_rollover() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_linear_get_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+fn bench_linear_get() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
     let map = populated_linear(DefaultMemoryImpl::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(map.get(&key), Ok(Some(value)));
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_linear_get_48");
+        let _scope = canbench_rs::bench_scope("bench_linear_get");
         for &(key, _) in &entries {
             let _ = black_box(map.get(&black_box(key)));
         }
@@ -608,13 +611,13 @@ fn bench_linear_get_48() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_linear_scan_physical_slots_64() -> canbench_rs::BenchResult {
     let map = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new scan map");
-    let mut entries = Vec::with_capacity(N);
+    let mut entries = Vec::with_capacity(SCAN_N);
     for candidate in 0u64.. {
         let value = fixture_value(candidate);
         match map.insert(candidate, value) {
             Ok(None) => {
                 entries.push((candidate, value));
-                if entries.len() == N {
+                if entries.len() == SCAN_N {
                     break;
                 }
             }
@@ -622,7 +625,7 @@ fn bench_linear_scan_physical_slots_64() -> canbench_rs::BenchResult {
             Err(_) => {}
         }
     }
-    assert_eq!(entries.len(), N);
+    assert_eq!(entries.len(), SCAN_N);
     let cursor = map.scan_start().expect("scan cursor");
     let preflight = map.scan_step(cursor, 64).expect("preflight scan");
     assert_eq!(preflight.entries().len(), entries.len());
@@ -650,13 +653,13 @@ fn bench_linear_scan_physical_slots_64() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_linear_insert_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+fn bench_linear_insert() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
     let preflight = populated_linear(VectorMemory::default(), &entries);
     assert_eq!(preflight.len(), Ok(entries.len() as u64));
     let map = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new linear map");
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_linear_insert_48");
+        let _scope = canbench_rs::bench_scope("bench_linear_insert");
         for &(key, value) in &entries {
             let _ = black_box(map.insert(key, value));
         }
@@ -669,8 +672,8 @@ fn bench_linear_insert_48() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_linear_remove_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+fn bench_linear_remove() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
     let preflight = populated_linear(VectorMemory::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(preflight.remove(&key), Ok(Some(value)));
@@ -683,7 +686,7 @@ fn bench_linear_remove_48() -> canbench_rs::BenchResult {
     let map = populated_linear(DefaultMemoryImpl::default(), &entries);
     assert_eq!(map.len(), Ok(entries.len() as u64));
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_linear_remove_48");
+        let _scope = canbench_rs::bench_scope("bench_linear_remove");
         for &(key, _) in &entries {
             let _ = black_box(map.remove(&key));
         }
@@ -699,7 +702,7 @@ fn bench_linear_remove_48() -> canbench_rs::BenchResult {
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
 fn bench_linear_get_phases_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+    let entries = fixture_entries(PHASE_N);
     let map = populated_linear(DefaultMemoryImpl::default(), &entries);
     let seeds: Vec<_> = entries.iter().map(|_| map.probe_seed()).collect();
     let encoded_keys: Vec<_> = entries
@@ -794,22 +797,22 @@ fn bench_linear_get_phases_48() -> canbench_rs::BenchResult {
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
 fn bench_linear_insert_phases_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+    let entries = fixture_entries(PHASE_N);
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
-    let route_maps: Vec<_> = (0..N)
+    let route_maps: Vec<_> = (0..PHASE_N)
         .map(|id| {
             StableLinearHashMap::new(manager.get(MemoryId::new(id as u8))).expect("route fixture")
         })
         .collect();
-    let payload_maps: Vec<_> = (0..N)
+    let payload_maps: Vec<_> = (0..PHASE_N)
         .map(|id| {
-            StableLinearHashMap::new(manager.get(MemoryId::new((N + id) as u8)))
+            StableLinearHashMap::new(manager.get(MemoryId::new((PHASE_N + id) as u8)))
                 .expect("payload fixture")
         })
         .collect();
-    let metadata_maps: Vec<_> = (0..N)
+    let metadata_maps: Vec<_> = (0..PHASE_N)
         .map(|id| {
-            StableLinearHashMap::new(manager.get(MemoryId::new((2 * N + id) as u8)))
+            StableLinearHashMap::new(manager.get(MemoryId::new((2 * PHASE_N + id) as u8)))
                 .expect("metadata fixture")
         })
         .collect();
@@ -882,7 +885,7 @@ fn bench_linear_insert_phases_48() -> canbench_rs::BenchResult {
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
 fn bench_linear_remove_phases_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+    let entries = fixture_entries(PHASE_N);
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     let make_maps = |offset: usize| {
         entries
@@ -897,7 +900,7 @@ fn bench_linear_remove_phases_48() -> canbench_rs::BenchResult {
             .collect::<Vec<_>>()
     };
     let route_maps = make_maps(0);
-    let metadata_maps = make_maps(N);
+    let metadata_maps = make_maps(PHASE_N);
     let route_routes: Vec<_> = route_maps
         .iter()
         .zip(&entries)
@@ -947,14 +950,14 @@ fn bench_linear_remove_phases_48() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_btree_get_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+fn bench_btree_get() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
     let map = populated_btree(DefaultMemoryImpl::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(map.get(&key), Some(value));
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_btree_get_48");
+        let _scope = canbench_rs::bench_scope("bench_btree_get");
         for &(key, _) in &entries {
             black_box(map.get(&black_box(key)));
         }
@@ -962,13 +965,13 @@ fn bench_btree_get_48() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_btree_insert_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+fn bench_btree_insert() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
     let preflight = populated_btree(VectorMemory::default(), &entries);
     assert_eq!(preflight.len(), entries.len() as u64);
     let mut map = StableBTreeMap::new(DefaultMemoryImpl::default());
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_btree_insert_48");
+        let _scope = canbench_rs::bench_scope("bench_btree_insert");
         for &(key, value) in &entries {
             let _ = black_box(map.insert(key, value));
         }
@@ -981,8 +984,8 @@ fn bench_btree_insert_48() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_btree_remove_48() -> canbench_rs::BenchResult {
-    let entries = fixture_entries();
+fn bench_btree_remove() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
     let mut preflight = populated_btree(VectorMemory::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(preflight.remove(&key), Some(value));
@@ -995,7 +998,7 @@ fn bench_btree_remove_48() -> canbench_rs::BenchResult {
     let mut map = populated_btree(DefaultMemoryImpl::default(), &entries);
     assert_eq!(map.len(), entries.len() as u64);
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_btree_remove_48");
+        let _scope = canbench_rs::bench_scope("bench_btree_remove");
         for &(key, _) in &entries {
             let _ = black_box(map.remove(&key));
         }

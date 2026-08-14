@@ -1,86 +1,86 @@
 benches:
-  bench_btree_get_48:
+  bench_btree_get:
     total:
       calls: 1
-      instructions: 375985
+      instructions: 76973380
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_btree_get_48:
+      bench_btree_get:
         calls: 1
-        instructions: 374980
+        instructions: 76972385
         heap_increase: 0
         stable_memory_increase: 0
-  bench_btree_insert_48:
+  bench_btree_insert:
     total:
       calls: 1
-      instructions: 1186886
+      instructions: 174363683
       heap_increase: 0
-      stable_memory_increase: 0
+      stable_memory_increase: 3
     scopes:
-      bench_btree_insert_48:
+      bench_btree_insert:
         calls: 1
-        instructions: 1185881
+        instructions: 174362688
         heap_increase: 0
-        stable_memory_increase: 0
-  bench_btree_remove_48:
+        stable_memory_increase: 3
+  bench_btree_remove:
     total:
       calls: 1
-      instructions: 1087345
+      instructions: 167915011
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_btree_remove_48:
+      bench_btree_remove:
         calls: 1
-        instructions: 1086340
+        instructions: 167914016
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_contains_miss_large_16:
     total:
       calls: 1
-      instructions: 35115
+      instructions: 34779
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_contains_miss_large_16:
         calls: 1
-        instructions: 33643
+        instructions: 33307
         heap_increase: 0
         stable_memory_increase: 0
-  bench_linear_get_48:
+  bench_linear_get:
     total:
       calls: 1
-      instructions: 97071
+      instructions: 8464130
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_linear_get_48:
+      bench_linear_get:
         calls: 1
-        instructions: 96066
+        instructions: 8463135
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_get_hit_large_16:
     total:
       calls: 1
-      instructions: 242306
+      instructions: 241330
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_get_hit_large_16:
         calls: 1
-        instructions: 239298
+        instructions: 238322
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_get_phases_48:
     total:
       calls: 1
-      instructions: 128862
+      instructions: 126098
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       get_bucket_value:
         calls: 1
-        instructions: 51064
+        instructions: 50776
         heap_increase: 0
         stable_memory_increase: 0
       get_route_bucket_mapping:
@@ -115,36 +115,36 @@ benches:
         stable_memory_increase: 0
       get_seed:
         calls: 1
-        instructions: 3172
+        instructions: 741
         heap_increase: 0
         stable_memory_increase: 0
-  bench_linear_insert_48:
+  bench_linear_insert:
     total:
       calls: 1
-      instructions: 164356
+      instructions: 25662599
       heap_increase: 0
-      stable_memory_increase: 0
+      stable_memory_increase: 1
     scopes:
-      bench_linear_insert_48:
+      bench_linear_insert:
         calls: 1
-        instructions: 163351
+        instructions: 25661606
         heap_increase: 0
-        stable_memory_increase: 0
+        stable_memory_increase: 1
   bench_linear_insert_phases_48:
     total:
       calls: 1
-      instructions: 99346
+      instructions: 97552
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       insert_control_route_lookup:
         calls: 1
-        instructions: 61568
+        instructions: 59840
         heap_increase: 0
         stable_memory_increase: 0
       insert_metadata_publish:
         calls: 1
-        instructions: 13993
+        instructions: 13947
         heap_increase: 0
         stable_memory_increase: 0
       insert_payload_write:
@@ -155,90 +155,138 @@ benches:
   bench_linear_insert_split_move_0:
     total:
       calls: 1
-      instructions: 4601
+      instructions: 12920
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_insert_split_move_0:
         calls: 1
-        instructions: 3596
+        instructions: 11915
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_insert_split_move_4:
     total:
       calls: 1
-      instructions: 4897
+      instructions: 13804
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_insert_split_move_4:
         calls: 1
-        instructions: 3892
+        instructions: 12799
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_insert_split_move_4_large:
     total:
       calls: 1
-      instructions: 118004
+      instructions: 121142
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_insert_split_move_4_large:
         calls: 1
-        instructions: 116999
+        instructions: 120137
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_insert_split_move_8:
     total:
       calls: 1
-      instructions: 4601
+      instructions: 14222
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_insert_split_move_8:
         calls: 1
-        instructions: 3596
+        instructions: 13217
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_insert_split_round_rollover:
     total:
       calls: 1
-      instructions: 4869
+      instructions: 13967
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bench_linear_insert_split_round_rollover:
         calls: 1
-        instructions: 3864
+        instructions: 12962
         heap_increase: 0
         stable_memory_increase: 0
-  bench_linear_remove_48:
+  bench_linear_remove:
     total:
       calls: 1
-      instructions: 81336
+      instructions: 7455863
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      bench_linear_remove_48:
+      bench_linear_remove:
         calls: 1
-        instructions: 80331
+        instructions: 7454870
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_remove_phases_48:
     total:
       calls: 1
-      instructions: 102972
+      instructions: 101327
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       remove_control_route_bucket_value:
         calls: 1
-        instructions: 86784
+        instructions: 85200
         heap_increase: 0
         stable_memory_increase: 0
       remove_metadata_publish:
         calls: 1
-        instructions: 14089
+        instructions: 14043
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_linear_scan_physical_slots_64:
+    total:
+      calls: 1
+      instructions: 59927
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_linear_scan_physical_slots_64:
+        calls: 1
+        instructions: 58922
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_one_hop_exhausted:
+    total:
+      calls: 1
+      instructions: 25149
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_one_hop_exhausted:
+        calls: 1
+        instructions: 24144
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_one_hop_movable:
+    total:
+      calls: 1
+      instructions: 8693
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_one_hop_movable:
+        calls: 1
+        instructions: 7698
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_one_hop_movable_large_value:
+    total:
+      calls: 1
+      instructions: 125945
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bench_one_hop_movable_large_value:
+        calls: 1
+        instructions: 124950
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.7.0
