@@ -38,49 +38,49 @@ benches:
   bench_linear_get_4096:
     total:
       calls: 1
-      instructions: 17819180
+      instructions: 13912258
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       linear_get_4096:
         calls: 1
-        instructions: 17818175
+        instructions: 13911253
         heap_increase: 0
         stable_memory_increase: 0
   bench_linear_insert_4096:
     total:
       calls: 1
-      instructions: 61955872
+      instructions: 61832823
       heap_increase: 0
       stable_memory_increase: 1
     scopes:
       linear_insert_4096:
         calls: 1
-        instructions: 61954867
+        instructions: 61831818
         heap_increase: 0
         stable_memory_increase: 1
   bench_linear_maintenance_4096:
     total:
       calls: 1
-      instructions: 11252284
+      instructions: 11215474
       heap_increase: 0
       stable_memory_increase: 2
     scopes:
       linear_maintenance_4096:
         calls: 1
-        instructions: 11251279
+        instructions: 11214469
         heap_increase: 0
         stable_memory_increase: 2
   bench_linear_remove_4096:
     total:
       calls: 1
-      instructions: 20767669
+      instructions: 20760204
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       linear_remove_4096:
         calls: 1
-        instructions: 20766664
+        instructions: 20759199
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.7.0
