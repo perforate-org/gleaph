@@ -2,11 +2,23 @@
 
 Date: 2026-06-23
 Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
-Last revised: 2026-08-14 06:48:18 UTC +0000
+Last revised: 2026-08-14 09:04:32 UTC +0000
 
 > **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
 > replaces this design; the Slices 1–10 implementation is **completely discarded** (breaking layout
 > change, dev data wiped). The historical content below is retained as decision history only.
+
+> **Current successor implementation note (2026-08-14).** The live Vector owner described by
+> [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md) and
+> [ADR 0067](0067-stable-linear-hash-map-production-contract.md) now fences bounded shard detach
+> independently from the historical incarnation model below. Its existing MemoryId 3 ownership
+> cell persists a checked-monotonic next detach generation plus at most 64 active shard sessions;
+> reattach is rejected until subject-scan EOF removes the row. Fresh outer `ShardDetachCursor`
+> values carry that generation, and legacy, completed, cross-shard, or earlier-session cursors are
+> rejected before decoding/stepping the MemoryId 7 subject scan or touching active/shadow rows. The
+> LHM backward-relocation generation can restart the inner scan while retaining this outer owner
+> generation; it does not identify an attachment lifecycle. No Router durable state or new MemoryId
+> is added, and production coordinated reset remains pending.
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
 > vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`

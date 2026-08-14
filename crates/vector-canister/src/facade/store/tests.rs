@@ -2,11 +2,13 @@
 
 use super::VectorCanisterStore;
 use crate::facade::stable::definition_store;
+use crate::facade::stable::memory::{ActiveShardDetach, VectorIndexOwnershipConfig};
 use crate::facade::stable::subject_store;
+use crate::facade::stable::{OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG};
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachPhase, ShardId};
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
     VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy,
@@ -909,13 +911,188 @@ fn detach_purges_shard_subjects_and_slots() {
         .vector_remove(shard_canister(), &remove_op(9, 1))
         .unwrap(); // tombstone clock
 
-    let result = store.detach_shard_step_for_test(ShardId::new(0), None, 20_000);
+    let result = store
+        .detach_shard_step_for_test(ShardId::new(0), None, 20_000)
+        .expect("detach step");
     assert!(result.done);
     assert!(result.removed >= 3);
 
     assert!(store.subject_entry_for_test(INDEX_ID, subject(7)).is_none());
     assert!(store.subject_entry_for_test(INDEX_ID, subject(8)).is_none());
     assert!(store.subject_entry_for_test(INDEX_ID, subject(9)).is_none());
+}
+
+#[test]
+fn detach_sessions_for_distinct_shards_are_independent_and_not_cross_replayable() {
+    let store = fresh_store();
+    let shard1 = Principal::from_slice(&[2]);
+    store
+        .admin_attach_shard_canister(router(), GraphId::from_raw(1), ShardId::new(1), shard1)
+        .expect("attach shard 1");
+    store
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .expect("seed shard 0");
+    let mut shard1_op = upsert_op(8, 1, 0xBB);
+    shard1_op.subject = VectorSubject::Vertex {
+        shard_id: ShardId::new(1),
+        vertex_id: 8,
+    };
+    store
+        .vector_upsert(shard1, &shard1_op)
+        .expect("seed shard 1");
+
+    let shard0_step = store
+        .detach_shard_step_for_test(ShardId::new(0), None, 1)
+        .expect("begin shard-0 detach");
+    let shard0_cursor = shard0_step.next.expect("shard-0 detach remains bounded");
+    let shard1_step = store
+        .detach_shard_step_for_test(ShardId::new(1), None, 1)
+        .expect("begin shard-1 detach");
+    let shard1_cursor = shard1_step.next.expect("shard-1 detach remains bounded");
+    assert_ne!(
+        shard0_cursor.detach_generation,
+        shard1_cursor.detach_generation
+    );
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(1), Some(shard0_cursor.clone()), 1,),
+        Err(VectorCanisterError::LegacyOrStaleDetachCursor)
+    );
+    let mut wrong_phase = shard0_cursor.clone();
+    wrong_phase.phase = ShardDetachPhase::Label;
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(0), Some(wrong_phase), 1),
+        Err(VectorCanisterError::LegacyOrStaleDetachCursor)
+    );
+    assert!(
+        store
+            .detach_shard_step_for_test(ShardId::new(0), Some(shard0_cursor), 1)
+            .is_ok(),
+        "one shard's active session does not invalidate another"
+    );
+}
+
+#[test]
+fn legacy_detach_cursor_is_rejected_before_subject_cursor_decode_or_state_change() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .expect("seed live subject");
+    let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
+    let before_entry = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .expect("live subject entry");
+    let slot = before_entry.slot.expect("live subject slot");
+    let before_bytes = store.read_slot_bytes(INDEX_ID, slot);
+    let legacy = ShardDetachCursor {
+        detach_generation: None,
+        phase: ShardDetachPhase::Vertex,
+        // Deliberately not a SubjectScanCursor encoding: the owner must reject first.
+        resume_key: vec![0xff],
+    };
+
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(0), Some(legacy), 1),
+        Err(VectorCanisterError::LegacyOrStaleDetachCursor)
+    );
+    assert_eq!(
+        OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone()),
+        before_config
+    );
+    assert_eq!(
+        SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(shard_canister())),
+        Some(ShardId::new(0))
+    );
+    assert_eq!(
+        store.subject_entry_for_test(INDEX_ID, subject(7)),
+        Some(before_entry)
+    );
+    assert_eq!(store.read_slot_bytes(INDEX_ID, slot), before_bytes);
+}
+
+#[test]
+fn detach_generation_exhaustion_is_an_exact_no_write_failure() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .expect("seed live subject");
+    OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+        let mut config = cell.get().clone();
+        config.next_detach_generation = Some(u64::MAX);
+        config.active_detaches = Some(Vec::new());
+        cell.set(config);
+    });
+    let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
+    let before_entry = store.subject_entry_for_test(INDEX_ID, subject(7));
+    let slot = before_entry
+        .as_ref()
+        .and_then(|entry| entry.slot)
+        .expect("live subject slot");
+    let before_bytes = store.read_slot_bytes(INDEX_ID, slot);
+
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(0), None, 1),
+        Err(VectorCanisterError::DetachGenerationExhausted)
+    );
+    assert_eq!(
+        OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone()),
+        before_config
+    );
+    assert_eq!(
+        SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(shard_canister())),
+        Some(ShardId::new(0))
+    );
+    assert_eq!(
+        store.subject_entry_for_test(INDEX_ID, subject(7)),
+        before_entry
+    );
+    assert_eq!(store.read_slot_bytes(INDEX_ID, slot), before_bytes);
+}
+
+#[test]
+fn detach_capacity_is_an_exact_no_write_failure() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .expect("seed live subject");
+    OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+        let mut config = cell.get().clone();
+        config.next_detach_generation = Some(65);
+        config.active_detaches = Some(
+            (0..super::authorization::MAX_CONCURRENT_SHARD_DETACHES)
+                .map(|offset| ActiveShardDetach {
+                    shard_id: ShardId::new(1_000 + u32::try_from(offset).expect("bounded offset")),
+                    generation: u64::try_from(offset + 1).expect("bounded generation"),
+                })
+                .collect(),
+        );
+        cell.set(config);
+    });
+    let before_config: VectorIndexOwnershipConfig =
+        OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
+    let before_entry = store.subject_entry_for_test(INDEX_ID, subject(7));
+    let slot = before_entry
+        .as_ref()
+        .and_then(|entry| entry.slot)
+        .expect("live subject slot");
+    let before_bytes = store.read_slot_bytes(INDEX_ID, slot);
+
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(0), None, 1),
+        Err(VectorCanisterError::TooManyActiveDetaches)
+    );
+    assert_eq!(
+        OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone()),
+        before_config
+    );
+    assert_eq!(
+        SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(shard_canister())),
+        Some(ShardId::new(0))
+    );
+    assert_eq!(
+        store.subject_entry_for_test(INDEX_ID, subject(7)),
+        before_entry
+    );
+    assert_eq!(store.read_slot_bytes(INDEX_ID, slot), before_bytes);
 }
 
 #[test]
@@ -2761,7 +2938,9 @@ fn detach_during_building_purges_active_and_shadow_slots() {
         "test requires distinct physical rows"
     );
 
-    let result = store.detach_shard_step_for_test(ShardId::new(0), None, 20_000);
+    let result = store
+        .detach_shard_step_for_test(ShardId::new(0), None, 20_000)
+        .expect("detach step");
     assert!(result.done);
     assert!(
         store.read_slot_bytes(INDEX_ID, active_slot).is_none(),
@@ -2796,6 +2975,139 @@ fn detach_during_building_purges_active_and_shadow_slots() {
     assert!(
         after_cleanup.hits.is_empty(),
         "all detached-shard subjects stay excluded after cleanup"
+    );
+}
+
+#[test]
+fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+
+    let d1_first = store
+        .detach_shard_step_for_test(ShardId::new(0), None, 1)
+        .expect("begin D1");
+    let d1_cursor = d1_first.next.expect("D1 remains bounded");
+    let d1_generation = d1_cursor
+        .detach_generation
+        .expect("fresh D1 cursor has a generation");
+    assert_eq!(
+        store.admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            shard_canister(),
+        ),
+        Err(VectorCanisterError::DetachInProgress)
+    );
+
+    let d1_restart = store
+        .detach_shard_step_for_test(ShardId::new(0), None, 1)
+        .expect("restart D1 from the beginning");
+    assert_eq!(
+        d1_restart
+            .next
+            .as_ref()
+            .and_then(|cursor| cursor.detach_generation),
+        Some(d1_generation),
+        "resume=None reuses the active D1 generation"
+    );
+    let mut resume = d1_restart.next;
+    let mut steps = 0u32;
+    while let Some(cursor) = resume {
+        resume = store
+            .detach_shard_step_for_test(ShardId::new(0), Some(cursor), 20_000)
+            .expect("complete D1")
+            .next;
+        steps += 1;
+        assert!(steps < 100, "D1 did not converge");
+    }
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(0), Some(d1_cursor.clone()), 1),
+        Err(VectorCanisterError::LegacyOrStaleDetachCursor),
+        "a completed D1 rejects its last issued cursor"
+    );
+
+    store
+        .admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            shard_canister(),
+        )
+        .expect("reattach after D1 completion");
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start rebuild");
+    assert_eq!(
+        drive_into_building(&store, INDEX_ID).phase,
+        VectorRebuildPhase::Building
+    );
+    for vertex_id in 100..120 {
+        store
+            .vector_upsert(
+                shard_canister(),
+                &upsert_vec(vertex_id, 1, vertex_id as f32),
+            )
+            .expect("dual-write post-reattach subject");
+    }
+
+    let d2 = store
+        .detach_shard_step_for_test(ShardId::new(0), None, 1)
+        .expect("begin D2");
+    let d2_cursor = d2.next.expect("D2 remains bounded");
+    let d2_generation = d2_cursor
+        .detach_generation
+        .expect("fresh D2 cursor has a generation");
+    assert!(d2_generation > d1_generation);
+    assert_eq!(
+        store.admin_attach_shard_canister(
+            router(),
+            GraphId::from_raw(1),
+            ShardId::new(0),
+            shard_canister(),
+        ),
+        Err(VectorCanisterError::DetachInProgress)
+    );
+
+    let (survivor_id, before_entry) = (100..120)
+        .find_map(|vertex_id| {
+            let entry = store.subject_entry_for_test(INDEX_ID, subject(vertex_id))?;
+            (entry.slot.is_some() && entry.shadow_slot.is_some() && entry.slot != entry.shadow_slot)
+                .then_some((vertex_id, entry))
+        })
+        .expect("a budget-1 D2 leaves a dual-written subject live");
+    let active_slot = before_entry.slot.expect("survivor active slot");
+    let shadow_slot = before_entry.shadow_slot.expect("survivor shadow slot");
+    let before_active_bytes = store.read_slot_bytes(INDEX_ID, active_slot);
+    let before_shadow_bytes = store.read_slot_bytes(INDEX_ID, shadow_slot);
+    let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
+    let mut stale_d1 = d1_cursor;
+    stale_d1.resume_key = vec![0xff];
+
+    assert_eq!(
+        store.detach_shard_step_for_test(ShardId::new(0), Some(stale_d1), 1),
+        Err(VectorCanisterError::LegacyOrStaleDetachCursor)
+    );
+    assert_eq!(
+        OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone()),
+        before_config,
+        "stale D1 does not change the active D2 lifecycle"
+    );
+    assert_eq!(
+        store.subject_entry_for_test(INDEX_ID, subject(survivor_id)),
+        Some(before_entry),
+        "stale D1 does not remove the reattached subject"
+    );
+    assert_eq!(
+        store.read_slot_bytes(INDEX_ID, active_slot),
+        before_active_bytes,
+        "stale D1 leaves the active row live"
+    );
+    assert_eq!(
+        store.read_slot_bytes(INDEX_ID, shadow_slot),
+        before_shadow_bytes,
+        "stale D1 leaves the distinct shadow row live"
     );
 }
 

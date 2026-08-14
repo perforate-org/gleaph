@@ -3,7 +3,7 @@
 Date: 2026-08-12
 Status: Partially Implemented
 Last revised: 2026-08-14
-Anchor timestamp: 2026-08-14 08:35:42 UTC +0000
+Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
 
 > **Partially implemented contract.** This ADR is the sole exact V1 persisted-format contract for
 > ic-stable-linear-hash-map. The map and the Vector MemoryId 4 and 7 owner cutovers are implemented;
@@ -318,6 +318,20 @@ serialized LHM `ScanCursor`; it validates the envelope before any physical slot 
 rebuild Sampling, Building, Cleaning, and Aborting use positive-budget physical pages, explicit EOF,
 and restart after an LHM split, reset, backward relocation, or legacy-cursor decode invalidates the
 saved cursor.
+
+Vector shard detach additionally has an outer owner lifecycle that is deliberately separate from
+the LHM scan cursor. The existing MemoryId 3 `VECTOR_INDEX_OWNERSHIP_CONFIG` cell carries optional
+`next_detach_generation` and `active_detaches` fields; missing legacy fields reopen as empty state.
+The owner checked-allocates a globally unique generation and persists one of at most 64 active
+`(shard_id, generation)` rows before removing authorization. `resume == None` restarts an existing
+row without allocating another generation, reattach is rejected while the row exists, and explicit
+subject-scan EOF alone removes it. A `Some(ShardDetachCursor)` must contain that exact generation
+before the owner decodes or steps `SubjectScanCursor`, reads a subject, tombstones active/distinct
+shadow rows, removes deleted-subject state, or changes authorization. The optional outer cursor field
+allows legacy Candid decode but no compatibility execution: `None`, a completed D1 generation, or a
+cross-shard/session generation is stale. Split/reset/legacy-LHM/backward-relocation restarts retain
+the same outer generation. Thus the LHM generation prevents physical-scan omission, while the owner
+generation prevents detach/reattach/detach ABA. No new MemoryId or Router-owned detach state exists.
 
 Vector maps definition and subject admission pressure to distinct terminal errors and map
 availability failure to distinct outer errors. It preflights each definition, then admits a new

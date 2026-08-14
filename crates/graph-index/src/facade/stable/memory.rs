@@ -50,11 +50,19 @@ pub(crate) type StableIndexBuildStateMap = BTreeMap<PhysicalIndexId, IndexBuildS
 pub(crate) type StableIndexBuildTouchedSet = BTreeSet<IndexBuildTouchedKey, Memory>;
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveShardDetach {
+    pub(crate) shard_id: ShardId,
+    pub(crate) generation: u64,
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IndexOwnershipConfig {
     pub initialized: bool,
     pub graph_id: GraphId,
     pub index_group_size: u32,
     pub group_index: u32,
+    pub next_detach_generation: Option<u64>,
+    pub active_detaches: Option<Vec<ActiveShardDetach>>,
 }
 
 impl Default for IndexOwnershipConfig {
@@ -64,6 +72,8 @@ impl Default for IndexOwnershipConfig {
             graph_id: GraphId::from_raw(0),
             index_group_size: 1,
             group_index: 0,
+            next_detach_generation: None,
+            active_detaches: None,
         }
     }
 }
@@ -227,4 +237,64 @@ pub(crate) fn init_index_build_states() -> StableIndexBuildStateMap {
 
 pub(crate) fn init_index_build_touched_subjects() -> StableIndexBuildTouchedSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_BUILD_TOUCHED_SUBJECTS)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ic_stable_structures::{Storable, VectorMemory};
+
+    #[derive(CandidType, Serialize)]
+    struct LegacyIndexOwnershipConfig {
+        initialized: bool,
+        graph_id: GraphId,
+        index_group_size: u32,
+        group_index: u32,
+    }
+
+    #[test]
+    fn decodes_legacy_ownership_bytes_with_empty_detach_state() {
+        let legacy = LegacyIndexOwnershipConfig {
+            initialized: true,
+            graph_id: GraphId::from_raw(7),
+            index_group_size: 4,
+            group_index: 3,
+        };
+        let bytes = Encode!(&legacy).expect("encode legacy ownership config");
+        let decoded = IndexOwnershipConfig::from_bytes(Cow::Owned(bytes));
+
+        assert_eq!(
+            decoded,
+            IndexOwnershipConfig {
+                initialized: true,
+                graph_id: GraphId::from_raw(7),
+                index_group_size: 4,
+                group_index: 3,
+                next_detach_generation: None,
+                active_detaches: None,
+            }
+        );
+    }
+
+    #[test]
+    fn active_detach_state_survives_ownership_cell_reopen() {
+        let memory = VectorMemory::default();
+        let expected = IndexOwnershipConfig {
+            initialized: true,
+            graph_id: GraphId::from_raw(7),
+            index_group_size: 4,
+            group_index: 1,
+            next_detach_generation: Some(12),
+            active_detaches: Some(vec![ActiveShardDetach {
+                shard_id: ShardId::new(3),
+                generation: 11,
+            }]),
+        };
+        let mut cell = Cell::init(memory.clone(), IndexOwnershipConfig::default());
+        cell.set(expected.clone());
+        drop(cell);
+
+        let reopened = Cell::init(memory, IndexOwnershipConfig::default());
+        assert_eq!(reopened.get(), &expected);
+    }
 }

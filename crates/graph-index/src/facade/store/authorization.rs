@@ -15,7 +15,7 @@ use ic_stable_structures::{BTreeSet, Memory, Storable};
 use std::borrow::Cow;
 use std::ops::Bound;
 
-use crate::facade::stable::memory::ShardCanisterCatalogInsertError;
+use crate::facade::stable::memory::{ActiveShardDetach, ShardCanisterCatalogInsertError};
 use crate::facade::stable::{
     INDEX_BUILD_STATES, INDEX_BUILD_TOUCHED_SUBJECTS, INDEX_EDGE_POSTINGS, INDEX_OWNERSHIP_CONFIG,
     INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG, INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS,
@@ -26,6 +26,9 @@ use crate::facade::stable::{
 /// stable read/write budgets regardless of total index size; the router resumes
 /// until the purge reports `done`.
 const MAX_DETACH_EXAMINE_PER_STEP: u32 = 20_000;
+
+/// Maximum number of distinct shard detach sessions retained in the ownership control cell.
+pub(super) const MAX_CONCURRENT_SHARD_DETACHES: usize = 64;
 
 /// A posting key carrying the `shard_id` used to scope detach purges.
 trait ShardScopedPostingKey: Storable + Ord + Clone {
@@ -106,6 +109,87 @@ fn purge_postings_step<K: ShardScopedPostingKey, M: Memory>(
 }
 
 impl IndexStore {
+    fn assert_attach_allowed(&self, shard_id: ShardId) -> Result<(), IndexError> {
+        INDEX_OWNERSHIP_CONFIG.with_borrow(|cell| {
+            let active = cell.get().active_detaches.as_deref().unwrap_or_default();
+            if active.iter().any(|detach| detach.shard_id == shard_id) {
+                return Err(IndexError::DetachInProgress);
+            }
+            Ok(())
+        })
+    }
+
+    fn begin_or_resume_detach(&self, shard_id: ShardId) -> Result<u64, IndexError> {
+        INDEX_OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+            let mut config = cell.get().clone();
+            if let Some(generation) = config
+                .active_detaches
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find_map(|detach| (detach.shard_id == shard_id).then_some(detach.generation))
+            {
+                return Ok(generation);
+            }
+            if config.active_detaches.as_ref().map_or(0, Vec::len) >= MAX_CONCURRENT_SHARD_DETACHES
+            {
+                return Err(IndexError::TooManyActiveDetaches);
+            }
+
+            let generation = config.next_detach_generation.unwrap_or(1);
+            let next_generation = generation
+                .checked_add(1)
+                .ok_or(IndexError::DetachGenerationExhausted)?;
+            config
+                .active_detaches
+                .get_or_insert_with(Vec::new)
+                .push(ActiveShardDetach {
+                    shard_id,
+                    generation,
+                });
+            config.next_detach_generation = Some(next_generation);
+            cell.set(config);
+            Ok(generation)
+        })
+    }
+
+    fn validate_detach_resume(
+        &self,
+        shard_id: ShardId,
+        generation: Option<u64>,
+    ) -> Result<u64, IndexError> {
+        let generation = generation.ok_or(IndexError::LegacyOrStaleDetachCursor)?;
+        INDEX_OWNERSHIP_CONFIG.with_borrow(|cell| {
+            let valid = cell
+                .get()
+                .active_detaches
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|detach| detach.shard_id == shard_id && detach.generation == generation);
+            valid
+                .then_some(generation)
+                .ok_or(IndexError::LegacyOrStaleDetachCursor)
+        })
+    }
+
+    fn finish_detach(&self, shard_id: ShardId, generation: u64) -> Result<(), IndexError> {
+        INDEX_OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+            let mut config = cell.get().clone();
+            let active = config
+                .active_detaches
+                .as_mut()
+                .ok_or(IndexError::LegacyOrStaleDetachCursor)?;
+            let position = active
+                .iter()
+                .position(|detach| detach.shard_id == shard_id && detach.generation == generation)
+                .ok_or(IndexError::LegacyOrStaleDetachCursor)?;
+            active.remove(position);
+            cell.set(config);
+            Ok(())
+        })
+    }
+
     /// Clears shard/canister catalog and postings; seeds router principal from init args.
     ///
     /// Validates `router_canister` before mutating any stable state: an anonymous router is
@@ -150,6 +234,7 @@ impl IndexStore {
         if shard_raw < group_start || shard_raw >= group_end {
             return Err(IndexError::ShardOutOfRangeForGroup);
         }
+        self.assert_attach_allowed(shard_id)?;
         INDEX_OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
             let mut cfg = cell.get().clone();
             if !cfg.initialized {
@@ -185,19 +270,27 @@ impl IndexStore {
         shard_id: ShardId,
         resume: Option<ShardDetachCursor>,
         budget: u32,
-    ) -> ShardDetachStepResult {
-        let cursor = match resume {
-            Some(cursor) => cursor,
+    ) -> Result<ShardDetachStepResult, IndexError> {
+        let (cursor, generation) = match resume {
+            Some(cursor) => {
+                let generation = self.validate_detach_resume(shard_id, cursor.detach_generation)?;
+                (cursor, generation)
+            }
             None => {
+                let generation = self.begin_or_resume_detach(shard_id)?;
                 // Drop the auth mapping first so the shard canister can no longer
                 // insert postings while the bounded purge runs across steps.
                 INDEX_SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| {
                     catalog.remove_shard(shard_id);
                 });
-                ShardDetachCursor {
-                    phase: ShardDetachPhase::Vertex,
-                    resume_key: Vec::new(),
-                }
+                (
+                    ShardDetachCursor {
+                        detach_generation: Some(generation),
+                        phase: ShardDetachPhase::Vertex,
+                        resume_key: Vec::new(),
+                    },
+                    generation,
+                )
             }
         };
 
@@ -215,35 +308,42 @@ impl IndexStore {
 
         let next = match step.resume_key {
             Some(resume_key) => Some(ShardDetachCursor {
+                detach_generation: Some(generation),
                 phase: cursor.phase,
                 resume_key,
             }),
             None => match cursor.phase {
                 ShardDetachPhase::Vertex => Some(ShardDetachCursor {
+                    detach_generation: Some(generation),
                     phase: ShardDetachPhase::Label,
                     resume_key: Vec::new(),
                 }),
                 ShardDetachPhase::Label => Some(ShardDetachCursor {
+                    detach_generation: Some(generation),
                     phase: ShardDetachPhase::Edge,
                     resume_key: Vec::new(),
                 }),
-                ShardDetachPhase::Edge => None,
+                ShardDetachPhase::Edge => {
+                    self.finish_detach(shard_id, generation)
+                        .expect("validated detach session remains active until finalization");
+                    None
+                }
             },
         };
 
-        ShardDetachStepResult {
+        Ok(ShardDetachStepResult {
             done: next.is_none(),
             next,
             examined: step.examined,
             removed: step.removed,
-        }
+        })
     }
 
     pub(super) fn commit_detach_shard_step(
         &self,
         shard_id: ShardId,
         resume: Option<ShardDetachCursor>,
-    ) -> ShardDetachStepResult {
+    ) -> Result<ShardDetachStepResult, IndexError> {
         self.commit_detach_shard_step_with_budget(shard_id, resume, MAX_DETACH_EXAMINE_PER_STEP)
     }
 
@@ -266,9 +366,9 @@ impl IndexStore {
         )
     }
 
-    /// Performs one bounded step of a shard posting purge. The first call
-    /// (`resume == None`) also drops the shard's auth mapping. The router resumes
-    /// from [`ShardDetachStepResult::next`] until `done`.
+    /// Performs one bounded step of a generation-fenced shard posting purge. `resume == None`
+    /// begins or restarts the shard's active session before dropping authorization. The router
+    /// resumes from [`ShardDetachStepResult::next`] until `done`.
     pub fn admin_detach_shard_canister(
         &self,
         caller: Principal,
@@ -276,7 +376,7 @@ impl IndexStore {
         resume: Option<ShardDetachCursor>,
     ) -> Result<ShardDetachStepResult, IndexError> {
         self.assert_router_caller(caller)?;
-        Ok(self.commit_detach_shard_step(shard_id, resume))
+        self.commit_detach_shard_step(shard_id, resume)
     }
 
     #[cfg(test)]
@@ -285,7 +385,7 @@ impl IndexStore {
         shard_id: ShardId,
         resume: Option<ShardDetachCursor>,
         budget: u32,
-    ) -> ShardDetachStepResult {
+    ) -> Result<ShardDetachStepResult, IndexError> {
         self.commit_detach_shard_step_with_budget(shard_id, resume, budget)
     }
 

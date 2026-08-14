@@ -2,14 +2,15 @@
 
 Date: 2026-06-17  
 Status: accepted  
-Last revised: 2026-06-17  
+Last revised: 2026-08-14
 
-Anchor timestamp: 2026-06-17 13:34:18 UTC +0000
+Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-08-14 | Shard detach sessions now carry an owner-issued durable generation; reattach is excluded until the bounded purge reaches EOF. |
 | 2026-06-17 | **Accepted** — S0–S5 implemented; post-accept doc sync (0005/0006/0010, capacity-planning, federation-target). |
 | 2026-06-17 | Repack: `ROUTER_GRAPH_RUNTIME_CONFIG` → MemoryId **5** (after registry); `INDEX_OWNERSHIP_CONFIG` → MemoryId **3** (before postings). |
 | 2026-06-17 | Proposed: `ShardId` dense per `GraphId`; one index cluster per logical graph; commit `GROUP_SIZE` shard-group routing. |
@@ -302,7 +303,7 @@ With [ADR 0018](0018-graph-scoped-label-property-catalogs.md), **`property_id` /
 | Effect | Policy |
 |--------|--------|
 | Auth catalog | Remove `shard_id` ↔ graph-canister mapping on the first step, before any purge, so the shard canister can no longer insert postings while the purge runs |
-| Postings | Purge vertex, label, and edge postings for that **graph-local `shard_id`** so unregister does not leave stale index hits. Posting keys order `shard_id` after `(property_id, value, …)`, so the purge is a **full scan** of each set; it runs as **bounded, resumable steps** (`≤ MAX_DETACH_EXAMINE_PER_STEP` keys examined per message) returning a `ShardDetachCursor` until `done`. The router drives the cursor to completion so a large index cannot exceed the per-message instruction / stable read-write budget and trap |
+| Postings | Purge vertex, label, and edge postings for that **graph-local `shard_id`** so unregister does not leave stale index hits. Posting keys order `shard_id` after `(property_id, value, …)`, so the purge is a **full scan** of each set; it runs as **bounded, resumable steps** (`≤ MAX_DETACH_EXAMINE_PER_STEP` keys examined per message) returning an owner-generation-fenced `ShardDetachCursor` until `done`. Graph Index rejects reattach while the session is active; the router drives the cursor to completion without owning lifecycle state, so a large index cannot exceed the per-message instruction / stable read-write budget and trap |
 | Router read path | `RouterIndexLookup` also filters index hits to **live registered shards** before merge |
 
 ### 8. Supersede ADR 0006 §1 and amend ADR 0010 / 0005 (semantics only)
@@ -423,11 +424,26 @@ unbounded purge. Because posting keys order `shard_id` after `(property_id, valu
 removing a shard's postings is an O(total postings) scan of each set. A single update
 message cannot scan an arbitrarily large index within the instruction / 2 GiB
 stable read-write limits, so the index examines at most `MAX_DETACH_EXAMINE_PER_STEP`
-keys per call and returns a `ShardDetachCursor` (phase + last-examined key); the router
-(`index_sync::admin_detach_shard_canister`) resumes until `done`. The auth mapping is
-dropped on the first step so the shard cannot re-insert postings mid-purge. This closes
-a liveness/DoS gap where detach of a large shard would trap and the shard could never be
-unregistered, permanently leaking stale index hits.
+keys per call and returns a `ShardDetachCursor` (owner-issued detach generation + phase +
+last-examined key); the router (`index_sync::admin_detach_shard_canister`) resumes until `done` but
+owns no durable detach state.
+
+The graph-index owner persists the global checked-monotonic next generation and at most 64 active
+`(shard_id, generation)` sessions in the existing MemoryId 3 `INDEX_OWNERSHIP_CONFIG` cell. A fresh
+`resume == None` creates the session before removing both authorization-catalog directions; a later
+`None` for the same shard restarts the same generation from the first phase. Reattach is rejected
+while that row exists. A `Some(cursor)` must carry the exact active generation for the API shard
+before the owner decodes a posting key or reads/writes a posting set. Vertex, label, and edge phase
+transitions retain that generation, and only explicit edge-phase EOF removes the active row. A
+completed D1 cursor therefore cannot resume after reattach or during D2, even when the shard id and
+principal are reused.
+
+The optional cursor/config fields are Candid decode compatibility only. Missing config fields reopen
+as empty lifecycle state; a legacy cursor decodes with no generation and is rejected as stale before
+derived-state access. Generation exhaustion and active-set capacity are typed prewrite failures. No
+new MemoryId, Router lifecycle table, catalog value format, or compatibility execution path is
+introduced. The auth removal plus reattach exclusion closes both the large-detach liveness/DoS gap
+and the detach/attach/detach ABA gap that could otherwise delete or miss newly inserted postings.
 
 **Sequencing:** S0–S1 before multi-graph federation tests; S2 is docs + call-site audit (no element wire bump); land with [0018](0018-graph-scoped-label-property-catalogs.md) V0–V2 when possible (shared router repack gate per [0007](0007-stable-memory-layout.md)).
 

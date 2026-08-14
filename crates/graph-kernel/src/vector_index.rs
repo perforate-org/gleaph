@@ -969,6 +969,14 @@ pub enum VectorCanisterError {
     InvalidPrincipalInRegistry,
     /// `shard_id` or principal is already attached to a different counterpart.
     ShardCanisterAlreadyAttached,
+    /// The shard cannot be attached while its durable detach session is active.
+    DetachInProgress,
+    /// The global detach generation cannot advance without wrapping.
+    DetachGenerationExhausted,
+    /// The bounded active-detach control set is full.
+    TooManyActiveDetaches,
+    /// A legacy cursor or a cursor for another/completed detach session was supplied.
+    LegacyOrStaleDetachCursor,
     /// The vector canister is already bound to a different graph (a vector target owns the whole
     /// graph, so attaching a shard of another graph is rejected).
     GraphOwnershipMismatch,
@@ -1042,6 +1050,10 @@ impl std::fmt::Display for VectorCanisterError {
             Self::ShardCanisterAlreadyAttached => {
                 "shard/canister attachment already exists with a different counterpart"
             }
+            Self::DetachInProgress => "shard detach is still in progress",
+            Self::DetachGenerationExhausted => "shard detach generation is exhausted",
+            Self::TooManyActiveDetaches => "too many shard detaches are active",
+            Self::LegacyOrStaleDetachCursor => "shard detach cursor is legacy or stale",
             Self::GraphOwnershipMismatch => {
                 "vector index canister is already bound to a different graph"
             }

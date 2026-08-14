@@ -11,6 +11,14 @@ pub enum IndexError {
     AnonymousRouter,
     /// `shard_id` or principal is already attached to a different counterpart.
     ShardCanisterAlreadyAttached,
+    /// The shard cannot be attached while its durable detach session is active.
+    DetachInProgress,
+    /// The global detach generation cannot advance without wrapping.
+    DetachGenerationExhausted,
+    /// The bounded active-detach control set is full.
+    TooManyActiveDetaches,
+    /// A legacy cursor or a cursor for another/completed detach session was supplied.
+    LegacyOrStaleDetachCursor,
     GraphOwnershipMismatch,
     InvalidIndexGroupConfig,
     ShardOutOfRangeForGroup,
@@ -74,6 +82,18 @@ impl std::fmt::Display for IndexError {
                     f,
                     "shard/canister attachment already exists with a different counterpart"
                 )
+            }
+            Self::DetachInProgress => {
+                write!(f, "shard detach is still in progress")
+            }
+            Self::DetachGenerationExhausted => {
+                write!(f, "shard detach generation is exhausted")
+            }
+            Self::TooManyActiveDetaches => {
+                write!(f, "too many shard detaches are active")
+            }
+            Self::LegacyOrStaleDetachCursor => {
+                write!(f, "shard detach cursor is legacy or stale")
             }
             Self::GraphOwnershipMismatch => {
                 write!(
@@ -245,6 +265,10 @@ impl From<IndexError> for gleaph_graph_kernel::index::IndexBuildStoreError {
             IndexError::InvalidPrincipalInRegistry
             | IndexError::AnonymousRouter
             | IndexError::ShardCanisterAlreadyAttached
+            | IndexError::DetachInProgress
+            | IndexError::DetachGenerationExhausted
+            | IndexError::TooManyActiveDetaches
+            | IndexError::LegacyOrStaleDetachCursor
             | IndexError::GraphOwnershipMismatch
             | IndexError::InvalidIndexGroupConfig
             | IndexError::ShardOutOfRangeForGroup

@@ -5,7 +5,7 @@ Status: **Partially Implemented** (the authoritative V1 map, bounded physical sc
 quarantine wiring are implemented; coordinated reset is fixture-only and production reset remains
 pending)
 Last updated: 2026-08-14
-Anchor timestamp: 2026-08-14 08:35:42 UTC +0000
+Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
 
 ## Authority and status
 
@@ -52,6 +52,16 @@ version, scope, length, or LHM cursor before a slot read. Detach plus rebuild Sa
 Cleaning, and Aborting use positive-budget physical `scan_step` pages; a short entry list is not EOF,
 and split, reset, or a committed backward one-hop relocation invalidates the prior cursor. Direct
 insert, overwrite, remove, and forward one-hop relocation leave that generation unchanged.
+
+The Vector ownership cell at MemoryId 3, not LHM, owns the outer shard-detach lifecycle. Optional
+config fields persist the checked-monotonic next generation and at most 64 active
+`(shard_id, generation)` rows. The owner records/reuses the session before removing authorization,
+rejects reattach until explicit subject-scan EOF, and validates the outer `ShardDetachCursor`
+generation before decoding or stepping the inner `SubjectScanCursor` or touching subjects and
+active/shadow rows. Legacy outer cursors decode with no generation but are rejected as stale. An
+inner LHM restart retains the outer generation; LHM's backward-relocation generation prevents a
+physical resident from moving behind a scan cursor, whereas the outer generation prevents
+detach/reattach/detach ABA. This uses no new MemoryId and does not add a production reset path.
 
 The owner keeps LHM `TablePressure` distinct from unavailable and other mutation failures. The
 legacy `vector_sync_batch` Candid method still returns its unchanged progress shape. The additive

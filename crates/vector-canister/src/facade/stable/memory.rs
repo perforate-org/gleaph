@@ -72,9 +72,17 @@ pub(crate) type StableGcCursorCell = Cell<Option<DeletedSubjectKey>, Memory>;
 /// shard, so ownership is keyed by `graph_id` alone — there is no property-index group sharding
 /// (`index_group_size` / `group_index`) here.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveShardDetach {
+    pub(crate) shard_id: ShardId,
+    pub(crate) generation: u64,
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VectorIndexOwnershipConfig {
     pub initialized: bool,
     pub graph_id: GraphId,
+    pub next_detach_generation: Option<u64>,
+    pub active_detaches: Option<Vec<ActiveShardDetach>>,
 }
 
 impl Default for VectorIndexOwnershipConfig {
@@ -82,6 +90,8 @@ impl Default for VectorIndexOwnershipConfig {
         Self {
             initialized: false,
             graph_id: GraphId::from_raw(0),
+            next_detach_generation: None,
+            active_detaches: None,
         }
     }
 }
@@ -258,7 +268,7 @@ pub(crate) fn init_gc_cursor() -> StableGcCursorCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ic_stable_structures::Storable;
+    use ic_stable_structures::{Storable, VectorMemory};
 
     /// The pre-Slice-4 ownership record carried property-index group fields. The vector target is
     /// now graph-scoped, so the struct dropped them. This guards the stable-layout change: old
@@ -287,7 +297,29 @@ mod tests {
             VectorIndexOwnershipConfig {
                 initialized: true,
                 graph_id: GraphId::from_raw(7),
+                next_detach_generation: None,
+                active_detaches: None,
             }
         );
+    }
+
+    #[test]
+    fn active_detach_state_survives_ownership_cell_reopen() {
+        let memory = VectorMemory::default();
+        let expected = VectorIndexOwnershipConfig {
+            initialized: true,
+            graph_id: GraphId::from_raw(7),
+            next_detach_generation: Some(12),
+            active_detaches: Some(vec![ActiveShardDetach {
+                shard_id: ShardId::new(3),
+                generation: 11,
+            }]),
+        };
+        let mut cell = Cell::init(memory.clone(), VectorIndexOwnershipConfig::default());
+        cell.set(expected.clone());
+        drop(cell);
+
+        let reopened = Cell::init(memory, VectorIndexOwnershipConfig::default());
+        assert_eq!(reopened.get(), &expected);
     }
 }

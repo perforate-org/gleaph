@@ -2,7 +2,9 @@
 
 use super::VectorCanisterStore;
 use crate::facade::stable::definition_store;
-use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
+use crate::facade::stable::memory::{
+    ActiveShardDetach, ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig,
+};
 use crate::facade::stable::subject_store;
 #[cfg(any(test, feature = "canbench"))]
 use crate::facade::stable::{DefinitionDomainResetError, reset_definition_domain};
@@ -23,7 +25,91 @@ use gleaph_graph_kernel::vector_index::VectorCanisterError;
 /// instruction / stable read budget regardless of total index size.
 const MAX_DETACH_EXAMINE_PER_STEP: u32 = 20_000;
 
+/// Maximum number of distinct shard detach sessions retained in the ownership control cell.
+pub(super) const MAX_CONCURRENT_SHARD_DETACHES: usize = 64;
+
 impl VectorCanisterStore {
+    fn assert_attach_allowed(&self, shard_id: ShardId) -> Result<(), VectorCanisterError> {
+        OWNERSHIP_CONFIG.with_borrow(|cell| {
+            let active = cell.get().active_detaches.as_deref().unwrap_or_default();
+            if active.iter().any(|detach| detach.shard_id == shard_id) {
+                return Err(VectorCanisterError::DetachInProgress);
+            }
+            Ok(())
+        })
+    }
+
+    fn begin_or_resume_detach(&self, shard_id: ShardId) -> Result<u64, VectorCanisterError> {
+        OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+            let mut config = cell.get().clone();
+            if let Some(generation) = config
+                .active_detaches
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find_map(|detach| (detach.shard_id == shard_id).then_some(detach.generation))
+            {
+                return Ok(generation);
+            }
+            if config.active_detaches.as_ref().map_or(0, Vec::len) >= MAX_CONCURRENT_SHARD_DETACHES
+            {
+                return Err(VectorCanisterError::TooManyActiveDetaches);
+            }
+
+            let generation = config.next_detach_generation.unwrap_or(1);
+            let next_generation = generation
+                .checked_add(1)
+                .ok_or(VectorCanisterError::DetachGenerationExhausted)?;
+            config
+                .active_detaches
+                .get_or_insert_with(Vec::new)
+                .push(ActiveShardDetach {
+                    shard_id,
+                    generation,
+                });
+            config.next_detach_generation = Some(next_generation);
+            cell.set(config);
+            Ok(generation)
+        })
+    }
+
+    fn validate_detach_resume(
+        &self,
+        shard_id: ShardId,
+        generation: Option<u64>,
+    ) -> Result<u64, VectorCanisterError> {
+        let generation = generation.ok_or(VectorCanisterError::LegacyOrStaleDetachCursor)?;
+        OWNERSHIP_CONFIG.with_borrow(|cell| {
+            let valid = cell
+                .get()
+                .active_detaches
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|detach| detach.shard_id == shard_id && detach.generation == generation);
+            valid
+                .then_some(generation)
+                .ok_or(VectorCanisterError::LegacyOrStaleDetachCursor)
+        })
+    }
+
+    fn finish_detach(&self, shard_id: ShardId, generation: u64) -> Result<(), VectorCanisterError> {
+        OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+            let mut config = cell.get().clone();
+            let active = config
+                .active_detaches
+                .as_mut()
+                .ok_or(VectorCanisterError::LegacyOrStaleDetachCursor)?;
+            let position = active
+                .iter()
+                .position(|detach| detach.shard_id == shard_id && detach.generation == generation)
+                .ok_or(VectorCanisterError::LegacyOrStaleDetachCursor)?;
+            active.remove(position);
+            cell.set(config);
+            Ok(())
+        })
+    }
+
     /// Strictly creates the definition region and seeds the router principal from init args.
     ///
     /// Rejects an anonymous router before mutating any stable state.
@@ -124,6 +210,7 @@ impl VectorCanisterStore {
         if shard_canister_principal == Principal::anonymous() {
             return Err(VectorCanisterError::InvalidPrincipalInRegistry);
         }
+        self.assert_attach_allowed(shard_id)?;
         // One vector target per graph (ADR 0031 Slice 4): this canister owns *every* shard of a
         // single graph, so ownership is fixed by `graph_id` alone. The first attach pins the graph;
         // any shard of that graph attaches; a different graph is rejected. (Property-index group
@@ -157,30 +244,43 @@ impl VectorCanisterStore {
         resume: Option<ShardDetachCursor>,
         budget: u32,
     ) -> Result<ShardDetachStepResult, VectorCanisterError> {
-        let cursor = match resume {
-            Some(cursor) => cursor,
+        let (cursor, generation) = match resume {
+            Some(cursor) => {
+                let generation = self.validate_detach_resume(shard_id, cursor.detach_generation)?;
+                if cursor.phase != ShardDetachPhase::Vertex {
+                    return Err(VectorCanisterError::LegacyOrStaleDetachCursor);
+                }
+                (cursor, generation)
+            }
             None => {
-                subject_store::scan_start(SubjectScanScope::Detach {
-                    shard_id: shard_id.raw(),
-                })
-                .map_err(super::legacy_subject_store_error)?;
+                let generation = self.begin_or_resume_detach(shard_id)?;
                 // Drop the auth mapping first so the shard can no longer write while the bounded
                 // purge runs across steps.
                 SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| {
                     catalog.remove_shard(shard_id);
                 });
-                ShardDetachCursor {
-                    phase: ShardDetachPhase::Vertex,
-                    resume_key: Vec::new(),
-                }
+                (
+                    ShardDetachCursor {
+                        detach_generation: Some(generation),
+                        phase: ShardDetachPhase::Vertex,
+                        resume_key: Vec::new(),
+                    },
+                    generation,
+                )
             }
         };
 
         let step = self.purge_subjects_step(shard_id, &cursor.resume_key, budget)?;
         let next = step.resume_key.map(|resume_key| ShardDetachCursor {
+            detach_generation: Some(generation),
             phase: ShardDetachPhase::Vertex,
             resume_key,
         });
+
+        if next.is_none() {
+            self.finish_detach(shard_id, generation)
+                .expect("validated detach session remains active until finalization");
+        }
 
         Ok(ShardDetachStepResult {
             done: next.is_none(),
@@ -299,8 +399,9 @@ impl VectorCanisterStore {
         self.commit_attach_shard_canister(graph_id, shard_id, shard_canister_principal)
     }
 
-    /// Performs one bounded step of a shard subject purge. The first call (`resume == None`) also
-    /// drops the shard's auth mapping. The router resumes from [`ShardDetachStepResult::next`].
+    /// Performs one bounded step of a generation-fenced shard subject purge. `resume == None`
+    /// begins or restarts the shard's active session before dropping authorization. The router
+    /// resumes from [`ShardDetachStepResult::next`].
     pub fn admin_detach_shard_canister(
         &self,
         caller: Principal,
@@ -317,9 +418,8 @@ impl VectorCanisterStore {
         shard_id: ShardId,
         resume: Option<ShardDetachCursor>,
         budget: u32,
-    ) -> ShardDetachStepResult {
+    ) -> Result<ShardDetachStepResult, VectorCanisterError> {
         self.commit_detach_shard_step_with_budget(shard_id, resume, budget)
-            .expect("subject scan detach step")
     }
 
     pub(super) fn assert_router_caller(
