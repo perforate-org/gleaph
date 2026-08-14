@@ -11,6 +11,43 @@ use std::path::Path;
 pub const DEFAULT_IC_URL: &str = "https://icp-api.io";
 pub const DEFAULT_LOCAL_URL: &str = "http://localhost:8000";
 
+/// Resolve a Router canister id from the Account canister for a caller's account.
+///
+/// `account_canister` is the platform-fixed Account canister id (from `.gleaph/data/mappings/`).
+/// `router_id` is the logical Router name within the account. The caller's identity (already on
+/// the transport) is used by Account to authorize the resolution.
+pub fn resolve_router_id(
+    transport: &RemoteTransport,
+    account_canister: &candid::Principal,
+    router_id: &str,
+) -> Result<candid::Principal, String> {
+    let accounts: Vec<String> = transport
+        .query_plain(account_canister, "resolve_my_accounts", &())
+        .map_err(|e| format!("resolve_my_accounts: {e}"))?;
+    let account_id = select_account(&accounts)?;
+    let result: Result<candid::Principal, String> = transport
+        .query_on(
+            account_canister,
+            "resolve_router",
+            &(account_id, router_id.to_owned()),
+        )
+        .map_err(|e| format!("resolve_router: {e}"))?;
+    result.map_err(|e| format!("resolve_router: {e}"))
+}
+
+/// Pick the account id to use from the caller's account list. Errors when there is none or more
+/// than one (a `--account` disambiguation flag is a later slice).
+fn select_account(accounts: &[String]) -> Result<String, String> {
+    match accounts {
+        [] => Err("no account registered for this identity; run `gleaph deploy` first".into()),
+        [single] => Ok(single.clone()),
+        _ => Err(format!(
+            "multiple accounts ({}) registered; pass --account to disambiguate",
+            accounts.len()
+        )),
+    }
+}
+
 /// One connected Router endpoint.
 pub struct RemoteTransport {
     agent: Agent,
@@ -68,8 +105,40 @@ impl RemoteTransport {
         T: CandidType + for<'de> serde::Deserialize<'de>,
         E: CandidType + for<'de> serde::Deserialize<'de>,
     {
+        self.query_on(&self.canister, method, args)
+    }
+
+    /// Query one method on an arbitrary canister (e.g. the Account canister) with a single
+    /// Candid argument, decoding the candid `Result<T, E>` envelope.
+    pub fn query_on<T, E>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        args: &impl CandidType,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
         let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
-        self.query_raw(method, encoded)
+        self.query_raw_on(canister, method, encoded)
+    }
+
+    /// Query one method on an arbitrary canister that returns a plain (non-`Result`) value.
+    pub fn query_plain<T>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        args: &impl CandidType,
+    ) -> Result<T, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        let response = self
+            .block_on(self.agent.query(canister, method).with_arg(encoded).call())
+            .map_err(|error| format!("query {method}: {error}"))?;
+        Decode!(&response, T).map_err(|error| format!("decode {method} response: {error}"))
     }
 
     /// Query one Router method whose arguments are multiple separate Candid values (one per
@@ -87,21 +156,21 @@ impl RemoteTransport {
     {
         let encoded =
             candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
-        self.query_raw(method, encoded)
+        self.query_raw_on(&self.canister, method, encoded)
     }
 
-    fn query_raw<T, E>(&self, method: &str, encoded: Vec<u8>) -> Result<Result<T, E>, String>
+    fn query_raw_on<T, E>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        encoded: Vec<u8>,
+    ) -> Result<Result<T, E>, String>
     where
         T: CandidType + for<'de> serde::Deserialize<'de>,
         E: CandidType + for<'de> serde::Deserialize<'de>,
     {
         let response = self
-            .block_on(
-                self.agent
-                    .query(&self.canister, method)
-                    .with_arg(encoded)
-                    .call(),
-            )
+            .block_on(self.agent.query(canister, method).with_arg(encoded).call())
             .map_err(|error| format!("query {method}: {error}"))?;
         decode_result(&response, method)
     }
@@ -114,7 +183,23 @@ impl RemoteTransport {
         E: CandidType + for<'de> serde::Deserialize<'de>,
     {
         let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
-        self.update_raw(method, encoded)
+        self.update_raw_on(&self.canister, method, encoded)
+    }
+
+    /// Update one method on an arbitrary canister (e.g. the Account canister) with a single
+    /// Candid argument, decoding the candid `Result<T, E>` envelope.
+    pub fn update_on<T, E>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        args: &impl CandidType,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.update_raw_on(canister, method, encoded)
     }
 
     /// Update one Router method whose arguments are multiple separate Candid values (one per
@@ -130,10 +215,15 @@ impl RemoteTransport {
     {
         let encoded =
             candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
-        self.update_raw(method, encoded)
+        self.update_raw_on(&self.canister, method, encoded)
     }
 
-    fn update_raw<T, E>(&self, method: &str, encoded: Vec<u8>) -> Result<Result<T, E>, String>
+    fn update_raw_on<T, E>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        encoded: Vec<u8>,
+    ) -> Result<Result<T, E>, String>
     where
         T: CandidType + for<'de> serde::Deserialize<'de>,
         E: CandidType + for<'de> serde::Deserialize<'de>,
@@ -141,7 +231,7 @@ impl RemoteTransport {
         let response = self
             .block_on(
                 self.agent
-                    .update(&self.canister, method)
+                    .update(canister, method)
                     .with_arg(encoded)
                     .call_and_wait(),
             )
@@ -233,6 +323,13 @@ mod tests {
                 next_start_after: None,
             },
         ))
+    }
+
+    #[test]
+    fn select_account_handles_zero_one_many() {
+        assert!(select_account(&[]).is_err());
+        assert_eq!(select_account(&["a".into()]).unwrap(), "a");
+        assert!(select_account(&["a".into(), "b".into()]).is_err());
     }
 
     #[test]
