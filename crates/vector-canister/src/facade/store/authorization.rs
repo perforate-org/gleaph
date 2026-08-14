@@ -262,8 +262,15 @@ impl VectorCanisterStore {
                             *key,
                         ));
                     });
-                } else if let Some(slot) = entry.slot {
+                }
+                if let Some(slot) = entry.slot {
                     self.tombstone_slot(key.index_id, slot);
+                }
+                if let Some(shadow_slot) = entry
+                    .shadow_slot
+                    .filter(|shadow_slot| Some(*shadow_slot) != entry.slot)
+                {
+                    self.tombstone_slot(key.index_id, shadow_slot);
                 }
             }
             subject_store::remove(key).map_err(super::legacy_subject_store_error)?;

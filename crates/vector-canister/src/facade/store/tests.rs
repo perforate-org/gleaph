@@ -2404,6 +2404,64 @@ fn upsert_during_building_survives_publish() {
 }
 
 #[test]
+fn detach_during_building_purges_active_and_shadow_slots() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    drive_into_building(&store, INDEX_ID);
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+        .expect("dual-write upsert");
+
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    let active_slot = entry.slot.expect("active slot");
+    let shadow_slot = entry.shadow_slot.expect("shadow slot");
+    assert_ne!(
+        active_slot, shadow_slot,
+        "test requires distinct physical rows"
+    );
+
+    let result = store.detach_shard_step_for_test(ShardId::new(0), None, 20_000);
+    assert!(result.done);
+    assert!(
+        store.read_slot_bytes(INDEX_ID, active_slot).is_none(),
+        "detach tombstones the active row"
+    );
+    assert!(
+        store.read_slot_bytes(INDEX_ID, shadow_slot).is_none(),
+        "detach tombstones the shadow row"
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(99))
+            .is_none(),
+        "detach removes the subject row"
+    );
+
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    let after_publish = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(
+        after_publish.hits.is_empty(),
+        "all detached-shard subjects stay excluded after publish"
+    );
+
+    drive_cleanup(&store, INDEX_ID);
+    let after_cleanup = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(
+        after_cleanup.hits.is_empty(),
+        "all detached-shard subjects stay excluded after cleanup"
+    );
+}
+
+#[test]
 fn dual_write_shadow_append_failure_rolls_back_insert() {
     let store = fresh_store();
     seed_distinct(&store, 4);
