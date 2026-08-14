@@ -10,8 +10,9 @@
 use candid::Principal;
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use gleaph_graph_kernel::entry::GraphId;
-#[cfg(not(feature = "pocket-ic-e2e"))]
 use gleaph_graph_kernel::federation::ShardId;
+#[cfg(target_family = "wasm")]
+use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult};
 use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
@@ -65,6 +66,40 @@ pub async fn admin_attach_shard_to_vector(
         .map_err(|e| format!("vector admin_attach_shard_canister call failed: {e}"))?
         .candid()
         .map_err(|e| format!("vector admin_attach_shard_canister decode failed: {e}"))?
+}
+
+/// Router → vector canister: purge all subjects owned by one shard before Router deletes the
+/// registry row. The Vector owner returns a generation-fenced cursor until explicit EOF, so this
+/// helper keeps no durable Router lifecycle state and can be retried from `None` after a failure.
+#[cfg(target_family = "wasm")]
+pub async fn admin_detach_shard_from_vector(
+    vector_canister: Principal,
+    shard_id: ShardId,
+) -> Result<(), String> {
+    use ic_cdk::call::Call;
+
+    let mut resume: Option<ShardDetachCursor> = None;
+    loop {
+        let step: ShardDetachStepResult =
+            Call::unbounded_wait(vector_canister, "admin_detach_shard_canister")
+                .with_args(&(shard_id.raw(), &resume))
+                .await
+                .map_err(|e| format!("vector admin_detach_shard_canister call failed: {e}"))?
+                .candid::<Result<ShardDetachStepResult, String>>()
+                .map_err(|e| format!("vector admin_detach_shard_canister decode failed: {e}"))??;
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => return Ok(()),
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn admin_detach_shard_from_vector(
+    _vector_canister: Principal,
+    _shard_id: ShardId,
+) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]

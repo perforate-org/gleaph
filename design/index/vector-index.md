@@ -1,14 +1,15 @@
 # Vector index
 
 Last updated: 2026-08-14
-Anchor timestamp: 2026-08-14 06:48:18 UTC +0000
+Anchor timestamp: 2026-08-14 09:52:44 UTC +0000
 
 ## Status
 
 **Deprecated → Planned (breaking redesign).** The ADR 0031/0032/0033 design and its Slices 1–10
-implementation are **deprecated / completely discarded**; the new design below is **Planned** — it is
-the active design contract and is intentionally ahead of implementation (none of it is implemented
-yet). The stable-memory layout lineage restarts at version 1: the new slab/page headers use a 3-byte
+implementation are **deprecated / completely discarded**; the new design below remains the active
+**Planned** contract. Selected ownership, fencing, and Router orchestration slices are implemented
+in the current tree, but the complete redesign and its algorithm roadmap remain ahead of
+implementation. The stable-memory layout lineage restarts at version 1: the new slab/page headers use a 3-byte
 magic (`VSL` / `VPG`) plus a **binary `u8` version byte `1`**. The discarded format's ASCII magic
 (`VSL1` / `VPG1`, 4th byte `0x31`) no longer matches (4th byte `0x01`), so old-format data is
 rejected fail-closed. This is a breaking change: dev stable data is wiped, and there is no
@@ -99,6 +100,16 @@ VectorIndexDefRecord {
 - **Presence is two-layered**: label membership is the graph-side _upper bound_ (could have a
   sidecar); the vector canister's subject map is the _exact_ authority. The graph may over-notify;
   remove-on-missing-row is a safe no-op.
+
+### Shard unregister lifecycle
+
+Router owns the registry/readiness state, while the Vector canister owns shard subject rows and
+attachment state. When a shard is unregistered, Router clears its Vector readiness bit first,
+drives the existing generation-fenced Vector `admin_detach_shard_canister` cursor to explicit EOF,
+and removes the registry row only after both the Graph Index and Vector detach operations succeed.
+If either remote operation fails, the row and exact Vector target remain available for retry; a
+successful unregister therefore purges stale Vector subjects before the shard id can be reused.
+This orchestration adds no Router stable region, Vector MemoryId, or public endpoint.
 
 ## Mutation flow
 

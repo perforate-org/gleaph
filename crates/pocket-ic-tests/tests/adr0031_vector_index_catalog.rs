@@ -25,7 +25,7 @@ use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBloc
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding,
-    VectorMetric, VectorSearchResult, VectorSubject,
+    VectorMetric, VectorSearchRequest, VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, e2e_insert_vertex, ensure_user_graph_type, gql_mutate_as_admin,
@@ -763,6 +763,100 @@ fn router_vector_search(
         )
         .expect("router vector_search call");
     Decode!(&bytes, Result<VectorSearchResult, RouterError>).expect("decode router search result")
+}
+
+fn direct_vector_search(
+    env: &FederationEnv,
+    vector: Principal,
+) -> Result<VectorSearchResult, VectorCanisterError> {
+    let request = VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(0.0),
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        top_k: 10,
+        candidate_subjects: None,
+    };
+    let bytes = env
+        .pic
+        .query_call(
+            vector,
+            env.router,
+            "vector_search",
+            Encode!(&request).expect("encode direct vector search"),
+        )
+        .expect("direct vector_search call");
+    Decode!(&bytes, Result<VectorSearchResult, VectorCanisterError>)
+        .expect("decode direct vector search")
+}
+
+#[test]
+fn unregister_shard_drives_vector_detach_before_registry_removal() {
+    let env = install_single_shard_federation();
+    ensure_user_graph_type(&env);
+    let vector = install_vector_canister(&env.pic, env.router);
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            labels: vec!["User".to_string()],
+            metric: Some(VectorMetric::L2Squared),
+            encoding: None,
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+    fully_activate_single_shard_index(&env, vector);
+    seed_embedding(&env, vector, env.graph_source, 7, 0.0).expect("seed vector subject");
+    assert_eq!(
+        direct_vector_search(&env, vector)
+            .expect("search before unregister")
+            .hits
+            .len(),
+        1
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "unregister_shard",
+            Encode!(&GRAPH_NAME.to_string(), &ShardId::new(0)).expect("encode unregister shard"),
+        )
+        .expect("unregister shard call");
+    Decode!(&bytes, Result<(), RouterError>)
+        .expect("decode unregister shard")
+        .expect("unregister shard succeeds");
+
+    assert!(
+        direct_vector_search(&env, vector)
+            .expect("search after unregister")
+            .hits
+            .is_empty(),
+        "Router unregister must purge the Vector subject before deleting its registry row"
+    );
+
+    let graph_id = router_graph_id(&env);
+    let replacement = Principal::from_slice(&[77; 29]);
+    let attach_bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "admin_attach_shard_canister",
+            Encode!(&graph_id, &ShardId::new(0), &replacement)
+                .expect("encode replacement vector attach"),
+        )
+        .expect("replacement vector attach call");
+    Decode!(&attach_bytes, Result<(), String>)
+        .expect("decode replacement vector attach")
+        .expect("Vector owner accepts replacement after Router detach");
 }
 
 #[test]

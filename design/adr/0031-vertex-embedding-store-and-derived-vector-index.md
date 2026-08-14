@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
-Last revised: 2026-08-14 09:04:32 UTC +0000
+Last revised: 2026-08-14 09:52:44 UTC +0000
 
 > **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
 > replaces this design; the Slices 1–10 implementation is **completely discarded** (breaking layout
@@ -19,6 +19,12 @@ Last revised: 2026-08-14 09:04:32 UTC +0000
 > LHM backward-relocation generation can restart the inner scan while retaining this outer owner
 > generation; it does not identify an attachment lifecycle. No Router durable state or new MemoryId
 > is added, and production coordinated reset remains pending.
+
+> Router shard unregister now clears the Router-side Vector readiness bit, drives the existing
+> generation-fenced Vector detach loop to explicit EOF, and deletes the Router registry row only
+> after the Graph Index and Vector owners both succeed. A remote failure therefore leaves the row
+> and target identity available for retry; successful unregister purges Vector subjects before the
+> shard id can be reused.
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
 > vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`

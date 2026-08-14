@@ -730,6 +730,59 @@ fn unregister_shard_reconciles_index_cluster_for_retry() {
 }
 
 #[test]
+fn unregister_shard_with_vector_target_removes_vector_readiness_row() {
+    use crate::facade::stable::ROUTER_SHARDS;
+    use gleaph_graph_kernel::federation::GraphShardKey;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let vector_canister = graph_principal(7);
+    futures::executor::block_on(store.admin_attach_vector_index_shard(
+        admin,
+        AdminAttachVectorIndexShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id: ShardId::new(0),
+            vector_canister,
+        },
+    ))
+    .expect("attach vector target");
+
+    let graph_id = tenant_main_graph_id();
+    ROUTER_SHARDS.with_borrow(|shards| {
+        let entry = shards
+            .get(&GraphShardKey::new(graph_id, ShardId::new(0)))
+            .expect("shard row");
+        assert_eq!(entry.vector_canister, Some(vector_canister));
+        assert!(entry.vector_index_attached);
+    });
+
+    futures::executor::block_on(store.admin_unregister_shard(
+        admin,
+        "tenant.main",
+        ShardId::new(0),
+    ))
+    .expect("unregister shard");
+
+    assert!(store.resolve_shard(graph_id, ShardId::new(0)).is_err());
+    assert_registry_invariants();
+}
+
+#[test]
 fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());

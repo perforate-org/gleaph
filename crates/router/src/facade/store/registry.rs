@@ -23,7 +23,6 @@ use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
     ProvisioningState, ShardId,
 };
-#[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::vector_sync;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
@@ -1109,9 +1108,22 @@ impl RouterStore {
 
         Self::commit_set_shard_index_attached(graph_id, shard_id, false)?;
 
+        // Clear Router-side vector readiness before any remote teardown. The target remains in the
+        // row while the bounded owner purge runs, so a failed call can be retried without losing
+        // the exact Vector canister identity.
+        if let Some(vector_canister) = entry.vector_canister {
+            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_canister, false)?;
+        }
+
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
             index_sync::admin_detach_shard_canister(entry.index_canister, shard_id)
+                .await
+                .map_err(RouterError::Internal)?;
+        }
+
+        if let Some(vector_canister) = entry.vector_canister {
+            vector_sync::admin_detach_shard_from_vector(vector_canister, shard_id)
                 .await
                 .map_err(RouterError::Internal)?;
         }
