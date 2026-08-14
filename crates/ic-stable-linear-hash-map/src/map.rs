@@ -8,7 +8,7 @@ use crate::{StableHashKey, StableMapValue};
 use ic_stable_structures::{Memory, Storable};
 use rapidhash::v3::{rapidhash_v3_inline, RapidSecrets};
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -27,6 +27,8 @@ const PAGE_FULL_MASK: u64 = (1u64 << PRIMARY_SLOTS) - 1;
 
 thread_local! {
     static NEXT_SCRUB_LINEAGE: Cell<u64> = const { Cell::new(1) };
+    // ponytail: one reusable buffer; add a scratch stack only if nested map reads become real.
+    static GET_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 fn next_scrub_lineage() -> u64 {
@@ -1306,20 +1308,34 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     }
 
     fn get_value_in_bucket(&self, bucket: u64, key: &K) -> Option<V> {
-        let primary = self.read_bucket_page(bucket, 0);
-        if let Some(slot) = self.find_in_page_bytes(&primary, key) {
-            return Some(self.value_from_page(&primary, slot));
-        }
-        let tail = self.read_bucket_tail(bucket);
-        for page in 1..PAGES_PER_BUCKET {
-            let start = (page - 1) as usize * self.header.bucket_page_stride as usize;
-            let end = start + self.header.bucket_page_stride as usize;
-            let page_bytes = &tail[start..end];
-            if let Some(slot) = self.find_in_page_bytes(page_bytes, key) {
-                return Some(self.value_from_page(page_bytes, slot));
+        GET_SCRATCH.with(|scratch| {
+            let page_stride = self.header.bucket_page_stride as usize;
+            let mut scratch = scratch.borrow_mut();
+            scratch.resize(page_stride, 0);
+            self.memory.read(
+                Self::bucket_page_base(self.header, bucket, 0),
+                &mut scratch[..page_stride],
+            );
+            if let Some(slot) = self.find_in_page_bytes(&scratch, key) {
+                return Some(self.value_from_page(&scratch, slot));
             }
-        }
-        None
+
+            let tail_len = page_stride * (PAGES_PER_BUCKET as usize - 1);
+            scratch.resize(tail_len, 0);
+            self.memory.read(
+                Self::bucket_page_base(self.header, bucket, 1),
+                &mut scratch[..tail_len],
+            );
+            for page in 1..PAGES_PER_BUCKET {
+                let start = (page - 1) as usize * page_stride;
+                let end = start + page_stride;
+                let page_bytes = &scratch[start..end];
+                if let Some(slot) = self.find_in_page_bytes(page_bytes, key) {
+                    return Some(self.value_from_page(page_bytes, slot));
+                }
+            }
+            None
+        })
     }
 
     fn find_in_page_bytes(&self, page: &[u8], key: &K) -> Option<u32> {
