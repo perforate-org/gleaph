@@ -7,7 +7,7 @@ use crate::{StableHashKey, StableMapValue};
 use ic_stable_structures::{Memory, Storable};
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_inline};
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 #[cfg(not(target_family = "wasm"))]
@@ -434,14 +434,8 @@ pub struct StableLinearHashMap<K: StableHashKey, V: StableMapValue, M: Memory> {
     memory: M,
     header: Header,
     scrub_lineage: u64,
-    hash_secrets: RefCell<CachedHashSecrets>,
+    hash_secrets: [RapidSecrets; 2],
     _marker: PhantomData<(K, V)>,
-}
-
-#[derive(Clone, Copy)]
-struct CachedHashSecrets {
-    seed: u64,
-    secrets: [RapidSecrets; 2],
 }
 
 /// Owns one persisted odd mutation epoch until the caller explicitly publishes the next even
@@ -575,10 +569,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             memory,
             header,
             scrub_lineage: next_scrub_lineage(),
-            hash_secrets: RefCell::new(CachedHashSecrets {
-                seed: hash_seed,
-                secrets: hash_secrets(hash_seed),
-            }),
+            hash_secrets: hash_secrets(hash_seed),
             _marker: PhantomData,
         })
     }
@@ -639,10 +630,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             memory,
             header,
             scrub_lineage: next_scrub_lineage(),
-            hash_secrets: RefCell::new(CachedHashSecrets {
-                seed: header.hash_seed,
-                secrets: hash_secrets(header.hash_seed),
-            }),
+            hash_secrets: hash_secrets(header.hash_seed),
             _marker: PhantomData,
         })
     }
@@ -929,25 +917,21 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     }
 
     pub fn get(&self, key: &K) -> Result<Option<V>, MutationError> {
-        self.read_consistent(|| {
-            let hot = control::read_hot(
-                &self.memory,
-                self.header.control_offset,
-                self.header.hash_seed,
-            );
-            self.get_with_hot(key, hot)
-        })
+        self.read_consistent_hot(|hot| self.get_with_hot(key, hot))
+    }
+
+    /// Looks up several keys under one mutation-epoch fence.
+    ///
+    /// Small fixed-width bucket pages are read at most once per candidate bucket. The returned
+    /// values retain the caller's order, including duplicate keys and missing entries. Large
+    /// value pages use the existing single-key path because grouping their full pages would
+    /// consume unbounded heap memory for no stable-memory read benefit.
+    pub fn get_many(&self, keys: &[K]) -> Result<Vec<Option<V>>, MutationError> {
+        self.read_consistent_hot(|hot| self.get_many_with_hot(keys, hot))
     }
 
     pub fn contains_key(&self, key: &K) -> Result<bool, MutationError> {
-        self.read_consistent(|| {
-            let hot = control::read_hot(
-                &self.memory,
-                self.header.control_offset,
-                self.header.hash_seed,
-            );
-            self.find_with_hot(key, hot).is_some()
-        })
+        self.read_consistent_hot(|hot| self.find_with_hot(key, hot).is_some())
     }
 
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, MutationError> {
@@ -1764,30 +1748,22 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
         seed: u64,
         control: ControlRegion,
     ) -> (u64, u64) {
-        let cached = self.hash_secrets.borrow();
-        if cached.seed == seed {
-            return Self::candidate_buckets_from_bytes_at(
+        if seed == self.header.hash_seed {
+            Self::candidate_buckets_from_bytes_at(
                 bytes,
-                &cached.secrets,
+                &self.hash_secrets,
                 control.level,
                 control.split_cursor,
-            );
+            )
+        } else {
+            let secrets = hash_secrets(seed);
+            Self::candidate_buckets_from_bytes_at(
+                bytes,
+                &secrets,
+                control.level,
+                control.split_cursor,
+            )
         }
-        drop(cached);
-
-        let mut cached = self.hash_secrets.borrow_mut();
-        if cached.seed != seed {
-            *cached = CachedHashSecrets {
-                seed,
-                secrets: hash_secrets(seed),
-            };
-        }
-        Self::candidate_buckets_from_bytes_at(
-            bytes,
-            &cached.secrets,
-            control.level,
-            control.split_cursor,
-        )
     }
 
     #[cfg(test)]
@@ -1811,6 +1787,68 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     fn get_with_hot(&self, key: &K, hot: control::HotControl) -> Option<V> {
         self.find_value_with_hot(key, hot)
             .map(|(_, _, _, value)| value)
+    }
+
+    fn get_many_with_hot(&self, keys: &[K], hot: control::HotControl) -> Vec<Option<V>> {
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        if self.header.bucket_page_stride > BULK_SCAN_MAX_BYTES {
+            return keys.iter().map(|key| self.get_with_hot(key, hot)).collect();
+        }
+
+        let routes: Vec<_> = keys
+            .iter()
+            .map(|key| {
+                self.candidate_buckets_for_key_at(key, hot.hash_seed, hot.level, hot.split_cursor)
+            })
+            .collect();
+        let mut first_buckets: Vec<_> = routes.iter().map(|&(first, _)| first).collect();
+        let load_pages = |mut buckets: Vec<u64>| {
+            buckets.sort_unstable();
+            buckets.dedup();
+            buckets
+                .into_iter()
+                .map(|bucket| {
+                    let page = read_exact_to_vec_uninit(
+                        &self.memory,
+                        Self::bucket_base(self.header, bucket),
+                        self.header.bucket_page_stride as usize,
+                    );
+                    (bucket, page)
+                })
+                .collect::<Vec<_>>()
+        };
+        let first_pages = load_pages(std::mem::take(&mut first_buckets));
+        let mut values: Vec<Option<V>> = std::iter::repeat_with(|| None).take(keys.len()).collect();
+        let mut unresolved = Vec::new();
+        for (index, key) in keys.iter().enumerate() {
+            if let Some(page) = Self::cached_page(&first_pages, routes[index].0) {
+                values[index] = self
+                    .find_in_small_page(key, page)
+                    .map(|(_, _, value)| value);
+            }
+            if values[index].is_none() {
+                unresolved.push(index);
+            }
+        }
+
+        drop(first_pages);
+        let second_buckets = unresolved
+            .iter()
+            .filter_map(|&index| (routes[index].0 != routes[index].1).then_some(routes[index].1))
+            .collect();
+        let second_pages = load_pages(second_buckets);
+        for index in unresolved {
+            if routes[index].0 != routes[index].1
+                && let Some(page) = Self::cached_page(&second_pages, routes[index].1)
+            {
+                values[index] = self
+                    .find_in_small_page(&keys[index], page)
+                    .map(|(_, _, value)| value);
+            }
+        }
+        values
     }
 
     fn find_value_with_hot(&self, key: &K, hot: control::HotControl) -> Option<(u64, u32, u8, V)> {
@@ -1847,17 +1885,41 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
         split_cursor: u64,
     ) -> (u64, u64) {
         let bytes = key.stable_hash_bytes();
-        Self::candidate_buckets_from_bytes_at(
-            bytes.as_ref(),
-            &self.secrets_for_seed(seed),
-            level,
-            split_cursor,
-        )
+        if seed == self.header.hash_seed {
+            Self::candidate_buckets_from_bytes_at(
+                bytes.as_ref(),
+                &self.hash_secrets,
+                level,
+                split_cursor,
+            )
+        } else {
+            let secrets = hash_secrets(seed);
+            Self::candidate_buckets_from_bytes_at(bytes.as_ref(), &secrets, level, split_cursor)
+        }
     }
 
     fn read_consistent<T>(&self, read: impl FnOnce() -> T) -> Result<T, MutationError> {
         let epoch = self.idle_epoch()?;
         let result = read();
+        if control::read_mutation_epoch(&self.memory, self.header.control_offset) != epoch {
+            return Err(MutationError::InProgress);
+        }
+        Ok(result)
+    }
+
+    fn read_consistent_hot<T>(
+        &self,
+        read: impl FnOnce(control::HotControl) -> T,
+    ) -> Result<T, MutationError> {
+        let (hot, epoch) = control::read_hot_with_epoch(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
+        if !epoch.is_multiple_of(2) {
+            return Err(MutationError::InProgress);
+        }
+        let result = read(hot);
         if control::read_mutation_epoch(&self.memory, self.header.control_offset) != epoch {
             return Err(MutationError::InProgress);
         }
@@ -1998,9 +2060,8 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     }
 
     fn secrets_for_seed(&self, seed: u64) -> [RapidSecrets; 2] {
-        let cached = self.hash_secrets.borrow();
-        if cached.seed == seed {
-            cached.secrets
+        if seed == self.header.hash_seed {
+            self.hash_secrets
         } else {
             hash_secrets(seed)
         }
@@ -2061,6 +2122,13 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             occupied &= occupied - 1;
         }
         None
+    }
+
+    fn cached_page(pages: &[(u64, Vec<u8>)], bucket: u64) -> Option<&[u8]> {
+        pages
+            .binary_search_by_key(&bucket, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| pages[index].1.as_slice())
     }
 
     fn candidate_occupancies(&self, candidates: (u64, u64)) -> (u8, u8) {
@@ -2346,18 +2414,22 @@ pub(crate) mod canbench_probe {
         }
 
         pub(crate) fn prepare_route(&self, bytes: [u8; 8], seed: u64) -> PreparedRoute {
-            let cached = self.hash_secrets.borrow();
-            assert_eq!(cached.seed, seed, "diagnostic fixture uses the cached seed");
+            assert_eq!(
+                self.header.hash_seed, seed,
+                "diagnostic fixture uses the map's immutable hash seed"
+            );
             PreparedRoute {
                 bytes,
-                secrets: cached.secrets,
+                secrets: self.hash_secrets,
             }
         }
 
-        pub(crate) fn probe_secret_cache_hit(&self, seed: u64) -> u64 {
-            let cached = self.hash_secrets.borrow();
-            assert_eq!(cached.seed, seed, "diagnostic fixture uses the cached seed");
-            cached.seed
+        pub(crate) fn probe_precomputed_secret(&self, seed: u64) -> u64 {
+            assert_eq!(
+                self.header.hash_seed, seed,
+                "diagnostic fixture uses the map's immutable hash seed"
+            );
+            self.header.hash_seed
         }
 
         pub(crate) fn probe_first_hash(&self, route: &PreparedRoute) -> u64 {
@@ -2478,7 +2550,7 @@ pub(crate) mod canbench_probe {
 mod tests {
     use super::*;
     use ic_stable_structures::VectorMemory;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     type Callback = Rc<dyn Fn()>;
@@ -6453,7 +6525,7 @@ mod tests {
 
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(Some(790)));
-        assert_eq!(memory.read_calls.get(), 4);
+        assert_eq!(memory.read_calls.get(), 3);
         assert_eq!(memory.read_bytes.get(), 16 + 8 + 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
@@ -6485,7 +6557,7 @@ mod tests {
 
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(Some(830)));
-        assert_eq!(memory.read_calls.get(), 5);
+        assert_eq!(memory.read_calls.get(), 4);
         assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
@@ -6506,10 +6578,94 @@ mod tests {
 
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(None));
-        assert_eq!(memory.read_calls.get(), 5);
+        assert_eq!(memory.read_calls.get(), 4);
         assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
+    }
+
+    #[test]
+    fn small_get_many_preserves_order_duplicates_and_misses() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory, 93).expect("new");
+        let key = (1u64..)
+            .find(|key| {
+                let candidates = map.candidate_buckets(key);
+                candidates.0 != candidates.1
+            })
+            .expect("distinct candidates");
+        let missing = (key + 1..)
+            .find(|candidate| *candidate != key)
+            .expect("missing key");
+        assert_eq!(map.insert(key, 930), Ok(None));
+
+        assert_eq!(
+            map.get_many(&[key, missing, key]),
+            Ok(vec![Some(930), None, Some(930)])
+        );
+    }
+
+    #[test]
+    fn small_get_many_reads_each_candidate_page_once() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 95).expect("new");
+        let (key, filler) = (1u64..)
+            .find_map(|key| {
+                let candidates = map.candidate_buckets(&key);
+                (candidates.0 != candidates.1).then(|| {
+                    (1u64..)
+                        .find(|filler| {
+                            *filler != key && map.candidate_buckets(filler).0 == candidates.0
+                        })
+                        .map(|filler| (key, filler))
+                })
+            })
+            .flatten()
+            .expect("second-candidate placement");
+        assert_eq!(map.insert(filler, 951), Ok(None));
+        assert_eq!(map.insert(key, 950), Ok(None));
+
+        reset_counts(&memory);
+        assert_eq!(map.get_many(&[key, key]), Ok(vec![Some(950), Some(950)]));
+        assert_eq!(memory.read_calls.get(), 4);
+        assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
+        assert_eq!(memory.write_calls.get(), 0);
+        assert_eq!(memory.write_bytes.get(), 0);
+    }
+
+    #[test]
+    fn get_many_rejects_a_completed_nested_mutation_from_hash_callback() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let nested = Rc::new(CallbackMap::new(memory.clone()).expect("new nested handle"));
+        assert_eq!(nested.insert(CallbackKey::plain(7), 70), Ok(None));
+        let reader = CallbackMap::init(memory).expect("open reader handle");
+        let nested_for_callback = nested.clone();
+        let callback: Rc<dyn Fn()> = Rc::new(move || {
+            assert_eq!(
+                nested_for_callback.insert(CallbackKey::plain(8), 80),
+                Ok(None)
+            );
+        });
+        let reentrant = CallbackKey {
+            value: 7,
+            on_encode: None,
+            on_hash: Some(callback),
+            on_eq: None,
+            invalid: false,
+        };
+
+        assert_eq!(
+            reader.get_many(&[reentrant]),
+            Err(MutationError::InProgress)
+        );
+        assert_eq!(reader.get(&CallbackKey::plain(7)), Ok(Some(70)));
+        assert_eq!(reader.get(&CallbackKey::plain(8)), Ok(Some(80)));
     }
 
     #[test]
@@ -6652,6 +6808,18 @@ mod tests {
                 .all(|&(start, len)| !read_overlaps(*range, start, len))
         }));
         assert_eq!(memory.write_calls.get(), 0);
+    }
+
+    #[test]
+    fn large_get_many_preserves_fallback_semantics() {
+        type LargeValueMap = StableLinearHashMap<u64, [u8; 2048], CountingMemory>;
+
+        let map = LargeValueMap::new_with_hash_seed(CountingMemory::default(), 89).expect("new");
+        let (key, value, miss) = seed_large_second_candidate_fixture(&map);
+        assert_eq!(
+            map.get_many(&[key, miss, key]),
+            Ok(vec![Some(value), None, Some(value)])
+        );
     }
 
     #[test]

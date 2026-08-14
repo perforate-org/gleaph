@@ -19,7 +19,9 @@ one bounded, synchronous incremental split on an absent insert that would exceed
   `page + 8 + i * key_size` and `page + value_slab_offset + i * value_size`.
 - Each key derives two candidates in the same linear bucket universe from the persisted hash seed
   with domain separation. Insert chooses the less-loaded candidate; ties choose the first.
-- `get`, `contains_key`, `insert`, update, and `remove` inspect only those two candidates. Live
+- `get`, `get_many`, `contains_key`, `insert`, update, and `remove` inspect only those two
+  candidates. `get_many` shares each small candidate page across the batch while preserving input
+  order, duplicates, and misses; callers should keep batches bounded to their request budget. Live
   operations return `Result<_, MutationError>` so an in-progress or invalidated operation fails
   closed rather than exposing a partial snapshot.
 - `new_with_hash_seed` is strict create and rejects every nonempty memory without writes.
@@ -51,14 +53,16 @@ one bounded, synchronous incremental split on an absent insert that would exceed
   mutation that completes during `stable_hash_bytes`, decoding, or equality comparison invalidates
   the read result. This persisted protocol applies across separately opened handles over aliased
   `Memory`; it does not claim concurrent physical-memory atomicity beyond the `Memory` implementation.
-  Domain-separated hash secrets are cached from the immutable header seed. The cache borrow ends
-  before stable reads, decodes, comparisons, and writes.
-- For small bucket pages only, `get` and `remove` allocate their first page buffer at its exact
-  length and fill it through `Memory::read_unsafe`; the buffer remains operation-local and is
-  reused for the second candidate with ordinary `read`. The helper sets the vector length only
-  after `read_unsafe` returns, with a documented proof that the allocation is writable,
-  non-overlapping with stable memory, and fully initialized. The generic `Memory` default retains
-  its safe zero-fill-then-read behavior, so custom implementations that do not override
+  Domain-separated hash secrets are derived once from the immutable header seed and retained in
+  the map handle; the read path performs no interior-mutability borrow or seed comparison. The
+  immutable field is not persisted and is reconstructed from the validated header on exact open.
+- For small bucket pages only, `get`, `get_many`, and `remove` allocate their first page buffer at
+  its exact length and fill it through `Memory::read_unsafe`; the buffer remains operation-local
+  and is reused for the second candidate with ordinary `read`. `get_many` loads each unique first
+  candidate page once, then loads second candidates only for unresolved keys. The helper sets the
+  vector length only after `read_unsafe` returns, with a documented proof that the allocation is
+  writable, non-overlapping with stable memory, and fully initialized. The generic `Memory` default
+  retains its safe zero-fill-then-read behavior, so custom implementations that do not override
   `read_unsafe` preserve the same observable result and read accounting. Large-value lookup keeps
   the occupancy-plus-key fallback.
 - `scan_start` and `scan_step` provide resumable physical enumeration without exposing an
@@ -127,15 +131,16 @@ map's general cases, so the three implementations can be compared without a fixt
 Probe and preflight maps use isolated `VectorMemory`, so they cannot consume the measured
 stable-memory region. Setup and semantic checks remain outside the measured closures.
 
-The persisted 4,096-entry baseline measures Linear scope instructions of 8.46M get, 25.66M insert,
-and 7.45M remove (8.46M, 25.66M, and 7.46M totals). The matching `StableBTreeMap` cases measure
-76.97M get, 174.36M insert, and 167.91M remove (76.97M, 174.36M, and 167.92M totals). These are
+The persisted 4,096-entry baseline measures Linear scope instructions of 7.70M get, 24.64M insert,
+and 7.30M remove (7.70M, 24.64M, and 7.30M totals). The matching `StableBTreeMap` cases measure
+76.97M get, 173.82M insert, and 167.42M remove (76.97M, 173.82M, and 167.42M totals). These are
 operation totals over 4,096 calls, not per-operation values; divide by 4,096 when comparing
-single-operation cost. The source keeps separate 48-entry phase and 64-slot physical-scan
-diagnostics because those cases intentionally isolate bounded internal work rather than general
-map throughput.
+single-operation cost. The new `get_many` diagnostics measure 9.43M instructions for all-unique
+keys and 7.28M for a 64-key hot batch of 4,096 requests. The source keeps separate 48-entry phase
+and 64-slot physical-scan diagnostics because those cases intentionally isolate bounded internal
+work rather than general map throughput.
 
-`canbench_results.yml` is refreshed with the unfiltered `canbench --persist` run and contains 20
+`canbench_results.yml` is refreshed with the unfiltered `canbench --persist` run and contains 22
 entries, including the six 4,096-entry Linear/BTree comparison cases and the bounded diagnostics.
 
 Four public-insert split fixtures use frozen literal keys and keep setup, geometry/value checks, and
@@ -155,5 +160,9 @@ over `DefaultMemoryImpl`; their translation overhead is part of every mutation p
 values remain in `canbench_results.yml`.
 
 The source also declares three focused one-hop diagnostics (movable `u64`, exhausted, and movable
-large-value) plus one bounded 64-physical-slot scan benchmark. Setup and semantic checks stay
-outside the measured scan closure; all four are included in the current 20-entry persisted artifact.
+large-value), two `get_many` diagnostics (all-unique and 64-key hot batches), plus one bounded
+64-physical-slot scan benchmark. Setup and semantic checks stay outside measured closures. The
+`get_many` cases are intentionally diagnostic rather than a replacement for the single-key
+throughput case: batching helps repeated/hot keys, while an all-unique batch pays grouping and
+heap costs. Persisted benchmark results are updated only after an unfiltered `canbench --persist`
+run.

@@ -609,6 +609,43 @@ fn bench_linear_get() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
+fn bench_linear_get_many() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
+    let keys: Vec<_> = entries.iter().map(|&(key, _)| key).collect();
+    let map = populated_linear(DefaultMemoryImpl::default(), &entries);
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_linear_get_many");
+        black_box(map.get_many(black_box(&keys)))
+    });
+    let values = map.get_many(&keys).expect("batch get after measurement");
+    assert_eq!(
+        values,
+        entries
+            .iter()
+            .map(|&(_, value)| Some(value))
+            .collect::<Vec<_>>()
+    );
+    result
+}
+
+#[bench(raw)]
+fn bench_linear_get_many_hot() -> canbench_rs::BenchResult {
+    let entries = fixture_entries(GENERAL_N);
+    let hot_keys: Vec<_> = entries.iter().take(64).map(|&(key, _)| key).collect();
+    let keys: Vec<_> = hot_keys.iter().copied().cycle().take(GENERAL_N).collect();
+    let map = populated_linear(DefaultMemoryImpl::default(), &entries);
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_linear_get_many_hot");
+        black_box(map.get_many(black_box(&keys)))
+    });
+    let values = map
+        .get_many(&keys)
+        .expect("hot batch get after measurement");
+    assert!(values.iter().all(Option::is_some));
+    result
+}
+
+#[bench(raw)]
 fn bench_linear_scan_physical_slots_64() -> canbench_rs::BenchResult {
     let map = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new scan map");
     let mut entries = Vec::with_capacity(SCAN_N);
@@ -749,9 +786,9 @@ fn bench_linear_get_phases_48() -> canbench_rs::BenchResult {
             }
         }
         {
-            let _scope = canbench_rs::bench_scope("get_route_secret_cache_hit");
+            let _scope = canbench_rs::bench_scope("get_route_secret_precomputed");
             for &seed in &seeds {
-                black_box(map.probe_secret_cache_hit(black_box(seed)));
+                black_box(map.probe_precomputed_secret(black_box(seed)));
             }
         }
         {

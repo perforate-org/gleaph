@@ -3,7 +3,7 @@
 Date: 2026-08-12
 Status: Partially Implemented
 Last revised: 2026-08-14
-Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
+Anchor timestamp: 2026-08-14 12:46:25 UTC +0000
 
 > **Partially implemented contract.** This ADR is the sole exact V1 persisted-format contract for
 > ic-stable-linear-hash-map. The map and the Vector MemoryId 4 and 7 owner cutovers are implemented;
@@ -384,6 +384,25 @@ both LHM owners and clears definitions, subject/deletion state, and the coupled 
 regions while preserving router authority, graph ownership, shard attachments, watermarks, and the
 GC cursor. A reviewed production reset operation and its rollback proof remain pending; no public
 administrative endpoint exists.
+
+The point-read path batches the adjacent routing geometry and pre-read mutation epoch into one
+control access, but retains the post-read epoch fence required for alias-mutation detection. The
+generic map additionally derives its immutable domain-separated hash secrets once per handle,
+removing the interior-mutability cache borrow and seed comparison from the normal route. Its
+`get_many` API shares each small candidate page across one bounded request, preserving input order,
+duplicates, and misses; large-value maps use the existing single-key route. The batch API is
+workload-specific: repeated/hot keys can avoid duplicate page reads, while all-unique batches pay
+route grouping and heap costs. The persisted 4,096-entry map benchmark now measures 7.70M single-key
+get instructions, 9.43M all-unique batch instructions, and 7.28M for a 64-key hot batch. On
+2026-08-14 this reduced the focused subject lookup benchmark to 15.04M instructions versus the
+14.31M checked-in baseline (+5.13%, identical across three runs); dual-write measured 862.16K
+(+13.49%). The remaining cost is recorded as an explicit safety/performance follow-up, and the
+Vector canister benchmark artifact is not updated by this change. The LHM crate artifact was
+refreshed by an unfiltered `canbench --persist` run with the new batch diagnostics. Building slot
+batching now measures 31.13M
+(+5.11%), including physical scan 11.67% better, append +9.83%, and state persistence +89.08%;
+training is 107.90M (+0.64%, within noise). The total and persistence acceptance blockers remain
+open.
 
 ## Consequences
 

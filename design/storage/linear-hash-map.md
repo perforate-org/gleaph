@@ -5,7 +5,7 @@ Status: **Partially Implemented** (the authoritative V1 map, bounded physical sc
 quarantine wiring are implemented; coordinated reset is fixture-only and production reset remains
 pending)
 Last updated: 2026-08-14
-Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
+Anchor timestamp: 2026-08-14 12:46:25 UTC +0000
 
 ## Authority and status
 
@@ -22,6 +22,16 @@ mutation fencing, reset, physical scan, and scrub. A consuming facade owns its o
 lifecycle state, seed authority, and domain-error translation. Bounded physical enumeration avoids
 requiring a consumer-owned key catalog. Vector integrates the map through two private owners:
 `DEFINITION_STORE` at MemoryId 4 and `SUBJECT_STORE` at MemoryId 7.
+
+Point reads retain the map's single-key `get` contract and epoch fence. The immutable, derived
+domain-separated hash secrets live in the map handle rather than an interior-mutability cache, so
+the hot route avoids a borrow and seed comparison without changing persisted bytes or routing
+identity. The additive `get_many` API shares small candidate pages across one bounded request while
+preserving input order, duplicate keys, and misses; it falls back to the existing single-key path
+for large value pages. This is a workload-specific batch optimization, not a replacement for the
+single-key path: the persisted 4,096-entry canbench measures 7.70M single-key instructions, 9.43M
+for all-unique batching, and 7.28M for a 64-key hot batch. All-unique batches can pay grouping and
+heap costs, while repeated/hot keys avoid duplicate stable-memory page reads.
 
 ## Contract consequences
 
@@ -135,3 +145,14 @@ before the mutation epoch becomes odd. TablePressure remains the no-write result
 can admit the key. A one-hop move to a lower physical slot checked-increments the persisted
 backward-relocation generation before either resident page write while the epoch is odd; u64::MAX
 rejects before any write. Reset publishes generation zero under its successor incarnation.
+
+Point lookups now read the adjacent routing geometry and pre-read mutation epoch in one control
+access, while retaining the post-read epoch fence. This removes one stable-memory read without
+weakening alias-mutation detection. The focused `bench_subject_map_get_d128` run is 15.04M
+instructions versus the checked-in 14.31M baseline (+5.13%), identical across three runs; the
+focused dual-write run is 862.16K (+13.49%). Building slot batching now measures 31.13M (+5.11%),
+with physical scan 11.67% better, append +9.83%, and state persistence +89.08%; training is
+107.90M (+0.64%, within noise).
+These remain explicit performance follow-ups rather than silent threshold waivers;
+the Vector canister's `canbench_results.yml` is intentionally unchanged. The LHM crate artifact is
+updated only by its own unfiltered canbench run.
