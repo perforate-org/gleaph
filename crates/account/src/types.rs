@@ -1,8 +1,7 @@
 //! Account canister public types and stable-memory encodings (ADR 0068).
 //!
-//! Slice 1 scope: account enum (Personal / Org), member RBAC, and lifecycle only.
-//! Router mapping (`routers`) is a later slice; it is deliberately not in the enum yet
-//! so a stable-format bump is owned by that slice.
+//! Slice 1: account enum (Personal / Org), member RBAC, lifecycle.
+//! Slice 2: Router mapping (`routers`).
 
 use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
@@ -28,17 +27,30 @@ impl Role {
     }
 }
 
+/// A Router owned by an account. `router_id` is a logical name unique within the account.
+/// An unissued Router is simply absent from the map; no separate status field is needed yet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct RouterEntry {
+    pub router_id: String,
+    pub router_canister: Principal,
+}
+
 /// Account ownership boundary. The **enum variant is the discriminator**; no separate
 /// `AccountKind` field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum Account {
     /// Single-owner account; `account_id == principal`.
-    Personal { name: String, principal: Principal },
+    Personal {
+        name: String,
+        principal: Principal,
+        routers: BTreeMap<String, RouterEntry>,
+    },
     /// Multi-member account with an owner-independent generated id.
     Org {
         name: String,
         account_id: String,
         members: BTreeMap<Principal, Role>,
+        routers: BTreeMap<String, RouterEntry>,
     },
 }
 

@@ -11,11 +11,12 @@ pub mod types;
 
 use canister::{
     add_member_with_caller, create_account_with_caller, create_org_account_with_caller,
-    delete_account_with_caller, get_account_with_caller, remove_member_with_caller,
-    resolve_my_accounts_with_caller,
+    delete_account_with_caller, get_account_with_caller, list_routers_with_caller,
+    register_router_with_caller, remove_member_with_caller, resolve_my_accounts_with_caller,
+    resolve_router_with_caller, unregister_router_with_caller,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
-use types::{Account, AccountError, Role};
+use types::{Account, AccountError, Role, RouterEntry};
 
 #[init]
 fn init() {
@@ -91,6 +92,48 @@ fn remove_member(account_id: String, principal: candid::Principal) -> Result<(),
 fn resolve_my_accounts() -> Vec<String> {
     resolve_my_accounts_with_caller(
         ic_cdk::api::msg_caller(),
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[update]
+fn register_router(account_id: String, router: RouterEntry) -> Result<(), AccountError> {
+    register_router_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        router,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[update]
+fn unregister_router(account_id: String, router_id: String) -> Result<(), AccountError> {
+    unregister_router_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        &router_id,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[query]
+fn list_routers(account_id: String) -> Result<Vec<RouterEntry>, AccountError> {
+    list_routers_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[query]
+fn resolve_router(
+    account_id: String,
+    router_id: String,
+) -> Result<candid::Principal, AccountError> {
+    resolve_router_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        &router_id,
         &stable::store::AccountStore::new(),
     )
 }

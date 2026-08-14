@@ -1,7 +1,7 @@
 //! Account canister stable-memory store facade (ADR 0068 Slice 1).
 
 use crate::stable::memory;
-use crate::types::{Account, AccountError, Role};
+use crate::types::{Account, AccountError, Role, RouterEntry};
 use candid::Principal;
 
 /// Durable account store. Keyed by `account_id`.
@@ -91,5 +91,94 @@ impl AccountStore {
                 .map(|entry| entry.key().clone())
                 .collect()
         })
+    }
+
+    /// Register a Router under an account. Owner/admin only. Returns AlreadyExists if the
+    /// `router_id` is taken.
+    pub fn register_router(
+        &self,
+        account_id: &str,
+        caller: Principal,
+        router: RouterEntry,
+    ) -> Result<(), AccountError> {
+        memory::ACCOUNTS.with_borrow_mut(|map| {
+            let mut account = map
+                .get(&account_id.to_owned())
+                .ok_or(AccountError::NotFound)?;
+            if !account.is_owner_or_admin(&caller) {
+                return Err(AccountError::NotAuthorized);
+            }
+            let routers = match &mut account {
+                Account::Personal { routers, .. } => routers,
+                Account::Org { routers, .. } => routers,
+            };
+            if routers.contains_key(&router.router_id) {
+                return Err(AccountError::AlreadyExists);
+            }
+            routers.insert(router.router_id.clone(), router);
+            map.insert(account_id.to_owned(), account);
+            Ok(())
+        })
+    }
+
+    /// Unregister a Router. Owner only.
+    pub fn unregister_router(
+        &self,
+        account_id: &str,
+        caller: Principal,
+        router_id: &str,
+    ) -> Result<(), AccountError> {
+        memory::ACCOUNTS.with_borrow_mut(|map| {
+            let mut account = map
+                .get(&account_id.to_owned())
+                .ok_or(AccountError::NotFound)?;
+            if !account.is_owner(&caller) {
+                return Err(AccountError::NotAuthorized);
+            }
+            let routers = match &mut account {
+                Account::Personal { routers, .. } => routers,
+                Account::Org { routers, .. } => routers,
+            };
+            routers.remove(router_id);
+            map.insert(account_id.to_owned(), account);
+            Ok(())
+        })
+    }
+
+    /// List the account's Routers. Any member.
+    pub fn list_routers(
+        &self,
+        account_id: &str,
+        caller: Principal,
+    ) -> Result<Vec<RouterEntry>, AccountError> {
+        let account = self.get(account_id).ok_or(AccountError::NotFound)?;
+        if !account.is_member(&caller) {
+            return Err(AccountError::NotAuthorized);
+        }
+        Ok(match &account {
+            Account::Personal { routers, .. } => routers.values().cloned().collect(),
+            Account::Org { routers, .. } => routers.values().cloned().collect(),
+        })
+    }
+
+    /// Resolve a Router's canister id. Any member. Returns NotFound if the Router is not issued.
+    pub fn resolve_router(
+        &self,
+        account_id: &str,
+        caller: Principal,
+        router_id: &str,
+    ) -> Result<Principal, AccountError> {
+        let account = self.get(account_id).ok_or(AccountError::NotFound)?;
+        if !account.is_member(&caller) {
+            return Err(AccountError::NotAuthorized);
+        }
+        let routers = match &account {
+            Account::Personal { routers, .. } => routers,
+            Account::Org { routers, .. } => routers,
+        };
+        routers
+            .get(router_id)
+            .map(|r| r.router_canister)
+            .ok_or(AccountError::NotFound)
     }
 }

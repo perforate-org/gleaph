@@ -4,7 +4,7 @@
 //! authorization branch without WASM.
 
 use crate::stable::store::AccountStore;
-use crate::types::{Account, AccountError, Role, generate_org_account_id};
+use crate::types::{Account, AccountError, Role, RouterEntry, generate_org_account_id};
 use candid::Principal;
 
 /// Create a Personal account owned by `caller`. Rejects anonymous and an existing same-id account.
@@ -19,6 +19,7 @@ pub(crate) fn create_account_with_caller(
     let account = Account::Personal {
         name,
         principal: caller,
+        routers: Default::default(),
     };
     store.insert(account.clone())?;
     Ok(account)
@@ -40,6 +41,7 @@ pub(crate) fn create_org_account_with_caller(
         name,
         account_id: generate_org_account_id(&caller, now_ns),
         members,
+        routers: Default::default(),
     };
     store.insert(account.clone())?;
     Ok(account)
@@ -104,15 +106,54 @@ pub(crate) fn resolve_my_accounts_with_caller(
     store.accounts_of(caller)
 }
 
+/// Register a Router under an account. Owner/admin only.
+pub(crate) fn register_router_with_caller(
+    caller: Principal,
+    account_id: &str,
+    router: RouterEntry,
+    store: &AccountStore,
+) -> Result<(), AccountError> {
+    store.register_router(account_id, caller, router)
+}
+
+/// Unregister a Router. Owner only.
+pub(crate) fn unregister_router_with_caller(
+    caller: Principal,
+    account_id: &str,
+    router_id: &str,
+    store: &AccountStore,
+) -> Result<(), AccountError> {
+    store.unregister_router(account_id, caller, router_id)
+}
+
+/// List the account's Routers. Any member.
+pub(crate) fn list_routers_with_caller(
+    caller: Principal,
+    account_id: &str,
+    store: &AccountStore,
+) -> Result<Vec<RouterEntry>, AccountError> {
+    store.list_routers(account_id, caller)
+}
+
+/// Resolve a Router's canister id. Any member. NotFound if not issued.
+pub(crate) fn resolve_router_with_caller(
+    caller: Principal,
+    account_id: &str,
+    router_id: &str,
+    store: &AccountStore,
+) -> Result<Principal, AccountError> {
+    store.resolve_router(account_id, caller, router_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         add_member_with_caller, create_account_with_caller, create_org_account_with_caller,
-        resolve_my_accounts_with_caller,
+        register_router_with_caller, resolve_my_accounts_with_caller, resolve_router_with_caller,
     };
     use crate::stable::memory;
     use crate::stable::store::AccountStore;
-    use crate::types::{Account, AccountError, Role};
+    use crate::types::{Account, AccountError, Role, RouterEntry};
     use candid::Principal;
 
     fn p(b: u8) -> Principal {
@@ -128,6 +169,7 @@ mod tests {
             name: "team".into(),
             account_id: "org-x".into(),
             members: [(alice, Role::Owner), (bob, Role::Member)].into(),
+            routers: Default::default(),
         };
 
         assert!(org.is_owner(&alice));
@@ -140,6 +182,7 @@ mod tests {
         let personal = Account::Personal {
             name: "me".into(),
             principal: alice,
+            routers: Default::default(),
         };
         assert!(personal.is_owner(&alice));
         assert!(!personal.is_member(&bob));
@@ -178,5 +221,49 @@ mod tests {
         let mut expect = vec![alice.to_text(), org_id];
         expect.sort();
         assert_eq!(mine, expect);
+    }
+
+    #[test]
+    fn router_mapping_enforces_rbac_and_resolves() {
+        memory::reset_all();
+        let store = AccountStore::new();
+        let alice = p(1);
+        let bob = p(2);
+        let router = RouterEntry {
+            router_id: "default".into(),
+            router_canister: p(9),
+        };
+
+        let org = create_org_account_with_caller(alice, "team".into(), 0, &store).unwrap();
+        let org_id = org.id();
+
+        // bob (not a member) cannot register.
+        assert_eq!(
+            register_router_with_caller(bob, &org_id, router.clone(), &store),
+            Err(AccountError::NotAuthorized)
+        );
+        // alice (owner) registers.
+        register_router_with_caller(alice, &org_id, router.clone(), &store).unwrap();
+        // duplicate router_id rejected.
+        assert_eq!(
+            register_router_with_caller(alice, &org_id, router.clone(), &store),
+            Err(AccountError::AlreadyExists)
+        );
+
+        // member resolves; non-member denied.
+        add_member_with_caller(alice, &org_id, bob, Role::Member, &store).unwrap();
+        assert_eq!(
+            resolve_router_with_caller(bob, &org_id, "default", &store),
+            Ok(p(9))
+        );
+        assert_eq!(
+            resolve_router_with_caller(p(3), &org_id, "default", &store),
+            Err(AccountError::NotAuthorized)
+        );
+        // unknown router_id -> NotFound.
+        assert_eq!(
+            resolve_router_with_caller(bob, &org_id, "nope", &store),
+            Err(AccountError::NotFound)
+        );
     }
 }
