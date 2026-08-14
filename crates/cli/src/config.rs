@@ -60,6 +60,7 @@ pub enum ConfigError {
 #[derive(Clone, Debug, Default)]
 pub struct ConfigEnv {
     pub config: Option<String>,
+    pub environment: Option<String>,
     pub network: Option<String>,
     pub canister: Option<String>,
     pub identity: Option<String>,
@@ -82,6 +83,7 @@ impl ConfigEnv {
         for (key, value) in iter {
             match key.as_str() {
                 "GLEAPH_CONFIG" => env.config = Some(value),
+                "GLEAPH_ENVIRONMENT" => env.environment = Some(value),
                 "GLEAPH_NETWORK" => env.network = Some(value),
                 "GLEAPH_CANISTER" => env.canister = Some(value),
                 "GLEAPH_IDENTITY" => env.identity = Some(value),
@@ -317,6 +319,13 @@ pub fn effective_network(flag: Option<&str>, env: &ConfigEnv, config: Option<&Co
         .or_else(|| env.network.clone())
         .or_else(|| config.map(Config::default_network).map(str::to_owned))
         .unwrap_or_else(|| DEFAULT_NETWORK.to_owned())
+}
+
+/// Effective environment: `GLEAPH_ENVIRONMENT` > effective network. The environment selects the
+/// `.gleaph/data/mappings/<env>.ids.json` and `.gleaph/cache/account/<env>.router.json` files.
+/// It defaults to the network name so a single-network project needs no extra config.
+pub fn effective_environment(env: &ConfigEnv, network: &str) -> String {
+    env.environment.clone().unwrap_or_else(|| network.to_owned())
 }
 
 /// One resolved connection field set. `canister` stays optional until the caller requires it
@@ -576,6 +585,7 @@ mod tests {
     fn env_snapshot_parses_scalar_overrides() {
         let env = ConfigEnv::from_env_iter(
             [
+                ("GLEAPH_ENVIRONMENT", "staging"),
                 ("GLEAPH_NETWORK", "local"),
                 ("GLEAPH_CANISTER", "aaaaa-aa"),
                 ("GLEAPH_IDENTITY", "id.pem"),
@@ -587,11 +597,23 @@ mod tests {
             .map(|(k, v)| (k.to_owned(), v.to_owned())),
         )
         .expect("valid env snapshot");
+        assert_eq!(env.environment.as_deref(), Some("staging"));
         assert_eq!(env.network.as_deref(), Some("local"));
         assert_eq!(env.canister.as_deref(), Some("aaaaa-aa"));
         assert_eq!(env.identity.as_deref(), Some("id.pem"));
         assert_eq!(env.router.as_deref(), Some("prod"));
         assert_eq!(env.fetch_root_key, Some(true));
+    }
+
+    #[test]
+    fn effective_environment_defaults_to_network() {
+        let env = ConfigEnv::default();
+        assert_eq!(effective_environment(&env, "local"), "local");
+        let env = ConfigEnv {
+            environment: Some("staging".into()),
+            ..ConfigEnv::default()
+        };
+        assert_eq!(effective_environment(&env, "ic"), "staging");
     }
 
     #[test]

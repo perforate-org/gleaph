@@ -281,10 +281,11 @@ fn resolve_router_from_account(
         )
     })?;
     let router_name = env.router.as_deref().unwrap_or("default");
-    if let Some(cached) = config::read_router_cache(loaded, &options.network) {
+    let environment = config::effective_environment(env, &options.network);
+    if let Some(cached) = config::read_router_cache(loaded, &environment) {
         return Ok(cached);
     }
-    let mapping = config::read_mapping(loaded, &options.network)?;
+    let mapping = config::read_mapping(loaded, &environment)?;
     let account_canister = mapping.get("account").ok_or_else(|| {
         CliError::Message(
             "no account canister in .gleaph/data/mappings; run `gleaph deploy` first".into(),
@@ -302,7 +303,7 @@ fn resolve_router_from_account(
     let router = remote::resolve_router_id(&transport, &account_principal, router_name)
         .map_err(CliError::Message)?;
     let router_text = router.to_text();
-    config::write_router_cache(loaded, &options.network, &router_text);
+    config::write_router_cache(loaded, &environment, &router_text);
     Ok(router_text)
 }
 
