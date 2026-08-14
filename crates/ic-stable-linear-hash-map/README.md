@@ -122,7 +122,9 @@ cargo clippy -p ic-stable-linear-hash-map --all-targets --all-features -- -D war
 
 Focused canbench runs compare Linear Hash Map and `StableBTreeMap` get/insert/remove in the same
 binary, using the same 48 successful `u64` key/value pairs, operation counts, and
-`DefaultMemoryImpl`. Setup and semantic checks remain outside the measured closures. The first
+`DefaultMemoryImpl` for the measured maps. Probe and preflight maps use isolated `VectorMemory`,
+so they cannot consume the measured stable-memory region. Setup and semantic checks remain outside
+the measured closures. The first
 persisted SoA baseline measures Linear scope instructions of 96.07K get, 163.35K insert, and 80.33K
 remove (97.07K, 164.36K, and 81.34K totals). The prior AoS run of the same three named benches
 measured 96.68K, 175.26K, and 89.44K scope instructions (97.68K, 176.27K, and 90.45K totals).
@@ -130,6 +132,9 @@ The persisted artifact measures `StableBTreeMap` scope instructions of 374.98K g
 and 1.086M remove (375.99K, 1.187M, and 1.087M totals). The persisted artifact contains the 16
 baseline benchmark entries measured before the one-hop diagnostics were added; the prior AoS Linear
 figures are historical only.
+The fixture-separation repair can change total setup instructions relative to that pre-separation
+artifact; operation-scope values remain the primary comparison, and the artifact is intentionally
+not rewritten by this repair.
 
 Four public-insert split fixtures use frozen literal keys and keep setup, geometry/value checks, and
 reopen checks outside timing. The persisted SoA baseline measures scope/total instructions of

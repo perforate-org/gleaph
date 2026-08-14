@@ -3,10 +3,10 @@ use crate::StableLinearHashMap;
 use crate::StableMapValue;
 use canbench_rs::bench;
 #[cfg(target_family = "wasm")]
-use ic_stable_structures::Storable;
-#[cfg(target_family = "wasm")]
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
-use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+#[cfg(target_family = "wasm")]
+use ic_stable_structures::Storable;
+use ic_stable_structures::{DefaultMemoryImpl, Memory, StableBTreeMap, VectorMemory};
 #[cfg(target_family = "wasm")]
 use std::cell::RefCell;
 use std::hint::black_box;
@@ -48,7 +48,8 @@ fn fixture_value(key: u64) -> u64 {
 }
 
 fn fixture_entries() -> Vec<(u64, u64)> {
-    let probe = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new probe map");
+    let probe = StableLinearHashMap::<u64, u64, VectorMemory>::new(VectorMemory::default())
+        .expect("new probe map");
     let mut entries = Vec::with_capacity(N);
     for candidate in 0u64.. {
         let value = fixture_value(candidate);
@@ -67,8 +68,11 @@ fn fixture_entries() -> Vec<(u64, u64)> {
     entries
 }
 
-fn populated_linear(entries: &[(u64, u64)]) -> StableLinearHashMap<u64, u64, DefaultMemoryImpl> {
-    let map = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new linear map");
+fn populated_linear<M: Memory>(
+    memory: M,
+    entries: &[(u64, u64)],
+) -> StableLinearHashMap<u64, u64, M> {
+    let map = StableLinearHashMap::new(memory).expect("new linear map");
     for &(key, value) in entries {
         assert_eq!(map.insert(key, value), Ok(None));
     }
@@ -79,8 +83,8 @@ fn populated_linear(entries: &[(u64, u64)]) -> StableLinearHashMap<u64, u64, Def
     map
 }
 
-fn populated_btree(entries: &[(u64, u64)]) -> StableBTreeMap<u64, u64, DefaultMemoryImpl> {
-    let mut map = StableBTreeMap::new(DefaultMemoryImpl::default());
+fn populated_btree<M: Memory>(memory: M, entries: &[(u64, u64)]) -> StableBTreeMap<u64, u64, M> {
+    let mut map = StableBTreeMap::new(memory);
     for &(key, value) in entries {
         assert_eq!(map.insert(key, value), None);
     }
@@ -109,8 +113,8 @@ fn populated_large() -> StableLinearHashMap<u64, [u8; 2048], DefaultMemoryImpl> 
 }
 
 #[cfg(target_family = "wasm")]
-fn one_hop_movable_fixture<V: Storable + StableMapValue + Clone>(
-    map: &StableLinearHashMap<u64, V, DefaultMemoryImpl>,
+fn one_hop_movable_fixture<M: Memory, V: Storable + StableMapValue + Clone>(
+    map: &StableLinearHashMap<u64, V, M>,
     value: impl Fn(u64) -> V,
 ) -> (u64, Vec<(u64, V)>, u64, u64) {
     let target = (1u64..)
@@ -175,8 +179,8 @@ fn one_hop_movable_fixture<V: Storable + StableMapValue + Clone>(
 }
 
 #[cfg(target_family = "wasm")]
-fn one_hop_exhausted_fixture(
-    map: &StableLinearHashMap<u64, u64, DefaultMemoryImpl>,
+fn one_hop_exhausted_fixture<M: Memory>(
+    map: &StableLinearHashMap<u64, u64, M>,
 ) -> (u64, Vec<(u64, u64)>) {
     let target = (1u64..)
         .find(|key| {
@@ -211,7 +215,7 @@ fn one_hop_exhausted_fixture(
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
 fn bench_one_hop_movable() -> canbench_rs::BenchResult {
-    let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 443)
+    let preflight = StableLinearHashMap::new_with_hash_seed(VectorMemory::default(), 443)
         .expect("new preflight map");
     let (preflight_target, _, _, _) = one_hop_movable_fixture(&preflight, fixture_value);
     assert_eq!(
@@ -290,7 +294,7 @@ fn bench_one_hop_exhausted() -> canbench_rs::BenchResult {
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
 fn bench_one_hop_movable_large_value() -> canbench_rs::BenchResult {
-    let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 457)
+    let preflight = StableLinearHashMap::new_with_hash_seed(VectorMemory::default(), 457)
         .expect("new large preflight map");
     let (preflight_target, _, _, _) = one_hop_movable_fixture(&preflight, large_value);
     assert_eq!(
@@ -480,7 +484,7 @@ fn split_benchmark(
         assert_eq!(map.get(&key), Ok(Some(fixture_value(key))));
     }
 
-    let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), seed)
+    let preflight = StableLinearHashMap::new_with_hash_seed(VectorMemory::default(), seed)
         .expect("new equivalent preflight map");
     for &key in residents {
         assert_eq!(preflight.insert(key, fixture_value(key)), Ok(None));
@@ -589,7 +593,7 @@ fn bench_linear_insert_split_round_rollover() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_linear_get_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let map = populated_linear(&entries);
+    let map = populated_linear(DefaultMemoryImpl::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(map.get(&key), Ok(Some(value)));
     }
@@ -648,7 +652,7 @@ fn bench_linear_scan_physical_slots_64() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_linear_insert_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let preflight = populated_linear(&entries);
+    let preflight = populated_linear(VectorMemory::default(), &entries);
     assert_eq!(preflight.len(), Ok(entries.len() as u64));
     let map = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new linear map");
     let result = canbench_rs::bench_fn(|| {
@@ -667,7 +671,7 @@ fn bench_linear_insert_48() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_linear_remove_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let preflight = populated_linear(&entries);
+    let preflight = populated_linear(VectorMemory::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(preflight.remove(&key), Ok(Some(value)));
     }
@@ -676,7 +680,7 @@ fn bench_linear_remove_48() -> canbench_rs::BenchResult {
     for &(key, _) in &entries {
         assert_eq!(preflight.get(&key), Ok(None));
     }
-    let map = populated_linear(&entries);
+    let map = populated_linear(DefaultMemoryImpl::default(), &entries);
     assert_eq!(map.len(), Ok(entries.len() as u64));
     let result = canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_linear_remove_48");
@@ -696,7 +700,7 @@ fn bench_linear_remove_48() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_linear_get_phases_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let map = populated_linear(&entries);
+    let map = populated_linear(DefaultMemoryImpl::default(), &entries);
     let seeds: Vec<_> = entries.iter().map(|_| map.probe_seed()).collect();
     let encoded_keys: Vec<_> = entries
         .iter()
@@ -945,7 +949,7 @@ fn bench_linear_remove_phases_48() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_btree_get_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let map = populated_btree(&entries);
+    let map = populated_btree(DefaultMemoryImpl::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(map.get(&key), Some(value));
     }
@@ -960,7 +964,7 @@ fn bench_btree_get_48() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_btree_insert_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let preflight = populated_btree(&entries);
+    let preflight = populated_btree(VectorMemory::default(), &entries);
     assert_eq!(preflight.len(), entries.len() as u64);
     let mut map = StableBTreeMap::new(DefaultMemoryImpl::default());
     let result = canbench_rs::bench_fn(|| {
@@ -979,7 +983,7 @@ fn bench_btree_insert_48() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_btree_remove_48() -> canbench_rs::BenchResult {
     let entries = fixture_entries();
-    let mut preflight = populated_btree(&entries);
+    let mut preflight = populated_btree(VectorMemory::default(), &entries);
     for &(key, value) in &entries {
         assert_eq!(preflight.remove(&key), Some(value));
     }
@@ -988,7 +992,7 @@ fn bench_btree_remove_48() -> canbench_rs::BenchResult {
     for &(key, _) in &entries {
         assert_eq!(preflight.get(&key), None);
     }
-    let mut map = populated_btree(&entries);
+    let mut map = populated_btree(DefaultMemoryImpl::default(), &entries);
     assert_eq!(map.len(), entries.len() as u64);
     let result = canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_btree_remove_48");
