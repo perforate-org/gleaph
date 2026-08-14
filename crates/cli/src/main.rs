@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use thiserror::Error;
 
 pub mod config;
+pub mod deploy;
 pub mod load;
 pub mod migration;
 pub mod prepared;
@@ -63,6 +64,21 @@ enum TopLevelCommand {
     /// Register prepared queries from local .gql files.
     #[command(subcommand)]
     Prepared(PreparedCommand),
+    /// Provision the user's Router and graph on the target environment.
+    Deploy(DeployArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct DeployArgs {
+    /// Network name (ic/local) or an HTTP(S) endpoint URL.
+    #[arg(short = 'n', long, value_name = "NETWORK")]
+    network: Option<String>,
+    /// PEM file containing a Secp256k1 identity.
+    #[arg(long, value_name = "PATH")]
+    identity: Option<PathBuf>,
+    /// Fetch the network root key before querying a custom endpoint.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    fetch_root_key: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -223,7 +239,26 @@ fn dispatch(
             Ok(())
         }
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
+        TopLevelCommand::Deploy(args) => execute_deploy(args, env, loaded),
     }
+}
+
+/// `gleaph deploy`: register the caller's Account and write the platform mapping.
+fn execute_deploy(
+    args: DeployArgs,
+    env: &ConfigEnv,
+    loaded: Option<&LoadedConfig>,
+) -> Result<(), CliError> {
+    let network =
+        config::effective_network(args.network.as_deref(), env, loaded.map(|l| &l.config));
+    deploy::deploy(
+        &network,
+        args.identity.as_deref(),
+        args.fetch_root_key.unwrap_or(false),
+        env,
+        loaded,
+    )
+    .map_err(CliError::Message)
 }
 
 /// One connection set with the canister required (for `migration`, `prepared`, and `load`).
