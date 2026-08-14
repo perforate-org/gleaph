@@ -3,7 +3,6 @@
 use super::VectorCanisterStore;
 use crate::facade::stable::definition_store;
 use crate::facade::stable::memory::{ActiveShardDetach, VectorIndexOwnershipConfig};
-use crate::facade::stable::subject_store;
 use crate::facade::stable::{OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG};
 use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
 use candid::Principal;
@@ -13,7 +12,7 @@ use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
     VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy,
     VectorMaintenanceRecommendation, VectorMetric, VectorPartitionPageHealth, VectorSearchRequest,
-    VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError,
+    VectorSubject,
 };
 
 const INDEX_ID: u32 = 1;
@@ -64,36 +63,6 @@ fn upsert_op(vertex_id: u32, mutation_id: u64, fill: u8) -> VectorEmbeddingSyncO
     }
 }
 
-fn upsert_op_for_index(
-    index_id: u32,
-    vertex_id: u32,
-    mutation_id: u64,
-    fill: u8,
-) -> VectorEmbeddingSyncOp {
-    let mut op = upsert_op(vertex_id, mutation_id, fill);
-    op.index_id = index_id;
-    op
-}
-
-/// Fills the actual MemoryId 4 LHM through the owner until the next fresh definition is rejected
-/// by production `MutationError::TablePressure`. The resident defs intentionally do not need
-/// centroid metadata because this fixture only exercises definition admission.
-fn pressure_fixture(store: &VectorCanisterStore) -> (u32, u32) {
-    const BOOTSTRAP_INDEX_ID: u32 = 900_000_000;
-    const FIRST_PRESSURE_CANDIDATE: u32 = 10_000;
-
-    store
-        .create_index_for_test(BOOTSTRAP_INDEX_ID, VectorEncoding::F32, DIMS, 64 * 1024)
-        .expect("bootstrap definition");
-    let definition = store
-        .def_for_test(BOOTSTRAP_INDEX_ID)
-        .expect("bootstrap definition is readable");
-    let pressure_index =
-        definition_store::fill_until_table_pressure_for_test(FIRST_PRESSURE_CANDIDATE, definition);
-    assert!(store.def_for_test(pressure_index).is_none());
-    (BOOTSTRAP_INDEX_ID, pressure_index)
-}
-
 /// Remove at an explicit `mutation_id` stamp (ADR 0064 §5).
 fn remove_op(vertex_id: u32, mutation_id: u64) -> VectorEmbeddingSyncOp {
     VectorEmbeddingSyncOp {
@@ -128,104 +97,6 @@ fn upsert_new_creates_def_slot_and_clock() {
     assert_eq!(entry.stamp, 1);
     let slot = entry.slot.expect("live slot");
     assert_eq!(slot.slot, 0, "first row lands at slot 0");
-}
-
-#[test]
-fn typed_sync_table_pressure_at_zero_has_no_vector_write() {
-    let store = fresh_store();
-    let (_bootstrap_index, pressure_index) = pressure_fixture(&store);
-    let op = upsert_op_for_index(pressure_index, 41, 1, 0xA1);
-
-    let outcome = crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &[op])
-        .expect("table pressure is a terminal outcome");
-
-    assert_eq!(
-        outcome,
-        VectorSyncBatchOutcome::Terminal {
-            applied: 0,
-            failed_index: 0,
-            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
-        }
-    );
-    assert!(store.def_for_test(pressure_index).is_none());
-    assert!(
-        store
-            .subject_entry_for_test(pressure_index, subject(41))
-            .is_none()
-    );
-    assert!(store.partition_head_for_test(pressure_index, 1).is_none());
-}
-
-#[test]
-fn typed_sync_table_pressure_after_prefix_commits_exact_prefix_only() {
-    let store = fresh_store();
-    let (bootstrap_index, pressure_index) = pressure_fixture(&store);
-    let prefix = upsert_op_for_index(bootstrap_index, 42, 1, 0xA2);
-    let failed = upsert_op_for_index(pressure_index, 43, 1, 0xA3);
-    let suffix_index = u32::MAX;
-    assert!(store.def_for_test(suffix_index).is_none());
-    let suffix = upsert_op_for_index(suffix_index, 44, 1, 0xA4);
-
-    let outcome = crate::canister::vector_sync_batch_outcome_for_caller(
-        shard_canister(),
-        &[prefix, failed, suffix],
-    )
-    .expect("table pressure is a terminal outcome");
-
-    assert_eq!(
-        outcome,
-        VectorSyncBatchOutcome::Terminal {
-            applied: 1,
-            failed_index: 1,
-            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
-        }
-    );
-    assert!(
-        store
-            .subject_entry_for_test(bootstrap_index, subject(42))
-            .is_some()
-    );
-    assert!(store.def_for_test(pressure_index).is_none());
-    assert!(
-        store
-            .subject_entry_for_test(pressure_index, subject(43))
-            .is_none()
-    );
-    assert!(store.def_for_test(suffix_index).is_none());
-    assert!(
-        store
-            .subject_entry_for_test(suffix_index, subject(44))
-            .is_none()
-    );
-}
-
-#[test]
-fn typed_sync_subject_pressure_is_terminal_before_row_write() {
-    let store = fresh_store();
-    store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xA5))
-        .expect("create definition");
-    let pressure_vertex = subject_store::fill_until_table_pressure_for_test(INDEX_ID, 100_000);
-    let probe = upsert_op(pressure_vertex, 2, 0xA6);
-    let before = store.partition_head_for_test(INDEX_ID, 1);
-
-    let outcome = crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &[probe])
-        .expect("subject pressure is a terminal outcome");
-
-    assert_eq!(
-        outcome,
-        VectorSyncBatchOutcome::Terminal {
-            applied: 0,
-            failed_index: 0,
-            error: VectorSyncTerminalError::SubjectTablePressure,
-        }
-    );
-    assert!(
-        store
-            .subject_entry_for_test(INDEX_ID, subject(pressure_vertex))
-            .is_none()
-    );
-    assert_eq!(store.partition_head_for_test(INDEX_ID, 1), before);
 }
 
 #[test]
@@ -2233,89 +2104,6 @@ fn target_centroid_count(index_id: u32, version: u64, nlist: u32) -> u32 {
     })
 }
 
-/// Deterministic default-seed fixture generated by the LHM owner. Its final insert fills two full
-/// candidate buckets by moving one resident backward without changing geometry. The tests observe
-/// only the owner contract: unchanged geometry plus `RestartRequired`.
-struct BackwardRelocationFixture {
-    residents: Vec<u32>,
-    trigger: u32,
-}
-
-fn backward_relocation_fixture() -> BackwardRelocationFixture {
-    BackwardRelocationFixture {
-        residents: vec![
-            356, 81, 192, 367, 373, 393, 394, 450, 26, 123, 249, 390, 411, 413, 444, 476,
-        ],
-        trigger: 9,
-    }
-}
-
-fn seed_backward_relocation_residents(
-    store: &VectorCanisterStore,
-    fixture: &BackwardRelocationFixture,
-) {
-    for (ordinal, vertex_id) in fixture.residents.iter().copied().enumerate() {
-        store
-            .vector_upsert(
-                shard_canister(),
-                &upsert_vec(vertex_id, 1, (ordinal + 1) as f32),
-            )
-            .expect("seed backward-relocation resident");
-    }
-}
-
-fn subject_physical_buckets(scope: crate::records::SubjectScanScope) -> u64 {
-    subject_store::scan_start(scope)
-        .expect("start subject scan")
-        .lhm_cursor()
-        .expect("decode current subject cursor")
-        .physical_buckets()
-}
-
-#[test]
-fn subject_scan_legacy_88_byte_cursor_requires_restart() {
-    use crate::facade::stable::subject_store::{SubjectStoreError, SubjectStoreScanError};
-    use crate::records::{SubjectScanCursor, SubjectScanScope};
-
-    let _store = fresh_store();
-    let scope = SubjectScanScope::Sampling {
-        index_id: INDEX_ID,
-        target_index_version: TARGET_V,
-    };
-    let encoded = subject_store::scan_start(scope)
-        .expect("current cursor")
-        .lhm_cursor()
-        .expect("decode current cursor")
-        .encode();
-    let mut legacy = encoded[..88].to_vec();
-    legacy[3] = 1;
-    let legacy = SubjectScanCursor::from_lhm_bytes_for_test(scope, legacy);
-
-    assert!(matches!(
-        subject_store::scan_step(scope, legacy, 1),
-        Err(SubjectStoreError::Scan(
-            SubjectStoreScanError::RestartRequired
-        ))
-    ));
-
-    let unknown_length = SubjectScanCursor::from_lhm_bytes_for_test(scope, encoded[..87].to_vec());
-    assert!(matches!(
-        subject_store::scan_step(scope, unknown_length, 1),
-        Err(SubjectStoreError::Scan(
-            SubjectStoreScanError::InvalidCursor
-        ))
-    ));
-    let mut unknown_version = encoded[..88].to_vec();
-    unknown_version[3] = u8::MAX;
-    let unknown_version = SubjectScanCursor::from_lhm_bytes_for_test(scope, unknown_version);
-    assert!(matches!(
-        subject_store::scan_step(scope, unknown_version, 1),
-        Err(SubjectStoreError::Scan(
-            SubjectStoreScanError::InvalidCursor
-        ))
-    ));
-}
-
 #[test]
 fn rebuild_start_is_o1_and_enters_sampling() {
     let store = fresh_store();
@@ -2455,164 +2243,6 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
             Some(TARGET_V as u32)
         );
         assert_eq!(entry.shadow_slot, None);
-    }
-}
-
-#[test]
-fn rebuild_sampling_restart_resets_sample_budget_and_candidates() {
-    use crate::facade::stable::subject_store::{SubjectStoreError, SubjectStoreScanError};
-    use crate::records::{SubjectScanScope, VectorRebuildStateRecord};
-
-    let store = fresh_store();
-    let fixture = backward_relocation_fixture();
-    seed_backward_relocation_residents(&store, &fixture);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 17)
-        .expect("start");
-
-    let mut stale_cursor = None;
-    for _ in 0..1_000 {
-        store
-            .rebuild_step_with_budget(INDEX_ID, 1, STRIDE as u64)
-            .expect("sampling step");
-        if let VectorRebuildStateRecord::Sampling {
-            cursor: Some(cursor),
-            subjects_scanned: 1,
-            ref candidates,
-            ..
-        } = super::rebuild::rebuild_state_of(INDEX_ID)
-            && candidates.len() == 1
-        {
-            stale_cursor = Some(cursor);
-            break;
-        }
-    }
-    let stale_cursor = stale_cursor.expect("sampling persists a cursor after one candidate");
-
-    let scope = SubjectScanScope::Sampling {
-        index_id: INDEX_ID,
-        target_index_version: TARGET_V,
-    };
-    let before_buckets = subject_physical_buckets(scope);
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(fixture.trigger, 1, 17.0))
-        .expect("same-geometry backward relocation");
-    assert_eq!(
-        subject_physical_buckets(scope),
-        before_buckets,
-        "the cursor invalidation is not a split or reset"
-    );
-    assert!(matches!(
-        subject_store::scan_step(scope, stale_cursor.clone(), 1),
-        Err(SubjectStoreError::Scan(
-            SubjectStoreScanError::RestartRequired
-        ))
-    ));
-
-    store
-        .rebuild_step_with_budget(INDEX_ID, 1, STRIDE as u64)
-        .expect("sampling handles the backward-relocation restart");
-    match super::rebuild::rebuild_state_of(INDEX_ID) {
-        VectorRebuildStateRecord::Sampling {
-            subjects_scanned,
-            candidates,
-            ..
-        } => {
-            assert_eq!(subjects_scanned, 0, "restart clears prior scan accounting");
-            assert!(candidates.is_empty(), "restart clears prior candidates");
-        }
-        other => panic!("expected Sampling after bounded restart, got {other:?}"),
-    }
-    assert_eq!(
-        drive_into_building(&store, INDEX_ID).phase,
-        VectorRebuildPhase::Building,
-        "a restarted scan gets a fresh sample_limit budget and candidate pool"
-    );
-}
-
-#[test]
-fn rebuild_building_backward_relocation_restart_converges_without_duplicates() {
-    use crate::facade::stable::subject_store::{SubjectStoreError, SubjectStoreScanError};
-    use crate::records::{SubjectScanScope, VectorRebuildStateRecord};
-
-    let store = fresh_store();
-    let fixture = backward_relocation_fixture();
-    seed_backward_relocation_residents(&store, &fixture);
-    store
-        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 16)
-        .expect("start");
-    assert_eq!(
-        drive_into_building(&store, INDEX_ID).phase,
-        VectorRebuildPhase::Building
-    );
-
-    let stale_cursor = loop {
-        store
-            .rebuild_step_with_budget(INDEX_ID, 1, STRIDE as u64)
-            .expect("building step");
-        if let VectorRebuildStateRecord::Building {
-            cursor: Some(cursor),
-            subjects_processed,
-            ..
-        } = super::rebuild::rebuild_state_of(INDEX_ID)
-            && subjects_processed > 0
-        {
-            break cursor;
-        }
-    };
-    let scope = SubjectScanScope::Building {
-        index_id: INDEX_ID,
-        target_index_version: TARGET_V,
-    };
-    let before_buckets = subject_physical_buckets(scope);
-    store
-        .vector_upsert(shard_canister(), &upsert_vec(fixture.trigger, 1, 17.0))
-        .expect("same-geometry backward relocation during Building");
-    assert_eq!(
-        subject_physical_buckets(scope),
-        before_buckets,
-        "the cursor invalidation is not a split or reset"
-    );
-    assert!(matches!(
-        subject_store::scan_step(scope, stale_cursor, 1),
-        Err(SubjectStoreError::Scan(
-            SubjectStoreScanError::RestartRequired
-        ))
-    ));
-
-    assert_eq!(
-        drive_steps(&store, INDEX_ID).phase,
-        VectorRebuildPhase::ReadyToPublish
-    );
-    store
-        .admin_publish_vector_rebuild(router(), INDEX_ID)
-        .expect("publish after Building restart");
-    drive_cleanup(&store, INDEX_ID);
-
-    let expected: Vec<_> = fixture
-        .residents
-        .iter()
-        .copied()
-        .chain(std::iter::once(fixture.trigger))
-        .map(subject)
-        .collect();
-    let result = store
-        .vector_search_tuned(
-            &search_value(8.0, expected.len() as u32),
-            tuned(f32::INFINITY),
-        )
-        .expect("search after publish and cleanup");
-    assert_eq!(result.hits.len(), expected.len());
-    for expected_subject in expected {
-        assert_eq!(
-            result
-                .hits
-                .iter()
-                .filter(|hit| hit.subject == expected_subject)
-                .count(),
-            1,
-            "each subject is searchable exactly once"
-        );
     }
 }
 

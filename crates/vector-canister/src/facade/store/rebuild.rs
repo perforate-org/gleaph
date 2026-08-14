@@ -44,6 +44,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
     VectorSlabStatsStep, VectorSubject,
 };
+use ic_stable_linear_hash_map::SLOTS_PER_BUCKET;
 use ic_stable_structures::Storable;
 use ic_stable_vector_page_store::kernel::{l2_squared_f32, l2_squared_f32_early_exit};
 
@@ -274,20 +275,23 @@ fn is_subjects_done(cursor: &Option<SubjectScanCursor>) -> bool {
     cursor.as_ref().is_some_and(SubjectScanCursor::is_done)
 }
 
-/// Reads one physical subject-map slot, restarting once when a split/reset invalidates the
-/// durable cursor. A one-slot page is intentional: callers may stop after the returned entry
-/// without ever skipping an unprocessed entry when their own byte/work budget is reached. The
-/// result marks a restart so `Sampling` can discard accumulation tied to the old geometry.
+const BUILDING_SCAN_SLOT_BUDGET: u64 = 64;
+
+/// Reads a bounded physical subject-map page, restarting once when a split/reset invalidates the
+/// durable cursor. Callers that may stop in the middle of a page use a one-slot budget; Building
+/// derives a larger budget that cannot exceed its remaining subject/byte allowance. The result
+/// marks a restart so `Sampling` can discard accumulation tied to the old geometry.
 fn next_subject_page(
     scope: SubjectScanScope,
     cursor: Option<SubjectScanCursor>,
+    physical_slot_budget: u64,
 ) -> Result<Option<NextSubjectPage>, VectorCanisterError> {
     let cursor = match cursor {
         Some(cursor) if cursor.is_done() => return Ok(None),
         Some(cursor) => cursor,
         None => subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?,
     };
-    match subject_store::scan_step(scope, cursor, 1) {
+    match subject_store::scan_step(scope, cursor, physical_slot_budget) {
         Ok(page) => Ok(Some(NextSubjectPage {
             page,
             restarted: false,
@@ -297,7 +301,7 @@ fn next_subject_page(
         )) => {
             let fresh =
                 subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?;
-            subject_store::scan_step(scope, fresh, 1)
+            subject_store::scan_step(scope, fresh, physical_slot_budget)
                 .map(|page| {
                     Some(NextSubjectPage {
                         page,
@@ -649,8 +653,12 @@ impl VectorCanisterStore {
                 target_index_version,
             };
             let mut scan_cursor = cursor;
-            for _ in 0..max_subjects.max(1) {
-                let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
+            // The owner cursor budgets physical slots, while this phase budgets live subjects.
+            // Keep one-slot pages so a logical subject limit never skips the remainder of a page;
+            // a bucket block is the bounded translation between the two budgets.
+            let physical_step_limit = max_subjects.max(1).saturating_mul(SLOTS_PER_BUCKET);
+            for _ in 0..physical_step_limit {
+                let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
                     range_exhausted = true;
                     last_cursor = None;
                     break;
@@ -966,8 +974,19 @@ impl VectorCanisterStore {
                 target_index_version,
             };
             let mut scan_cursor = cursor;
+            let subject_budget = max_subjects.max(1);
+            let mut subjects_in_step = 0u32;
             for _ in 0..max_subjects.max(1) {
-                let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
+                let remaining_subjects = u64::from(subject_budget.saturating_sub(subjects_in_step));
+                let remaining_bytes = max_vector_bytes.saturating_sub(bytes_buffered);
+                let stride = u64::from(def.pad_stride_bytes).max(1);
+                let byte_budget = (remaining_bytes / stride).max(1);
+                let physical_slot_budget = remaining_subjects
+                    .min(byte_budget)
+                    .min(BUILDING_SCAN_SLOT_BUDGET);
+                let Some(next) =
+                    next_subject_page(scope, scan_cursor.clone(), physical_slot_budget)?
+                else {
                     range_exhausted = true;
                     last_cursor = None;
                     break;
@@ -991,6 +1010,7 @@ impl VectorCanisterStore {
                         continue;
                     };
                     bytes_buffered += def.pad_stride_bytes as u64;
+                    subjects_in_step += 1;
                     to_read.push((
                         PageKey::new(
                             index_id,
@@ -1003,7 +1023,10 @@ impl VectorCanisterStore {
                         active_slot,
                     ));
                 }
-                if range_exhausted || bytes_buffered >= max_vector_bytes {
+                if range_exhausted
+                    || subjects_in_step >= subject_budget
+                    || bytes_buffered >= max_vector_bytes
+                {
                     break;
                 }
             }
@@ -1454,7 +1477,7 @@ impl VectorCanisterStore {
         let mut scan_cursor = cursor;
         let mut exhausted = false;
         for _ in 0..max_work.max(1) {
-            let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
+            let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
                 exhausted = true;
                 break;
             };
@@ -1505,7 +1528,7 @@ impl VectorCanisterStore {
         let mut scan_cursor = cursor;
         let mut exhausted = false;
         for _ in 0..max_work.max(1) {
-            let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
+            let Some(next) = next_subject_page(scope, scan_cursor.clone(), 1)? else {
                 exhausted = true;
                 break;
             };

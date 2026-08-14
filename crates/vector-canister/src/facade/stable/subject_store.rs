@@ -9,10 +9,6 @@ use super::memory::{self, Memory};
 use crate::records::{
     FixedSubjectMapEntry, SubjectKey, SubjectScanCursor, SubjectScanCursorError, SubjectScanScope,
 };
-#[cfg(test)]
-use gleaph_graph_kernel::federation::ShardId;
-#[cfg(test)]
-use gleaph_graph_kernel::vector_index::VectorSubject;
 #[cfg(any(test, feature = "canbench"))]
 use ic_stable_linear_hash_map::ResetError;
 use ic_stable_linear_hash_map::{
@@ -44,7 +40,6 @@ pub(crate) enum SubjectStoreUnavailableReason {
 pub(crate) enum SubjectStoreMutationError {
     InProgress,
     EpochExhausted,
-    RelocationGenerationExhausted,
     InvalidKeyEncoding,
     InvalidValueEncoding,
     OutOfMemory,
@@ -287,9 +282,6 @@ fn mutation_error(error: MutationError) -> SubjectStoreError {
         MutationError::EpochExhausted => {
             SubjectStoreError::Mutation(SubjectStoreMutationError::EpochExhausted)
         }
-        MutationError::RelocationGenerationExhausted => {
-            SubjectStoreError::Mutation(SubjectStoreMutationError::RelocationGenerationExhausted)
-        }
         MutationError::InvalidKeyEncoding => {
             SubjectStoreError::Mutation(SubjectStoreMutationError::InvalidKeyEncoding)
         }
@@ -416,37 +408,4 @@ pub(crate) fn incarnation_for_test_or_bench() -> Result<u64, SubjectStoreError> 
 #[cfg(test)]
 pub(crate) fn is_empty_for_test() -> Result<bool, SubjectStoreError> {
     SUBJECT_STORE.with_borrow(|store| store.map()?.is_empty().map_err(mutation_error))
-}
-
-/// Fills the live MemoryId 7 owner with real LHM insertions until the next subject admission
-/// returns `TablePressure`. The failed key is not written and can be used as an exact terminal
-/// probe by the typed batch tests.
-#[cfg(test)]
-pub(crate) fn fill_until_table_pressure_for_test(index_id: u32, first_vertex_id: u32) -> u32 {
-    const MAX_ATTEMPTS: u32 = 50_000;
-    for offset in 0..MAX_ATTEMPTS {
-        let vertex_id = first_vertex_id
-            .checked_add(offset)
-            .expect("test subject pressure vertex range overflow");
-        let key = SubjectKey::new(
-            index_id,
-            VectorSubject::Vertex {
-                shard_id: ShardId::new(0),
-                vertex_id,
-            },
-        );
-        let entry = FixedSubjectMapEntry {
-            stamp: 1,
-            deleted: false,
-            slot: None,
-            shadow_slot: None,
-        };
-        match insert(key, entry) {
-            Ok(None) => {}
-            Ok(Some(_)) => panic!("test subject pressure key unexpectedly replaced"),
-            Err(SubjectStoreError::TablePressure) => return vertex_id,
-            Err(error) => panic!("test subject pressure fixture owner error: {error:?}"),
-        }
-    }
-    panic!("real LHM subject table pressure was not reached within {MAX_ATTEMPTS} inserts");
 }

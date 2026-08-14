@@ -1,11 +1,11 @@
-//! Experimental bucketized two-choice linear hash map in Internet Computer stable memory.
+//! Final pre-release V1 two-choice linear hash map in Internet Computer stable memory.
 //!
-//! V1 stores fixed-size keys and values in one linear bucket universe. RapidHash V3 exact mode,
-//! the two fixed domain constants, candidate order, and linear reduction are part of the version-1
-//! routing identity. One persisted hash seed plus domain separation derives two candidates. New
-//! entries use the less-loaded candidate; ties use the first. Every bucket has [`BUCKET_SIZE`]
-//! slots. An absent insert that
-//! would exceed 75% load performs at most one synchronous, bounded linear split.
+//! Fixed-width entries use RapidHash V3 with two persisted-seed domains and standard linear-hash
+//! split-pointer routing. Each logical bucket owns one primary page plus two inline overflow
+//! pages. Overflow is bounded and contributes persistent split debt; maintenance services debt in
+//! global split-pointer order with entry/byte budgets. The repository is pre-release: development
+//! stable bytes are intentionally destructive-replaced and no migration or compatibility reader
+//! exists.
 
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
 
@@ -18,10 +18,12 @@ mod memory;
 mod bench;
 
 pub use header::{ControlRegion, Header, InitError};
+pub use header::{OVERFLOW_PAGE_COUNT, PAGES_PER_BUCKET, PRIMARY_SLOTS, SLOTS_PER_BUCKET};
 pub use map::{
-    BUCKET_SIZE, MutationError, ResetError, ScanCursor, ScanError, ScanPage, ScrubCursor,
+    MaintenanceStep, MutationError, ResetError, ScanCursor, ScanError, ScanPage, ScrubCursor,
     ScrubError, ScrubSnapshot, ScrubStep, StableLinearHashMap,
 };
+pub const BUCKET_SIZE: u32 = PRIMARY_SLOTS;
 
 use ic_stable_structures::Storable;
 

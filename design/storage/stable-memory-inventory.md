@@ -480,13 +480,11 @@ PocketIC lifecycle evidence (2026-08-14 UTC):
 `unavailable_vector_owner_keeps_graph_delete_outbox_until_upgrade_rebind` passed (1 passed, 0
 failed), proving that an outer `IndexDefinitionStoreUnavailable` leaves the Graph delete outbox
 row pending until Vector exact-open/rebind and maintenance drain.
-Definition pressure remains proven at the owning Vector and Graph unit layers: a fixed-count
-sequential-key PocketIC fixture cannot deterministically force a specific definition collision
-after bounded one-hop relocation.
-`real_subject_table_pressure_is_terminal_and_graph_quarantines_exact_prefix_without_retry` provides
-the live real-pressure PocketIC proof for typed terminal-at-zero, exact Graph prefix removal, one
-durable quarantine, and no pending retry. The coordinated reset remains fixture-only and production
-reset ownership/rollback proof remain pending.
+The final V1 inline-overflow/split-debt map does not expose a bounded PocketIC pressure injector;
+fixed-count sequential-key fixtures are intentionally not treated as pressure evidence. Map-level
+overflow, split-debt, and pressure behavior is covered by the owning LHM unit suite. The
+coordinated reset remains fixture-only and production reset ownership/rollback proof remain
+pending.
 
 ---
 

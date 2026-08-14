@@ -60,18 +60,6 @@ fn e2e_unbind_definition_store() -> Result<(), String> {
     canister::e2e_unbind_definition_store()
 }
 
-/// Test-only bounded real-subject pressure fixture. Production builds expose no subject fill or
-/// reset surface.
-#[cfg(feature = "pocket-ic-e2e")]
-#[update(guard = "guard_router_canister")]
-fn e2e_fill_subject_store_toward_pressure(
-    index_id: u32,
-    first_vertex_id: u32,
-    max_attempts: u32,
-) -> Result<(u32, u32, Option<u32>), String> {
-    canister::e2e_fill_subject_store_toward_pressure(index_id, first_vertex_id, max_attempts)
-}
-
 #[update(guard = "guard_router_canister")]
 fn admin_attach_shard_canister(
     graph_id: GraphId,

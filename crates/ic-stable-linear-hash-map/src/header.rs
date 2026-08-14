@@ -8,12 +8,22 @@ pub(crate) const BUCKETS_OFFSET: u64 = HEADER_SIZE + CONTROL_BYTES;
 pub const MAGIC: [u8; 3] = *b"LHM";
 pub const LAYOUT_VERSION: u8 = 1;
 
+/// Final pre-release V1 format identity. Bytes without this fingerprint belong to another format
+/// and are rejected by `open`; there is intentionally no compatibility reader.
+pub const FORMAT_FINGERPRINT: [u8; 16] = *b"GLEAPH-LHM-V1\0\0\0";
+
+pub const PRIMARY_SLOTS: u32 = 8;
+pub const OVERFLOW_PAGE_COUNT: u32 = 2;
+pub const PAGES_PER_BUCKET: u32 = 1 + OVERFLOW_PAGE_COUNT;
+pub const SLOTS_PER_BUCKET: u32 = PRIMARY_SLOTS * PAGES_PER_BUCKET;
+
 const KEY_SIZE_OFFSET: usize = 4;
 const VALUE_SIZE_OFFSET: usize = 8;
 const KEY_STORAGE_SCHEMA_ID_OFFSET: usize = 16;
 const KEY_ROUTING_SCHEMA_ID_OFFSET: usize = 32;
 const VALUE_STORAGE_SCHEMA_ID_OFFSET: usize = 48;
 const HASH_SEED_OFFSET: usize = 64;
+const FORMAT_FINGERPRINT_OFFSET: usize = 72;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -29,6 +39,7 @@ pub struct Header {
     pub(crate) buckets_offset: u64,
     pub(crate) value_slab_offset: u64,
     pub(crate) bucket_page_stride: u64,
+    pub(crate) bucket_block_stride: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +48,8 @@ pub struct ControlRegion {
     pub physical_buckets: u64,
     pub mutation_epoch: u64,
     pub incarnation: u64,
-    pub backward_relocation_generation: u64,
+    pub split_debt: u64,
+    pub overflow_entries: u64,
     pub(crate) level: u8,
     pub(crate) split_cursor: u64,
     pub(crate) hash_seed: u64,
@@ -75,7 +87,7 @@ impl fmt::Display for InitError {
             Self::IncompatibleValueStorageSchema => {
                 write!(f, "incompatible stable value storage schema")
             }
-            Self::InvalidLayout => write!(f, "invalid linear hash map layout"),
+            Self::InvalidLayout => write!(f, "invalid final V1 linear hash map layout"),
             Self::RecoveryRequired => write!(f, "odd mutation epoch requires recovery"),
             Self::OutOfMemory => write!(f, "failed to allocate linear hash map memory"),
         }
@@ -95,7 +107,10 @@ pub(crate) fn read<M: Memory>(memory: &M) -> Result<Header, InitError> {
     if bytes[3] != LAYOUT_VERSION {
         return Err(InitError::IncompatibleVersion(bytes[3]));
     }
-    if bytes[12..16].iter().any(|byte| *byte != 0) || bytes[72..].iter().any(|byte| *byte != 0) {
+    if bytes[12..16].iter().any(|byte| *byte != 0)
+        || bytes[FORMAT_FINGERPRINT_OFFSET..FORMAT_FINGERPRINT_OFFSET + 16] != FORMAT_FINGERPRINT
+        || bytes[88..].iter().any(|byte| *byte != 0)
+    {
         return Err(InitError::InvalidLayout);
     }
 
@@ -103,15 +118,20 @@ pub(crate) fn read<M: Memory>(memory: &M) -> Result<Header, InitError> {
     let value_size = u32_at(&bytes, VALUE_SIZE_OFFSET);
     let value_slab_offset = 8u64
         .checked_add(
-            8u64.checked_mul(u64::from(key_size))
+            u64::from(PRIMARY_SLOTS)
+                .checked_mul(u64::from(key_size))
                 .ok_or(InitError::InvalidLayout)?,
         )
         .ok_or(InitError::InvalidLayout)?;
     let bucket_page_stride = value_slab_offset
         .checked_add(
-            8u64.checked_mul(u64::from(value_size))
+            u64::from(PRIMARY_SLOTS)
+                .checked_mul(u64::from(value_size))
                 .ok_or(InitError::InvalidLayout)?,
         )
+        .ok_or(InitError::InvalidLayout)?;
+    let bucket_block_stride = bucket_page_stride
+        .checked_mul(u64::from(PAGES_PER_BUCKET))
         .ok_or(InitError::InvalidLayout)?;
     Ok(Header {
         key_size,
@@ -120,12 +140,13 @@ pub(crate) fn read<M: Memory>(memory: &M) -> Result<Header, InitError> {
         key_routing_schema_id: id_at(&bytes, KEY_ROUTING_SCHEMA_ID_OFFSET),
         value_storage_schema_id: id_at(&bytes, VALUE_STORAGE_SCHEMA_ID_OFFSET),
         hash_seed: u64_at(&bytes, HASH_SEED_OFFSET),
-        bucket_size: 8,
+        bucket_size: PRIMARY_SLOTS,
         control_offset: CONTROL_OFFSET,
         control_bytes: CONTROL_BYTES,
         buckets_offset: BUCKETS_OFFSET,
         value_slab_offset,
         bucket_page_stride,
+        bucket_block_stride,
     })
 }
 
@@ -142,6 +163,8 @@ pub(crate) fn write<M: Memory>(memory: &M, header: Header) {
     bytes[VALUE_STORAGE_SCHEMA_ID_OFFSET..VALUE_STORAGE_SCHEMA_ID_OFFSET + 16]
         .copy_from_slice(&header.value_storage_schema_id);
     bytes[HASH_SEED_OFFSET..HASH_SEED_OFFSET + 8].copy_from_slice(&header.hash_seed.to_le_bytes());
+    bytes[FORMAT_FINGERPRINT_OFFSET..FORMAT_FINGERPRINT_OFFSET + 16]
+        .copy_from_slice(&FORMAT_FINGERPRINT);
 
     memory.write(3, &bytes[3..]);
     memory.write(0, &MAGIC);

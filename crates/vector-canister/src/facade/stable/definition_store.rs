@@ -38,7 +38,6 @@ pub(crate) enum DefinitionStoreUnavailableReason {
 pub(crate) enum DefinitionStoreMutationError {
     InProgress,
     EpochExhausted,
-    RelocationGenerationExhausted,
     InvalidKeyEncoding,
     InvalidValueEncoding,
     OutOfMemory,
@@ -280,9 +279,6 @@ fn mutation_error(error: MutationError) -> DefinitionStoreError {
         MutationError::EpochExhausted => {
             DefinitionStoreError::Mutation(DefinitionStoreMutationError::EpochExhausted)
         }
-        MutationError::RelocationGenerationExhausted => DefinitionStoreError::Mutation(
-            DefinitionStoreMutationError::RelocationGenerationExhausted,
-        ),
         MutationError::InvalidKeyEncoding => {
             DefinitionStoreError::Mutation(DefinitionStoreMutationError::InvalidKeyEncoding)
         }
@@ -379,31 +375,6 @@ pub(crate) fn incarnation_for_test_or_bench() -> Result<u64, DefinitionStoreErro
 #[cfg(test)]
 pub(crate) fn reopen_for_test() -> Result<(), DefinitionStoreError> {
     DEFINITION_STORE.with_borrow_mut(|store| store.reopen_for_test(memory::defs_memory()))
-}
-
-/// Fills the live owner through ordinary LHM insertions until the map itself returns terminal
-/// `TablePressure`. This is a test fixture, not fault injection: every successful row and the
-/// final rejected row use the production owner and its real `MutationError` mapping.
-#[cfg(test)]
-pub(crate) fn fill_until_table_pressure_for_test(
-    first_index_id: u32,
-    definition: VectorIndexDef,
-) -> u32 {
-    const MAX_ATTEMPTS: u32 = 50_000;
-
-    for offset in 0..MAX_ATTEMPTS {
-        let index_id = first_index_id
-            .checked_add(offset)
-            .expect("test pressure index range overflow");
-        match insert(index_id, definition) {
-            Ok(None) => {}
-            Ok(Some(_)) => panic!("test pressure index {index_id} unexpectedly replaced a def"),
-            Err(DefinitionStoreError::TablePressure) => return index_id,
-            Err(error) => panic!("test pressure fixture owner error: {error:?}"),
-        }
-    }
-
-    panic!("real LHM table pressure was not reached within {MAX_ATTEMPTS} definition inserts");
 }
 
 /// Simulates the post-upgrade pre-open state without fabricating an owner error. The backing

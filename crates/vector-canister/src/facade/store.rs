@@ -117,15 +117,6 @@ pub(crate) enum VectorSyncBatchOutcomeOperationError {
     Fatal(VectorCanisterError),
 }
 
-/// Result of one test-only missing-subject tombstone admission. This stays private to the
-/// PocketIC fixture path so production callers retain the typed batch contract.
-#[cfg(feature = "pocket-ic-e2e")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum E2eSubjectPressureStep {
-    Inserted,
-    TablePressure,
-}
-
 /// The legacy Vector wire surface has no availability or terminal-admission envelope.  Preserve its
 /// existing generic stable-write projection until the additive typed batch endpoint owns the richer
 /// definition-store result.

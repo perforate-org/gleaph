@@ -4,8 +4,6 @@
 //! (`VECTOR_SUBJECT_TO_ID`), never by comparing stored bytes — except the single
 //! same-version-different-payload conflict guard on a live row. See ADR 0031 Slice 2.
 
-#[cfg(feature = "pocket-ic-e2e")]
-use super::E2eSubjectPressureStep;
 use super::rebuild::rebuild_state_of;
 use super::search::{assign_partition, normalize_f32, read_centroids_at};
 use super::{
@@ -27,8 +25,6 @@ use crate::records::{
     VectorRebuildStateRecord,
 };
 use candid::Principal;
-#[cfg(feature = "pocket-ic-e2e")]
-use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
     VectorSubject, quantize_f32_to_i8,
@@ -465,57 +461,6 @@ impl VectorCanisterStore {
         subject_store::insert(key, entry)
             .map(|_| ())
             .map_err(super::legacy_subject_store_error)
-    }
-
-    /// Test-only missing-subject remove admission used to fill the real subject table in bounded
-    /// PocketIC updates. It mirrors the production missing-remove co-write: the subject tombstone
-    /// and its deleted-list cursor row are committed together, without allocating a vector slab row.
-    #[cfg(feature = "pocket-ic-e2e")]
-    pub(crate) fn e2e_insert_subject_tombstone_for_pressure(
-        &self,
-        index_id: u32,
-        vertex_id: u32,
-    ) -> Result<E2eSubjectPressureStep, String> {
-        let key = SubjectKey::new(
-            index_id,
-            VectorSubject::Vertex {
-                shard_id: ShardId::new(0),
-                vertex_id,
-            },
-        );
-        match subject_store::get(&key) {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                return Err(format!(
-                    "subject pressure fixture subject {vertex_id} already exists"
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "subject pressure fixture read error at {vertex_id}: {error:?}"
-                ));
-            }
-        }
-
-        let entry = FixedSubjectMapEntry {
-            stamp: u64::MAX,
-            deleted: true,
-            slot: None,
-            shadow_slot: None,
-        };
-        match subject_store::insert(key, entry) {
-            Ok(None) => {
-                mark_deleted(key, entry.stamp);
-                Ok(E2eSubjectPressureStep::Inserted)
-            }
-            Ok(Some(_)) => Err(format!(
-                "subject pressure fixture subject {vertex_id} unexpectedly replaced an entry"
-            )),
-            Err(SubjectStoreError::TablePressure) => Ok(E2eSubjectPressureStep::TablePressure),
-            Err(error) => Err(format!(
-                "subject pressure fixture insert error at {vertex_id}: {error:?}"
-            )),
-        }
     }
 
     /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
