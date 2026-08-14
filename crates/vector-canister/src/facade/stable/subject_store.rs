@@ -44,6 +44,7 @@ pub(crate) enum SubjectStoreUnavailableReason {
 pub(crate) enum SubjectStoreMutationError {
     InProgress,
     EpochExhausted,
+    RelocationGenerationExhausted,
     InvalidKeyEncoding,
     InvalidValueEncoding,
     OutOfMemory,
@@ -285,6 +286,9 @@ fn mutation_error(error: MutationError) -> SubjectStoreError {
         }
         MutationError::EpochExhausted => {
             SubjectStoreError::Mutation(SubjectStoreMutationError::EpochExhausted)
+        }
+        MutationError::RelocationGenerationExhausted => {
+            SubjectStoreError::Mutation(SubjectStoreMutationError::RelocationGenerationExhausted)
         }
         MutationError::InvalidKeyEncoding => {
             SubjectStoreError::Mutation(SubjectStoreMutationError::InvalidKeyEncoding)

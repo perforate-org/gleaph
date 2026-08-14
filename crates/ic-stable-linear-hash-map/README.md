@@ -10,7 +10,8 @@ one bounded, synchronous incremental split on an absent insert that would exceed
 - The exact 128-byte immutable header owns key/value widths, type-owned key storage/routing and value
   storage identities, and the immutable hash seed. Layout offsets and strides are derived.
 - The exact 64-byte `ControlRegion` owns mutable length, physical bucket count, odd/even mutation
-  epoch, and incarnation. Level and split cursor are derived from the physical bucket count.
+  epoch, incarnation, and the backward-relocation generation used by physical scans. Level and
+  split cursor are derived from the physical bucket count.
 - The table starts at linear-hashing level 3 with 8 physical buckets, `split_cursor = 0`, and
   `B = 8` slots per bucket. Each split appends exactly one bucket, advances the cursor, and promotes
   the level at round rollover. Each page stores its 8-byte occupancy header, all eight fixed-width
@@ -61,17 +62,20 @@ one bounded, synchronous incremental split on an absent insert that would exceed
   `read_unsafe` preserve the same observable result and read accounting. Large-value lookup keeps
   the occupancy-plus-key fallback.
 - `scan_start` and `scan_step` provide resumable physical enumeration without exposing an
-  `Iterator` or requiring a second key catalog. The versioned 88-byte cursor encodes the three
-  schema identities, immutable seed, incarnation, physical bucket bound, and next physical slot;
-  it deliberately omits epoch, length, and derived geometry. It therefore survives exact reopen or
-  canister upgrade under the same incarnation and bucket bound. Each positive-budget step reads at
-  most that many physical slots, returns entries in physical order with the next cursor and exact
-  examined-slot count, and reports EOF only through `exhausted`. Fixed-width payloads make the slot
-  budget an entry and encoded-output bound. The step reads an even mutation epoch before and after
-  collecting its local output. A same-geometry epoch change returns `InProgress`; reset or split
-  returns `RestartRequired`; neither returns the mixed output. Mutations between completed steps are
-  allowed, so exactly-once enumeration is guaranteed only while the map remains unchanged across
-  the lap.
+  `Iterator` or requiring a second key catalog. The version-2 96-byte cursor encodes the three
+  schema identities, immutable seed, incarnation, physical bucket bound, next physical slot, and
+  backward-relocation generation; it deliberately omits epoch, length, and derived geometry. It
+  therefore survives exact reopen or canister upgrade while those captured fields still match.
+  Exact 88-byte version-1 cursor bytes still decode, but are deliberately stale and `scan_step`
+  returns `RestartRequired`; unknown size/version combinations remain malformed. Each
+  positive-budget step reads at most that many physical slots, returns entries in physical order
+  with the next cursor and exact examined-slot count, and reports EOF only through `exhausted`.
+  Fixed-width payloads make the slot budget an entry and encoded-output bound. The step reads an
+  even mutation epoch before and after collecting its local output. A same-geometry epoch change
+  returns `InProgress`; reset, split, or a backward resident relocation returns
+  `RestartRequired`; neither returns mixed output. Direct insert, overwrite, remove, and forward
+  relocation do not invalidate a cursor between completed steps. Exactly-once enumeration is still
+  guaranteed only while the map remains unchanged across the lap.
 - `scrub_snapshot` and `scrub_step` provide an explicit bounded integrity scan. The opaque,
   handle-bound cursor captures the exact schema identities, immutable seed, even mutation epoch,
   incarnation, length, and physical-bucket bound; each positive-budget step scans only its primary
@@ -88,7 +92,8 @@ one bounded, synchronous incremental split on an absent insert that would exceed
   preflights the ownership fence, successor incarnation, epoch pair, and initial extent before the
   first write. Success preserves the immutable header, seed, schemas, payload bytes, and trailing
   pages; it clears only the eight initial occupancy headers and publishes empty initial geometry,
-  the successor incarnation, and the final even epoch together as the last control write.
+  the successor incarnation, backward-relocation generation zero, and the final even epoch together
+  as the last control write.
 
 An overwrite never splits. An absent insert below 75% load uses the existing two candidates; if both
 are full, it scans at most their sixteen residents in deterministic candidate/slot order and moves
@@ -98,8 +103,10 @@ entries under the post-split routes, and then places the requested entry. If tha
 pair is still full, it keeps the current geometry and retries current-geometry admission, including
 the same one-hop relocation, before returning `MutationError::TablePressure`. The one-hop planner
 prepares every resident decode, route, checked offset, source/destination page image, and epoch
-fence before the odd epoch or first write. True pressure neither grows nor changes bytes, control,
-geometry, or epoch. V1 exposes no ordinary iterator, recover an interrupted generic-memory write,
+fence before the odd epoch or first write. A resident move to a lower physical slot checked-advances
+the persisted backward-relocation generation; `u64::MAX` rejects before any stable write. Forward
+relocation leaves it unchanged. True pressure neither grows nor changes bytes, control, geometry,
+or epoch. V1 exposes no ordinary iterator, recover an interrupted generic-memory write,
 shrink, or migration compatibility. The bounded physical scan is not an integrity validator;
 corrupted bucket pages are diagnosed through bounded scrub. The SoA layout is fresh-memory-only: V1
 has no reader or migration path for earlier experimental bytes. Consumer integration remains

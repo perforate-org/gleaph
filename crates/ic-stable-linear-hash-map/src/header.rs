@@ -37,6 +37,7 @@ pub struct ControlRegion {
     pub physical_buckets: u64,
     pub mutation_epoch: u64,
     pub incarnation: u64,
+    pub backward_relocation_generation: u64,
     pub(crate) level: u8,
     pub(crate) split_cursor: u64,
     pub(crate) hash_seed: u64,

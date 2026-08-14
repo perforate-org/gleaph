@@ -6,6 +6,7 @@ const LEN_OFFSET: u64 = 0;
 const PHYSICAL_BUCKETS_OFFSET: u64 = 8;
 const MUTATION_EPOCH_OFFSET: u64 = 16;
 const INCARNATION_OFFSET: u64 = 24;
+const BACKWARD_RELOCATION_GENERATION_OFFSET: u64 = 32;
 
 pub(crate) const INITIAL_MUTATION_EPOCH: u64 = 0;
 pub(crate) const INITIAL_INCARNATION: u64 = 1;
@@ -30,7 +31,7 @@ pub(crate) fn read_for_open<M: Memory>(
 ) -> Result<ControlRegion, ()> {
     let mut bytes = [0; CONTROL_BYTES as usize];
     memory.read(offset, &mut bytes);
-    if bytes[32..].iter().any(|byte| *byte != 0) {
+    if bytes[40..].iter().any(|byte| *byte != 0) {
         return Err(());
     }
     Ok(decode(&bytes, hash_seed))
@@ -48,6 +49,7 @@ fn decode(bytes: &[u8; CONTROL_BYTES as usize], hash_seed: u64) -> ControlRegion
         physical_buckets,
         mutation_epoch: u64_at(bytes, MUTATION_EPOCH_OFFSET),
         incarnation: u64_at(bytes, INCARNATION_OFFSET),
+        backward_relocation_generation: u64_at(bytes, BACKWARD_RELOCATION_GENERATION_OFFSET),
         level,
         split_cursor: physical_buckets
             .saturating_sub(1u64.checked_shl(u32::from(level)).unwrap_or(0)),
@@ -97,6 +99,9 @@ pub(crate) fn write<M: Memory>(memory: &M, offset: u64, control: ControlRegion) 
         .copy_from_slice(&control.mutation_epoch.to_le_bytes());
     bytes[INCARNATION_OFFSET as usize..INCARNATION_OFFSET as usize + 8]
         .copy_from_slice(&control.incarnation.to_le_bytes());
+    bytes[BACKWARD_RELOCATION_GENERATION_OFFSET as usize
+        ..BACKWARD_RELOCATION_GENERATION_OFFSET as usize + 8]
+        .copy_from_slice(&control.backward_relocation_generation.to_le_bytes());
     memory.write(offset, &bytes);
 }
 
@@ -106,6 +111,18 @@ pub(crate) fn write_len<M: Memory>(memory: &M, offset: u64, len: u64) {
 
 pub(crate) fn write_mutation_epoch<M: Memory>(memory: &M, offset: u64, epoch: u64) {
     write_u64(memory, offset + MUTATION_EPOCH_OFFSET, epoch);
+}
+
+pub(crate) fn write_backward_relocation_generation<M: Memory>(
+    memory: &M,
+    offset: u64,
+    generation: u64,
+) {
+    write_u64(
+        memory,
+        offset + BACKWARD_RELOCATION_GENERATION_OFFSET,
+        generation,
+    );
 }
 
 pub(crate) fn publish_split<M: Memory>(

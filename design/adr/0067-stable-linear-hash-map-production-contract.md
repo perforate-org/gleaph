@@ -3,7 +3,7 @@
 Date: 2026-08-12
 Status: Partially Implemented
 Last revised: 2026-08-14
-Anchor timestamp: 2026-08-14 04:17:51 UTC +0000
+Anchor timestamp: 2026-08-14 08:35:42 UTC +0000
 
 > **Partially implemented contract.** This ADR is the sole exact V1 persisted-format contract for
 > ic-stable-linear-hash-map. The map and the Vector MemoryId 4 and 7 owner cutovers are implemented;
@@ -75,9 +75,9 @@ fresh-memory-only: strict create accepts only memory.size() == 0; any nonempty r
 exact V1 open validation or is rejected without writes. There is no alternate reader, conversion,
 fallback create, or reset-on-open-error behavior.
 
-All integers are unsigned little-endian. Every reserved byte is written and validated as zero.
-Giving a reserved byte meaning requires a future explicit format decision, not a reinterpretation
-under V1.
+All integers are unsigned little-endian. Every range still designated reserved is written and
+validated as zero. This ADR revision explicitly assigns the pre-release control bytes 160..168 to
+the backward-relocation generation; it is not an implicit reinterpretation by a reader.
 
 ### 2. Exact immutable 128-byte header
 
@@ -125,7 +125,11 @@ buckets begin at byte 192.
 | 136..144 | u64 | physical_buckets | at least 8; sole persisted geometry scalar |
 | 144..152 | u64 | mutation_epoch | committed states are even; writing state is odd |
 | 152..160 | u64 | incarnation | starts at 1; increments exactly once per reset |
-| 160..192 | [u8; 32] | reserved | all zero |
+| 160..168 | u64 | backward_relocation_generation | starts at 0; advances on each committed backward one-hop resident move |
+| 168..192 | [u8; 24] | reserved | all zero |
+
+Within the 64-byte control record these are offsets 32..40 for
+backward_relocation_generation and 40..64 for the remaining reserved-zero bytes.
 
 The header is immutable for its lineage. The control is the sole mutable map-level record. Seed,
 layout offsets, sizes, bucket slots, slab offsets, page stride, level, and split cursor are never
@@ -152,8 +156,9 @@ Strict create does not inspect or overwrite nonempty memory. On zero-sized memor
 schema and arithmetic, calculates the initial eight-bucket extent, and grows exactly once. Stable
 memory zero-fill establishes empty bucket pages, so strict create performs no bucket-clearing loop.
 It writes the initial control snapshot first and then writes the immutable header with magic as the
-final publication. Initial control is len = 0, physical_buckets = 8, mutation_epoch = 0, and
-incarnation = 1; the header receives the trusted creation seed.
+final publication. Initial control is len = 0, physical_buckets = 8, mutation_epoch = 0,
+incarnation = 1, and backward_relocation_generation = 0; the header receives the trusted creation
+seed.
 
 Canonical open-or-create invokes strict create only at memory.size() == 0. Otherwise it exact-opens;
 an open error is final and never falls back to create or reset.
@@ -174,7 +179,9 @@ reset.
 
 On success reset writes an odd mutation epoch first. It clears exactly the eight initial bucket
 occupancy headers and writes the new mutable initial state. It never scans or shrinks trailing
-pages, and publishes the final even control snapshot last.
+pages, resets backward_relocation_generation to zero under the successor incarnation, and publishes
+the final even control snapshot last. Resetting the generation is safe because the incarnation
+change independently invalidates every earlier cursor and makes generation zero a new lineage.
 
 This map-local reset operation is implemented in the V1 collection crate. Vector currently uses
 the coordinated definition-domain reset only in `cfg(test)` / `cfg(feature = "canbench")` fixtures:
@@ -211,6 +218,15 @@ epoch or any write. TablePressure therefore means neither the prospective split 
 current-geometry admission can place the key; it preserves bytes, control, and geometry exactly.
 It is a typed terminal admission outcome, not allocation failure or a generic retry.
 
+The map computes the source and destination physical slot for every planned one-hop resident move.
+Only a destination below the source advances backward_relocation_generation, regardless of load,
+capacity, or whether one-hop admission followed a rejected prospective split. Its successor uses
+checked addition during planning; u64::MAX returns
+`MutationError::RelocationGenerationExhausted` before any stable write. On apply, the odd epoch is
+published first, the successor generation is persisted before either resident page, and the final
+even epoch remains the last publication. Direct insert, overwrite, remove, split redistribution,
+and a forward one-hop resident move do not change the generation.
+
 ### 6. Explicit bounded scrub
 
 scrub_step is an administrative integrity operation, never initialization or public iteration. Its
@@ -236,13 +252,13 @@ and restarting from bucket zero is safe and required after reopening or upgradin
 
 ### 7. Serializable bounded physical scan
 
-`scan_start` returns a serializable cursor at physical slot zero. Its encoding is exactly 88 bytes;
-all integer fields are unsigned little-endian:
+`scan_start` returns a serializable cursor at physical slot zero. Its current encoding is exactly 96
+bytes; all integer fields are unsigned little-endian:
 
 | Bytes | Type | Meaning |
 |---:|---|---|
 | 0..3 | [u8; 3] | magic `LHS` |
-| 3 | u8 | cursor version, exactly 1 |
+| 3 | u8 | cursor version, exactly 2 |
 | 4..8 | [u8; 4] | reserved, all zero |
 | 8..24 | [u8; 16] | key_storage_schema_id |
 | 24..40 | [u8; 16] | key_routing_schema_id |
@@ -251,12 +267,16 @@ all integer fields are unsigned little-endian:
 | 64..72 | u64 | incarnation |
 | 72..80 | u64 | physical_buckets |
 | 80..88 | u64 | next_slot |
+| 88..96 | u64 | backward_relocation_generation |
 
 The cursor persists no mutation epoch, length, level, split cursor, or handle lineage. It survives
 serialization, exact reopen, and canister upgrade while schema identities, seed, incarnation, and
-physical_buckets still match. A zero incarnation, fewer than eight physical buckets, overflowing
-slot capacity, next_slot beyond capacity, bad magic/version/length, or nonzero reserved byte is
-malformed. A cursor with a different immutable schema or seed does not belong to the map.
+physical_buckets and backward_relocation_generation still match. An exact 88-byte version-1 cursor
+is structurally decoded as legacy/stale, and `scan_step` returns `RestartRequired` before reading a
+slot. No generation is inferred for it. Unknown size/version pairs, a zero incarnation, fewer than
+eight physical buckets, overflowing slot capacity, next_slot beyond capacity, bad magic, or nonzero
+reserved byte are malformed. A cursor with a different immutable schema or seed does not belong to
+the map.
 
 `scan_step(cursor, physical_slot_budget)` requires a positive budget and examines the half-open
 physical-slot range from next_slot through `min(next_slot + budget, physical_buckets * 8)`. It
@@ -268,12 +288,15 @@ and payload bytes without a second output parameter.
 
 Each step reads and requires one even mutation epoch before examining slots, collects output only
 locally, then reads the complete control record again. A changed or odd epoch with unchanged
-incarnation and geometry returns `InProgress`; a changed incarnation or physical_buckets returns
-`RestartRequired`. Both discard the local output. A malformed cursor or zero budget is rejected
-before slot reads. Mutations between successful steps are permitted when incarnation and geometry
-remain unchanged: the cursor does not fence an entire multi-call lap. Therefore an unchanged map is
-enumerated exactly once in physical order and a repeated cursor replays the same page, while a lap
-that overlaps mutations has no cross-step snapshot guarantee.
+incarnation, geometry, and backward-relocation generation returns `InProgress`; a changed
+incarnation, physical_buckets, or backward-relocation generation returns `RestartRequired`. Both
+discard the local output. A malformed cursor, exact legacy cursor, or zero budget is rejected before
+slot reads. Mutations between successful steps are permitted when the restart fields remain
+unchanged: direct insert, overwrite, remove, and forward one-hop relocation do not fence an entire
+multi-call lap. A committed backward one-hop relocation increments the generation exactly once and
+forces restart so an unvisited resident cannot move behind next_slot unnoticed. Therefore an
+unchanged map is enumerated exactly once in physical order and a repeated cursor replays the same
+page, while a lap that overlaps permitted mutations has no cross-step snapshot guarantee.
 
 Physical scan is not scrub. It does not validate routing reachability, duplicates, canonical
 re-encoding, or captured length, and it never reuses the handle-bound `ScrubCursor`. The crate
@@ -293,7 +316,8 @@ there is no reader, migration, or create-on-open-failure fallback.
 scans. Its durable `SubjectScanCursor` envelope contains a version, a consumer scope, and the exact
 serialized LHM `ScanCursor`; it validates the envelope before any physical slot read. Detach and
 rebuild Sampling, Building, Cleaning, and Aborting use positive-budget physical pages, explicit EOF,
-and restart after an LHM split or reset invalidates the saved cursor.
+and restart after an LHM split, reset, backward relocation, or legacy-cursor decode invalidates the
+saved cursor.
 
 Vector maps definition and subject admission pressure to distinct terminal errors and map
 availability failure to distinct outer errors. It preflights each definition, then admits a new
@@ -364,7 +388,10 @@ behavior; safe reuse of allocated split pages; stale/replayable bounded scrub be
 Vector MemoryId 4 and 7 owner plus IC/PocketIC rollback behavior. Physical scan must prove empty and sparse
 pages, exact bucket boundaries, explicit EOF independent of short results, unchanged-map
 exactly-once/replay behavior, mid-step mutation output discard, split/reset restart, serialized
-cursor reopen/upgrade continuation, malformed/zero-budget rejection, and exact slot/read bounds.
+cursor reopen/upgrade continuation, backward-relocation restart followed by complete fresh scan,
+forward/direct/overwrite/remove non-invalidation, exact legacy-v1 restart, generation persistence
+and reset behavior, overflow prewrite atomicity, malformed/zero-budget rejection, and exact
+slot/read bounds.
 
 ## Design documentation impact
 
@@ -376,7 +403,8 @@ synchronize the stable-memory inventory and applicable Vector design records.
 
 - **Encapsulation:** the map owns bytes; Vector owns its MemoryId 4 and 7 bindings and wire outcomes.
 - **Separation of concerns:** Router assigns identifiers, Graph owns its outbox, and neither owns map layout.
-- **Invariants:** one immutable header, one mutable control, checked derivation, epoch fencing, and incarnation fencing.
+- **Invariants:** one immutable header, one mutable control, checked derivation, epoch/incarnation
+  fencing, and LHM-owned backward-relocation generation fencing.
 - **Consistency:** returned errors are prewrite; post-write IC failure traps; terminal outcomes acknowledge one exact prefix.
 - **Fitness for purpose:** fixed-width trusted-key point operations gain bounded reopen, reset,
   physical scan, and scrub without speculative recovery state or a duplicate key catalog.

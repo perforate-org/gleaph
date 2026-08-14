@@ -5,7 +5,7 @@ Status: **Partially Implemented** (the authoritative V1 map, bounded physical sc
 quarantine wiring are implemented; coordinated reset is fixture-only and production reset remains
 pending)
 Last updated: 2026-08-14
-Anchor timestamp: 2026-08-14 04:17:51 UTC +0000
+Anchor timestamp: 2026-08-14 08:35:42 UTC +0000
 
 ## Authority and status
 
@@ -32,9 +32,10 @@ epoch; and scrub is bounded, handle-session integrity work rather than initializ
 iteration. Its opaque cursor is replayable only on its originating open handle; reopen or upgrade
 restarts at bucket zero. The separate physical-scan cursor is versioned and serializable across
 exact reopen/upgrade. It persists schema/seed/incarnation/physical-bucket identity plus the next
-slot, never an epoch or derived geometry. Each step has its own even-epoch pre/post fence, so a scan
-does not claim a multi-call snapshot. The map derives layout and geometry rather than persisting
-duplicate descriptors.
+slot and backward-relocation generation, never an epoch or derived geometry. Version 2 is 96 bytes;
+an exact 88-byte version-1 cursor is accepted only as stale and requires restart. Each step has its
+own even-epoch pre/post fence, so a scan does not claim a multi-call snapshot. The map derives layout
+and geometry rather than persisting duplicate descriptors.
 
 As of 2026-08-14 UTC, Vector owns MemoryIds 4 and 7 through separate private
 `Uninitialized -> Ready | Unavailable` state machines. Fresh install strictly creates each LHM with
@@ -49,7 +50,8 @@ subject freshness, deletion, and slot authority. Its durable `SubjectScanCursor`
 version, one consumer scope, and the exact LHM physical-scan cursor bytes. It rejects an invalid
 version, scope, length, or LHM cursor before a slot read. Detach plus rebuild Sampling, Building,
 Cleaning, and Aborting use positive-budget physical `scan_step` pages; a short entry list is not EOF,
-and split/reset restart invalidates the prior cursor.
+and split, reset, or a committed backward one-hop relocation invalidates the prior cursor. Direct
+insert, overwrite, remove, and forward one-hop relocation leave that generation unchanged.
 
 The owner keeps LHM `TablePressure` distinct from unavailable and other mutation failures. The
 legacy `vector_sync_batch` Candid method still returns its unchanged progress shape. The additive
@@ -103,8 +105,9 @@ reset endpoint exists.
 The live crate implements the authoritative V1 header/control layout, strict create, seed-free exact
 nonempty open, serializable bounded physical scan, and opaque handle-session bounded scrub. Physical
 scan returns entries, next cursor, examined slots, and explicit exhausted state under a per-call
-epoch fence; split/reset requires restart, while exact reopen/upgrade under the same incarnation and
-physical bucket bound can continue. Scrub validates
+epoch fence; split/reset requires restart, while exact reopen/upgrade under the same incarnation,
+physical bucket bound, and backward-relocation generation can continue. Exact legacy version-1
+cursor bytes decode as stale and require restart. Scrub validates
 reserved occupancy bits, canonical fixed encodings, routing reachability, duplicate candidate
 placement, and the captured length under an exact pre/post schema/seed/epoch/incarnation/geometry
 fence. Fixed-width canonical mismatches return typed scrub errors. User-defined decode, encode,
@@ -119,4 +122,6 @@ current threshold; a rejected prospective split then uses the same current-geome
 one-hop relocation as a below-threshold full pair. The planner scans no more than the two target
 buckets, moves only a resident to its other candidate, and prepares all resident routing/page bytes
 before the mutation epoch becomes odd. TablePressure remains the no-write result when neither path
-can admit the key.
+can admit the key. A one-hop move to a lower physical slot checked-increments the persisted
+backward-relocation generation before either resident page write while the epoch is odd; u64::MAX
+rejects before any write. Reset publishes generation zero under its successor incarnation.

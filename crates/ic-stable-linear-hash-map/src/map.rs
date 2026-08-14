@@ -19,8 +19,10 @@ const INITIAL_BUCKETS: u64 = 1 << INITIAL_LEVEL;
 const BUCKET_HEADER_BYTES: u64 = 8;
 const BULK_SCAN_MAX_BYTES: u64 = 1024;
 const SCAN_CURSOR_MAGIC: [u8; 3] = *b"LHS";
-const SCAN_CURSOR_VERSION: u8 = 1;
-const SCAN_CURSOR_BYTES: usize = 88;
+const LEGACY_SCAN_CURSOR_VERSION: u8 = 1;
+const LEGACY_SCAN_CURSOR_BYTES: usize = 88;
+const SCAN_CURSOR_VERSION: u8 = 2;
+const SCAN_CURSOR_BYTES: usize = 96;
 const DEFAULT_HASH_SEED: u64 = 0x243f_6a88_85a3_08d3;
 const HASH_DOMAIN_0: u64 = 0x1319_8a2e_0370_7344;
 const HASH_DOMAIN_1: u64 = 0xa409_3822_299f_31d0;
@@ -59,6 +61,8 @@ pub enum MutationError {
     InProgress,
     /// Publishing a new odd/even mutation-epoch pair would overflow `u64`.
     EpochExhausted,
+    /// A committed backward resident relocation could not advance its persisted generation.
+    RelocationGenerationExhausted,
     /// `K::to_bytes()` did not match the fixed key width recorded by the header.
     InvalidKeyEncoding,
     /// `V::to_bytes()` did not match the fixed value width recorded by the header.
@@ -109,6 +113,9 @@ impl fmt::Display for MutationError {
             Self::TablePressure => write!(f, "both candidate buckets are full"),
             Self::InProgress => write!(f, "a mutation is already in progress"),
             Self::EpochExhausted => write!(f, "mutation epoch is exhausted"),
+            Self::RelocationGenerationExhausted => {
+                write!(f, "backward relocation generation is exhausted")
+            }
             Self::InvalidKeyEncoding => {
                 write!(f, "key serialization did not match the fixed-width header")
             }
@@ -130,8 +137,8 @@ impl std::error::Error for MutationError {}
 ///
 /// Unlike [`ScrubCursor`], this cursor is intentionally portable across exact reopen and canister
 /// upgrade. It captures only immutable schema/seed identity, the reset incarnation, the physical
-/// bucket bound, and the next physical slot. It does not capture a mutation epoch or length, so a
-/// multi-call scan does not fence the map for an entire lap.
+/// bucket bound, backward-relocation generation, and the next physical slot. It does not capture a
+/// mutation epoch or length, so a multi-call scan does not fence the map for an entire lap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScanCursor {
     key_storage_schema_id: [u8; 16],
@@ -141,6 +148,8 @@ pub struct ScanCursor {
     incarnation: u64,
     physical_buckets: u64,
     next_slot: u64,
+    backward_relocation_generation: u64,
+    legacy: bool,
 }
 
 impl ScanCursor {
@@ -159,6 +168,7 @@ impl ScanCursor {
         bytes[64..72].copy_from_slice(&self.incarnation.to_le_bytes());
         bytes[72..80].copy_from_slice(&self.physical_buckets.to_le_bytes());
         bytes[80..88].copy_from_slice(&self.next_slot.to_le_bytes());
+        bytes[88..96].copy_from_slice(&self.backward_relocation_generation.to_le_bytes());
         bytes
     }
 
@@ -166,11 +176,13 @@ impl ScanCursor {
     ///
     /// Map identity and freshness are validated by [`StableLinearHashMap::scan_step`].
     pub fn decode(bytes: &[u8]) -> Result<Self, ScanError> {
-        if bytes.len() != SCAN_CURSOR_BYTES
-            || bytes[..3] != SCAN_CURSOR_MAGIC
-            || bytes[3] != SCAN_CURSOR_VERSION
-            || bytes[4..8].iter().any(|byte| *byte != 0)
-        {
+        let version = bytes.get(3).copied().ok_or(ScanError::InvalidCursor)?;
+        let legacy = match (bytes.len(), version) {
+            (SCAN_CURSOR_BYTES, SCAN_CURSOR_VERSION) => false,
+            (LEGACY_SCAN_CURSOR_BYTES, LEGACY_SCAN_CURSOR_VERSION) => true,
+            _ => return Err(ScanError::InvalidCursor),
+        };
+        if bytes[..3] != SCAN_CURSOR_MAGIC || bytes[4..8].iter().any(|byte| *byte != 0) {
             return Err(ScanError::InvalidCursor);
         }
         let cursor = Self {
@@ -187,6 +199,12 @@ impl ScanCursor {
             incarnation: scan_cursor_u64(bytes, 64),
             physical_buckets: scan_cursor_u64(bytes, 72),
             next_slot: scan_cursor_u64(bytes, 80),
+            backward_relocation_generation: if legacy {
+                0
+            } else {
+                scan_cursor_u64(bytes, 88)
+            },
+            legacy,
         };
         cursor.validate_structure()?;
         Ok(cursor)
@@ -279,7 +297,7 @@ pub enum ScanError {
     ZeroBudget,
     /// The cursor encoding, bounds, or immutable map identity is invalid.
     InvalidCursor,
-    /// Reset or split changed the cursor's incarnation or physical bucket bound.
+    /// Reset, split, backward relocation, or legacy decoding made the cursor stale.
     RestartRequired,
     /// The mutation epoch was odd or changed while this step was reading entries.
     InProgress,
@@ -293,7 +311,7 @@ impl fmt::Display for ScanError {
             Self::RestartRequired => {
                 write!(
                     f,
-                    "scan incarnation or geometry changed; restart from a fresh cursor"
+                    "scan lineage, geometry, or backward-relocation generation changed; restart from a fresh cursor"
                 )
             }
             Self::InProgress => write!(f, "a mutation overlapped this scan step"),
@@ -462,6 +480,7 @@ enum InsertPlan<V> {
         source_page: Vec<u8>,
         destination_bucket: u64,
         destination_page: Vec<u8>,
+        backward_relocation_generation: Option<u64>,
         len: u64,
     },
     SplitInsert {
@@ -545,6 +564,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
                 physical_buckets: INITIAL_BUCKETS,
                 mutation_epoch: control::INITIAL_MUTATION_EPOCH,
                 incarnation: control::INITIAL_INCARNATION,
+                backward_relocation_generation: 0,
                 level: INITIAL_LEVEL,
                 split_cursor: 0,
                 hash_seed,
@@ -660,7 +680,8 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     /// Starts a serializable physical-slot scan at slot zero.
     ///
     /// The returned cursor survives exact reopen and canister upgrade while the map's immutable
-    /// identity, incarnation, and physical bucket bound remain unchanged.
+    /// identity, incarnation, physical bucket bound, and backward-relocation generation remain
+    /// unchanged.
     pub fn scan_start(&self) -> Result<ScanCursor, ScanError> {
         let (_, control) = self.scan_control_before_step()?;
         Ok(ScanCursor {
@@ -671,6 +692,8 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             incarnation: control.incarnation,
             physical_buckets: control.physical_buckets,
             next_slot: 0,
+            backward_relocation_generation: control.backward_relocation_generation,
+            legacy: false,
         })
     }
 
@@ -679,8 +702,8 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
     /// Fixed-width keys and values make the slot budget an entry and encoded-byte bound as well:
     /// at most one entry and `key_size + value_size` payload bytes are read per examined slot.
     /// A short `entries` list does not mean EOF; only [`ScanPage::exhausted`] does. The mutation
-    /// epoch fences this call only. Mutations between successful calls are permitted while a split
-    /// or reset requires restarting from [`Self::scan_start`].
+    /// epoch fences this call only. Mutations between successful calls are permitted while a split,
+    /// reset, or backward resident relocation requires restarting from [`Self::scan_start`].
     pub fn scan_step(
         &self,
         cursor: ScanCursor,
@@ -690,6 +713,9 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             return Err(ScanError::ZeroBudget);
         }
         cursor.validate_structure()?;
+        if cursor.legacy {
+            return Err(ScanError::RestartRequired);
+        }
         if cursor.key_storage_schema_id != self.header.key_storage_schema_id
             || cursor.key_routing_schema_id != self.header.key_routing_schema_id
             || cursor.value_storage_schema_id != self.header.value_storage_schema_id
@@ -701,6 +727,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
         let (observed_epoch, before) = self.scan_control_before_step()?;
         if before.incarnation != cursor.incarnation
             || before.physical_buckets != cursor.physical_buckets
+            || before.backward_relocation_generation != cursor.backward_relocation_generation
         {
             return Err(ScanError::RestartRequired);
         }
@@ -723,6 +750,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
         .map_err(|()| ScanError::RestartRequired)?;
         if after.incarnation != cursor.incarnation
             || after.physical_buckets != cursor.physical_buckets
+            || after.backward_relocation_generation != cursor.backward_relocation_generation
         {
             return Err(ScanError::RestartRequired);
         }
@@ -809,6 +837,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
                 physical_buckets: INITIAL_BUCKETS,
                 mutation_epoch: completed_epoch,
                 incarnation: successor,
+                backward_relocation_generation: 0,
                 level: INITIAL_LEVEL,
                 split_cursor: 0,
                 hash_seed: self.header.hash_seed,
@@ -1019,12 +1048,30 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
                     destination_occupancy | (1 << destination_slot),
                 );
                 Self::write_page_entry(&mut source_page, self.header, source_slot, &key, &value);
+                let source_physical_slot = source_bucket
+                    .checked_mul(u64::from(BUCKET_SIZE))
+                    .and_then(|base| base.checked_add(u64::from(source_slot)))
+                    .ok_or(MutationError::CapacityOverflow)?;
+                let destination_physical_slot = destination_bucket
+                    .checked_mul(u64::from(BUCKET_SIZE))
+                    .and_then(|base| base.checked_add(u64::from(destination_slot)))
+                    .ok_or(MutationError::CapacityOverflow)?;
+                let backward_relocation_generation = (destination_physical_slot
+                    < source_physical_slot)
+                    .then(|| {
+                        control
+                            .backward_relocation_generation
+                            .checked_add(1)
+                            .ok_or(MutationError::RelocationGenerationExhausted)
+                    })
+                    .transpose()?;
                 return Ok(InsertPlan::OneHopInsert {
                     observed_epoch,
                     source_bucket,
                     source_page,
                     destination_bucket,
                     destination_page,
+                    backward_relocation_generation,
                     len,
                 });
             }
@@ -1290,9 +1337,17 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
                 source_page,
                 destination_bucket,
                 destination_page,
+                backward_relocation_generation,
                 len,
             } => {
                 let mutation = self.begin_mutation_at(observed_epoch)?;
+                if let Some(generation) = backward_relocation_generation {
+                    control::write_backward_relocation_generation(
+                        &self.memory,
+                        self.header.control_offset,
+                        generation,
+                    );
+                }
                 self.memory.write(
                     Self::bucket_base(self.header, destination_bucket),
                     &destination_page,
@@ -1557,6 +1612,7 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             physical_buckets: snapshot.physical_buckets,
             mutation_epoch: snapshot.mutation_epoch,
             incarnation: snapshot.incarnation,
+            backward_relocation_generation: 0,
             level,
             split_cursor: snapshot.physical_buckets - (1u64 << level),
             hash_seed: snapshot.hash_seed,
@@ -3255,6 +3311,38 @@ mod tests {
         seed_one_hop_fixture_at_geometry(map, INITIAL_LEVEL, 0, INITIAL_BUCKETS, None)
     }
 
+    struct DirectionalOneHopFixture {
+        memory: VectorMemory,
+        map: Map,
+        residents: Vec<(u64, u64)>,
+        target: u64,
+        moved: u64,
+        source: u64,
+        destination: u64,
+    }
+
+    fn directional_one_hop_fixture(backward: bool) -> DirectionalOneHopFixture {
+        for hash_seed in 1..=1_024 {
+            let memory = VectorMemory::default();
+            let map = Map::new_with_hash_seed(memory.clone(), hash_seed)
+                .expect("new directional relocation fixture");
+            let (residents, target, moved, destination) = seed_one_hop_fixture(&map);
+            let source = map.find(&moved).expect("movable resident source").0;
+            if (destination < source) == backward {
+                return DirectionalOneHopFixture {
+                    memory,
+                    map,
+                    residents,
+                    target,
+                    moved,
+                    source,
+                    destination,
+                };
+            }
+        }
+        panic!("bounded directional relocation fixture search");
+    }
+
     #[test]
     fn exact_layout_and_idle_control_are_persisted() {
         let memory = VectorMemory::default();
@@ -4408,6 +4496,166 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn backward_one_hop_restarts_stale_scan_and_fresh_scan_covers_every_resident() {
+        let fixture = directional_one_hop_fixture(true);
+        assert!(fixture.destination < fixture.source);
+        let mut stale = fixture.map.scan_start().expect("pre-relocation scan");
+        stale.next_slot = (fixture.destination + 1) * u64::from(BUCKET_SIZE);
+        assert!(stale.next_slot <= fixture.source * u64::from(BUCKET_SIZE));
+
+        let before = fixture
+            .map
+            .control_region()
+            .expect("pre-relocation control");
+        assert_eq!(fixture.map.insert(fixture.target, 90_011), Ok(None));
+        let after = fixture
+            .map
+            .control_region()
+            .expect("post-relocation control");
+        assert_eq!(
+            after.backward_relocation_generation,
+            before.backward_relocation_generation + 1
+        );
+        assert_eq!(
+            fixture.map.scan_step(stale, 1),
+            Err(ScanError::RestartRequired)
+        );
+
+        let mut expected = fixture.residents.clone();
+        expected.push((fixture.target, 90_011));
+        expected.sort_unstable();
+        let mut actual = Vec::new();
+        let mut cursor = fixture.map.scan_start().expect("fresh scan");
+        loop {
+            let page = fixture.map.scan_step(cursor, 7).expect("fresh page");
+            actual.extend_from_slice(page.entries());
+            cursor = page.next_cursor();
+            if page.exhausted() {
+                break;
+            }
+        }
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            fixture
+                .map
+                .find(&fixture.moved)
+                .expect("relocated resident")
+                .0,
+            fixture.destination
+        );
+    }
+
+    #[test]
+    fn forward_one_hop_direct_overwrite_and_remove_do_not_advance_generation() {
+        let fixture = directional_one_hop_fixture(false);
+        assert!(fixture.destination > fixture.source);
+        let before = fixture
+            .map
+            .control_region()
+            .expect("pre-forward control")
+            .backward_relocation_generation;
+        assert_eq!(fixture.map.insert(fixture.target, 90_021), Ok(None));
+        assert_eq!(
+            fixture
+                .map
+                .control_region()
+                .expect("post-forward control")
+                .backward_relocation_generation,
+            before
+        );
+
+        let direct = Map::new_with_hash_seed(VectorMemory::default(), 1_001)
+            .expect("direct-operation fixture");
+        assert_eq!(direct.insert(1, 10), Ok(None));
+        assert_eq!(direct.insert(1, 11), Ok(Some(10)));
+        assert_eq!(direct.remove(&1), Ok(Some(11)));
+        assert_eq!(
+            direct
+                .control_region()
+                .expect("post-direct control")
+                .backward_relocation_generation,
+            0
+        );
+    }
+
+    #[test]
+    fn backward_relocation_generation_reopens_legacy_cursor_restarts_and_reset_clears_it() {
+        let fixture = directional_one_hop_fixture(true);
+        assert_eq!(fixture.map.insert(fixture.target, 90_031), Ok(None));
+        let persisted = fixture
+            .map
+            .control_region()
+            .expect("post-backward control")
+            .backward_relocation_generation;
+        assert_eq!(persisted, 1);
+        let encoded = fixture.map.scan_start().expect("v2 scan start").encode();
+        drop(fixture.map);
+
+        let reopened = Map::open(fixture.memory).expect("reopen relocation generation");
+        assert_eq!(
+            reopened
+                .control_region()
+                .expect("reopened control")
+                .backward_relocation_generation,
+            persisted
+        );
+        let v2 = ScanCursor::decode(&encoded).expect("decode v2 cursor");
+        assert!(reopened.scan_step(v2, 1).is_ok());
+
+        let mut legacy = encoded[..LEGACY_SCAN_CURSOR_BYTES].to_vec();
+        legacy[3] = LEGACY_SCAN_CURSOR_VERSION;
+        let legacy = ScanCursor::decode(&legacy).expect("decode exact legacy v1 cursor");
+        assert_eq!(
+            reopened.scan_step(legacy, 1),
+            Err(ScanError::RestartRequired)
+        );
+
+        let incarnation = reopened
+            .control_region()
+            .expect("pre-reset control")
+            .incarnation;
+        reopened.reset(incarnation).expect("owner reset");
+        assert_eq!(
+            reopened
+                .control_region()
+                .expect("post-reset control")
+                .backward_relocation_generation,
+            0
+        );
+    }
+
+    #[test]
+    fn backward_relocation_generation_overflow_is_prewrite_and_reopenable() {
+        let fixture = directional_one_hop_fixture(true);
+        control::write_backward_relocation_generation(
+            &fixture.memory,
+            fixture.map.header.control_offset,
+            u64::MAX,
+        );
+        let before = stable_snapshot(&fixture.map, &fixture.memory);
+        assert_eq!(
+            fixture.map.insert(fixture.target, 90_041),
+            Err(MutationError::RelocationGenerationExhausted)
+        );
+        assert_eq!(stable_snapshot(&fixture.map, &fixture.memory), before);
+        assert_eq!(fixture.map.get(&fixture.target), Ok(None));
+        drop(fixture.map);
+
+        let reopened = Map::open(fixture.memory).expect("reopen overflow rejection");
+        assert_eq!(
+            reopened
+                .control_region()
+                .expect("reopened max generation")
+                .backward_relocation_generation,
+            u64::MAX
+        );
+        for (key, value) in fixture.residents {
+            assert_eq!(reopened.get(&key), Ok(Some(value)));
+        }
+    }
+
     fn assert_one_hop_uses_current_geometry(
         level: u8,
         split_cursor: u64,
@@ -5217,10 +5465,12 @@ mod tests {
 
     #[test]
     fn nonzero_control_reserved_bytes_fail_closed() {
-        let memory = VectorMemory::default();
-        let map = Map::new(memory.clone()).expect("new reserved fixture");
-        memory.write(map.header.control_offset + 32, &[1]);
-        assert!(matches!(Map::init(memory), Err(InitError::InvalidLayout)));
+        for reserved_offset in [40, 63] {
+            let memory = VectorMemory::default();
+            let map = Map::new(memory.clone()).expect("new reserved fixture");
+            memory.write(map.header.control_offset + reserved_offset, &[1]);
+            assert!(matches!(Map::init(memory), Err(InitError::InvalidLayout)));
+        }
     }
 
     #[test]
@@ -5697,6 +5947,24 @@ mod tests {
         bad_reserved[4] = 1;
         assert_eq!(
             ScanCursor::decode(&bad_reserved),
+            Err(ScanError::InvalidCursor)
+        );
+        let mut unknown_version = encoded;
+        unknown_version[3] = SCAN_CURSOR_VERSION + 1;
+        assert_eq!(
+            ScanCursor::decode(&unknown_version),
+            Err(ScanError::InvalidCursor)
+        );
+        let mut wrong_v1_size = encoded;
+        wrong_v1_size[3] = LEGACY_SCAN_CURSOR_VERSION;
+        assert_eq!(
+            ScanCursor::decode(&wrong_v1_size),
+            Err(ScanError::InvalidCursor)
+        );
+        let mut wrong_v2_size = encoded[..LEGACY_SCAN_CURSOR_BYTES].to_vec();
+        wrong_v2_size[3] = SCAN_CURSOR_VERSION;
+        assert_eq!(
+            ScanCursor::decode(&wrong_v2_size),
             Err(ScanError::InvalidCursor)
         );
 

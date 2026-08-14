@@ -38,6 +38,7 @@ pub(crate) enum DefinitionStoreUnavailableReason {
 pub(crate) enum DefinitionStoreMutationError {
     InProgress,
     EpochExhausted,
+    RelocationGenerationExhausted,
     InvalidKeyEncoding,
     InvalidValueEncoding,
     OutOfMemory,
@@ -279,6 +280,9 @@ fn mutation_error(error: MutationError) -> DefinitionStoreError {
         MutationError::EpochExhausted => {
             DefinitionStoreError::Mutation(DefinitionStoreMutationError::EpochExhausted)
         }
+        MutationError::RelocationGenerationExhausted => DefinitionStoreError::Mutation(
+            DefinitionStoreMutationError::RelocationGenerationExhausted,
+        ),
         MutationError::InvalidKeyEncoding => {
             DefinitionStoreError::Mutation(DefinitionStoreMutationError::InvalidKeyEncoding)
         }

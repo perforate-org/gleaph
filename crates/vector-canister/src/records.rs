@@ -722,6 +722,16 @@ impl SubjectScanCursor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_lhm_bytes_for_test(scope: SubjectScanScope, cursor: Vec<u8>) -> Self {
+        Self {
+            version: Self::VERSION,
+            scope,
+            cursor,
+            done: false,
+        }
+    }
+
     /// Durable marker used by teardown phases after the subject scan reaches EOF.
     pub fn done(scope: SubjectScanScope) -> Self {
         Self {
@@ -761,9 +771,10 @@ impl SubjectScanCursor {
         if self.done {
             return Ok(());
         }
-        if self.cursor.len() != ScanCursor::ENCODED_SIZE {
-            return Err(SubjectScanCursorError::Malformed);
-        }
+        // The LHM owns the versioned cursor byte contract, including legacy cursor restart
+        // semantics. Keep this envelope opaque so an older, structurally valid LHM cursor reaches
+        // `ScanCursor::decode` and can request a clean restart instead of being rejected here merely
+        // because the current encoded size changed.
         ScanCursor::decode(&self.cursor).map_err(SubjectScanCursorError::from)?;
         Ok(())
     }
