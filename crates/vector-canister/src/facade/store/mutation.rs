@@ -4,17 +4,21 @@
 //! (`VECTOR_SUBJECT_TO_ID`), never by comparing stored bytes — except the single
 //! same-version-different-payload conflict guard on a live row. See ADR 0031 Slice 2.
 
+#[cfg(feature = "pocket-ic-e2e")]
+use super::E2eSubjectPressureStep;
 use super::rebuild::rebuild_state_of;
 use super::search::{assign_partition, normalize_f32, read_centroids_at};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, INITIAL_INDEX_VERSION, VectorCanisterStore,
+    VectorSyncBatchOutcomeOperationError,
 };
 use crate::encoding::EncodingRecord;
 #[cfg(test)]
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
+use crate::facade::stable::definition_store::{self, DefinitionStoreError};
+use crate::facade::stable::subject_store::{self, SubjectStoreError};
 use crate::facade::stable::{
     IVF_CENTROID_META, PAGE_STORE, SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS,
-    VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
 #[cfg(test)]
 use crate::records::PartitionKey;
@@ -23,6 +27,8 @@ use crate::records::{
     VectorRebuildStateRecord,
 };
 use candid::Principal;
+#[cfg(feature = "pocket-ic-e2e")]
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
     VectorSubject, quantize_f32_to_i8,
@@ -214,14 +220,41 @@ impl VectorCanisterStore {
         dims: u16,
         metric: VectorMetric,
     ) -> Result<VectorIndexDef, VectorCanisterError> {
+        self.ensure_def_for_outcome(index_id, encoding, dims, metric)
+            .map_err(|error| match error {
+                VectorSyncBatchOutcomeOperationError::TablePressure
+                | VectorSyncBatchOutcomeOperationError::SubjectTablePressure
+                | VectorSyncBatchOutcomeOperationError::StoreUnavailable
+                | VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable => {
+                    super::legacy_definition_store_error(DefinitionStoreError::TablePressure)
+                }
+                VectorSyncBatchOutcomeOperationError::Fatal(error) => error,
+            })
+    }
+
+    /// Admits a lazy definition before the typed batch path writes any vector rows.
+    ///
+    /// Only an insertion-time `TablePressure` is terminal.  Read-side and other mutation failures
+    /// are deliberately availability failures: the outer outcome has no error payload with which
+    /// to acknowledge a possibly ambiguous operation.
+    fn ensure_def_for_outcome(
+        &self,
+        index_id: u32,
+        encoding: VectorEncoding,
+        dims: u16,
+        metric: VectorMetric,
+    ) -> Result<VectorIndexDef, VectorSyncBatchOutcomeOperationError> {
         let existing = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _get_scope = bench_scope("sync_def_get");
-            VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&index_id))
+            definition_store::get(index_id)
+                .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
         };
         if let Some(def) = existing {
             if def.metric != metric {
-                return Err(VectorCanisterError::MetricMismatch);
+                return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                    VectorCanisterError::MetricMismatch,
+                ));
             }
             return Ok(def);
         }
@@ -230,8 +263,9 @@ impl VectorCanisterStore {
         // The encoding record is the single source of width truth (ADR 0064 §8): it validates the
         // (encoding, dims, metric) combination and derives the stored stride before any def or row
         // is written. `dimension_mismatch` maps any invalid combination (wire-unchanged).
-        let record = EncodingRecord::from_parts(encoding, dims)
-            .map_err(|_| VectorCanisterError::DimensionMismatch)?;
+        let record = EncodingRecord::from_parts(encoding, dims).map_err(|_| {
+            VectorSyncBatchOutcomeOperationError::Fatal(VectorCanisterError::DimensionMismatch)
+        })?;
         let stride_bytes = record.stride_bytes;
         let pad_stride_bytes = record.pad_stride_bytes;
         let meta_stride_bytes = record.meta_stride();
@@ -241,7 +275,8 @@ impl VectorCanisterStore {
             pad_stride_bytes,
             meta_stride_bytes,
             run_capacity,
-        )?;
+        )
+        .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
         let def = VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
             encoding,
@@ -256,13 +291,89 @@ impl VectorCanisterStore {
             max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
             slots_per_page,
         };
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
-            defs.insert(index_id, def)
-                .map(|_| ())
-                .map_err(|_| VectorCanisterError::StableGrowFailed)
-        })?;
+        definition_store::insert(index_id, def)
+            .map(|_| ())
+            .map_err(|error| match error {
+                DefinitionStoreError::TablePressure => {
+                    VectorSyncBatchOutcomeOperationError::TablePressure
+                }
+                DefinitionStoreError::Unavailable(_) | DefinitionStoreError::Mutation(_) => {
+                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
+                }
+                #[cfg(any(test, feature = "canbench"))]
+                DefinitionStoreError::Reset(_) => {
+                    VectorSyncBatchOutcomeOperationError::StoreUnavailable
+                }
+            })?;
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(def)
+    }
+
+    /// Applies one operation for the additive typed batch endpoint.
+    ///
+    /// The definition admission happens after caller validation and before the legacy row path.  A
+    /// successful admission is visible to that legacy path as an existing definition, so this
+    /// method never maps CHM/page-store errors to `TablePressure`.
+    pub(crate) fn vector_sync_batch_outcome_apply_one(
+        &self,
+        caller: Principal,
+        op: &VectorEmbeddingSyncOp,
+    ) -> Result<(), VectorSyncBatchOutcomeOperationError> {
+        self.assert_caller_owns_subject(caller, op.subject.shard_id())
+            .map_err(VectorSyncBatchOutcomeOperationError::Fatal)?;
+
+        if op.remove {
+            // A remove has no lazy definition to create, but it must establish that the owner is
+            // readable before it can write the subject tombstone clock.
+            let active = definition_store::get(op.index_id)
+                .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?;
+            return self
+                .vector_remove_after_definition_admission(
+                    op,
+                    active.map(|def| def.active_index_version),
+                )
+                .map_err(VectorSyncBatchOutcomeOperationError::Fatal);
+        }
+
+        // Reject a malformed wire vector before the lazy definition insert. A public typed batch
+        // must never classify invalid bytes as an availability result or leave a definition behind
+        // in a host-side test seam; on the IC, later fatal errors still trap and roll back.
+        if op.bytes.len() != op.dims as usize * 4 {
+            return Err(VectorSyncBatchOutcomeOperationError::Fatal(
+                VectorCanisterError::ByteWidthMismatch,
+            ));
+        }
+        let def = self.ensure_def_for_outcome(op.index_id, op.encoding, op.dims, op.metric)?;
+        let key = SubjectKey::new(op.index_id, op.subject);
+        // Reserve a brand-new subject-map slot before any slab append. This makes an insertion-time
+        // LHM TablePressure an exact terminal result instead of an ambiguous post-row failure.
+        let reserved_new_subject = subject_store::get(&key)
+            .map_err(|error| match error {
+                SubjectStoreError::TablePressure => {
+                    VectorSyncBatchOutcomeOperationError::SubjectTablePressure
+                }
+                _ => VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable,
+            })?
+            .is_none();
+        if reserved_new_subject {
+            subject_store::insert(
+                key,
+                FixedSubjectMapEntry {
+                    stamp: op.mutation_id,
+                    deleted: true,
+                    slot: None,
+                    shadow_slot: None,
+                },
+            )
+            .map_err(|error| match error {
+                SubjectStoreError::TablePressure => {
+                    VectorSyncBatchOutcomeOperationError::SubjectTablePressure
+                }
+                _ => VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable,
+            })?;
+        }
+        self.vector_upsert_after_definition_admission(op, def, reserved_new_subject)
+            .map_err(VectorSyncBatchOutcomeOperationError::Fatal)
     }
 
     /// Appends a vector row into the given partition's page chain via the slab page store
@@ -351,11 +462,60 @@ impl VectorCanisterStore {
         }
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("sync_subject_insert");
-        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-            m.insert(key, entry)
-                .map(|_| ())
-                .map_err(|_| VectorCanisterError::StableGrowFailed)
-        })
+        subject_store::insert(key, entry)
+            .map(|_| ())
+            .map_err(super::legacy_subject_store_error)
+    }
+
+    /// Test-only missing-subject remove admission used to fill the real subject table in bounded
+    /// PocketIC updates. It mirrors the production missing-remove co-write: the subject tombstone
+    /// and its deleted-list cursor row are committed together, without allocating a vector slab row.
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub(crate) fn e2e_insert_subject_tombstone_for_pressure(
+        &self,
+        index_id: u32,
+        vertex_id: u32,
+    ) -> Result<E2eSubjectPressureStep, String> {
+        let key = SubjectKey::new(
+            index_id,
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id,
+            },
+        );
+        match subject_store::get(&key) {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Err(format!(
+                    "subject pressure fixture subject {vertex_id} already exists"
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "subject pressure fixture read error at {vertex_id}: {error:?}"
+                ));
+            }
+        }
+
+        let entry = FixedSubjectMapEntry {
+            stamp: u64::MAX,
+            deleted: true,
+            slot: None,
+            shadow_slot: None,
+        };
+        match subject_store::insert(key, entry) {
+            Ok(None) => {
+                mark_deleted(key, entry.stamp);
+                Ok(E2eSubjectPressureStep::Inserted)
+            }
+            Ok(Some(_)) => Err(format!(
+                "subject pressure fixture subject {vertex_id} unexpectedly replaced an entry"
+            )),
+            Err(SubjectStoreError::TablePressure) => Ok(E2eSubjectPressureStep::TablePressure),
+            Err(error) => Err(format!(
+                "subject pressure fixture insert error at {vertex_id}: {error:?}"
+            )),
+        }
     }
 
     /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
@@ -419,6 +579,16 @@ impl VectorCanisterStore {
             let _def_scope = bench_scope("sync_def_ensure");
             self.ensure_def_for_upsert(op.index_id, op.encoding, op.dims, op.metric)?
         };
+        self.vector_upsert_after_definition_admission(op, def, false)
+    }
+
+    /// Executes an upsert after the caller and definition admission checks completed.
+    fn vector_upsert_after_definition_admission(
+        &self,
+        op: &VectorEmbeddingSyncOp,
+        def: VectorIndexDef,
+        reserved_new_subject: bool,
+    ) -> Result<(), VectorCanisterError> {
         if op.encoding != def.encoding || op.dims != def.dims {
             return Err(VectorCanisterError::DimensionMismatch);
         }
@@ -434,14 +604,23 @@ impl VectorCanisterStore {
         let existing = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _get_scope = bench_scope("sync_subject_get");
-            VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key))
+            subject_store::get(&key).map_err(super::legacy_subject_store_error)?
         };
 
         let Some(entry) = existing else {
             // New subject: allocate a fresh VectorId and create a live slot.
-            self.insert_new_subject(op, &def, mode, key)?;
+            self.insert_new_subject(op, &def, mode, key, false)?;
             return Ok(());
         };
+
+        if reserved_new_subject
+            && entry.deleted
+            && entry.slot.is_none()
+            && entry.stamp == op.mutation_id
+        {
+            self.insert_new_subject(op, &def, mode, key, true)?;
+            return Ok(());
+        }
 
         match op.mutation_id.cmp(&entry.stamp) {
             std::cmp::Ordering::Less => Ok(()), // stale replay: no-op
@@ -568,6 +747,7 @@ impl VectorCanisterStore {
         def: &VectorIndexDef,
         mode: RebuildMutationMode,
         key: SubjectKey,
+        reserved: bool,
     ) -> Result<(), VectorCanisterError> {
         let active = def.active_index_version;
         let active_partition = self.active_partition(def, op.index_id, &op.bytes);
@@ -601,15 +781,20 @@ impl VectorCanisterStore {
             }
             RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
         };
-        if let Err(err) = self.insert_subject_entry(
-            key,
-            FixedSubjectMapEntry {
-                stamp: op.mutation_id,
-                deleted: false,
-                slot: Some(slot),
-                shadow_slot,
-            },
-        ) {
+        let entry = FixedSubjectMapEntry {
+            stamp: op.mutation_id,
+            deleted: false,
+            slot: Some(slot),
+            shadow_slot,
+        };
+        let insert_result = if reserved {
+            subject_store::insert(key, entry)
+                .map(|_| ())
+                .map_err(super::legacy_subject_store_error)
+        } else {
+            self.insert_subject_entry(key, entry)
+        };
+        if let Err(err) = insert_result {
             // The subject-map commit failed (OutOfMemory): tombstone the just-appended slots so the
             // residual is a tombstoned dead row (live counters restored) rather than a live-counted
             // orphan, mirroring the shadow-append failure handling above.
@@ -648,12 +833,21 @@ impl VectorCanisterStore {
             return Err(VectorCanisterError::MutationKindMismatch);
         }
         self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
-        let mode = rebuild_mutation_mode(op.index_id);
-        let active = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&op.index_id))
+        let active = definition_store::get(op.index_id)
+            .map_err(super::legacy_definition_store_error)?
             .map(|def| def.active_index_version);
+        self.vector_remove_after_definition_admission(op, active)
+    }
+
+    /// Executes a remove after caller and definition-store readability are established.
+    fn vector_remove_after_definition_admission(
+        &self,
+        op: &VectorEmbeddingSyncOp,
+        active: Option<u64>,
+    ) -> Result<(), VectorCanisterError> {
+        let mode = rebuild_mutation_mode(op.index_id);
         let key = SubjectKey::new(op.index_id, op.subject);
-        let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
+        let existing = subject_store::get(&key).map_err(super::legacy_subject_store_error)?;
 
         let Some(entry) = existing else {
             self.insert_subject_entry(
@@ -874,7 +1068,7 @@ impl VectorCanisterStore {
                 applied = applied.saturating_add(1);
                 continue;
             }
-            let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
+            let existing = subject_store::get(&key).map_err(super::legacy_subject_store_error)?;
             // Classify: fresh (no entry) or live Greater (newer stamp on a live subject) are batchable.
             let old_active_slot = match &existing {
                 None => None,
@@ -957,11 +1151,9 @@ impl VectorCanisterStore {
             max_page_bytes,
             slots_per_page,
         };
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
-            defs.insert(index_id, def)
-                .map(|_| ())
-                .map_err(|_| VectorCanisterError::StableGrowFailed)
-        })?;
+        definition_store::insert(index_id, def)
+            .map(|_| ())
+            .map_err(super::legacy_definition_store_error)?;
         IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
         Ok(())
     }
@@ -972,12 +1164,14 @@ impl VectorCanisterStore {
         index_id: u32,
         subject: gleaph_graph_kernel::vector_index::VectorSubject,
     ) -> Option<FixedSubjectMapEntry> {
-        VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(index_id, subject)))
+        subject_store::get(&SubjectKey::new(index_id, subject))
+            .ok()
+            .flatten()
     }
 
     #[cfg(test)]
     pub(crate) fn def_for_test(&self, index_id: u32) -> Option<VectorIndexDef> {
-        VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&index_id))
+        definition_store::get(index_id).ok().flatten()
     }
 
     #[cfg(test)]

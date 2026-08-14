@@ -503,6 +503,7 @@ impl VectorSlabStore {
     /// Resets the store to empty-initialized (canister (re)install). Clears the directory and
     /// rewinds the slab tail to the header; slab pages are not shrunk (stable memory cannot shrink),
     /// the bytes are reused on subsequent appends.
+    #[cfg(any(test, feature = "canbench"))]
     pub(crate) fn reset(&mut self) {
         self.meta.clear_new();
         grow_to_at_least(&self.slab, SLAB_HEADER_SIZE as u64)

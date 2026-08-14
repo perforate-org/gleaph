@@ -17,9 +17,9 @@
 //!
 //! Run from `crates/vector-canister`: `canbench` (see `canbench.yml`).
 
-use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+use crate::facade::stable::subject_store;
 use crate::facade::{SearchTuning, VectorCanisterStore};
-use crate::init::VectorCanisterInitArgs;
+use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
 use crate::records::SubjectKey;
 use canbench_rs::bench;
 use candid::{Encode, Principal};
@@ -95,8 +95,10 @@ fn setup_search_store(dims: u16, n: u32) -> VectorCanisterStore {
 fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorCanisterInitArgs {
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
             router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect("init");
     store
@@ -148,8 +150,10 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorC
 fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorCanisterInitArgs {
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
             router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect("init");
     store
@@ -354,14 +358,12 @@ fn bench_subject_map_get_d128() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("bench_subject_map_get_d128");
         let mut sum = 0u64;
-        VECTOR_SUBJECT_TO_ID.with_borrow(|m| {
-            for s in &subjects {
-                let key = SubjectKey::new(INDEX_ID, *s);
-                if let Some(e) = m.get(&key) {
-                    sum = sum.wrapping_add(e.stamp);
-                }
+        for s in &subjects {
+            let key = SubjectKey::new(INDEX_ID, *s);
+            if let Some(e) = subject_store::get(&key).expect("subject lookup") {
+                sum = sum.wrapping_add(e.stamp);
             }
-        });
+        }
         black_box(sum);
     })
 }
@@ -378,8 +380,10 @@ fn cvec(dims: u16, value: f32) -> Vec<f32> {
 fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorCanisterInitArgs {
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
             router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect("init");
     let centroids: Vec<Vec<f32>> = (0..nlist)
@@ -425,8 +429,10 @@ fn varied_raw(dims: u16, seed: u32) -> Vec<f32> {
 fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorCanisterInitArgs {
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
             router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect("init");
     let centroids: Vec<Vec<f32>> = (0..nlist)

@@ -16,11 +16,14 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
+use ic_stable_linear_hash_map::{ScanCursor, ScanError, StableHashKey, StableMapValue};
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 const SUBJECT_TAG_VERTEX: u8 = 0;
+const VECTOR_INDEX_DEF_BYTES: usize = 41;
+const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-01";
 
 /// `(index_id, subject)` key for `VECTOR_SUBJECT_TO_ID`.
 ///
@@ -86,6 +89,19 @@ impl Storable for SubjectKey {
         let mut raw = [0u8; 13];
         raw.copy_from_slice(bytes.as_ref());
         Self::from_array(raw)
+    }
+}
+
+impl StableHashKey for SubjectKey {
+    const KEY_STORAGE_ID: [u8; 16] = *b"GLEAPH-SUBKEY-01";
+    const KEY_ROUTING_ID: [u8; 16] = *b"GLEAPH-SUBRTE-01";
+    type HashBytes<'a>
+        = [u8; 13]
+    where
+        Self: 'a;
+
+    fn stable_hash_bytes(&self) -> Self::HashBytes<'_> {
+        self.to_array()
     }
 }
 
@@ -227,12 +243,12 @@ pub struct VectorIndexDef {
 
 impl Storable for VectorIndexDef {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 41,
+        max_size: VECTOR_INDEX_DEF_BYTES as u32,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut out = [0u8; 41];
+        let mut out = [0u8; VECTOR_INDEX_DEF_BYTES];
         out[0] = self.kind.as_u8();
         out[1] = self.encoding.as_u8();
         out[2..4].copy_from_slice(&self.dims.to_le_bytes());
@@ -254,7 +270,11 @@ impl Storable for VectorIndexDef {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let b = bytes.as_ref();
-        assert_eq!(b.len(), 41, "VectorIndexDef expects exactly 41 bytes");
+        assert_eq!(
+            b.len(),
+            VECTOR_INDEX_DEF_BYTES,
+            "VectorIndexDef expects exactly {VECTOR_INDEX_DEF_BYTES} bytes"
+        );
         Self {
             kind: VectorIndexKind::from_u8(b[0]).expect("valid kind"),
             encoding: VectorEncoding::from_u8(b[1]).expect("valid encoding"),
@@ -270,6 +290,10 @@ impl Storable for VectorIndexDef {
             slots_per_page: u32::from_le_bytes(b[37..41].try_into().expect("slots")),
         }
     }
+}
+
+impl StableMapValue for VectorIndexDef {
+    const VALUE_STORAGE_ID: [u8; 16] = VECTOR_INDEX_DEF_STORAGE_ID;
 }
 
 /// Centroid-only derived state (`IVF_CENTROID_META`). Degenerate in Slice 2 (`nlist=1`, not ready).
@@ -424,6 +448,10 @@ impl Storable for FixedSubjectMapEntry {
             shadow_slot,
         }
     }
+}
+
+impl StableMapValue for FixedSubjectMapEntry {
+    const VALUE_STORAGE_ID: [u8; 16] = *b"GLEAPH-SUBVAL-01";
 }
 
 /// Key for the deleted-subjects list (`VECTOR_DELETED_SUBJECTS`): `(shard, tombstone stamp, subject)`.
@@ -646,17 +674,116 @@ impl Storable for VectorRebuildStateRecord {
     }
 }
 
-/// Resume cursor for a bounded subject-map scan: the next slot to examine and the map capacity at
-/// the time the cursor was saved (to detect a concurrent resize that invalidates the slot).
+/// Consumer scope bound to a durable physical subject-map scan cursor.
+///
+/// A cursor from one consumer must never be replayed by another consumer: the scope is persisted
+/// beside the exact bytes emitted by the LHM owner and is checked before any physical slot read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum SubjectScanScope {
+    Detach {
+        shard_id: u32,
+    },
+    Sampling {
+        index_id: u32,
+        target_index_version: u64,
+    },
+    Building {
+        index_id: u32,
+        target_index_version: u64,
+    },
+    Cleaning {
+        index_id: u32,
+        target_index_version: u64,
+    },
+    Aborting {
+        index_id: u32,
+        target_index_version: u64,
+    },
+}
+
+/// Versioned, scope-bound envelope for the LHM's upgrade-stable [`ScanCursor`] bytes.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SubjectScanCursor {
-    pub slot: u64,
-    pub capacity: u64,
+    version: u8,
+    scope: SubjectScanScope,
+    cursor: Vec<u8>,
+    done: bool,
 }
 
 impl SubjectScanCursor {
-    pub const fn new(slot: u64, capacity: u64) -> Self {
-        Self { slot, capacity }
+    pub const VERSION: u8 = 1;
+
+    pub fn from_lhm(scope: SubjectScanScope, cursor: ScanCursor) -> Self {
+        Self {
+            version: Self::VERSION,
+            scope,
+            cursor: cursor.encode().to_vec(),
+            done: false,
+        }
+    }
+
+    /// Durable marker used by teardown phases after the subject scan reaches EOF.
+    pub fn done(scope: SubjectScanScope) -> Self {
+        Self {
+            version: Self::VERSION,
+            scope,
+            cursor: Vec::new(),
+            done: true,
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Encodes this envelope for the detach cursor's opaque `resume_key` field.
+    pub fn encode_bytes(&self) -> Vec<u8> {
+        Encode!(&self).expect("encode SubjectScanCursor")
+    }
+
+    /// Decodes and validates a detach cursor before the owner reads any slots.
+    pub fn decode_bytes(
+        expected_scope: SubjectScanScope,
+        bytes: &[u8],
+    ) -> Result<Self, SubjectScanCursorError> {
+        let cursor: Self = Decode!(bytes, Self).map_err(|_| SubjectScanCursorError::Malformed)?;
+        cursor.validate(expected_scope)?;
+        Ok(cursor)
+    }
+
+    pub fn validate(&self, expected_scope: SubjectScanScope) -> Result<(), SubjectScanCursorError> {
+        if self.version != Self::VERSION {
+            return Err(SubjectScanCursorError::VersionMismatch);
+        }
+        if self.scope != expected_scope {
+            return Err(SubjectScanCursorError::ScopeMismatch);
+        }
+        if self.done {
+            return Ok(());
+        }
+        if self.cursor.len() != ScanCursor::ENCODED_SIZE {
+            return Err(SubjectScanCursorError::Malformed);
+        }
+        ScanCursor::decode(&self.cursor).map_err(SubjectScanCursorError::from)?;
+        Ok(())
+    }
+
+    pub fn lhm_cursor(&self) -> Result<ScanCursor, SubjectScanCursorError> {
+        ScanCursor::decode(&self.cursor).map_err(SubjectScanCursorError::from)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubjectScanCursorError {
+    Malformed,
+    VersionMismatch,
+    ScopeMismatch,
+    Lhm(ScanError),
+}
+
+impl From<ScanError> for SubjectScanCursorError {
+    fn from(error: ScanError) -> Self {
+        Self::Lhm(error)
     }
 }
 
@@ -716,27 +843,60 @@ impl Storable for RawMaintenanceState {
 mod tests {
     use super::*;
     use gleaph_graph_kernel::federation::ShardId;
+    use ic_stable_linear_hash_map::StableLinearHashMap;
+    use ic_stable_structures::VectorMemory;
+
+    fn subject_scan_cursor_fixture(scope: SubjectScanScope) -> SubjectScanCursor {
+        let subjects = StableLinearHashMap::<SubjectKey, FixedSubjectMapEntry, VectorMemory>::new_with_hash_seed(
+            VectorMemory::default(),
+            0x5eed,
+        )
+        .expect("fixture subject map");
+        SubjectScanCursor::from_lhm(scope, subjects.scan_start().expect("fixture scan cursor"))
+    }
 
     #[test]
-    fn subject_key_roundtrip_and_order() {
+    fn subject_key_exact_bytes_schema_and_roundtrip() {
         let key = SubjectKey::new(
-            7,
+            0x0102_0304,
             VectorSubject::Vertex {
-                shard_id: ShardId::new(2),
-                vertex_id: 42,
+                shard_id: ShardId::new(0x0506_0708),
+                vertex_id: 0x090a_0b0c,
             },
         );
+        let expected = [
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+            SUBJECT_TAG_VERTEX,
+            0x05,
+            0x06,
+            0x07,
+            0x08,
+            0x09,
+            0x0a,
+            0x0b,
+            0x0c,
+        ];
         let bytes = key.to_bytes();
-        assert_eq!(SubjectKey::from_bytes(bytes), key);
-        // index-major ordering
-        let lower = SubjectKey::new(
-            6,
+
+        assert_eq!(SubjectKey::BOUND.max_size(), expected.len() as u32);
+        assert!(SubjectKey::BOUND.is_fixed_size());
+        assert_eq!(SubjectKey::KEY_STORAGE_ID, *b"GLEAPH-SUBKEY-01");
+        assert_eq!(SubjectKey::KEY_ROUTING_ID, *b"GLEAPH-SUBRTE-01");
+        assert_eq!(bytes.as_ref(), expected);
+        assert_eq!(key.stable_hash_bytes().as_ref(), expected);
+        assert_eq!(SubjectKey::from_bytes(Cow::Borrowed(&expected)), key);
+
+        let lower_index = SubjectKey::new(
+            key.index_id - 1,
             VectorSubject::Vertex {
-                shard_id: ShardId::new(9),
-                vertex_id: 9,
+                shard_id: ShardId::new(u32::MAX),
+                vertex_id: u32::MAX,
             },
         );
-        assert!(lower.to_array() < key.to_array());
+        assert!(lower_index.to_array() < key.to_array());
     }
 
     #[test]
@@ -748,45 +908,75 @@ mod tests {
     }
 
     #[test]
-    fn def_storable_roundtrip() {
+    fn def_storable_exact_asymmetric_bytes_and_roundtrip() {
         let def = VectorIndexDef {
             kind: VectorIndexKind::IvfFlat,
-            encoding: VectorEncoding::F32,
-            dims: 4,
-            metric: VectorMetric::L2Squared,
-            nlist: 1,
-            active_index_version: 1,
-            stride_bytes: 16,
-            pad_stride_bytes: 16,
-            meta_stride_bytes: 4,
-            run_capacity: 1,
-            max_page_bytes: 65536,
-            slots_per_page: 4000,
+            encoding: VectorEncoding::I8,
+            dims: 0x0201,
+            metric: VectorMetric::Cosine,
+            nlist: 0x0605_0403,
+            active_index_version: 0x0e0d_0c0b_0a09_0807,
+            stride_bytes: 0x1211_100f,
+            pad_stride_bytes: 0x1615_1413,
+            meta_stride_bytes: 0x1a19_1817,
+            run_capacity: 0x1e1d_1c1b,
+            max_page_bytes: 0x2221_201f,
+            slots_per_page: 0x2625_2423,
         };
-        assert_eq!(VectorIndexDef::from_bytes(def.to_bytes()), def);
+        let expected = [
+            0x00, 0x01, 0x01, 0x02, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+        ];
+
+        assert_eq!(
+            VectorIndexDef::BOUND.max_size(),
+            VECTOR_INDEX_DEF_BYTES as u32
+        );
+        assert!(VectorIndexDef::BOUND.is_fixed_size());
+        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-01");
+        assert_eq!(def.to_bytes().as_ref(), expected);
+        assert_eq!(VectorIndexDef::from_bytes(Cow::Borrowed(&expected)), def);
     }
 
     #[test]
-    fn fixed_subject_entry_storable_roundtrip() {
-        // 41-byte fixed layout: stamp(8) + flags(1) + slot(16) + shadow_slot(16).
-        assert_eq!(FixedSubjectMapEntry::BOUND.max_size(), 41);
+    fn fixed_subject_entry_exact_bytes_schema_and_roundtrip() {
+        let exact_entry = FixedSubjectMapEntry {
+            stamp: 0x0807_0605_0403_0201,
+            deleted: true,
+            slot: Some(SlotRef {
+                index_version: 0x0c0b_0a09,
+                partition_id: 0x100f_0e0d,
+                page_id: 0x1413_1211,
+                slot: 0x1817_1615,
+            }),
+            shadow_slot: Some(SlotRef {
+                index_version: 0x1c1b_1a19,
+                partition_id: 0x201f_1e1d,
+                page_id: 0x2423_2221,
+                slot: 0x2827_2625,
+            }),
+        };
+        let expected = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x07, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+        ];
+
+        assert_eq!(
+            FixedSubjectMapEntry::BOUND.max_size(),
+            expected.len() as u32
+        );
+        assert!(FixedSubjectMapEntry::BOUND.is_fixed_size());
+        assert_eq!(FixedSubjectMapEntry::VALUE_STORAGE_ID, *b"GLEAPH-SUBVAL-01");
+        assert_eq!(exact_entry.to_bytes().as_ref(), expected);
+        assert_eq!(
+            FixedSubjectMapEntry::from_bytes(Cow::Borrowed(&expected)),
+            exact_entry
+        );
+
+        // Flags, including zero-valued Some payloads, remain byte-identical to the existing layout.
         for entry in [
-            FixedSubjectMapEntry {
-                stamp: 4,
-                deleted: false,
-                slot: Some(SlotRef {
-                    index_version: 1,
-                    partition_id: 0,
-                    page_id: 0,
-                    slot: 2,
-                }),
-                shadow_slot: Some(SlotRef {
-                    index_version: 2,
-                    partition_id: 3,
-                    page_id: 0,
-                    slot: 2,
-                }),
-            },
             // A zero-valued SlotRef must round-trip as Some (the flags byte, not the payload,
             // records presence).
             FixedSubjectMapEntry {
@@ -855,7 +1045,10 @@ mod tests {
                 target_index_version: 2,
                 nlist: 8,
                 sample_limit: 1024,
-                cursor: Some(SubjectScanCursor::new(5, 64)),
+                cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Sampling {
+                    index_id: 1,
+                    target_index_version: 2,
+                })),
                 subjects_scanned: 17,
                 candidates: vec![vec![0u8; 16], vec![1u8; 16]],
             },
@@ -881,7 +1074,10 @@ mod tests {
                 old_version: 1,
                 old_nlist: 1,
                 target_index_version: 2,
-                subject_cursor: Some(SubjectScanCursor::new(3, 64)),
+                subject_cursor: Some(subject_scan_cursor_fixture(SubjectScanScope::Cleaning {
+                    index_id: 1,
+                    target_index_version: 2,
+                })),
                 page_cursor: None,
             },
             VectorRebuildStateRecord::Aborting {

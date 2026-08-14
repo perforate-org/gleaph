@@ -1,31 +1,60 @@
-use crate::StableHashKey;
 use crate::control;
-use crate::header::{self, CONTROL_BYTES, ControlRegion, HEADER_SIZE, Header, InitError};
+use crate::header::{
+    self, BUCKETS_OFFSET, CONTROL_BYTES, ControlRegion, HEADER_SIZE, Header, InitError,
+};
 use crate::memory::{GrowError, grow_to_bytes};
+use crate::{StableHashKey, StableMapValue};
 use ic_stable_structures::{Memory, Storable};
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_inline};
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::marker::PhantomData;
+#[cfg(not(target_family = "wasm"))]
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub const BUCKET_SIZE: u32 = 8;
 const INITIAL_LEVEL: u8 = 3;
 const INITIAL_BUCKETS: u64 = 1 << INITIAL_LEVEL;
 const BUCKET_HEADER_BYTES: u64 = 8;
 const BULK_SCAN_MAX_BYTES: u64 = 1024;
+const SCAN_CURSOR_MAGIC: [u8; 3] = *b"LHS";
+const SCAN_CURSOR_VERSION: u8 = 1;
+const SCAN_CURSOR_BYTES: usize = 88;
 const DEFAULT_HASH_SEED: u64 = 0x243f_6a88_85a3_08d3;
 const HASH_DOMAIN_0: u64 = 0x1319_8a2e_0370_7344;
 const HASH_DOMAIN_1: u64 = 0xa409_3822_299f_31d0;
 
-/// An operation could not run because a mutation is in progress, a seed change is invalid, or a
-/// new key has no free candidate slot.
+thread_local! {
+    static NEXT_SCRUB_LINEAGE: Cell<u64> = const { Cell::new(1) };
+}
+
+fn next_scrub_lineage() -> u64 {
+    NEXT_SCRUB_LINEAGE.with(|next| {
+        let lineage = next.get();
+        next.set(lineage.checked_add(1).expect("scrub lineage exhausted"));
+        lineage
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn scrub_callback<T>(callback: impl FnOnce() -> T, error: ScrubError) -> Result<T, ScrubError> {
+    catch_unwind(AssertUnwindSafe(callback)).map_err(|_| error)
+}
+
+#[cfg(target_family = "wasm")]
+fn scrub_callback<T>(callback: impl FnOnce() -> T, _error: ScrubError) -> Result<T, ScrubError> {
+    // The production wasm build uses panic-abort. A user callback panic traps and fails closed at
+    // the IC update boundary; it cannot be translated into a typed scrub result.
+    Ok(callback())
+}
+
+/// An operation could not run because a mutation is in progress or a new key has no free
+/// candidate slot.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MutationError {
     /// Both candidate buckets are full.
     TablePressure,
-    /// A hash-seed change was attempted after the first entry was inserted.
-    HashSeedNonEmpty,
     /// The persisted mutation epoch is odd or changed during a read.
     InProgress,
     /// Publishing a new odd/even mutation-epoch pair would overflow `u64`.
@@ -40,11 +69,44 @@ pub enum MutationError {
     CapacityOverflow,
 }
 
+/// A map-local destructive reset was rejected before changing stable bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResetError {
+    /// The caller's ownership fence is stale; the current incarnation is returned for diagnosis.
+    IncarnationMismatch { current: u64 },
+    /// The current incarnation cannot be advanced without wrapping.
+    IncarnationExhausted,
+    /// The persisted mutation epoch is odd or changed before reset acquired the write fence.
+    InProgress,
+    /// Publishing a new odd/even mutation-epoch pair would overflow `u64`.
+    EpochExhausted,
+    /// Initial-extent address arithmetic overflowed before the first write.
+    CapacityOverflow,
+}
+
+impl fmt::Display for ResetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IncarnationMismatch { current } => {
+                write!(
+                    f,
+                    "reset incarnation mismatch; current incarnation is {current}"
+                )
+            }
+            Self::IncarnationExhausted => write!(f, "reset incarnation is exhausted"),
+            Self::InProgress => write!(f, "a mutation is already in progress"),
+            Self::EpochExhausted => write!(f, "mutation epoch is exhausted"),
+            Self::CapacityOverflow => write!(f, "initial map extent arithmetic overflowed"),
+        }
+    }
+}
+
+impl std::error::Error for ResetError {}
+
 impl fmt::Display for MutationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TablePressure => write!(f, "both candidate buckets are full"),
-            Self::HashSeedNonEmpty => write!(f, "hash seed can only change while the map is empty"),
             Self::InProgress => write!(f, "a mutation is already in progress"),
             Self::EpochExhausted => write!(f, "mutation epoch is exhausted"),
             Self::InvalidKeyEncoding => {
@@ -64,15 +126,296 @@ impl fmt::Display for MutationError {
 
 impl std::error::Error for MutationError {}
 
+/// Serializable progress through the map's physical slot order.
+///
+/// Unlike [`ScrubCursor`], this cursor is intentionally portable across exact reopen and canister
+/// upgrade. It captures only immutable schema/seed identity, the reset incarnation, the physical
+/// bucket bound, and the next physical slot. It does not capture a mutation epoch or length, so a
+/// multi-call scan does not fence the map for an entire lap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanCursor {
+    key_storage_schema_id: [u8; 16],
+    key_routing_schema_id: [u8; 16],
+    value_storage_schema_id: [u8; 16],
+    hash_seed: u64,
+    incarnation: u64,
+    physical_buckets: u64,
+    next_slot: u64,
+}
+
+impl ScanCursor {
+    /// Exact byte length produced by [`Self::encode`].
+    pub const ENCODED_SIZE: usize = SCAN_CURSOR_BYTES;
+
+    /// Encodes the cursor into its versioned, upgrade-stable representation.
+    pub fn encode(&self) -> [u8; SCAN_CURSOR_BYTES] {
+        let mut bytes = [0; SCAN_CURSOR_BYTES];
+        bytes[..3].copy_from_slice(&SCAN_CURSOR_MAGIC);
+        bytes[3] = SCAN_CURSOR_VERSION;
+        bytes[8..24].copy_from_slice(&self.key_storage_schema_id);
+        bytes[24..40].copy_from_slice(&self.key_routing_schema_id);
+        bytes[40..56].copy_from_slice(&self.value_storage_schema_id);
+        bytes[56..64].copy_from_slice(&self.hash_seed.to_le_bytes());
+        bytes[64..72].copy_from_slice(&self.incarnation.to_le_bytes());
+        bytes[72..80].copy_from_slice(&self.physical_buckets.to_le_bytes());
+        bytes[80..88].copy_from_slice(&self.next_slot.to_le_bytes());
+        bytes
+    }
+
+    /// Decodes and structurally validates a serialized cursor.
+    ///
+    /// Map identity and freshness are validated by [`StableLinearHashMap::scan_step`].
+    pub fn decode(bytes: &[u8]) -> Result<Self, ScanError> {
+        if bytes.len() != SCAN_CURSOR_BYTES
+            || bytes[..3] != SCAN_CURSOR_MAGIC
+            || bytes[3] != SCAN_CURSOR_VERSION
+            || bytes[4..8].iter().any(|byte| *byte != 0)
+        {
+            return Err(ScanError::InvalidCursor);
+        }
+        let cursor = Self {
+            key_storage_schema_id: bytes[8..24]
+                .try_into()
+                .expect("fixed scan cursor key-storage identity"),
+            key_routing_schema_id: bytes[24..40]
+                .try_into()
+                .expect("fixed scan cursor key-routing identity"),
+            value_storage_schema_id: bytes[40..56]
+                .try_into()
+                .expect("fixed scan cursor value-storage identity"),
+            hash_seed: scan_cursor_u64(bytes, 56),
+            incarnation: scan_cursor_u64(bytes, 64),
+            physical_buckets: scan_cursor_u64(bytes, 72),
+            next_slot: scan_cursor_u64(bytes, 80),
+        };
+        cursor.validate_structure()?;
+        Ok(cursor)
+    }
+
+    pub fn key_storage_schema_id(&self) -> [u8; 16] {
+        self.key_storage_schema_id
+    }
+
+    pub fn key_routing_schema_id(&self) -> [u8; 16] {
+        self.key_routing_schema_id
+    }
+
+    pub fn value_storage_schema_id(&self) -> [u8; 16] {
+        self.value_storage_schema_id
+    }
+
+    pub fn hash_seed(&self) -> u64 {
+        self.hash_seed
+    }
+
+    pub fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
+    pub fn physical_buckets(&self) -> u64 {
+        self.physical_buckets
+    }
+
+    pub fn next_slot(&self) -> u64 {
+        self.next_slot
+    }
+
+    fn validate_structure(&self) -> Result<(), ScanError> {
+        let slots = self
+            .physical_buckets
+            .checked_mul(u64::from(BUCKET_SIZE))
+            .filter(|_| self.physical_buckets >= INITIAL_BUCKETS)
+            .ok_or(ScanError::InvalidCursor)?;
+        if self.incarnation == 0 || self.next_slot > slots {
+            return Err(ScanError::InvalidCursor);
+        }
+        Ok(())
+    }
+}
+
+fn scan_cursor_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("fixed scan cursor field"),
+    )
+}
+
+/// One bounded physical scan result.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScanPage<K, V> {
+    entries: Vec<(K, V)>,
+    next_cursor: ScanCursor,
+    examined_slots: u64,
+    exhausted: bool,
+}
+
+impl<K, V> ScanPage<K, V> {
+    pub fn entries(&self) -> &[(K, V)] {
+        &self.entries
+    }
+
+    pub fn into_entries(self) -> Vec<(K, V)> {
+        self.entries
+    }
+
+    pub fn next_cursor(&self) -> ScanCursor {
+        self.next_cursor
+    }
+
+    pub fn examined_slots(&self) -> u64 {
+        self.examined_slots
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
+/// A bounded physical scan could not produce one internally consistent step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanError {
+    /// The caller supplied no physical-slot work budget.
+    ZeroBudget,
+    /// The cursor encoding, bounds, or immutable map identity is invalid.
+    InvalidCursor,
+    /// Reset or split changed the cursor's incarnation or physical bucket bound.
+    RestartRequired,
+    /// The mutation epoch was odd or changed while this step was reading entries.
+    InProgress,
+}
+
+impl fmt::Display for ScanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroBudget => write!(f, "scan physical-slot budget must be positive"),
+            Self::InvalidCursor => write!(f, "scan cursor is malformed or belongs to another map"),
+            Self::RestartRequired => {
+                write!(
+                    f,
+                    "scan incarnation or geometry changed; restart from a fresh cursor"
+                )
+            }
+            Self::InProgress => write!(f, "a mutation overlapped this scan step"),
+        }
+    }
+}
+
+impl std::error::Error for ScanError {}
+
+/// The immutable map identity and mutable control fence captured for one scrub.
+///
+/// Fields are intentionally opaque: callers may retain and compare a snapshot, but only the map
+/// can construct one from validated persisted state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrubSnapshot {
+    key_storage_schema_id: [u8; 16],
+    key_routing_schema_id: [u8; 16],
+    value_storage_schema_id: [u8; 16],
+    hash_seed: u64,
+    mutation_epoch: u64,
+    incarnation: u64,
+    len: u64,
+    physical_buckets: u64,
+}
+
+/// Handle-session progress for a bounded integrity scrub.
+///
+/// The map never persists this cursor, and private fields plus its handle lineage make it an
+/// in-process capability rather than a wire or stable encoding. Passing the same cursor again on
+/// its originating handle repeats the same bounded work while its captured fence remains current.
+/// Reopen, upgrade, or construction of another alias starts a new scrub session at bucket zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrubCursor {
+    snapshot: ScrubSnapshot,
+    next_primary_bucket: u64,
+    occupied: u64,
+    lineage: u64,
+}
+
+impl ScrubCursor {
+    pub fn snapshot(&self) -> ScrubSnapshot {
+        self.snapshot
+    }
+
+    pub fn next_primary_bucket(&self) -> u64 {
+        self.next_primary_bucket
+    }
+
+    pub fn occupied(&self) -> u64 {
+        self.occupied
+    }
+}
+
+/// Result of one bounded scrub step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrubStep {
+    InProgress(ScrubCursor),
+    Complete(ScrubSnapshot),
+}
+
+/// A scrub cursor is stale, malformed, or found invalid persisted bucket data.
+///
+/// Invalid fixed-width bytes that decode and then re-encode noncanonically produce typed encoding
+/// errors. A panic in a user-defined `Storable` decode/encode, `StableHashKey` hash, or `Eq`
+/// implementation is caught only on unwind-enabled host targets. The wasm panic-abort build traps,
+/// so the IC update boundary fails closed instead of returning one of these typed errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrubError {
+    ZeroBudget,
+    InvalidCursor,
+    Stale,
+    InvalidOccupancy { bucket: u64 },
+    InvalidKeyEncoding { bucket: u64, slot: u32 },
+    InvalidValueEncoding { bucket: u64, slot: u32 },
+    UnreachablePlacement { bucket: u64, slot: u32 },
+    DuplicateKey { bucket: u64, slot: u32 },
+    LengthMismatch { expected: u64, actual: u64 },
+}
+
+impl fmt::Display for ScrubError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroBudget => write!(f, "scrub primary-bucket budget must be positive"),
+            Self::InvalidCursor => write!(f, "scrub cursor is outside its captured bounds"),
+            Self::Stale => write!(f, "scrub cursor fence is stale"),
+            Self::InvalidOccupancy { bucket } => {
+                write!(f, "bucket {bucket} has nonzero reserved occupancy bits")
+            }
+            Self::InvalidKeyEncoding { bucket, slot } => {
+                write!(f, "bucket {bucket} slot {slot} has invalid key encoding")
+            }
+            Self::InvalidValueEncoding { bucket, slot } => {
+                write!(f, "bucket {bucket} slot {slot} has invalid value encoding")
+            }
+            Self::UnreachablePlacement { bucket, slot } => {
+                write!(f, "bucket {bucket} slot {slot} is not reachable by its key")
+            }
+            Self::DuplicateKey { bucket, slot } => {
+                write!(
+                    f,
+                    "bucket {bucket} slot {slot} duplicates a candidate placement"
+                )
+            }
+            Self::LengthMismatch { expected, actual } => {
+                write!(f, "scrub counted {actual} entries, expected {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScrubError {}
+
 /// Fixed-geometry two-choice stable-memory map.
 ///
 /// Calls that read or mutate live state return [`MutationError::InProgress`] when another handle
 /// has an incomplete mutation. Mutation uses a persisted odd/even epoch so an alias cannot start
 /// nested mutation and a read detects a completed nested mutation before it returns a snapshot.
 /// An odd epoch on reopen fails closed until a future journal/recovery design owns recovery.
-pub struct StableLinearHashMap<K: StableHashKey, V: Storable, M: Memory> {
+pub struct StableLinearHashMap<K: StableHashKey, V: StableMapValue, M: Memory> {
     memory: M,
     header: Header,
+    scrub_lineage: u64,
     hash_secrets: RefCell<CachedHashSecrets>,
     _marker: PhantomData<(K, V)>,
 }
@@ -86,7 +429,7 @@ struct CachedHashSecrets {
 /// Owns one persisted odd mutation epoch until the caller explicitly publishes the next even
 /// epoch. Deliberately has no `Drop` cleanup: unwinding after a write must leave reopen fail-closed
 /// until a future journal owns recovery.
-struct MutationGuard<'a, K: StableHashKey, V: Storable, M: Memory> {
+struct MutationGuard<'a, K: StableHashKey, V: StableMapValue, M: Memory> {
     map: &'a StableLinearHashMap<K, V, M>,
     completed_epoch: u64,
 }
@@ -111,6 +454,14 @@ enum InsertPlan<V> {
         occupancy: u8,
         key: Vec<u8>,
         value: Vec<u8>,
+        len: u64,
+    },
+    OneHopInsert {
+        observed_epoch: u64,
+        source_bucket: u64,
+        source_page: Vec<u8>,
+        destination_bucket: u64,
+        destination_page: Vec<u8>,
         len: u64,
     },
     SplitInsert {
@@ -153,35 +504,7 @@ struct PreparedEntry {
     value: Vec<u8>,
 }
 
-#[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
-enum ExperimentalDirectInsertPlan<V> {
-    Overwrite {
-        observed_epoch: u64,
-        bucket: u64,
-        slot: u32,
-        value: Vec<u8>,
-        previous: V,
-    },
-    Direct {
-        observed_epoch: u64,
-        bucket: u64,
-        slot: u32,
-        occupancy: u8,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        len: u64,
-    },
-    OneHop {
-        observed_epoch: u64,
-        source_bucket: u64,
-        source_page: Vec<u8>,
-        destination_bucket: u64,
-        destination_page: Vec<u8>,
-        len: u64,
-    },
-}
-
-impl<K: StableHashKey, V: Storable, M: Memory> MutationGuard<'_, K, V, M> {
+impl<K: StableHashKey, V: StableMapValue, M: Memory> MutationGuard<'_, K, V, M> {
     fn finish(self) {
         control::write_mutation_epoch(
             &self.map.memory,
@@ -191,13 +514,20 @@ impl<K: StableHashKey, V: Storable, M: Memory> MutationGuard<'_, K, V, M> {
     }
 }
 
-impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
+impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M> {
     pub fn new(memory: M) -> Result<Self, InitError> {
         Self::new_with_hash_seed(memory, DEFAULT_HASH_SEED)
     }
 
     pub fn new_with_hash_seed(memory: M, hash_seed: u64) -> Result<Self, InitError> {
-        let header = Self::expected_header()?;
+        Self::create(memory, hash_seed)
+    }
+
+    pub fn create(memory: M, hash_seed: u64) -> Result<Self, InitError> {
+        if memory.size() != 0 {
+            return Err(InitError::NonEmptyMemory);
+        }
+        let header = Self::expected_header(hash_seed)?;
         let end = header
             .buckets_offset
             .checked_add(
@@ -207,34 +537,24 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             )
             .ok_or(InitError::InvalidLayout)?;
         grow_to_bytes(&memory, end).map_err(|_| InitError::OutOfMemory)?;
-        header::write(&memory, header);
         control::write(
             &memory,
             header.control_offset,
             ControlRegion {
                 len: 0,
+                physical_buckets: INITIAL_BUCKETS,
+                mutation_epoch: control::INITIAL_MUTATION_EPOCH,
+                incarnation: control::INITIAL_INCARNATION,
                 level: INITIAL_LEVEL,
                 split_cursor: 0,
-                physical_buckets: INITIAL_BUCKETS,
                 hash_seed,
-                split_state: 0,
-                split_work_cursor: 0,
-                journal_state: 0,
-                mutation_epoch: control::INITIAL_MUTATION_EPOCH,
-                hash_encoding_id: K::HASH_ENCODING_ID,
             },
         );
-        let journal_bytes = header.journal_bytes().ok_or(InitError::InvalidLayout)?;
-        memory.write(header.journal_offset, &vec![0; journal_bytes as usize]);
-        for bucket in 0..INITIAL_BUCKETS {
-            memory.write(
-                Self::bucket_base(header, bucket),
-                &[0; BUCKET_HEADER_BYTES as usize],
-            );
-        }
+        header::write(&memory, header);
         Ok(Self {
             memory,
             header,
+            scrub_lineage: next_scrub_lineage(),
             hash_secrets: RefCell::new(CachedHashSecrets {
                 seed: hash_seed,
                 secrets: hash_secrets(hash_seed),
@@ -244,26 +564,45 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     }
 
     pub fn init(memory: M) -> Result<Self, InitError> {
-        Self::init_with_hash_seed(memory, DEFAULT_HASH_SEED)
+        Self::open_or_create(memory)
     }
 
     pub fn init_with_hash_seed(memory: M, hash_seed: u64) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Self::new_with_hash_seed(memory, hash_seed);
         }
+        Self::open(memory)
+    }
+
+    pub fn open_or_create(memory: M) -> Result<Self, InitError> {
+        Self::init_with_hash_seed(memory, DEFAULT_HASH_SEED)
+    }
+
+    pub fn open(memory: M) -> Result<Self, InitError> {
+        let allocated = memory
+            .size()
+            .checked_mul(crate::memory::WASM_PAGE_SIZE)
+            .ok_or(InitError::InvalidLayout)?;
+        if allocated < HEADER_SIZE + CONTROL_BYTES {
+            return Err(InitError::InvalidLayout);
+        }
         let header = header::read(&memory)?;
-        let expected = Self::expected_header()?;
+        let expected = Self::expected_header(header.hash_seed)?;
         if header.key_size != expected.key_size || header.value_size != expected.value_size {
             return Err(InitError::IncompatibleElementType);
         }
-        if header != expected {
-            return Err(InitError::InvalidLayout);
+        if header.key_storage_schema_id != expected.key_storage_schema_id {
+            return Err(InitError::IncompatibleKeyStorageSchema);
         }
-        let control = control::read(&memory, header.control_offset);
+        if header.key_routing_schema_id != expected.key_routing_schema_id {
+            return Err(InitError::IncompatibleKeyRoutingSchema);
+        }
+        if header.value_storage_schema_id != expected.value_storage_schema_id {
+            return Err(InitError::IncompatibleValueStorageSchema);
+        }
+        let control = control::read_for_open(&memory, header.control_offset, header.hash_seed)
+            .map_err(|()| InitError::InvalidLayout)?;
         Self::validate_control(control)?;
-        if control.hash_encoding_id != K::HASH_ENCODING_ID {
-            return Err(InitError::IncompatibleHashEncoding);
-        }
         let end = header
             .buckets_offset
             .checked_add(
@@ -273,27 +612,16 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
                     .ok_or(InitError::InvalidLayout)?,
             )
             .ok_or(InitError::InvalidLayout)?;
-        let allocated = memory
-            .size()
-            .checked_mul(crate::memory::WASM_PAGE_SIZE)
-            .ok_or(InitError::InvalidLayout)?;
         if allocated < end {
             return Err(InitError::InvalidLayout);
         }
-        let mut occupied = 0u64;
-        for bucket in 0..control.physical_buckets {
-            occupied += Self::occupancy_byte(&memory, header, bucket).count_ones() as u64;
-        }
-        if occupied != control.len {
-            return Err(InitError::InvalidLayout);
-        }
-        Self::validate_bucket_headers(&memory, header, control.physical_buckets)?;
         Ok(Self {
             memory,
             header,
+            scrub_lineage: next_scrub_lineage(),
             hash_secrets: RefCell::new(CachedHashSecrets {
-                seed: control.hash_seed,
-                secrets: hash_secrets(control.hash_seed),
+                seed: header.hash_seed,
+                secrets: hash_secrets(header.hash_seed),
             }),
             _marker: PhantomData,
         })
@@ -304,7 +632,13 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     }
 
     pub fn control_region(&self) -> Result<ControlRegion, MutationError> {
-        self.read_consistent(|| control::read(&self.memory, self.header.control_offset))
+        self.read_consistent(|| {
+            control::read(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            )
+        })
     }
 
     pub fn into_memory(self) -> M {
@@ -320,34 +654,269 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     }
 
     pub fn hash_seed(&self) -> Result<u64, MutationError> {
-        self.read_consistent(|| control::read_hash_seed(&self.memory, self.header.control_offset))
+        self.read_consistent(|| self.header.hash_seed)
     }
 
-    pub fn set_hash_seed(&self, hash_seed: u64) -> Result<(), MutationError> {
-        let mutation = self.begin_mutation()?;
-        if control::read_len(&self.memory, self.header.control_offset) != 0 {
-            mutation.finish();
-            return Err(MutationError::HashSeedNonEmpty);
+    /// Starts a serializable physical-slot scan at slot zero.
+    ///
+    /// The returned cursor survives exact reopen and canister upgrade while the map's immutable
+    /// identity, incarnation, and physical bucket bound remain unchanged.
+    pub fn scan_start(&self) -> Result<ScanCursor, ScanError> {
+        let (_, control) = self.scan_control_before_step()?;
+        Ok(ScanCursor {
+            key_storage_schema_id: self.header.key_storage_schema_id,
+            key_routing_schema_id: self.header.key_routing_schema_id,
+            value_storage_schema_id: self.header.value_storage_schema_id,
+            hash_seed: self.header.hash_seed,
+            incarnation: control.incarnation,
+            physical_buckets: control.physical_buckets,
+            next_slot: 0,
+        })
+    }
+
+    /// Reads at most `physical_slot_budget` slots in deterministic physical order.
+    ///
+    /// Fixed-width keys and values make the slot budget an entry and encoded-byte bound as well:
+    /// at most one entry and `key_size + value_size` payload bytes are read per examined slot.
+    /// A short `entries` list does not mean EOF; only [`ScanPage::exhausted`] does. The mutation
+    /// epoch fences this call only. Mutations between successful calls are permitted while a split
+    /// or reset requires restarting from [`Self::scan_start`].
+    pub fn scan_step(
+        &self,
+        cursor: ScanCursor,
+        physical_slot_budget: u64,
+    ) -> Result<ScanPage<K, V>, ScanError> {
+        if physical_slot_budget == 0 {
+            return Err(ScanError::ZeroBudget);
         }
-        control::write_hash_seed(&self.memory, self.header.control_offset, hash_seed);
-        *self.hash_secrets.borrow_mut() = CachedHashSecrets {
-            seed: hash_seed,
-            secrets: hash_secrets(hash_seed),
-        };
-        mutation.finish();
-        Ok(())
+        cursor.validate_structure()?;
+        if cursor.key_storage_schema_id != self.header.key_storage_schema_id
+            || cursor.key_routing_schema_id != self.header.key_routing_schema_id
+            || cursor.value_storage_schema_id != self.header.value_storage_schema_id
+            || cursor.hash_seed != self.header.hash_seed
+        {
+            return Err(ScanError::InvalidCursor);
+        }
+
+        let (observed_epoch, before) = self.scan_control_before_step()?;
+        if before.incarnation != cursor.incarnation
+            || before.physical_buckets != cursor.physical_buckets
+        {
+            return Err(ScanError::RestartRequired);
+        }
+
+        let total_slots = cursor
+            .physical_buckets
+            .checked_mul(u64::from(BUCKET_SIZE))
+            .ok_or(ScanError::InvalidCursor)?;
+        let end = cursor
+            .next_slot
+            .saturating_add(physical_slot_budget)
+            .min(total_slots);
+        let entries = self.scan_physical_window(cursor.next_slot, end);
+
+        let after = control::read_for_open(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        )
+        .map_err(|()| ScanError::RestartRequired)?;
+        if after.incarnation != cursor.incarnation
+            || after.physical_buckets != cursor.physical_buckets
+        {
+            return Err(ScanError::RestartRequired);
+        }
+        if !after.mutation_epoch.is_multiple_of(2) || after.mutation_epoch != observed_epoch {
+            return Err(ScanError::InProgress);
+        }
+        Self::validate_control(after).map_err(|_| ScanError::RestartRequired)?;
+
+        let mut next_cursor = cursor;
+        next_cursor.next_slot = end;
+        Ok(ScanPage {
+            entries,
+            next_cursor,
+            examined_slots: end - cursor.next_slot,
+            exhausted: end == total_slots,
+        })
+    }
+
+    /// Destructively returns this map region to its initial empty geometry.
+    ///
+    /// This is an owner operation, not a general collection `clear`: the caller must present the
+    /// currently persisted incarnation. Every rejection occurs before the first stable write.
+    /// Payload bytes and pages beyond the initial eight buckets are deliberately left untouched.
+    pub fn reset(&self, expected_incarnation: u64) -> Result<u64, ResetError> {
+        let control = control::read(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
+        if !control.mutation_epoch.is_multiple_of(2) {
+            return Err(ResetError::InProgress);
+        }
+        if control.incarnation != expected_incarnation {
+            return Err(ResetError::IncarnationMismatch {
+                current: control.incarnation,
+            });
+        }
+
+        let successor = control
+            .incarnation
+            .checked_add(1)
+            .ok_or(ResetError::IncarnationExhausted)?;
+        let completed_epoch = control
+            .mutation_epoch
+            .checked_add(2)
+            .ok_or(ResetError::EpochExhausted)?;
+        let initial_end = self
+            .header
+            .buckets_offset
+            .checked_add(
+                INITIAL_BUCKETS
+                    .checked_mul(self.header.bucket_page_stride)
+                    .ok_or(ResetError::CapacityOverflow)?,
+            )
+            .ok_or(ResetError::CapacityOverflow)?;
+        let allocated = self
+            .memory
+            .size()
+            .checked_mul(crate::memory::WASM_PAGE_SIZE)
+            .ok_or(ResetError::CapacityOverflow)?;
+        if allocated < initial_end {
+            return Err(ResetError::CapacityOverflow);
+        }
+
+        let mutation =
+            self.begin_mutation_at(control.mutation_epoch)
+                .map_err(|error| match error {
+                    MutationError::InProgress => ResetError::InProgress,
+                    MutationError::EpochExhausted => ResetError::EpochExhausted,
+                    _ => unreachable!("reset acquisition returns only epoch errors"),
+                })?;
+        debug_assert_eq!(mutation.completed_epoch, completed_epoch);
+        for bucket in 0..INITIAL_BUCKETS {
+            self.memory.write(
+                Self::bucket_base(self.header, bucket),
+                &[0; BUCKET_HEADER_BYTES as usize],
+            );
+        }
+        control::write(
+            &self.memory,
+            self.header.control_offset,
+            ControlRegion {
+                len: 0,
+                physical_buckets: INITIAL_BUCKETS,
+                mutation_epoch: completed_epoch,
+                incarnation: successor,
+                level: INITIAL_LEVEL,
+                split_cursor: 0,
+                hash_seed: self.header.hash_seed,
+            },
+        );
+        Ok(successor)
+    }
+
+    /// Captures the exact immutable/control fence for an external bounded scrub cursor.
+    pub fn scrub_snapshot(&self) -> Result<ScrubCursor, ScrubError> {
+        let snapshot = self.current_scrub_snapshot()?;
+        Ok(ScrubCursor {
+            snapshot,
+            next_primary_bucket: 0,
+            occupied: 0,
+            lineage: self.scrub_lineage,
+        })
+    }
+
+    /// Validates at most `primary_bucket_budget` primary buckets against a captured fence.
+    ///
+    /// Candidate-bucket reads are bounded by the eight slots in each primary bucket. This method
+    /// writes no map bytes and returning the input cursor to this method repeats the same work. A
+    /// primary bucket performs one occupancy read and, per occupied slot, one key read, one value
+    /// read, and at most two candidate occupancy plus sixteen candidate-key reads.
+    /// A user-defined decode, encode, hash, or equality panic traps on wasm and is not a typed
+    /// `ScrubError`; retry begins from the last cursor owned by the caller.
+    pub fn scrub_step(
+        &self,
+        cursor: ScrubCursor,
+        primary_bucket_budget: u64,
+    ) -> Result<ScrubStep, ScrubError> {
+        if primary_bucket_budget == 0 {
+            return Err(ScrubError::ZeroBudget);
+        }
+        if cursor.lineage != self.scrub_lineage {
+            return Err(ScrubError::InvalidCursor);
+        }
+        let scanned_capacity = cursor
+            .next_primary_bucket
+            .checked_mul(u64::from(BUCKET_SIZE))
+            .ok_or(ScrubError::InvalidCursor)?;
+        if cursor.next_primary_bucket > cursor.snapshot.physical_buckets
+            || cursor.occupied > cursor.snapshot.len.min(scanned_capacity)
+            || (cursor.next_primary_bucket == 0 && cursor.occupied != 0)
+        {
+            return Err(ScrubError::InvalidCursor);
+        }
+        self.ensure_scrub_fence(cursor.snapshot)?;
+
+        let end = cursor
+            .next_primary_bucket
+            .saturating_add(primary_bucket_budget)
+            .min(cursor.snapshot.physical_buckets);
+        let scan = (|| {
+            let mut occupied = cursor.occupied;
+            let control = self.scrub_control(cursor.snapshot);
+            for bucket in cursor.next_primary_bucket..end {
+                occupied = occupied
+                    .checked_add(self.scrub_bucket(bucket, control)?)
+                    .ok_or(ScrubError::InvalidCursor)?;
+                if occupied > cursor.snapshot.len {
+                    return Err(ScrubError::LengthMismatch {
+                        expected: cursor.snapshot.len,
+                        actual: occupied,
+                    });
+                }
+            }
+            Ok(occupied)
+        })();
+        self.ensure_scrub_fence(cursor.snapshot)?;
+        let occupied = scan?;
+        if end == cursor.snapshot.physical_buckets {
+            if occupied != cursor.snapshot.len {
+                return Err(ScrubError::LengthMismatch {
+                    expected: cursor.snapshot.len,
+                    actual: occupied,
+                });
+            }
+            Ok(ScrubStep::Complete(cursor.snapshot))
+        } else {
+            Ok(ScrubStep::InProgress(ScrubCursor {
+                snapshot: cursor.snapshot,
+                next_primary_bucket: end,
+                occupied,
+                lineage: cursor.lineage,
+            }))
+        }
     }
 
     pub fn get(&self, key: &K) -> Result<Option<V>, MutationError> {
         self.read_consistent(|| {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             self.get_with_hot(key, hot)
         })
     }
 
     pub fn contains_key(&self, key: &K) -> Result<bool, MutationError> {
         self.read_consistent(|| {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             self.find_with_hot(key, hot).is_some()
         })
     }
@@ -371,228 +940,96 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         self.apply_insert(plan)
     }
 
-    /// Test/canbench-only experiment: direct admission may move one resident to its other
-    /// candidate. It never performs or participates in split planning.
-    #[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
-    pub(crate) fn experimental_insert_one_hop(
+    /// Plans a bounded relocation only after the requested key has no free current candidate slot.
+    ///
+    /// The scan order is the two target buckets in candidate order, then their occupied slots in
+    /// ascending order. Every decode, route calculation, page image, and output byte range is
+    /// resolved before [`Self::begin_mutation_at`] can publish an odd epoch.
+    fn plan_one_hop_insert(
         &self,
-        key: K,
-        value: V,
-    ) -> Result<Option<V>, MutationError> {
-        let key_bytes = Self::checked_storable_bytes(
-            &key,
-            self.header.key_size,
-            MutationError::InvalidKeyEncoding,
-        )?
-        .into_owned();
-        let hash_bytes = key.stable_hash_bytes().as_ref().to_vec();
-        let value_bytes = Self::checked_storable_bytes(
-            &value,
-            self.header.value_size,
-            MutationError::InvalidValueEncoding,
-        )?
-        .into_owned();
-        let plan =
-            self.plan_experimental_direct_insert(&key, &hash_bytes, key_bytes, value_bytes)?;
-        self.apply_experimental_direct_insert(plan)
-    }
-
-    #[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
-    fn plan_experimental_direct_insert(
-        &self,
-        key: &K,
-        hash_bytes: &[u8],
-        key_bytes: Vec<u8>,
-        value_bytes: Vec<u8>,
-    ) -> Result<ExperimentalDirectInsertPlan<V>, MutationError> {
-        let control = control::read(&self.memory, self.header.control_offset);
-        if !control.mutation_epoch.is_multiple_of(2) {
-            return Err(MutationError::InProgress);
-        }
-        let observed_epoch = control.mutation_epoch;
-        let planned = (|| {
-            let candidates =
-                self.candidate_buckets_for_bytes_at(hash_bytes, control.hash_seed, control);
-            let occupancies = self.candidate_occupancies(candidates);
-            if let Some((bucket, slot, _)) = self.find_in_candidates(candidates, occupancies, key) {
-                return Ok(ExperimentalDirectInsertPlan::Overwrite {
-                    observed_epoch,
-                    bucket,
-                    slot,
-                    value: value_bytes,
-                    previous: self.read_value(bucket, slot),
-                });
+        observed_epoch: u64,
+        control: ControlRegion,
+        candidates: (u64, u64),
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<InsertPlan<V>, MutationError> {
+        let len = control
+            .len
+            .checked_add(1)
+            .ok_or(MutationError::CapacityOverflow)?;
+        let page_bytes = usize::try_from(self.header.bucket_page_stride)
+            .map_err(|_| MutationError::CapacityOverflow)?;
+        let secrets = self.secrets_for_seed(self.header.hash_seed);
+        for (candidate_index, source_bucket) in [candidates.0, candidates.1].into_iter().enumerate()
+        {
+            if candidate_index == 1 && candidates.0 == candidates.1 {
+                continue;
             }
-            if control.len >= Self::split_threshold(control.physical_buckets)? {
-                return Err(MutationError::TablePressure);
-            }
-            let len = control
-                .len
-                .checked_add(1)
-                .ok_or(MutationError::CapacityOverflow)?;
-            if let Some((bucket, slot, occupancy)) = Self::choose_placement(candidates, occupancies)
-            {
-                return Ok(ExperimentalDirectInsertPlan::Direct {
+            let mut source_page = vec![0; page_bytes];
+            self.memory.read(
+                Self::bucket_base(self.header, source_bucket),
+                &mut source_page,
+            );
+            let occupancy = Self::page_occupancy(&source_page);
+            for source_slot in 0..BUCKET_SIZE {
+                if occupancy & (1 << source_slot) == 0 {
+                    continue;
+                }
+                let resident_key_offset = Self::page_key_offset(self.header, source_slot);
+                let resident_key_end = resident_key_offset
+                    .checked_add(self.header.key_size as usize)
+                    .ok_or(MutationError::CapacityOverflow)?;
+                let resident_value_offset = Self::page_value_offset(self.header, source_slot);
+                let resident_value_end = resident_value_offset
+                    .checked_add(self.header.value_size as usize)
+                    .ok_or(MutationError::CapacityOverflow)?;
+                let resident_key = K::from_bytes(Cow::Borrowed(
+                    &source_page[resident_key_offset..resident_key_end],
+                ));
+                let resident_hash = resident_key.stable_hash_bytes();
+                let resident_candidates = Self::candidate_buckets_from_bytes_at(
+                    resident_hash.as_ref(),
+                    &secrets,
+                    control.level,
+                    control.split_cursor,
+                );
+                let destination_bucket = match resident_candidates {
+                    (first, second) if first == source_bucket && second != source_bucket => second,
+                    (first, second) if second == source_bucket && first != source_bucket => first,
+                    _ => continue,
+                };
+                let mut destination_page = vec![0; page_bytes];
+                self.memory.read(
+                    Self::bucket_base(self.header, destination_bucket),
+                    &mut destination_page,
+                );
+                let destination_occupancy = Self::page_occupancy(&destination_page);
+                let Some(destination_slot) = Self::first_empty(destination_occupancy) else {
+                    continue;
+                };
+                Self::write_page_entry(
+                    &mut destination_page,
+                    self.header,
+                    destination_slot,
+                    &source_page[resident_key_offset..resident_key_end],
+                    &source_page[resident_value_offset..resident_value_end],
+                );
+                Self::set_page_occupancy(
+                    &mut destination_page,
+                    destination_occupancy | (1 << destination_slot),
+                );
+                Self::write_page_entry(&mut source_page, self.header, source_slot, &key, &value);
+                return Ok(InsertPlan::OneHopInsert {
                     observed_epoch,
-                    bucket,
-                    slot,
-                    occupancy,
-                    key: key_bytes,
-                    value: value_bytes,
+                    source_bucket,
+                    source_page,
+                    destination_bucket,
+                    destination_page,
                     len,
                 });
             }
-
-            let page_bytes = usize::try_from(self.header.bucket_page_stride)
-                .map_err(|_| MutationError::CapacityOverflow)?;
-            let secrets = self.secrets_for_seed(control.hash_seed);
-            for (candidate_index, source_bucket) in
-                [candidates.0, candidates.1].into_iter().enumerate()
-            {
-                if candidate_index == 1 && candidates.0 == candidates.1 {
-                    continue;
-                }
-                let mut source_page = vec![0; page_bytes];
-                self.memory.read(
-                    Self::bucket_base(self.header, source_bucket),
-                    &mut source_page,
-                );
-                let occupancy = Self::page_occupancy(&source_page);
-                for source_slot in 0..BUCKET_SIZE {
-                    if occupancy & (1 << source_slot) == 0 {
-                        continue;
-                    }
-                    let resident_key_offset = Self::page_key_offset(self.header, source_slot);
-                    let resident_key_end = resident_key_offset
-                        .checked_add(self.header.key_size as usize)
-                        .ok_or(MutationError::CapacityOverflow)?;
-                    let resident_key = K::from_bytes(Cow::Borrowed(
-                        &source_page[resident_key_offset..resident_key_end],
-                    ));
-                    let resident_hash = resident_key.stable_hash_bytes();
-                    let resident_candidates = Self::candidate_buckets_from_bytes_at(
-                        resident_hash.as_ref(),
-                        &secrets,
-                        control.level,
-                        control.split_cursor,
-                    );
-                    let destination_bucket = match resident_candidates {
-                        (first, second) if first == source_bucket && second != source_bucket => {
-                            second
-                        }
-                        (first, second) if second == source_bucket && first != source_bucket => {
-                            first
-                        }
-                        _ => continue,
-                    };
-                    let destination_occupancy =
-                        Self::occupancy_byte(&self.memory, self.header, destination_bucket);
-                    let Some(destination_slot) = Self::first_empty(destination_occupancy) else {
-                        continue;
-                    };
-                    let mut destination_page = vec![0; page_bytes];
-                    self.memory.read(
-                        Self::bucket_base(self.header, destination_bucket),
-                        &mut destination_page,
-                    );
-                    let resident_value_offset = Self::page_value_offset(self.header, source_slot);
-                    let resident_value_end = resident_value_offset
-                        .checked_add(self.header.value_size as usize)
-                        .ok_or(MutationError::CapacityOverflow)?;
-                    Self::write_page_entry(
-                        &mut destination_page,
-                        self.header,
-                        destination_slot,
-                        &source_page[resident_key_offset..resident_key_end],
-                        &source_page[resident_value_offset..resident_value_end],
-                    );
-                    Self::set_page_occupancy(
-                        &mut destination_page,
-                        destination_occupancy | (1 << destination_slot),
-                    );
-                    Self::write_page_entry(
-                        &mut source_page,
-                        self.header,
-                        source_slot,
-                        &key_bytes,
-                        &value_bytes,
-                    );
-                    return Ok(ExperimentalDirectInsertPlan::OneHop {
-                        observed_epoch,
-                        source_bucket,
-                        source_page,
-                        destination_bucket,
-                        destination_page,
-                        len,
-                    });
-                }
-            }
-            Err(MutationError::TablePressure)
-        })();
-        match planned {
-            Ok(plan) => Ok(plan),
-            Err(error) => {
-                self.ensure_epoch(observed_epoch)?;
-                Err(error)
-            }
         }
-    }
-
-    #[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
-    fn apply_experimental_direct_insert(
-        &self,
-        plan: ExperimentalDirectInsertPlan<V>,
-    ) -> Result<Option<V>, MutationError> {
-        match plan {
-            ExperimentalDirectInsertPlan::Overwrite {
-                observed_epoch,
-                bucket,
-                slot,
-                value,
-                previous,
-            } => {
-                let mutation = self.begin_mutation_at(observed_epoch)?;
-                self.write_value_bytes(bucket, slot, &value);
-                mutation.finish();
-                Ok(Some(previous))
-            }
-            ExperimentalDirectInsertPlan::Direct {
-                observed_epoch,
-                bucket,
-                slot,
-                occupancy,
-                key,
-                value,
-                len,
-            } => {
-                let mutation = self.begin_mutation_at(observed_epoch)?;
-                self.write_key_bytes(bucket, slot, &key);
-                self.write_value_bytes(bucket, slot, &value);
-                self.write_occupancy(bucket, occupancy | (1 << slot));
-                control::write_len(&self.memory, self.header.control_offset, len);
-                mutation.finish();
-                Ok(None)
-            }
-            ExperimentalDirectInsertPlan::OneHop {
-                observed_epoch,
-                source_bucket,
-                source_page,
-                destination_bucket,
-                destination_page,
-                len,
-            } => {
-                let mutation = self.begin_mutation_at(observed_epoch)?;
-                self.memory.write(
-                    Self::bucket_base(self.header, destination_bucket),
-                    &destination_page,
-                );
-                self.memory
-                    .write(Self::bucket_base(self.header, source_bucket), &source_page);
-                control::write_len(&self.memory, self.header.control_offset, len);
-                mutation.finish();
-                Ok(None)
-            }
-        }
+        Err(MutationError::TablePressure)
     }
 
     fn plan_insert(
@@ -602,14 +1039,18 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         key_bytes: Vec<u8>,
         value_bytes: Vec<u8>,
     ) -> Result<InsertPlan<V>, MutationError> {
-        let control = control::read(&self.memory, self.header.control_offset);
+        let control = control::read(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
         if !control.mutation_epoch.is_multiple_of(2) {
             return Err(MutationError::InProgress);
         }
         let observed_epoch = control.mutation_epoch;
         let planned = (|| {
             let candidates =
-                self.candidate_buckets_for_bytes_at(hash_bytes, control.hash_seed, control);
+                self.candidate_buckets_for_bytes_at(hash_bytes, self.header.hash_seed, control);
             let occupancies = self.candidate_occupancies(candidates);
             if let Some((bucket, slot, _)) = self.find_in_candidates(candidates, occupancies, key) {
                 let previous = self.read_value(bucket, slot);
@@ -623,23 +1064,66 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             }
             let threshold = Self::split_threshold(control.physical_buckets)?;
             if control.len < threshold {
-                let (bucket, slot, occupancy) = Self::choose_placement(candidates, occupancies)
-                    .ok_or(MutationError::TablePressure)?;
-                return Ok(InsertPlan::DirectInsert {
+                if let Some((bucket, slot, occupancy)) =
+                    Self::choose_placement(candidates, occupancies)
+                {
+                    return Ok(InsertPlan::DirectInsert {
+                        observed_epoch,
+                        bucket,
+                        slot,
+                        occupancy,
+                        key: key_bytes,
+                        value: value_bytes,
+                        len: control
+                            .len
+                            .checked_add(1)
+                            .ok_or(MutationError::CapacityOverflow)?,
+                    });
+                }
+                return self.plan_one_hop_insert(
                     observed_epoch,
-                    bucket,
-                    slot,
-                    occupancy,
-                    key: key_bytes,
-                    value: value_bytes,
-                    len: control
-                        .len
-                        .checked_add(1)
-                        .ok_or(MutationError::CapacityOverflow)?,
-                });
+                    control,
+                    candidates,
+                    key_bytes,
+                    value_bytes,
+                );
             }
 
-            self.plan_split_insert(observed_epoch, control, hash_bytes, key_bytes, value_bytes)
+            match self.plan_split_insert(
+                observed_epoch,
+                control,
+                hash_bytes,
+                key_bytes.clone(),
+                value_bytes.clone(),
+            ) {
+                Ok(plan) => Ok(plan),
+                Err(MutationError::TablePressure) => {
+                    if let Some((bucket, slot, occupancy)) =
+                        Self::choose_placement(candidates, self.candidate_occupancies(candidates))
+                    {
+                        return Ok(InsertPlan::DirectInsert {
+                            observed_epoch,
+                            bucket,
+                            slot,
+                            occupancy,
+                            key: key_bytes,
+                            value: value_bytes,
+                            len: control
+                                .len
+                                .checked_add(1)
+                                .ok_or(MutationError::CapacityOverflow)?,
+                        });
+                    }
+                    self.plan_one_hop_insert(
+                        observed_epoch,
+                        control,
+                        candidates,
+                        key_bytes,
+                        value_bytes,
+                    )
+                }
+                Err(error) => Err(error),
+            }
         })();
         match planned {
             Ok(plan) => Ok(plan),
@@ -672,7 +1156,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         );
         let source_occupancy = Self::page_occupancy(&source_page);
         let mut new_page = vec![0; page_bytes];
-        let secrets = self.secrets_for_seed(control.hash_seed);
+        let secrets = self.secrets_for_seed(self.header.hash_seed);
         let mut retained = source_occupancy;
         let mut new_occupancy = 0u8;
         for slot in 0..BUCKET_SIZE {
@@ -709,7 +1193,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
 
         let candidates = self.candidate_buckets_for_bytes_at(
             hash_bytes,
-            control.hash_seed,
+            self.header.hash_seed,
             ControlRegion {
                 level,
                 split_cursor,
@@ -800,6 +1284,25 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
                 mutation.finish();
                 Ok(None)
             }
+            InsertPlan::OneHopInsert {
+                observed_epoch,
+                source_bucket,
+                source_page,
+                destination_bucket,
+                destination_page,
+                len,
+            } => {
+                let mutation = self.begin_mutation_at(observed_epoch)?;
+                self.memory.write(
+                    Self::bucket_base(self.header, destination_bucket),
+                    &destination_page,
+                );
+                self.memory
+                    .write(Self::bucket_base(self.header, source_bucket), &source_page);
+                control::write_len(&self.memory, self.header.control_offset, len);
+                mutation.finish();
+                Ok(None)
+            }
             InsertPlan::SplitInsert {
                 observed_epoch,
                 source_bucket,
@@ -844,7 +1347,11 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     }
 
     fn plan_remove(&self, key: &K) -> Result<RemovePlan<V>, MutationError> {
-        let control = control::read(&self.memory, self.header.control_offset);
+        let control = control::read(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
         if !control.mutation_epoch.is_multiple_of(2) {
             return Err(MutationError::InProgress);
         }
@@ -853,7 +1360,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             let hash_input = key.stable_hash_bytes();
             let candidates = self.candidate_buckets_for_bytes_at(
                 hash_input.as_ref(),
-                control.hash_seed,
+                self.header.hash_seed,
                 control,
             );
             let Some((bucket, slot, occupancy, previous)) =
@@ -906,7 +1413,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         }
     }
 
-    fn expected_header() -> Result<Header, InitError> {
+    fn expected_header(hash_seed: u64) -> Result<Header, InitError> {
         if !K::BOUND.is_fixed_size() || !V::BOUND.is_fixed_size() {
             return Err(InitError::IncompatibleElementType);
         }
@@ -920,16 +1427,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             )
             .ok_or(InitError::InvalidLayout)?;
         let control_offset = HEADER_SIZE;
-        let journal_offset = control_offset
-            .checked_add(CONTROL_BYTES)
-            .ok_or(InitError::InvalidLayout)?;
-        let buckets_offset = journal_offset
-            .checked_add(
-                8u64.checked_add(u64::from(key_size))
-                    .and_then(|bytes| bytes.checked_add(u64::from(value_size)))
-                    .ok_or(InitError::InvalidLayout)?,
-            )
-            .ok_or(InitError::InvalidLayout)?;
+        let buckets_offset = BUCKETS_OFFSET;
         let bucket_page_stride = value_slab_offset
             .checked_add(
                 u64::from(BUCKET_SIZE)
@@ -940,10 +1438,13 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         Ok(Header {
             key_size,
             value_size,
+            key_storage_schema_id: K::KEY_STORAGE_ID,
+            key_routing_schema_id: K::KEY_ROUTING_ID,
+            value_storage_schema_id: V::VALUE_STORAGE_ID,
+            hash_seed,
             bucket_size: BUCKET_SIZE,
             control_offset,
             control_bytes: CONTROL_BYTES,
-            journal_offset,
             buckets_offset,
             value_slab_offset,
             bucket_page_stride,
@@ -951,10 +1452,7 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
     }
 
     fn validate_control(control: ControlRegion) -> Result<(), InitError> {
-        if control.split_state != 0
-            || control.journal_state != 0
-            || !control.mutation_epoch.is_multiple_of(2)
-        {
+        if !control.mutation_epoch.is_multiple_of(2) {
             return Err(InitError::RecoveryRequired);
         }
         let base = Self::base_buckets(control.level).ok_or(InitError::InvalidLayout)?;
@@ -968,16 +1466,217 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             || control.split_cursor >= base
             || control.physical_buckets != expected_buckets
             || control.len > capacity
-            || control.split_work_cursor != 0
+            || control.incarnation == 0
         {
             return Err(InitError::InvalidLayout);
         }
         Ok(())
     }
 
+    fn scan_control_before_step(&self) -> Result<(u64, ControlRegion), ScanError> {
+        let epoch = control::read_mutation_epoch(&self.memory, self.header.control_offset);
+        if !epoch.is_multiple_of(2) {
+            return Err(ScanError::InProgress);
+        }
+        let control = control::read_for_open(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        )
+        .map_err(|()| ScanError::RestartRequired)?;
+        if !control.mutation_epoch.is_multiple_of(2) || control.mutation_epoch != epoch {
+            return Err(ScanError::InProgress);
+        }
+        Self::validate_control(control).map_err(|_| ScanError::RestartRequired)?;
+        Ok((epoch, control))
+    }
+
+    fn scan_physical_window(&self, start: u64, end: u64) -> Vec<(K, V)> {
+        let mut entries = Vec::new();
+        let mut physical_slot = start;
+        while physical_slot < end {
+            let bucket = physical_slot / u64::from(BUCKET_SIZE);
+            let first_slot = (physical_slot % u64::from(BUCKET_SIZE)) as u32;
+            let bucket_end = end.min((bucket + 1) * u64::from(BUCKET_SIZE));
+            let last_slot = (bucket_end - bucket * u64::from(BUCKET_SIZE)) as u32;
+            let occupancy = Self::occupancy_byte(&self.memory, self.header, bucket);
+            for slot in first_slot..last_slot {
+                if occupancy & (1 << slot) == 0 {
+                    continue;
+                }
+                let mut key_bytes = vec![0; self.header.key_size as usize];
+                self.memory
+                    .read(self.key_offset(bucket, slot), &mut key_bytes);
+                let mut value_bytes = vec![0; self.header.value_size as usize];
+                self.memory
+                    .read(self.value_offset(bucket, slot), &mut value_bytes);
+                entries.push((
+                    K::from_bytes(Cow::Owned(key_bytes)),
+                    V::from_bytes(Cow::Owned(value_bytes)),
+                ));
+            }
+            physical_slot = bucket_end;
+        }
+        entries
+    }
+
+    fn current_scrub_snapshot(&self) -> Result<ScrubSnapshot, ScrubError> {
+        let persisted_header = header::read(&self.memory).map_err(|_| ScrubError::Stale)?;
+        if persisted_header != self.header {
+            return Err(ScrubError::Stale);
+        }
+        let control = control::read_for_open(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        )
+        .map_err(|()| ScrubError::Stale)?;
+        Self::validate_control(control).map_err(|_| ScrubError::Stale)?;
+        Ok(ScrubSnapshot {
+            key_storage_schema_id: self.header.key_storage_schema_id,
+            key_routing_schema_id: self.header.key_routing_schema_id,
+            value_storage_schema_id: self.header.value_storage_schema_id,
+            hash_seed: self.header.hash_seed,
+            mutation_epoch: control.mutation_epoch,
+            incarnation: control.incarnation,
+            len: control.len,
+            physical_buckets: control.physical_buckets,
+        })
+    }
+
+    fn ensure_scrub_fence(&self, snapshot: ScrubSnapshot) -> Result<(), ScrubError> {
+        (self.current_scrub_snapshot()? == snapshot)
+            .then_some(())
+            .ok_or(ScrubError::Stale)
+    }
+
+    fn scrub_control(&self, snapshot: ScrubSnapshot) -> ControlRegion {
+        let level = (u64::BITS - 1 - snapshot.physical_buckets.leading_zeros()) as u8;
+        ControlRegion {
+            len: snapshot.len,
+            physical_buckets: snapshot.physical_buckets,
+            mutation_epoch: snapshot.mutation_epoch,
+            incarnation: snapshot.incarnation,
+            level,
+            split_cursor: snapshot.physical_buckets - (1u64 << level),
+            hash_seed: snapshot.hash_seed,
+        }
+    }
+
+    fn scrub_bucket(&self, bucket: u64, control: ControlRegion) -> Result<u64, ScrubError> {
+        let occupancy = self.scrub_occupancy(bucket)?;
+        let mut occupied = occupancy;
+        while occupied != 0 {
+            let slot = occupied.trailing_zeros();
+            occupied &= occupied - 1;
+            let key = self.scrub_key(bucket, slot)?;
+            self.scrub_value(bucket, slot)?;
+            let hash_bytes = scrub_callback(
+                || key.stable_hash_bytes(),
+                ScrubError::InvalidKeyEncoding { bucket, slot },
+            )?;
+            let candidates = self.candidate_buckets_for_bytes_at(
+                hash_bytes.as_ref(),
+                control.hash_seed,
+                control,
+            );
+            if candidates.0 != bucket && candidates.1 != bucket {
+                return Err(ScrubError::UnreachablePlacement { bucket, slot });
+            }
+            self.ensure_unique_candidate_placement(bucket, slot, &key, candidates)?;
+        }
+        Ok(u64::from(occupancy.count_ones()))
+    }
+
+    fn scrub_occupancy(&self, bucket: u64) -> Result<u8, ScrubError> {
+        let mut bytes = [0; BUCKET_HEADER_BYTES as usize];
+        self.memory
+            .read(Self::bucket_base(self.header, bucket), &mut bytes);
+        if bytes[1..].iter().any(|byte| *byte != 0) {
+            return Err(ScrubError::InvalidOccupancy { bucket });
+        }
+        Ok(bytes[0])
+    }
+
+    fn scrub_key(&self, bucket: u64, slot: u32) -> Result<K, ScrubError> {
+        let mut bytes = vec![0; self.header.key_size as usize];
+        self.memory.read(self.key_offset(bucket, slot), &mut bytes);
+        let original = bytes.clone();
+        let key = scrub_callback(
+            || K::from_bytes(Cow::Owned(bytes)),
+            ScrubError::InvalidKeyEncoding { bucket, slot },
+        )?;
+        let encoded = scrub_callback(
+            || key.to_bytes(),
+            ScrubError::InvalidKeyEncoding { bucket, slot },
+        )?;
+        if encoded.as_ref() != original {
+            return Err(ScrubError::InvalidKeyEncoding { bucket, slot });
+        }
+        Ok(key)
+    }
+
+    fn scrub_value(&self, bucket: u64, slot: u32) -> Result<(), ScrubError> {
+        let mut bytes = vec![0; self.header.value_size as usize];
+        self.memory
+            .read(self.value_offset(bucket, slot), &mut bytes);
+        let original = bytes.clone();
+        let value = scrub_callback(
+            || V::from_bytes(Cow::Owned(bytes)),
+            ScrubError::InvalidValueEncoding { bucket, slot },
+        )?;
+        let encoded = scrub_callback(
+            || value.to_bytes(),
+            ScrubError::InvalidValueEncoding { bucket, slot },
+        )?;
+        if encoded.as_ref() != original {
+            return Err(ScrubError::InvalidValueEncoding { bucket, slot });
+        }
+        Ok(())
+    }
+
+    fn ensure_unique_candidate_placement(
+        &self,
+        bucket: u64,
+        slot: u32,
+        key: &K,
+        candidates: (u64, u64),
+    ) -> Result<(), ScrubError> {
+        for (candidate_index, candidate) in [candidates.0, candidates.1].into_iter().enumerate() {
+            if candidate_index == 1 && candidates.0 == candidates.1 {
+                continue;
+            }
+            let occupancy = self.scrub_occupancy(candidate)?;
+            let mut occupied = occupancy;
+            while occupied != 0 {
+                let candidate_slot = occupied.trailing_zeros();
+                occupied &= occupied - 1;
+                if candidate == bucket && candidate_slot == slot {
+                    continue;
+                }
+                let candidate_key = self.scrub_key(candidate, candidate_slot)?;
+                let equal = scrub_callback(
+                    || candidate_key == *key,
+                    ScrubError::InvalidKeyEncoding {
+                        bucket: candidate,
+                        slot: candidate_slot,
+                    },
+                )?;
+                if equal {
+                    return Err(ScrubError::DuplicateKey { bucket, slot });
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn candidate_buckets(&self, key: &K) -> (u64, u64) {
-        let hot = control::read_hot(&self.memory, self.header.control_offset);
+        let hot = control::read_hot(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
         let bytes = key.stable_hash_bytes();
         Self::candidate_buckets_from_bytes_at(
             bytes.as_ref(),
@@ -1037,7 +1736,11 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
 
     #[cfg(test)]
     fn find(&self, key: &K) -> Option<(u64, u32, u8)> {
-        let hot = control::read_hot(&self.memory, self.header.control_offset);
+        let hot = control::read_hot(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
         self.find_with_hot(key, hot)
     }
 
@@ -1113,16 +1816,6 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         Ok(epoch)
     }
 
-    fn begin_mutation(&self) -> Result<MutationGuard<'_, K, V, M>, MutationError> {
-        let epoch = self.idle_epoch()?;
-        let completed = epoch.checked_add(2).ok_or(MutationError::EpochExhausted)?;
-        control::write_mutation_epoch(&self.memory, self.header.control_offset, epoch + 1);
-        Ok(MutationGuard {
-            map: self,
-            completed_epoch: completed,
-        })
-    }
-
     fn begin_mutation_at(
         &self,
         observed_epoch: u64,
@@ -1138,6 +1831,12 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
             map: self,
             completed_epoch: completed,
         })
+    }
+
+    #[cfg(test)]
+    fn begin_mutation(&self) -> Result<MutationGuard<'_, K, V, M>, MutationError> {
+        let epoch = self.idle_epoch()?;
+        self.begin_mutation_at(epoch)
     }
 
     fn ensure_epoch(&self, observed_epoch: u64) -> Result<(), MutationError> {
@@ -1384,22 +2083,6 @@ impl<K: StableHashKey, V: Storable, M: Memory> StableLinearHashMap<K, V, M> {
         u16::from_le_bytes(occupancy) as u8
     }
 
-    fn validate_bucket_headers(
-        memory: &M,
-        header: Header,
-        physical_buckets: u64,
-    ) -> Result<(), InitError> {
-        for bucket in 0..physical_buckets {
-            let mut bucket_header = [0; BUCKET_HEADER_BYTES as usize];
-            memory.read(Self::bucket_base(header, bucket), &mut bucket_header);
-            let occupancy = u16::from_le_bytes([bucket_header[0], bucket_header[1]]);
-            if occupancy & !0x00ff != 0 || bucket_header[2..].iter().any(|byte| *byte != 0) {
-                return Err(InitError::InvalidLayout);
-            }
-        }
-        Ok(())
-    }
-
     fn bucket_base(header: Header, bucket: u64) -> u64 {
         header.buckets_offset + bucket * header.bucket_page_stride
     }
@@ -1522,13 +2205,17 @@ pub(crate) mod canbench_probe {
         len: u64,
     }
 
-    impl<V: Storable, M: Memory> StableLinearHashMap<u64, V, M> {
-        pub(crate) fn probe_experimental_candidates(&self, key: u64) -> (u64, u64) {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+    impl<V: StableMapValue, M: Memory> StableLinearHashMap<u64, V, M> {
+        pub(crate) fn probe_one_hop_candidates(&self, key: u64) -> (u64, u64) {
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             self.candidate_buckets_for_key_at(&key, hot.hash_seed, hot.level, hot.split_cursor)
         }
 
-        pub(crate) fn probe_experimental_place(
+        pub(crate) fn probe_one_hop_place(
             &self,
             bucket: u64,
             slot: u32,
@@ -1541,21 +2228,29 @@ pub(crate) mod canbench_probe {
             self.write_occupancy(bucket, occupancy | (1 << slot));
         }
 
-        pub(crate) fn probe_experimental_set_len(&self, len: u64) {
+        pub(crate) fn probe_one_hop_set_len(&self, len: u64) {
             control::write_len(&self.memory, self.header.control_offset, len);
         }
 
-        pub(crate) fn probe_experimental_resident_bucket(&self, key: u64) -> u64 {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+        pub(crate) fn probe_one_hop_resident_bucket(&self, key: u64) -> u64 {
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             self.find_with_hot(&key, hot)
-                .expect("experimental benchmark resident exists")
+                .expect("one-hop benchmark resident exists")
                 .0
         }
     }
 
     impl<M: Memory> StableLinearHashMap<u64, u64, M> {
         pub(crate) fn probe_candidates(&self, key: u64) -> (u64, u64) {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             self.candidate_buckets_for_key_at(&key, hot.hash_seed, hot.level, hot.split_cursor)
         }
 
@@ -1566,14 +2261,18 @@ pub(crate) mod canbench_probe {
         pub(crate) fn probe_resident_bucket(&self, key: u64) -> u64 {
             self.find_with_hot(
                 &key,
-                control::read_hot(&self.memory, self.header.control_offset),
+                control::read_hot(
+                    &self.memory,
+                    self.header.control_offset,
+                    self.header.hash_seed,
+                ),
             )
             .expect("benchmark resident exists")
             .0
         }
 
         pub(crate) fn probe_seed(&self) -> u64 {
-            control::read_hash_seed(&self.memory, self.header.control_offset)
+            self.header.hash_seed
         }
 
         pub(crate) fn probe_route_hash(&self, key: u64, seed: u64) -> Route {
@@ -1632,7 +2331,11 @@ pub(crate) mod canbench_probe {
         }
 
         pub(crate) fn probe_insert_control_route_lookup(&self, key: u64) -> Mutation {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             let route = self.probe_route_hash(key, hot.hash_seed);
             let occupancies = self.candidate_occupancies(route.candidates);
             let preferred = if occupancies.0.count_ones() <= occupancies.1.count_ones() {
@@ -1689,7 +2392,11 @@ pub(crate) mod canbench_probe {
         }
 
         pub(crate) fn probe_remove_control_route_bucket_value(&self, key: u64) -> (Mutation, u64) {
-            let hot = control::read_hot(&self.memory, self.header.control_offset);
+            let hot = control::read_hot(
+                &self.memory,
+                self.header.control_offset,
+                self.header.hash_seed,
+            );
             let (bucket, slot, occupancy, value) = self
                 .find_value_with_hot(&key, hot)
                 .expect("diagnostic fixture contains key");
@@ -1750,6 +2457,7 @@ mod tests {
         size_override: Rc<Cell<Option<u64>>>,
         after_grow: Rc<RefCell<Option<GrowCallback>>>,
         epoch_read_override: Rc<Cell<Option<u64>>>,
+        after_write: Rc<RefCell<Option<GrowCallback>>>,
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1781,7 +2489,8 @@ mod tests {
     }
 
     impl StableHashKey for ProbeKey {
-        const HASH_ENCODING_ID: u64 = 0x4c48_4d00_0000_1004;
+        const KEY_STORAGE_ID: [u8; 16] = [4; 16];
+        const KEY_ROUTING_ID: [u8; 16] = [14; 16];
         type HashBytes<'a> = [u8; 8];
 
         fn stable_hash_bytes(&self) -> Self::HashBytes<'_> {
@@ -1818,7 +2527,8 @@ mod tests {
     }
 
     impl StableHashKey for Width3Key {
-        const HASH_ENCODING_ID: u64 = 0x4c48_4d00_0000_3005;
+        const KEY_STORAGE_ID: [u8; 16] = [5; 16];
+        const KEY_ROUTING_ID: [u8; 16] = [15; 16];
         type HashBytes<'a> = [u8; 3];
 
         fn stable_hash_bytes(&self) -> Self::HashBytes<'_> {
@@ -1849,6 +2559,10 @@ mod tests {
             };
     }
 
+    impl StableMapValue for Width5Value {
+        const VALUE_STORAGE_ID: [u8; 16] = [25; 16];
+    }
+
     impl Storable for RoutingKey {
         fn to_bytes(&self) -> Cow<'_, [u8]> {
             Cow::Owned(self.0.to_le_bytes().to_vec())
@@ -1872,7 +2586,8 @@ mod tests {
     }
 
     impl StableHashKey for RoutingKey {
-        const HASH_ENCODING_ID: u64 = 0x4c48_4d00_0000_1001;
+        const KEY_STORAGE_ID: [u8; 16] = [1; 16];
+        const KEY_ROUTING_ID: [u8; 16] = [11; 16];
         type HashBytes<'a>
             = [u8; 8]
         where
@@ -1908,7 +2623,8 @@ mod tests {
     }
 
     impl StableHashKey for BadKey {
-        const HASH_ENCODING_ID: u64 = 0x4c48_4d00_0000_1002;
+        const KEY_STORAGE_ID: [u8; 16] = [2; 16];
+        const KEY_ROUTING_ID: [u8; 16] = [12; 16];
         type HashBytes<'a>
             = [u8; 8]
         where
@@ -1941,6 +2657,10 @@ mod tests {
                 max_size: 8,
                 is_fixed_size: true,
             };
+    }
+
+    impl StableMapValue for BadValue {
+        const VALUE_STORAGE_ID: [u8; 16] = [22; 16];
     }
 
     #[derive(Clone)]
@@ -2010,7 +2730,8 @@ mod tests {
     }
 
     impl StableHashKey for CallbackKey {
-        const HASH_ENCODING_ID: u64 = 0x4c48_4d00_0000_1003;
+        const KEY_STORAGE_ID: [u8; 16] = [3; 16];
+        const KEY_ROUTING_ID: [u8; 16] = [13; 16];
         type HashBytes<'a>
             = [u8; 8]
         where
@@ -2071,6 +2792,10 @@ mod tests {
             };
     }
 
+    impl StableMapValue for CallbackValue {
+        const VALUE_STORAGE_ID: [u8; 16] = [23; 16];
+    }
+
     impl Memory for CountingMemory {
         fn size(&self) -> u64 {
             self.inner.size()
@@ -2122,7 +2847,7 @@ mod tests {
         }
 
         fn read(&self, offset: u64, dst: &mut [u8]) {
-            if offset == 64 + 48
+            if offset == HEADER_SIZE + 16
                 && dst.len() == 8
                 && let Some(epoch) = self.epoch_read_override.take()
             {
@@ -2139,6 +2864,10 @@ mod tests {
                 panic!("injected stable-memory write failure");
             }
             self.inner.write(offset, src);
+            let callback = self.after_write.borrow_mut().take();
+            if let Some(callback) = callback {
+                callback();
+            }
         }
     }
 
@@ -2214,6 +2943,11 @@ mod tests {
         )
     }
 
+    fn write_incarnation<M: Memory>(map: &StableLinearHashMap<u64, u64, M>, incarnation: u64) {
+        map.memory
+            .write(map.header.control_offset + 24, &incarnation.to_le_bytes());
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct StableSnapshot {
         pages: u64,
@@ -2221,18 +2955,18 @@ mod tests {
         control: ControlRegion,
     }
 
-    fn stable_snapshot<K: StableHashKey, V: Storable, M: Memory>(
+    fn stable_snapshot<K: StableHashKey, V: StableMapValue, M: Memory>(
         map: &StableLinearHashMap<K, V, M>,
         backing: &VectorMemory,
     ) -> StableSnapshot {
         StableSnapshot {
             pages: backing.size(),
             bytes: allocated_bytes(backing),
-            control: control::read(backing, map.header.control_offset),
+            control: control::read(backing, map.header.control_offset, map.header.hash_seed),
         }
     }
 
-    fn assert_even_callback<M: Memory, K: StableHashKey, V: Storable>(
+    fn assert_even_callback<M: Memory, K: StableHashKey, V: StableMapValue>(
         map: &StableLinearHashMap<K, V, M>,
         called: &Cell<bool>,
     ) {
@@ -2307,17 +3041,15 @@ mod tests {
         target_kind: SplitTarget,
     ) -> (Vec<(u64, u64)>, Vec<u64>, u64) {
         assert!(move_count <= BUCKET_SIZE as usize);
-        map.memory.write(map.header.control_offset + 8, &[level]);
-        map.memory
-            .write(map.header.control_offset + 16, &split_cursor.to_le_bytes());
+        let _ = (level, split_cursor);
         map.memory.write(
-            map.header.control_offset + 24,
+            map.header.control_offset + 8,
             &physical_buckets.to_le_bytes(),
         );
-        let seed = control::read_hash_seed(&map.memory, map.header.control_offset);
+        let seed = map.header.hash_seed;
         let secrets = hash_secrets(seed);
         let (next_level, next_cursor, _) = StableLinearHashMap::<u64, u64, M>::next_geometry(
-            control::read(&map.memory, map.header.control_offset),
+            control::read(&map.memory, map.header.control_offset, map.header.hash_seed),
         )
         .expect("next fixture geometry");
         let source = split_cursor;
@@ -2437,11 +3169,9 @@ mod tests {
         physical_buckets: u64,
         reference_geometry: Option<(u8, u64)>,
     ) -> (Vec<(u64, u64)>, u64, u64, u64) {
-        map.memory.write(map.header.control_offset + 8, &[level]);
-        map.memory
-            .write(map.header.control_offset + 16, &split_cursor.to_le_bytes());
+        let _ = (level, split_cursor);
         map.memory.write(
-            map.header.control_offset + 24,
+            map.header.control_offset + 8,
             &physical_buckets.to_le_bytes(),
         );
         let target = (1u64..1 << 20)
@@ -2466,10 +3196,7 @@ mod tests {
                 };
                 let current_only =
                     reference_geometry.is_none_or(|(reference_level, reference_cursor)| {
-                        let secrets = hash_secrets(control::read_hash_seed(
-                            &map.memory,
-                            map.header.control_offset,
-                        ));
+                        let secrets = hash_secrets(map.header.hash_seed);
                         let reference =
                             StableLinearHashMap::<u64, u64, M>::candidate_buckets_from_bytes_at(
                                 &key.stable_hash_bytes(),
@@ -2537,31 +3264,117 @@ mod tests {
             Header {
                 key_size: 8,
                 value_size: 8,
+                key_storage_schema_id: u64::KEY_STORAGE_ID,
+                key_routing_schema_id: u64::KEY_ROUTING_ID,
+                value_storage_schema_id: u64::VALUE_STORAGE_ID,
+                hash_seed: 11,
                 bucket_size: 8,
-                control_offset: 64,
+                control_offset: 128,
                 control_bytes: 64,
-                journal_offset: 128,
-                buckets_offset: 152,
+                buckets_offset: 192,
                 value_slab_offset: 72,
                 bucket_page_stride: 136,
             }
         );
 
-        let expected_header = [
-            b'L', b'H', b'M', 1, 8, 0, 0, 0, 8, 0, 0, 0, 8, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 64,
-            0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 152, 0, 0, 0, 0, 0, 0, 0, 72, 0, 0, 0,
-            0, 0, 0, 0, 136, 0, 0, 0, 0, 0, 0, 0,
-        ];
-        assert_eq!(read_bytes(&memory, 0, 64), expected_header);
+        let mut expected_header = [0; 128];
+        expected_header[..3].copy_from_slice(b"LHM");
+        expected_header[3] = 1;
+        expected_header[4..8].copy_from_slice(&8u32.to_le_bytes());
+        expected_header[8..12].copy_from_slice(&8u32.to_le_bytes());
+        expected_header[16..32].copy_from_slice(&u64::KEY_STORAGE_ID);
+        expected_header[32..48].copy_from_slice(&u64::KEY_ROUTING_ID);
+        expected_header[48..64].copy_from_slice(&u64::VALUE_STORAGE_ID);
+        expected_header[64..72].copy_from_slice(&11u64.to_le_bytes());
+        assert_eq!(read_bytes(&memory, 0, 128), expected_header);
 
         let mut expected_control = [0; 64];
-        expected_control[8] = 3;
-        expected_control[24..32].copy_from_slice(&8u64.to_le_bytes());
-        expected_control[32..40].copy_from_slice(&11u64.to_le_bytes());
-        expected_control[56..64].copy_from_slice(&u64::HASH_ENCODING_ID.to_le_bytes());
-        assert_eq!(read_bytes(&memory, 64, 64), expected_control);
-        assert_eq!(read_bytes(&memory, 128, 24), vec![0; 24]);
-        assert_eq!(read_bytes(&memory, 152, 8 * 136), vec![0; 8 * 136]);
+        expected_control[8..16].copy_from_slice(&8u64.to_le_bytes());
+        expected_control[24..32].copy_from_slice(&1u64.to_le_bytes());
+        assert_eq!(read_bytes(&memory, 128, 64), expected_control);
+        assert_eq!(read_bytes(&memory, 192, 8 * 136), vec![0; 8 * 136]);
+    }
+
+    #[test]
+    fn strict_create_rejects_nonempty_memory_without_writes() {
+        let memory = VectorMemory::default();
+        assert_eq!(memory.grow(1), 0);
+        memory.write(0, b"existing bytes");
+        let before = allocated_bytes(&memory);
+        assert!(matches!(
+            Map::new_with_hash_seed(memory.clone(), 11),
+            Err(InitError::NonEmptyMemory)
+        ));
+        assert_eq!(allocated_bytes(&memory), before);
+    }
+
+    #[test]
+    fn old_v1_like_nonempty_bytes_are_rejected_without_fallback_or_writes() {
+        let memory = VectorMemory::default();
+        assert_eq!(memory.grow(1), 0);
+        let mut old_header = [0; 64];
+        old_header[..4].copy_from_slice(b"LHM\x01");
+        old_header[4..8].copy_from_slice(&8u32.to_le_bytes());
+        old_header[8..12].copy_from_slice(&8u32.to_le_bytes());
+        memory.write(0, &old_header);
+        let before = allocated_bytes(&memory);
+
+        assert!(Map::open_or_create(memory.clone()).is_err());
+        assert_eq!(allocated_bytes(&memory), before);
+    }
+
+    #[test]
+    fn header_reserved_and_each_same_width_schema_mismatch_are_rejected() {
+        for (offset, expected) in [
+            (16, InitError::IncompatibleKeyStorageSchema),
+            (32, InitError::IncompatibleKeyRoutingSchema),
+            (48, InitError::IncompatibleValueStorageSchema),
+        ] {
+            let memory = VectorMemory::default();
+            let map = Map::new(memory.clone()).expect("new schema fixture");
+            drop(map);
+            memory.write(offset, &[0xff; 16]);
+            assert!(matches!(Map::open(memory), Err(error) if error == expected));
+        }
+
+        for offset in [12, 72] {
+            let memory = VectorMemory::default();
+            let map = Map::new(memory.clone()).expect("new reserved fixture");
+            drop(map);
+            memory.write(offset, &[1]);
+            assert!(matches!(Map::open(memory), Err(InitError::InvalidLayout)));
+        }
+    }
+
+    #[test]
+    fn exact_open_rejects_empty_memory_without_creating() {
+        let memory = VectorMemory::default();
+        assert!(matches!(
+            Map::open(memory.clone()),
+            Err(InitError::InvalidLayout)
+        ));
+        assert_eq!(memory.size(), 0);
+    }
+
+    #[test]
+    fn nonempty_open_reads_exactly_header_and_control() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 17).expect("strict create");
+        for key in 0..49 {
+            map.insert(key, key + 1).expect("populate split geometry");
+        }
+        let buckets = map.control_region().expect("idle control").physical_buckets;
+        assert!(buckets > INITIAL_BUCKETS);
+        drop(map);
+        reset_counts(&memory);
+
+        let reopened = CountingMap::open(memory.clone()).expect("exact open");
+        assert_eq!(memory.read_calls.get(), 2);
+        assert_eq!(memory.read_bytes.get(), HEADER_SIZE + CONTROL_BYTES);
+        assert_eq!(&*memory.read_ranges.borrow(), &[(0, 128), (128, 64)]);
+        assert_eq!(reopened.len(), Ok(49));
     }
 
     #[test]
@@ -2650,7 +3463,7 @@ mod tests {
         let memory = VectorMemory::default();
         let map = AsymmetricMap::new_with_hash_seed(memory.clone(), 313).expect("new asymmetric");
         let control = map.control_region().expect("initial control");
-        let secrets = hash_secrets(control.hash_seed);
+        let secrets = hash_secrets(map.header.hash_seed);
         let next = AsymmetricMap::next_geometry(control).expect("next geometry");
         let source = control.split_cursor;
         let new_bucket = source + (1u64 << control.level);
@@ -2822,18 +3635,15 @@ mod tests {
     }
 
     #[test]
-    fn hash_encoding_id_is_persisted_and_reopen_rejects_a_different_key_contract() {
+    fn key_schema_ids_are_persisted_and_reopen_rejects_a_different_key_contract() {
         let memory = VectorMemory::default();
         let map = Map::new(memory.clone()).expect("new");
-        assert_eq!(
-            map.control_region().expect("idle control").hash_encoding_id,
-            u64::HASH_ENCODING_ID
-        );
+        assert_eq!(map.header().key_routing_schema_id, u64::KEY_ROUTING_ID);
         drop(map);
 
         assert!(matches!(
             StableLinearHashMap::<RoutingKey, u64, _>::init(memory),
-            Err(InitError::IncompatibleHashEncoding)
+            Err(InitError::IncompatibleKeyStorageSchema)
         ));
     }
 
@@ -2849,7 +3659,6 @@ mod tests {
         assert_eq!(map.len(), Err(MutationError::InProgress));
         assert_eq!(map.is_empty(), Err(MutationError::InProgress));
         assert_eq!(map.hash_seed(), Err(MutationError::InProgress));
-        assert_eq!(map.set_hash_seed(13), Err(MutationError::InProgress));
         assert_eq!(map.insert(7, 70), Err(MutationError::InProgress));
         assert_eq!(map.remove(&7), Err(MutationError::InProgress));
         assert!(matches!(
@@ -3268,6 +4077,211 @@ mod tests {
     }
 
     #[test]
+    fn owner_reset_clears_initial_occupancy_and_publishes_successor_last() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 0x51).expect("new reset fixture");
+        let header_before = read_bytes(&memory, 0, HEADER_SIZE as usize);
+        for key in 1..=12 {
+            assert_eq!(map.insert(key, key ^ 0xaa), Ok(None));
+        }
+        let before = map.control_region().expect("reset control");
+        let bytes_before = allocated_bytes(&memory);
+
+        assert_eq!(map.reset(before.incarnation), Ok(before.incarnation + 1));
+
+        let after = map.control_region().expect("settled reset control");
+        assert_eq!(after.len, 0);
+        assert_eq!(after.physical_buckets, INITIAL_BUCKETS);
+        assert_eq!(after.level, INITIAL_LEVEL);
+        assert_eq!(after.split_cursor, 0);
+        assert_eq!(after.incarnation, before.incarnation + 1);
+        assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
+        assert_eq!(after.hash_seed, before.hash_seed);
+        assert_eq!(read_bytes(&memory, 0, HEADER_SIZE as usize), header_before);
+        for bucket in 0..INITIAL_BUCKETS {
+            assert_eq!(
+                read_bytes(
+                    &memory,
+                    Map::bucket_base(map.header, bucket),
+                    BUCKET_HEADER_BYTES as usize,
+                ),
+                vec![0; BUCKET_HEADER_BYTES as usize]
+            );
+        }
+        let bytes_after = allocated_bytes(&memory);
+        let is_reset_mutation = |offset: usize| {
+            let control = HEADER_SIZE as usize..(HEADER_SIZE + CONTROL_BYTES) as usize;
+            let occupancy = (0..INITIAL_BUCKETS).any(|bucket| {
+                let start = Map::bucket_base(map.header, bucket) as usize;
+                (start..start + BUCKET_HEADER_BYTES as usize).contains(&offset)
+            });
+            control.contains(&offset) || occupancy
+        };
+        for (offset, (before_byte, after_byte)) in bytes_before.iter().zip(&bytes_after).enumerate()
+        {
+            if !is_reset_mutation(offset) {
+                assert_eq!(
+                    after_byte, before_byte,
+                    "reset changed non-owned byte at offset {offset}"
+                );
+            }
+        }
+        assert_eq!(map.hash_seed(), Ok(0x51));
+    }
+
+    #[test]
+    fn reset_preflight_errors_write_nothing() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        let memory = FailpointMemory::default();
+        let map = FailMap::new(memory.clone()).expect("new reset rejection fixture");
+        let current = map.control_region().expect("current control");
+
+        for expected in [current.incarnation + 1, current.incarnation - 1] {
+            let before = allocated_bytes(&memory.inner);
+            memory.writes.set(0);
+            assert_eq!(
+                map.reset(expected),
+                Err(ResetError::IncarnationMismatch {
+                    current: current.incarnation
+                })
+            );
+            assert_eq!(memory.writes.get(), 0);
+            assert_eq!(allocated_bytes(&memory.inner), before);
+        }
+
+        write_incarnation(&map, u64::MAX);
+        let before = allocated_bytes(&memory.inner);
+        memory.writes.set(0);
+        assert_eq!(map.reset(u64::MAX), Err(ResetError::IncarnationExhausted));
+        assert_eq!(memory.writes.get(), 0);
+        assert_eq!(allocated_bytes(&memory.inner), before);
+
+        write_incarnation(&map, current.incarnation);
+        control::write_mutation_epoch(&memory, map.header.control_offset, 1);
+        let before = allocated_bytes(&memory.inner);
+        memory.writes.set(0);
+        assert_eq!(map.reset(current.incarnation), Err(ResetError::InProgress));
+        assert_eq!(memory.writes.get(), 0);
+        assert_eq!(allocated_bytes(&memory.inner), before);
+
+        control::write_mutation_epoch(&memory, map.header.control_offset, u64::MAX - 1);
+        let before = allocated_bytes(&memory.inner);
+        memory.writes.set(0);
+        assert_eq!(
+            map.reset(current.incarnation),
+            Err(ResetError::EpochExhausted)
+        );
+        assert_eq!(memory.writes.get(), 0);
+        assert_eq!(allocated_bytes(&memory.inner), before);
+    }
+
+    #[test]
+    fn reset_alias_epoch_change_rejects_before_outer_write() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        let memory = FailpointMemory::default();
+        let map = FailMap::new(memory.clone()).expect("new reset alias fixture");
+        let current = map.control_region().expect("current control");
+        let before = allocated_bytes(&memory.inner);
+        memory.writes.set(0);
+        memory
+            .epoch_read_override
+            .set(Some(current.mutation_epoch + 2));
+
+        assert_eq!(map.reset(current.incarnation), Err(ResetError::InProgress));
+        assert_eq!(memory.writes.get(), 0);
+        assert_eq!(allocated_bytes(&memory.inner), before);
+    }
+
+    #[test]
+    fn reset_reentrancy_observes_odd_epoch_and_cannot_write() {
+        type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
+
+        let memory = FailpointMemory::default();
+        let map = Rc::new(FailMap::new(memory.clone()).expect("new reset reentrancy fixture"));
+        let current = map.control_region().expect("current control");
+        let nested_map = Rc::clone(&map);
+        let nested_result = Rc::new(RefCell::new(None));
+        let callback_result = Rc::clone(&nested_result);
+        *memory.after_write.borrow_mut() = Some(Rc::new(move || {
+            *callback_result.borrow_mut() = Some(nested_map.reset(current.incarnation));
+        }));
+
+        assert_eq!(map.reset(current.incarnation), Ok(current.incarnation + 1));
+        assert_eq!(
+            nested_result.borrow_mut().take(),
+            Some(Err(ResetError::InProgress))
+        );
+        assert_eq!(
+            map.control_region().expect("settled reset").mutation_epoch,
+            current.mutation_epoch + 2
+        );
+    }
+
+    #[test]
+    fn split_after_reset_fully_overwrites_reused_trailing_page_and_reopens() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 0x71).expect("new reuse fixture");
+        let (_, _, first_target) = seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        assert_eq!(map.insert(first_target, 0x1111), Ok(None));
+        assert_eq!(
+            map.control_region().expect("first split").physical_buckets,
+            9
+        );
+        let current = map.control_region().expect("pre-reset control");
+        assert_eq!(map.reset(current.incarnation), Ok(current.incarnation + 1));
+
+        let trailing_base = Map::bucket_base(map.header, 8);
+        memory.write(
+            trailing_base,
+            &vec![0xa5; map.header.bucket_page_stride as usize],
+        );
+        let (residents, _, target) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        assert_eq!(map.insert(target, 0x2222), Ok(None));
+        let reused = read_bytes(
+            &memory,
+            trailing_base,
+            map.header.bucket_page_stride as usize,
+        );
+        assert!(
+            reused[2..BUCKET_HEADER_BYTES as usize]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+
+        let second_control = map.control_region().expect("second pre-reset control");
+        assert_eq!(
+            map.reset(second_control.incarnation),
+            Ok(second_control.incarnation + 1)
+        );
+        memory.write(
+            trailing_base,
+            &vec![0x5a; map.header.bucket_page_stride as usize],
+        );
+        let (_, _, replay_target) =
+            seed_threshold_split_fixture(&map, 3, 0, 8, 4, SplitTarget::New);
+        assert_eq!(replay_target, target);
+        assert_eq!(map.insert(replay_target, 0x2222), Ok(None));
+        assert_eq!(
+            read_bytes(
+                &memory,
+                trailing_base,
+                map.header.bucket_page_stride as usize
+            ),
+            reused,
+            "the complete reused page must be independent of trailing bytes"
+        );
+
+        let reopened = Map::open(memory).expect("reopen reused trailing page");
+        assert_eq!(reopened.get(&target), Ok(Some(0x2222)));
+        for (key, value) in residents {
+            assert_eq!(reopened.get(&key), Ok(Some(value)));
+        }
+    }
+
+    #[test]
     fn init_with_hash_seed_only_uses_argument_for_empty_memory() {
         let memory = VectorMemory::default();
         let map = Map::init_with_hash_seed(memory.clone(), 41).expect("initialize");
@@ -3282,81 +4296,37 @@ mod tests {
     }
 
     #[test]
-    fn hash_seed_changes_only_while_empty() {
-        let memory = VectorMemory::default();
-        let map = Map::new(memory.clone()).expect("new");
-        let header_before = read_bytes(&memory, 0, 64);
-        let control_before = read_bytes(&memory, 64, 64);
-        let journal_before = read_bytes(&memory, 128, 24);
-        let buckets_before = read_bytes(&memory, 152, 8 * 136);
-
-        map.set_hash_seed(51).expect("empty seed change");
-        assert_eq!(map.hash_seed(), Ok(51));
-        assert_eq!(read_bytes(&memory, 0, 64), header_before);
-        assert_eq!(read_bytes(&memory, 128, 24), journal_before);
-        assert_eq!(read_bytes(&memory, 152, 8 * 136), buckets_before);
-        let mut expected_control = control_before;
-        expected_control[32..40].copy_from_slice(&51u64.to_le_bytes());
-        expected_control[48..56].copy_from_slice(&2u64.to_le_bytes());
-        assert_eq!(read_bytes(&memory, 64, 64), expected_control);
-
-        drop(map);
-        let map = Map::init(memory).expect("reopen changed seed");
-        assert_eq!(map.hash_seed(), Ok(51));
-        map.insert(1, 10).expect("insert");
-        assert_eq!(map.set_hash_seed(53), Err(MutationError::HashSeedNonEmpty));
-        assert_eq!(map.hash_seed(), Ok(51));
-        assert_eq!(map.get(&1), Ok(Some(10)));
-    }
-
-    #[test]
-    fn cloned_memory_handles_share_canonical_len_and_nonempty_seed_guard() {
+    fn cloned_memory_handles_share_canonical_len() {
         let memory = VectorMemory::default();
         let first = Map::new_with_hash_seed(memory.clone(), 101).expect("new first handle");
         let second = Map::init(memory).expect("open second handle");
 
         assert_eq!(first.insert(7, 70), Ok(None));
         assert_eq!(second.len(), Ok(1));
-        assert_eq!(
-            second.set_hash_seed(103),
-            Err(MutationError::HashSeedNonEmpty)
-        );
         assert_eq!(first.get(&7), Ok(Some(70)));
         assert_eq!(second.get(&7), Ok(Some(70)));
     }
 
     #[test]
-    fn cloned_memory_handle_refreshes_seed_for_routing_and_reopen() {
+    fn cloned_memory_handle_uses_the_immutable_seed() {
         let old_seed = 107;
-        let new_seed = 109;
         let memory = VectorMemory::default();
         let first = Map::new_with_hash_seed(memory.clone(), old_seed).expect("new first handle");
         let second = Map::init(memory.clone()).expect("open second handle");
-        first
-            .set_hash_seed(new_seed)
-            .expect("change seed while empty");
-
-        let old_secrets = hash_secrets(old_seed);
-        let new_secrets = hash_secrets(new_seed);
-        let (key, new_candidates) = (0u64..)
-            .find_map(|key| {
-                let bytes = key.to_bytes();
-                let old = Map::candidate_buckets_from_bytes(bytes.as_ref(), &old_secrets);
-                let new = Map::candidate_buckets_from_bytes(bytes.as_ref(), &new_secrets);
-                (old.0 != new.0 && old.0 != new.1 && old.1 != new.0 && old.1 != new.1)
-                    .then_some((key, new))
-            })
-            .expect("key with disjoint old and new candidates");
+        let (key, old_candidates) = (0u64..)
+            .map(|key| (key, first.candidate_buckets(&key)))
+            .find(|(_, candidates)| candidates.0 != candidates.1)
+            .expect("distinct candidates");
 
         assert_eq!(second.insert(key, 110), Ok(None));
         let actual_bucket = second.find(&key).expect("find through refreshed seed").0;
-        assert!(actual_bucket == new_candidates.0 || actual_bucket == new_candidates.1);
+        assert!(actual_bucket == old_candidates.0 || actual_bucket == old_candidates.1);
         assert_eq!(first.get(&key), Ok(Some(110)));
         drop(first);
         drop(second);
 
         let reopened = Map::init(memory).expect("reopen new seed routing");
-        assert_eq!(reopened.hash_seed(), Ok(new_seed));
+        assert_eq!(reopened.hash_seed(), Ok(old_seed));
         assert_eq!(reopened.len(), Ok(1));
         assert_eq!(reopened.get(&key), Ok(Some(110)));
     }
@@ -3392,18 +4362,25 @@ mod tests {
     }
 
     #[test]
-    fn experimental_one_hop_direct_insert_moves_one_resident_and_preserves_lifecycle() {
+    fn one_hop_admits_below_threshold_pressure_without_geometry_growth_and_preserves_lifecycle() {
         let memory = VectorMemory::default();
         let map = Map::new_with_hash_seed(memory.clone(), 401).expect("new one-hop fixture");
         let (residents, target, moved, destination) = seed_one_hop_fixture(&map);
         let before = map.control_region().expect("pre-one-hop control");
         let source = map.find(&moved).expect("movable resident").0;
-
-        assert_eq!(
-            map.insert(target, 90_001),
-            Err(MutationError::TablePressure)
+        let target_candidates = map.candidate_buckets(&target);
+        assert!(
+            before.len < Map::split_threshold(before.physical_buckets).expect("split threshold")
         );
-        assert_eq!(map.experimental_insert_one_hop(target, 90_001), Ok(None));
+        assert_eq!(
+            Map::occupancy_byte(&memory, map.header, target_candidates.0),
+            u8::MAX
+        );
+        assert_eq!(
+            Map::occupancy_byte(&memory, map.header, target_candidates.1),
+            u8::MAX
+        );
+        assert_eq!(map.insert(target, 90_001), Ok(None));
         let after = map.control_region().expect("post-one-hop control");
         assert_eq!(after.len, before.len + 1);
         assert_eq!(after.physical_buckets, before.physical_buckets);
@@ -3412,12 +4389,9 @@ mod tests {
         assert_eq!(map.find(&moved).expect("relocated resident").0, destination);
         assert_ne!(source, destination);
         assert_eq!(map.get(&target), Ok(Some(90_001)));
-        assert_eq!(
-            map.experimental_insert_one_hop(target, 90_002),
-            Ok(Some(90_001))
-        );
+        assert_eq!(map.insert(target, 90_002), Ok(Some(90_001)));
         assert_eq!(map.remove(&target), Ok(Some(90_002)));
-        assert_eq!(map.experimental_insert_one_hop(target, 90_003), Ok(None));
+        assert_eq!(map.insert(target, 90_003), Ok(None));
         for &(key, value) in &residents {
             assert_eq!(map.get(&key), Ok(Some(value)));
         }
@@ -3427,9 +4401,14 @@ mod tests {
         for (key, value) in residents {
             assert_eq!(reopened.get(&key), Ok(Some(value)));
         }
+        let cursor = reopened.scrub_snapshot().expect("post-one-hop snapshot");
+        assert!(matches!(
+            reopened.scrub_step(cursor, u64::MAX),
+            Ok(ScrubStep::Complete(_))
+        ));
     }
 
-    fn assert_experimental_one_hop_uses_current_geometry(
+    fn assert_one_hop_uses_current_geometry(
         level: u8,
         split_cursor: u64,
         physical_buckets: u64,
@@ -3478,7 +4457,7 @@ mod tests {
         assert_ne!(preceding_routes.0, destination);
         assert_ne!(preceding_routes.1, destination);
 
-        assert_eq!(map.experimental_insert_one_hop(target, 90_051), Ok(None));
+        assert_eq!(map.insert(target, 90_051), Ok(None));
         assert_eq!(map.get(&target), Ok(Some(90_051)));
         assert_eq!(map.find(&moved).expect("relocated resident").0, destination);
         for &(key, value) in &residents {
@@ -3501,17 +4480,17 @@ mod tests {
     }
 
     #[test]
-    fn experimental_one_hop_uses_current_nonzero_split_geometry_and_reopens() {
-        assert_experimental_one_hop_uses_current_geometry(3, 3, 11, (3, 2));
+    fn one_hop_uses_current_nonzero_split_geometry_and_reopens() {
+        assert_one_hop_uses_current_geometry(3, 3, 11, (3, 2));
     }
 
     #[test]
-    fn experimental_one_hop_uses_current_rollover_geometry_and_reopens() {
-        assert_experimental_one_hop_uses_current_geometry(4, 0, 16, (3, 7));
+    fn one_hop_uses_current_rollover_geometry_and_reopens() {
+        assert_one_hop_uses_current_geometry(4, 0, 16, (3, 7));
     }
 
     #[test]
-    fn experimental_one_hop_no_movable_resident_is_exactly_failure_atomic() {
+    fn one_hop_no_movable_resident_is_exactly_failure_atomic() {
         let memory = VectorMemory::default();
         let map = Map::new_with_hash_seed(memory.clone(), 59).expect("new exhausted fixture");
         let target = 0;
@@ -3527,7 +4506,7 @@ mod tests {
         let before = allocated_bytes(&memory);
         let control_before = map.control_region().expect("pre-exhausted control");
         assert_eq!(
-            map.experimental_insert_one_hop(target, 90_101),
+            map.insert(target, 90_101),
             Err(MutationError::TablePressure)
         );
         assert_eq!(allocated_bytes(&memory), before);
@@ -3539,7 +4518,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_one_hop_duplicate_candidates_probe_only_one_bucket() {
+    fn one_hop_duplicate_candidates_probe_only_one_bucket() {
         let memory = CountingMemory::default();
         let map = StableLinearHashMap::<u64, u64, _>::new_with_hash_seed(memory.clone(), 409)
             .expect("new duplicate-candidate fixture");
@@ -3568,7 +4547,7 @@ mod tests {
         let before = stable_snapshot(&map, &memory.inner);
         reset_counts(&memory);
         assert_eq!(
-            map.experimental_insert_one_hop(target, 90_201),
+            map.insert(target, 90_201),
             Err(MutationError::TablePressure)
         );
         assert_eq!(stable_snapshot(&map, &memory.inner), before);
@@ -3591,7 +4570,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_one_hop_prewrite_callback_and_error_matrix_is_atomic() {
+    fn one_hop_prewrite_callback_and_error_matrix_is_atomic() {
         type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
         type ValueMap = StableLinearHashMap<CallbackKey, CallbackValue, VectorMemory>;
 
@@ -3636,7 +4615,7 @@ mod tests {
             };
             let before = stable_snapshot(&*callback_map, &memory);
             assert_eq!(
-                callback_map.experimental_insert_one_hop(target, 90_211),
+                callback_map.insert(target, 90_211),
                 Err(expected),
                 "{callback_kind}"
             );
@@ -3667,7 +4646,7 @@ mod tests {
         });
         let before = stable_snapshot(&*map, &memory);
         assert!(matches!(
-            map.experimental_insert_one_hop(
+            map.insert(
                 CallbackKey::plain(7),
                 CallbackValue {
                     value: 70,
@@ -3688,16 +4667,13 @@ mod tests {
             let map = CallbackMap::new_with_hash_seed(memory.clone(), 409).expect("epoch map");
             control::write_mutation_epoch(&memory, map.header.control_offset, epoch);
             let before = stable_snapshot(&map, &memory);
-            assert_eq!(
-                map.experimental_insert_one_hop(CallbackKey::plain(7), 70),
-                Err(expected)
-            );
+            assert_eq!(map.insert(CallbackKey::plain(7), 70), Err(expected));
             assert_eq!(stable_snapshot(&map, &memory), before);
         }
     }
 
     #[test]
-    fn experimental_one_hop_exhausted_scan_is_bounded_and_deterministic() {
+    fn one_hop_exhausted_scan_is_bounded_and_deterministic() {
         type ProbeMap = StableLinearHashMap<ProbeKey, u64, CountingMemory>;
 
         let memory = CountingMemory::default();
@@ -3737,7 +4713,7 @@ mod tests {
         reset_counts(&memory);
         PROBED_HASH_KEYS.with(|keys| keys.borrow_mut().clear());
         RECORD_HASH_KEYS.with(|record| record.set(true));
-        let result = map.experimental_insert_one_hop(ProbeKey(target), 90_301);
+        let result = map.insert(ProbeKey(target), 90_301);
         RECORD_HASH_KEYS.with(|record| record.set(false));
         assert_eq!(result, Err(MutationError::TablePressure));
         let probed = PROBED_HASH_KEYS.with(|keys| keys.borrow().clone());
@@ -3748,7 +4724,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_one_hop_success_probes_at_most_sixteen_and_relocates_exactly_one() {
+    fn one_hop_success_probes_at_most_sixteen_and_relocates_exactly_one() {
         type ProbeMap = StableLinearHashMap<ProbeKey, u64, CountingMemory>;
 
         let probe = Map::new_with_hash_seed(VectorMemory::default(), 421).expect("new seed probe");
@@ -3772,7 +4748,7 @@ mod tests {
         reset_counts(&memory);
         PROBED_HASH_KEYS.with(|keys| keys.borrow_mut().clear());
         RECORD_HASH_KEYS.with(|record| record.set(true));
-        let result = map.experimental_insert_one_hop(ProbeKey(target), 90_351);
+        let result = map.insert(ProbeKey(target), 90_351);
         RECORD_HASH_KEYS.with(|record| record.set(false));
         assert_eq!(result, Ok(None));
         let probed = PROBED_HASH_KEYS.with(|keys| keys.borrow().clone());
@@ -3793,7 +4769,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_one_hop_alias_mutation_invalidates_planning() {
+    fn one_hop_alias_mutation_invalidates_planning() {
         type CallbackMap = StableLinearHashMap<CallbackKey, u64, VectorMemory>;
 
         let probe = Map::new_with_hash_seed(VectorMemory::default(), 421).expect("new probe");
@@ -3825,8 +4801,7 @@ mod tests {
         let callback: Rc<dyn Fn()> = Rc::new(move || {
             if !attempted_for_callback.replace(true) {
                 assert_eq!(
-                    nested_for_callback
-                        .experimental_insert_one_hop(CallbackKey::plain(nested_key), 90_401,),
+                    nested_for_callback.insert(CallbackKey::plain(nested_key), 90_401,),
                     Ok(Some(nested_key ^ 0xa5a5_a5a5_a5a5_a5a5))
                 );
             }
@@ -3839,10 +4814,7 @@ mod tests {
             invalid: false,
         };
         let before = outer.control_region().expect("pre-alias control");
-        assert_eq!(
-            outer.experimental_insert_one_hop(target, 90_402),
-            Err(MutationError::InProgress)
-        );
+        assert_eq!(outer.insert(target, 90_402), Err(MutationError::InProgress));
         assert!(attempted.get());
         assert_eq!(outer.get(&CallbackKey::plain(target_value)), Ok(None));
         assert_eq!(outer.get(&CallbackKey::plain(nested_key)), Ok(Some(90_401)));
@@ -3854,7 +4826,7 @@ mod tests {
     }
 
     #[test]
-    fn every_experimental_one_hop_apply_write_boundary_fails_closed() {
+    fn every_one_hop_apply_write_boundary_fails_closed() {
         type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
 
         for fail_write in 2..=5 {
@@ -3864,7 +4836,7 @@ mod tests {
             memory.writes.set(0);
             memory.fail_write.set(Some(fail_write));
             let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = map.experimental_insert_one_hop(target, 90_501);
+                let _ = map.insert(target, 90_501);
             }));
             assert!(trapped.is_err(), "write boundary {fail_write}");
             memory.fail_write.set(None);
@@ -3975,7 +4947,7 @@ mod tests {
     }
 
     #[test]
-    fn post_split_pressure_rejects_before_grow_or_epoch_change() {
+    fn post_split_pressure_uses_one_hop_without_geometry_growth() {
         let memory = VectorMemory::default();
         let map = Map::new_with_hash_seed(memory.clone(), 239).expect("new pressure fixture");
         let (mut residents, _, _) =
@@ -4020,14 +4992,39 @@ mod tests {
                     ) == (bucket, bucket)
             })
             .expect("pressured target");
-        let bytes_before = allocated_bytes(&memory);
+        assert_eq!(map.candidate_buckets(&target), (bucket, bucket));
+        assert_eq!(Map::occupancy_byte(&memory, map.header, bucket), u8::MAX);
+        let before = map.control_region().expect("pre-one-hop control");
+        let before_buckets = residents
+            .iter()
+            .map(|&(key, _)| (key, map.find(&key).expect("pre-one-hop resident").0))
+            .collect::<Vec<_>>();
         let size_before = memory.size();
-        assert_eq!(
-            map.insert(target, 30_101),
-            Err(MutationError::TablePressure)
-        );
+        assert_eq!(map.insert(target, 30_101), Ok(None));
+        let after = map.control_region().expect("post-one-hop control");
         assert_eq!(memory.size(), size_before);
-        assert_eq!(allocated_bytes(&memory), bytes_before);
+        assert_eq!(after.len, before.len + 1);
+        assert_eq!(after.physical_buckets, before.physical_buckets);
+        assert_eq!(after.split_cursor, before.split_cursor);
+        assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
+        assert_eq!(map.get(&target), Ok(Some(30_101)));
+        assert_eq!(
+            before_buckets
+                .iter()
+                .filter(
+                    |&&(key, bucket)| map.find(&key).expect("post-one-hop resident").0 != bucket
+                )
+                .count(),
+            1
+        );
+        for &(key, value) in &residents {
+            assert_eq!(map.get(&key), Ok(Some(value)));
+        }
+        let reopened = Map::init(memory).expect("reopen post-split one-hop fixture");
+        assert_eq!(reopened.get(&target), Ok(Some(30_101)));
+        for (key, value) in residents {
+            assert_eq!(reopened.get(&key), Ok(Some(value)));
+        }
     }
 
     #[test]
@@ -4141,7 +5138,7 @@ mod tests {
     fn every_split_apply_write_boundary_leaves_odd_epoch_and_reopen_fails_closed() {
         type FailMap = StableLinearHashMap<u64, u64, FailpointMemory>;
 
-        for fail_write in 2..=11 {
+        for fail_write in 2..=9 {
             let memory = FailpointMemory::default();
             let map = FailMap::new_with_hash_seed(memory.clone(), 229).expect("new panic fixture");
             let (_, _, target) =
@@ -4219,48 +5216,31 @@ mod tests {
     }
 
     #[test]
-    fn non_idle_split_control_and_journal_fail_closed() {
-        let split_memory = VectorMemory::default();
-        let split = Map::new(split_memory.clone()).expect("new split fixture");
-        split_memory.write(split.header.control_offset + 9, &[1]);
-        assert!(matches!(
-            Map::init(split_memory),
-            Err(InitError::RecoveryRequired)
-        ));
-
-        let journal_memory = VectorMemory::default();
-        let journal = Map::new(journal_memory.clone()).expect("new journal fixture");
-        journal_memory.write(journal.header.control_offset + 10, &[1]);
-        assert!(matches!(
-            Map::init(journal_memory),
-            Err(InitError::RecoveryRequired)
-        ));
+    fn nonzero_control_reserved_bytes_fail_closed() {
+        let memory = VectorMemory::default();
+        let map = Map::new(memory.clone()).expect("new reserved fixture");
+        memory.write(map.header.control_offset + 32, &[1]);
+        assert!(matches!(Map::init(memory), Err(InitError::InvalidLayout)));
     }
 
     #[test]
-    fn reopen_rejects_invalid_occupancy_and_len() {
+    fn reopen_defers_bucket_corruption_but_rejects_impossible_len() {
         let occupancy_memory = VectorMemory::default();
         let occupancy = Map::new(occupancy_memory.clone()).expect("new occupancy fixture");
         let middle_bucket =
             occupancy.header.buckets_offset + 3 * occupancy.header.bucket_page_stride;
         occupancy_memory.write(middle_bucket, &0x0100u16.to_le_bytes());
-        assert!(matches!(
-            Map::init(occupancy_memory),
-            Err(InitError::InvalidLayout)
-        ));
+        assert!(Map::init(occupancy_memory).is_ok());
 
         let reserved_memory = VectorMemory::default();
         let reserved = Map::new(reserved_memory.clone()).expect("new reserved fixture");
         let last_bucket = reserved.header.buckets_offset + 7 * reserved.header.bucket_page_stride;
         reserved_memory.write(last_bucket + 2, &[1]);
-        assert!(matches!(
-            Map::init(reserved_memory),
-            Err(InitError::InvalidLayout)
-        ));
+        assert!(Map::init(reserved_memory).is_ok());
 
         let len_memory = VectorMemory::default();
         let len_map = Map::new(len_memory.clone()).expect("new len fixture");
-        control::write_len(&len_memory, len_map.header.control_offset, 1);
+        control::write_len(&len_memory, len_map.header.control_offset, 65);
         assert!(matches!(
             Map::init(len_memory),
             Err(InitError::InvalidLayout)
@@ -4271,8 +5251,7 @@ mod tests {
     fn reopen_accepts_midround_geometry_and_rejects_invalid_geometry() {
         let smaller_memory = VectorMemory::default();
         let smaller = Map::new(smaller_memory.clone()).expect("new smaller fixture");
-        smaller_memory.write(smaller.header.control_offset + 8, &[2]);
-        smaller_memory.write(smaller.header.control_offset + 24, &4u64.to_le_bytes());
+        smaller_memory.write(smaller.header.control_offset + 8, &4u64.to_le_bytes());
         assert!(matches!(
             Map::init(smaller_memory),
             Err(InitError::InvalidLayout)
@@ -4280,8 +5259,7 @@ mod tests {
 
         let split_memory = VectorMemory::default();
         let split = Map::new(split_memory.clone()).expect("new split fixture");
-        split_memory.write(split.header.control_offset + 16, &1u64.to_le_bytes());
-        split_memory.write(split.header.control_offset + 24, &9u64.to_le_bytes());
+        split_memory.write(split.header.control_offset + 8, &9u64.to_le_bytes());
         let reopened = Map::init(split_memory).expect("reopen mid-round geometry");
         let control = reopened.control_region().expect("idle mid-round control");
         assert_eq!(control.level, 3);
@@ -4292,12 +5270,8 @@ mod tests {
         let invalid_cursor_memory = VectorMemory::default();
         let invalid_cursor = Map::new(invalid_cursor_memory.clone()).expect("new cursor fixture");
         invalid_cursor_memory.write(
-            invalid_cursor.header.control_offset + 16,
-            &8u64.to_le_bytes(),
-        );
-        invalid_cursor_memory.write(
-            invalid_cursor.header.control_offset + 24,
-            &16u64.to_le_bytes(),
+            invalid_cursor.header.control_offset + 8,
+            &7u64.to_le_bytes(),
         );
         assert!(matches!(
             Map::init(invalid_cursor_memory),
@@ -4306,7 +5280,7 @@ mod tests {
 
         let mismatch_memory = VectorMemory::default();
         let mismatch = Map::new(mismatch_memory.clone()).expect("new mismatch fixture");
-        mismatch_memory.write(mismatch.header.control_offset + 16, &1u64.to_le_bytes());
+        mismatch_memory.write(mismatch.header.control_offset + 24, &0u64.to_le_bytes());
         assert!(matches!(
             Map::init(mismatch_memory),
             Err(InitError::InvalidLayout)
@@ -4314,7 +5288,7 @@ mod tests {
 
         let high_memory = VectorMemory::default();
         let high = Map::new(high_memory.clone()).expect("new high fixture");
-        high_memory.write(high.header.control_offset + 8, &[63]);
+        high_memory.write(high.header.control_offset + 8, &u64::MAX.to_le_bytes());
         assert!(matches!(
             Map::init(high_memory),
             Err(InitError::InvalidLayout)
@@ -4322,8 +5296,7 @@ mod tests {
 
         let rollover_memory = VectorMemory::default();
         let rollover = Map::new(rollover_memory.clone()).expect("new rollover fixture");
-        rollover_memory.write(rollover.header.control_offset + 8, &[4]);
-        rollover_memory.write(rollover.header.control_offset + 24, &16u64.to_le_bytes());
+        rollover_memory.write(rollover.header.control_offset + 8, &16u64.to_le_bytes());
         let reopened = Map::init(rollover_memory).expect("valid settled rollover");
         assert_eq!(
             reopened
@@ -4336,8 +5309,7 @@ mod tests {
         let extent_memory = FailpointMemory::default();
         let extent = StableLinearHashMap::<u64, u64, _>::new(extent_memory.clone())
             .expect("new extent fixture");
-        extent_memory.write(extent.header.control_offset + 8, &[9]);
-        extent_memory.write(extent.header.control_offset + 24, &512u64.to_le_bytes());
+        extent_memory.write(extent.header.control_offset + 8, &512u64.to_le_bytes());
         extent_memory.size_override.set(Some(1));
         assert!(matches!(
             StableLinearHashMap::<u64, u64, _>::init(extent_memory),
@@ -4487,6 +5459,652 @@ mod tests {
     }
 
     #[test]
+    fn physical_scan_empty_and_sparse_pages_use_explicit_eof() {
+        let empty = Map::new_with_hash_seed(VectorMemory::default(), 191).expect("empty map");
+        let start = empty.scan_start().expect("empty scan start");
+        let empty_page = empty.scan_step(start, 2).expect("empty bounded page");
+        assert!(empty_page.entries().is_empty());
+        assert_eq!(empty_page.examined_slots(), 2);
+        assert!(!empty_page.exhausted());
+        assert_eq!(empty_page.next_cursor().next_slot(), 2);
+
+        let mut final_slot = start;
+        final_slot.next_slot = u64::from(BUCKET_SIZE) * INITIAL_BUCKETS - 1;
+        let eof = empty.scan_step(final_slot, 8).expect("explicit eof page");
+        assert!(eof.entries().is_empty());
+        assert_eq!(eof.examined_slots(), 1);
+        assert!(eof.exhausted());
+
+        let sparse = Map::new_with_hash_seed(VectorMemory::default(), 193).expect("sparse map");
+        let key = (0u64..)
+            .find(|key| sparse.candidate_buckets(key).0 < INITIAL_BUCKETS - 1)
+            .expect("nonfinal sparse bucket");
+        sparse.insert(key, 1_930).expect("sparse entry");
+        let (bucket, slot, _) = sparse.find(&key).expect("sparse physical slot");
+        let mut cursor = sparse.scan_start().expect("sparse scan start");
+        cursor.next_slot = bucket * u64::from(BUCKET_SIZE) + u64::from(slot);
+        let short = sparse.scan_step(cursor, 2).expect("short non-eof page");
+        assert_eq!(short.entries(), &[(key, 1_930)]);
+        assert_eq!(short.examined_slots(), 2);
+        assert!(!short.exhausted());
+    }
+
+    #[test]
+    fn physical_scan_respects_exact_bucket_boundaries() {
+        let map = Map::new_with_hash_seed(VectorMemory::default(), 197).expect("map");
+        map.write_key_bytes(0, 7, 7u64.to_bytes().as_ref());
+        map.write_value_bytes(0, 7, 70u64.to_bytes().as_ref());
+        map.write_occupancy(0, 1 << 7);
+        map.write_key_bytes(1, 0, 8u64.to_bytes().as_ref());
+        map.write_value_bytes(1, 0, 80u64.to_bytes().as_ref());
+        map.write_occupancy(1, 1);
+
+        let start = map.scan_start().expect("scan start");
+        let first = map.scan_step(start, 8).expect("first bucket");
+        assert_eq!(first.entries(), &[(7, 70)]);
+        assert_eq!(first.examined_slots(), 8);
+        assert_eq!(first.next_cursor().next_slot(), 8);
+        assert!(!first.exhausted());
+
+        let second = map
+            .scan_step(first.next_cursor(), 1)
+            .expect("first slot of second bucket");
+        assert_eq!(second.entries(), &[(8, 80)]);
+        assert_eq!(second.examined_slots(), 1);
+        assert_eq!(second.next_cursor().next_slot(), 9);
+        assert!(!second.exhausted());
+    }
+
+    #[test]
+    fn physical_scan_is_exactly_once_on_an_unchanged_map_and_replayable() {
+        let map = Map::new_with_hash_seed(VectorMemory::default(), 199).expect("map");
+        let mut expected = Vec::new();
+        for key in 0..20 {
+            let entry = (key, key + 1_990);
+            map.insert(entry.0, entry.1).expect("seed entry");
+            expected.push(entry);
+        }
+
+        let initial = map.scan_start().expect("scan start");
+        let first = map.scan_step(initial, 7).expect("first page");
+        assert_eq!(map.scan_step(initial, 7), Ok(first));
+        let first = map.scan_step(initial, 7).expect("replayed first page");
+        let mut actual = first.entries().to_vec();
+        let mut cursor = first.next_cursor();
+        let mut exhausted = first.exhausted();
+        while !exhausted {
+            let page = map.scan_step(cursor, 7).expect("next page");
+            actual.extend_from_slice(page.entries());
+            cursor = page.next_cursor();
+            exhausted = page.exhausted();
+        }
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+
+        let eof = map.scan_step(cursor, 7).expect("replayed eof");
+        assert!(eof.entries().is_empty());
+        assert_eq!(eof.examined_slots(), 0);
+        assert!(eof.exhausted());
+    }
+
+    #[test]
+    fn physical_scan_does_not_fence_mutations_between_steps() {
+        let map = Map::new_with_hash_seed(VectorMemory::default(), 209).expect("map");
+        map.insert(1, 10).expect("initial entry");
+        let first = map
+            .scan_step(map.scan_start().expect("scan start"), 1)
+            .expect("first step");
+        map.insert(2, 20).expect("between-step mutation");
+
+        let second = map
+            .scan_step(first.next_cursor(), 1)
+            .expect("cursor remains usable at unchanged geometry");
+        assert_eq!(second.examined_slots(), 1);
+        assert_eq!(second.next_cursor().next_slot(), 2);
+    }
+
+    #[test]
+    fn physical_scan_discards_output_when_alias_mutates_mid_step() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, CallbackValue, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = CallbackMap::new_with_hash_seed(memory.clone(), 211).expect("map");
+        map.insert(
+            CallbackKey::plain(1),
+            CallbackValue {
+                value: 10,
+                on_encode: None,
+                invalid: false,
+            },
+        )
+        .expect("seed entry");
+        let alias = Rc::new(CallbackMap::open(memory).expect("alias"));
+        let cursor = map.scan_start().expect("scan start");
+        let fired = Rc::new(Cell::new(false));
+        let alias_for_callback = Rc::clone(&alias);
+        let fired_for_callback = Rc::clone(&fired);
+        RESIDENT_DECODE_CALLBACK.with(|callback| {
+            *callback.borrow_mut() = Some(Rc::new(move || {
+                if fired_for_callback.replace(true) {
+                    return;
+                }
+                alias_for_callback
+                    .insert(
+                        CallbackKey::plain(2),
+                        CallbackValue {
+                            value: 20,
+                            on_encode: None,
+                            invalid: false,
+                        },
+                    )
+                    .expect("nested alias mutation");
+            }));
+        });
+
+        assert!(matches!(
+            map.scan_step(cursor, u64::MAX),
+            Err(ScanError::InProgress)
+        ));
+        assert!(fired.get());
+        RESIDENT_DECODE_CALLBACK.with(|callback| callback.borrow_mut().take());
+    }
+
+    #[test]
+    fn physical_scan_requires_restart_after_split_or_reset() {
+        let split_map = Map::new_with_hash_seed(VectorMemory::default(), 223).expect("split map");
+        let split_cursor = split_map.scan_start().expect("pre-split cursor");
+        let (_, _, target) = seed_threshold_split_fixture(&split_map, 3, 0, 8, 4, SplitTarget::New);
+        split_map.insert(target, 2_230).expect("split insertion");
+        assert_eq!(
+            split_map
+                .control_region()
+                .expect("split control")
+                .physical_buckets,
+            INITIAL_BUCKETS + 1
+        );
+        assert!(matches!(
+            split_map.scan_step(split_cursor, 1),
+            Err(ScanError::RestartRequired)
+        ));
+
+        let reset_map = Map::new_with_hash_seed(VectorMemory::default(), 227).expect("reset map");
+        let reset_cursor = reset_map.scan_start().expect("pre-reset cursor");
+        let incarnation = reset_map.control_region().expect("control").incarnation;
+        reset_map.reset(incarnation).expect("owner reset");
+        assert!(matches!(
+            reset_map.scan_step(reset_cursor, 1),
+            Err(ScanError::RestartRequired)
+        ));
+    }
+
+    #[test]
+    fn serialized_physical_scan_cursor_survives_exact_reopen() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 229).expect("map");
+        let mut expected = Vec::new();
+        for key in 0..10 {
+            let entry = (key, key + 2_290);
+            map.insert(entry.0, entry.1).expect("seed entry");
+            expected.push(entry);
+        }
+        let first = map
+            .scan_step(map.scan_start().expect("scan start"), 9)
+            .expect("first page");
+        let mut actual = first.entries().to_vec();
+        let encoded = first.next_cursor().encode();
+        assert_eq!(encoded.len(), ScanCursor::ENCODED_SIZE);
+        drop(map);
+
+        let reopened = Map::open(memory).expect("exact reopen");
+        let mut cursor = ScanCursor::decode(&encoded).expect("decode persisted cursor");
+        assert_eq!(cursor.hash_seed(), 229);
+        assert_eq!(cursor.physical_buckets(), INITIAL_BUCKETS);
+        loop {
+            let page = reopened.scan_step(cursor, 9).expect("reopened page");
+            actual.extend_from_slice(page.entries());
+            cursor = page.next_cursor();
+            if page.exhausted() {
+                break;
+            }
+        }
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn physical_scan_rejects_zero_budget_and_malformed_cursor() {
+        let map = Map::new_with_hash_seed(VectorMemory::default(), 233).expect("map");
+        let cursor = map.scan_start().expect("scan start");
+        assert!(matches!(
+            map.scan_step(cursor, 0),
+            Err(ScanError::ZeroBudget)
+        ));
+
+        let encoded = cursor.encode();
+        assert_eq!(
+            ScanCursor::decode(&encoded[..encoded.len() - 1]),
+            Err(ScanError::InvalidCursor)
+        );
+        let mut bad_magic = encoded;
+        bad_magic[0] ^= 0xff;
+        assert_eq!(
+            ScanCursor::decode(&bad_magic),
+            Err(ScanError::InvalidCursor)
+        );
+        let mut bad_reserved = encoded;
+        bad_reserved[4] = 1;
+        assert_eq!(
+            ScanCursor::decode(&bad_reserved),
+            Err(ScanError::InvalidCursor)
+        );
+
+        let mut out_of_bounds = cursor;
+        out_of_bounds.next_slot = INITIAL_BUCKETS * u64::from(BUCKET_SIZE) + 1;
+        assert!(matches!(
+            map.scan_step(out_of_bounds, 1),
+            Err(ScanError::InvalidCursor)
+        ));
+        let other = Map::new_with_hash_seed(VectorMemory::default(), 239).expect("other map");
+        assert!(matches!(
+            other.scan_step(cursor, 1),
+            Err(ScanError::InvalidCursor)
+        ));
+    }
+
+    #[test]
+    fn physical_scan_read_work_is_bounded_by_examined_slots() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 241).expect("map");
+        for slot in 0..BUCKET_SIZE {
+            let key = u64::from(slot);
+            map.write_key_bytes(0, slot, key.to_bytes().as_ref());
+            map.write_value_bytes(0, slot, (key + 100).to_bytes().as_ref());
+        }
+        map.write_occupancy(0, u8::MAX);
+        map.write_key_bytes(1, 0, 8u64.to_bytes().as_ref());
+        map.write_value_bytes(1, 0, 108u64.to_bytes().as_ref());
+        map.write_occupancy(1, 1);
+        let cursor = map.scan_start().expect("scan start");
+        reset_counts(&memory);
+
+        let page = map.scan_step(cursor, 9).expect("bounded page");
+        assert_eq!(page.entries().len(), 9);
+        assert_eq!(page.examined_slots(), 9);
+        assert_eq!(page.next_cursor().next_slot(), 9);
+        assert!(!page.exhausted());
+        assert_eq!(memory.read_calls.get(), 23);
+        assert_eq!(memory.read_bytes.get(), 284);
+        let bucket_reads = memory
+            .read_ranges
+            .borrow()
+            .iter()
+            .filter(|(offset, _)| *offset >= BUCKETS_OFFSET)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(bucket_reads.len(), 20);
+        assert!(bucket_reads.iter().all(|(offset, _)| {
+            let bucket = (offset - BUCKETS_OFFSET) / map.header.bucket_page_stride;
+            bucket <= 1
+        }));
+        assert_eq!(memory.write_calls.get(), 0);
+    }
+
+    #[test]
+    fn bounded_scrub_replays_cursor_and_completes_without_writes() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 107).expect("new");
+        for key in 0..12 {
+            assert_eq!(map.insert(key, key + 1_000), Ok(None));
+        }
+        let initial = map.scrub_snapshot().expect("snapshot");
+
+        reset_counts(&memory);
+        let first = map.scrub_step(initial, 2).expect("first step");
+        let replay = map.scrub_step(initial, 2).expect("replayed first step");
+        assert_eq!(first, replay);
+        assert!(
+            matches!(first, ScrubStep::InProgress(cursor) if cursor.next_primary_bucket() == 2)
+        );
+        assert_eq!(memory.write_calls.get(), 0);
+
+        let mut cursor = match first {
+            ScrubStep::InProgress(cursor) => cursor,
+            ScrubStep::Complete(_) => panic!("two buckets cannot complete this fixture"),
+        };
+        loop {
+            match map.scrub_step(cursor, 3).expect("bounded step") {
+                ScrubStep::InProgress(next) => cursor = next,
+                ScrubStep::Complete(snapshot) => {
+                    assert_eq!(snapshot, initial.snapshot());
+                    break;
+                }
+            }
+        }
+        assert_eq!(memory.write_calls.get(), 0);
+    }
+
+    #[test]
+    fn bounded_scrub_reads_only_budgeted_primary_buckets_and_candidates() {
+        type CountingMap = StableLinearHashMap<u64, u64, CountingMemory>;
+
+        let memory = CountingMemory::default();
+        let map = CountingMap::new_with_hash_seed(memory.clone(), 109).expect("new");
+        let primary = 0;
+        let mut keys = Vec::new();
+        let mut legal_candidates = std::collections::BTreeSet::from([primary]);
+        for key in 0u64.. {
+            let candidates = map.candidate_buckets(&key);
+            if candidates.0 != candidates.1
+                && (candidates.0 == primary || candidates.1 == primary)
+                && !keys.iter().any(|(existing, _)| *existing == key)
+            {
+                legal_candidates.extend([candidates.0, candidates.1]);
+                keys.push((key, candidates));
+                if keys.len() == BUCKET_SIZE as usize {
+                    break;
+                }
+            }
+        }
+        assert_eq!(keys.len(), BUCKET_SIZE as usize);
+        for (slot, (key, _)) in keys.iter().enumerate() {
+            map.write_key_bytes(primary, slot as u32, &key.to_bytes());
+            map.write_value_bytes(primary, slot as u32, &key.to_bytes());
+        }
+        map.write_occupancy(primary, u8::MAX);
+        for candidate in legal_candidates
+            .iter()
+            .copied()
+            .filter(|bucket| *bucket != primary)
+        {
+            let mut occupancy = 0;
+            for slot in 0..BUCKET_SIZE {
+                let filler = (0u64..)
+                    .find(|key| {
+                        !keys.iter().any(|(existing, _)| existing == key) && {
+                            let routes = map.candidate_buckets(key);
+                            routes.0 == candidate || routes.1 == candidate
+                        }
+                    })
+                    .expect("candidate filler");
+                keys.push((filler, map.candidate_buckets(&filler)));
+                map.write_key_bytes(candidate, slot, &filler.to_bytes());
+                map.write_value_bytes(candidate, slot, &filler.to_bytes());
+                occupancy |= 1 << slot;
+            }
+            map.write_occupancy(candidate, occupancy);
+        }
+        let total_entries = legal_candidates.len() as u64 * u64::from(BUCKET_SIZE);
+        control::write_len(&memory, map.header.control_offset, total_entries);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        reset_counts(&memory);
+
+        let step = map.scrub_step(cursor, 1).expect("one primary bucket");
+        assert!(matches!(step, ScrubStep::InProgress(_)));
+        let bucket_ranges = memory
+            .read_ranges
+            .borrow()
+            .iter()
+            .filter(|(offset, _)| *offset >= BUCKETS_OFFSET)
+            .count();
+        let per_occupied_slot = 2 + 2 * (1 + BUCKET_SIZE as usize);
+        let maximum_bucket_reads = 1 + BUCKET_SIZE as usize * per_occupied_slot;
+        assert!(bucket_ranges <= maximum_bucket_reads);
+        for &(offset, _) in memory
+            .read_ranges
+            .borrow()
+            .iter()
+            .filter(|(offset, _)| *offset >= BUCKETS_OFFSET)
+        {
+            let bucket = (offset - BUCKETS_OFFSET) / map.header.bucket_page_stride;
+            assert!(legal_candidates.contains(&bucket));
+        }
+        assert_eq!(memory.write_calls.get(), 0);
+    }
+
+    #[test]
+    fn bounded_scrub_rejects_zero_budget_and_stale_alias_cursor() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 113).expect("new");
+        let alias = Map::open(memory).expect("alias");
+        let cursor = map.scrub_snapshot().expect("snapshot");
+
+        assert_eq!(map.scrub_step(cursor, 0), Err(ScrubError::ZeroBudget));
+        alias.insert(1, 10).expect("alias mutation");
+        assert_eq!(map.scrub_step(cursor, 1), Err(ScrubError::Stale));
+    }
+
+    #[test]
+    fn bounded_scrub_rejects_cursor_from_another_map_or_handle() {
+        let first = Map::new_with_hash_seed(VectorMemory::default(), 179).expect("first map");
+        let second = Map::new_with_hash_seed(VectorMemory::default(), 179).expect("second map");
+        for key in 0..4 {
+            first.insert(key, key).expect("first seed");
+            second.insert(key, key).expect("second seed");
+        }
+        let cursor = first.scrub_snapshot().expect("first snapshot");
+        let advanced = match first.scrub_step(cursor, 1).expect("first step") {
+            ScrubStep::InProgress(cursor) => cursor,
+            ScrubStep::Complete(_) => panic!("one bucket cannot complete"),
+        };
+        assert_eq!(
+            second.scrub_step(advanced, u64::MAX),
+            Err(ScrubError::InvalidCursor)
+        );
+
+        let memory = VectorMemory::default();
+        let original = Map::new_with_hash_seed(memory.clone(), 181).expect("original");
+        let alias = Map::open(memory).expect("alias");
+        let cursor = original.scrub_snapshot().expect("original snapshot");
+        assert_eq!(alias.scrub_step(cursor, 1), Err(ScrubError::InvalidCursor));
+    }
+
+    #[test]
+    fn bounded_scrub_rejects_reserved_occupancy_and_length_mismatch() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 127).expect("new");
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        memory.write(Map::bucket_base(map.header, 0), &[0, 1]);
+        assert_eq!(
+            map.scrub_step(cursor, 1),
+            Err(ScrubError::InvalidOccupancy { bucket: 0 })
+        );
+
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 131).expect("new");
+        control::write_len(&memory, map.header.control_offset, 1);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        assert_eq!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::LengthMismatch {
+                expected: 1,
+                actual: 0
+            })
+        );
+    }
+
+    #[test]
+    fn bounded_scrub_rejects_unreachable_and_duplicate_placements() {
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 137).expect("new");
+        let key = 7;
+        let candidates = map.candidate_buckets(&key);
+        let unreachable = (0..INITIAL_BUCKETS)
+            .find(|bucket| *bucket != candidates.0 && *bucket != candidates.1)
+            .expect("unreachable bucket");
+        map.write_key_bytes(unreachable, 0, &key.to_bytes());
+        map.write_value_bytes(unreachable, 0, &70u64.to_bytes());
+        map.write_occupancy(unreachable, 1);
+        control::write_len(&memory, map.header.control_offset, 1);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        assert_eq!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::UnreachablePlacement {
+                bucket: unreachable,
+                slot: 0
+            })
+        );
+
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 139).expect("new");
+        let key = (0u64..)
+            .find(|key| {
+                let candidates = map.candidate_buckets(key);
+                candidates.0 != candidates.1
+            })
+            .expect("two candidates");
+        let candidates = map.candidate_buckets(&key);
+        for bucket in [candidates.0, candidates.1] {
+            map.write_key_bytes(bucket, 0, &key.to_bytes());
+            map.write_value_bytes(bucket, 0, &key.to_bytes());
+            map.write_occupancy(bucket, 1);
+        }
+        control::write_len(&memory, map.header.control_offset, 2);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        assert!(matches!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::DuplicateKey { .. })
+        ));
+
+        let memory = VectorMemory::default();
+        let map = Map::new_with_hash_seed(memory.clone(), 149).expect("new");
+        let key = (0u64..)
+            .find(|key| {
+                let candidates = map.candidate_buckets(key);
+                candidates.0 == candidates.1
+            })
+            .expect("one candidate");
+        let bucket = map.candidate_buckets(&key).0;
+        for slot in 0..2 {
+            map.write_key_bytes(bucket, slot, &key.to_bytes());
+            map.write_value_bytes(bucket, slot, &key.to_bytes());
+        }
+        map.write_occupancy(bucket, 0b11);
+        control::write_len(&memory, map.header.control_offset, 2);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        assert!(matches!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::DuplicateKey { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_scrub_rejects_noncanonical_fixed_encodings_and_forged_cursor() {
+        let memory = VectorMemory::default();
+        let map = StableLinearHashMap::<BadKey, u64, _>::new_with_hash_seed(memory.clone(), 151)
+            .expect("new bad-key map");
+        let bucket = map.candidate_buckets(&BadKey(1)).0;
+        map.write_key_bytes(bucket, 0, &1u64.to_be_bytes());
+        map.write_value_bytes(bucket, 0, &10u64.to_bytes());
+        map.write_occupancy(bucket, 1);
+        control::write_len(&memory, map.header.control_offset, 1);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        assert_eq!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::InvalidKeyEncoding { bucket, slot: 0 })
+        );
+
+        let memory = VectorMemory::default();
+        let map = StableLinearHashMap::<u64, BadValue, _>::new_with_hash_seed(memory.clone(), 157)
+            .expect("new bad-value map");
+        let key = 2u64;
+        let bucket = map.candidate_buckets(&key).0;
+        map.write_key_bytes(bucket, 0, &key.to_bytes());
+        map.write_value_bytes(bucket, 0, &20u64.to_be_bytes());
+        map.write_occupancy(bucket, 1);
+        control::write_len(&memory, map.header.control_offset, 1);
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        assert_eq!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::InvalidValueEncoding { bucket, slot: 0 })
+        );
+
+        let map = Map::new_with_hash_seed(VectorMemory::default(), 163).expect("new");
+        let mut forged = map.scrub_snapshot().expect("snapshot");
+        forged.next_primary_bucket = forged.snapshot.physical_buckets + 1;
+        assert_eq!(map.scrub_step(forged, 1), Err(ScrubError::InvalidCursor));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn bounded_scrub_maps_user_decode_panic_only_on_unwind_enabled_host() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, CallbackValue, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = CallbackMap::new_with_hash_seed(memory, 165).expect("new");
+        map.insert(
+            CallbackKey::plain(1),
+            CallbackValue {
+                value: 10,
+                on_encode: None,
+                invalid: false,
+            },
+        )
+        .expect("seed");
+        let bucket = map.find(&CallbackKey::plain(1)).expect("resident").0;
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        RESIDENT_DECODE_CALLBACK.with(|callback| {
+            *callback.borrow_mut() = Some(Rc::new(|| panic!("host-only decode panic")));
+        });
+
+        assert_eq!(
+            map.scrub_step(cursor, u64::MAX),
+            Err(ScrubError::InvalidKeyEncoding { bucket, slot: 0 })
+        );
+        RESIDENT_DECODE_CALLBACK.with(|callback| callback.borrow_mut().take());
+    }
+
+    #[test]
+    fn bounded_scrub_final_fence_supersedes_reentrant_scan_error() {
+        type CallbackMap = StableLinearHashMap<CallbackKey, CallbackValue, VectorMemory>;
+
+        let memory = VectorMemory::default();
+        let map = CallbackMap::new_with_hash_seed(memory.clone(), 167).expect("new");
+        map.insert(
+            CallbackKey::plain(1),
+            CallbackValue {
+                value: 10,
+                on_encode: None,
+                invalid: false,
+            },
+        )
+        .expect("seed");
+        let alias = Rc::new(CallbackMap::open(memory).expect("alias"));
+        let cursor = map.scrub_snapshot().expect("snapshot");
+        let alias_for_callback = Rc::clone(&alias);
+        let fired = Rc::new(Cell::new(false));
+        let fired_for_callback = Rc::clone(&fired);
+        RESIDENT_HASH_CALLBACK.with(|callback| {
+            *callback.borrow_mut() = Some((
+                1,
+                Rc::new(move || {
+                    if fired_for_callback.replace(true) {
+                        return;
+                    }
+                    alias_for_callback
+                        .insert(
+                            CallbackKey::plain(2),
+                            CallbackValue {
+                                value: 20,
+                                on_encode: None,
+                                invalid: false,
+                            },
+                        )
+                        .expect("nested alias mutation");
+                }),
+            ));
+        });
+
+        assert_eq!(map.scrub_step(cursor, u64::MAX), Err(ScrubError::Stale));
+        RESIDENT_HASH_CALLBACK.with(|callback| callback.borrow_mut().take());
+    }
+
+    #[test]
     fn large_values_are_not_read_during_key_search() {
         type LargeValueMap = StableLinearHashMap<u64, [u8; 2048], CountingMemory>;
 
@@ -4568,7 +6186,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(Some(790)));
         assert_eq!(memory.read_calls.get(), 4);
-        assert_eq!(memory.read_bytes.get(), 16 + 40 + 136);
+        assert_eq!(memory.read_bytes.get(), 16 + 8 + 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
     }
@@ -4600,7 +6218,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(Some(830)));
         assert_eq!(memory.read_calls.get(), 5);
-        assert_eq!(memory.read_bytes.get(), 16 + 40 + 2 * 136);
+        assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
     }
@@ -4621,7 +6239,7 @@ mod tests {
         reset_counts(&memory);
         assert_eq!(map.get(&key), Ok(None));
         assert_eq!(memory.read_calls.get(), 5);
-        assert_eq!(memory.read_bytes.get(), 16 + 40 + 2 * 136);
+        assert_eq!(memory.read_bytes.get(), 16 + 8 + 2 * 136);
         assert_eq!(memory.write_calls.get(), 0);
         assert_eq!(memory.write_bytes.get(), 0);
     }

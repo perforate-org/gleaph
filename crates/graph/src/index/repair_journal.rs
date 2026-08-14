@@ -24,6 +24,7 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::IndexBuildDmlRequest;
 use gleaph_graph_kernel::index::IndexPostingMutation;
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
+use gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome;
 use gleaph_message_sizing::{FitError, SizingPolicy, adaptive_fitting_prefix};
 
 /// Outcome of re-applying a single journal entry.
@@ -232,24 +233,62 @@ async fn drain_queue(
                 let mut group_offset = 0usize;
                 while group_offset < group.len() {
                     let reconciled_prefix = vector_batch_prefix(&reconciled[group_offset..])?;
-                    let progress = vx
-                        .vector_sync_batch(
+                    let submitted_group = &group[group_offset..group_offset + reconciled_prefix];
+                    let submitted = if matches!(queue, DurableQueue::DerivedIndexOutbox) {
+                        let pending = store.derived_index_outbox_peek(reconciled_prefix);
+                        if pending.len() != reconciled_prefix
+                            || pending.iter().zip(submitted_group).any(
+                                |((pending_seq, _), (submitted_seq, _))| {
+                                    pending_seq != submitted_seq
+                                },
+                            )
+                        {
+                            return Err(PlanQueryError::UnsupportedOp(
+                                "invalid vector outbox identity",
+                            ));
+                        }
+                        Some(pending)
+                    } else {
+                        None
+                    };
+                    let outcome = vx
+                        .vector_sync_batch_outcome(
                             reconciled[group_offset..group_offset + reconciled_prefix].to_vec(),
                         )
                         .await?;
-                    let applied = usize::try_from(progress.applied).map_err(|_| {
-                        PlanQueryError::UnsupportedOp("invalid vector repair progress")
+                    outcome.validate(reconciled_prefix).map_err(|_| {
+                        PlanQueryError::UnsupportedOp("invalid vector repair outcome")
                     })?;
-                    if applied == 0 || applied > reconciled_prefix {
+                    let applied = match outcome {
+                        VectorSyncBatchOutcome::Progress { applied }
+                        | VectorSyncBatchOutcome::Terminal { applied, .. } => applied as usize,
+                    };
+                    if matches!(outcome, VectorSyncBatchOutcome::Progress { applied: 0 }) {
                         return Err(PlanQueryError::UnsupportedOp(
-                            "invalid vector repair progress",
+                            "vector repair outcome made no progress",
                         ));
                     }
-                    for (seq, _) in &group[group_offset..group_offset + applied] {
-                        remove_from_queue(&store, queue, *seq);
+                    if matches!(queue, DurableQueue::DerivedIndexOutbox) {
+                        store
+                            .derived_index_outbox_apply_vector_outcome(
+                                submitted.as_deref().expect("outbox submission captured"),
+                                outcome,
+                            )
+                            .map_err(|_| {
+                                PlanQueryError::UnsupportedOp("invalid vector outbox identity")
+                            })?;
+                    } else {
+                        if matches!(outcome, VectorSyncBatchOutcome::Terminal { .. }) {
+                            return Err(PlanQueryError::UnsupportedOp(
+                                "repair journal cannot quarantine a terminal vector item",
+                            ));
+                        }
+                        for (seq, _) in &submitted_group[..applied] {
+                            remove_from_queue(&store, queue, *seq);
+                        }
                     }
                     group_offset += applied;
-                    if progress.next_index.is_none() {
+                    if matches!(outcome, VectorSyncBatchOutcome::Terminal { .. }) {
                         break;
                     }
                 }
@@ -667,16 +706,12 @@ mod tests {
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
             graph.repair_journal_remove(seq);
         }
-        for (seq, _) in graph.derived_index_outbox_peek(usize::MAX) {
-            graph.derived_index_outbox_remove(seq);
-        }
+        graph.derived_index_outbox_clear();
         let out = body(&graph);
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
             graph.repair_journal_remove(seq);
         }
-        for (seq, _) in graph.derived_index_outbox_peek(usize::MAX) {
-            graph.derived_index_outbox_remove(seq);
-        }
+        graph.derived_index_outbox_clear();
         graph.set_federation_routing(None).expect("clear routing");
         out
     }
@@ -740,9 +775,7 @@ mod tests {
             assert_eq!(status.repair_journal_len, 1);
             assert!(!status.converged);
 
-            for (seq, _) in graph.derived_index_outbox_peek(usize::MAX) {
-                graph.derived_index_outbox_remove(seq);
-            }
+            graph.derived_index_outbox_clear();
             for (seq, _) in graph.repair_journal_peek(usize::MAX) {
                 graph.repair_journal_remove(seq);
             }
@@ -847,6 +880,95 @@ mod tests {
         batch_limit: usize,
     }
 
+    struct TerminalThenProgressVectorCanister {
+        batch_calls: AtomicUsize,
+        seen_vertices: std::sync::Mutex<Vec<Vec<u32>>>,
+    }
+
+    #[async_trait(?Send)]
+    impl VectorCanisterLookup for TerminalThenProgressVectorCanister {
+        fn supports_sync_batch(&self) -> bool {
+            true
+        }
+
+        async fn vector_sync_batch_outcome(
+            &self,
+            operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+            self.seen_vertices.lock().unwrap().push(
+                operations
+                    .iter()
+                    .map(|op| {
+                        let gleaph_graph_kernel::vector_index::VectorSubject::Vertex {
+                            vertex_id,
+                            ..
+                        } = op.subject;
+                        vertex_id
+                    })
+                    .collect(),
+            );
+            let call = self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok(VectorSyncBatchOutcome::Terminal {
+                    applied: 1,
+                    failed_index: 1,
+                    error: gleaph_graph_kernel::vector_index::VectorSyncTerminalError::IndexDefinitionTablePressure,
+                })
+            } else {
+                Ok(VectorSyncBatchOutcome::Progress {
+                    applied: operations.len() as u32,
+                })
+            }
+        }
+
+        async fn vector_upsert(
+            &self,
+            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        ) -> Result<(), PlanQueryError> {
+            unreachable!("terminal vector test uses vector_sync_batch_outcome")
+        }
+
+        async fn vector_remove(
+            &self,
+            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        ) -> Result<(), PlanQueryError> {
+            unreachable!("terminal vector test uses vector_sync_batch_outcome")
+        }
+    }
+
+    struct TransportFailureVectorCanister;
+
+    #[async_trait(?Send)]
+    impl VectorCanisterLookup for TransportFailureVectorCanister {
+        fn supports_sync_batch(&self) -> bool {
+            true
+        }
+
+        async fn vector_sync_batch_outcome(
+            &self,
+            _operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+            Err(PlanQueryError::FederatedIndexCall {
+                op: "vector_sync_batch",
+                detail: "test transport failure".into(),
+            })
+        }
+
+        async fn vector_upsert(
+            &self,
+            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        ) -> Result<(), PlanQueryError> {
+            unreachable!("transport test uses vector_sync_batch_outcome")
+        }
+
+        async fn vector_remove(
+            &self,
+            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        ) -> Result<(), PlanQueryError> {
+            unreachable!("transport test uses vector_sync_batch_outcome")
+        }
+    }
+
     #[async_trait(?Send)]
     impl VectorCanisterLookup for PartialVectorCanister {
         fn supports_sync_batch(&self) -> bool {
@@ -942,6 +1064,66 @@ mod tests {
                 .expect("vector drain succeeds");
             assert_eq!(vector.batch_calls.load(Ordering::SeqCst), 3);
             assert!(graph.derived_index_outbox_is_empty());
+        });
+    }
+
+    #[test]
+    fn terminal_vector_item_is_quarantined_and_not_retried() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(
+                17,
+                [
+                    vector_upsert_op(1),
+                    vector_upsert_op(2),
+                    vector_upsert_op(3),
+                ],
+            );
+            let index = CountingIndex::batch();
+            let vector = TerminalThenProgressVectorCanister {
+                batch_calls: AtomicUsize::new(0),
+                seen_vertices: std::sync::Mutex::new(Vec::new()),
+            };
+
+            pollster::block_on(drain_outbox_once(&index, Some(&vector)))
+                .expect("terminal outcome is durably handled");
+            assert_eq!(graph.derived_index_outbox_len(), 2);
+
+            pollster::block_on(drain_outbox_once(&index, Some(&vector)))
+                .expect("pending suffix drains past quarantine");
+            assert_eq!(
+                *vector.seen_vertices.lock().unwrap(),
+                vec![vec![1, 2, 3], vec![3]]
+            );
+            assert_eq!(
+                graph.derived_index_outbox_len(),
+                1,
+                "only the quarantined row remains durable"
+            );
+            assert!(graph.derived_index_outbox_peek(10).is_empty());
+            assert!(graph.derived_index_outbox_pending_is_empty());
+            assert!(!graph.derived_index_outbox_is_empty());
+            assert!(
+                !crate::facade::maintenance_timer::durable_delivery_pending(graph),
+                "quarantine-only durable state must not re-arm the maintenance timer"
+            );
+        });
+    }
+
+    #[test]
+    fn vector_transport_failure_leaves_outbox_unchanged() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(17, [vector_upsert_op(1), vector_upsert_op(2)]);
+            let before = graph.derived_index_outbox_peek(10);
+            let index = CountingIndex::batch();
+
+            let error = pollster::block_on(drain_outbox_once(
+                &index,
+                Some(&TransportFailureVectorCanister),
+            ))
+            .expect_err("transport failure propagates");
+            assert!(error.to_string().contains("test transport failure"));
+            assert_eq!(graph.derived_index_outbox_peek(10), before);
+            assert_eq!(graph.derived_index_outbox_len(), 2);
         });
     }
 

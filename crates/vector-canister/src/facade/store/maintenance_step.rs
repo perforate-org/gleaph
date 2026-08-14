@@ -16,7 +16,8 @@
 use super::VectorCanisterStore;
 use super::rebuild::{partition_health_summary, rebuild_state_of};
 use super::recommend_partition_maintenance;
-use crate::facade::stable::{VECTOR_INDEX_DEFS, VECTOR_MAINTENANCE_STATE};
+use crate::facade::stable::VECTOR_MAINTENANCE_STATE;
+use crate::facade::stable::definition_store;
 use crate::records::{RawMaintenanceState, VectorRebuildStateRecord};
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::vector_index::{
@@ -93,8 +94,8 @@ impl VectorCanisterStore {
         req: VectorMaintenanceStepRequest,
     ) -> Result<VectorMaintenanceStepResult, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
 
         // ADR 0064 §5: run a bounded subject-map GC step on each maintenance tick so a quiet graph or

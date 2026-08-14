@@ -1,8 +1,10 @@
 //! Experimental bucketized two-choice linear hash map in Internet Computer stable memory.
 //!
-//! V1 stores fixed-size keys and values in one linear bucket universe. One persisted hash seed plus
-//! domain separation derives two candidates for each key. New entries use the less-loaded
-//! candidate; ties use the first. Every bucket has [`BUCKET_SIZE`] slots. An absent insert that
+//! V1 stores fixed-size keys and values in one linear bucket universe. RapidHash V3 exact mode,
+//! the two fixed domain constants, candidate order, and linear reduction are part of the version-1
+//! routing identity. One persisted hash seed plus domain separation derives two candidates. New
+//! entries use the less-loaded candidate; ties use the first. Every bucket has [`BUCKET_SIZE`]
+//! slots. An absent insert that
 //! would exceed 75% load performs at most one synchronous, bounded linear split.
 
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
@@ -16,7 +18,10 @@ mod memory;
 mod bench;
 
 pub use header::{ControlRegion, Header, InitError};
-pub use map::{BUCKET_SIZE, MutationError, StableLinearHashMap};
+pub use map::{
+    BUCKET_SIZE, MutationError, ResetError, ScanCursor, ScanError, ScanPage, ScrubCursor,
+    ScrubError, ScrubSnapshot, ScrubStep, StableLinearHashMap,
+};
 
 use ic_stable_structures::Storable;
 
@@ -25,17 +30,17 @@ use ic_stable_structures::Storable;
 /// Stored key bytes remain owned by [`Storable`]; routing bytes are a separate contract so a
 /// storage encoding can change only through an explicit layout decision. Equal keys must return
 /// identical routing bytes. Implementations must keep those bytes stable across upgrades,
-/// platforms, and compiler versions. Changing either the bytes or [`Self::HASH_ENCODING_ID`]
+/// platforms, and compiler versions. Changing either the bytes or [`Self::KEY_ROUTING_ID`]
 /// requires an explicit rehash/layout decision before reopening existing memory.
 ///
 /// Hash collisions are allowed. The map decodes stored [`Storable`] bytes and uses [`Eq`] to
 /// establish key identity.
 pub trait StableHashKey: Storable + Eq {
-    /// Identifies the canonical routing-byte encoding persisted with the map control region.
-    ///
-    /// The value must be frozen and distinct from every incompatible key routing encoding,
-    /// including same-width encodings introduced later.
-    const HASH_ENCODING_ID: u64;
+    /// Identifies the canonical fixed-width key payload encoding.
+    const KEY_STORAGE_ID: [u8; 16];
+
+    /// Identifies the canonical routing-byte encoding.
+    const KEY_ROUTING_ID: [u8; 16];
 
     /// The borrowing or owned representation of canonical routing bytes.
     type HashBytes<'a>: AsRef<[u8]>
@@ -46,11 +51,24 @@ pub trait StableHashKey: Storable + Eq {
     fn stable_hash_bytes(&self) -> Self::HashBytes<'_>;
 }
 
+/// Supplies the nominal identity of a fixed-width persisted value encoding.
+pub trait StableMapValue: Storable {
+    const VALUE_STORAGE_ID: [u8; 16];
+}
+
+const fn schema_id(kind: u8, width: u32) -> [u8; 16] {
+    let width = width.to_le_bytes();
+    [
+        b'L', b'H', b'M', 1, kind, width[0], width[1], width[2], width[3], 0, 0, 0, 0, 0, 0, 0,
+    ]
+}
+
 macro_rules! impl_stable_hash_key_for_unsigned {
     ($(($ty:ty, $bytes:expr, $id:expr)),+ $(,)?) => {
         $(
             impl StableHashKey for $ty {
-                const HASH_ENCODING_ID: u64 = $id;
+                const KEY_STORAGE_ID: [u8; 16] = schema_id(1, $bytes);
+                const KEY_ROUTING_ID: [u8; 16] = schema_id($id, $bytes);
                 type HashBytes<'a> = [u8; $bytes] where Self: 'a;
 
                 #[inline]
@@ -63,12 +81,28 @@ macro_rules! impl_stable_hash_key_for_unsigned {
 }
 
 impl_stable_hash_key_for_unsigned!(
-    (u8, 1, 0x4c48_4d00_0000_0001),
-    (u16, 2, 0x4c48_4d00_0000_0002),
-    (u32, 4, 0x4c48_4d00_0000_0003),
-    (u64, 8, 0x4c48_4d00_0000_0004),
-    (u128, 16, 0x4c48_4d00_0000_0005),
+    (u8, 1, 11),
+    (u16, 2, 12),
+    (u32, 4, 13),
+    (u64, 8, 14),
+    (u128, 16, 15),
 );
+
+macro_rules! impl_stable_map_value_for_unsigned {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl StableMapValue for $ty {
+                const VALUE_STORAGE_ID: [u8; 16] = schema_id(2, std::mem::size_of::<$ty>() as u32);
+            }
+        )+
+    };
+}
+
+impl_stable_map_value_for_unsigned!(u8, u16, u32, u64, u128);
+
+impl<const N: usize> StableMapValue for [u8; N] {
+    const VALUE_STORAGE_ID: [u8; 16] = schema_id(3, N as u32);
+}
 
 #[cfg(test)]
 mod tests {
@@ -95,11 +129,11 @@ mod tests {
         );
 
         let ids = [
-            u8::HASH_ENCODING_ID,
-            u16::HASH_ENCODING_ID,
-            u32::HASH_ENCODING_ID,
-            u64::HASH_ENCODING_ID,
-            u128::HASH_ENCODING_ID,
+            u8::KEY_ROUTING_ID,
+            u16::KEY_ROUTING_ID,
+            u32::KEY_ROUTING_ID,
+            u64::KEY_ROUTING_ID,
+            u128::KEY_ROUTING_ID,
         ];
         for (index, id) in ids.iter().enumerate() {
             assert!(ids[..index].iter().all(|previous| previous != id));

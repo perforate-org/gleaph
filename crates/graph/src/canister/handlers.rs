@@ -2559,6 +2559,48 @@ pub fn e2e_derived_index_outbox_len() -> u64 {
     GraphStore::new().derived_index_outbox_len()
 }
 
+/// Whether every durable derived-index row is quarantined rather than retryable (PocketIC E2E
+/// only). The total length remains separately observable so an empty queue cannot satisfy this
+/// contract accidentally.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_derived_index_outbox_pending_is_empty() -> bool {
+    GraphStore::new().derived_index_outbox_pending_is_empty()
+}
+
+/// Appends one bounded same-mutation vector group to the real durable outbox and arms its normal
+/// maintenance owner (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_enqueue_vector_outbox(
+    operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+) -> Result<(), String> {
+    const MAX_OPERATIONS: usize = 2;
+
+    let mutation_id = operations
+        .first()
+        .ok_or_else(|| "vector outbox fixture requires at least one operation".to_owned())?
+        .mutation_id;
+    if operations.len() > MAX_OPERATIONS {
+        return Err(format!(
+            "vector outbox fixture accepts at most {MAX_OPERATIONS} operations"
+        ));
+    }
+    if operations
+        .iter()
+        .any(|operation| operation.mutation_id != mutation_id)
+    {
+        return Err("vector outbox fixture operations must share one mutation_id".to_owned());
+    }
+
+    GraphStore::new().derived_index_outbox_append(
+        mutation_id,
+        operations
+            .into_iter()
+            .map(|op| crate::facade::RepairPostingOp::VectorEmbedding { op }),
+    );
+    crate::facade::maintenance_timer::arm_if_needed();
+    Ok(())
+}
+
 /// Pending repair-journal operations in stable memory (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 pub fn e2e_repair_journal_len() -> u64 {

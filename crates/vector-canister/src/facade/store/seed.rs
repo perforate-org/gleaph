@@ -14,9 +14,9 @@
 
 use super::search::encode_f32;
 use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION, VectorCanisterStore};
-use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
-};
+use crate::facade::stable::definition_store;
+use crate::facade::stable::subject_store;
+use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS};
 use crate::records::{
     FixedSubjectMapEntry, IvfCentroidMeta, PartitionKey, SubjectKey, VectorIndexDef,
 };
@@ -145,23 +145,19 @@ impl VectorCanisterStore {
             let slot = self
                 .append_slot(index_id, active, partition_id, &def, *subject, &encoded)
                 .expect("seed append");
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                m.insert(
-                    SubjectKey::new(index_id, *subject),
-                    FixedSubjectMapEntry {
-                        stamp: 1,
-                        deleted: false,
-                        slot: Some(slot),
-                        shadow_slot: None,
-                    },
-                )
-                .expect("seed insert");
-            });
+            subject_store::insert(
+                SubjectKey::new(index_id, *subject),
+                FixedSubjectMapEntry {
+                    stamp: 1,
+                    deleted: false,
+                    slot: Some(slot),
+                    shadow_slot: None,
+                },
+            )
+            .expect("seed insert");
         }
 
         // Persist the def last.
-        VECTOR_INDEX_DEFS
-            .with_borrow_mut(|defs| defs.insert(index_id, def))
-            .expect("seed def insert");
+        definition_store::insert(index_id, def).expect("seed def insert");
     }
 }

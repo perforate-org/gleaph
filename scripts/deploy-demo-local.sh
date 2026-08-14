@@ -367,6 +367,8 @@ main() {
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-vector --args "(
     record {
       router_canister = principal \"$router_id\";
+      definition_map_seed = 7640891576956012809 : nat64;
+      subject_map_seed = 13503953896175478587 : nat64;
     }
   )"
 

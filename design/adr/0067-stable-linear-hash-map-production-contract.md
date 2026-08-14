@@ -1,20 +1,21 @@
 # 0067. Stable linear hash map production contract
 
 Date: 2026-08-12
-Status: proposed
-Last revised: 2026-08-13
-Anchor timestamp: 2026-08-13 12:28:04 UTC +0000
+Status: Partially Implemented
+Last revised: 2026-08-14
+Anchor timestamp: 2026-08-14 04:17:51 UTC +0000
 
-> **Proposed contract.** This ADR is the sole exact V1 persisted-format contract for
-> ic-stable-linear-hash-map. It is deliberately ahead of the current implementation and does not
-> declare the crate or a consumer production-ready.
+> **Partially implemented contract.** This ADR is the sole exact V1 persisted-format contract for
+> ic-stable-linear-hash-map. The map and the Vector MemoryId 4 and 7 owner cutovers are implemented;
+> a production-authorized coordinated reset remains pending.
 
 ## Context
 
-ic-stable-linear-hash-map owns one stable-memory region for fixed-width point-map operations. The
-first intended consumer is Vector VECTOR_INDEX_DEFS, keyed by Router-assigned u32 and owned by the
-Vector canister at MemoryId 4. Router assigns identifiers and authorizes work; Vector owns its one
-map binding and domain outcomes; the generic map owns persisted bytes and their invariants.
+ic-stable-linear-hash-map owns one stable-memory region for fixed-width point-map operations. Vector
+uses it through two private owners: `DEFINITION_STORE` for Router-assigned index ids at MemoryId 4
+and `SUBJECT_STORE` for `SubjectKey -> FixedSubjectMapEntry` at MemoryId 7. Router assigns
+identifiers and authorizes work; Vector owns the bindings and domain outcomes; the generic map owns
+persisted bytes and their invariants.
 
 ADR 0007 remains authoritative for the stable-region inventory. ADR 0064 permits a destructive
 pre-release Vector reinstall. This ADR permits neither an alternate reader nor conversion of a
@@ -23,17 +24,19 @@ nonempty region.
 ## Problem
 
 The map needs one inspectable byte contract, fixed-cost normal reopening, an explicit destructive
-reset, and a bounded full-integrity operation. Width-only checks are unsafe because equal widths do
-not establish compatible key storage, key routing, or value storage. Scanning every allocated bucket
-on open makes upgrade cost grow with table history.
+reset, a bounded full-integrity operation, and resumable bounded physical enumeration for owners
+without an external key catalog. Width-only checks are unsafe because equal widths do not establish
+compatible key storage, key routing, or value storage. Scanning every allocated bucket on open makes
+upgrade cost grow with table history.
 
 ## Existing architecture assessment
 
 The existing MemoryManager/VirtualMemory boundary is sufficient. A new registry, manager, or
 Router-owned storage facade would duplicate state ownership. The map crate alone owns layout,
-schema validation, address arithmetic, routing, split geometry, mutation fencing, reset, and scrub.
-The Vector facade alone owns MemoryId 4, staged availability, and map-error translation. Graph and
-Router never read or write raw map bytes.
+schema validation, address arithmetic, routing, split geometry, mutation fencing, reset, physical
+scan, and scrub.
+The Vector facade owns the MemoryId 4 and 7 staged availability and map-error translation boundaries.
+Graph and Router never read or write raw map bytes.
 
 ## Alternatives
 
@@ -56,6 +59,12 @@ explicit bounded scrub.
 
 Rejected. One permitted split is bounded and completes in one update. Persisted recovery state is
 not justified until a demonstrated multi-call mutation needs it.
+
+### E. Expose an ordinary iterator or maintain an external key catalog
+
+Rejected. An iterator cannot express upgrade-stable progress or a bounded instruction contract, and
+an external catalog duplicates canonical keys plus their write-consistency obligation. The owning
+map can enumerate its fixed physical slots directly under a per-step epoch fence.
 
 ## Decision
 
@@ -167,9 +176,12 @@ On success reset writes an odd mutation epoch first. It clears exactly the eight
 occupancy headers and writes the new mutable initial state. It never scans or shrinks trailing
 pages, and publishes the final even control snapshot last.
 
-This map-local reset operation is implemented in the V1 collection crate. Vector integration is
-not: the Vector owner must coordinate this operation with every other Vector-owned stable region in
-one update before exposing a domain reset API.
+This map-local reset operation is implemented in the V1 collection crate. Vector currently uses
+the coordinated definition-domain reset only in `cfg(test)` / `cfg(feature = "canbench")` fixtures:
+an internal owner-issued ticket follows exact-incarnation/epoch preflight, all coupled region
+handles are acquired before the first write, and the complete definition-dependent domain resets in
+one fixture operation. A production-authorized coordinated reset remains pending, and no public
+reset API is exposed.
 
 At the owning facade, a successful reset and every prewrite reset error, including expected-
 incarnation mismatch and exhaustion, keep Ready -> Ready. Unavailable is reserved for an exact-open
@@ -187,9 +199,17 @@ traps so the platform rolls back coupled stable writes. A live page is exactly a
 i < physical_buckets. When a split reuses an already allocated page, it overwrites that complete
 final page before publishing the larger physical_buckets control value.
 
-An absent insert may perform at most one next-in-order bounded split. TablePressure means both
-candidate buckets remain full after that split. It is a typed terminal admission outcome, not
-allocation failure or a generic retry.
+An absent insert may perform at most one next-in-order bounded split. Below the split threshold, a
+full current candidate pair is admitted only by a deterministic one-hop relocation: candidate
+buckets are scanned in candidate order and occupied slots in ascending order (at most sixteen
+residents); a resident may move only to its own other candidate. At or above the threshold, the map
+first plans the normal next-in-order split. If its prospective target pair remains full, the map
+keeps the current geometry and retries current-geometry admission, including that same bounded
+one-hop relocation, before returning pressure. All resident decoding, routing, checked offsets,
+complete source/destination page images, and the observed epoch are preflighted before the odd
+epoch or any write. TablePressure therefore means neither the prospective split nor the bounded
+current-geometry admission can place the key; it preserves bytes, control, and geometry exactly.
+It is a typed terminal admission outcome, not allocation failure or a generic retry.
 
 ### 6. Explicit bounded scrub
 
@@ -214,24 +234,78 @@ Completion requires the captured primary-bucket bound, complete occupancy/routin
 occupied count equal to captured len. Cursor state is handle-local and noncanonical; abandoning it
 and restarting from bucket zero is safe and required after reopening or upgrading the map.
 
-### 7. Vector and Graph boundary
+### 7. Serializable bounded physical scan
 
-Only the Vector facade binds VECTOR_INDEX_DEFS to MemoryId 4. Its lifecycle is Uninitialized to
-Ready or Uninitialized to Unavailable(reason); static construction does not open memory. Fresh
-install strict-creates with the trusted seed. Post-upgrade exact-opens a nonempty region without a
-seed argument. An authorized reset is a separate operation. Unavailable and uninitialized
-reads/writes return a typed unavailable result and never infer empty state.
+`scan_start` returns a serializable cursor at physical slot zero. Its encoding is exactly 88 bytes;
+all integer fields are unsigned little-endian:
 
-Vector maps terminal pressure to IndexDefinitionTablePressure and map availability failure to
-IndexDefinitionStoreUnavailable. It preflights each definition before coupled writes. Its batch
-outcome distinguishes a committed prefix from one terminal item:
+| Bytes | Type | Meaning |
+|---:|---|---|
+| 0..3 | [u8; 3] | magic `LHS` |
+| 3 | u8 | cursor version, exactly 1 |
+| 4..8 | [u8; 4] | reserved, all zero |
+| 8..24 | [u8; 16] | key_storage_schema_id |
+| 24..40 | [u8; 16] | key_routing_schema_id |
+| 40..56 | [u8; 16] | value_storage_schema_id |
+| 56..64 | u64 | immutable hash_seed |
+| 64..72 | u64 | incarnation |
+| 72..80 | u64 | physical_buckets |
+| 80..88 | u64 | next_slot |
+
+The cursor persists no mutation epoch, length, level, split cursor, or handle lineage. It survives
+serialization, exact reopen, and canister upgrade while schema identities, seed, incarnation, and
+physical_buckets still match. A zero incarnation, fewer than eight physical buckets, overflowing
+slot capacity, next_slot beyond capacity, bad magic/version/length, or nonzero reserved byte is
+malformed. A cursor with a different immutable schema or seed does not belong to the map.
+
+`scan_step(cursor, physical_slot_budget)` requires a positive budget and examines the half-open
+physical-slot range from next_slot through `min(next_slot + budget, physical_buckets * 8)`. It
+returns decoded key/value entries in physical order, the advanced cursor, the exact examined-slot
+count, and explicit exhausted state. A short entry page is not EOF; only exhausted is EOF. Calling
+again with an already exhausted cursor returns no entries, zero examined slots, and exhausted.
+Because key/value encodings are fixed-width, the physical-slot budget also bounds returned entries
+and payload bytes without a second output parameter.
+
+Each step reads and requires one even mutation epoch before examining slots, collects output only
+locally, then reads the complete control record again. A changed or odd epoch with unchanged
+incarnation and geometry returns `InProgress`; a changed incarnation or physical_buckets returns
+`RestartRequired`. Both discard the local output. A malformed cursor or zero budget is rejected
+before slot reads. Mutations between successful steps are permitted when incarnation and geometry
+remain unchanged: the cursor does not fence an entire multi-call lap. Therefore an unchanged map is
+enumerated exactly once in physical order and a repeated cursor replays the same page, while a lap
+that overlaps mutations has no cross-step snapshot guarantee.
+
+Physical scan is not scrub. It does not validate routing reachability, duplicates, canonical
+re-encoding, or captured length, and it never reuses the handle-bound `ScrubCursor`. The crate
+exposes no ordinary `Iterator` and maintains no external key catalog.
+
+### 8. Vector and Graph boundary
+
+The Vector facade binds `DEFINITION_STORE` to MemoryId 4 and `SUBJECT_STORE` to MemoryId 7. Each
+owner has the private lifecycle `Uninitialized -> Ready | Unavailable(reason)`; static construction
+does not open memory. Fresh install strict-creates with its own trusted seed (`definition_map_seed`
+or `subject_map_seed`), and post-upgrade seed-free exact-opens the existing region. Unavailable and
+uninitialized reads/writes return typed unavailable results and never infer empty state. Existing
+CHM or unknown bytes are rejected unchanged and require a destructive pre-release wipe/reinstall;
+there is no reader, migration, or create-on-open-failure fallback.
+
+`SubjectStore` alone obtains the MemoryId 7 handle and owns all subject point access plus physical
+scans. Its durable `SubjectScanCursor` envelope contains a version, a consumer scope, and the exact
+serialized LHM `ScanCursor`; it validates the envelope before any physical slot read. Detach and
+rebuild Sampling, Building, Cleaning, and Aborting use positive-budget physical pages, explicit EOF,
+and restart after an LHM split or reset invalidates the saved cursor.
+
+Vector maps definition and subject admission pressure to distinct terminal errors and map
+availability failure to distinct outer errors. It preflights each definition, then admits a new
+subject before any coupled row, page, tombstone, or deleted-list write. Its batch outcome
+distinguishes a committed prefix from one terminal item:
 
     VectorSyncBatchOutcome =
       Progress { applied: u32 }
       | Terminal {
           applied: u32,
           failed_index: u32,
-          error: IndexDefinitionTablePressure,
+          error: IndexDefinitionTablePressure | SubjectTablePressure,
         }
 
 Terminal requires failed_index == applied < operations.len(). Graph removes exactly the
@@ -239,21 +313,47 @@ acknowledged prefix and quarantines exactly the failed item in one update, or ch
 Transport, decode, malformed reply, and unavailable outcomes keep the submitted outbox slice
 unchanged.
 
-**Implementation status (2026-08-13):** `gleaph-graph-kernel` now defines the additive shared
-`VectorSyncBatchOutcome`, `IndexDefinitionTablePressure`, and
-`IndexDefinitionStoreUnavailable` wire vocabulary, including decoded-outcome validation against the
-submitted operation count. `Terminal` exclusively carries `IndexDefinitionTablePressure`;
-`IndexDefinitionStoreUnavailable` is an out-of-band lifecycle error, never a terminal item outcome.
-This does not change the live `vector_sync_batch` endpoint, which still returns
-`VectorSyncBatchProgress`, or Graph's legacy outbox behavior; it does not implement outbox removal,
-quarantine, definition-store lifecycle, linear-hash-map integration, or migration.
+**Implementation status (2026-08-14):** MemoryId 4 uses
+`StableLinearHashMap<u32, VectorIndexDef>` and retains the fixed 41-byte definition schema;
+MemoryId 7 uses `StableLinearHashMap<SubjectKey, FixedSubjectMapEntry>` and remains the canonical
+subject freshness, deletion, and slot source of truth. Both owners start inert, strictly create on
+install, and exact-open seed-free after upgrade. Failed exact opens remain unavailable and never
+create, reset, or infer an empty map. The former broad `init_from_args` clearing path is not an
+authorized production reset.
+
+`gleaph-graph-kernel` defines the additive shared `VectorSyncBatchOutcome`,
+`VectorSyncTerminalError::{IndexDefinitionTablePressure, SubjectTablePressure}`, and
+`VectorSyncBatchUnavailable::{IndexDefinitionStoreUnavailable, SubjectStoreUnavailable}` wire
+vocabulary, including decoded-outcome validation against the submitted operation count. `Terminal`
+is reserved for real LHM admission pressure; the unavailable enum is an out-of-band lifecycle error,
+never a terminal item outcome. Graph MemoryId 46 stores a tagged `Pending | Quarantined` wrapper,
+prevalidates the complete pending prefix and failed row identity, then removes the acknowledged
+prefix and quarantines exactly the failed row with the matching fixed pressure reason. Pending scans
+and scheduling skip quarantined rows, while raw durable length and emptiness still expose them.
+
+The additive `vector_sync_batch_outcome` endpoint maps only the real owner LHM `TablePressure`
+result to the corresponding terminal variant. Nonterminal failures after a committed prefix trap so
+the IC update rolls the prefix back instead of returning an ambiguous outer error. The legacy
+`vector_sync_batch` endpoint remains unchanged. The live Graph IC client calls only the additive
+endpoint for derived-index outbox delivery, validates each typed outcome against the submitted
+count, and does not fall back after unavailable, malformed, transport, or reject failures. The
+definition-pressure terminal mapping and Graph quarantine transition are proven at their owning
+unit layers. Real subject pressure additionally has a live PocketIC terminal/quarantine proof. No
+definition-pressure PocketIC proof is claimed because bounded sequential definition keys cannot
+deterministically force a specific collision after one-hop relocation. The
+fixture-only coordinated reset, compiled under `cfg(test)` / `cfg(feature = "canbench")`, preflights
+both LHM owners and clears definitions, subject/deletion state, and the coupled definition-derived
+regions while preserving router authority, graph ownership, shard attachments, watermarks, and the
+GC cursor. A reviewed production reset operation and its rollback proof remain pending; no public
+administrative endpoint exists.
 
 ## Consequences
 
 This preserves one source of truth: the ADR fixes exact bytes, while the map derives every address
 and geometry value from it. It gives ordinary reopen fixed work, restricts destructive operations to
-an explicit owner path, and avoids an unnecessary journal, alternate-format subsystem, or iterator.
-The accepted cost is a deliberate pre-release stable-state wipe/reinstall before first deployment.
+an explicit owner path, and adds bounded resumable enumeration without an ordinary iterator or
+external key catalog. It avoids an unnecessary journal and alternate-format subsystem. The accepted
+cost is a deliberate pre-release stable-state wipe/reinstall before first deployment.
 
 ## Implementation and validation requirements
 
@@ -261,7 +361,10 @@ Implementation must prove exact header/control bytes and reserved-zero rejection
 mismatch rejection; strict-create nonempty no-write behavior; one-grow zero-fill creation; no bucket
 read in normal open; reset expected-incarnation/exhaustion/prewrite behavior; odd-epoch fail-closed
 behavior; safe reuse of allocated split pages; stale/replayable bounded scrub behavior; and real
-Vector MemoryId 4 plus IC/PocketIC rollback behavior.
+Vector MemoryId 4 and 7 owner plus IC/PocketIC rollback behavior. Physical scan must prove empty and sparse
+pages, exact bucket boundaries, explicit EOF independent of short results, unchanged-map
+exactly-once/replay behavior, mid-step mutation output discard, split/reset restart, serialized
+cursor reopen/upgrade continuation, malformed/zero-budget rejection, and exact slot/read bounds.
 
 ## Design documentation impact
 
@@ -271,8 +374,9 @@ synchronize the stable-memory inventory and applicable Vector design records.
 
 ## Required axes impact
 
-- **Encapsulation:** the map owns bytes; Vector owns its one binding and wire outcomes.
+- **Encapsulation:** the map owns bytes; Vector owns its MemoryId 4 and 7 bindings and wire outcomes.
 - **Separation of concerns:** Router assigns identifiers, Graph owns its outbox, and neither owns map layout.
 - **Invariants:** one immutable header, one mutable control, checked derivation, epoch fencing, and incarnation fencing.
 - **Consistency:** returned errors are prewrite; post-write IC failure traps; terminal outcomes acknowledge one exact prefix.
-- **Fitness for purpose:** fixed-width trusted-key point operations gain bounded reopen, reset, and scrub without speculative recovery state.
+- **Fitness for purpose:** fixed-width trusted-key point operations gain bounded reopen, reset,
+  physical scan, and scrub without speculative recovery state or a duplicate key catalog.

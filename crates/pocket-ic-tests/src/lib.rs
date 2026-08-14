@@ -251,6 +251,8 @@ fn create_funded_canister(pic: &PocketIc) -> Principal {
 #[derive(CandidType)]
 struct VectorCanisterInitArgs {
     router_canister: Principal,
+    definition_map_seed: u64,
+    subject_map_seed: u64,
 }
 
 /// Install a derived vector canister (`gleaph-vector-canister`) authorized for `router`.
@@ -262,6 +264,8 @@ pub fn install_vector_canister(pic: &PocketIc, router: Principal) -> Principal {
         wasm_bytes("VECTOR_INDEX_WASM"),
         Encode!(&VectorCanisterInitArgs {
             router_canister: router,
+            definition_map_seed: 0x6a09_e667_f3bc_c909,
+            subject_map_seed: 0xbb67_ae85_84ca_a73b,
         })
         .expect("encode vector init"),
         None,

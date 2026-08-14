@@ -27,14 +27,15 @@ use super::{
     MAX_REBUILD_STEP_VECTOR_BYTES, MAX_REBUILD_STEP_WORK, MAX_REBUILD_TRAINING_DISTANCE_OPS,
     MAX_REBUILD_TRAINING_ITERATIONS, VectorCanisterStore,
 };
+use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::PageScratch;
+use crate::facade::stable::subject_store::{self, SubjectScanPage};
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_PARTITION_HEADS,
-    VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE,
 };
 use crate::records::{
     FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionKey, RawRebuildState, SlotRef,
-    SubjectKey, SubjectScanCursor, VectorRebuildStateRecord,
+    SubjectKey, SubjectScanCursor, SubjectScanScope, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -260,12 +261,39 @@ fn status_of(state: &VectorRebuildStateRecord) -> VectorRebuildStatus {
 
 /// Marker stored in a teardown `subject_cursor` once the subject sub-stage is exhausted, so the page
 /// sub-stage can begin. `slot == u64::MAX` is never a valid slot index (capacity is far below it).
-fn subjects_done_marker() -> Option<SubjectScanCursor> {
-    Some(SubjectScanCursor::new(u64::MAX, 0))
+fn subjects_done_marker(scope: SubjectScanScope) -> Option<SubjectScanCursor> {
+    Some(SubjectScanCursor::done(scope))
 }
 
 fn is_subjects_done(cursor: &Option<SubjectScanCursor>) -> bool {
-    matches!(cursor, Some(c) if c.slot == u64::MAX)
+    cursor.as_ref().is_some_and(SubjectScanCursor::is_done)
+}
+
+/// Reads one physical subject-map slot, restarting once when a split/reset invalidates the
+/// durable cursor. A one-slot page is intentional: callers may stop after the returned entry
+/// without ever skipping an unprocessed entry when their own byte/work budget is reached.
+fn next_subject_page(
+    scope: SubjectScanScope,
+    cursor: Option<SubjectScanCursor>,
+) -> Result<Option<SubjectScanPage>, VectorCanisterError> {
+    let cursor = match cursor {
+        Some(cursor) if cursor.is_done() => return Ok(None),
+        Some(cursor) => cursor,
+        None => subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?,
+    };
+    match subject_store::scan_step(scope, cursor, 1) {
+        Ok(page) => Ok(Some(page)),
+        Err(subject_store::SubjectStoreError::Scan(
+            subject_store::SubjectStoreScanError::RestartRequired,
+        )) => {
+            let fresh =
+                subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?;
+            subject_store::scan_step(scope, fresh, 1)
+                .map(Some)
+                .map_err(super::legacy_subject_store_error)
+        }
+        Err(error) => Err(super::legacy_subject_store_error(error)),
+    }
 }
 
 /// Deterministic furthest-point (Maximin-D) centroid seeding over the candidate pool.
@@ -373,8 +401,8 @@ impl VectorCanisterStore {
         sample_limit: u32,
     ) -> Result<(), VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         if !matches!(def.encoding, VectorEncoding::F32 | VectorEncoding::I8)
             || (def.metric != VectorMetric::L2Squared && def.metric != VectorMetric::Cosine)
@@ -447,8 +475,8 @@ impl VectorCanisterStore {
         sample_limit: u32,
     ) -> Result<VectorMaintenanceRecommendation, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         // Freshness guard: reject page health attested against a different generation. The skew
         // summary needs no such guard because it is recomputed below from current heads.
@@ -582,17 +610,16 @@ impl VectorCanisterStore {
         };
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_sampling");
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
         // Candidates are stored as canonical f32 (`dims * 4` bytes each), even for an I8 index (rows
         // are dequantized before sampling), so the pool cap uses the f32 width.
         let pool_cap = candidate_pool_cap(nlist, u32::from(def.dims) * 4, def.dims);
 
-        let mut examined = 0u32;
-        let mut last_cursor: Option<SubjectScanCursor> = None;
-        let mut range_exhausted = true;
+        let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
+        let mut range_exhausted = false;
         let mut bytes_buffered = 0u64;
         let mut live_bytes: Vec<Vec<u8>> = Vec::new();
         {
@@ -603,55 +630,50 @@ impl VectorCanisterStore {
             // stays bounded; the actual bytes are read in phase 2 (mirrors the rebuild `Building`
             // scan and the search exact-scan).
             let mut to_read: Vec<(PageKey, SlotRef)> = Vec::new();
-            {
-                VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                    let capacity = subjects.capacity();
-                    // Restart from slot 0 if the saved capacity no longer matches (a concurrent
-                    // mutation resized the map, invalidating the slot cursor).
-                    let start_slot = match cursor {
-                        Some(c) if c.capacity == capacity => c.slot,
-                        _ => 0,
-                    };
-                    let mut iter = subjects.iter_from(start_slot);
-                    while let Some((key, value)) = iter.next() {
-                        if key.index_id != index_id {
-                            continue; // slot order is not index-major
-                        }
-                        if examined >= max_subjects {
-                            range_exhausted = false;
-                            break;
-                        }
-                        examined += 1;
-                        last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                        if value.deleted {
-                            continue;
-                        }
-                        let Some(slot) = value.current_slot_for(active) else {
-                            continue;
-                        };
-                        if subjects_scanned >= sample_limit as u64 {
-                            range_exhausted = false;
-                            break;
-                        }
-                        subjects_scanned += 1;
-                        bytes_buffered += def.pad_stride_bytes as u64;
-                        to_read.push((
-                            PageKey::new(
-                                index_id,
-                                slot.index_version as u64,
-                                slot.partition_id,
-                                slot.page_id as u64,
-                            ),
-                            slot,
-                        ));
-                        // Bound transient heap bytes: break after buffering at least one vector once
-                        // the per-step byte budget is reached (cursor resumes from `last_cursor`).
-                        if bytes_buffered >= max_vector_bytes {
-                            range_exhausted = false;
-                            break;
-                        }
+            let scope = SubjectScanScope::Sampling {
+                index_id,
+                target_index_version,
+            };
+            let mut scan_cursor = cursor;
+            for _ in 0..max_subjects.max(1) {
+                let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+                    range_exhausted = true;
+                    last_cursor = None;
+                    break;
+                };
+                scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+                last_cursor = scan_cursor.clone();
+                if page.exhausted {
+                    range_exhausted = true;
+                }
+                for (key, value) in page.entries {
+                    if key.index_id != index_id || value.deleted {
+                        continue;
                     }
-                });
+                    let Some(slot) = value.current_slot_for(active) else {
+                        continue;
+                    };
+                    if subjects_scanned >= sample_limit as u64 {
+                        break;
+                    }
+                    subjects_scanned += 1;
+                    bytes_buffered += def.pad_stride_bytes as u64;
+                    to_read.push((
+                        PageKey::new(
+                            index_id,
+                            slot.index_version as u64,
+                            slot.partition_id,
+                            slot.page_id as u64,
+                        ),
+                        slot,
+                    ));
+                }
+                if range_exhausted
+                    || subjects_scanned >= sample_limit as u64
+                    || bytes_buffered >= max_vector_bytes
+                {
+                    break;
+                }
             }
             // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
             // each sampled row's bytes into `live_bytes`. A slot at/after `row_count` or tombstoned
@@ -775,8 +797,8 @@ impl VectorCanisterStore {
         };
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_training");
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let dims = def.dims as usize;
         let nlist_usize = nlist as usize;
@@ -899,16 +921,15 @@ impl VectorCanisterStore {
         };
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("rebuild_building");
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         let active = def.active_index_version;
         let centroids = read_centroids_at(index_id, target_index_version, nlist, def.dims)
             .ok_or(VectorCanisterError::RebuildIncomplete)?;
 
-        let mut examined = 0u32;
-        let mut last_cursor: Option<SubjectScanCursor> = None;
-        let mut range_exhausted = true;
+        let mut last_cursor: Option<SubjectScanCursor> = cursor.clone();
+        let mut range_exhausted = false;
         let mut bytes_buffered = 0u64;
         let mut pending: Vec<ShadowPendingRow> = Vec::new();
         {
@@ -919,58 +940,50 @@ impl VectorCanisterStore {
             // will carry) so the buffered `pending` stays bounded; the actual bytes are read in phase
             // 2.
             let mut to_read: Vec<(PageKey, SubjectKey, FixedSubjectMapEntry, SlotRef)> = Vec::new();
-            {
-                VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                    let capacity = subjects.capacity();
-                    // Restart from slot 0 if the saved capacity no longer matches (a concurrent
-                    // mutation resized the map, invalidating the slot cursor).
-                    let start_slot = match cursor {
-                        Some(c) if c.capacity == capacity => c.slot,
-                        _ => 0,
-                    };
-                    let mut iter = subjects.iter_from(start_slot);
-                    while let Some((key, value)) = iter.next() {
-                        if key.index_id != index_id {
-                            continue; // slot order is not index-major
-                        }
-                        if examined >= max_subjects {
-                            range_exhausted = false;
-                            break;
-                        }
-                        examined += 1;
-                        last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                        if value.deleted {
-                            continue;
-                        }
-                        if value
+            let scope = SubjectScanScope::Building {
+                index_id,
+                target_index_version,
+            };
+            let mut scan_cursor = cursor;
+            for _ in 0..max_subjects.max(1) {
+                let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+                    range_exhausted = true;
+                    last_cursor = None;
+                    break;
+                };
+                scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+                last_cursor = scan_cursor.clone();
+                if page.exhausted {
+                    range_exhausted = true;
+                }
+                for (key, value) in page.entries {
+                    if key.index_id != index_id
+                        || value.deleted
+                        || value
                             .shadow_slot
                             .is_some_and(|s| s.index_version as u64 == target_index_version)
-                        {
-                            continue; // already shadowed (e.g. by dual-write)
-                        }
-                        let Some(active_slot) = value.current_slot_for(active) else {
-                            continue;
-                        };
-                        bytes_buffered += def.pad_stride_bytes as u64;
-                        to_read.push((
-                            PageKey::new(
-                                index_id,
-                                active_slot.index_version as u64,
-                                active_slot.partition_id,
-                                active_slot.page_id as u64,
-                            ),
-                            key,
-                            value,
-                            active_slot,
-                        ));
-                        // Bound transient heap bytes: break after buffering at least one vector once
-                        // the per-step byte budget is reached (cursor resumes from `last_cursor`).
-                        if bytes_buffered >= max_vector_bytes {
-                            range_exhausted = false;
-                            break;
-                        }
+                    {
+                        continue;
                     }
-                });
+                    let Some(active_slot) = value.current_slot_for(active) else {
+                        continue;
+                    };
+                    bytes_buffered += def.pad_stride_bytes as u64;
+                    to_read.push((
+                        PageKey::new(
+                            index_id,
+                            active_slot.index_version as u64,
+                            active_slot.partition_id,
+                            active_slot.page_id as u64,
+                        ),
+                        key,
+                        value,
+                        active_slot,
+                    ));
+                }
+                if range_exhausted || bytes_buffered >= max_vector_bytes {
+                    break;
+                }
             }
             // Phase 2: bulk-read each distinct page once into a reused `PageScratch`, then extract
             // each row's bytes. A subject whose slot is at/after `row_count` or is tombstoned is
@@ -1046,10 +1059,8 @@ impl VectorCanisterStore {
                     // one we read bytes from (replaces the retired `vector_id` equality check).
                     if !entry.deleted && entry.current_slot_for(active) == Some(active_slot) {
                         entry.shadow_slot = Some(shadow_slot);
-                        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                            m.insert(key, entry)
-                                .expect("reinsert existing subject entry");
-                        });
+                        subject_store::insert(key, entry)
+                            .map_err(super::legacy_subject_store_error)?;
                     }
                     subjects_processed += 1;
                 }
@@ -1091,8 +1102,8 @@ impl VectorCanisterStore {
         index_id: u32,
     ) -> Result<VectorPartitionHealthSummary, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         Ok(partition_health_summary(
             index_id,
@@ -1150,8 +1161,8 @@ impl VectorCanisterStore {
         max_pages: u32,
     ) -> Result<VectorPartitionHealthStep, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         PAGE_STORE.with_borrow(|store| {
             store.partition_page_health_step(index_id, def.active_index_version, cursor, max_pages)
@@ -1176,8 +1187,8 @@ impl VectorCanisterStore {
         else {
             return Err(VectorCanisterError::RebuildNotReadyToPublish);
         };
-        let mut def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let mut def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         // O(`nlist`) centroid presence check (bounded by MAX_NLIST); not a subject scan.
         if read_centroids_at(index_id, target_index_version, nlist, def.dims).is_none() {
@@ -1188,11 +1199,9 @@ impl VectorCanisterStore {
 
         def.active_index_version = target_index_version;
         def.nlist = nlist;
-        VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
-            defs.insert(index_id, def)
-                .map(|_| ())
-                .map_err(|_| VectorCanisterError::StableGrowFailed)
-        })?;
+        definition_store::insert(index_id, def)
+            .map(|_| ())
+            .map_err(super::legacy_definition_store_error)?;
         // The active centroid set just changed generation; drop any warmed heap entry so search does
         // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
         super::centroid_cache::invalidate(index_id);
@@ -1282,7 +1291,7 @@ impl VectorCanisterStore {
                 self.aborting_step(index_id, state, max_work)
             }
             _ => return Err(VectorCanisterError::NoActiveRebuild),
-        };
+        }?;
         put_rebuild_state(index_id, next.clone());
         Ok(status_of(&next))
     }
@@ -1294,7 +1303,7 @@ impl VectorCanisterStore {
         index_id: u32,
         state: VectorRebuildStateRecord,
         max_work: u32,
-    ) -> VectorRebuildStateRecord {
+    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
         let VectorRebuildStateRecord::Cleaning {
             old_version,
             old_nlist,
@@ -1307,34 +1316,38 @@ impl VectorCanisterStore {
         };
 
         if !is_subjects_done(&subject_cursor) {
+            let scope = SubjectScanScope::Cleaning {
+                index_id,
+                target_index_version,
+            };
             let (next_cursor, exhausted) =
-                self.collapse_subjects(index_id, target_index_version, subject_cursor, max_work);
-            return VectorRebuildStateRecord::Cleaning {
+                self.collapse_subjects(index_id, target_index_version, subject_cursor, max_work)?;
+            return Ok(VectorRebuildStateRecord::Cleaning {
                 old_version,
                 old_nlist,
                 target_index_version,
                 subject_cursor: if exhausted {
-                    subjects_done_marker()
+                    subjects_done_marker(scope)
                 } else {
                     next_cursor
                 },
                 page_cursor: None,
-            };
+            });
         }
 
         let (next_page, exhausted) =
             drop_version_pages(index_id, old_version, page_cursor, max_work);
         if exhausted {
             drop_version_heads_and_centroids(index_id, old_version, old_nlist);
-            VectorRebuildStateRecord::Idle
+            Ok(VectorRebuildStateRecord::Idle)
         } else {
-            VectorRebuildStateRecord::Cleaning {
+            Ok(VectorRebuildStateRecord::Cleaning {
                 old_version,
                 old_nlist,
                 target_index_version,
                 subject_cursor,
                 page_cursor: next_page,
-            }
+            })
         }
     }
 
@@ -1345,7 +1358,7 @@ impl VectorCanisterStore {
         index_id: u32,
         state: VectorRebuildStateRecord,
         max_work: u32,
-    ) -> VectorRebuildStateRecord {
+    ) -> Result<VectorRebuildStateRecord, VectorCanisterError> {
         let VectorRebuildStateRecord::Aborting {
             target_index_version,
             target_nlist,
@@ -1357,32 +1370,36 @@ impl VectorCanisterStore {
         };
 
         if !is_subjects_done(&subject_cursor) {
+            let scope = SubjectScanScope::Aborting {
+                index_id,
+                target_index_version,
+            };
             let (next_cursor, exhausted) =
-                self.clear_shadow_slots(index_id, target_index_version, subject_cursor, max_work);
-            return VectorRebuildStateRecord::Aborting {
+                self.clear_shadow_slots(index_id, target_index_version, subject_cursor, max_work)?;
+            return Ok(VectorRebuildStateRecord::Aborting {
                 target_index_version,
                 target_nlist,
                 subject_cursor: if exhausted {
-                    subjects_done_marker()
+                    subjects_done_marker(scope)
                 } else {
                     next_cursor
                 },
                 page_cursor: None,
-            };
+            });
         }
 
         let (next_page, exhausted) =
             drop_version_pages(index_id, target_index_version, page_cursor, max_work);
         if exhausted {
             drop_version_heads_and_centroids(index_id, target_index_version, target_nlist);
-            VectorRebuildStateRecord::Idle
+            Ok(VectorRebuildStateRecord::Idle)
         } else {
-            VectorRebuildStateRecord::Aborting {
+            Ok(VectorRebuildStateRecord::Aborting {
                 target_index_version,
                 target_nlist,
                 subject_cursor,
                 page_cursor: next_page,
-            }
+            })
         }
     }
 
@@ -1394,50 +1411,46 @@ impl VectorCanisterStore {
         target: u64,
         cursor: Option<SubjectScanCursor>,
         max_work: u32,
-    ) -> (Option<SubjectScanCursor>, bool) {
-        let mut examined = 0u32;
-        let mut last_cursor: Option<SubjectScanCursor> = None;
-        let mut exhausted = true;
+    ) -> Result<(Option<SubjectScanCursor>, bool), VectorCanisterError> {
         let mut updates: Vec<(SubjectKey, SlotRef)> = Vec::new();
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            let capacity = subjects.capacity();
-            // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
-            // resized the map, invalidating the slot cursor).
-            let start_slot = match cursor {
-                Some(c) if c.capacity == capacity => c.slot,
-                _ => 0,
+        let scope = SubjectScanScope::Cleaning {
+            index_id,
+            target_index_version: target,
+        };
+        let mut scan_cursor = cursor;
+        let mut exhausted = false;
+        for _ in 0..max_work.max(1) {
+            let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+                exhausted = true;
+                break;
             };
-            let mut iter = subjects.iter_from(start_slot);
-            while let Some((key, value)) = iter.next() {
-                if key.index_id != index_id {
-                    continue; // slot order is not index-major
-                }
-                if examined >= max_work {
-                    exhausted = false;
-                    break;
-                }
-                examined += 1;
-                last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                if let Some(shadow) = value.shadow_slot
-                    && shadow.index_version as u64 == target
+            scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+            for (key, value) in page.entries {
+                if key.index_id == index_id
+                    && value
+                        .shadow_slot
+                        .is_some_and(|shadow| shadow.index_version as u64 == target)
                 {
-                    updates.push((key, shadow));
+                    updates.push((key, value.shadow_slot.expect("shadow slot checked")));
                 }
             }
-        });
-
-        for (key, shadow) in updates {
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                if let Some(mut entry) = m.get(&key) {
-                    entry.slot = Some(shadow);
-                    entry.shadow_slot = None;
-                    m.insert(key, entry)
-                        .expect("reinsert existing subject entry");
-                }
-            });
+            if page.exhausted {
+                exhausted = true;
+                break;
+            }
         }
 
-        (last_cursor, exhausted)
+        for (key, shadow) in updates {
+            if let Some(mut entry) =
+                subject_store::get(&key).map_err(super::legacy_subject_store_error)?
+            {
+                entry.slot = Some(shadow);
+                entry.shadow_slot = None;
+                subject_store::insert(key, entry).map_err(super::legacy_subject_store_error)?;
+            }
+        }
+
+        Ok((if exhausted { None } else { scan_cursor }, exhausted))
     }
 
     /// Stage 1 of `Aborting`: clear `shadow_slot@target` for up to `max_work` subjects without
@@ -1448,50 +1461,45 @@ impl VectorCanisterStore {
         target: u64,
         cursor: Option<SubjectScanCursor>,
         max_work: u32,
-    ) -> (Option<SubjectScanCursor>, bool) {
-        let mut examined = 0u32;
-        let mut last_cursor: Option<SubjectScanCursor> = None;
-        let mut exhausted = true;
+    ) -> Result<(Option<SubjectScanCursor>, bool), VectorCanisterError> {
         let mut keys: Vec<SubjectKey> = Vec::new();
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            let capacity = subjects.capacity();
-            // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
-            // resized the map, invalidating the slot cursor).
-            let start_slot = match cursor {
-                Some(c) if c.capacity == capacity => c.slot,
-                _ => 0,
+        let scope = SubjectScanScope::Aborting {
+            index_id,
+            target_index_version: target,
+        };
+        let mut scan_cursor = cursor;
+        let mut exhausted = false;
+        for _ in 0..max_work.max(1) {
+            let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+                exhausted = true;
+                break;
             };
-            let mut iter = subjects.iter_from(start_slot);
-            while let Some((key, value)) = iter.next() {
-                if key.index_id != index_id {
-                    continue; // slot order is not index-major
-                }
-                if examined >= max_work {
-                    exhausted = false;
-                    break;
-                }
-                examined += 1;
-                last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                if value
-                    .shadow_slot
-                    .is_some_and(|s| s.index_version as u64 == target)
+            scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
+            for (key, value) in page.entries {
+                if key.index_id == index_id
+                    && value
+                        .shadow_slot
+                        .is_some_and(|shadow| shadow.index_version as u64 == target)
                 {
                     keys.push(key);
                 }
             }
-        });
-
-        for key in keys {
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                if let Some(mut entry) = m.get(&key) {
-                    entry.shadow_slot = None;
-                    m.insert(key, entry)
-                        .expect("reinsert existing subject entry");
-                }
-            });
+            if page.exhausted {
+                exhausted = true;
+                break;
+            }
         }
 
-        (last_cursor, exhausted)
+        for key in keys {
+            if let Some(mut entry) =
+                subject_store::get(&key).map_err(super::legacy_subject_store_error)?
+            {
+                entry.shadow_slot = None;
+                subject_store::insert(key, entry).map_err(super::legacy_subject_store_error)?;
+            }
+        }
+
+        Ok((if exhausted { None } else { scan_cursor }, exhausted))
     }
 }
 

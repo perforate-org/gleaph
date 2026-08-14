@@ -1,6 +1,12 @@
 //! Canister request handlers for `gleaph-vector-canister`.
 
-use crate::facade::VectorCanisterStore;
+#[cfg(feature = "pocket-ic-e2e")]
+use crate::facade::E2eSubjectPressureStep;
+#[cfg(feature = "pocket-ic-e2e")]
+use crate::facade::stable::definition_store;
+use crate::facade::{
+    VectorCanisterStore, VectorSyncBatchOutcomeOperationError, advance_watermark, gc_subjects_step,
+};
 use crate::init::VectorCanisterInitArgs;
 use crate::state::VectorCanisterError;
 use candid::Principal;
@@ -11,7 +17,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchProgress,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchProgress,
+    VectorSyncBatchUnavailable, VectorSyncTerminalError,
 };
 use ic_cdk::api::msg_caller;
 
@@ -38,6 +45,70 @@ pub(crate) fn init(args: VectorCanisterInitArgs) {
     if let Err(e) = VectorCanisterStore::new().init_from_args(&args) {
         ic_cdk::trap(e.to_string());
     }
+}
+
+/// Rebind the definition and subject-store heap owners. Each retains an unavailable exact-open
+/// result for subsequent request handling instead of creating or resetting a nonempty region.
+pub(crate) fn post_upgrade() {
+    VectorCanisterStore::new().open_definition_store_after_upgrade();
+    VectorCanisterStore::new().open_subject_store_after_upgrade();
+}
+
+/// Test-only PocketIC seam for simulating the post-upgrade pre-open window without touching stable
+/// memory. The definition owner must be `Ready`; production lifecycle code remains exact-open.
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn e2e_unbind_definition_store() -> Result<(), String> {
+    crate::facade::stable::definition_store::unbind_for_test().map_err(str::to_owned)
+}
+
+/// Test-only bounded pressure fixture over the live MemoryId 7 subject owner.
+///
+/// Each synthetic subject is admitted through the ordinary missing-remove co-write. That path
+/// inserts the tombstone clock and records the matching deleted-subject entry, so this fixture
+/// preserves the subject-map/GC-list consistency invariant while avoiding slab-row allocation. One
+/// update is bounded so PocketIC callers can build pressure across messages without risking the
+/// instruction limit.
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn e2e_fill_subject_store_toward_pressure(
+    index_id: u32,
+    first_vertex_id: u32,
+    max_attempts: u32,
+) -> Result<(u32, u32, Option<u32>), String> {
+    const MAX_ATTEMPTS_PER_CALL: u32 = 128;
+
+    if max_attempts == 0 || max_attempts > MAX_ATTEMPTS_PER_CALL {
+        return Err(format!(
+            "max_attempts must be in 1..={MAX_ATTEMPTS_PER_CALL}"
+        ));
+    }
+    if first_vertex_id.checked_add(max_attempts).is_none() {
+        return Err("subject pressure fixture vertex range overflow".to_owned());
+    }
+    definition_store::get(index_id)
+        .map_err(|error| format!("read subject pressure definition: {error:?}"))?
+        .ok_or_else(|| format!("subject pressure fixture index {index_id} is absent"))?;
+
+    let store = VectorCanisterStore::new();
+    let mut next_vertex_id = first_vertex_id;
+    for inserted in 0..max_attempts {
+        match store.e2e_insert_subject_tombstone_for_pressure(index_id, next_vertex_id) {
+            Ok(E2eSubjectPressureStep::Inserted) => {
+                next_vertex_id = next_vertex_id
+                    .checked_add(1)
+                    .expect("subject pressure fixture range preflighted");
+            }
+            Ok(E2eSubjectPressureStep::TablePressure) => {
+                return Ok((inserted, next_vertex_id, Some(next_vertex_id)));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "subject pressure fixture operation error at {next_vertex_id}: {error}"
+                ));
+            }
+        }
+    }
+
+    Ok((max_attempts, next_vertex_id, None))
 }
 
 pub(crate) fn admin_attach_shard_canister(
@@ -107,6 +178,115 @@ pub(crate) fn vector_sync_batch(
         next_index: None,
         instruction_budget_exhausted: false,
     })
+}
+
+/// Failure that cannot be represented as a committed typed batch outcome.
+///
+/// The public wrapper projects `StoreUnavailable` to the outer Candid error only before any
+/// operation has committed.  `Fatal` always traps at the IC boundary so a prior prefix is rolled
+/// back rather than being hidden behind an outer error.
+#[derive(Debug)]
+pub(crate) enum VectorSyncBatchOutcomeDriverError {
+    StoreUnavailable,
+    SubjectStoreUnavailable,
+    Fatal(VectorCanisterError),
+}
+
+/// Per-operation typed batch driver used by the additive endpoint and unit tests.
+///
+/// Unlike the legacy chunked handler, every operation first obtains definition admission before
+/// row/page/subject mutations. This makes `TablePressure` an exact terminal index and preserves
+/// an acknowledged prefix only for that explicit terminal condition.
+pub(crate) fn vector_sync_batch_outcome_for_caller(
+    caller: Principal,
+    operations: &[VectorEmbeddingSyncOp],
+) -> Result<VectorSyncBatchOutcome, VectorSyncBatchOutcomeDriverError> {
+    let store = VectorCanisterStore::new();
+    let baseline = instruction_counter();
+    let mut applied = 0u32;
+
+    for operation in operations {
+        // Always attempt the first operation: Graph treats a zero-progress nonempty response as
+        // malformed, while a terminal pressure at position zero remains explicit and valid.
+        let exhausted = applied > 0
+            && instruction_counter()
+                .saturating_sub(baseline)
+                .saturating_add(VECTOR_BATCH_RESERVE_INSTRUCTIONS)
+                >= VECTOR_BATCH_MAX_INSTRUCTIONS;
+        if exhausted {
+            break;
+        }
+
+        match store.vector_sync_batch_outcome_apply_one(caller, operation) {
+            Ok(()) => {
+                applied = applied
+                    .checked_add(1)
+                    .expect("vector sync batch outcome exceeds u32");
+            }
+            Err(VectorSyncBatchOutcomeOperationError::TablePressure) => {
+                if applied > 0 {
+                    advance_watermark(caller, &operations[..applied as usize]);
+                    gc_subjects_step(GC_SUBJECTS_BUDGET);
+                }
+                return Ok(VectorSyncBatchOutcome::Terminal {
+                    applied,
+                    failed_index: applied,
+                    error: VectorSyncTerminalError::IndexDefinitionTablePressure,
+                });
+            }
+            Err(VectorSyncBatchOutcomeOperationError::SubjectTablePressure) => {
+                if applied > 0 {
+                    advance_watermark(caller, &operations[..applied as usize]);
+                    gc_subjects_step(GC_SUBJECTS_BUDGET);
+                }
+                return Ok(VectorSyncBatchOutcome::Terminal {
+                    applied,
+                    failed_index: applied,
+                    error: VectorSyncTerminalError::SubjectTablePressure,
+                });
+            }
+            Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) if applied == 0 => {
+                return Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable);
+            }
+            Err(VectorSyncBatchOutcomeOperationError::StoreUnavailable) => {
+                return Err(VectorSyncBatchOutcomeDriverError::Fatal(
+                    VectorCanisterError::StableGrowFailed,
+                ));
+            }
+            Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) if applied == 0 => {
+                return Err(VectorSyncBatchOutcomeDriverError::SubjectStoreUnavailable);
+            }
+            Err(VectorSyncBatchOutcomeOperationError::SubjectStoreUnavailable) => {
+                return Err(VectorSyncBatchOutcomeDriverError::Fatal(
+                    VectorCanisterError::StableGrowFailed,
+                ));
+            }
+            Err(VectorSyncBatchOutcomeOperationError::Fatal(error)) => {
+                return Err(VectorSyncBatchOutcomeDriverError::Fatal(error));
+            }
+        }
+    }
+
+    if applied > 0 {
+        advance_watermark(caller, &operations[..applied as usize]);
+        gc_subjects_step(GC_SUBJECTS_BUDGET);
+    }
+    Ok(VectorSyncBatchOutcome::Progress { applied })
+}
+
+pub(crate) fn vector_sync_batch_outcome(
+    operations: Vec<VectorEmbeddingSyncOp>,
+) -> Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable> {
+    match vector_sync_batch_outcome_for_caller(msg_caller(), &operations) {
+        Ok(outcome) => Ok(outcome),
+        Err(VectorSyncBatchOutcomeDriverError::StoreUnavailable) => {
+            Err(VectorSyncBatchUnavailable::IndexDefinitionStoreUnavailable)
+        }
+        Err(VectorSyncBatchOutcomeDriverError::SubjectStoreUnavailable) => {
+            Err(VectorSyncBatchUnavailable::SubjectStoreUnavailable)
+        }
+        Err(VectorSyncBatchOutcomeDriverError::Fatal(error)) => ic_cdk::trap(error.to_string()),
+    }
 }
 
 pub(crate) fn vector_search(

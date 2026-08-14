@@ -16,7 +16,7 @@
 //! delay) rather than run blind, which would re-key the store without re-keying
 //! the index and silently diverge the two.
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(test, target_family = "wasm"))]
 use super::GraphStore;
 #[cfg(any(test, target_family = "wasm"))]
 use super::ic_budget::{MAINTENANCE_TIMER_FLOOR_DELAY, MAINTENANCE_TIMER_RELAXED_DELAY};
@@ -63,10 +63,7 @@ pub(crate) fn arm_if_needed() {
     #[cfg(target_family = "wasm")]
     {
         let store = GraphStore::new();
-        if store.maintenance_queue_len() == 0
-            && store.repair_journal_is_empty()
-            && store.derived_index_outbox_is_empty()
-        {
+        if store.maintenance_queue_len() == 0 && !durable_delivery_pending(&store) {
             return;
         }
         if MAINTENANCE_RUNNING.with(std::cell::Cell::get) {
@@ -79,6 +76,11 @@ pub(crate) fn arm_if_needed() {
             }
         });
     }
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+pub(crate) fn durable_delivery_pending(store: &GraphStore) -> bool {
+    !store.repair_journal_is_empty() || !store.derived_index_outbox_pending_is_empty()
 }
 
 /// Registers a one-shot timer that runs [`on_tick`]. `ic-cdk-timers` 1.0 takes a
@@ -137,9 +139,7 @@ async fn run_maintenance_pass() -> Option<core::time::Duration> {
     // relaxed delay rather than hot-looping.
     match base {
         Some(delay) => Some(delay),
-        None if !store.repair_journal_is_empty() || !store.derived_index_outbox_is_empty() => {
-            Some(MAINTENANCE_TIMER_RELAXED_DELAY)
-        }
+        None if durable_delivery_pending(&store) => Some(MAINTENANCE_TIMER_RELAXED_DELAY),
         None => None,
     }
 }
@@ -198,9 +198,9 @@ async fn flush_and_repair(store: &GraphStore) {
         return;
     }
 
-    if !store.derived_index_outbox_is_empty() {
+    if !store.derived_index_outbox_pending_is_empty() {
         let _ = crate::index::repair_journal::drain_outbox_once(ix, vx).await;
-        if !store.derived_index_outbox_is_empty() {
+        if !store.derived_index_outbox_pending_is_empty() {
             return;
         }
     }

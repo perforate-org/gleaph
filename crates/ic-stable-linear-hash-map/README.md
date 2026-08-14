@@ -7,15 +7,10 @@ one bounded, synchronous incremental split on an absent insert that would exceed
 
 - Fixed-size `Storable` keys and values. Keys additionally implement `StableHashKey`, which owns
   canonical routing bytes separately from persisted key bytes.
-- A 64-byte immutable header owns only layout identity: element widths, `B`, and offsets or strides
-  for control, journal, and bucket pages. `value_slab_offset = 8 + B * key_size` identifies the
-  start of each bucket's value slab; `bucket_page_stride = value_slab_offset + B * value_size`.
-- A separate 64-byte `ControlRegion` owns mutable length, linear-hashing level/split cursors,
-  physical bucket count, one persisted hash seed, split/journal state, an odd/even mutation epoch,
-  and the persisted `StableHashKey::HASH_ENCODING_ID`.
-- One inactive journal slot sized to `8 metadata bytes + one entry payload` remains reserved for
-  future recovery work. The bounded split does not use it or persist an active phase. Reopen fails
-  closed if split, journal, or mutation state is non-idle.
+- The exact 128-byte immutable header owns key/value widths, type-owned key storage/routing and value
+  storage identities, and the immutable hash seed. Layout offsets and strides are derived.
+- The exact 64-byte `ControlRegion` owns mutable length, physical bucket count, odd/even mutation
+  epoch, and incarnation. Level and split cursor are derived from the physical bucket count.
 - The table starts at linear-hashing level 3 with 8 physical buckets, `split_cursor = 0`, and
   `B = 8` slots per bucket. Each split appends exactly one bucket, advances the cursor, and promotes
   the level at round rollover. Each page stores its 8-byte occupancy header, all eight fixed-width
@@ -26,12 +21,14 @@ one bounded, synchronous incremental split on an absent insert that would exceed
 - `get`, `contains_key`, `insert`, update, and `remove` inspect only those two candidates. Live
   operations return `Result<_, MutationError>` so an in-progress or invalidated operation fails
   closed rather than exposing a partial snapshot.
-- `new_with_hash_seed` supports deterministic placement experiments. `init_with_hash_seed` uses its
-  argument only for empty memory and otherwise reopens the persisted seed. `set_hash_seed` is
-  permitted only while the map is empty.
+- `new_with_hash_seed` is strict create and rejects every nonempty memory without writes.
+  `init_with_hash_seed` is canonical open-or-create: it creates only at size zero and otherwise
+  exact-opens the persisted seed. `open` is exact-open-only and rejects empty memory. Normal open
+  reads only the header and control plus memory extent.
 - `StableHashKey` requires `Eq`, canonical bytes stable across upgrades, platforms, and compiler
-  versions, and equal keys to produce identical bytes. `HASH_ENCODING_ID` identifies that routing
-  encoding and is validated on reopen. V1 routing identity is additionally frozen by layout version
+  versions, and equal keys to produce identical bytes. `KEY_STORAGE_ID`, `KEY_ROUTING_ID`, and
+  `StableMapValue::VALUE_STORAGE_ID` identify persisted encodings and are validated on reopen. V1
+  routing identity is additionally frozen by layout version
   1, the literal routing vectors in the unit tests, RapidHash V3 exact mode, and the two fixed domain
   constants. Dynamic power-of-two bucket reduction uses equivalent bit masks, with modulo
   equivalence checked at geometry boundaries and deterministic samples. Changing any of those
@@ -53,9 +50,8 @@ one bounded, synchronous incremental split on an absent insert that would exceed
   mutation that completes during `stable_hash_bytes`, decoding, or equality comparison invalidates
   the read result. This persisted protocol applies across separately opened handles over aliased
   `Memory`; it does not claim concurrent physical-memory atomicity beyond the `Memory` implementation.
-  Domain-separated hash secrets are cached with their seed tag and refreshed from the fresh control
-  seed after guard acquisition. The cache borrow ends before stable reads, decodes, comparisons, and
-  writes.
+  Domain-separated hash secrets are cached from the immutable header seed. The cache borrow ends
+  before stable reads, decodes, comparisons, and writes.
 - For small bucket pages only, `get` and `remove` allocate their first page buffer at its exact
   length and fill it through `Memory::read_unsafe`; the buffer remains operation-local and is
   reused for the second candidate with ordinary `read`. The helper sets the vector length only
@@ -64,15 +60,51 @@ one bounded, synchronous incremental split on an absent insert that would exceed
   its safe zero-fill-then-read behavior, so custom implementations that do not override
   `read_unsafe` preserve the same observable result and read accounting. Large-value lookup keeps
   the occupancy-plus-key fallback.
+- `scan_start` and `scan_step` provide resumable physical enumeration without exposing an
+  `Iterator` or requiring a second key catalog. The versioned 88-byte cursor encodes the three
+  schema identities, immutable seed, incarnation, physical bucket bound, and next physical slot;
+  it deliberately omits epoch, length, and derived geometry. It therefore survives exact reopen or
+  canister upgrade under the same incarnation and bucket bound. Each positive-budget step reads at
+  most that many physical slots, returns entries in physical order with the next cursor and exact
+  examined-slot count, and reports EOF only through `exhausted`. Fixed-width payloads make the slot
+  budget an entry and encoded-output bound. The step reads an even mutation epoch before and after
+  collecting its local output. A same-geometry epoch change returns `InProgress`; reset or split
+  returns `RestartRequired`; neither returns the mixed output. Mutations between completed steps are
+  allowed, so exactly-once enumeration is guaranteed only while the map remains unchanged across
+  the lap.
+- `scrub_snapshot` and `scrub_step` provide an explicit bounded integrity scan. The opaque,
+  handle-bound cursor captures the exact schema identities, immutable seed, even mutation epoch,
+  incarnation, length, and physical-bucket bound; each positive-budget step scans only its primary
+  bucket range plus bounded candidate probes. It validates reserved occupancy bits, canonical
+  fixed key/value encodings, route reachability, duplicate candidate placement, and final length.
+  The exact fence is checked before and after every step, so an alias mutation makes the cursor
+  stale and supersedes an integrity result from mixed bytes. The cursor is external to map bytes,
+  replayable only on its originating open handle, and is not a wire or stable encoding. Reopen or
+  upgrade starts a new scrub session at bucket zero. Fixed-width bytes that decode and re-encode
+  noncanonically return typed scrub errors. A panic in user-defined `Storable` decode/encode,
+  `StableHashKey` hashing, or `Eq` is recoverable only in unwind-enabled host tests; the wasm
+  panic-abort build traps and the IC update boundary fails closed.
+- `reset(expected_incarnation)` is a destructive owner operation, not a general `clear`. It
+  preflights the ownership fence, successor incarnation, epoch pair, and initial extent before the
+  first write. Success preserves the immutable header, seed, schemas, payload bytes, and trailing
+  pages; it clears only the eight initial occupancy headers and publishes empty initial geometry,
+  the successor incarnation, and the final even epoch together as the last control write.
 
-An overwrite never splits. An absent insert below 75% load uses the existing two candidates. At or
-above 75% load it plans exactly the next linear split, redistributes at most the source bucket's
-eight entries under the post-split routes, and then places the requested entry. If its two
-post-split candidates are still full, it returns `MutationError::TablePressure` without growing,
-splitting, or advancing the epoch. V1 does not iterate, recover an interrupted generic-memory write,
-shrink, or provide migration compatibility. The SoA layout is fresh-memory-only: V1 has no reader
-or migration path for earlier experimental AoS bytes. This remains an experimental storage foundation, not
-yet integrated into a canister owner.
+An overwrite never splits. An absent insert below 75% load uses the existing two candidates; if both
+are full, it scans at most their sixteen residents in deterministic candidate/slot order and moves
+only one resident to that resident's other candidate before admitting the key. At or above 75% load
+it first plans exactly the next linear split, redistributes at most the source bucket's eight
+entries under the post-split routes, and then places the requested entry. If that prospective target
+pair is still full, it keeps the current geometry and retries current-geometry admission, including
+the same one-hop relocation, before returning `MutationError::TablePressure`. The one-hop planner
+prepares every resident decode, route, checked offset, source/destination page image, and epoch
+fence before the odd epoch or first write. True pressure neither grows nor changes bytes, control,
+geometry, or epoch. V1 exposes no ordinary iterator, recover an interrupted generic-memory write,
+shrink, or migration compatibility. The bounded physical scan is not an integrity validator;
+corrupted bucket pages are diagnosed through bounded scrub. The SoA layout is fresh-memory-only: V1
+has no reader or migration path for earlier experimental bytes. Consumer integration remains
+planned; reset is map-local only and a Vector owner must coordinate all of its stable regions in one
+update before it can expose reset.
 
 ## Validation
 
@@ -88,8 +120,9 @@ persisted SoA baseline measures Linear scope instructions of 96.07K get, 163.35K
 remove (97.07K, 164.36K, and 81.34K totals). The prior AoS run of the same three named benches
 measured 96.68K, 175.26K, and 89.44K scope instructions (97.68K, 176.27K, and 90.45K totals).
 The persisted artifact measures `StableBTreeMap` scope instructions of 374.98K get, 1.186M insert,
-and 1.086M remove (375.99K, 1.187M, and 1.087M totals). The full artifact contains all 16 benchmark
-keys currently declared in `src/bench.rs`; the prior AoS Linear figures are historical only.
+and 1.086M remove (375.99K, 1.187M, and 1.087M totals). The persisted artifact contains the 16
+baseline benchmark entries measured before the one-hop diagnostics were added; the prior AoS Linear
+figures are historical only.
 
 Four public-insert split fixtures use frozen literal keys and keep setup, geometry/value checks, and
 reopen checks outside timing. The persisted SoA baseline measures scope/total instructions of
@@ -114,5 +147,8 @@ non-additive diagnostics and do not replace epoch-protected direct-map totals. M
 distinct `VirtualMemory` regions over `DefaultMemoryImpl`; their translation overhead is part of
 every mutation phase.
 
-`canbench_results.yml` is the first unfiltered persisted baseline. It contains the full set of 16
-benchmark keys currently declared by the canbench source.
+`canbench_results.yml` is the first unfiltered persisted baseline and contains 16 entries. The source
+also declares three focused one-hop diagnostics (movable `u64`, exhausted, and movable
+large-value) plus one bounded 64-physical-slot scan benchmark. Setup and semantic checks stay
+outside the measured scan closure. These four benchmarks are intentionally unpersisted in this
+change and are not part of that baseline.

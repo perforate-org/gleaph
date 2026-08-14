@@ -493,6 +493,20 @@ fn e2e_derived_index_outbox_len() -> u64 {
 
 #[cfg(feature = "pocket-ic-e2e")]
 #[query(guard = "guard_control_plane_admin")]
+fn e2e_derived_index_outbox_pending_is_empty() -> bool {
+    canister::handlers::e2e_derived_index_outbox_pending_is_empty()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+fn e2e_enqueue_vector_outbox(
+    operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+) -> Result<(), String> {
+    canister::handlers::e2e_enqueue_vector_outbox(operations)
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
 fn e2e_repair_journal_len() -> u64 {
     canister::handlers::e2e_repair_journal_len()
 }

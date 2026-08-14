@@ -292,12 +292,26 @@ pub struct VectorSyncBatchProgress {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct IndexDefinitionTablePressure;
 
+/// Terminal admission source for one vector synchronization item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorSyncTerminalError {
+    IndexDefinitionTablePressure,
+    SubjectTablePressure,
+}
+
 /// Vector's definition store could not be opened or safely served.
 ///
 /// This marker represents the availability boundary only. Existing vector endpoints do not yet
 /// transport it; they continue to use their legacy error/progress contracts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct IndexDefinitionStoreUnavailable;
+
+/// Out-of-band availability source for the additive vector synchronization endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorSyncBatchUnavailable {
+    IndexDefinitionStoreUnavailable,
+    SubjectStoreUnavailable,
+}
 
 /// A bounded vector-index synchronization result with either a committed prefix or one terminal
 /// definition-table admission failure.
@@ -313,7 +327,7 @@ pub enum VectorSyncBatchOutcome {
     Terminal {
         applied: u32,
         failed_index: u32,
-        error: IndexDefinitionTablePressure,
+        error: VectorSyncTerminalError,
     },
 }
 
@@ -1750,7 +1764,7 @@ mod tests {
         let outcome = VectorSyncBatchOutcome::Terminal {
             applied: 0,
             failed_index: 0,
-            error: IndexDefinitionTablePressure,
+            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
         };
         let bytes = Encode!(&outcome).expect("encode outcome");
         let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode outcome");
@@ -1763,7 +1777,7 @@ mod tests {
         let outcome = VectorSyncBatchOutcome::Terminal {
             applied: 2,
             failed_index: 2,
-            error: IndexDefinitionTablePressure,
+            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
         };
         let bytes = Encode!(&outcome).expect("encode outcome");
         let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode outcome");
@@ -1776,7 +1790,7 @@ mod tests {
         let malformed_terminal = VectorSyncBatchOutcome::Terminal {
             applied: 1,
             failed_index: 2,
-            error: IndexDefinitionTablePressure,
+            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
         };
         let bytes = Encode!(&malformed_terminal).expect("encode malformed terminal");
         let decoded = Decode!(&bytes, VectorSyncBatchOutcome).expect("decode malformed terminal");
@@ -1793,7 +1807,7 @@ mod tests {
             VectorSyncBatchOutcome::Terminal {
                 applied: 3,
                 failed_index: 3,
-                error: IndexDefinitionTablePressure,
+                error: VectorSyncTerminalError::IndexDefinitionTablePressure,
             }
             .validate(3),
             Err("vector sync batch terminal requires failed_index == applied < operation_count")
@@ -1802,10 +1816,10 @@ mod tests {
 
     #[test]
     fn index_definition_store_unavailable_candid_roundtrip() {
-        let marker = IndexDefinitionStoreUnavailable;
+        let marker = VectorSyncBatchUnavailable::IndexDefinitionStoreUnavailable;
         let bytes = Encode!(&marker).expect("encode unavailable marker");
         assert_eq!(
-            Decode!(&bytes, IndexDefinitionStoreUnavailable).expect("decode unavailable marker"),
+            Decode!(&bytes, VectorSyncBatchUnavailable).expect("decode unavailable marker"),
             marker
         );
     }

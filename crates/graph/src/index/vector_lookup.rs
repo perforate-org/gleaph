@@ -7,7 +7,9 @@
 
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
-use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSyncBatchProgress};
+use gleaph_graph_kernel::vector_index::{
+    VectorEmbeddingSyncOp, VectorSyncBatchOutcome, VectorSyncBatchProgress,
+};
 
 #[async_trait(?Send)]
 pub trait VectorCanisterLookup {
@@ -32,6 +34,18 @@ pub trait VectorCanisterLookup {
             applied,
             next_index: None,
             instruction_budget_exhausted: false,
+        })
+    }
+
+    /// Compatibility adapter for legacy trait implementations and mocks. The live IC client
+    /// overrides this method and calls the additive typed endpoint directly.
+    async fn vector_sync_batch_outcome(
+        &self,
+        operations: Vec<VectorEmbeddingSyncOp>,
+    ) -> Result<VectorSyncBatchOutcome, PlanQueryError> {
+        let progress = self.vector_sync_batch(operations).await?;
+        Ok(VectorSyncBatchOutcome::Progress {
+            applied: progress.applied,
         })
     }
 

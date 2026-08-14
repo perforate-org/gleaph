@@ -1,4 +1,6 @@
 use crate::StableLinearHashMap;
+#[cfg(target_family = "wasm")]
+use crate::StableMapValue;
 use canbench_rs::bench;
 #[cfg(target_family = "wasm")]
 use ic_stable_structures::Storable;
@@ -107,20 +109,20 @@ fn populated_large() -> StableLinearHashMap<u64, [u8; 2048], DefaultMemoryImpl> 
 }
 
 #[cfg(target_family = "wasm")]
-fn one_hop_movable_fixture<V: Storable + Clone>(
+fn one_hop_movable_fixture<V: Storable + StableMapValue + Clone>(
     map: &StableLinearHashMap<u64, V, DefaultMemoryImpl>,
     value: impl Fn(u64) -> V,
 ) -> (u64, Vec<(u64, V)>, u64, u64) {
     let target = (1u64..)
         .find(|key| {
-            let candidates = map.probe_experimental_candidates(*key);
+            let candidates = map.probe_one_hop_candidates(*key);
             candidates.0 != candidates.1
         })
         .expect("distinct target candidates");
-    let candidates = map.probe_experimental_candidates(target);
+    let candidates = map.probe_one_hop_candidates(target);
     let (moved, destination) = (1u64..)
         .find_map(|key| {
-            let routes = map.probe_experimental_candidates(key);
+            let routes = map.probe_one_hop_candidates(key);
             let destination = if routes.0 == candidates.0 && routes.1 != candidates.0 {
                 routes.1
             } else if routes.1 == candidates.0 && routes.0 != candidates.0 {
@@ -143,7 +145,7 @@ fn one_hop_movable_fixture<V: Storable + Clone>(
         let occupancy = occupancies[bucket as usize];
         let slot = (!occupancy).trailing_zeros();
         let resident_value = value(key);
-        map.probe_experimental_place(bucket, slot, occupancy, key, resident_value.clone());
+        map.probe_one_hop_place(bucket, slot, occupancy, key, resident_value.clone());
         occupancies[bucket as usize] |= 1 << slot;
         used.push(key);
         residents.push((key, resident_value));
@@ -160,7 +162,7 @@ fn one_hop_movable_fixture<V: Storable + Clone>(
             let key = (1u64..)
                 .find(|key| {
                     !used.contains(key) && {
-                        let routes = map.probe_experimental_candidates(*key);
+                        let routes = map.probe_one_hop_candidates(*key);
                         routes.0 == bucket || routes.1 == bucket
                     }
                 })
@@ -168,7 +170,7 @@ fn one_hop_movable_fixture<V: Storable + Clone>(
             place(bucket, key, &mut occupancies, &mut used, &mut residents);
         }
     }
-    map.probe_experimental_set_len(residents.len() as u64);
+    map.probe_one_hop_set_len(residents.len() as u64);
     (target, residents, moved, destination)
 }
 
@@ -178,13 +180,13 @@ fn one_hop_exhausted_fixture(
 ) -> (u64, Vec<(u64, u64)>) {
     let target = (1u64..)
         .find(|key| {
-            let candidates = map.probe_experimental_candidates(*key);
+            let candidates = map.probe_one_hop_candidates(*key);
             candidates.0 != candidates.1
         })
         .expect("distinct exhausted target");
-    let candidates = map.probe_experimental_candidates(target);
+    let candidates = map.probe_one_hop_candidates(target);
     let keys = (target + 1..)
-        .filter(|key| map.probe_experimental_candidates(*key) == candidates)
+        .filter(|key| map.probe_one_hop_candidates(*key) == candidates)
         .take(16)
         .collect::<Vec<_>>();
     let mut occupancies = [0u8; 8];
@@ -198,22 +200,22 @@ fn one_hop_exhausted_fixture(
         let occupancy = occupancies[bucket as usize];
         let slot = (!occupancy).trailing_zeros();
         let value = fixture_value(key);
-        map.probe_experimental_place(bucket, slot, occupancy, key, value);
+        map.probe_one_hop_place(bucket, slot, occupancy, key, value);
         occupancies[bucket as usize] |= 1 << slot;
         residents.push((key, value));
     }
-    map.probe_experimental_set_len(residents.len() as u64);
+    map.probe_one_hop_set_len(residents.len() as u64);
     (target, residents)
 }
 
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_experimental_one_hop_movable() -> canbench_rs::BenchResult {
+fn bench_one_hop_movable() -> canbench_rs::BenchResult {
     let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 443)
         .expect("new preflight map");
     let (preflight_target, _, _, _) = one_hop_movable_fixture(&preflight, fixture_value);
     assert_eq!(
-        preflight.experimental_insert_one_hop(preflight_target, fixture_value(preflight_target)),
+        preflight.insert(preflight_target, fixture_value(preflight_target)),
         Ok(None)
     );
 
@@ -224,9 +226,9 @@ fn bench_experimental_one_hop_movable() -> canbench_rs::BenchResult {
     let measured = Rc::new(RefCell::new(None));
     let measured_in_scope = measured.clone();
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_experimental_one_hop_movable");
+        let _scope = canbench_rs::bench_scope("bench_one_hop_movable");
         *measured_in_scope.borrow_mut() = Some(black_box(
-            map.experimental_insert_one_hop(black_box(target), black_box(fixture_value(target))),
+            map.insert(black_box(target), black_box(fixture_value(target))),
         ));
     });
     assert_eq!(measured.borrow().as_ref(), Some(&Ok(None)));
@@ -238,7 +240,7 @@ fn bench_experimental_one_hop_movable() -> canbench_rs::BenchResult {
     );
     assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
     assert_eq!(map.get(&target), Ok(Some(fixture_value(target))));
-    assert_eq!(map.probe_experimental_resident_bucket(moved), destination);
+    assert_eq!(map.probe_one_hop_resident_bucket(moved), destination);
     for &(key, value) in &residents {
         assert_eq!(map.get(&key), Ok(Some(value)));
     }
@@ -250,21 +252,21 @@ fn bench_experimental_one_hop_movable() -> canbench_rs::BenchResult {
 
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_experimental_one_hop_exhausted() -> canbench_rs::BenchResult {
+fn bench_one_hop_exhausted() -> canbench_rs::BenchResult {
     let map = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 449)
         .expect("new exhausted map");
     let (target, residents) = one_hop_exhausted_fixture(&map);
     assert_eq!(
-        map.experimental_insert_one_hop(target, fixture_value(target)),
+        map.insert(target, fixture_value(target)),
         Err(crate::MutationError::TablePressure)
     );
     let before = map.control_region().expect("pre-measurement control");
     let measured = Rc::new(RefCell::new(None));
     let measured_in_scope = measured.clone();
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_experimental_one_hop_exhausted");
+        let _scope = canbench_rs::bench_scope("bench_one_hop_exhausted");
         *measured_in_scope.borrow_mut() = Some(black_box(
-            map.experimental_insert_one_hop(black_box(target), black_box(fixture_value(target))),
+            map.insert(black_box(target), black_box(fixture_value(target))),
         ));
     });
     assert_eq!(
@@ -287,12 +289,12 @@ fn bench_experimental_one_hop_exhausted() -> canbench_rs::BenchResult {
 
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
-fn bench_experimental_one_hop_movable_large_value() -> canbench_rs::BenchResult {
+fn bench_one_hop_movable_large_value() -> canbench_rs::BenchResult {
     let preflight = StableLinearHashMap::new_with_hash_seed(DefaultMemoryImpl::default(), 457)
         .expect("new large preflight map");
     let (preflight_target, _, _, _) = one_hop_movable_fixture(&preflight, large_value);
     assert_eq!(
-        preflight.experimental_insert_one_hop(preflight_target, large_value(preflight_target)),
+        preflight.insert(preflight_target, large_value(preflight_target)),
         Ok(None)
     );
 
@@ -303,9 +305,9 @@ fn bench_experimental_one_hop_movable_large_value() -> canbench_rs::BenchResult 
     let measured = Rc::new(RefCell::new(None));
     let measured_in_scope = measured.clone();
     let result = canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("bench_experimental_one_hop_movable_large_value");
+        let _scope = canbench_rs::bench_scope("bench_one_hop_movable_large_value");
         *measured_in_scope.borrow_mut() = Some(black_box(
-            map.experimental_insert_one_hop(black_box(target), black_box(large_value(target))),
+            map.insert(black_box(target), black_box(large_value(target))),
         ));
     });
     assert_eq!(measured.borrow().as_ref(), Some(&Ok(None)));
@@ -317,7 +319,7 @@ fn bench_experimental_one_hop_movable_large_value() -> canbench_rs::BenchResult 
     );
     assert_eq!(after.mutation_epoch, before.mutation_epoch + 2);
     assert_eq!(map.get(&target), Ok(Some(large_value(target))));
-    assert_eq!(map.probe_experimental_resident_bucket(moved), destination);
+    assert_eq!(map.probe_one_hop_resident_bucket(moved), destination);
     for &(key, ref value) in &residents {
         assert_eq!(map.get(&key), Ok(Some(*value)));
     }
@@ -597,6 +599,50 @@ fn bench_linear_get_48() -> canbench_rs::BenchResult {
             let _ = black_box(map.get(&black_box(key)));
         }
     })
+}
+
+#[bench(raw)]
+fn bench_linear_scan_physical_slots_64() -> canbench_rs::BenchResult {
+    let map = StableLinearHashMap::new(DefaultMemoryImpl::default()).expect("new scan map");
+    let mut entries = Vec::with_capacity(N);
+    for candidate in 0u64.. {
+        let value = fixture_value(candidate);
+        match map.insert(candidate, value) {
+            Ok(None) => {
+                entries.push((candidate, value));
+                if entries.len() == N {
+                    break;
+                }
+            }
+            Ok(Some(_)) => panic!("scan fixture candidates must be unique"),
+            Err(_) => {}
+        }
+    }
+    assert_eq!(entries.len(), N);
+    let cursor = map.scan_start().expect("scan cursor");
+    let preflight = map.scan_step(cursor, 64).expect("preflight scan");
+    assert_eq!(preflight.entries().len(), entries.len());
+    assert_eq!(preflight.examined_slots(), 64);
+    assert!(preflight.exhausted());
+    let mut expected = entries.clone();
+    expected.sort_unstable();
+    let mut actual = preflight.entries().to_vec();
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
+
+    let result = canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_linear_scan_physical_slots_64");
+        let _ = black_box(map.scan_step(black_box(cursor), black_box(64)));
+    });
+
+    let verified = map.scan_step(cursor, 64).expect("verified scan");
+    assert_eq!(verified.entries().len(), entries.len());
+    assert_eq!(verified.examined_slots(), 64);
+    assert!(verified.exhausted());
+    let mut actual = verified.into_entries();
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
+    result
 }
 
 #[bench(raw)]

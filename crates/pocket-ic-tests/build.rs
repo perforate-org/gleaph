@@ -216,7 +216,7 @@ fn build_wasm(manifest_dir: &Path) {
         "-Z",
         "build-std=core,alloc,std,panic_abort",
         "--features",
-        "gleaph-router/pocket-ic-e2e,gleaph-graph/pocket-ic-e2e",
+        "gleaph-router/pocket-ic-e2e,gleaph-graph/pocket-ic-e2e,gleaph-vector-canister/pocket-ic-e2e",
     ];
     println!(
         "cargo:rerun-if-changed={}",

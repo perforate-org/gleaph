@@ -12,12 +12,14 @@ use gleaph_graph_kernel::federation::{
     ElementIdEncodingKey, GlobalVertexId, RouterError, ShardId, encode_global_vertex_id,
 };
 use gleaph_graph_kernel::vector_index::{
-    VectorCentroidCacheStatus, VectorEncoding, VectorMetric, VertexEmbeddingProjectionOutcome,
+    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
+    VectorSyncBatchOutcome, VectorSyncBatchProgress, VectorSyncBatchUnavailable,
+    VectorSyncTerminalError, VertexEmbeddingProjectionOutcome,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, e2e_insert_vertex_with_label, ensure_user_graph_type,
-    gql_query_with_params_as_admin, install_single_shard_federation, install_vector_canister,
-    user_vertex_label_id, wasm_bytes,
+    FederationEnv, GRAPH_NAME, drain_maintenance_via_timer, e2e_insert_vertex_with_label,
+    ensure_user_graph_type, gql_mutate_as_admin, gql_query_with_params_as_admin,
+    install_single_shard_federation, install_vector_canister, user_vertex_label_id, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingBatchArgs,
@@ -267,6 +269,144 @@ fn router_vector_centroid_cache_status(env: &FederationEnv) -> VectorCentroidCac
         .expect("router vector cache status succeeds")
 }
 
+fn graph_derived_index_outbox_len(env: &FederationEnv) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            env.graph_source,
+            env.router,
+            "e2e_derived_index_outbox_len",
+            Encode!(&()).expect("encode graph outbox length"),
+        )
+        .expect("graph outbox length call");
+    Decode!(&bytes, u64).expect("decode graph outbox length")
+}
+
+fn graph_derived_index_outbox_pending_is_empty(env: &FederationEnv) -> bool {
+    let bytes = env
+        .pic
+        .query_call(
+            env.graph_source,
+            env.router,
+            "e2e_derived_index_outbox_pending_is_empty",
+            Encode!(&()).expect("encode graph outbox pending status"),
+        )
+        .expect("graph outbox pending status call");
+    Decode!(&bytes, bool).expect("decode graph outbox pending status")
+}
+
+fn fill_vector_subject_store_until_pressure(env: &FederationEnv, vector: Principal) -> u32 {
+    const FIRST_VERTEX_ID: u32 = 100_000;
+    const ATTEMPTS_PER_CALL: u32 = 128;
+    const MAX_CALLS: usize = 512;
+
+    let mut next_vertex_id = FIRST_VERTEX_ID;
+    for _ in 0..MAX_CALLS {
+        let bytes = env
+            .pic
+            .update_call(
+                vector,
+                env.router,
+                "e2e_fill_subject_store_toward_pressure",
+                Encode!(&INDEX_ID, &next_vertex_id, &ATTEMPTS_PER_CALL)
+                    .expect("encode bounded subject pressure step"),
+            )
+            .expect("bounded subject pressure step call");
+        let step: Result<(u32, u32, Option<u32>), String> =
+            Decode!(&bytes, Result<(u32, u32, Option<u32>), String>)
+                .expect("decode bounded subject pressure step");
+        let (inserted, next, pressure_vertex_id) =
+            step.expect("real subject pressure fixture owner stays available");
+        if let Some(pressure_vertex_id) = pressure_vertex_id {
+            assert_eq!(
+                pressure_vertex_id, next,
+                "the rejected subject is the exact resumable cursor"
+            );
+            return pressure_vertex_id;
+        }
+        assert_eq!(
+            inserted, ATTEMPTS_PER_CALL,
+            "a nonterminal pressure step fills its whole bounded chunk"
+        );
+        assert!(
+            next > next_vertex_id,
+            "subject pressure fixture must make progress"
+        );
+        next_vertex_id = next;
+    }
+
+    panic!(
+        "real LHM TablePressure was not reached within {} subject inserts",
+        ATTEMPTS_PER_CALL as usize * MAX_CALLS
+    );
+}
+
+fn enqueue_vector_outbox_fixture(env: &FederationEnv, operations: Vec<VectorEmbeddingSyncOp>) {
+    let bytes = env
+        .pic
+        .update_call(
+            env.graph_source,
+            env.router,
+            "e2e_enqueue_vector_outbox",
+            Encode!(&operations).expect("encode vector outbox fixture"),
+        )
+        .expect("enqueue vector outbox fixture call");
+    Decode!(&bytes, Result<(), String>)
+        .expect("decode vector outbox fixture result")
+        .expect("enqueue bounded vector outbox fixture");
+}
+
+fn tick_until_vector_quarantines_remain(env: &FederationEnv, expected_quarantines: u64) {
+    use std::time::Duration;
+
+    const MAX_ROUNDS: usize = 40;
+    const TICKS_PER_ROUND: usize = 12;
+
+    for _ in 0..MAX_ROUNDS {
+        if graph_derived_index_outbox_len(env) == expected_quarantines
+            && graph_derived_index_outbox_pending_is_empty(env)
+        {
+            return;
+        }
+        env.pic.advance_time(Duration::from_secs(2));
+        for _ in 0..TICKS_PER_ROUND {
+            env.pic.tick();
+        }
+    }
+    panic!(
+        "vector outbox did not converge to {expected_quarantines} quarantines: total={}, pending_empty={}",
+        graph_derived_index_outbox_len(env),
+        graph_derived_index_outbox_pending_is_empty(env)
+    );
+}
+
+fn router_vector_hit_count(env: &FederationEnv, value: f32) -> u64 {
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN d"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(value)),
+    )])
+    .expect("encode vector search params");
+    gql_query_with_params_as_admin(env, &query, params).row_count
+}
+
+fn e2e_unbind_vector_definition_store(env: &FederationEnv, vector: Principal) {
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "e2e_unbind_definition_store",
+            Encode!(&()).expect("encode vector definition-store unbind"),
+        )
+        .expect("vector definition-store unbind call");
+    Decode!(&bytes, Result<(), String>)
+        .expect("decode vector definition-store unbind")
+        .expect("vector definition-store owner was not Ready");
+}
+
 #[test]
 fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
     let env = install_single_shard_federation();
@@ -345,6 +485,271 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         (distance - 0.0f64).abs() < 1e-6,
         "exact match distance must be zero"
     );
+}
+
+#[test]
+fn graph_delete_drains_vector_remove_through_typed_batch_and_legacy_batch_remains_callable() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
+    register(&env, vector);
+    fully_activate(&env, vector);
+
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let result = ingest(
+        &env,
+        encode_vertex(&env, inserted.local_vertex_id),
+        vec![6.0; DIMS as usize],
+    );
+    assert_eq!(
+        result.projection_outcome,
+        VertexEmbeddingProjectionOutcome::Applied,
+        "the legacy Router batch path seeds one searchable vector"
+    );
+    assert_eq!(router_vector_hit_count(&env, 6.0), 1);
+
+    // Preserve the legacy wire contract independently of Router ingestion. This stale remove is an
+    // idempotent no-op, but the Graph caller must still receive the original progress shape.
+    let legacy_noop = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: inserted.local_vertex_id,
+        },
+        mutation_id: 0,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        bytes: Vec::new(),
+        remove: true,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.graph_source,
+            "vector_sync_batch",
+            Encode!(&vec![legacy_noop]).expect("encode legacy vector batch"),
+        )
+        .expect("legacy vector batch call");
+    assert_eq!(
+        Decode!(&bytes, VectorSyncBatchProgress).expect("decode legacy vector batch progress"),
+        VectorSyncBatchProgress {
+            applied: 1,
+            next_index: None,
+            instruction_budget_exhausted: false,
+        }
+    );
+    assert_eq!(
+        router_vector_hit_count(&env, 6.0),
+        1,
+        "the stale legacy replay must not remove the current vector"
+    );
+
+    // Graph DML queues the derived remove in its durable outbox. The synchronous outbox drain uses
+    // the live IcVectorCanisterClient additive `vector_sync_batch_outcome` endpoint and consumes the
+    // typed Progress prefix before acknowledging the local outbox entry.
+    gql_mutate_as_admin(
+        &env,
+        "MATCH (v:User) DETACH DELETE v",
+        "typed-vector-delete",
+    );
+    assert_eq!(
+        graph_derived_index_outbox_len(&env),
+        0,
+        "the typed Progress outcome acknowledges the Graph outbox prefix"
+    );
+    assert_eq!(
+        router_vector_hit_count(&env, 6.0),
+        0,
+        "the Graph-delivered typed remove reaches live Vector state"
+    );
+}
+
+#[test]
+fn unavailable_vector_owner_keeps_graph_delete_outbox_until_upgrade_rebind() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
+    register(&env, vector);
+    fully_activate(&env, vector);
+
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let result = ingest(
+        &env,
+        encode_vertex(&env, inserted.local_vertex_id),
+        vec![6.0; DIMS as usize],
+    );
+    assert_eq!(
+        result.projection_outcome,
+        VertexEmbeddingProjectionOutcome::Applied,
+        "the vector must be searchable before simulating the unavailable owner"
+    );
+    assert_eq!(router_vector_hit_count(&env, 6.0), 1);
+
+    e2e_unbind_vector_definition_store(&env, vector);
+
+    // The Router guard admits this probe, while the typed endpoint must report the outer
+    // availability marker before attempting any row/page/subject mutation.
+    let unavailable_probe = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: inserted.local_vertex_id,
+        },
+        mutation_id: u64::MAX,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        bytes: Vec::new(),
+        remove: true,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "vector_sync_batch_outcome",
+            Encode!(&vec![unavailable_probe]).expect("encode unavailable vector probe"),
+        )
+        .expect("typed vector probe call");
+    let outcome: Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable> =
+        Decode!(&bytes, Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable>)
+            .expect("decode unavailable vector outcome");
+    assert_eq!(
+        outcome,
+        Err(VectorSyncBatchUnavailable::IndexDefinitionStoreUnavailable),
+        "an unavailable owner is an outer typed error before any operation commits"
+    );
+
+    // Graph DML is still canonical: it commits the delete and durable outbox row, but the
+    // unavailable vector leaves the projection pending for maintenance retry.
+    gql_mutate_as_admin(
+        &env,
+        "MATCH (v:User) DETACH DELETE v",
+        "typed-vector-delete-owner-unavailable",
+    );
+    assert_eq!(
+        graph_derived_index_outbox_len(&env),
+        1,
+        "the unavailable vector must leave the Graph delete posting pending"
+    );
+
+    // The normal post-upgrade hook performs exact-open on the existing MemoryId 4 bytes. The
+    // Graph timer can then retry the untouched outbox row and remove the deleted vector.
+    env.pic
+        .upgrade_canister(
+            vector,
+            wasm_bytes("VECTOR_INDEX_WASM"),
+            Encode!(&()).expect("encode vector upgrade args"),
+            None,
+        )
+        .expect("upgrade vector canister");
+    drain_maintenance_via_timer(&env, env.graph_source);
+    assert_eq!(graph_derived_index_outbox_len(&env), 0);
+    assert_eq!(router_vector_hit_count(&env, 6.0), 0);
+}
+
+#[test]
+fn real_subject_table_pressure_is_terminal_and_graph_quarantines_exact_prefix_without_retry() {
+    use std::time::Duration;
+
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    ensure_user_graph_type(&env);
+    register(&env, vector);
+    fully_activate(&env, vector);
+
+    let inserted = e2e_insert_vertex_with_label(&env, env.graph_source, user_vertex_label_id(&env));
+    let ingestion = ingest(
+        &env,
+        encode_vertex(&env, inserted.local_vertex_id),
+        vec![8.0; DIMS as usize],
+    );
+    assert_eq!(
+        ingestion.projection_outcome,
+        VertexEmbeddingProjectionOutcome::Applied
+    );
+    assert_eq!(router_vector_hit_count(&env, 8.0), 1);
+
+    let pressure_vertex_id = fill_vector_subject_store_until_pressure(&env, vector);
+    let terminal_probe = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: pressure_vertex_id,
+        },
+        mutation_id: 1,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        bytes: vec_bytes(9.0),
+        remove: false,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.graph_source,
+            "vector_sync_batch_outcome",
+            Encode!(&vec![terminal_probe.clone()]).expect("encode subject-terminal-at-zero probe"),
+        )
+        .expect("subject-terminal-at-zero typed Vector call");
+    let outcome: Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable> =
+        Decode!(&bytes, Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable>)
+            .expect("decode subject-terminal-at-zero typed outcome");
+    assert_eq!(
+        outcome,
+        Ok(VectorSyncBatchOutcome::Terminal {
+            applied: 0,
+            failed_index: 0,
+            error: VectorSyncTerminalError::SubjectTablePressure,
+        }),
+        "the real subject owner pressure must be a typed terminal rejection at the exact item"
+    );
+
+    let prefix_remove = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: inserted.local_vertex_id,
+        },
+        mutation_id: u64::MAX - 1,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        bytes: Vec::new(),
+        remove: true,
+    };
+    let mut failed_upsert = terminal_probe;
+    failed_upsert.mutation_id = prefix_remove.mutation_id;
+    enqueue_vector_outbox_fixture(&env, vec![prefix_remove, failed_upsert]);
+    assert_eq!(graph_derived_index_outbox_len(&env), 2);
+    assert!(!graph_derived_index_outbox_pending_is_empty(&env));
+
+    tick_until_vector_quarantines_remain(&env, 1);
+    assert_eq!(
+        router_vector_hit_count(&env, 8.0),
+        0,
+        "the acknowledged subject-pressure prefix remove must reach Vector before the terminal item"
+    );
+    assert_eq!(graph_derived_index_outbox_len(&env), 1);
+    assert!(graph_derived_index_outbox_pending_is_empty(&env));
+
+    // Quarantine is durable but excluded from the retry prefix. Extra maintenance opportunities
+    // must neither remove nor re-arm it.
+    for _ in 0..3 {
+        env.pic.advance_time(Duration::from_secs(2));
+        for _ in 0..12 {
+            env.pic.tick();
+        }
+    }
+    assert_eq!(graph_derived_index_outbox_len(&env), 1);
+    assert!(graph_derived_index_outbox_pending_is_empty(&env));
 }
 
 #[test]

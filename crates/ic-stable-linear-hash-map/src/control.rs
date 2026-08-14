@@ -3,15 +3,12 @@ use crate::memory::write_u64;
 use ic_stable_structures::Memory;
 
 const LEN_OFFSET: u64 = 0;
-const LEVEL_OFFSET: u64 = 8;
-const SPLIT_CURSOR_OFFSET: u64 = 16;
-const PHYSICAL_BUCKETS_OFFSET: u64 = 24;
-const HASH_SEED_OFFSET: u64 = 32;
-const SPLIT_WORK_CURSOR_OFFSET: u64 = 40;
-const MUTATION_EPOCH_OFFSET: u64 = 48;
-const HASH_ENCODING_ID_OFFSET: u64 = 56;
+const PHYSICAL_BUCKETS_OFFSET: u64 = 8;
+const MUTATION_EPOCH_OFFSET: u64 = 16;
+const INCARNATION_OFFSET: u64 = 24;
 
 pub(crate) const INITIAL_MUTATION_EPOCH: u64 = 0;
+pub(crate) const INITIAL_INCARNATION: u64 = 1;
 
 #[derive(Clone, Copy)]
 pub(crate) struct HotControl {
@@ -20,20 +17,41 @@ pub(crate) struct HotControl {
     pub(crate) hash_seed: u64,
 }
 
-pub(crate) fn read<M: Memory>(memory: &M, offset: u64) -> ControlRegion {
+pub(crate) fn read<M: Memory>(memory: &M, offset: u64, hash_seed: u64) -> ControlRegion {
     let mut bytes = [0; CONTROL_BYTES as usize];
     memory.read(offset, &mut bytes);
+    decode(&bytes, hash_seed)
+}
+
+pub(crate) fn read_for_open<M: Memory>(
+    memory: &M,
+    offset: u64,
+    hash_seed: u64,
+) -> Result<ControlRegion, ()> {
+    let mut bytes = [0; CONTROL_BYTES as usize];
+    memory.read(offset, &mut bytes);
+    if bytes[32..].iter().any(|byte| *byte != 0) {
+        return Err(());
+    }
+    Ok(decode(&bytes, hash_seed))
+}
+
+fn decode(bytes: &[u8; CONTROL_BYTES as usize], hash_seed: u64) -> ControlRegion {
+    let physical_buckets = u64_at(bytes, PHYSICAL_BUCKETS_OFFSET);
+    let level = if physical_buckets == 0 {
+        0
+    } else {
+        (u64::BITS - 1 - physical_buckets.leading_zeros()) as u8
+    };
     ControlRegion {
-        len: u64_at(&bytes, LEN_OFFSET),
-        level: bytes[LEVEL_OFFSET as usize],
-        split_state: bytes[LEVEL_OFFSET as usize + 1],
-        journal_state: bytes[LEVEL_OFFSET as usize + 2],
-        split_cursor: u64_at(&bytes, SPLIT_CURSOR_OFFSET),
-        physical_buckets: u64_at(&bytes, PHYSICAL_BUCKETS_OFFSET),
-        hash_seed: u64_at(&bytes, HASH_SEED_OFFSET),
-        split_work_cursor: u64_at(&bytes, SPLIT_WORK_CURSOR_OFFSET),
-        mutation_epoch: u64_at(&bytes, MUTATION_EPOCH_OFFSET),
-        hash_encoding_id: u64_at(&bytes, HASH_ENCODING_ID_OFFSET),
+        len: u64_at(bytes, LEN_OFFSET),
+        physical_buckets,
+        mutation_epoch: u64_at(bytes, MUTATION_EPOCH_OFFSET),
+        incarnation: u64_at(bytes, INCARNATION_OFFSET),
+        level,
+        split_cursor: physical_buckets
+            .saturating_sub(1u64.checked_shl(u32::from(level)).unwrap_or(0)),
+        hash_seed,
     }
 }
 
@@ -52,94 +70,52 @@ pub(crate) fn read_len<M: Memory>(memory: &M, offset: u64) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-pub(crate) fn read_hash_seed<M: Memory>(memory: &M, offset: u64) -> u64 {
-    let mut bytes = [0; 8];
-    memory.read(offset + HASH_SEED_OFFSET, &mut bytes);
-    u64::from_le_bytes(bytes)
-}
-
 pub(crate) fn read_mutation_epoch<M: Memory>(memory: &M, offset: u64) -> u64 {
     let mut bytes = [0; 8];
     memory.read(offset + MUTATION_EPOCH_OFFSET, &mut bytes);
     u64::from_le_bytes(bytes)
 }
 
-pub(crate) fn read_hot<M: Memory>(memory: &M, offset: u64) -> HotControl {
-    let mut bytes = [0; (HASH_SEED_OFFSET + 8) as usize];
-    memory.read(offset, &mut bytes);
+pub(crate) fn read_hot<M: Memory>(memory: &M, offset: u64, hash_seed: u64) -> HotControl {
+    let mut bytes = [0; 8];
+    memory.read(offset + PHYSICAL_BUCKETS_OFFSET, &mut bytes);
+    let physical_buckets = u64::from_le_bytes(bytes);
+    let level = (u64::BITS - 1 - physical_buckets.leading_zeros()) as u8;
     HotControl {
-        level: bytes[LEVEL_OFFSET as usize],
-        split_cursor: u64::from_le_bytes(
-            bytes[SPLIT_CURSOR_OFFSET as usize..SPLIT_CURSOR_OFFSET as usize + 8]
-                .try_into()
-                .expect("fixed split cursor field"),
-        ),
-        hash_seed: u64::from_le_bytes(
-            bytes[HASH_SEED_OFFSET as usize..HASH_SEED_OFFSET as usize + 8]
-                .try_into()
-                .expect("fixed hash seed field"),
-        ),
+        level,
+        split_cursor: physical_buckets - (1u64 << level),
+        hash_seed,
     }
 }
 
 pub(crate) fn write<M: Memory>(memory: &M, offset: u64, control: ControlRegion) {
-    memory.write(offset, &[0; CONTROL_BYTES as usize]);
-    write_u64(memory, offset + LEN_OFFSET, control.len);
-    memory.write(
-        offset + LEVEL_OFFSET,
-        &[control.level, control.split_state, control.journal_state, 0],
-    );
-    write_u64(memory, offset + SPLIT_CURSOR_OFFSET, control.split_cursor);
-    write_u64(
-        memory,
-        offset + PHYSICAL_BUCKETS_OFFSET,
-        control.physical_buckets,
-    );
-    write_u64(memory, offset + HASH_SEED_OFFSET, control.hash_seed);
-    write_u64(
-        memory,
-        offset + SPLIT_WORK_CURSOR_OFFSET,
-        control.split_work_cursor,
-    );
-    write_u64(
-        memory,
-        offset + MUTATION_EPOCH_OFFSET,
-        control.mutation_epoch,
-    );
-    write_u64(
-        memory,
-        offset + HASH_ENCODING_ID_OFFSET,
-        control.hash_encoding_id,
-    );
+    let mut bytes = [0; CONTROL_BYTES as usize];
+    bytes[LEN_OFFSET as usize..LEN_OFFSET as usize + 8].copy_from_slice(&control.len.to_le_bytes());
+    bytes[PHYSICAL_BUCKETS_OFFSET as usize..PHYSICAL_BUCKETS_OFFSET as usize + 8]
+        .copy_from_slice(&control.physical_buckets.to_le_bytes());
+    bytes[MUTATION_EPOCH_OFFSET as usize..MUTATION_EPOCH_OFFSET as usize + 8]
+        .copy_from_slice(&control.mutation_epoch.to_le_bytes());
+    bytes[INCARNATION_OFFSET as usize..INCARNATION_OFFSET as usize + 8]
+        .copy_from_slice(&control.incarnation.to_le_bytes());
+    memory.write(offset, &bytes);
 }
 
 pub(crate) fn write_len<M: Memory>(memory: &M, offset: u64, len: u64) {
     write_u64(memory, offset + LEN_OFFSET, len);
 }
 
-pub(crate) fn write_hash_seed<M: Memory>(memory: &M, offset: u64, seed: u64) {
-    write_u64(memory, offset + HASH_SEED_OFFSET, seed);
-}
-
 pub(crate) fn write_mutation_epoch<M: Memory>(memory: &M, offset: u64, epoch: u64) {
     write_u64(memory, offset + MUTATION_EPOCH_OFFSET, epoch);
 }
 
-/// Publishes settled split metadata while the caller owns an odd mutation epoch.
-///
-/// This deliberately does not reuse [`write`]: that initialization helper clears the complete
-/// control page before rewriting it and could expose an even epoch between writes.  Each field
-/// below is independent of the epoch field, which remains odd until `MutationGuard::finish`.
 pub(crate) fn publish_split<M: Memory>(
     memory: &M,
     offset: u64,
-    level: u8,
-    split_cursor: u64,
+    _level: u8,
+    _split_cursor: u64,
     physical_buckets: u64,
     len: u64,
 ) {
-    memory.write(offset + LEVEL_OFFSET, &[level]);
-    write_u64(memory, offset + SPLIT_CURSOR_OFFSET, split_cursor);
     write_u64(memory, offset + PHYSICAL_BUCKETS_OFFSET, physical_buckets);
     write_u64(memory, offset + LEN_OFFSET, len);
 }

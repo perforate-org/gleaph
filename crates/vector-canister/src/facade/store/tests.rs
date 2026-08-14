@@ -1,7 +1,9 @@
 //! Unit tests for the degenerate `ivf_flat` mutation store (ADR 0031 Slice 2).
 
 use super::VectorCanisterStore;
-use crate::init::VectorCanisterInitArgs;
+use crate::facade::stable::definition_store;
+use crate::facade::stable::subject_store;
+use crate::init::{DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
@@ -9,7 +11,7 @@ use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorCanisterError,
     VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy,
     VectorMaintenanceRecommendation, VectorMetric, VectorPartitionPageHealth, VectorSearchRequest,
-    VectorSubject,
+    VectorSubject, VectorSyncBatchOutcome, VectorSyncTerminalError,
 };
 
 const INDEX_ID: u32 = 1;
@@ -24,12 +26,14 @@ fn shard_canister() -> Principal {
     Principal::from_slice(&[1])
 }
 
-/// Initializes a fresh store (clears all per-thread stable state) and attaches shard 0.
+/// Resets the fixture-only store and attaches shard 0.
 fn fresh_store() -> VectorCanisterStore {
     let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorCanisterInitArgs {
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
             router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect("init");
     store.attach_single_shard_for_test(router(), ShardId::new(0), shard_canister());
@@ -56,6 +60,36 @@ fn upsert_op(vertex_id: u32, mutation_id: u64, fill: u8) -> VectorEmbeddingSyncO
         bytes: vec![fill; STRIDE],
         remove: false,
     }
+}
+
+fn upsert_op_for_index(
+    index_id: u32,
+    vertex_id: u32,
+    mutation_id: u64,
+    fill: u8,
+) -> VectorEmbeddingSyncOp {
+    let mut op = upsert_op(vertex_id, mutation_id, fill);
+    op.index_id = index_id;
+    op
+}
+
+/// Fills the actual MemoryId 4 LHM through the owner until the next fresh definition is rejected
+/// by production `MutationError::TablePressure`. The resident defs intentionally do not need
+/// centroid metadata because this fixture only exercises definition admission.
+fn pressure_fixture(store: &VectorCanisterStore) -> (u32, u32) {
+    const BOOTSTRAP_INDEX_ID: u32 = 900_000_000;
+    const FIRST_PRESSURE_CANDIDATE: u32 = 10_000;
+
+    store
+        .create_index_for_test(BOOTSTRAP_INDEX_ID, VectorEncoding::F32, DIMS, 64 * 1024)
+        .expect("bootstrap definition");
+    let definition = store
+        .def_for_test(BOOTSTRAP_INDEX_ID)
+        .expect("bootstrap definition is readable");
+    let pressure_index =
+        definition_store::fill_until_table_pressure_for_test(FIRST_PRESSURE_CANDIDATE, definition);
+    assert!(store.def_for_test(pressure_index).is_none());
+    (BOOTSTRAP_INDEX_ID, pressure_index)
 }
 
 /// Remove at an explicit `mutation_id` stamp (ADR 0064 §5).
@@ -92,6 +126,125 @@ fn upsert_new_creates_def_slot_and_clock() {
     assert_eq!(entry.stamp, 1);
     let slot = entry.slot.expect("live slot");
     assert_eq!(slot.slot, 0, "first row lands at slot 0");
+}
+
+#[test]
+fn typed_sync_table_pressure_at_zero_has_no_vector_write() {
+    let store = fresh_store();
+    let (_bootstrap_index, pressure_index) = pressure_fixture(&store);
+    let op = upsert_op_for_index(pressure_index, 41, 1, 0xA1);
+
+    let outcome = crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &[op])
+        .expect("table pressure is a terminal outcome");
+
+    assert_eq!(
+        outcome,
+        VectorSyncBatchOutcome::Terminal {
+            applied: 0,
+            failed_index: 0,
+            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
+        }
+    );
+    assert!(store.def_for_test(pressure_index).is_none());
+    assert!(
+        store
+            .subject_entry_for_test(pressure_index, subject(41))
+            .is_none()
+    );
+    assert!(store.partition_head_for_test(pressure_index, 1).is_none());
+}
+
+#[test]
+fn typed_sync_table_pressure_after_prefix_commits_exact_prefix_only() {
+    let store = fresh_store();
+    let (bootstrap_index, pressure_index) = pressure_fixture(&store);
+    let prefix = upsert_op_for_index(bootstrap_index, 42, 1, 0xA2);
+    let failed = upsert_op_for_index(pressure_index, 43, 1, 0xA3);
+    let suffix_index = u32::MAX;
+    assert!(store.def_for_test(suffix_index).is_none());
+    let suffix = upsert_op_for_index(suffix_index, 44, 1, 0xA4);
+
+    let outcome = crate::canister::vector_sync_batch_outcome_for_caller(
+        shard_canister(),
+        &[prefix, failed, suffix],
+    )
+    .expect("table pressure is a terminal outcome");
+
+    assert_eq!(
+        outcome,
+        VectorSyncBatchOutcome::Terminal {
+            applied: 1,
+            failed_index: 1,
+            error: VectorSyncTerminalError::IndexDefinitionTablePressure,
+        }
+    );
+    assert!(
+        store
+            .subject_entry_for_test(bootstrap_index, subject(42))
+            .is_some()
+    );
+    assert!(store.def_for_test(pressure_index).is_none());
+    assert!(
+        store
+            .subject_entry_for_test(pressure_index, subject(43))
+            .is_none()
+    );
+    assert!(store.def_for_test(suffix_index).is_none());
+    assert!(
+        store
+            .subject_entry_for_test(suffix_index, subject(44))
+            .is_none()
+    );
+}
+
+#[test]
+fn typed_sync_subject_pressure_is_terminal_before_row_write() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xA5))
+        .expect("create definition");
+    let pressure_vertex = subject_store::fill_until_table_pressure_for_test(INDEX_ID, 100_000);
+    let probe = upsert_op(pressure_vertex, 2, 0xA6);
+    let before = store.partition_head_for_test(INDEX_ID, 1);
+
+    let outcome = crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &[probe])
+        .expect("subject pressure is a terminal outcome");
+
+    assert_eq!(
+        outcome,
+        VectorSyncBatchOutcome::Terminal {
+            applied: 0,
+            failed_index: 0,
+            error: VectorSyncTerminalError::SubjectTablePressure,
+        }
+    );
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(pressure_vertex))
+            .is_none()
+    );
+    assert_eq!(store.partition_head_for_test(INDEX_ID, 1), before);
+}
+
+#[test]
+fn typed_sync_unavailable_before_first_operation_is_outer_error_without_write() {
+    let store = fresh_store();
+    let op = upsert_op(45, 1, 0xA5);
+    definition_store::unbind_for_test().expect("unbind ready definition owner");
+
+    let result = crate::canister::vector_sync_batch_outcome_for_caller(shard_canister(), &[op]);
+
+    assert!(matches!(
+        result,
+        Err(crate::canister::VectorSyncBatchOutcomeDriverError::StoreUnavailable)
+    ));
+    assert!(store.def_for_test(INDEX_ID).is_none());
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(45))
+            .is_none()
+    );
+    definition_store::reopen_for_test().expect("restore exact-open definition owner");
 }
 
 #[test]
@@ -659,6 +812,8 @@ fn init_rejects_anonymous_router() {
     let err = store
         .init_from_args(&VectorCanisterInitArgs {
             router_canister: Principal::anonymous(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect_err("anonymous router rejected");
     assert_eq!(err, VectorCanisterError::AnonymousRouter);
@@ -684,8 +839,10 @@ fn attach_rejects_anonymous_principal() {
 fn single_target_owns_all_shards_of_one_graph() {
     let store = VectorCanisterStore::new();
     store
-        .init_from_args(&VectorCanisterInitArgs {
+        .reset_for_test_or_bench(&VectorCanisterInitArgs {
             router_canister: router(),
+            definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+            subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
         })
         .expect("init");
     let graph = GraphId::from_raw(1);
@@ -1001,7 +1158,7 @@ fn search_does_not_read_rows_of_a_different_index() {
 
 #[test]
 fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
-    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::facade::stable::subject_store;
     use crate::records::{FixedSubjectMapEntry, SubjectKey};
 
     let store = fresh_store();
@@ -1022,10 +1179,8 @@ fn search_scores_non_tombstoned_row_regardless_of_subject_map() {
         shadow_slot: None,
         ..entry
     };
-    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-        m.insert(SubjectKey::new(INDEX_ID, subject(7)), drifted)
-            .expect("insert drifted entry");
-    });
+    subject_store::insert(SubjectKey::new(INDEX_ID, subject(7)), drifted)
+        .expect("insert drifted entry");
 
     let result = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert_eq!(
@@ -1653,7 +1808,7 @@ fn partition_scan_eps_zero_loses_boundary_recall_that_eps_positive_recovers() {
 
 #[test]
 fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
-    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::facade::stable::subject_store;
     use crate::records::{FixedSubjectMapEntry, SubjectKey};
 
     let store = fresh_store();
@@ -1670,16 +1825,14 @@ fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
     // The search no longer consults the subject map: it scores every non-tombstoned row, relying on
     // the write-path invariant. Even if the subject-map entry is marked deleted (without the row being
     // tombstoned, which the write path would do), the non-tombstoned row is still scored.
-    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-        m.insert(
-            SubjectKey::new(INDEX_ID, subject(1)),
-            FixedSubjectMapEntry {
-                deleted: true,
-                ..entry
-            },
-        )
-        .expect("insert deleted entry");
-    });
+    subject_store::insert(
+        SubjectKey::new(INDEX_ID, subject(1)),
+        FixedSubjectMapEntry {
+            deleted: true,
+            ..entry
+        },
+    )
+    .expect("insert deleted entry");
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
@@ -1691,7 +1844,7 @@ fn partition_scan_scores_non_tombstoned_row_regardless_of_deleted_subject() {
 /// `VECTOR_SUBJECT_TO_ID` entry (which the write path would never leave) is still scored.
 #[test]
 fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
-    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::facade::stable::subject_store;
     use crate::records::SubjectKey;
 
     let store = fresh_store();
@@ -1703,10 +1856,8 @@ fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
         &clustered_vectors(),
     );
     // Drop the subject-map entry for subject 1: its slab row is still non-tombstoned and is scored.
-    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-        m.remove(&SubjectKey::new(INDEX_ID, subject(1)))
-            .expect("remove subject-map fixture")
-    });
+    subject_store::remove(&SubjectKey::new(INDEX_ID, subject(1)))
+        .expect("remove subject-map fixture");
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
@@ -1716,7 +1867,7 @@ fn partition_scan_scores_non_tombstoned_row_without_subject_entry() {
 // --- ADR 0034 Slice 6: candidate allowlist ---
 #[test]
 fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
-    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::facade::stable::subject_store;
     use crate::records::{FixedSubjectMapEntry, SlotRef, SubjectKey};
 
     let store = fresh_store();
@@ -1737,16 +1888,14 @@ fn partition_scan_scores_non_tombstoned_row_despite_slot_drift() {
         slot: live_slot.slot + 10_000,
         ..live_slot
     };
-    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-        m.insert(
-            SubjectKey::new(INDEX_ID, subject(1)),
-            FixedSubjectMapEntry {
-                slot: Some(drifted),
-                ..entry
-            },
-        )
-        .expect("insert drifted entry");
-    });
+    subject_store::insert(
+        SubjectKey::new(INDEX_ID, subject(1)),
+        FixedSubjectMapEntry {
+            slot: Some(drifted),
+            ..entry
+        },
+    )
+    .expect("insert drifted entry");
     let result = store
         .vector_search_tuned(&search_nonzero(0.0, 10), tuned(f32::INFINITY))
         .expect("partition scan");
@@ -2573,8 +2722,8 @@ fn second_rebuild_from_partitioned_active() {
 #[test]
 fn publish_succeeds_with_an_empty_partition() {
     let store = fresh_store();
-    // Subjects: values 0, 10, 5, 0, 10. The val-5 subject (3) becomes centroid 2's source but is
-    // removed during Building, leaving centroid 2's partition empty.
+    // Subjects: values 0, 10, 5, 0, 10. The val-5 subject (3) becomes one target centroid's source
+    // but is removed during Building, leaving that centroid's partition empty.
     store
         .vector_upsert(shard_canister(), &upsert_vec(1, 1, 0.0))
         .unwrap();
@@ -2594,11 +2743,11 @@ fn publish_succeeds_with_an_empty_partition() {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
         .expect("start");
-    // Sampling collects the 3 distinct candidates [0, 10, 5]; Training writes the 3 centroids and
-    // enters Building (each distinct candidate seeds and stays its own centroid).
+    // Sampling collects the three distinct candidates; Training writes the three centroids and enters
+    // Building (each distinct candidate seeds and stays its own centroid).
     let status = drive_into_building(&store, INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::Building);
-    // Remove the val-5 subject so no live vector is nearest to centroid 2.
+    // Remove the val-5 subject so no live vector is nearest to the 5.0 centroid.
     store
         .vector_remove(shard_canister(), &remove_op(3, 2))
         .expect("remove val-5");
@@ -2607,10 +2756,28 @@ fn publish_succeeds_with_an_empty_partition() {
         VectorRebuildPhase::ReadyToPublish
     );
 
-    // Partition 2 received no vector: no head materialized for it (empty partition is valid).
-    let head_p2 =
-        VECTOR_PARTITION_HEADS.with_borrow(|m| m.get(&PartitionKey::new(INDEX_ID, TARGET_V, 2)));
-    assert!(head_p2.is_none(), "empty partition materializes no head");
+    // Physical subject-map scan order is not a partition-id contract. Locate the specific centroid
+    // whose only source was removed, then prove its partition has no materialized head while the
+    // remaining centroid partitions retain their two live rows each.
+    let removed_centroid = vec_bytes(5.0);
+    let empty_partition = IVF_CENTROIDS
+        .with_borrow(|centroids| {
+            (0..3).find(|&partition| {
+                centroids
+                    .get(&PartitionKey::new(INDEX_ID, TARGET_V, partition))
+                    .is_some_and(|centroid| centroid.as_slice() == removed_centroid.as_slice())
+            })
+        })
+        .expect("removed vector remains a target centroid");
+    let empty_head = VECTOR_PARTITION_HEADS
+        .with_borrow(|heads| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, empty_partition)));
+    assert!(empty_head.is_none(), "empty partition materializes no head");
+    for partition in (0..3).filter(|partition| *partition != empty_partition) {
+        let head = VECTOR_PARTITION_HEADS
+            .with_borrow(|heads| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
+            .expect("non-removed centroid partition materializes a head");
+        assert_eq!(head.live_len, 2, "remaining partition keeps two live rows");
+    }
 
     store
         .admin_publish_vector_rebuild(router(), INDEX_ID)
@@ -3322,7 +3489,6 @@ fn centroid_cache_publish_invalidates_warmed_entry() {
 
 // --- ADR 0031 Slice 10: maintenance execution state machine ---
 
-use crate::facade::stable::VECTOR_INDEX_DEFS;
 use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
 };
@@ -3366,11 +3532,11 @@ fn seed_live_and_tombstones(store: &VectorCanisterStore, live: u32, tombstones: 
 }
 
 fn set_active_version(index_id: u32, version: u64) {
-    VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
-        let mut def = defs.get(&index_id).expect("def");
-        def.active_index_version = version;
-        defs.insert(index_id, def).expect("set active version");
-    });
+    let mut def = definition_store::get(index_id)
+        .expect("definition store available")
+        .expect("def");
+    def.active_index_version = version;
+    definition_store::insert(index_id, def).expect("set active version");
 }
 
 #[test]
@@ -3913,7 +4079,7 @@ fn candidate_search_rejects_duplicate_subjects() {
 /// I8 scalar-quantization tests (B1+A1: per-row scale, F32 wire query; `VectorEncoding::I8`).
 mod i8_tests {
     use super::*;
-    use crate::facade::stable::{PAGE_STORE, VECTOR_INDEX_DEFS};
+    use crate::facade::stable::{PAGE_STORE, definition_store};
     use crate::records::SlotRef;
 
     /// A distinct index id so an `I8` def is created without colliding with the F32 `INDEX_ID` fixtures.
@@ -4047,7 +4213,9 @@ mod i8_tests {
             &[1.0, 2.0, 3.0, 4.0],
             VectorMetric::L2Squared,
         );
-        let def = VECTOR_INDEX_DEFS.with_borrow(|d| d.get(&I8_INDEX)).unwrap();
+        let def = definition_store::get(I8_INDEX)
+            .expect("definition store available")
+            .expect("def");
         assert_eq!(def.encoding, VectorEncoding::I8);
         // I8 stores `dims` payload bytes plus a 4-byte scale in row-meta aux (meta stride 8).
         assert_eq!(def.stride_bytes, DIMS as u32);

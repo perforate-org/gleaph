@@ -24,7 +24,7 @@
 
 use super::VectorCanisterStore;
 use super::search::read_centroids_at;
-use crate::facade::stable::VECTOR_INDEX_DEFS;
+use crate::facade::stable::definition_store;
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{VectorCanisterError, VectorCentroidCacheStatus};
 use std::cell::RefCell;
@@ -91,6 +91,12 @@ pub(super) fn clear_all() {
     });
 }
 
+/// Verifies that the coordinated reset can acquire the heap cache before any stable write.
+#[cfg(any(test, feature = "canbench"))]
+pub(super) fn preflight_clear() -> Result<(), ()> {
+    CENTROID_CACHE.with(|cache| cache.try_borrow_mut().map(|_| ()).map_err(|_| ()))
+}
+
 /// Inserts (replacing any existing entry for `index_id`), evicting other entries lowest-`index_id`
 /// first until the budget fits. A set larger than the whole budget is not cached. Returns whether
 /// the entry is now resident.
@@ -137,8 +143,8 @@ impl VectorCanisterStore {
         index_id: u32,
     ) -> Result<VectorCentroidCacheStatus, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        let def = VECTOR_INDEX_DEFS
-            .with_borrow(|defs| defs.get(&index_id))
+        let def = definition_store::get(index_id)
+            .map_err(super::legacy_definition_store_error)?
             .ok_or(VectorCanisterError::UnknownIndex)?;
         match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
             Some(centroids) if def.nlist > 1 => {

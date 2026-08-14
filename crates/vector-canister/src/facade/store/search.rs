@@ -21,11 +21,10 @@
 //! [`FixedSubjectMapEntry`]: crate::records::FixedSubjectMapEntry
 
 use super::VectorCanisterStore;
+use crate::facade::stable::definition_store;
 use crate::facade::stable::page_store::{PageScratch, RowInfo};
-use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_PARTITION_HEADS,
-    VECTOR_SUBJECT_TO_ID,
-};
+use crate::facade::stable::subject_store;
+use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS};
 use crate::records::{PageKey, PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
@@ -659,7 +658,9 @@ impl VectorCanisterStore {
         // The physical def is created lazily on the first upsert (see `mutation.rs`). A
         // Router-registered, activated index with no embeddings yet has no physical def, but it is a
         // known-empty index, not an unknown one — return an empty result rather than `UnknownIndex`.
-        let Some(def) = VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&req.index_id)) else {
+        let Some(def) =
+            definition_store::get(req.index_id).map_err(super::legacy_definition_store_error)?
+        else {
             return Ok(VectorSearchResult { hits: Vec::new() });
         };
         // Model Y: the request must agree with the stored definition's encoding (F32 or I8) and
@@ -819,30 +820,28 @@ impl VectorCanisterStore {
     ) -> Result<VectorSearchResult, VectorCanisterError> {
         // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
         let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("filtered_resolve");
-            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-                for subject in candidates {
-                    let key = SubjectKey::new(index_id, *subject);
-                    let Some(value) = subjects.get(&key) else {
-                        continue;
-                    };
-                    if value.deleted {
-                        continue;
-                    }
-                    let Some(slot) = value.current_slot_for(active_index_version) else {
-                        continue;
-                    };
-                    let page_key = PageKey::new(
-                        index_id,
-                        slot.index_version as u64,
-                        slot.partition_id,
-                        slot.page_id as u64,
-                    );
-                    rows.push((page_key, *subject, slot));
-                }
-            });
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("filtered_resolve");
+        for subject in candidates {
+            let key = SubjectKey::new(index_id, *subject);
+            let Some(value) =
+                subject_store::get(&key).map_err(super::legacy_subject_store_error)?
+            else {
+                continue;
+            };
+            if value.deleted {
+                continue;
+            }
+            let Some(slot) = value.current_slot_for(active_index_version) else {
+                continue;
+            };
+            let page_key = PageKey::new(
+                index_id,
+                slot.index_version as u64,
+                slot.partition_id,
+                slot.page_id as u64,
+            );
+            rows.push((page_key, *subject, slot));
         }
         if rows.is_empty() {
             return Ok(VectorSearchResult { hits: Vec::new() });

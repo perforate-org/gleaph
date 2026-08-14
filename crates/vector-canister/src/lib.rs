@@ -37,13 +37,39 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchProgress,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome, VectorSyncBatchProgress,
+    VectorSyncBatchUnavailable,
 };
-use ic_cdk_macros::{init, query, update};
+use ic_cdk_macros::{init, post_upgrade, query, update};
 
 #[init]
 fn init(args: VectorCanisterInitArgs) {
     canister::init(args);
+}
+
+#[post_upgrade]
+fn post_upgrade() {
+    canister::post_upgrade();
+}
+
+/// Test-only Router-guarded seam that leaves all stable bytes untouched and only drops the live
+/// definition-store heap owner from `Ready` to `Uninitialized`.
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_router_canister")]
+fn e2e_unbind_definition_store() -> Result<(), String> {
+    canister::e2e_unbind_definition_store()
+}
+
+/// Test-only bounded real-subject pressure fixture. Production builds expose no subject fill or
+/// reset surface.
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_router_canister")]
+fn e2e_fill_subject_store_toward_pressure(
+    index_id: u32,
+    first_vertex_id: u32,
+    max_attempts: u32,
+) -> Result<(u32, u32, Option<u32>), String> {
+    canister::e2e_fill_subject_store_toward_pressure(index_id, first_vertex_id, max_attempts)
 }
 
 #[update(guard = "guard_router_canister")]
@@ -83,6 +109,20 @@ fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchP
         Ok(progress) => progress,
         Err(error) => ic_cdk::trap(error.to_string()),
     }
+}
+
+/// Additive typed synchronization surface. The legacy `vector_sync_batch` return shape remains
+/// unchanged for Router callers that still decode `VectorSyncBatchProgress`.
+#[update]
+fn vector_sync_batch_outcome(
+    operations: Vec<VectorEmbeddingSyncOp>,
+) -> Result<VectorSyncBatchOutcome, VectorSyncBatchUnavailable> {
+    let request_bytes =
+        Encode!(&(&operations,)).expect("vector_sync_batch_outcome request encoding");
+    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        ic_cdk::trap("vector_sync_batch_outcome request exceeds the safe payload limit");
+    }
+    canister::vector_sync_batch_outcome(operations)
 }
 
 /// Read-only exact `ivf_flat` top-k search (ADR 0031 Slice 5). Router-guarded like the

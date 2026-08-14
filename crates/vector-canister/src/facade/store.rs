@@ -14,6 +14,10 @@ mod rebuild;
 mod search;
 mod watermark;
 
+use crate::facade::stable::definition_store::DefinitionStoreError;
+use crate::facade::stable::subject_store::SubjectStoreError;
+use gleaph_graph_kernel::vector_index::VectorCanisterError;
+
 pub(crate) use maintenance::recommend_partition_maintenance;
 pub(crate) use watermark::{advance_watermark, gc_subjects_step};
 
@@ -96,4 +100,41 @@ impl VectorCanisterStore {
     pub const fn new() -> Self {
         Self
     }
+}
+
+/// Result of admitting one operation through the typed batch path.
+///
+/// `TablePressure` is deliberately the only terminal item result.  A definition-store failure
+/// that is not pressure cannot be acknowledged by the wire outcome because that outcome carries
+/// only a committed prefix; the canister handler either returns the outer availability marker
+/// before the first write or traps so the IC rolls the whole message back.
+#[derive(Debug)]
+pub(crate) enum VectorSyncBatchOutcomeOperationError {
+    TablePressure,
+    SubjectTablePressure,
+    StoreUnavailable,
+    SubjectStoreUnavailable,
+    Fatal(VectorCanisterError),
+}
+
+/// Result of one test-only missing-subject tombstone admission. This stays private to the
+/// PocketIC fixture path so production callers retain the typed batch contract.
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum E2eSubjectPressureStep {
+    Inserted,
+    TablePressure,
+}
+
+/// The legacy Vector wire surface has no availability or terminal-admission envelope.  Preserve its
+/// existing generic stable-write projection until the additive typed batch endpoint owns the richer
+/// definition-store result.
+fn legacy_definition_store_error(_error: DefinitionStoreError) -> VectorCanisterError {
+    VectorCanisterError::StableGrowFailed
+}
+
+/// The legacy point/batch surfaces predate the typed subject pressure result. They retain their
+/// generic stable-write projection until the typed batch driver consumes the owner error directly.
+fn legacy_subject_store_error(_error: SubjectStoreError) -> VectorCanisterError {
+    VectorCanisterError::StableGrowFailed
 }

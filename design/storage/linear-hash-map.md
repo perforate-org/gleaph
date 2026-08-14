@@ -1,174 +1,122 @@
 # Stable Linear Hash Map
 
-Status: **Partially Implemented (experimental bounded-split foundation)**
-Last updated: 2026-08-12
-Anchor timestamp: 2026-08-12 14:39:52 UTC +0000
+Status: **Partially Implemented** (the authoritative V1 map, bounded physical scan, Vector MemoryId
+4 definition-store and MemoryId 7 SubjectStore cutovers, typed terminal delivery, and Graph
+quarantine wiring are implemented; coordinated reset is fixture-only and production reset remains
+pending)
+Last updated: 2026-08-14
+Anchor timestamp: 2026-08-14 04:17:51 UTC +0000
 
-## Purpose and ownership
+## Authority and status
 
-`ic-stable-linear-hash-map` owns a stable-memory point map experiment for fixed-width keys and
-values. The crate owns its persisted bytes, hashing policy, mutation invariants, and reopen
-validation. It has no Router, Graph, index, or canister owner yet.
+[ADR 0067](../adr/0067-stable-linear-hash-map-production-contract.md) is the sole exact V1
+persisted-format contract. This document intentionally does not repeat its byte-layout table or
+define an alternative interpretation.
 
-The implemented target is bucketized two-choice linear hashing with one synchronous bounded split
-per absent insert. Durable journal recovery, iteration, migration, and production integration remain
-planned.
+V1 is destructive and pre-release only. Strict create accepts zero-sized memory only; a nonempty
+region must exact-open as V1 or be rejected unchanged. There is no alternate reader, conversion, or
+reset-on-open-error path.
 
-## Persisted layout
+The map crate owns bytes, type-derived identity, address arithmetic, routing, split geometry,
+mutation fencing, reset, physical scan, and scrub. A consuming facade owns its one MemoryId,
+lifecycle state, seed authority, and domain-error translation. Bounded physical enumeration avoids
+requiring a consumer-owned key catalog. Vector integrates the map through two private owners:
+`DEFINITION_STORE` at MemoryId 4 and `SUBJECT_STORE` at MemoryId 7.
 
-All integers are little-endian.
+## Contract consequences
 
-1. An immutable 64-byte `Header` stores `LHM` magic/version, key and value widths, `B`, and the
-   offsets or strides for the control region, journal slot, and bucket pages. Header bytes `48..56`
-   store `value_slab_offset = 8 + B * key_size`; bytes `56..64` store
-   `bucket_page_stride = value_slab_offset + B * value_size`.
-2. A separate 64-byte `ControlRegion` is the single mutable metadata owner. Its byte offsets are:
-   `0..8` `len`; `8` `level`; `9` split state; `10` journal state; `11..16` reserved zero;
-   `16..24` `split_cursor`; `24..32` physical bucket count; `32..40` hash seed; `40..48`
-   split work cursor; `48..56` mutation epoch; and `56..64` stable-hash encoding ID.
-3. One inactive `JournalSlot` reserves 8 metadata bytes plus one key/value entry payload. Its first
-   eight bytes, not `ControlRegion`, will own future journal progress. `ControlRegion.journal_state`
-   remains the authoritative journal-state indicator.
-4. Bucket pages own occupancy and use a structure-of-arrays layout. Each page begins with an 8-byte
-   header whose low 8 occupancy bits correspond to `B = 8` slots; remaining header bits/bytes must
-   be zero. The key slab contains `B` fixed-width keys at `8 + slot * key_size`. The value slab then
-   contains `B` fixed-width values at `value_slab_offset + slot * value_size`. Keys and values for a
-   slot are paired by the shared occupancy bit and slot index, not adjacency.
+The exact byte ranges, fixed constants, and derivation formulas are specified only in ADR 0067.
+This storage note records their consequences: ordinary nonempty open has fixed work and does not
+scan map data; reset is an explicit owner-only destructive operation fenced by incarnation and
+epoch; and scrub is bounded, handle-session integrity work rather than initialization or public
+iteration. Its opaque cursor is replayable only on its originating open handle; reopen or upgrade
+restarts at bucket zero. The separate physical-scan cursor is versioned and serializable across
+exact reopen/upgrade. It persists schema/seed/incarnation/physical-bucket identity plus the next
+slot, never an epoch or derived geometry. Each step has its own even-epoch pre/post fence, so a scan
+does not claim a multi-call snapshot. The map derives layout and geometry rather than persisting
+duplicate descriptors.
 
-`init` rejects mismatched layout identity, element widths, hash-encoding identity, impossible
-geometry, occupancy/length disagreement, nonzero reserved bucket-header bytes, and non-idle split,
-journal, or mutation state. Recovery is planned, so V1 fails closed instead of guessing how to
-resume.
+As of 2026-08-14 UTC, Vector owns MemoryIds 4 and 7 through separate private
+`Uninitialized -> Ready | Unavailable` state machines. Fresh install strictly creates each LHM with
+its own trusted install seed (`definition_map_seed` or `subject_map_seed`); `post_upgrade` seed-free
+exact-opens each existing region. Every definition or subject point access is routed through its
+owner, so unavailable state is never inferred to mean an empty catalog. Existing clustered-map or
+unknown bytes are rejected unchanged and require a pre-release wipe/reinstall; there is no
+migration, reader, or create-on-open-failure fallback.
 
-The SoA format is fresh-memory-only. This experimental V1 provides no compatibility reader or
-migration for earlier AoS bytes; opening bytes whose header does not exactly match the SoA-derived
-offsets and strides fails with `InvalidLayout`.
+`SubjectStore` is the only MemoryId 7 owner for `SubjectKey -> FixedSubjectMapEntry`, the canonical
+subject freshness, deletion, and slot authority. Its durable `SubjectScanCursor` envelope carries a
+version, one consumer scope, and the exact LHM physical-scan cursor bytes. It rejects an invalid
+version, scope, length, or LHM cursor before a slot read. Detach plus rebuild Sampling, Building,
+Cleaning, and Aborting use positive-budget physical `scan_step` pages; a short entry list is not EOF,
+and split/reset restart invalidates the prior cursor.
 
-## Stable key-routing contract
+The owner keeps LHM `TablePressure` distinct from unavailable and other mutation failures. The
+legacy `vector_sync_batch` Candid method still returns its unchanged progress shape. The additive
+`vector_sync_batch_outcome` method admits a lazy definition and, for a new subject, the subject
+record before any coupled row, page, tombstone, or deleted-list write. Only real owner pressure
+returns `Terminal { applied, failed_index: applied }`, distinguished as
+`IndexDefinitionTablePressure` or `SubjectTablePressure`; unavailable owners return the matching
+outer lifecycle error before a committed prefix. Any later nonterminal failure traps so IC rollback
+cannot hide a prefix behind an outer error. Graph validates the decoded outcome against the submitted
+count, removes exactly the acknowledged prefix, and quarantines exactly the failed row with the
+matching fixed reason without a legacy fallback after unavailable, malformed, transport, or reject
+failures. The coordinated reset is internal and owner-only, but currently compiled only for
+`cfg(test)` / `cfg(feature = "canbench")` fixtures. It preflights both LHM owners and resets the
+definition-dependent regions while preserving router authority, graph ownership, shard catalog,
+watermarks, and the GC cursor. Production reset and its rollback proof remain pending; no public
+reset endpoint exists.
 
-`StableHashKey` extends `Storable + Eq`. `Storable` owns persisted key payload bytes; the associated
-`HashBytes` representation owns canonical bytes used only for routing. The contract requires equal
-keys to return identical hash bytes, and requires those bytes to be stable across upgrades,
-platforms, and compiler versions. `HASH_ENCODING_ID` identifies that byte encoding and is persisted
-at control bytes `56..64`; reopen rejects a different ID even if key widths are equal.
+## Roadmap
 
-The unsigned primitive implementations return fixed-width big-endian arrays and use distinct frozen
-IDs per type. Big-endian `u64` is deliberately retained to preserve V1's literal routing vectors and
-stored-route expectations. V1 routing algorithm identity is frozen by layout version 1, RapidHash V3
-exact mode, the two domain constants, and the literal route/reopen-byte vectors in the test suite.
-Dynamic power-of-two bucket reduction uses equivalent bit masks, checked against modulo at geometry
-boundaries plus deterministic samples. Changing a key encoding, ID, hash algorithm/version, domain
-constant, or route rule requires an
-explicit rehash/layout decision before existing memory can be reopened. Hash collisions remain valid:
-the map decodes stored `Storable` bytes and uses `Eq` for key identity.
+1. **Phase 1a — implemented format/open slice:** exact V1 header/control, type-owned schema identity,
+   strict create, immutable seed, and O(1) normal open.
+2. **Phase 1b — implemented map-local lifecycle slice:** destructive owner-only reset and
+   incarnation fencing. Consumer owners are responsible for coordinating their coupled regions;
+   the Vector consumer demonstrates that coordination in test/canbench fixtures; production owner
+   wiring remains pending.
+3. **Phase 2 — partially implemented bounded maintenance:** bounded scrub and serializable bounded
+   physical scan are implemented; a focused reopen benchmark remains planned with consumer
+   lifecycle work.
+4. **Phase 3a — implemented Vector ownership slice:** MemoryId 4 definition and MemoryId 7 subject
+   destructive CHM-to-LHM cutovers, type-owned schema identities, private staged owners, distinct
+   strict install seeds, seed-free post-upgrade open, and migration of production point accesses.
+5. **Phase 3b — implemented Vector/Graph outcome slice:** additive typed
+   `vector_sync_batch_outcome`, exact definition/subject `TablePressure` terminal mapping, Graph
+   exact-prefix quarantine wiring, decoded-outcome validation, no-fallback failure handling, and focused
+   terminal-at-zero/nonempty-prefix and malformed/transport unit tests are implemented. PocketIC
+   proves live typed `Progress` delivery, legacy wire compatibility, and the unavailable no-write
+   upgrade/rebind path in `unavailable_vector_owner_keeps_graph_delete_outbox_until_upgrade_rebind`
+   (1 passed, 0 failed; focused runtime, 2026-08-14 UTC). Definition pressure remains proven at the
+   owning Vector and Graph unit layers: a fixed-count sequential-key PocketIC fixture cannot
+   deterministically force a specific definition collision after bounded one-hop relocation.
+   `real_subject_table_pressure_is_terminal_and_graph_quarantines_exact_prefix_without_retry`
+   provides the live real-pressure PocketIC proof for typed terminal-at-zero, exact Graph prefix
+   acknowledgement, durable failed-item quarantine, and no pending retry. Coordinated reset is
+   fixture-only; production reset and rollback coverage remain pending.
+6. **Phase 4 — later work:** generic recovery only when a demonstrated multi-call mutation requires
+   it. The bounded one-hop relocation is part of the current production map contract; an ordinary
+   iterator and external key catalog remain intentionally absent.
 
-## Implemented bounded-split slice
+## Current implementation and remaining boundary
 
-- `level = 3`, `split_cursor = 0`, and 8 physical buckets at creation. Settled geometry is
-  `physical_buckets = 2^level + split_cursor`; reopen accepts valid mid-round and rollover states.
-- One persisted `hash_seed`; two candidate hashes use domain separation and the same linear bucket
-  universe.
-- `get`, `contains_key`, insert/overwrite, remove, and remove/reinsert inspect only the two candidate
-  buckets. Live query/control APIs return `Result<_, MutationError>`.
-- A new entry chooses the less-loaded candidate; ties choose the first. The insert that reaches
-  exactly 75% capacity stays direct. A later absent insert plans exactly one next-in-order split,
-  appends one bucket, recomputes the source bucket's at most eight entries under post-split routing,
-  and advances the cursor or rolls the level. Entries that remain source-addressable stay in their
-  original slots; only entries that would become unreachable move to the appended bucket.
-  `TablePressure` is returned before growth or writes if the requested post-split pair is still full.
-- `new_with_hash_seed` sets a seed for fresh memory. `init_with_hash_seed` uses its argument only
-  when memory is empty; existing memory always reopens the persisted seed. `set_hash_seed` is
-  allowed only while the map is empty.
-- After reopen validates the control region, persisted control bytes remain the canonical source for
-  live length, geometry, hash seed, and mutation epoch. Insert planning reads one full authoritative
-  control snapshot, rejects its odd epoch, serializes requested bytes, decodes stored keys/values,
-  runs equality and stable-hash callbacks, checks arithmetic, and constructs complete final source/new
-  pages. A successful apply revalidates that observed even epoch exactly once immediately before any
-  logical write. A planning error also revalidates it before return, so an alias mutation supersedes
-  a stale `TablePressure` or capacity error. A split grows one appended bucket before acquiring the
-  exact-epoch guard. `TablePressure`, `OutOfMemory`, `CapacityOverflow`, encoding errors, and epoch
-  mismatch therefore leave logical bytes and the mutation epoch unchanged; successful growth followed
-  by alias invalidation may leave only unreachable zero capacity. The guarded apply phase performs
-  only prepared writes: final source page, final new page, any target in an unaffected candidate,
-  settled geometry/length, then the next even epoch. A panic intentionally leaves the epoch odd, so
-  reopen returns `RecoveryRequired`.
-- Reads first reject an odd epoch and validate that the same even epoch remains after their lookup.
-  Thus a completed nested mutation during `stable_hash_bytes`, decoding, or equality comparison
-  returns `MutationError::InProgress` instead of a stale result. The persisted protocol covers
-  separately opened map handles backed by aliased `Memory`; it does not assert atomic behavior that
-  the `Memory` implementation itself does not provide for physical concurrent writers. Derived
-  domain-separated hash secrets are cached with their seed tag in a `RefCell` and refreshed from the
-  fresh guarded seed. The cache borrow covers only candidate hashing and ends before stable reads,
-  decodes, equality comparison, or writes.
-- `get` and `remove` share a bounded value lookup. `get` reads the persisted seed and `remove`
-  reads one length-plus-seed control snapshot. For buckets whose full fixed-entry payload is at
-  most 1024 bytes, the lookup reads one page containing that bucket's header and entries per
-  candidate. It returns the matched value and, for `remove`, its bucket, slot, and occupancy so
-  remove publishes only occupancy and length after lookup. Larger bucket payloads retain the
-  occupancy-plus-key scan and read only the matched value; this avoids bulk-reading large values.
-  For the first small-candidate page only, the operation allocates its exact
-  buffer length and calls `Memory::read_unsafe`, then sets the vector length only after that read
-  initializes every byte. The helper's safety proof establishes writable allocation capacity and
-  non-overlap with the stable-memory source; its result stays operation-local. The second candidate
-  reuses that initialized buffer with ordinary `read`. A generic `Memory` that retains the trait
-  default for `read_unsafe` still zero-fills and delegates to `read`, preserving behavior and exact
-  read accounting; the large-value fallback is unchanged.
-- Remove planning reads occupancy and only the key slab while searching. It reads/decodes a value
-  only for the exact matched slot, before acquiring the mutation guard. The apply phase therefore
-  writes occupancy and length only; it performs no user-controlled decode after the epoch is odd.
-- Unit tests cover exact layout, frozen literal routes/reopen bytes, mask-versus-modulo routing at
-  every valid level's geometry boundaries plus deterministic samples, the routing-versus-storage key
-  distinction, primitive big-endian encodings and distinct IDs, reopen encoding rejection,
-  odd-epoch fail-closed behavior, completed nested-read invalidation, reentrant mutation rejection,
-  epoch exhaustion, malformed fixed-width serialization with unchanged bytes/epoch, CRUD, overwrite,
-  pressure atomicity, remove/reinsert, invalid occupancy/length, incompatible types, magic/version
-  rejection, and exact bounded read/write-call accounting for direct and overwrite insert planning,
-  first-/second-candidate and miss small gets, first-/second-candidate removes, and large-value
-  lookup/remove fallback.
-- Focused canbench source/config compares Linear Hash Map and `StableBTreeMap` get/insert/remove in
-  the same binary, using the same 48 successful `u64` key/value pairs, operation counts, and
-  `DefaultMemoryImpl`. Fixture setup and semantic pre/post checks are outside measured closures. The
-  first persisted SoA baseline measures Linear scope instructions of 96.07K get, 163.35K insert, and
-  80.33K remove (97.07K, 164.36K, and 81.34K totals). The prior AoS run of these same named benches
-  measured 96.68K, 175.26K, and 89.44K scopes (97.68K, 176.27K, and 90.45K totals). The persisted
-  artifact measures `StableBTreeMap` scopes of 374.98K get, 1.186M insert, and 1.086M remove
-  (375.99K, 1.187M, and 1.087M totals). The artifact contains all 16 benchmark keys currently
-  declared in `src/bench.rs`; the prior AoS Linear values remain explicitly historical.
-- Four public-insert split fixtures freeze literal key sets for zero, four, and eight moved source
-  entries and for level rollover. Setup plus exact geometry, length, all-resident values, requested
-  value, and reopen checks remain outside timing. The persisted SoA baseline measures scope/total
-  instructions of 3.60K/4.60K for zero moves, 3.89K/4.90K for four moves, 3.60K/4.60K for eight
-  moves, and 3.86K/4.87K for round rollover.
-- New large-value SoA diagnostics use `u64` / `[u8; 2048]` with `DefaultMemoryImpl`. Sixteen
-  contains misses measured 33.64K scope / 35.12K total instructions, sixteen get hits measured
-  239.30K / 242.31K, and a public split moving four large values measured 117.00K / 118.00K. Setup,
-  semantic checks, and reopen verification remain outside timing. These new named benches have no
-  comparable AoS baseline. These results are included in the persisted artifact.
-- Canbench-only raw component probes put one aggregate scope around each phase's 48 items. The
-  persisted get phase measures 128.86K total instructions: 3.172K seed, 33.93K route, and 51.06K
-  bucket. The insert phase measures 99.35K total: 61.57K control, 20.12K payload, and 13.99K
-  metadata. The remove phase measures 102.97K total: 86.78K control and 14.09K metadata. Disjoint
-  get-route diagnostics were key encoding 3.27K, cache borrow/seed check 2.83K, first hash 9.73K,
-  second hash 9.65K, and bucket mapping 2.69K instructions. Prepared route inputs are created
-  outside timing; postconditions reconstruct every prepared route and require it to equal the
-  production route for all 48 keys. Raw probes deliberately bypass the public epoch guard to isolate
-  components, so they are non-additive diagnostics and do not decompose the epoch-protected product
-  operations. Mutation probes use distinct `VirtualMemory` regions over `DefaultMemoryImpl`;
-  memory-translation overhead is part of every mutation phase. Probe APIs are crate-private and
-  compiled only for wasm canbench; the product API and persisted format are unchanged.
-
-## Planned follow-up design
-
-The following remains planned and must not be inferred from the current API:
-
-1. A journal protocol with explicit prepare/apply/commit/recover states, exact ownership of the
-   staged payload, operation-atomic error behavior, and reopen recovery tests at every persisted
-   boundary, only if a later mutation can no longer complete in one bounded update call.
-2. Iteration/resume semantics across settled linear geometry.
-3. Format migration and compatibility policy. The experimental V1 makes no compatibility promise.
-4. Matched benchmarks against clustered hashing, acceptance thresholds, and an owning production
-   workload. The implemented B-tree comparison and persisted artifact are only the initial
-   same-input point-operation reference.
-
-Production integration requires a separate reviewed plan or ADR covering these boundaries. Until
-then, this crate remains an isolated experiment.
+The live crate implements the authoritative V1 header/control layout, strict create, seed-free exact
+nonempty open, serializable bounded physical scan, and opaque handle-session bounded scrub. Physical
+scan returns entries, next cursor, examined slots, and explicit exhausted state under a per-call
+epoch fence; split/reset requires restart, while exact reopen/upgrade under the same incarnation and
+physical bucket bound can continue. Scrub validates
+reserved occupancy bits, canonical fixed encodings, routing reachability, duplicate candidate
+placement, and the captured length under an exact pre/post schema/seed/epoch/incarnation/geometry
+fence. Fixed-width canonical mismatches return typed scrub errors. User-defined decode, encode,
+hash, or equality panics trap under the wasm panic-abort build and fail closed at the IC boundary;
+they are not promised as typed errors. The map-local reset/incarnation lifecycle, both Vector owner
+lifecycle boundaries, and fixture-only coordinated reset are implemented. Production reset ownership
+remains pending. The additive endpoint exposes real definition and subject `TablePressure`, and
+Graph's live IC client consumes those typed outcomes without a legacy fallback before applying the
+owner-level outbox transition.
+Within the map, an absent insert first attempts the bounded next-in-order split required by the
+current threshold; a rejected prospective split then uses the same current-geometry deterministic
+one-hop relocation as a below-threshold full pair. The planner scans no more than the two target
+buckets, moves only a resident to its other candidate, and prepares all resident routing/page bytes
+before the mutation epoch becomes odd. TablePressure remains the no-write result when neither path
+can admit the key.

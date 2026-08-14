@@ -1,13 +1,16 @@
 //! Router authorization and shard/canister attachment registry for the vector index.
 
 use super::VectorCanisterStore;
+use crate::facade::stable::definition_store;
 use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
+use crate::facade::stable::subject_store;
+#[cfg(any(test, feature = "canbench"))]
+use crate::facade::stable::{DefinitionDomainResetError, reset_definition_domain};
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, PAGE_STORE, SHARD_CANISTER_CATALOG,
-    VECTOR_DELETED_SUBJECTS, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_MAINTENANCE_STATE,
-    VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
+    OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS, VECTOR_INDEX_ROUTER,
 };
 use crate::init::VectorCanisterInitArgs;
+use crate::records::SubjectScanScope;
 use crate::records::{DeletedSubjectKey, SubjectKey, SubjectScanCursor};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
@@ -21,24 +24,17 @@ use gleaph_graph_kernel::vector_index::VectorCanisterError;
 const MAX_DETACH_EXAMINE_PER_STEP: u32 = 20_000;
 
 impl VectorCanisterStore {
-    /// Clears all derived state and seeds the router principal from init args.
+    /// Strictly creates the definition region and seeds the router principal from init args.
     ///
     /// Rejects an anonymous router before mutating any stable state.
     pub fn init_from_args(&self, args: &VectorCanisterInitArgs) -> Result<(), VectorCanisterError> {
         if args.router_canister == Principal::anonymous() {
             return Err(VectorCanisterError::AnonymousRouter);
         }
-        SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
-        VECTOR_INDEX_DEFS.with_borrow_mut(|m| m.clear_new());
-        IVF_CENTROID_META.with_borrow_mut(|m| m.clear_new());
-        IVF_CENTROIDS.with_borrow_mut(|m| m.clear_new());
-        VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.clear_new());
-        VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| m.clear_new());
-        VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.clear_new());
-        // Stable execution state: persists across upgrade, cleared only on this init/reset path.
-        VECTOR_MAINTENANCE_STATE.with_borrow_mut(|m| m.clear_new());
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|m| m.clear_new());
-        PAGE_STORE.with_borrow_mut(|store| store.reset());
+        definition_store::create_for_install(args.definition_map_seed)
+            .map_err(super::legacy_definition_store_error)?;
+        subject_store::create_for_install(args.subject_map_seed)
+            .map_err(super::legacy_subject_store_error)?;
         super::centroid_cache::clear_all();
         VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
@@ -47,6 +43,76 @@ impl VectorCanisterStore {
             cell.set(VectorIndexOwnershipConfig::default());
         });
         Ok(())
+    }
+
+    /// Test/benchmark fixture reset only.  Production install is strict-create only; coordinated
+    /// destructive reset of every Vector region remains a separately authorized lifecycle action.
+    #[cfg(any(test, feature = "canbench"))]
+    pub(crate) fn reset_for_test_or_bench(
+        &self,
+        args: &VectorCanisterInitArgs,
+    ) -> Result<(), VectorCanisterError> {
+        if args.router_canister == Principal::anonymous() {
+            return Err(VectorCanisterError::AnonymousRouter);
+        }
+        definition_store::bind_for_fixture(args.definition_map_seed)
+            .map_err(super::legacy_definition_store_error)?;
+        subject_store::bind_for_fixture(args.subject_map_seed)
+            .map_err(super::legacy_subject_store_error)?;
+        let expected_incarnation = definition_store::incarnation_for_test_or_bench()
+            .map_err(super::legacy_definition_store_error)?;
+        let subject_incarnation = subject_store::incarnation_for_test_or_bench()
+            .map_err(super::legacy_subject_store_error)?;
+        self.reset_definition_domain(expected_incarnation, subject_incarnation)
+            .map_err(|error| match error {
+                DefinitionDomainResetError::Definition(error) => {
+                    super::legacy_definition_store_error(error)
+                }
+                DefinitionDomainResetError::Subject(error) => {
+                    super::legacy_subject_store_error(error)
+                }
+                DefinitionDomainResetError::RegionHandleUnavailable(_) => {
+                    VectorCanisterError::StableGrowFailed
+                }
+            })?;
+        SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
+        VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
+            router.set(args.router_canister);
+        });
+        OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
+            cell.set(VectorIndexOwnershipConfig::default());
+        });
+        Ok(())
+    }
+
+    /// Owner-only reset of state whose interpretation depends on the definition table.
+    ///
+    /// Router authority, graph ownership, shard attachments, ingestion watermarks, and the GC
+    /// cursor are independent lifecycle state and deliberately survive this operation.
+    #[cfg(any(test, feature = "canbench"))]
+    pub(crate) fn reset_definition_domain(
+        &self,
+        expected_incarnation: u64,
+        subject_incarnation: u64,
+    ) -> Result<u64, DefinitionDomainResetError> {
+        super::centroid_cache::preflight_clear()
+            .map_err(|()| DefinitionDomainResetError::RegionHandleUnavailable("CENTROID_CACHE"))?;
+        let ticket = definition_store::prepare_reset(expected_incarnation)?;
+        let subject_ticket = subject_store::prepare_reset(subject_incarnation)?;
+        let incarnation = reset_definition_domain(ticket, subject_ticket)?;
+        super::centroid_cache::clear_all();
+        Ok(incarnation)
+    }
+
+    /// Binds the definition owner after an upgrade without creating or resetting MemoryId 4.
+    pub(crate) fn open_definition_store_after_upgrade(&self) {
+        let _ = definition_store::open_after_upgrade();
+        super::centroid_cache::clear_all();
+    }
+
+    /// Binds the subject owner after an upgrade without creating or resetting MemoryId 7.
+    pub(crate) fn open_subject_store_after_upgrade(&self) {
+        let _ = subject_store::open_after_upgrade();
     }
 
     pub(super) fn commit_attach_shard_canister(
@@ -90,10 +156,14 @@ impl VectorCanisterStore {
         shard_id: ShardId,
         resume: Option<ShardDetachCursor>,
         budget: u32,
-    ) -> ShardDetachStepResult {
+    ) -> Result<ShardDetachStepResult, VectorCanisterError> {
         let cursor = match resume {
             Some(cursor) => cursor,
             None => {
+                subject_store::scan_start(SubjectScanScope::Detach {
+                    shard_id: shard_id.raw(),
+                })
+                .map_err(super::legacy_subject_store_error)?;
                 // Drop the auth mapping first so the shard can no longer write while the bounded
                 // purge runs across steps.
                 SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| {
@@ -106,18 +176,18 @@ impl VectorCanisterStore {
             }
         };
 
-        let step = self.purge_subjects_step(shard_id, &cursor.resume_key, budget);
+        let step = self.purge_subjects_step(shard_id, &cursor.resume_key, budget)?;
         let next = step.resume_key.map(|resume_key| ShardDetachCursor {
             phase: ShardDetachPhase::Vertex,
             resume_key,
         });
 
-        ShardDetachStepResult {
+        Ok(ShardDetachStepResult {
             done: next.is_none(),
             next,
             examined: step.examined,
             removed: step.removed,
-        }
+        })
     }
 
     /// Scans up to `budget` subject keys (resuming after the saved slot), removing all rows owned by
@@ -129,37 +199,58 @@ impl VectorCanisterStore {
         shard_id: ShardId,
         resume_key: &[u8],
         budget: u32,
-    ) -> SubjectPurgeStep {
-        let resume = decode_scan_cursor(resume_key);
-        let mut examined = 0u32;
-        let mut to_remove: Vec<SubjectKey> = Vec::new();
-        let mut last_cursor: Option<SubjectScanCursor> = None;
-        let mut exhausted = true;
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            let capacity = subjects.capacity();
-            // Restart from slot 0 if the saved capacity no longer matches (a concurrent mutation
-            // resized the map, invalidating the slot cursor).
-            let start_slot = match resume {
-                Some(c) if c.capacity == capacity => c.slot,
-                _ => 0,
-            };
-            let mut iter = subjects.iter_from(start_slot);
-            while let Some((key, _value)) = iter.next() {
-                if examined >= budget {
-                    exhausted = false;
-                    break;
-                }
-                examined += 1;
-                last_cursor = Some(SubjectScanCursor::new(iter.position(), capacity));
-                if key.subject.shard_id() == shard_id {
-                    to_remove.push(key);
-                }
+    ) -> Result<SubjectPurgeStep, VectorCanisterError> {
+        let scope = SubjectScanScope::Detach {
+            shard_id: shard_id.raw(),
+        };
+        let cursor = if resume_key.is_empty() {
+            subject_store::scan_start(scope)
+        } else {
+            SubjectScanCursor::decode_bytes(scope, resume_key).map_err(|_| {
+                subject_store::SubjectStoreError::Scan(
+                    subject_store::SubjectStoreScanError::InvalidCursor,
+                )
+            })
+        };
+        let cursor = match cursor {
+            Ok(cursor) => Ok(cursor),
+            Err(subject_store::SubjectStoreError::Scan(
+                subject_store::SubjectStoreScanError::RestartRequired,
+            )) => subject_store::scan_start(scope),
+            Err(error) => Err(error),
+        };
+        let cursor = cursor.map_err(super::legacy_subject_store_error)?;
+        let page = match subject_store::scan_step(scope, cursor, u64::from(budget)) {
+            Ok(page) => Ok(page),
+            Err(subject_store::SubjectStoreError::Scan(
+                subject_store::SubjectStoreScanError::RestartRequired,
+            )) => {
+                let fresh =
+                    subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?;
+                subject_store::scan_step(scope, fresh, u64::from(budget))
             }
-        });
+            Err(subject_store::SubjectStoreError::Scan(
+                subject_store::SubjectStoreScanError::InProgress,
+            )) => {
+                return Ok(SubjectPurgeStep {
+                    examined: 0,
+                    removed: 0,
+                    resume_key: (!resume_key.is_empty()).then(|| resume_key.to_vec()),
+                });
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(super::legacy_subject_store_error)?;
+        let examined = u32::try_from(page.examined_slots).unwrap_or(u32::MAX);
+        let to_remove: Vec<SubjectKey> = page
+            .entries
+            .iter()
+            .filter_map(|(key, _)| (key.subject.shard_id() == shard_id).then_some(*key))
+            .collect();
 
         let removed = u32::try_from(to_remove.len()).unwrap_or(u32::MAX);
         for key in &to_remove {
-            let entry = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(key));
+            let entry = subject_store::get(key).map_err(super::legacy_subject_store_error)?;
             if let Some(entry) = entry {
                 if entry.deleted {
                     // Drop the tombstoned row from the deleted list so the GC does not later try to
@@ -175,19 +266,19 @@ impl VectorCanisterStore {
                     self.tombstone_slot(key.index_id, slot);
                 }
             }
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key).expect("remove purged subject"));
+            subject_store::remove(key).map_err(super::legacy_subject_store_error)?;
         }
 
-        let resume_key = if exhausted {
+        let resume_key = if page.exhausted {
             None
         } else {
-            last_cursor.map(encode_scan_cursor)
+            Some(page.next_cursor.encode_bytes())
         };
-        SubjectPurgeStep {
+        Ok(SubjectPurgeStep {
             examined,
             removed,
             resume_key,
-        }
+        })
     }
 
     pub fn admin_attach_shard_canister(
@@ -210,13 +301,7 @@ impl VectorCanisterStore {
         resume: Option<ShardDetachCursor>,
     ) -> Result<ShardDetachStepResult, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        Ok(
-            self.commit_detach_shard_step_with_budget(
-                shard_id,
-                resume,
-                MAX_DETACH_EXAMINE_PER_STEP,
-            ),
-        )
+        self.commit_detach_shard_step_with_budget(shard_id, resume, MAX_DETACH_EXAMINE_PER_STEP)
     }
 
     #[cfg(test)]
@@ -227,6 +312,7 @@ impl VectorCanisterStore {
         budget: u32,
     ) -> ShardDetachStepResult {
         self.commit_detach_shard_step_with_budget(shard_id, resume, budget)
+            .expect("subject scan detach step")
     }
 
     pub(super) fn assert_router_caller(
@@ -244,31 +330,14 @@ impl VectorCanisterStore {
     }
 }
 
+#[cfg(test)]
+mod coordinated_reset_tests;
+
 /// Outcome of purging up to `budget` subject keys for one shard.
 struct SubjectPurgeStep {
     examined: u32,
     removed: u32,
     resume_key: Option<Vec<u8>>,
-}
-
-/// Encodes a [`SubjectScanCursor`] into the detach `resume_key` byte string.
-fn encode_scan_cursor(cursor: SubjectScanCursor) -> Vec<u8> {
-    let mut out = Vec::with_capacity(16);
-    out.extend_from_slice(&cursor.slot.to_le_bytes());
-    out.extend_from_slice(&cursor.capacity.to_le_bytes());
-    out
-}
-
-/// Decodes a [`SubjectScanCursor`] from the detach `resume_key` byte string.
-///
-/// An empty key means "start from slot 0" (fresh purge).
-fn decode_scan_cursor(resume_key: &[u8]) -> Option<SubjectScanCursor> {
-    if resume_key.is_empty() {
-        return None;
-    }
-    let slot = u64::from_le_bytes(resume_key[0..8].try_into().unwrap());
-    let capacity = u64::from_le_bytes(resume_key[8..16].try_into().unwrap());
-    Some(SubjectScanCursor::new(slot, capacity))
 }
 
 /// Convenience for test setup: attach a shard of graph 1 to this single vector target.

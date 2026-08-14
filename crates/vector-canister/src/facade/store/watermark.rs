@@ -12,9 +12,10 @@
 //! A deleted entry with `stamp <= min(both)` for its shard is unreachable (no stale replay can arrive)
 //! and is GC'd. The subject map therefore stays at `≈ N + recently deleted`.
 
+use crate::facade::stable::subject_store;
 use crate::facade::stable::{
     SHARD_CANISTER_CATALOG, VECTOR_DELETED_SUBJECTS, VECTOR_GC_CURSOR, VECTOR_INDEX_ROUTER,
-    VECTOR_SHARD_WATERMARKS, VECTOR_SUBJECT_TO_ID,
+    VECTOR_SHARD_WATERMARKS,
 };
 use crate::records::DeletedSubjectKey;
 use candid::Principal;
@@ -99,8 +100,7 @@ pub(crate) fn gc_subjects_step(budget: u32) -> u32 {
 
     for key in &to_remove {
         VECTOR_DELETED_SUBJECTS.with_borrow_mut(|m| m.remove(key));
-        VECTOR_SUBJECT_TO_ID
-            .with_borrow_mut(|m| m.remove(&key.subject).expect("remove collected subject"));
+        subject_store::remove(&key.subject).expect("remove collected subject");
     }
     // Persist the resume cursor: the last examined key if the scan was budget-bounded, else wrap to
     // the start (None) so the next step scans from the beginning again.
@@ -112,7 +112,9 @@ pub(crate) fn gc_subjects_step(budget: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::init::VectorCanisterInitArgs;
+    use crate::init::{
+        DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, VectorCanisterInitArgs,
+    };
     use crate::records::{DeletedSubjectKey, FixedSubjectMapEntry, ShardWatermarks, SubjectKey};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric};
@@ -134,8 +136,10 @@ mod tests {
     fn fresh_store() -> crate::facade::VectorCanisterStore {
         let store = crate::facade::VectorCanisterStore::new();
         store
-            .init_from_args(&VectorCanisterInitArgs {
+            .reset_for_test_or_bench(&VectorCanisterInitArgs {
                 router_canister: router(),
+                definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+                subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
             })
             .expect("init");
         store.attach_single_shard_for_test(router(), ShardId::new(0), shard_canister());
@@ -182,7 +186,9 @@ mod tests {
     }
 
     fn subject_entry(vertex_id: u32) -> Option<FixedSubjectMapEntry> {
-        VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(INDEX_ID, subject(vertex_id))))
+        subject_store::get(&SubjectKey::new(INDEX_ID, subject(vertex_id)))
+            .ok()
+            .flatten()
     }
 
     #[test]
@@ -366,21 +372,16 @@ mod tests {
         );
     }
 
-    /// Upgrade persistence: the watermark store survives a re-init (simulated upgrade) through the
-    /// facade's real stable-memory lifecycle. `init_from_args` clears the request-path stores but not
-    /// the watermark store, so the advanced watermark must be unchanged after re-init.
+    /// Upgrade persistence: the watermark store survives a seed-free definition-store reopen.
     #[test]
-    fn watermark_survives_reinit_upgrade() {
-        let store = fresh_store();
+    fn watermark_survives_definition_store_reopen() {
+        let _store = fresh_store();
         advance_watermark(shard_canister(), &[upsert_op(7, 5)]);
         assert_eq!(watermarks(ShardId::new(0)).graph_watermark, 5);
 
-        // Simulate an upgrade: re-init with the same args.
-        store
-            .init_from_args(&VectorCanisterInitArgs {
-                router_canister: router(),
-            })
-            .expect("re-init");
+        // Simulate the owner heap rebind used by `post_upgrade`; it must not reset other stable
+        // regions such as the watermark table.
+        crate::facade::stable::definition_store::reopen_for_test().expect("exact reopen");
         assert_eq!(
             watermarks(ShardId::new(0)).graph_watermark,
             5,

@@ -5,6 +5,7 @@ use super::super::stable::derived_index_outbox::DerivedIndexOutboxEntry;
 use super::super::stable::repair_journal::RepairPostingOp;
 use super::GraphStore;
 use gleaph_graph_kernel::index::IndexBuildDmlRequest;
+use gleaph_graph_kernel::vector_index::VectorSyncBatchOutcome;
 
 impl GraphStore {
     pub(crate) fn derived_index_outbox_append(
@@ -28,6 +29,10 @@ impl GraphStore {
         DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.is_empty())
     }
 
+    pub(crate) fn derived_index_outbox_pending_is_empty(&self) -> bool {
+        DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.pending_is_empty())
+    }
+
     pub(crate) fn derived_index_outbox_len(&self) -> u64 {
         DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.len())
     }
@@ -41,5 +46,19 @@ impl GraphStore {
 
     pub(crate) fn derived_index_outbox_remove(&self, seq: u64) {
         DERIVED_INDEX_OUTBOX.with_borrow_mut(|outbox| outbox.remove(seq));
+    }
+
+    pub(crate) fn derived_index_outbox_apply_vector_outcome(
+        &self,
+        submitted: &[(u64, DerivedIndexOutboxEntry)],
+        outcome: VectorSyncBatchOutcome,
+    ) -> Result<(), &'static str> {
+        DERIVED_INDEX_OUTBOX
+            .with_borrow_mut(|outbox| outbox.apply_vector_outcome(submitted, outcome))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn derived_index_outbox_clear(&self) {
+        DERIVED_INDEX_OUTBOX.with_borrow_mut(|outbox| outbox.clear());
     }
 }

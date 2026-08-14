@@ -16,8 +16,8 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::records::{
-    DeletedSubjectKey, FixedSubjectMapEntry, IvfCentroidMeta, PageKey, PartitionHead, PartitionKey,
-    RawMaintenanceState, RawRebuildState, ShardWatermarks, SubjectKey, VectorIndexDef,
+    DeletedSubjectKey, IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawMaintenanceState,
+    RawRebuildState, ShardWatermarks,
 };
 use ic_stable_clustered_hash_map::{InitError, StableClusteredHashMap};
 
@@ -56,10 +56,8 @@ pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
 pub(crate) type StableShardCanisterByShardMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
-pub(crate) type StableDefsMap = StableClusteredHashMap<u32, VectorIndexDef, Memory>;
 pub(crate) type StableCentroidMetaMap = BTreeMap<u32, IvfCentroidMeta, Memory>;
 pub(crate) type StableCentroidsMap = BTreeMap<PartitionKey, Vec<u8>, Memory>;
-pub(crate) type StableSubjectMap = StableClusteredHashMap<SubjectKey, FixedSubjectMapEntry, Memory>;
 pub(crate) type StableDeletedSubjectsMap = BTreeMap<DeletedSubjectKey, u8, Memory>;
 pub(crate) type StablePartitionHeadsMap =
     StableClusteredHashMap<PartitionKey, PartitionHead, Memory>;
@@ -124,6 +122,7 @@ impl ShardCanisterCatalog {
         }
     }
 
+    #[cfg(any(test, feature = "canbench"))]
     pub(crate) fn clear_new(&mut self) {
         self.by_shard.clear_new();
         self.by_canister.clear_new();
@@ -196,17 +195,12 @@ pub(crate) fn init_ownership_config() -> StableOwnershipConfigCell {
     )
 }
 
-pub(crate) fn init_defs() -> StableDefsMap {
-    let memory = MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_INDEX_DEFS));
-    match StableClusteredHashMap::init(memory.clone()) {
-        Ok(map) => map,
-        // Empty (fresh) memory has no `CHM` magic; create the map like `BTreeMap::init` does for a
-        // fresh region. A non-zero wrong magic is genuine corruption.
-        Err(InitError::BadMagic { actual: [0, 0, 0] }) => {
-            StableClusteredHashMap::new(memory).expect("init defs")
-        }
-        Err(e) => panic!("init defs: {e}"),
-    }
+pub(crate) fn defs_memory() -> Memory {
+    MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_INDEX_DEFS))
+}
+
+pub(crate) fn subject_memory() -> Memory {
+    MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SUBJECT_TO_ID))
 }
 
 pub(crate) fn init_centroid_meta() -> StableCentroidMetaMap {
@@ -215,19 +209,6 @@ pub(crate) fn init_centroid_meta() -> StableCentroidMetaMap {
 
 pub(crate) fn init_centroids() -> StableCentroidsMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(IVF_CENTROIDS)))
-}
-
-pub(crate) fn init_subject_map() -> StableSubjectMap {
-    let memory = MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_SUBJECT_TO_ID));
-    match StableClusteredHashMap::init(memory.clone()) {
-        Ok(map) => map,
-        // Empty (fresh) memory has no `CHM` magic; create the map like `ic-stable-structures`
-        // `BTreeMap::init` does for a fresh region. A non-zero wrong magic is genuine corruption.
-        Err(InitError::BadMagic { actual: [0, 0, 0] }) => {
-            StableClusteredHashMap::new(memory).expect("init subject map")
-        }
-        Err(e) => panic!("init subject map: {e}"),
-    }
 }
 
 pub(crate) fn init_deleted_subjects() -> StableDeletedSubjectsMap {
