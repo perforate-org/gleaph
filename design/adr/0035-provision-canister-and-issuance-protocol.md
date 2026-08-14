@@ -177,3 +177,35 @@ Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISI
 - [ADR 0038](0038-provisioning-authorization-and-cycles-funding.md) — admission and cycle reservation.
 - [ADR 0054](0054-provisioned-logical-graph-topology-and-resource-activation.md) — bootstrap resource selection, logical-graph topology, and placement policy.
 - Plan 0061b (release manifest + active-release pointer + activation) and Plan 0061c (install transfer + artifact audit log + PocketIC) build on the artifact catalog.
+
+## Amendment: Account as bootstrap trust subject (planned)
+
+**Status of this amendment: planned, not implemented.** The original ADR above is accepted and
+partially implemented as written. This section records the changes required by the Account-canister
+design ([ADR 0068](0068-account-canister-and-per-developer-router-issuance.md)) for the first-Router
+bootstrap handover. Until implemented, the original sections remain authoritative.
+
+### 1. Account as a transient trust subject
+
+Today Provision accepts envelopes only from the Router principal registered for `deployment_id`
+(above, §"Provision accepts envelopes only from the Router principal"). Under ADR 0068, for the
+**first Router only**, the **Account** canister acts as the deployment's issuance authority:
+
+- Provision must accept `accept_envelope` from the **Account principal** bound to the deployment as
+  a bootstrap trust subject, in addition to the Router principal.
+- This trust is **transient**: after the first Router is issued, the deployment trust binding is
+  handed over to the issued Router principal, and the ADR 0035 model (Router owns the binding)
+  applies unchanged.
+
+### 2. First-issuance result callback to Account
+
+Provision must deliver the first-issuance result to **Account** (so Account can
+`register_router`), not only via the existing Router-bound `router_ack`. This is a new callback
+surface on Provision. The existing `router_ack` to the Router continues to apply to subsequent
+graph / shard / index issuance under ADR 0035.
+
+### 3. `deployment_id` derivation
+
+`deployment_id` is derived from `account_id` (Personal principal or Org generated id) per
+[ADR 0068](0068-account-canister-and-per-developer-router-issuance.md). It remains the issuance and
+trust-binding scope; it is not a new user-configured concept.

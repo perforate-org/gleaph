@@ -1,0 +1,116 @@
+//! Gleaph Account canister — ADR 0068.
+//!
+//! Owns developer identity/registration and the account↔Router mapping.
+//! Does not own graph topology, graph tenancy, or routing catalogs.
+
+#![cfg_attr(not(test), allow(dead_code))]
+
+pub mod canister;
+pub mod stable;
+pub mod types;
+
+use canister::{
+    add_member_with_caller, create_account_with_caller, create_org_account_with_caller,
+    delete_account_with_caller, get_account_with_caller, remove_member_with_caller,
+    resolve_my_accounts_with_caller,
+};
+use ic_cdk_macros::{init, post_upgrade, query, update};
+use types::{Account, AccountError, Role};
+
+#[init]
+fn init() {
+    // All account state lives in stable memory; nothing to seed.
+}
+
+#[post_upgrade]
+fn post_upgrade() {}
+
+#[update]
+fn create_account(name: String) -> Result<Account, AccountError> {
+    create_account_with_caller(
+        ic_cdk::api::msg_caller(),
+        name,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[update]
+fn create_org_account(name: String) -> Result<Account, AccountError> {
+    create_org_account_with_caller(
+        ic_cdk::api::msg_caller(),
+        name,
+        ic_time_ns(),
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[query]
+fn get_account(account_id: String) -> Result<Account, AccountError> {
+    get_account_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[update]
+fn delete_account(account_id: String) -> Result<(), AccountError> {
+    delete_account_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[update]
+fn add_member(
+    account_id: String,
+    principal: candid::Principal,
+    role: Role,
+) -> Result<(), AccountError> {
+    add_member_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        principal,
+        role,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[update]
+fn remove_member(account_id: String, principal: candid::Principal) -> Result<(), AccountError> {
+    remove_member_with_caller(
+        ic_cdk::api::msg_caller(),
+        &account_id,
+        principal,
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[query]
+fn resolve_my_accounts() -> Vec<String> {
+    resolve_my_accounts_with_caller(
+        ic_cdk::api::msg_caller(),
+        &stable::store::AccountStore::new(),
+    )
+}
+
+#[cfg(test)]
+pub fn export_service_string() -> String {
+    __export_service()
+}
+
+ic_cdk::export_candid!();
+
+/// IC NNS timestamp in nanoseconds (0 off-wasm, for deterministic unit tests).
+#[allow(dead_code)]
+pub(crate) fn ic_time_ns() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::time()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        0
+    }
+}

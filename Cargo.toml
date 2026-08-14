@@ -31,6 +31,7 @@ members = [
     "crates/ic-stable-linear-hash-map",
     "crates/index-ddl",
     "crates/instruction-budget",
+    "crates/account",
     "crates/pocket-ic-tests",
     "crates/prepared-api",
     "crates/provision",
@@ -46,6 +47,7 @@ version = "0.1.0"
 license = "MIT or Apache-2.0"
 
 [workspace.dependencies]
+gleaph-account = { path = "crates/account" }
 gleaph-auth = { path = "crates/auth" }
 gleaph-bulk-load-api = { path = "crates/bulk-load-api" }
 gleaph-cli = { path = "crates/cli" }
