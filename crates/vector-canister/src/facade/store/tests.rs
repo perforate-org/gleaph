@@ -2102,6 +2102,69 @@ fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
 }
 
 #[test]
+fn rebuild_sampling_restart_resets_sample_budget_and_candidates() {
+    use crate::facade::stable::subject_store::{SubjectStoreError, SubjectStoreScanError};
+    use crate::records::{SubjectKey, SubjectScanScope, VectorRebuildStateRecord};
+
+    let store = fresh_store();
+    seed_distinct(&store, 3);
+    let entries: Vec<_> = (1..=3)
+        .map(|vertex_id| {
+            let key = SubjectKey::new(INDEX_ID, subject(vertex_id));
+            let entry = subject_store::get(&key)
+                .expect("read seeded subject")
+                .expect("seeded subject exists");
+            (key, entry)
+        })
+        .collect();
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 3)
+        .expect("start");
+
+    let mut stale_cursor = None;
+    for _ in 0..1_000 {
+        store
+            .rebuild_step_with_budget(INDEX_ID, 1, STRIDE as u64)
+            .expect("sampling step");
+        if let VectorRebuildStateRecord::Sampling {
+            cursor: Some(cursor),
+            subjects_scanned: 1,
+            ref candidates,
+            ..
+        } = super::rebuild::rebuild_state_of(INDEX_ID)
+            && candidates.len() == 1
+        {
+            stale_cursor = Some(cursor);
+            break;
+        }
+    }
+    let stale_cursor = stale_cursor.expect("sampling persists a cursor after one candidate");
+
+    let incarnation = subject_store::incarnation_for_test_or_bench().expect("incarnation");
+    let ticket = subject_store::prepare_reset(incarnation).expect("prepare subject reset");
+    subject_store::commit_reset(ticket).expect("reset subject map");
+    for (key, entry) in entries {
+        subject_store::insert(key, entry).expect("restore seeded subject");
+    }
+    let scope = SubjectScanScope::Sampling {
+        index_id: INDEX_ID,
+        target_index_version: TARGET_V,
+    };
+    assert!(matches!(
+        subject_store::scan_step(scope, stale_cursor, 1),
+        Err(SubjectStoreError::Scan(
+            SubjectStoreScanError::RestartRequired
+        ))
+    ));
+
+    assert_eq!(
+        drive_into_building(&store, INDEX_ID).phase,
+        VectorRebuildPhase::Building,
+        "a restarted scan gets a fresh sample_limit budget and candidate pool"
+    );
+}
+
+#[test]
 fn rebuild_start_rejects_invalid_params() {
     let store = fresh_store();
     seed_distinct(&store, 4);

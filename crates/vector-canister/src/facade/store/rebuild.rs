@@ -55,6 +55,11 @@ use std::borrow::Cow;
 /// slot the bytes were read from, the active bytes, and the active row's aux (the `I8` scale).
 type ShadowPendingRow = (SubjectKey, FixedSubjectMapEntry, SlotRef, Vec<u8>, [u8; 8]);
 
+struct NextSubjectPage {
+    page: SubjectScanPage,
+    restarted: bool,
+}
+
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
@@ -275,21 +280,29 @@ fn is_subjects_done(cursor: &Option<SubjectScanCursor>) -> bool {
 fn next_subject_page(
     scope: SubjectScanScope,
     cursor: Option<SubjectScanCursor>,
-) -> Result<Option<SubjectScanPage>, VectorCanisterError> {
+) -> Result<Option<NextSubjectPage>, VectorCanisterError> {
     let cursor = match cursor {
         Some(cursor) if cursor.is_done() => return Ok(None),
         Some(cursor) => cursor,
         None => subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?,
     };
     match subject_store::scan_step(scope, cursor, 1) {
-        Ok(page) => Ok(Some(page)),
+        Ok(page) => Ok(Some(NextSubjectPage {
+            page,
+            restarted: false,
+        })),
         Err(subject_store::SubjectStoreError::Scan(
             subject_store::SubjectStoreScanError::RestartRequired,
         )) => {
             let fresh =
                 subject_store::scan_start(scope).map_err(super::legacy_subject_store_error)?;
             subject_store::scan_step(scope, fresh, 1)
-                .map(Some)
+                .map(|page| {
+                    Some(NextSubjectPage {
+                        page,
+                        restarted: true,
+                    })
+                })
                 .map_err(super::legacy_subject_store_error)
         }
         Err(error) => Err(super::legacy_subject_store_error(error)),
@@ -636,11 +649,18 @@ impl VectorCanisterStore {
             };
             let mut scan_cursor = cursor;
             for _ in 0..max_subjects.max(1) {
-                let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+                let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
                     range_exhausted = true;
                     last_cursor = None;
                     break;
                 };
+                if next.restarted {
+                    subjects_scanned = 0;
+                    candidates.clear();
+                    to_read.clear();
+                    bytes_buffered = 0;
+                }
+                let page = next.page;
                 scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
                 last_cursor = scan_cursor.clone();
                 if page.exhausted {
@@ -946,11 +966,12 @@ impl VectorCanisterStore {
             };
             let mut scan_cursor = cursor;
             for _ in 0..max_subjects.max(1) {
-                let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+                let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
                     range_exhausted = true;
                     last_cursor = None;
                     break;
                 };
+                let page = next.page;
                 scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
                 last_cursor = scan_cursor.clone();
                 if page.exhausted {
@@ -1420,10 +1441,11 @@ impl VectorCanisterStore {
         let mut scan_cursor = cursor;
         let mut exhausted = false;
         for _ in 0..max_work.max(1) {
-            let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+            let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
                 exhausted = true;
                 break;
             };
+            let page = next.page;
             scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
             for (key, value) in page.entries {
                 if key.index_id == index_id
@@ -1470,10 +1492,11 @@ impl VectorCanisterStore {
         let mut scan_cursor = cursor;
         let mut exhausted = false;
         for _ in 0..max_work.max(1) {
-            let Some(page) = next_subject_page(scope, scan_cursor.clone())? else {
+            let Some(next) = next_subject_page(scope, scan_cursor.clone())? else {
                 exhausted = true;
                 break;
             };
+            let page = next.page;
             scan_cursor = (!page.exhausted).then(|| page.next_cursor.clone());
             for (key, value) in page.entries {
                 if key.index_id == index_id
