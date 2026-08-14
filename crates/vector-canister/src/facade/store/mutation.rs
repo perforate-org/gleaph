@@ -44,8 +44,8 @@ thread_local! {
     /// page-store append seam. `None` disables injection; `Some(k)` lets the next `k` subject-map
     /// inserts succeed and forces the `(k+1)`-th to fail with
     /// [`VectorCanisterError::StableGrowFailed`] (then disarms). This exercises the fallible commit
-    /// branch of `vector_upsert`/`insert_new_subject`, otherwise only reachable by exhausting stable
-    /// memory.
+    /// branch of mutation and rebuild subject-link commits, otherwise only reachable by exhausting
+    /// stable memory.
     static FAIL_SUBJECT_INSERT_AFTER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
@@ -449,8 +449,8 @@ impl VectorCanisterStore {
     }
 
     /// Inserts a subject-map row, mapping the map's `OutOfMemory` to the canister's stable-grow
-    /// error so the mutation path can propagate it instead of panicking.
-    fn insert_subject_entry(
+    /// error so mutation and rebuild callers can propagate it instead of panicking.
+    pub(super) fn insert_subject_entry(
         &self,
         key: SubjectKey,
         entry: FixedSubjectMapEntry,

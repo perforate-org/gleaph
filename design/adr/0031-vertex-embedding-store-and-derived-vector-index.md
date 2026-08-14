@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: **superseded by [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)**
-Last revised: 2026-08-07 23:39:30 UTC +0000
+Last revised: 2026-08-14 06:48:18 UTC +0000
 
 > **Superseded (2026-08-07).** [ADR 0064](0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)
 > replaces this design; the Slices 1–10 implementation is **completely discarded** (breaking layout
@@ -577,6 +577,20 @@ Execution flow:
 6. `admin_abort_vector_rebuild(index_id)` returns straight to `Idle` from `Sampling`/`Training`/`Failed`
    (nothing persisted) or enters bounded `Aborting` from `Building`/`ReadyToPublish`, keeping the active version
    unchanged and dropping the shadow version's pages so it is unreachable from search.
+
+The replacement `vector-canister` implementation adds the following failure-atomicity guarantees as
+of 2026-08-14 UTC:
+
+- `append_rows` prevalidates and plans every page, then reserves every planned page before publishing
+  the partition head. A reservation failure can leave only unpublished, unreachable bytes beyond the
+  occupied tail; it never partially publishes the head.
+- If the kth subject-store link fails during `Building`, the linked prefix is preserved, the current
+  row and every unlinked suffix row are tombstoned, and the original error is returned. A retry from
+  the preserved `Building` cursor skips subjects in that linked prefix and rebuilds the current row
+  and suffix, converging without duplicate live rows.
+- The regression coverage is `append_rows_grow_failure_leaves_consistent_state`,
+  `append_rows_second_page_reserve_failure_is_atomic`, and
+  `rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges`.
 
 The required tests are:
 

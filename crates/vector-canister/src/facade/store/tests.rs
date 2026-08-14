@@ -2102,6 +2102,103 @@ fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
 }
 
 #[test]
+fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges() {
+    let store = fresh_store();
+    for vertex_id in 1..=3 {
+        store
+            .vector_upsert(shard_canister(), &upsert_vec(vertex_id, 1, 0.0))
+            .expect("seed first cluster");
+    }
+    for vertex_id in 4..=6 {
+        store
+            .vector_upsert(shard_canister(), &upsert_vec(vertex_id, 1, 10.0))
+            .expect("seed second cluster");
+    }
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        drive_into_building(&store, INDEX_ID).phase,
+        VectorRebuildPhase::Building
+    );
+
+    // Each deterministic target cluster contains three subjects. Fail the second subject-map link
+    // in the first appended partition batch, leaving one linked prefix row and two unlinked rows
+    // that the Building compensation must tombstone.
+    crate::facade::store::mutation::arm_subject_insert_failure(1);
+    let error = store
+        .rebuild_step_with_budget(INDEX_ID, 100, u64::MAX)
+        .expect_err("second Building subject link fails");
+    assert_eq!(error, VectorCanisterError::StableGrowFailed);
+
+    let linked_slots: Vec<_> = (1..=6)
+        .filter_map(|vertex_id| {
+            store
+                .subject_entry_for_test(INDEX_ID, subject(vertex_id))
+                .expect("seeded subject")
+                .shadow_slot
+        })
+        .collect();
+    assert_eq!(linked_slots.len(), 1, "only the committed prefix is linked");
+    assert_eq!(linked_slots[0].index_version, TARGET_V as u32);
+    assert!(
+        store.read_slot_bytes(INDEX_ID, linked_slots[0]).is_some(),
+        "the linked prefix remains live"
+    );
+    let target_live_after_failure = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
+        (0..2)
+            .filter_map(|partition| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
+            .map(|head| head.live_len)
+            .sum::<u64>()
+    });
+    assert_eq!(
+        target_live_after_failure,
+        linked_slots.len() as u64,
+        "no live shadow row exists without a subject link"
+    );
+
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish retry");
+    drive_cleanup(&store, INDEX_ID);
+
+    let target_live_after_cleanup = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
+        (0..2)
+            .filter_map(|partition| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
+            .map(|head| head.live_len)
+            .sum::<u64>()
+    });
+    assert_eq!(target_live_after_cleanup, 6, "one live row per subject");
+    let result = store
+        .vector_search_tuned(&search_value(5.0, 10), tuned(f32::INFINITY))
+        .expect("search after cleanup");
+    assert_eq!(result.hits.len(), 6);
+    for vertex_id in 1..=6 {
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .filter(|hit| hit.subject == subject(vertex_id))
+                .count(),
+            1,
+            "subject {vertex_id} appears exactly once"
+        );
+        let entry = store
+            .subject_entry_for_test(INDEX_ID, subject(vertex_id))
+            .expect("subject survives cleanup");
+        assert_eq!(
+            entry.slot.map(|slot| slot.index_version),
+            Some(TARGET_V as u32)
+        );
+        assert_eq!(entry.shadow_slot, None);
+    }
+}
+
+#[test]
 fn rebuild_sampling_restart_resets_sample_budget_and_candidates() {
     use crate::facade::stable::subject_store::{SubjectStoreError, SubjectStoreScanError};
     use crate::records::{SubjectKey, SubjectScanScope, VectorRebuildStateRecord};

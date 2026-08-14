@@ -276,7 +276,8 @@ fn is_subjects_done(cursor: &Option<SubjectScanCursor>) -> bool {
 
 /// Reads one physical subject-map slot, restarting once when a split/reset invalidates the
 /// durable cursor. A one-slot page is intentional: callers may stop after the returned entry
-/// without ever skipping an unprocessed entry when their own byte/work budget is reached.
+/// without ever skipping an unprocessed entry when their own byte/work budget is reached. The
+/// result marks a restart so `Sampling` can discard accumulation tied to the old geometry.
 fn next_subject_page(
     scope: SubjectScanScope,
     cursor: Option<SubjectScanCursor>,
@@ -1073,15 +1074,27 @@ impl VectorCanisterStore {
                         &rows,
                     )?
                 };
-                for (shadow_slot, (key, mut entry, active_slot, _, _)) in
-                    shadow_slots.into_iter().zip(bucket)
+                for (i, (shadow_slot, (key, mut entry, active_slot, _, _))) in
+                    shadow_slots.iter().copied().zip(bucket).enumerate()
                 {
                     // Positional stale-read guard: the subject's current live slot must still be the
                     // one we read bytes from (replaces the retired `vector_id` equality check).
                     if !entry.deleted && entry.current_slot_for(active) == Some(active_slot) {
                         entry.shadow_slot = Some(shadow_slot);
-                        subject_store::insert(key, entry)
-                            .map_err(super::legacy_subject_store_error)?;
+                        if let Err(error) = self.insert_subject_entry(key, entry) {
+                            // The linked prefix belongs to the rebuilt subject map and stays live.
+                            // This row and the unattempted suffix have no subject owner, so retire
+                            // only those rows appended by this batch before returning the original
+                            // commit error.
+                            for unlinked_slot in &shadow_slots[i..] {
+                                self.tombstone_slot(index_id, *unlinked_slot);
+                            }
+                            return Err(error);
+                        }
+                    } else {
+                        // The positional guard rejected this stale scan result, so its newly
+                        // appended row has no subject owner.
+                        self.tombstone_slot(index_id, shadow_slot);
                     }
                     subjects_processed += 1;
                 }

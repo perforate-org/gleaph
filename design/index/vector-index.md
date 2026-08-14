@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-08-07
-Anchor timestamp: 2026-08-07 23:39:30 UTC +0000
+Last updated: 2026-08-14
+Anchor timestamp: 2026-08-14 06:48:18 UTC +0000
 
 ## Status
 
@@ -188,6 +188,12 @@ The `VECTOR_ROW_SLAB` holds fixed-stride pages; `VECTOR_PAGE_META` is the direct
 - **vector_bytes** is 16-byte aligned for SIMD scoring.
 - Tail-only allocation, positions are write-once (never reused), so a row is validated **positionally**
   (subject map slot matches the scanned position) — no stamp/vector_id/generation per row.
+
+**Implemented failure boundary (2026-08-14 UTC):** `append_rows` prevalidates and plans every page,
+then reserves every planned page before publishing the partition head. A reservation failure leaves
+only unpublished, unreachable bytes beyond the occupied tail and never partially publishes the head.
+This is covered by `append_rows_grow_failure_leaves_consistent_state` and
+`append_rows_second_page_reserve_failure_is_atomic`.
 
 ### Headers (3-byte magic + u8 version; version 1, breaking)
 
@@ -384,6 +390,12 @@ extent compaction: tail-only allocation grows the slab, and the Slice 9/10 tombs
 bounds it (`slab ≤ live/(1 − r)` for trigger ratio `r`).
 
 Rebuild reads the vector canister's own rows (self-rebuild); the graph is never consulted.
+
+During `Building`, if the kth subject-store link fails after a partition batch append, the linked
+prefix is preserved while the current row and every unlinked suffix row are tombstoned; the original
+error is returned. Retrying from the preserved `Building` cursor skips subjects in the linked prefix
+and rebuilds the current row and suffix, so the rebuild converges without duplicate live rows. The
+regression is `rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges`.
 
 ## Growth model
 
