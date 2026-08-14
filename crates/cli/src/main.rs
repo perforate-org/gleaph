@@ -226,10 +226,6 @@ fn dispatch(
     }
 }
 
-/// Error text when no `migration`/`prepared`/`load` canister could be resolved from any layer.
-const CANISTER_REQUIRED: &str = "--canister is required; pass it, set GLEAPH_CANISTER, or add \
-`canister` to the [deployment.<network>] entry in gleaph.toml";
-
 /// One connection set with the canister required (for `migration`, `prepared`, and `load`).
 struct ResolvedRemote {
     canister: String,
@@ -254,15 +250,57 @@ fn required_remote(
         env,
         loaded,
     )?;
-    let canister = options
-        .canister
-        .ok_or_else(|| CliError::Message(CANISTER_REQUIRED.into()))?;
+    let canister = match options.canister {
+        Some(c) => c,
+        // No explicit canister: resolve the Router id from the Account canister
+        // (ADR 0068). The explicit `--canister` / GLEAPH_CANISTER / config path is
+        // preserved for backward compatibility.
+        None => resolve_router_from_account(&options, loaded)?,
+    };
     Ok(ResolvedRemote {
         canister,
         network: options.network,
         identity: options.identity,
         fetch_root_key: options.fetch_root_key,
     })
+}
+
+/// Resolve the Router canister id from the Account canister when no explicit canister is given.
+/// Reads the platform-fixed Account id from `.gleaph/data/mappings/<env>.ids.json`, then calls
+/// `Account.resolve_router` with the default router id. The resolved id is cached in
+/// `.gleaph/cache/account/<env>.router.json` and reused on subsequent runs.
+fn resolve_router_from_account(
+    options: &config::RemoteOptions,
+    loaded: Option<&LoadedConfig>,
+) -> Result<String, CliError> {
+    let loaded = loaded.ok_or_else(|| {
+        CliError::Message(
+            "no gleaph.toml; cannot resolve the Router from the Account canister".into(),
+        )
+    })?;
+    if let Some(cached) = config::read_router_cache(loaded, &options.network) {
+        return Ok(cached);
+    }
+    let mapping = config::read_mapping(loaded, &options.network)?;
+    let account_canister = mapping.get("account").ok_or_else(|| {
+        CliError::Message(
+            "no account canister in .gleaph/data/mappings; run `gleaph deploy` first".into(),
+        )
+    })?;
+    let account_principal = candid::Principal::from_text(account_canister)
+        .map_err(|e| CliError::Message(format!("invalid account canister id: {e}")))?;
+    let transport = remote::RemoteTransport::connect(
+        account_canister,
+        &options.network,
+        options.identity.as_deref(),
+        options.fetch_root_key,
+    )
+    .map_err(CliError::Message)?;
+    let router = remote::resolve_router_id(&transport, &account_principal, "default")
+        .map_err(CliError::Message)?;
+    let router_text = router.to_text();
+    config::write_router_cache(loaded, &options.network, &router_text);
+    Ok(router_text)
 }
 
 /// Merge `gleaph.toml` and `GLEAPH_*` defaults into the parsed codegen args. The manifest source
@@ -284,7 +322,10 @@ fn resolve_codegen(
         loaded,
     )?;
     if args.manifest.is_none() && args.canister.is_none() {
-        args.canister = remote.canister;
+        args.canister = match remote.canister {
+            Some(c) => Some(c),
+            None => Some(resolve_router_from_account(&remote, loaded)?),
+        };
     }
     // The graph selects the Router-side manifest source, so `--manifest` suppresses it
     // exactly like it suppresses the deployment canister (ADR 0062 §5).
@@ -707,8 +748,8 @@ mod tests {
             .expect_err("a remote command without any canister source must fail")
             .to_string();
             assert!(
-                error.contains("--canister is required"),
-                "{command} must report the required canister: {error}"
+                error.contains("cannot resolve the Router from the Account canister"),
+                "{command} must report the unresolved Router: {error}"
             );
         }
     }

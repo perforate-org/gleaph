@@ -19,6 +19,9 @@ pub const GLEAPH_DIR: &str = ".gleaph";
 /// Platform-fixed canister-id mapping directory under `.gleaph/` (committed).
 pub const MAPPINGS_DIR: &str = "data/mappings";
 
+/// Per-user Router-id cache directory under `.gleaph/` (gitignored).
+pub const ACCOUNT_CACHE_DIR: &str = "cache/account";
+
 /// Current config format version; any other value is rejected.
 pub const CONFIG_FORMAT_VERSION: u32 = 1;
 
@@ -277,6 +280,33 @@ pub fn read_mapping(
         path,
         error: format!("parse mapping: {error}"),
     })
+}
+
+/// The per-user Router-id cache file: `<config_dir>/.gleaph/cache/account/<env>.router.json`.
+pub fn router_cache_path(loaded: &LoadedConfig, environment: &str) -> PathBuf {
+    gleaph_dir(loaded)
+        .join(ACCOUNT_CACHE_DIR)
+        .join(format!("{environment}.router.json"))
+}
+
+/// Read the cached Router id for an environment, if present.
+pub fn read_router_cache(loaded: &LoadedConfig, environment: &str) -> Option<String> {
+    let path = router_cache_path(loaded, environment);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<String>(&text).ok())
+}
+
+/// Write the Router id cache for an environment, creating `.gleaph/cache/account/` as needed.
+pub fn write_router_cache(loaded: &LoadedConfig, environment: &str, router_id: &str) {
+    let path = router_cache_path(loaded, environment);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string(router_id).expect("encode router id"),
+    );
 }
 
 /// Effective network: flag > `GLEAPH_NETWORK` > `default_network` > "ic".
@@ -719,5 +749,27 @@ canister = \"config-local\"
             resolved_dir(None, None, DirKey::Migrations),
             PathBuf::from("migrations")
         );
+    }
+
+    #[test]
+    fn router_cache_round_trips_per_environment() {
+        let root = temp_root("router-cache");
+        write_config(&root, "format_version = 1\n");
+        let loaded = load_at(&root, &ConfigEnv::default())
+            .expect("config must load")
+            .expect("config must exist");
+
+        // Absent cache -> None.
+        assert_eq!(read_router_cache(&loaded, "local"), None);
+
+        // Write then read back.
+        write_router_cache(&loaded, "local", "aaaaa-aa");
+        assert_eq!(
+            read_router_cache(&loaded, "local").as_deref(),
+            Some("aaaaa-aa")
+        );
+
+        // Environments are isolated.
+        assert_eq!(read_router_cache(&loaded, "ic"), None);
     }
 }

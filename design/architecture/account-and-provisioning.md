@@ -74,7 +74,7 @@ See [ADR 0062 Amendment](../adr/0062-gleaph-toml-project-configuration.md) (plan
 - `identity` is a **name** (keyring default), delegated to icp-cli when an `icp.yaml` is present.
 - `environment` vs `network` are separated (`-e` / `-n`).
 - `.gleaph/data/mappings/<env>.ids.json` (committed, platform-fixed ids) and
-  `.gleaph/cache/<env>.router.json` (gitignored, per-user Router id).
+  `.gleaph/cache/account/<env>.router.json` (gitignored, per-user Router id).
 - `GLEAPH_CANISTER` is removed.
 
 ## Related documents
