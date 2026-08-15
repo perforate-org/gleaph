@@ -289,6 +289,7 @@ fn execute_login(args: LoginArgs) -> Result<(), CliError> {
     } else {
         auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?
     };
+    auth::save_session(&principal).map_err(CliError::Message)?;
     println!("logged in as {principal}");
     Ok(())
 }

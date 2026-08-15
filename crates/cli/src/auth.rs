@@ -5,7 +5,37 @@
 //! that principal.
 
 use ic_agent::Identity;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Session file under the user config dir: `~/.config/gleaph/session`.
+fn session_path() -> Result<PathBuf, String> {
+    let base = std::env::var_os("GLEAPH_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|p| PathBuf::from(p).join("gleaph")))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("gleaph"))
+        })
+        .ok_or("cannot determine user config directory (set HOME or GLEAPH_CONFIG_HOME)")?;
+    Ok(base.join("session"))
+}
+
+/// Persist the active session principal.
+pub fn save_session(principal: &str) -> Result<(), String> {
+    let path = session_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create config dir {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, principal).map_err(|e| format!("write session {}: {e}", path.display()))
+}
+
+/// Read the active session principal, if any.
+pub fn load_session() -> Option<String> {
+    let path = session_path().ok()?;
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_owned())
+}
 
 /// Resolve the caller's principal from a local PEM identity (no browser flow).
 ///
@@ -19,14 +49,13 @@ pub fn principal_from_pem(identity: &Path) -> Result<String, String> {
         .to_text())
 }
 
-/// The active session principal. Currently read from the explicit PEM identity; a web
-/// (icp identity link web) delegation flow is a later slice.
+/// The active session principal. Prefers an explicit PEM identity, then the saved session.
 pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
     match identity {
         Some(path) => principal_from_pem(path),
-        None => {
-            Err("no identity; pass --identity <PEM> or run `gleaph login` with an identity".into())
-        }
+        None => load_session().ok_or_else(|| {
+            "no identity; pass --identity <PEM>, run `gleaph login`, or set a session".into()
+        }),
     }
 }
 
@@ -54,4 +83,31 @@ pub fn login_with_web(name: &str, app: &str) -> Result<String, String> {
         .map_err(|e| format!("run `icp identity principal`: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout.trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_config_home() -> PathBuf {
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("gleaph-auth-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp config home");
+        dir
+    }
+
+    #[test]
+    fn session_round_trips_via_config_home() {
+        let home = temp_config_home();
+        // SAFETY: single-threaded test; no other thread reads this env var concurrently.
+        unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", &home) };
+        assert_eq!(load_session(), None);
+        save_session("aaaaa-aa").expect("save");
+        assert_eq!(load_session().as_deref(), Some("aaaaa-aa"));
+        // SAFETY: single-threaded test; cleanup after the assertion.
+        unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") };
+    }
 }
