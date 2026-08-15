@@ -1,16 +1,14 @@
 //! `gleaph deploy` — provision the user's Router and graph (ADR 0068).
 //!
-//! Slice 1 scope: register the caller's Account (if absent) and write the platform-fixed
-//! `.gleaph/data/mappings/<env>.ids.json`. Router issuance (Provision) is a later slice.
+//! Flow: register the caller's Account (if absent), authorize the first-Router issuance via
+//! Provision, then resolve and cache the Router id.
 
 use crate::config::{self, ConfigEnv, LoadedConfig};
 use crate::remote::{RemoteTransport, resolve_router_id};
 use candid::Principal;
 use std::path::Path;
 
-/// Register the caller's Account and write the platform mapping.
-///
-/// Returns the Account canister id and the caller's account id.
+/// Register the caller's Account, issue the first Router via Provision, and cache the Router id.
 pub fn deploy(
     network: &str,
     identity: Option<&Path>,
@@ -25,27 +23,52 @@ pub fn deploy(
     let account_canister = mapping.get("account").ok_or(
         "no account canister in .gleaph/data/mappings; the platform must be deployed first",
     )?;
+    let provision_canister = mapping.get("provision").ok_or(
+        "no provision canister in .gleaph/data/mappings; the platform must be deployed first",
+    )?;
 
     let transport = RemoteTransport::connect(account_canister, network, identity, fetch_root_key)?;
     let account_principal = Principal::from_text(account_canister)
         .map_err(|e| format!("invalid account canister id: {e}"))?;
+    let provision_principal = Principal::from_text(provision_canister)
+        .map_err(|e| format!("invalid provision canister id: {e}"))?;
 
-    // Register the caller's Personal account if they have none.
+    // The caller must already have a registered account; deploy does not self-register.
     let accounts: Vec<String> = transport
         .query_plain(&account_principal, "resolve_my_accounts", &())
         .map_err(|e| format!("resolve_my_accounts: {e}"))?;
-    if accounts.is_empty() {
-        let name = "default";
-        let result: Result<(), String> = transport
-            .update_on(&account_principal, "create_account", &(name.to_owned()))
-            .map_err(|e| format!("create_account: {e}"))?;
-        result.map_err(|e| format!("create_account: {e}"))?;
-        println!("registered account for this identity");
-    } else {
-        println!("account already registered");
+    let account_id = match accounts.as_slice() {
+        [] => {
+            return Err("no account registered for this identity; register an account first".into());
+        }
+        [single] => single.clone(),
+        _ => {
+            return Err(format!(
+                "multiple accounts ({}) registered; pass --account to disambiguate",
+                accounts.len()
+            ));
+        }
+    };
+
+    // Authorize the first-Router issuance via Provision (Account is the bootstrap trust subject).
+    let result: Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, String> =
+        transport
+            .update_on(
+                &account_principal,
+                "authorize_router_issuance",
+                &(
+                    account_id.clone(),
+                    "default".to_owned(),
+                    provision_principal,
+                ),
+            )
+            .map_err(|e| format!("authorize_router_issuance: {e}"))?;
+    match result {
+        Ok(_) => println!("router issuance authorized"),
+        Err(e) => return Err(format!("authorize_router_issuance: {e}")),
     }
 
-    // Resolve the Router id (may be unissued -> error for now; issuance is a later slice).
+    // Resolve the Router id and cache it.
     let router = resolve_router_id(&transport, &account_principal, "default")
         .map_err(|e| format!("resolve router: {e}"))?;
     config::write_router_cache(loaded, &environment, &router.to_text());
