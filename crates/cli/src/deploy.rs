@@ -98,5 +98,16 @@ pub fn deploy(
         .map_err(|e| format!("resolve router: {e}"))?;
     config::write_router_cache(loaded, &environment, &router.to_text());
     println!("router resolved: {}", router);
+
+    // Complete the bootstrap trust handover: the Account no longer holds issuance authority.
+    let result: Result<(), String> = transport
+        .update_on(
+            &account_principal,
+            "complete_bootstrap",
+            &(account_id.clone(), provision_principal),
+        )
+        .map_err(|e| format!("complete_bootstrap: {e}"))?;
+    result.map_err(|e| format!("complete_bootstrap: {e}"))?;
+    println!("bootstrap trust handed over to the Router");
     Ok(())
 }
