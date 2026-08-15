@@ -6,6 +6,8 @@
 use crate::stable::store::AccountStore;
 use crate::types::{Account, AccountError, Role, RouterEntry, generate_org_account_id};
 use candid::Principal;
+use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::provisioning::LogicalResource;
 
 /// Create a Personal account owned by `caller`. Rejects anonymous and an existing same-id account.
 pub(crate) fn create_account_with_caller(
@@ -173,10 +175,10 @@ async fn send_issuance_request(
     router_id: &str,
     provision_canister: Principal,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
+    use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
     use gleaph_graph_kernel::provisioning::wire::{
         ProvisionIngressResult, ProvisionRequest, ProvisionableResource,
     };
-    use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
     use ic_cdk::call::Call;
 
     let deployment_id = account_id.to_text();
@@ -186,14 +188,12 @@ async fn send_issuance_request(
         request_fingerprint: format!("{router_id}-{}", caller.to_text()),
         intent_key: ProvisioningIntentKey::new(
             &deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
+            LogicalResource::GraphShard(ShardId::new(0)),
         ),
         reserved_graph_id: None,
         graph_name: "default".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-0".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
         authorized_caller: caller,
         release_id: "default".to_owned(),
