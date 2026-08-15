@@ -2762,6 +2762,11 @@ pub struct ProvisionGraphArgs {
     pub requested_resources: Vec<ProvisionableResource>,
     pub authorized_caller: Principal,
     pub release_id: String,
+    /// Graph owner (receives `Admin` + owner role). Required so the Router can register the
+    /// provisioned graph into its catalog from `created_resources`.
+    pub owner: Principal,
+    /// Additional graph admins seeded at registration.
+    pub admins: BTreeSet<Principal>,
 }
 
 /// Router ingress response for `provision_graph`: a mirror of `ProvisionAcceptResponse`.
@@ -2817,6 +2822,8 @@ mod outbound_tests {
             requested_resources: vec![],
             authorized_caller: Principal::from_slice(&[0xAB; 29]),
             release_id: "rel-1".to_owned(),
+            owner: Principal::from_slice(&[0xAB; 29]),
+            admins: std::collections::BTreeSet::new(),
         };
         let bytes = Encode!(&args).expect("encode ProvisionGraphArgs");
         let decoded: ProvisionGraphArgs =

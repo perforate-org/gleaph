@@ -756,25 +756,114 @@ async fn provision_graph(
         })?;
 
     let install_args = build_install_args(&args);
+    let graph_name_for_request = args.graph_name.clone();
+    let requested_resources_for_request = args.requested_resources.clone();
     let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
         deployment_id,
         request_id,
-        request_fingerprint: args.request_fingerprint,
+        request_fingerprint: args.request_fingerprint.clone(),
         intent_key,
         reserved_graph_id: None,
-        graph_name: args.graph_name,
-        requested_resources: args.requested_resources,
+        graph_name: graph_name_for_request,
+        requested_resources: requested_resources_for_request,
         install_args,
         authorized_caller: args.authorized_caller,
-        release_id: args.release_id,
+        release_id: args.release_id.clone(),
         // Sender will overwrite this with ic_cdk::api::canister_self() before encoding.
         router_callback_principal: candid::Principal::anonymous(),
     };
 
-    dispatch_provision_send(request_key, outcome, store, || {
+    let response = dispatch_provision_send(request_key, outcome, store, || {
         send_accept_envelope(provision_canister, request)
     })
-    .await
+    .await?;
+
+    // Register the provisioned graph and its shards into the Router catalog from the created
+    // canisters. Only a fresh `Accepted` with created resources carries canister ids; a `Replay`
+    // returns whatever was already recorded and a `Completed` returns the acked version, neither
+    // of which triggers a new registration.
+    if let types::ProvisionGraphResponse::Accepted {
+        created_resources, ..
+    } = &response
+        && !created_resources.is_empty()
+    {
+        register_provisioned_graph(caller, &args, created_resources).await?;
+    }
+
+    Ok(response)
+}
+
+/// Register a provisioned graph and its shards into the Router catalog from the canister ids the
+/// Provision canister returned. The Router is the sole owner of logical topology; this commits
+/// the graph registry entry and each graph shard (+ its index canister) so subsequent reads and
+/// DML resolve correctly.
+async fn register_provisioned_graph(
+    caller: Principal,
+    args: &types::ProvisionGraphArgs,
+    created_resources: &[gleaph_graph_kernel::provisioning::wire::CreatedResource],
+) -> Result<(), RouterError> {
+    use gleaph_gql_ic::graph_registry::{GraphStatus, ProvisioningState};
+
+    let store = RouterStore::new();
+
+    // A property index canister may be requested without a graph shard in the same batch only if
+    // the graph already exists. For the initial graph bootstrap the graph shard is mandatory, so
+    // reject a batch that contains an index but no graph shard (the graph cannot be placed).
+    let graph_shard = created_resources
+        .iter()
+        .find(|r| matches!(r.logical_resource, LogicalResource::GraphShard(_)))
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "provisioned graph registration requires at least one GraphShard resource"
+                    .to_owned(),
+            )
+        })?;
+    let graph_canister = graph_shard.canister_id;
+
+    let entry = gleaph_gql_ic::graph_registry::GraphRegistryEntry {
+        graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(0), // store assigns
+        graph_name: args.graph_name.clone(),
+        canister_id: graph_canister,
+        owner: args.owner,
+        admins: args.admins.clone(),
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: crate::facade::store::ic_time_ns(),
+        provisioning_state: ProvisioningState::None,
+        is_home: false,
+    };
+    store
+        .admin_register_graph_with_random_key(caller, entry)
+        .await?;
+
+    // Register each created graph shard, pairing it with the index canister from the same
+    // `IndexClusterId` group when one was requested. Indexless shards (ADR 0054) pass an
+    // anonymous index target, which the registry now accepts.
+    for resource in created_resources
+        .iter()
+        .filter(|r| matches!(r.logical_resource, LogicalResource::GraphShard(_)))
+    {
+        let LogicalResource::GraphShard(shard_id) = resource.logical_resource else {
+            continue;
+        };
+        let index_canister = created_resources
+            .iter()
+            .find(|r| matches!(r.logical_resource, LogicalResource::PropertyIndex(_)))
+            .map(|r| r.canister_id)
+            .unwrap_or(Principal::anonymous());
+        store
+            .admin_register_shard(
+                caller,
+                types::AdminRegisterShardArgs {
+                    shard_id,
+                    graph_canister: resource.canister_id,
+                    index_canister,
+                    logical_graph_name: args.graph_name.clone(),
+                },
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 /// Build Candid-encoded init args for each requested resource, in `requested_resources` order.
@@ -1178,6 +1267,53 @@ mod provision_graph_tests {
                 matches!(result, ProvisionGraphResponse::Accepted { .. }),
                 "expected Accepted, got {result:?}"
             );
+        });
+    }
+
+    #[test]
+    fn register_provisioned_graph_indexless_commits_graph_and_shard() {
+        futures::executor::block_on(async {
+            use gleaph_graph_kernel::provisioning::wire::CreatedResource;
+            use std::collections::BTreeSet;
+
+            let store = crate::facade::store::RouterStore::new();
+            store.init_from_args(&crate::facade::store::tests::test_init_args());
+            let admin = Principal::from_slice(&[1; 29]);
+            crate::facade::auth::grant_admins(&[admin]);
+
+            let args = crate::types::ProvisionGraphArgs {
+                deployment_id: "dep-1".to_owned(),
+                request_fingerprint: "fp-1".to_owned(),
+                graph_name: "tenant.provisioned".to_owned(),
+                requested_resources: vec![ProvisionableResource {
+                    logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+                }],
+                authorized_caller: admin,
+                release_id: "rel-1".to_owned(),
+                owner: admin,
+                admins: BTreeSet::new(),
+            };
+            let graph_canister = Principal::from_slice(&[0x50; 29]);
+            let created = vec![CreatedResource {
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+                canister_id: graph_canister,
+                artifact_hash: "abc".to_owned(),
+            }];
+
+            super::register_provisioned_graph(admin, &args, &created)
+                .await
+                .expect("register provisioned graph");
+
+            let graph_id =
+                crate::facade::stable::graph_catalog::lookup_graph_id("tenant.provisioned")
+                    .expect("graph id");
+            assert_ne!(graph_id, gleaph_graph_kernel::entry::GraphId::from_raw(0));
+            // The graph shard is registered and indexless (anonymous index target).
+            let shard = store
+                .resolve_shard(graph_id, ShardId::new(0))
+                .expect("shard resolved");
+            assert_eq!(shard.graph_canister, graph_canister);
+            assert_eq!(shard.index_canister, Principal::anonymous());
         });
     }
 }

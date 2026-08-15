@@ -152,6 +152,8 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         }],
         authorized_caller: env.admin,
         release_id: "rel-1".to_owned(),
+        owner: env.admin,
+        admins: std::collections::BTreeSet::new(),
     };
 
     // Scenario 1: fresh admission returns Accepted.
@@ -238,6 +240,8 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         }],
         authorized_caller: env.admin,
         release_id: "rel-admin-1".to_owned(),
+        owner: env.admin,
+        admins: std::collections::BTreeSet::new(),
     };
     let admin_installed = call_provision_graph(&env, &admin_installed_args)
         .expect("outbound call for admin-installed deployment must be accepted");
@@ -272,6 +276,8 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         }],
         authorized_caller: env.admin,
         release_id: "rel-missing-1".to_owned(),
+        owner: env.admin,
+        admins: std::collections::BTreeSet::new(),
     };
     let missing_result = call_provision_graph(&env, &missing_args)
         .expect_err("outbound call for rejected deployment must still be rejected");

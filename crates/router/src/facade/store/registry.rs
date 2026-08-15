@@ -973,11 +973,9 @@ impl RouterStore {
         args: AdminRegisterShardArgs,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
-        if args.graph_canister == Principal::anonymous()
-            || args.index_canister == Principal::anonymous()
-        {
+        if args.graph_canister == Principal::anonymous() {
             return Err(RouterError::InvalidArgument(
-                "graph and index principals must be non-anonymous".into(),
+                "graph principal must be non-anonymous".into(),
             ));
         }
         validate_metadata_name(&args.logical_graph_name)?;
@@ -1059,19 +1057,32 @@ impl RouterStore {
             vector_index_attached: false,
         };
 
-        commit_index_group_canister_assignment(graph_id, allocated_shard_id, args.index_canister)?;
+        if args.index_canister != Principal::anonymous() {
+            commit_index_group_canister_assignment(
+                graph_id,
+                allocated_shard_id,
+                args.index_canister,
+            )?;
+        }
         if let Err(err) = Self::commit_register_shard(entry) {
             let _ = reconcile_index_cluster_after_shard_removal(graph_id);
             return Err(err);
         }
 
-        self.complete_shard_index_attach(
-            graph_id,
-            allocated_shard_id,
-            args.index_canister,
-            args.graph_canister,
-        )
-        .await?;
+        if args.index_canister != Principal::anonymous() {
+            self.complete_shard_index_attach(
+                graph_id,
+                allocated_shard_id,
+                args.index_canister,
+                args.graph_canister,
+            )
+            .await?;
+        } else {
+            // Indexless shard (ADR 0054): no index canister to attach, so mark the shard ready
+            // immediately. Dispatch fan-out and index reads treat a non-anonymous index target as
+            // absent, which matches an indexless first shard.
+            Self::commit_set_shard_index_attached(graph_id, allocated_shard_id, true)?;
+        }
 
         #[cfg(target_family = "wasm")]
         crate::peer_sync::sync_peers_after_shard_register(

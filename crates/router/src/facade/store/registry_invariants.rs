@@ -143,17 +143,20 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
             })?;
             let group_index = usize::try_from(key.shard_id.raw() / runtime.index_group_size)
                 .map_err(|_| format!("ROUTER_SHARDS[{key:?}] group index overflow"))?;
-            let expected_index_canister = runtime.index_cluster.get(group_index).ok_or_else(|| {
-                format!(
-                    "ROUTER_SHARDS[{key:?}] group {group_index} out of runtime index_cluster bounds {}",
-                    runtime.index_cluster.len()
-                )
-            })?;
-            if entry.index_canister != *expected_index_canister {
-                return Err(format!(
-                    "ROUTER_SHARDS[{key:?}] index_canister {:?} != runtime index_cluster[{group_index}] {:?}",
-                    entry.index_canister, expected_index_canister
-                ));
+            // An indexless shard (ADR 0054) has no index canister and no index_cluster entry.
+            if entry.index_canister != candid::Principal::anonymous() {
+                let expected_index_canister = runtime.index_cluster.get(group_index).ok_or_else(|| {
+                    format!(
+                        "ROUTER_SHARDS[{key:?}] group {group_index} out of runtime index_cluster bounds {}",
+                        runtime.index_cluster.len()
+                    )
+                })?;
+                if entry.index_canister != *expected_index_canister {
+                    return Err(format!(
+                        "ROUTER_SHARDS[{key:?}] index_canister {:?} != runtime index_cluster[{group_index}] {:?}",
+                        entry.index_canister, expected_index_canister
+                    ));
+                }
             }
 
             shards_by_graph

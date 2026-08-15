@@ -122,7 +122,7 @@ pub(super) fn validate_client_mutation_key(key: &str) -> Result<(), RouterError>
     Ok(())
 }
 
-pub(super) fn ic_time_ns() -> u64 {
+pub(crate) fn ic_time_ns() -> u64 {
     #[cfg(target_family = "wasm")]
     {
         ic_cdk::api::time()

@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-08-15 21:29:26 UTC +0000
-Anchor timestamp: 2026-08-15 21:29:26 UTC +0000
+Last revised: 2026-08-15 22:06:57 UTC +0000
+Anchor timestamp: 2026-08-15 22:06:57 UTC +0000
 
 ## Context
 
@@ -186,6 +186,19 @@ leaving the job `Reserved` (the path PocketIC admission tests exercise). The Pro
 outbound `router_ack` call remains deferred to a later slice; the Router advances to
 `RouterAckPending` only after it has durably registered the returned canisters. ADR 0037
 lifecycle (stop/delete/reconciliation) and ADR 0038 cycle reservation remain proposed.
+
+Slice 8 also wires the Router side of the created-resources handoff. `provision_graph` registers
+the provisioned graph and its shards into the Router catalog from `created_resources`:
+`ProvisionGraphArgs` gains `owner`/`admins`, the graph registry entry is committed via
+`admin_register_graph_with_random_key`, and each created Graph shard is registered via
+`admin_register_shard`. Indexless shards (ADR 0054) are now expressible: `admin_register_shard`
+accepts an anonymous index target (skipping the attach handshake and `index_cluster` entry), and
+`verify_registry_invariants_after_commit` skips cluster-membership validation for anonymous-index
+shards. `register_provisioned_graph` runs only on a fresh `Accepted` with non-empty
+`created_resources`; a `Replay`/`Completed` does not re-register. The Property Index canister from
+`created_resources` is paired with the Graph shard during registration. The `register_graph`
+provisioned-mode fold (ADR 0056 Slice B) remains a separate integration surface; this slice
+implements the seam's registration behavior.
 
 ## Cross-links
 
