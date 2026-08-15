@@ -80,31 +80,41 @@ pub fn import_from_icp(name: &str) -> Result<PathBuf, String> {
 /// Resolve a session to a PEM path for signing.
 ///
 /// - `Session::Pem` → the path directly.
-/// - `Session::IcpIdentity(name)` → `icp identity export <name>` (used when an `icp.yaml` is
-///   present, i.e. the user is an icp-cli user).
-pub fn session_pem(session: &Session) -> Result<PathBuf, String> {
+/// - `Session::IcpIdentity(name)` → if `has_icp_yaml`, `icp identity export <name>` (the user is
+///   an icp-cli user); otherwise the Gleaph store's PEM for `name`.
+pub fn session_pem(session: &Session, has_icp_yaml: bool) -> Result<PathBuf, String> {
     match session {
         Session::Pem(path) => Ok(path.clone()),
         Session::IcpIdentity(name) => {
-            let output = std::process::Command::new("icp")
-                .args(["identity", "export", name])
-                .output()
-                .map_err(|e| format!("run `icp identity export`: {e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "`icp identity export {name}` failed with status {}",
-                    output.status
-                ));
+            if has_icp_yaml {
+                let output = std::process::Command::new("icp")
+                    .args(["identity", "export", name])
+                    .output()
+                    .map_err(|e| format!("run `icp identity export`: {e}"))?;
+                if !output.status.success() {
+                    return Err(format!(
+                        "`icp identity export {name}` failed with status {}",
+                        output.status
+                    ));
+                }
+                // Write to a temp file so Secp256k1Identity can read it; the secret is not
+                // persisted beyond the call.
+                let tmp =
+                    std::env::temp_dir().join(format!("gleaph-{name}-{}.pem", std::process::id()));
+                std::fs::write(&tmp, &output.stdout)
+                    .map_err(|e| format!("write temp identity: {e}"))?;
+                Ok(tmp)
+            } else {
+                // No icp.yaml: use the Gleaph store's PEM for the named identity.
+                store_pem_path(name)
             }
-            // Write to a temp file so Secp256k1Identity can read it; the secret is not
-            // persisted beyond the call.
-            let tmp =
-                std::env::temp_dir().join(format!("gleaph-{name}-{}.pem", std::process::id()));
-            std::fs::write(&tmp, &output.stdout)
-                .map_err(|e| format!("write temp identity: {e}"))?;
-            Ok(tmp)
         }
     }
+}
+
+/// True when an `icp.yaml` exists in the project root (the user is an icp-cli user).
+pub fn has_icp_yaml(project_root: &Path) -> bool {
+    project_root.join("icp.yaml").is_file()
 }
 
 /// Resolve the caller's principal from a PEM file.
@@ -118,8 +128,8 @@ pub fn principal_from_pem(identity: &Path) -> Result<String, String> {
 }
 
 /// Resolve the caller's principal from a session.
-pub fn principal_from_session(session: &Session) -> Result<String, String> {
-    let pem = session_pem(session)?;
+pub fn principal_from_session(session: &Session, has_icp_yaml: bool) -> Result<String, String> {
+    let pem = session_pem(session, has_icp_yaml)?;
     principal_from_pem(&pem)
 }
 
@@ -150,5 +160,13 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dest).expect("read"), "dummy-pem");
         // SAFETY: single-threaded test; cleanup.
         unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") };
+    }
+
+    #[test]
+    fn has_icp_yaml_detects_project_file() {
+        let root = temp_config_home();
+        assert!(!has_icp_yaml(&root));
+        std::fs::write(root.join("icp.yaml"), "networks: []").expect("write icp.yaml");
+        assert!(has_icp_yaml(&root));
     }
 }

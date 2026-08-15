@@ -55,7 +55,8 @@ pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
                 "no identity; pass --identity <PEM>, run `gleaph login`, or set a session"
                     .to_owned()
             })?;
-            identity::principal_from_session(&session)
+            // icp.yaml presence is unknown here; default to no icp.yaml (Gleaph store).
+            identity::principal_from_session(&session, false)
         }
     }
 }
