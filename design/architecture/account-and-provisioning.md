@@ -77,6 +77,37 @@ See [ADR 0062 Amendment](../adr/0062-gleaph-toml-project-configuration.md) (plan
   `.gleaph/cache/account/<env>.router.json` (gitignored, per-user Router id).
 - `GLEAPH_CANISTER` is removed.
 
+## Authentication: `gleaph login` / `gleaph signup`
+
+Account access is gated by the caller's **principal**; the RBAC is principal-based and
+authentication-method-agnostic. Three paths converge on "resolve a principal":
+
+| Path                     | Who          | Principal origin                                      |
+| ------------------------ | ------------ | ----------------------------------------------------- |
+| Web UI login             | end user     | Internet Identity app-specific principal (`gleaph.com`) |
+| `gleaph login`           | CLI + browser| Internet Identity delegation via `icp identity link web` |
+| Local PEM/keyring        | local dev    | principal derived from a secret key                    |
+
+The web UI is served at `gleaph.com`. `/login/` hosts the sign-in entry (redirecting to Internet
+Identity / `id.ai`), and `/account/` hosts the authenticated account-management screen (profile,
+members, Routers). The principal is derived from the bare domain `gleaph.com` (no path), so
+`/login/` and `/account/` share the same principal and Account.
+
+`gleaph login` and `gleaph signup` are **separate commands**, sharing a common auth layer:
+
+- **`gleaph login`** — authentication only. Resolves the caller's principal (delegating the
+  browser/II flow to `icp identity link web`, or reading a local PEM/keyring identity) and stores
+  it as the active session. Read-only and idempotent.
+- **`gleaph signup`** — registration. Runs the login principal resolution, then calls
+  `Account.create_account` to create a Personal account for that principal. One-time; creates
+  state.
+- **`gleaph deploy`** — requires an already-registered account (no self-registration); calls
+  `Account.authorize_router_issuance` to issue the first Router.
+
+The web UI and `gleaph login` share the same II app principal, so they access the same Account.
+A local PEM identity is a different principal and maps to a different Account (or is added to an
+Org).
+
 ## Related documents
 
 - [ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md) — account model (SSOT).
