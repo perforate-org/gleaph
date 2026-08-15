@@ -225,7 +225,7 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
 
 // === Handlers ================================================================
 
-pub(crate) fn accept_envelope_with_caller(
+pub(crate) async fn accept_envelope_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
     deployment_store: &DeploymentTrustStore,
@@ -244,10 +244,15 @@ pub(crate) fn accept_envelope_with_caller(
         return Err(ProvisionIngressError::NotAuthorized);
     }
 
-    // 2. Validate requested_resources.
+    // 2. Validate requested_resources and install_args alignment.
     if req.requested_resources.is_empty() {
         return Err(ProvisionIngressError::InvalidResources {
             reason: "requested_resources is empty".to_owned(),
+        });
+    }
+    if req.install_args.len() != req.requested_resources.len() {
+        return Err(ProvisionIngressError::InvalidResources {
+            reason: "install_args length does not match requested_resources".to_owned(),
         });
     }
     let mut seen = HashSet::new();
@@ -270,27 +275,191 @@ pub(crate) fn accept_envelope_with_caller(
 
     // 3. Single store boundary: preflights locks, co-writes job + derived rows + locks,
     // and advances the fresh record to Reserved atomically.
-    let record = build_record_from_request(req, now_ns);
-    match store.insert_with_intent_locks(record, now_ns) {
+    let record = build_record_from_request(req.clone(), now_ns);
+    let outcome = match store.insert_with_intent_locks(record, now_ns) {
         Ok(crate::stable::store::InsertWithLocksOutcome::InsertedFresh(updated)) => {
-            Ok(ProvisionAcceptResponse::Accepted {
+            // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
+            //    InstallPending -> Installed for each resource, recording canister_id and
+            //    artifact_hash, then advance to RouterAckPending.
+            let created =
+                deploy_job_resources(store, &req, binding.governance_principal, now_ns).await;
+            let updated = store
+                .get_by_request_key(&ProvisionJobRequestKey::new(
+                    &req.request_id,
+                    &req.deployment_id,
+                ))
+                .unwrap_or(updated);
+            ProvisionAcceptResponse::Accepted {
                 job_view: build_job_summary(&updated),
                 intent_lock_count: store.intent_lock_count_for_record(&updated) as u32,
-            })
+                created_resources: created,
+            }
         }
         Ok(crate::stable::store::InsertWithLocksOutcome::IdempotentReplay(existing)) => {
-            Ok(ProvisionAcceptResponse::Replay {
+            // A replay of an already-admitted request returns the existing job view with
+            // whatever resources are already recorded; no new deploy is driven.
+            let created = existing
+                .resources
+                .iter()
+                .filter_map(|r| {
+                    Some(CreatedResource {
+                        logical_resource: r.logical_resource,
+                        canister_id: r.canister_id?,
+                        artifact_hash: r.artifact_hash.clone()?,
+                    })
+                })
+                .collect();
+            ProvisionAcceptResponse::Replay {
                 job_view: build_job_summary(&existing),
                 intent_lock_count: store.intent_lock_count_for_record(&existing) as u32,
-            })
+                created_resources: created,
+            }
         }
         Err(crate::stable::store::InsertWithLocksError::Conflict) => {
-            Err(ProvisionIngressError::Conflict)
+            return Err(ProvisionIngressError::Conflict);
         }
         Err(crate::stable::store::InsertWithLocksError::IntentLockHeld) => {
-            Err(ProvisionIngressError::IntentLockHeld)
+            return Err(ProvisionIngressError::IntentLockHeld);
         }
+    };
+    Ok(outcome)
+}
+
+/// Drive one job's resources through the create/install state machine. Each resource is
+/// processed in sequence: advance to `CreatePending`, call `create_canister`, record the
+/// canister id (advancing to `CanisterCreated`), advance to `InstallPending`, install the
+/// release artifact, record its hash (advancing to `Installed`). After the last resource,
+/// advance to `RouterAckPending`. Returns the created resources in `requested_resources` order.
+///
+/// A management-canister failure at any step aborts the remaining resources and leaves the job
+/// in a non-terminal state (the created prefix is preserved for reconciliation). The caller's
+/// `accept_envelope` still returns `Accepted` with whatever was created.
+async fn deploy_job_resources(
+    store: &ProvisionJobStore,
+    req: &ProvisionRequest,
+    governance_principal: Principal,
+    now_ns: u64,
+) -> Vec<CreatedResource> {
+    let mut created = Vec::with_capacity(req.requested_resources.len());
+
+    // No active release configured: abort before any remote effect, leaving the job `Reserved`.
+    // This is also the path unit tests hit (no release seeded), so the state machine stays
+    // driveable without a management call.
+    if ProvisionReleaseStore::new().get_active().is_none() {
+        return created;
     }
+
+    let key = ProvisionJobRequestKey::new(&req.request_id, &req.deployment_id);
+
+    for (index, resource) in req.requested_resources.iter().enumerate() {
+        // CanisterKind from the logical resource.
+        let kind = match resource.logical_resource {
+            LogicalResource::GraphShard(_) => CanisterKind::Graph,
+            LogicalResource::PropertyIndex(_) => CanisterKind::PropertyIndex,
+        };
+
+        // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
+        // is already Reserved).
+        let _ = store.advance_state(&key, JobState::CreatePending, Some(index), now_ns);
+
+        // create_canister with controllers [Provision, governance].
+        let canister_id = match create_canister_call(governance_principal).await {
+            Some(id) => id,
+            None => return created,
+        };
+
+        store.set_resource_canister_id(&key, index, canister_id);
+        let _ = store.advance_state(&key, JobState::CanisterCreated, Some(index), now_ns);
+
+        // Install the release artifact for this kind.
+        let _ = store.advance_state(&key, JobState::InstallPending, Some(index), now_ns);
+        let install_result = install_resource(kind, canister_id, &req.install_args[index]).await;
+        let artifact_hash = match install_result {
+            Ok(hash) => hash,
+            Err(_) => {
+                let _ = store.advance_state(
+                    &key,
+                    JobState::Failed {
+                        reason: format!("install failed for resource {index}"),
+                    },
+                    None,
+                    now_ns,
+                );
+                return created;
+            }
+        };
+
+        store.set_resource_artifact_hash(&key, index, artifact_hash.clone());
+        let _ = store.advance_state(&key, JobState::Installed, Some(index), now_ns);
+
+        created.push(CreatedResource {
+            logical_resource: resource.logical_resource,
+            canister_id,
+            artifact_hash,
+        });
+    }
+
+    // All resources installed.
+    let _ = store.advance_state(&key, JobState::RouterRegistrationPending, None, now_ns);
+    created
+}
+
+/// Install the release artifact for one resource into an already-created canister. Returns the
+/// artifact's full SHA-256 as hex on success.
+async fn install_resource(
+    kind: CanisterKind,
+    target_canister_id: Principal,
+    install_args: &[u8],
+) -> Result<String, InstallError> {
+    let release_store = ProvisionReleaseStore::new();
+    let artifact_store = ProvisionArtifactStore::new();
+
+    let active_release_id = release_store
+        .get_active()
+        .ok_or(InstallError::NoActiveRelease)?;
+    let manifest = release_store
+        .get_manifest(&active_release_id)
+        .ok_or(InstallError::NoActiveRelease)?;
+
+    let artifact_id = match kind {
+        CanisterKind::Router => &manifest.router_artifact,
+        CanisterKind::Graph => &manifest.graph_artifact,
+        CanisterKind::PropertyIndex => &manifest.property_index_artifact,
+        CanisterKind::VectorCanister => &manifest.vector_canister_artifact,
+    };
+
+    let metadata = artifact_store
+        .get_metadata(artifact_id)
+        .ok_or(InstallError::ArtifactNotFound(artifact_id.clone()))?;
+
+    let chunk_count = metadata.chunk_hashes.len() as u32;
+    let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
+    if staged.len() != chunk_count as usize {
+        return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
+    }
+    let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
+    for chunk in &staged {
+        full_bytes.extend_from_slice(&chunk.bytes);
+    }
+    if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+        return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
+    }
+
+    let mut chunk_hashes = Vec::with_capacity(chunk_count as usize);
+    for chunk in &staged {
+        let hash = install_upload_chunk(target_canister_id, chunk.bytes.clone()).await?;
+        chunk_hashes.push(hash);
+    }
+
+    install_chunked_code_call(
+        target_canister_id,
+        chunk_hashes,
+        metadata.artifact_id.sha256,
+        install_args.to_vec(),
+    )
+    .await?;
+
+    Ok(hex_string(&metadata.artifact_id.sha256))
 }
 
 pub(crate) fn query_job_with_caller(
@@ -347,7 +516,13 @@ pub(crate) fn router_ack_with_caller(
         }
     }
 
-    if !matches!(record.current_state, JobState::RouterAckPending) {
+    // The Router registers the returned canisters in its catalogs and then acks. Both the
+    // `RouterRegistrationPending` (deploy just completed, Router about to register+ack) and
+    // `RouterAckPending` (replay after an interrupted ack) states are valid ack entry points.
+    if !matches!(
+        record.current_state,
+        JobState::RouterRegistrationPending | JobState::RouterAckPending
+    ) {
         return Err(ProvisionIngressError::InvalidState);
     }
 
@@ -367,6 +542,14 @@ pub(crate) fn router_ack_with_caller(
     record.accepted_registry_version = Some(ack.accepted_registry_version);
     store.put(&key, record.clone());
 
+    // The Router registers the created canisters and then acks. A fresh deploy leaves the job in
+    // `RouterRegistrationPending`; advance through `RouterAckPending` to `Completed`. A replay of
+    // an interrupted ack arrives already in `RouterAckPending`.
+    if record.current_state == JobState::RouterRegistrationPending {
+        store
+            .advance_state(&key, JobState::RouterAckPending, None, now_ns)
+            .map_err(|_| ProvisionIngressError::StateAdvanceFailed)?;
+    }
     store
         .advance_state(&key, JobState::Completed, None, now_ns)
         .map_err(|_| ProvisionIngressError::StateAdvanceFailed)?;
@@ -1136,6 +1319,33 @@ pub(crate) fn artifact_audit_history_with_caller(
 // === Release install handler (ADR 0036 Slice 8c) ===========
 
 const MAX_INSTALL_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// Create a canister with controllers `[Provision, governance]`. Returns the new canister id.
+/// On wasm this calls the IC management canister; on native (unit tests) it synthesizes a
+/// deterministic principal so the state machine can be exercised without a management call.
+#[cfg(target_family = "wasm")]
+async fn create_canister_call(governance_principal: Principal) -> Option<Principal> {
+    use ic_cdk_management_canister::{CanisterSettings, CreateCanisterArgs, create_canister};
+    let args = CreateCanisterArgs {
+        settings: Some(CanisterSettings {
+            controllers: Some(vec![ic_cdk::api::canister_self(), governance_principal]),
+            ..CanisterSettings::default()
+        }),
+    };
+    match create_canister(&args).await {
+        Ok(id) => Some(id.canister_id),
+        Err(_e) => None,
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn create_canister_call(_governance_principal: Principal) -> Option<Principal> {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut bytes = [0u8; 29];
+    bytes[..4].copy_from_slice(&n.to_le_bytes());
+    Some(Principal::from_slice(&bytes))
+}
 
 #[cfg(target_family = "wasm")]
 async fn install_upload_chunk(

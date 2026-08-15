@@ -11,17 +11,10 @@ pub(crate) fn validate_provision_principal(p: &Option<Principal>) -> Result<(), 
     Ok(())
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct RouterInitArgs {
-    /// Installer principal; receives [`gleaph_auth::Role::Admin`] in stable auth.
-    pub issuing_principal: Principal,
-    /// Additional principals seeded as [`gleaph_auth::Role::Admin`] at init.
-    #[serde(default)]
-    pub initial_admins: Vec<Principal>,
-    /// Optional provision-canister principal for ADR 0035 Slice 5.
-    #[serde(default)]
-    pub provision_canister: Option<Principal>,
-}
+/// Shared Router init args, single-sourced in `gleaph_graph_kernel::provisioning` so the
+/// Account canister and Provision canister can construct/install a Router without depending on
+/// this crate.
+pub use gleaph_graph_kernel::provisioning::init_args::RouterInitArgs;
 
 /// Upgrade-only args for the router canister (ADR 0039).
 ///

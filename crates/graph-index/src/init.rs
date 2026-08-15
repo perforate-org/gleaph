@@ -1,12 +1,9 @@
 //! Candid-shaped init args for the index canister.
 
-use candid::{CandidType, Deserialize, Principal};
-
-#[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct IndexInitArgs {
-    /// Router canister allowed to call `admin_attach_shard_canister` / `admin_detach_shard_canister`.
-    pub router_canister: Principal,
-}
+/// Shared Property Index init args, single-sourced in `gleaph_graph_kernel::provisioning` so the
+/// Router can construct `install_args` for a Provision-issued index canister without depending on
+/// this crate.
+pub use gleaph_graph_kernel::provisioning::init_args::IndexInitArgs;
 
 #[cfg(test)]
 mod canbench_init_hex {
@@ -15,7 +12,7 @@ mod canbench_init_hex {
 
     #[test]
     fn print_index_canbench_init_hex() {
-        let admin = Principal::from_slice(&[0xAB; 29]);
+        let admin = candid::Principal::from_slice(&[0xAB; 29]);
         let bytes = Encode!(&IndexInitArgs {
             router_canister: admin,
         })

@@ -6235,6 +6235,7 @@ mod provisioning_tests {
             requested_resources: vec![ProvisionableResource {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
+            install_args: vec![vec![0u8; 0]],
             authorized_caller: Principal::from_slice(&[2; 29]),
             release_id: "rel-1".to_owned(),
             router_callback_principal: Principal::from_slice(&[3; 29]),

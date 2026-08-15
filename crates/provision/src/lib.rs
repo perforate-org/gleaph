@@ -37,8 +37,8 @@ fn post_upgrade() {
 }
 
 #[update]
-fn accept_envelope(req: ProvisionRequest) -> ProvisionIngressResult {
-    handlers::accept_envelope_handler(req)
+async fn accept_envelope(req: ProvisionRequest) -> ProvisionIngressResult {
+    handlers::accept_envelope_handler(req).await
 }
 
 #[query]

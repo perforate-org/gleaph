@@ -755,6 +755,7 @@ async fn provision_graph(
             }
         })?;
 
+    let install_args = build_install_args(&args);
     let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
         deployment_id,
         request_id,
@@ -763,6 +764,7 @@ async fn provision_graph(
         reserved_graph_id: None,
         graph_name: args.graph_name,
         requested_resources: args.requested_resources,
+        install_args,
         authorized_caller: args.authorized_caller,
         release_id: args.release_id,
         // Sender will overwrite this with ic_cdk::api::canister_self() before encoding.
@@ -773,6 +775,34 @@ async fn provision_graph(
         send_accept_envelope(provision_canister, request)
     })
     .await
+}
+
+/// Build Candid-encoded init args for each requested resource, in `requested_resources` order.
+/// The Router owns logical topology and constructs these; Provision installs them verbatim.
+fn build_install_args(args: &types::ProvisionGraphArgs) -> Vec<Vec<u8>> {
+    use candid::Encode;
+    use gleaph_graph_kernel::provisioning::init_args::{GraphInitArgs, IndexInitArgs};
+    let router_principal = ic_cdk::api::canister_self();
+    args.requested_resources
+        .iter()
+        .map(|resource| match resource.logical_resource {
+            LogicalResource::GraphShard(shard_id) => {
+                let init = GraphInitArgs {
+                    logical_graph_name: Some(args.graph_name.clone()),
+                    router_canister: Some(router_principal),
+                    shard_id: Some(shard_id),
+                    index_canister: None,
+                };
+                Encode!(&init).expect("encode GraphInitArgs")
+            }
+            LogicalResource::PropertyIndex(_) => {
+                let init = IndexInitArgs {
+                    router_canister: router_principal,
+                };
+                Encode!(&init).expect("encode IndexInitArgs")
+            }
+        })
+        .collect()
 }
 
 /// Maps a Provision outbound error to the Router ingress error returned by `provision_graph`.
@@ -796,16 +826,20 @@ fn build_provision_graph_response(
         gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Accepted {
             job_view,
             intent_lock_count,
+            created_resources,
         } => types::ProvisionGraphResponse::Accepted {
             job_view,
             intent_lock_count,
+            created_resources,
         },
         gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Replay {
             job_view,
             intent_lock_count,
+            created_resources,
         } => types::ProvisionGraphResponse::Replay {
             job_view,
             intent_lock_count,
+            created_resources,
         },
     }
 }
@@ -1134,6 +1168,7 @@ mod provision_graph_tests {
                 Ok(ProvisionAcceptResponse::Accepted {
                     job_view: job_view(),
                     intent_lock_count: 1,
+                    created_resources: vec![],
                 })
             })
             .await

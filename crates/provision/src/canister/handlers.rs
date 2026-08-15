@@ -29,11 +29,13 @@ pub fn init_handler(args: crate::canister::init::ProvisionInitArgs) {
 pub fn post_upgrade_handler() {}
 
 /// Authorize `accept_envelope` from the IC runtime and forward to the handler.
-pub fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressResult {
+pub async fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressResult {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     let deployment_store = DeploymentTrustStore::new();
-    match accept_envelope_with_caller(caller, &store, &deployment_store, req, crate::ic_time_ns()) {
+    match accept_envelope_with_caller(caller, &store, &deployment_store, req, crate::ic_time_ns())
+        .await
+    {
         Ok(v) => ProvisionIngressResult::Ok(v),
         Err(e) => ProvisionIngressResult::Err(e),
     }

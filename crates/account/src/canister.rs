@@ -175,6 +175,7 @@ async fn send_issuance_request(
     router_id: &str,
     provision_canister: Principal,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
+    use candid::Encode;
     use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
     use gleaph_graph_kernel::provisioning::wire::{
         ProvisionIngressResult, ProvisionRequest, ProvisionableResource,
@@ -182,6 +183,13 @@ async fn send_issuance_request(
     use ic_cdk::call::Call;
 
     let deployment_id = account_id.to_text();
+    // The first-Router issuance installs a Router canister; construct its init args here.
+    let router_init = gleaph_graph_kernel::provisioning::init_args::RouterInitArgs {
+        issuing_principal: caller,
+        initial_admins: vec![],
+        provision_canister: Some(provision_canister),
+    };
+    let install_args = vec![Encode!(&router_init).expect("encode RouterInitArgs")];
     let request = ProvisionRequest {
         deployment_id: deployment_id.clone(),
         request_id: format!("{router_id}-{}", caller.to_text()),
@@ -195,6 +203,7 @@ async fn send_issuance_request(
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
+        install_args,
         authorized_caller: caller,
         release_id: "default".to_owned(),
         router_callback_principal: ic_cdk::api::canister_self(),

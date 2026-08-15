@@ -48,6 +48,7 @@ fn test_request(request_id: &str, shard: u32) -> ProvisionRequest {
         reserved_graph_id: None,
         graph_name: "g1".to_owned(),
         requested_resources: vec![ProvisionableResource { logical_resource }],
+        install_args: vec![vec![0u8; 0]],
         authorized_caller: Principal::from_slice(&[0x30; 29]),
         release_id: "rel1".to_owned(),
         router_callback_principal: Principal::from_slice(&[0x40; 29]),
@@ -116,11 +117,16 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         ProvisionIngressResult::Ok(ProvisionAcceptResponse::Accepted {
             job_view,
             intent_lock_count,
+            created_resources,
         }) => {
             assert_eq!(job_view.deployment_id, "d1", "scenario 3 deployment_id");
             assert_eq!(job_view.request_id, "r1", "scenario 3 request_id");
             assert_eq!(job_view.state, "Reserved", "scenario 3 state");
             assert_eq!(intent_lock_count, 1, "scenario 3 intent_lock_count");
+            assert!(
+                created_resources.is_empty(),
+                "scenario 3: no release seeded -> no deploy"
+            );
         }
         other => panic!("scenario 3: expected Accepted fresh response, got {other:?}"),
     }

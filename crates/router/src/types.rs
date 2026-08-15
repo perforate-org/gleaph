@@ -2770,10 +2770,12 @@ pub enum ProvisionGraphResponse {
     Accepted {
         job_view: gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary,
         intent_lock_count: u32,
+        created_resources: Vec<gleaph_graph_kernel::provisioning::wire::CreatedResource>,
     },
     Replay {
         job_view: gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary,
         intent_lock_count: u32,
+        created_resources: Vec<gleaph_graph_kernel::provisioning::wire::CreatedResource>,
     },
     /// The request already reached durable `Completed` state on a prior call.
     /// Re-sending the accept envelope is not performed; the stored accepted registry
@@ -2836,6 +2838,7 @@ mod outbound_tests {
         let response = ProvisionGraphResponse::Accepted {
             job_view: summary.clone(),
             intent_lock_count: 1,
+            created_resources: vec![],
         };
         let bytes = Encode!(&response).expect("encode ProvisionGraphResponse");
         let decoded: ProvisionGraphResponse =

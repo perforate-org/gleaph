@@ -76,7 +76,8 @@ fn test_request(
         intent_key,
         reserved_graph_id: None,
         graph_name: "test-graph".to_owned(),
-        requested_resources: resources,
+        requested_resources: resources.clone(),
+        install_args: resources.iter().map(|_| vec![0u8; 0]).collect(),
         authorized_caller: pid(30),
         release_id: "r1".to_owned(),
         router_callback_principal: pid(40),
@@ -158,7 +159,13 @@ fn test_provision_accept_wrong_caller_rejected() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result = accept_envelope_with_caller(other_principal(), &store, &deployment_store, req, 1);
+    let result = block_on(accept_envelope_with_caller(
+        other_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
     assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
     assert!(store.get_by_request("req-a", "dep-a").is_none());
 }
@@ -177,7 +184,13 @@ fn test_provision_accept_unknown_deployment_rejected() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
     assert_eq!(result, Err(ProvisionIngressError::UnknownDeployment));
 }
 
@@ -191,16 +204,22 @@ fn test_provision_accept_idempotent_replay_returns_existing() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(
+    block_on(accept_envelope_with_caller(
         router_principal(),
         &store,
         &deployment_store,
         req.clone(),
         1,
-    )
+    ))
     .unwrap();
-    let replay =
-        accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 2).unwrap();
+    let replay = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+    ))
+    .unwrap();
     match replay {
         ProvisionAcceptResponse::Replay { job_view, .. } => {
             assert_eq!(job_view.request_id, "req-a");
@@ -223,15 +242,27 @@ fn test_provision_accept_conflict_different_fingerprint() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req1, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req1,
+        1,
+    ))
+    .unwrap();
     let req2 = test_request(
         "dep-a",
         "req-a",
         "fp-b",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result =
-        accept_envelope_with_caller(router_principal(), &store, &deployment_store, req2, 2);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req2,
+        2,
+    ));
     assert_eq!(result, Err(ProvisionIngressError::Conflict));
     let record = store.get_by_request("req-a", "dep-a").unwrap();
     assert_eq!(record.request_fingerprint, "fp-a");
@@ -252,7 +283,13 @@ fn test_provision_no_partial_writes_on_lock_failure() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
     assert_eq!(result, Err(ProvisionIngressError::IntentLockHeld));
 
     // No canonical record and no derived Map 2 entries remain.
@@ -267,7 +304,13 @@ fn test_provision_accept_empty_resources_rejected() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req = test_request("dep-a", "req-empty", "fp-empty", vec![]);
-    let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
     assert_eq!(
         result,
         Err(ProvisionIngressError::InvalidResources {
@@ -289,7 +332,13 @@ fn test_provision_accept_duplicate_resources_rejected() {
             test_resource(LogicalResource::GraphShard(ShardId::new(0))),
         ],
     );
-    let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
     assert!(
         matches!(
             result,
@@ -312,7 +361,14 @@ fn test_provision_query_wrong_caller_rejected() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let result = query_job_with_caller(
         other_principal(),
         &store,
@@ -333,7 +389,14 @@ fn test_provision_query_returns_redacted_view() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let view = query_job_with_caller(
         router_principal(),
         &store,
@@ -396,7 +459,14 @@ fn test_provision_router_ack_wrong_router_rejected() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let result = router_ack_with_caller(
@@ -423,7 +493,14 @@ fn test_provision_router_ack_invalid_state() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     // Record is in Reserved after accept.
     let result = router_ack_with_caller(
         router_principal(),
@@ -449,7 +526,14 @@ fn test_provision_router_ack_persists_registry_version() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let result = router_ack_with_caller(
@@ -485,7 +569,14 @@ fn test_provision_router_ack_missing_lock_returns_invalid_state() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     // Release the lock behind the store's back.
@@ -516,7 +607,14 @@ fn test_provision_router_ack_idempotent_replay() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let ack = RouterProvisionAck {
@@ -548,7 +646,14 @@ fn test_provision_router_ack_completed_replay_returns_ok() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     complete_record(&store, &key, 5, 30);
@@ -578,7 +683,14 @@ fn test_provision_router_ack_completed_version_conflict_returns_ack_conflict() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     complete_record(&store, &key, 5, 30);
@@ -609,7 +721,14 @@ fn test_provision_router_ack_state_advance_failed_returns_state_advance_failed()
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     set_force_advance_error(true);
@@ -671,17 +790,28 @@ fn test_provision_accept_envelope_fresh_admission_reports_accepted() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result =
-        accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     match result {
         ProvisionAcceptResponse::Accepted {
             job_view,
             intent_lock_count,
+            created_resources,
         } => {
             assert_eq!(job_view.request_id, "req-a");
             assert_eq!(job_view.deployment_id, "dep-a");
             assert_eq!(job_view.state, "Reserved");
             assert_eq!(intent_lock_count, 1);
+            assert!(
+                created_resources.is_empty(),
+                "no release seeded -> no deploy"
+            );
         }
         ProvisionAcceptResponse::Replay { .. } => {
             panic!("fresh admission must report Accepted, not Replay")
@@ -699,24 +829,35 @@ fn test_provision_accept_envelope_replay_reports_replay() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(
+    block_on(accept_envelope_with_caller(
         router_principal(),
         &store,
         &deployment_store,
         req.clone(),
         1,
-    )
+    ))
     .unwrap();
-    let result =
-        accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 2).unwrap();
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+    ))
+    .unwrap();
     match result {
         ProvisionAcceptResponse::Replay {
             job_view,
             intent_lock_count,
+            created_resources,
         } => {
             assert_eq!(job_view.request_id, "req-a");
             assert_eq!(job_view.state, "Reserved");
             assert_eq!(intent_lock_count, 1);
+            assert!(
+                created_resources.is_empty(),
+                "no release seeded -> no deploy"
+            );
         }
         ProvisionAcceptResponse::Accepted { .. } => {
             panic!("replay must report Replay, not Accepted")
@@ -747,16 +888,27 @@ fn test_provision_accept_envelope_allows_bootstrap_principal() {
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     // The bootstrap principal (Account) may issue the first Router.
-    let result =
-        accept_envelope_with_caller(other_principal(), &store, &deployment_store, req.clone(), 1)
-            .unwrap();
+    let result = block_on(accept_envelope_with_caller(
+        other_principal(),
+        &store,
+        &deployment_store,
+        req.clone(),
+        1,
+    ))
+    .unwrap();
     assert!(
         matches!(result, ProvisionAcceptResponse::Accepted { .. }),
         "bootstrap principal must be accepted for the first Router"
     );
     // A non-router, non-bootstrap caller is still rejected.
-    let err = accept_envelope_with_caller(gov_principal(), &store, &deployment_store, req, 2)
-        .unwrap_err();
+    let err = block_on(accept_envelope_with_caller(
+        gov_principal(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+    ))
+    .unwrap_err();
     assert_eq!(err, ProvisionIngressError::NotAuthorized);
 }
 
@@ -805,8 +957,14 @@ fn test_provision_wrong_impl_returning_failed_for_admission_would_fail() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result =
-        accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     assert!(
         matches!(result, ProvisionAcceptResponse::Accepted { .. }),
         "admission must never return a fabricated terminal result; got {:?}",
@@ -826,8 +984,14 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let _a = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req_a, 1)
-        .unwrap();
+    let _a = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req_a,
+        1,
+    ))
+    .unwrap();
 
     let key_a = ProvisionJobRequestKey::new("req-a", "dep-a");
     let intent_key =
@@ -840,8 +1004,13 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
         "fp-b",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    let result =
-        accept_envelope_with_caller(router_principal(), &store, &deployment_store, req_b, 2);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req_b,
+        2,
+    ));
     assert_eq!(result, Err(ProvisionIngressError::IntentLockHeld));
 
     // A's canonical record is unchanged.
@@ -923,8 +1092,22 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
         "fp-2",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(2)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req1, 1).unwrap();
-    accept_envelope_with_caller(other_principal(), &store, &deployment_store, req2, 2).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req1,
+        1,
+    ))
+    .unwrap();
+    block_on(accept_envelope_with_caller(
+        other_principal(),
+        &store,
+        &deployment_store,
+        req2,
+        2,
+    ))
+    .unwrap();
 
     let key1 = ProvisionJobRequestKey::new("r1", "d1");
     let key2 = ProvisionJobRequestKey::new("r1", "d2");
@@ -993,7 +1176,14 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
 
@@ -1048,7 +1238,14 @@ fn test_provision_router_ack_completed_then_retry_returns_replay() {
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let ack = RouterProvisionAck {
@@ -1847,4 +2044,77 @@ fn release_install_audit_log_survives_handler_return() {
         .unwrap();
     assert_eq!(install.outcome, crate::types::ArtifactAuditOutcome::Success);
     assert_eq!(install.target_canister, Some(target));
+}
+
+/// With an active release seeded, a fresh `accept_envelope` drives the job through create +
+/// install to `RouterAckPending` and returns a created resource with a canister id and hash.
+#[test]
+fn accept_envelope_drives_deploy_to_router_ack_pending() {
+    reset_all_maps();
+    seed_bootstrap();
+    let r = release_id("release-deploy");
+    publish_compatible_release(r.clone());
+    release_activate_with_caller(gov_principal(), ReleaseActivateArgs { release_id: r }, 200)
+        .unwrap();
+
+    let (deployment_store, store) = insert_binding_and_init("dep-a");
+    let req = test_request(
+        "dep-a",
+        "req-deploy",
+        "fp-deploy",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let resp = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
+    match resp {
+        ProvisionAcceptResponse::Accepted {
+            job_view,
+            created_resources,
+            ..
+        } => {
+            assert_eq!(
+                job_view.state, "RouterRegistrationPending",
+                "deploy must advance to RouterRegistrationPending"
+            );
+            assert_eq!(created_resources.len(), 1);
+            let created = &created_resources[0];
+            assert_eq!(
+                created.logical_resource,
+                LogicalResource::GraphShard(ShardId::new(0))
+            );
+            assert_ne!(created.canister_id, Principal::anonymous());
+            assert!(!created.artifact_hash.is_empty());
+        }
+        other => panic!("expected Accepted with created resources, got {other:?}"),
+    }
+
+    // The job record persisted the canister id and hash.
+    let record = store.get_by_request("req-deploy", "dep-a").unwrap();
+    assert_eq!(record.current_state, JobState::RouterRegistrationPending);
+    let entry = &record.resources[0];
+    assert!(entry.canister_id.is_some());
+    assert!(entry.artifact_hash.is_some());
+
+    // Router acks after registering the created canister; the ack completes the job and releases
+    // the intent locks.
+    let ack = RouterProvisionAck {
+        deployment_id: "dep-a".to_owned(),
+        request_id: "req-deploy".to_owned(),
+        accepted_registry_version: 1,
+    };
+    router_ack_with_caller(router_principal(), &store, &deployment_store, ack, 2).unwrap();
+    let record = store.get_by_request("req-deploy", "dep-a").unwrap();
+    assert_eq!(record.current_state, JobState::Completed);
+    let intent_key =
+        ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
+    assert!(
+        !store.intent_locked(&intent_key),
+        "ack must release intent locks"
+    );
 }

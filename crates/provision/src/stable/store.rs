@@ -319,6 +319,21 @@ impl ProvisionJobStore {
         });
     }
 
+    pub fn set_resource_artifact_hash(
+        &self,
+        key: &ProvisionJobRequestKey,
+        resource_index: usize,
+        artifact_hash: String,
+    ) {
+        JOB_BY_REQUEST.with_borrow_mut(|map| {
+            let mut record = map
+                .get(key)
+                .expect("set_resource_artifact_hash: record not found");
+            record.resources[resource_index].artifact_hash = Some(artifact_hash);
+            map.insert(key.clone(), record);
+        });
+    }
+
     pub fn intent_locked(&self, lock_key: &ProvisioningIntentKey) -> bool {
         INTENT_LOCK.with_borrow(|map| map.contains_key(lock_key))
     }

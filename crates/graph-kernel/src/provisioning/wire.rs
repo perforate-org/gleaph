@@ -72,6 +72,10 @@ pub struct ProvisionRequest {
     pub reserved_graph_id: Option<GraphId>,
     pub graph_name: String,
     pub requested_resources: Vec<ProvisionableResource>,
+    /// Candid-encoded init args for each requested resource, in the same order as
+    /// `requested_resources`. The Router (sole owner of logical topology) constructs these;
+    /// Provision installs them verbatim and never re-derives logical state.
+    pub install_args: Vec<Vec<u8>>,
     pub authorized_caller: Principal,
     pub release_id: String,
     pub router_callback_principal: Principal,
@@ -123,9 +127,13 @@ pub enum ProvisionAcceptResponse {
     Accepted {
         job_view: ProvisionJobSummary,
         intent_lock_count: u32,
+        /// Canister ids created/installed for this request, in `requested_resources` order.
+        /// Populated once the async deploy completes; empty for a `Reserved` (still-in-flight) response.
+        created_resources: Vec<CreatedResource>,
     },
     Replay {
         job_view: ProvisionJobSummary,
         intent_lock_count: u32,
+        created_resources: Vec<CreatedResource>,
     },
 }

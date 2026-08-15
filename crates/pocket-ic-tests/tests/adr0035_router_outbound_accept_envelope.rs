@@ -156,11 +156,12 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     // Scenario 1: fresh admission returns Accepted.
     let first = call_provision_graph(&env, &args).expect("first provision_graph accepted");
-    let (state, intent_lock_count) = match first {
+    let (state, intent_lock_count, _created_resources) = match first {
         ProvisionGraphResponse::Accepted {
             job_view: ProvisionJobSummary { state, .. },
             intent_lock_count,
-        } => (state, intent_lock_count),
+            created_resources,
+        } => (state, intent_lock_count, created_resources),
         ProvisionGraphResponse::Replay { .. } => panic!("first call must be Accepted"),
         ProvisionGraphResponse::Completed { .. } => panic!("first call must not be Completed"),
     };

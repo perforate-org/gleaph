@@ -70,6 +70,7 @@ mod tests {
                 accepted_registry_version: None,
             },
             intent_lock_count: 1,
+            created_resources: vec![],
         }
     }
 

@@ -1,8 +1,11 @@
 //! Candid-shaped types for canister `init`.
 
-use candid::{CandidType, Deserialize, Principal};
+#[cfg(feature = "pocket-ic-e2e")]
+use candid::{CandidType, Deserialize};
 
-use gleaph_graph_kernel::federation::ShardId;
+/// Shared Graph init args, single-sourced in `gleaph_graph_kernel::provisioning` so the Router
+/// can construct `install_args` for a Provision-issued Graph shard without depending on this crate.
+pub use gleaph_graph_kernel::provisioning::init_args::GraphInitArgs;
 
 /// Result of [`super::handlers::e2e_insert_vertex`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
@@ -148,22 +151,6 @@ pub struct E2eInsertUndirectedEdgeWithPropertyArgs {
 }
 
 /// Arguments supplied by the registry (or installer) on first `init`.
-#[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct GraphInitArgs {
-    pub logical_graph_name: Option<String>,
-    /// Router canister for federation (required together with `shard_id`).
-    #[serde(default)]
-    pub router_canister: Option<Principal>,
-    #[serde(default)]
-    pub shard_id: Option<ShardId>,
-    /// Index canister for install-time federation wiring.
-    ///
-    /// Canister init cannot perform inter-canister calls, so deployments pass this after the
-    /// Router registry has been configured.
-    #[serde(default)]
-    pub index_canister: Option<Principal>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -149,8 +149,13 @@ type InstallError = variant {
 // terminal `ProvisionResult` envelope so a successful first admission is never
 // reported as `Failed`.
 type ProvisionAcceptResponse = variant {
-  Replay : record { intent_lock_count : nat32; job_view : ProvisionJobSummary };
+  Replay : record {
+    created_resources : vec CreatedResource;
+    intent_lock_count : nat32;
+    job_view : ProvisionJobSummary;
+  };
   Accepted : record {
+    created_resources : vec CreatedResource;
     intent_lock_count : nat32;
     job_view : ProvisionJobSummary;
   };
@@ -205,6 +210,7 @@ type ProvisionRequest = record {
   reserved_graph_id : opt nat32;
   router_callback_principal : principal;
   release_id : text;
+  install_args : vec blob;
   graph_name : text;
   intent_key : ProvisioningIntentKey;
   deployment_id : text;
@@ -216,6 +222,11 @@ type ProvisionRouterAckResult = record {
 };
 type ProvisionableResource = record {
   logical_resource : LogicalResource;
+};
+type CreatedResource = record {
+  artifact_hash : text;
+  logical_resource : LogicalResource;
+  canister_id : principal;
 };
 // A provisionable resource within a deployment. The variant is the discriminator (it doubles
 // as the resource kind); the inner nat32 is a shared newtype (ShardId or IndexClusterId).
