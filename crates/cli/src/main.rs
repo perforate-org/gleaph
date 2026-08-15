@@ -302,7 +302,7 @@ fn dispatch(
         }
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
         TopLevelCommand::Deploy(args) => execute_deploy(args, env, loaded),
-        TopLevelCommand::Login(args) => execute_login(args),
+        TopLevelCommand::Login(args) => execute_login(args, loaded),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
         TopLevelCommand::Identity(command) => execute_identity(command),
     }
@@ -344,7 +344,8 @@ fn execute_identity(command: IdentityCommand) -> Result<(), CliError> {
 }
 
 /// `gleaph login`: resolve and store the caller's principal.
-fn execute_login(args: LoginArgs) -> Result<(), CliError> {
+fn execute_login(args: LoginArgs, loaded: Option<&LoadedConfig>) -> Result<(), CliError> {
+    let project_root = loaded.map(|l| l.path.parent().unwrap_or_else(|| std::path::Path::new(".")));
     let (principal, session) = if args.web {
         let principal = auth::login_with_web(&args.name, &args.app).map_err(CliError::Message)?;
         (principal, identity::Session::IcpIdentity(args.name.clone()))
@@ -352,7 +353,7 @@ fn execute_login(args: LoginArgs) -> Result<(), CliError> {
         let principal = identity::principal_from_pem(path).map_err(CliError::Message)?;
         (principal, identity::Session::Pem(path.to_owned()))
     } else {
-        let principal = auth::resolve_principal(None).map_err(CliError::Message)?;
+        let principal = auth::resolve_principal(None, project_root).map_err(CliError::Message)?;
         let session = auth::load_session().ok_or_else(|| {
             CliError::Message("no identity; pass --identity <PEM> or --web".into())
         })?;
@@ -371,7 +372,9 @@ fn execute_signup(
 ) -> Result<(), CliError> {
     let network =
         config::effective_network(args.network.as_deref(), env, loaded.map(|l| &l.config));
-    let principal = auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?;
+    let project_root = loaded.map(|l| l.path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+    let principal = auth::resolve_principal(args.identity.as_deref(), project_root)
+        .map_err(CliError::Message)?;
     let loaded = loaded.ok_or_else(|| {
         CliError::Message("no gleaph.toml; `gleaph signup` needs a project config".into())
     })?;

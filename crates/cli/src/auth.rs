@@ -47,7 +47,13 @@ pub fn load_session() -> Option<Session> {
 }
 
 /// The active session principal. Prefers an explicit PEM identity, then the saved session.
-pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
+///
+/// `project_root` is used to detect an `icp.yaml` (an icp-cli user), which selects how an
+/// `IcpIdentity` session resolves its signing key.
+pub fn resolve_principal(
+    identity: Option<&Path>,
+    project_root: Option<&Path>,
+) -> Result<String, String> {
     match identity {
         Some(path) => identity::principal_from_pem(path),
         None => {
@@ -55,8 +61,8 @@ pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
                 "no identity; pass --identity <PEM>, run `gleaph login`, or set a session"
                     .to_owned()
             })?;
-            // icp.yaml presence is unknown here; default to no icp.yaml (Gleaph store).
-            identity::principal_from_session(&session, false)
+            let has_icp_yaml = project_root.is_some_and(identity::has_icp_yaml);
+            identity::principal_from_session(&session, has_icp_yaml)
         }
     }
 }
