@@ -230,6 +230,39 @@ pub fn stop(network: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Report the status of a background network: whether the launcher process is alive and, if so,
+/// the gateway port.
+pub fn status(network: &str) -> Result<NetworkStatus, String> {
+    let path = pid_file(network);
+    let pid_text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(_) => return Ok(NetworkStatus::NotRunning),
+    };
+    let pid: u32 = pid_text
+        .trim()
+        .parse()
+        .map_err(|e| format!("parse pid: {e}"))?;
+    // Check whether the process is alive (signal 0 probes without sending).
+    let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+    if !alive {
+        return Ok(NetworkStatus::NotRunning);
+    }
+    // Read the gateway port from the launcher status file.
+    let status_dir = std::env::temp_dir().join(format!("gleaph-{network}-status"));
+    let status_file = status_dir.join("status.json");
+    let port = std::fs::read_to_string(&status_file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<LauncherStatus>(&text).ok())
+        .map(|s| s.gateway_port);
+    Ok(NetworkStatus::Running { pid, port })
+}
+
+/// The status of a background network.
+pub enum NetworkStatus {
+    Running { pid: u32, port: Option<u16> },
+    NotRunning,
+}
+
 /// The launcher's status file format (mirrors icp-cli).
 // ponytail: root_key is read but not yet consumed; RemoteTransport::connect fetches the root key.
 #[derive(Deserialize)]

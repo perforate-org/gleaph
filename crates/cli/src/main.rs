@@ -87,6 +87,8 @@ enum NetworkCommand {
     Start(NetworkStartArgs),
     /// Stop a background network.
     Stop(NetworkStopArgs),
+    /// Report the status of a background network.
+    Status(NetworkStopArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -394,6 +396,20 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
         NetworkCommand::Stop(args) => {
             network::stop(&args.network).map_err(CliError::Message)?;
             println!("network stopped");
+            Ok(())
+        }
+        NetworkCommand::Status(args) => {
+            match network::status(&args.network).map_err(CliError::Message)? {
+                network::NetworkStatus::Running { pid, port } => {
+                    println!("network running (pid {pid})");
+                    if let Some(port) = port {
+                        println!("gateway port: {port}");
+                    }
+                }
+                network::NetworkStatus::NotRunning => {
+                    println!("network not running");
+                }
+            }
             Ok(())
         }
     }
