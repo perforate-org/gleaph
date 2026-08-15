@@ -29,3 +29,29 @@ pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
         }
     }
 }
+
+/// Run `icp identity link web` to obtain an Internet Identity delegation, then return the
+/// principal for the linked identity.
+///
+/// The flow is interactive: `icp identity link web` prints a "Press Enter to log in" prompt,
+/// opens (or prints) a sign-in URL, and blocks until the user completes the browser flow. The
+/// principal for the resulting identity is read back with `icp identity principal --identity`.
+pub fn login_with_web(name: &str, app: &str) -> Result<String, String> {
+    // link web is interactive and long-running; it must run in the user's terminal, not
+    // captured here. Delegate to icp-cli and return the principal afterward.
+    let status = std::process::Command::new("icp")
+        .args(["identity", "link", "web", name, "--app", app])
+        .status()
+        .map_err(|e| format!("run `icp identity link web`: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "`icp identity link web` failed with status {status}"
+        ));
+    }
+    let output = std::process::Command::new("icp")
+        .args(["identity", "principal", "--identity", name])
+        .output()
+        .map_err(|e| format!("run `icp identity principal`: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.trim().to_owned())
+}

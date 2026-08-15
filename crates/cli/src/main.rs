@@ -78,6 +78,15 @@ struct LoginArgs {
     /// PEM file containing a Secp256k1 identity.
     #[arg(long, value_name = "PATH")]
     identity: Option<PathBuf>,
+    /// Sign in via a browser / Internet Identity (icp identity link web) instead of a PEM.
+    #[arg(long)]
+    web: bool,
+    /// Internet Identity app domain (bare domain, e.g. gleaph.com) for the web flow.
+    #[arg(long, default_value = "gleaph.com")]
+    app: String,
+    /// Name for the linked identity in the web flow.
+    #[arg(long, value_name = "NAME", default_value = "gleaph")]
+    name: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -275,7 +284,11 @@ fn dispatch(
 
 /// `gleaph login`: resolve and store the caller's principal.
 fn execute_login(args: LoginArgs) -> Result<(), CliError> {
-    let principal = auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?;
+    let principal = if args.web {
+        auth::login_with_web(&args.name, &args.app).map_err(CliError::Message)?
+    } else {
+        auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?
+    };
     println!("logged in as {principal}");
     Ok(())
 }
