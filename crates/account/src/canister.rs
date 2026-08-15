@@ -212,6 +212,32 @@ async fn send_issuance_request(
     }
 }
 
+/// Complete the bootstrap trust handover: ask Provision to clear `bootstrap_principal` so the
+/// Account no longer holds issuance authority. Owner/admin only. Called after the first Router
+/// is issued.
+pub(crate) async fn complete_bootstrap_with_caller(
+    caller: Principal,
+    account_id: &str,
+    provision_canister: Principal,
+    store: &AccountStore,
+) -> Result<(), AccountError> {
+    let account = store.get(account_id).ok_or(AccountError::NotFound)?;
+    if !account.is_owner_or_admin(&caller) {
+        return Err(AccountError::NotAuthorized);
+    }
+    use gleaph_graph_kernel::provisioning::wire::ProvisionIngressError;
+    use ic_cdk::call::Call;
+
+    let result: Result<(), ProvisionIngressError> =
+        Call::unbounded_wait(provision_canister, "complete_bootstrap")
+            .with_args(&(account_id.to_owned(),))
+            .await
+            .map_err(|e| AccountError::Message(format!("provision complete_bootstrap: {e}")))?
+            .candid()
+            .map_err(|e| AccountError::Message(format!("provision decode: {e}")))?;
+    result.map_err(|e| AccountError::Message(format!("provision: {e:?}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -353,6 +379,21 @@ mod tests {
         );
         // The async fn returns a future; drive it to completion. Non-owner short-circuits
         // before the cross-canister call, so this is safe off-wasm.
+        let result = futures::executor::block_on(result);
+        assert_eq!(result, Err(AccountError::NotAuthorized));
+    }
+
+    #[test]
+    fn complete_bootstrap_rejects_non_owner_before_cross_canister() {
+        memory::reset_all();
+        let store = AccountStore::new();
+        let alice = p(1);
+        let bob = p(2);
+        let org = create_org_account_with_caller(alice, "team".into(), 0, &store).unwrap();
+        let org_id = org.id();
+
+        // bob is not a member -> NotAuthorized, before any Provision call.
+        let result = crate::canister::complete_bootstrap_with_caller(bob, &org_id, p(9), &store);
         let result = futures::executor::block_on(result);
         assert_eq!(result, Err(AccountError::NotAuthorized));
     }
