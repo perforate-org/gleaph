@@ -13,7 +13,9 @@ pub mod canister;
 #[cfg(test)]
 mod candid;
 
-use crate::canister::{ProvisionIngressResult, ProvisionJobView, RouterAckResult, handlers};
+use crate::canister::{
+    ProvisionIngressError, ProvisionIngressResult, ProvisionJobView, RouterAckResult, handlers,
+};
 use crate::types::AdminInstallError;
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactAuditEntry, ArtifactError, ArtifactId,
@@ -47,6 +49,11 @@ fn query_job(request_id: String, deployment_id: String) -> Option<ProvisionJobVi
 #[update]
 fn router_ack(ack: RouterProvisionAck) -> RouterAckResult {
     handlers::router_ack_handler(ack)
+}
+
+#[update]
+fn complete_bootstrap(deployment_id: String) -> Result<(), ProvisionIngressError> {
+    handlers::complete_bootstrap_handler(deployment_id)
 }
 
 #[update]

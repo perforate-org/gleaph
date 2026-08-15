@@ -111,6 +111,35 @@ impl DeploymentTrustStore {
             Ok(())
         })
     }
+
+    /// Complete the bootstrap trust handover: clear `bootstrap_principal` so the Account no
+    /// longer holds issuance authority. Authorized by the bootstrap principal (Account) or the
+    /// governance principal. Idempotent: once cleared, any caller re-confirms as a no-op (there
+    /// is nothing left to protect).
+    pub fn complete_bootstrap(
+        &self,
+        deployment_id: &str,
+        caller: Principal,
+    ) -> Result<(), TrustUpdateError> {
+        DEPLOYMENT_TRUST.with_borrow_mut(|map| {
+            let binding = map
+                .get(&deployment_id.to_owned())
+                .ok_or(TrustUpdateError::NotFound)?;
+            // Idempotent: already cleared, nothing to do.
+            if binding.bootstrap_principal.is_none() {
+                return Ok(());
+            }
+            let is_bootstrap = binding.bootstrap_principal.is_some_and(|p| caller == p);
+            let is_governance = binding.governance_principal == caller;
+            if !is_bootstrap && !is_governance {
+                return Err(TrustUpdateError::NotAuthorized);
+            }
+            let mut binding = binding;
+            binding.bootstrap_principal = None;
+            map.insert(deployment_id.to_owned(), binding);
+            Ok(())
+        })
+    }
 }
 
 /// Durable job/receipt store (stable regions 1–3).

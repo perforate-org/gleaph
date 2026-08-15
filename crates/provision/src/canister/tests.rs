@@ -5,9 +5,9 @@ use super::{
     ProvisionResultOutcome, accept_envelope_with_caller,
     admin_install_deployment_binding_with_caller, artifact_get_status,
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    build_record_from_request, query_job_with_caller, record_to_result,
-    release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, router_ack_with_caller,
+    build_record_from_request, complete_bootstrap_with_caller, query_job_with_caller,
+    record_to_result, release_activate_with_caller, release_get_active,
+    release_install_with_caller, release_publish_with_caller, router_ack_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -829,6 +829,32 @@ fn test_provision_accept_envelope_allows_bootstrap_principal() {
     let err = accept_envelope_with_caller(gov_principal(), &store, &deployment_store, req, 2)
         .unwrap_err();
     assert_eq!(err, ProvisionIngressError::NotAuthorized);
+}
+
+#[test]
+fn test_complete_bootstrap_clears_bootstrap_principal() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![DeploymentBinding {
+            deployment_id: "dep-boot".to_owned(),
+            router_principal: router_principal(),
+            governance_principal: gov_principal(),
+            binding_version: 1,
+            bootstrap_principal: Some(other_principal()),
+        }],
+    });
+    let deployment_store = DeploymentTrustStore::new();
+
+    // The bootstrap principal (Account) can complete the handover.
+    complete_bootstrap_with_caller(other_principal(), "dep-boot", &deployment_store).unwrap();
+    let binding = deployment_store.get("dep-boot").unwrap();
+    assert_eq!(binding.bootstrap_principal, None);
+
+    // Idempotent: completing again is a no-op (already cleared).
+    complete_bootstrap_with_caller(other_principal(), "dep-boot", &deployment_store).unwrap();
+
+    // Once cleared, any caller re-confirms as a no-op (nothing left to protect).
+    complete_bootstrap_with_caller(router_principal(), "dep-boot", &deployment_store).unwrap();
 }
 
 #[test]

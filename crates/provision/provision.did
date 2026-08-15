@@ -297,9 +297,10 @@ type Result = variant { Ok : BootstrapAuthEntry; Err : AdminInstallError };
 type Result_1 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_2 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_3 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_4 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_5 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_6 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_4 = variant { Ok; Err : ProvisionIngressError };
+type Result_5 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_6 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_7 = variant { Ok : ReleaseManifest; Err : ReleaseError };
 // Candid wire Result for `router_ack`.
 type RouterAckResult = variant {
   Ok : ProvisionRouterAckResult;
@@ -319,10 +320,11 @@ service : (ProvisionInitArgs) -> {
   artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query;
   artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_2);
   artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_3);
+  complete_bootstrap : (text) -> (Result_4);
   query_job : (text, text) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_4);
+  release_activate : (ReleaseActivateArgs) -> (Result_5);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_5);
-  release_publish : (ReleasePublishArgs) -> (Result_6);
+  release_install : (ReleaseInstallArgs) -> (Result_6);
+  release_publish : (ReleasePublishArgs) -> (Result_7);
   router_ack : (RouterProvisionAck) -> (RouterAckResult);
 }

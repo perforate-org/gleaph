@@ -5,12 +5,12 @@
 //! `pub(crate)` so the 33+ unit tests and the candid export tests can drive every branch without WASM.
 
 use crate::canister::{
-    ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterAckResult,
-    accept_envelope_with_caller, admin_install_deployment_binding_with_caller,
+    ArtifactUpload, ProvisionIngressError, ProvisionIngressResult, ProvisionJobView,
+    RouterAckResult, accept_envelope_with_caller, admin_install_deployment_binding_with_caller,
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
-    artifact_upload_chunk_with_caller, query_job_with_caller, release_activate_with_caller,
-    release_get_active, release_install_with_caller, release_publish_with_caller,
-    router_ack_with_caller,
+    artifact_upload_chunk_with_caller, complete_bootstrap_with_caller, query_job_with_caller,
+    release_activate_with_caller, release_get_active, release_install_with_caller,
+    release_publish_with_caller, router_ack_with_caller,
 };
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
@@ -60,6 +60,13 @@ pub fn router_ack_handler(ack: RouterProvisionAck) -> RouterAckResult {
         Ok(v) => RouterAckResult::Ok(v),
         Err(e) => RouterAckResult::Err(e),
     }
+}
+
+/// Authorize `complete_bootstrap` from the IC runtime and forward to the handler.
+pub fn complete_bootstrap_handler(deployment_id: String) -> Result<(), ProvisionIngressError> {
+    let caller = ic_cdk::api::msg_caller();
+    let deployment_store = DeploymentTrustStore::new();
+    complete_bootstrap_with_caller(caller, &deployment_id, &deployment_store)
 }
 
 /// Authorize `admin_install_deployment_binding` from the IC runtime and forward to the handler.

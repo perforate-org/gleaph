@@ -386,6 +386,23 @@ pub(crate) fn router_ack_with_caller(
     })
 }
 
+/// Complete the bootstrap trust handover: clear `bootstrap_principal` so the Account no longer
+/// holds issuance authority. Authorized by the bootstrap principal (Account) or the governance
+/// principal. Idempotent.
+pub(crate) fn complete_bootstrap_with_caller(
+    caller: Principal,
+    deployment_id: &str,
+    deployment_store: &DeploymentTrustStore,
+) -> Result<(), ProvisionIngressError> {
+    use crate::stable::store::TrustUpdateError;
+    deployment_store
+        .complete_bootstrap(deployment_id, caller)
+        .map_err(|e| match e {
+            TrustUpdateError::NotFound => ProvisionIngressError::UnknownDeployment,
+            TrustUpdateError::NotAuthorized => ProvisionIngressError::NotAuthorized,
+        })
+}
+
 // === admin_install_deployment_binding (ADR 0035 Slice 7) =========
 
 pub(crate) fn admin_install_deployment_binding_with_caller(
