@@ -213,15 +213,35 @@ fn pid_file(network: &str) -> PathBuf {
         .join(format!("network-{network}.pid"))
 }
 
-/// Stop a background network by reading its PID file and terminating the process.
-pub fn stop(network: &str) -> Result<(), String> {
+/// Read the PID file and return the PID if the process is alive. If the file is absent, returns
+/// `Ok(None)`. If the process is dead, removes the stale PID file and returns `Ok(None)`.
+fn read_alive_pid(network: &str) -> Result<Option<u32>, String> {
     let path = pid_file(network);
-    let pid_text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read pid file {}: {e}", path.display()))?;
+    let pid_text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(_) => return Ok(None),
+    };
     let pid: u32 = pid_text
         .trim()
         .parse()
         .map_err(|e| format!("parse pid: {e}"))?;
+    // Probe the process without sending a signal (signal 0).
+    let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+    if !alive {
+        // Stale PID file: the process is gone. Clean it up.
+        let _ = std::fs::remove_file(&path);
+        return Ok(None);
+    }
+    Ok(Some(pid))
+}
+
+/// Stop a background network by reading its PID file and terminating the process.
+pub fn stop(network: &str) -> Result<(), String> {
+    let path = pid_file(network);
+    let Some(pid) = read_alive_pid(network)? else {
+        // No live process (absent or stale PID file already cleaned up).
+        return Ok(());
+    };
     // Send SIGINT (like icp-cli) so the launcher cleans up.
     unsafe {
         libc::kill(pid as i32, libc::SIGINT);
@@ -233,20 +253,9 @@ pub fn stop(network: &str) -> Result<(), String> {
 /// Report the status of a background network: whether the launcher process is alive and, if so,
 /// the gateway port.
 pub fn status(network: &str) -> Result<NetworkStatus, String> {
-    let path = pid_file(network);
-    let pid_text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(_) => return Ok(NetworkStatus::NotRunning),
-    };
-    let pid: u32 = pid_text
-        .trim()
-        .parse()
-        .map_err(|e| format!("parse pid: {e}"))?;
-    // Check whether the process is alive (signal 0 probes without sending).
-    let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
-    if !alive {
+    let Some(pid) = read_alive_pid(network)? else {
         return Ok(NetworkStatus::NotRunning);
-    }
+    };
     // Read the gateway port from the launcher status file.
     let status_dir = std::env::temp_dir().join(format!("gleaph-{network}-status"));
     let status_file = status_dir.join("status.json");
@@ -298,4 +307,47 @@ fn deploy_canister(
     transport.management_call::<()>("install_code", &install_args)?;
 
     Ok(canister_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_config_home() -> PathBuf {
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("gleaph-network-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp config home");
+        dir
+    }
+
+    #[test]
+    fn read_alive_pid_cleans_up_stale_file() {
+        let home = temp_config_home();
+        // SAFETY: single-threaded test.
+        unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", &home) };
+
+        // Absent file -> None.
+        assert_eq!(read_alive_pid("local").expect("read"), None);
+
+        // Spawn a short-lived child, wait for it to exit, then its PID is stale.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let pid = child.id();
+        child.wait().expect("wait child");
+
+        let path = pid_file("local");
+        std::fs::write(&path, pid.to_string()).expect("write pid");
+        assert_eq!(read_alive_pid("local").expect("read"), None);
+        assert!(!path.exists(), "stale pid file must be removed");
+
+        // SAFETY: single-threaded test; cleanup.
+        unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") };
+    }
 }
