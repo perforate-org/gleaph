@@ -22,6 +22,7 @@ gleaph-migration-api.workspace = true
 gleaph-prepared-api.workspace = true
 gleaph-prepared-runtime.workspace = true
 ic-agent.workspace = true
+ic-management-canister-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yml.workspace = true

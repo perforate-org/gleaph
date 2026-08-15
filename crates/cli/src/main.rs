@@ -92,6 +92,12 @@ struct NetworkStartArgs {
     /// Network name (ic/local) or an HTTP(S) endpoint URL.
     #[arg(short = 'n', long, value_name = "NETWORK", default_value = "local")]
     network: String,
+    /// Path to the Account canister wasm.
+    #[arg(long, value_name = "PATH")]
+    account_wasm: PathBuf,
+    /// Path to the Provision canister wasm.
+    #[arg(long, value_name = "PATH")]
+    provision_wasm: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -339,8 +345,14 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 .path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
-            let mapping =
-                network::start(&args.network, project_root, loaded).map_err(CliError::Message)?;
+            let mapping = network::start(
+                &args.network,
+                project_root,
+                loaded,
+                &args.account_wasm,
+                &args.provision_wasm,
+            )
+            .map_err(CliError::Message)?;
             println!("network started; platform mapping: {mapping:?}");
             Ok(())
         }

@@ -56,6 +56,26 @@ pub struct RemoteTransport {
 }
 
 impl RemoteTransport {
+    /// Call a management-canister method (e.g. `create_canister`, `install_code`) and decode the
+    /// plain response value. The management canister is `aaaaa-aa`; it returns values directly
+    /// (not wrapped in a candid `Result`), and rejections surface as IC call errors.
+    pub fn management_call<T>(&self, method: &str, args: &impl CandidType) -> Result<T, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let management = candid::Principal::from_text("aaaaa-aa")
+            .map_err(|e| format!("management canister id: {e}"))?;
+        let encoded = Encode!(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        let response = self
+            .block_on(
+                self.agent
+                    .update(&management, method)
+                    .with_arg(encoded)
+                    .call_and_wait(),
+            )
+            .map_err(|error| format!("update {method}: {error}"))?;
+        Decode!(&response, T).map_err(|error| format!("decode {method} response: {error}"))
+    }
     /// Build a transport using the same network and identity conventions as `gleaph migration`.
     pub fn connect(
         canister: &str,

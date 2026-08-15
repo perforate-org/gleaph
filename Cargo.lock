@@ -1734,6 +1734,7 @@ dependencies = [
  "gleaph-prepared-api",
  "gleaph-prepared-runtime",
  "ic-agent",
+ "ic-management-canister-types 0.7.1",
  "serde",
  "serde_json",
  "serde_yml",
