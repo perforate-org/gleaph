@@ -13,8 +13,8 @@ impl AccountStore {
         Self
     }
 
-    pub fn get(&self, account_id: &str) -> Option<Account> {
-        memory::ACCOUNTS.with_borrow(|map| map.get(&account_id.to_owned()))
+    pub fn get(&self, account_id: &Principal) -> Option<Account> {
+        memory::ACCOUNTS.with_borrow(|map| map.get(account_id))
     }
 
     /// Insert an account. Returns `AlreadyExists` if the id is taken.
@@ -27,23 +27,21 @@ impl AccountStore {
         Ok(())
     }
 
-    pub fn remove(&self, account_id: &str) -> Option<Account> {
-        memory::ACCOUNTS.with_borrow_mut(|map| map.remove(&account_id.to_owned()))
+    pub fn remove(&self, account_id: &Principal) -> Option<Account> {
+        memory::ACCOUNTS.with_borrow_mut(|map| map.remove(account_id))
     }
 
     /// Apply a membership change to an existing Org account. Returns NotFound / NotAuthorized /
     /// InvalidRole as appropriate.
     pub fn upsert_member(
         &self,
-        account_id: &str,
+        account_id: &Principal,
         caller: Principal,
         target: Principal,
         role: Role,
     ) -> Result<(), AccountError> {
         memory::ACCOUNTS.with_borrow_mut(|map| {
-            let mut account = map
-                .get(&account_id.to_owned())
-                .ok_or(AccountError::NotFound)?;
+            let mut account = map.get(account_id).ok_or(AccountError::NotFound)?;
             if !account.is_owner(&caller) {
                 return Err(AccountError::NotAuthorized);
             }
@@ -53,7 +51,7 @@ impl AccountStore {
                     members.insert(target, role);
                 }
             }
-            map.insert(account_id.to_owned(), account);
+            map.insert(*account_id, account);
             Ok(())
         })
     }
@@ -61,14 +59,12 @@ impl AccountStore {
     /// Remove a member from an existing Org account.
     pub fn remove_member(
         &self,
-        account_id: &str,
+        account_id: &Principal,
         caller: Principal,
         target: Principal,
     ) -> Result<(), AccountError> {
         memory::ACCOUNTS.with_borrow_mut(|map| {
-            let mut account = map
-                .get(&account_id.to_owned())
-                .ok_or(AccountError::NotFound)?;
+            let mut account = map.get(account_id).ok_or(AccountError::NotFound)?;
             if !account.is_owner(&caller) {
                 return Err(AccountError::NotAuthorized);
             }
@@ -78,17 +74,17 @@ impl AccountStore {
                     members.remove(&target);
                 }
             }
-            map.insert(account_id.to_owned(), account);
+            map.insert(*account_id, account);
             Ok(())
         })
     }
 
     /// List account ids whose member set contains `caller` (owner/admin/member).
-    pub fn accounts_of(&self, caller: Principal) -> Vec<String> {
+    pub fn accounts_of(&self, caller: Principal) -> Vec<Principal> {
         memory::ACCOUNTS.with_borrow(|map| {
             map.iter()
                 .filter(|entry| entry.value().is_member(&caller))
-                .map(|entry| entry.key().clone())
+                .map(|entry| *entry.key())
                 .collect()
         })
     }
@@ -97,14 +93,12 @@ impl AccountStore {
     /// `router_id` is taken.
     pub fn register_router(
         &self,
-        account_id: &str,
+        account_id: &Principal,
         caller: Principal,
         router: RouterEntry,
     ) -> Result<(), AccountError> {
         memory::ACCOUNTS.with_borrow_mut(|map| {
-            let mut account = map
-                .get(&account_id.to_owned())
-                .ok_or(AccountError::NotFound)?;
+            let mut account = map.get(account_id).ok_or(AccountError::NotFound)?;
             if !account.is_owner_or_admin(&caller) {
                 return Err(AccountError::NotAuthorized);
             }
@@ -116,7 +110,7 @@ impl AccountStore {
                 return Err(AccountError::AlreadyExists);
             }
             routers.insert(router.router_id.clone(), router);
-            map.insert(account_id.to_owned(), account);
+            map.insert(*account_id, account);
             Ok(())
         })
     }
@@ -124,14 +118,12 @@ impl AccountStore {
     /// Unregister a Router. Owner only.
     pub fn unregister_router(
         &self,
-        account_id: &str,
+        account_id: &Principal,
         caller: Principal,
         router_id: &str,
     ) -> Result<(), AccountError> {
         memory::ACCOUNTS.with_borrow_mut(|map| {
-            let mut account = map
-                .get(&account_id.to_owned())
-                .ok_or(AccountError::NotFound)?;
+            let mut account = map.get(account_id).ok_or(AccountError::NotFound)?;
             if !account.is_owner(&caller) {
                 return Err(AccountError::NotAuthorized);
             }
@@ -140,7 +132,7 @@ impl AccountStore {
                 Account::Org { routers, .. } => routers,
             };
             routers.remove(router_id);
-            map.insert(account_id.to_owned(), account);
+            map.insert(*account_id, account);
             Ok(())
         })
     }
@@ -148,7 +140,7 @@ impl AccountStore {
     /// List the account's Routers. Any member.
     pub fn list_routers(
         &self,
-        account_id: &str,
+        account_id: &Principal,
         caller: Principal,
     ) -> Result<Vec<RouterEntry>, AccountError> {
         let account = self.get(account_id).ok_or(AccountError::NotFound)?;
@@ -164,7 +156,7 @@ impl AccountStore {
     /// Resolve a Router's canister id. Any member. Returns NotFound if the Router is not issued.
     pub fn resolve_router(
         &self,
-        account_id: &str,
+        account_id: &Principal,
         caller: Principal,
         router_id: &str,
     ) -> Result<Principal, AccountError> {

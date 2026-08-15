@@ -1686,6 +1686,7 @@ dependencies = [
  "ic-stable-memory-backend",
  "ic-stable-structures",
  "serde",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
 ]
 
@@ -2038,6 +2039,7 @@ dependencies = [
  "candid",
  "cargo_metadata",
  "flate2",
+ "gleaph-account",
  "gleaph-codegen",
  "gleaph-gql",
  "gleaph-gql-ic",

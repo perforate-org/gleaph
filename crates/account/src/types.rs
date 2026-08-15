@@ -45,21 +45,22 @@ pub enum Account {
         principal: Principal,
         routers: BTreeMap<String, RouterEntry>,
     },
-    /// Multi-member account with an owner-independent generated id.
+    /// Multi-member account with an owner-independent generated id (a Reserved id, so it is
+    /// neither a canister nor a user).
     Org {
         name: String,
-        account_id: String,
+        account_id: Principal,
         members: BTreeMap<Principal, Role>,
         routers: BTreeMap<String, RouterEntry>,
     },
 }
 
 impl Account {
-    /// Canonical storage key (the `account_id`).
-    pub fn id(&self) -> String {
+    /// Canonical storage key (the `account_id`), as a Principal.
+    pub fn id(&self) -> Principal {
         match self {
-            Account::Personal { principal, .. } => principal.to_text(),
-            Account::Org { account_id, .. } => account_id.clone(),
+            Account::Personal { principal, .. } => *principal,
+            Account::Org { account_id, .. } => *account_id,
         }
     }
 
@@ -132,9 +133,17 @@ pub enum AccountError {
     Message(String),
 }
 
-/// Generate an Org `account_id`. `now_ns` is injected for deterministic tests.
-// ponytail: naive caller+time id; collisions are practically impossible. Upgrade to raw_rand
-// if ids need to be unpredictable/opaque.
-pub fn generate_org_account_id(caller: &Principal, now_ns: u64) -> String {
-    format!("org-{}-{}", caller.to_text(), now_ns)
+/// Generate an Org `account_id` as a **Reserved id** (`blob · 0x7f`), so it is neither a
+/// canister nor a user (IC interface spec, Principals). Deterministic from `caller` + `counter`
+/// for testability.
+pub fn generate_org_account_id(caller: &Principal, counter: u64) -> Principal {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(caller.as_slice());
+    hasher.update(counter.to_be_bytes());
+    let digest = hasher.finalize();
+    // Reserved id: blob (0..28 bytes) · 0x7f.
+    let mut bytes = digest[..28].to_vec();
+    bytes.push(0x7f);
+    Principal::from_slice(&bytes)
 }

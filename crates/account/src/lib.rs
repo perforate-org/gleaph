@@ -47,7 +47,7 @@ fn create_org_account(name: String) -> Result<Account, AccountError> {
 }
 
 #[query]
-fn get_account(account_id: String) -> Result<Account, AccountError> {
+fn get_account(account_id: candid::Principal) -> Result<Account, AccountError> {
     get_account_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
@@ -56,7 +56,7 @@ fn get_account(account_id: String) -> Result<Account, AccountError> {
 }
 
 #[update]
-fn delete_account(account_id: String) -> Result<(), AccountError> {
+fn delete_account(account_id: candid::Principal) -> Result<(), AccountError> {
     delete_account_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
@@ -66,7 +66,7 @@ fn delete_account(account_id: String) -> Result<(), AccountError> {
 
 #[update]
 fn add_member(
-    account_id: String,
+    account_id: candid::Principal,
     principal: candid::Principal,
     role: Role,
 ) -> Result<(), AccountError> {
@@ -80,7 +80,10 @@ fn add_member(
 }
 
 #[update]
-fn remove_member(account_id: String, principal: candid::Principal) -> Result<(), AccountError> {
+fn remove_member(
+    account_id: candid::Principal,
+    principal: candid::Principal,
+) -> Result<(), AccountError> {
     remove_member_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
@@ -90,7 +93,7 @@ fn remove_member(account_id: String, principal: candid::Principal) -> Result<(),
 }
 
 #[query]
-fn resolve_my_accounts() -> Vec<String> {
+fn resolve_my_accounts() -> Vec<candid::Principal> {
     resolve_my_accounts_with_caller(
         ic_cdk::api::msg_caller(),
         &stable::store::AccountStore::new(),
@@ -98,7 +101,7 @@ fn resolve_my_accounts() -> Vec<String> {
 }
 
 #[update]
-fn register_router(account_id: String, router: RouterEntry) -> Result<(), AccountError> {
+fn register_router(account_id: candid::Principal, router: RouterEntry) -> Result<(), AccountError> {
     register_router_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
@@ -108,7 +111,7 @@ fn register_router(account_id: String, router: RouterEntry) -> Result<(), Accoun
 }
 
 #[update]
-fn unregister_router(account_id: String, router_id: String) -> Result<(), AccountError> {
+fn unregister_router(account_id: candid::Principal, router_id: String) -> Result<(), AccountError> {
     unregister_router_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
@@ -118,7 +121,7 @@ fn unregister_router(account_id: String, router_id: String) -> Result<(), Accoun
 }
 
 #[query]
-fn list_routers(account_id: String) -> Result<Vec<RouterEntry>, AccountError> {
+fn list_routers(account_id: candid::Principal) -> Result<Vec<RouterEntry>, AccountError> {
     list_routers_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
@@ -128,7 +131,7 @@ fn list_routers(account_id: String) -> Result<Vec<RouterEntry>, AccountError> {
 
 #[query]
 fn resolve_router(
-    account_id: String,
+    account_id: candid::Principal,
     router_id: String,
 ) -> Result<candid::Principal, AccountError> {
     resolve_router_with_caller(
@@ -141,7 +144,7 @@ fn resolve_router(
 
 #[update]
 async fn authorize_router_issuance(
-    account_id: String,
+    account_id: candid::Principal,
     router_id: String,
     provision_canister: candid::Principal,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
@@ -157,7 +160,7 @@ async fn authorize_router_issuance(
 
 #[update]
 async fn complete_bootstrap(
-    account_id: String,
+    account_id: candid::Principal,
     provision_canister: candid::Principal,
 ) -> Result<(), AccountError> {
     complete_bootstrap_with_caller(

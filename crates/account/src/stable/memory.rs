@@ -1,8 +1,9 @@
 //! Account canister stable-memory wiring (ADR 0068 Slice 1).
 //!
-//! Keyed by `account_id` string (Personal principal text or Org generated id).
+//! Keyed by `account_id` as a Principal (Personal principal or Org Reserved id).
 
 use crate::types::Account;
+use candid::Principal;
 use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_structures::{
     StableBTreeMap,
@@ -14,7 +15,7 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 pub(crate) const ACCOUNT_BY_ID: MemoryId = MemoryId::new(0);
 
-pub(crate) type StableAccountById = StableBTreeMap<String, Account, Memory>;
+pub(crate) type StableAccountById = StableBTreeMap<Principal, Account, Memory>;
 
 pub(crate) fn init_account_by_id() -> StableAccountById {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(ACCOUNT_BY_ID)))

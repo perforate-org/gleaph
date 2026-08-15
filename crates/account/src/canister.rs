@@ -29,7 +29,7 @@ pub(crate) fn create_account_with_caller(
 pub(crate) fn create_org_account_with_caller(
     caller: Principal,
     name: String,
-    now_ns: u64,
+    counter: u64,
     store: &AccountStore,
 ) -> Result<Account, AccountError> {
     if caller == Principal::anonymous() {
@@ -39,7 +39,7 @@ pub(crate) fn create_org_account_with_caller(
     members.insert(caller, Role::Owner);
     let account = Account::Org {
         name,
-        account_id: generate_org_account_id(&caller, now_ns),
+        account_id: generate_org_account_id(&caller, counter),
         members,
         routers: Default::default(),
     };
@@ -50,7 +50,7 @@ pub(crate) fn create_org_account_with_caller(
 /// Read an account. Any member may read.
 pub(crate) fn get_account_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     store: &AccountStore,
 ) -> Result<Account, AccountError> {
     let account = store.get(account_id).ok_or(AccountError::NotFound)?;
@@ -63,7 +63,7 @@ pub(crate) fn get_account_with_caller(
 /// Delete an account: owner (Org) or self (Personal).
 pub(crate) fn delete_account_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     store: &AccountStore,
 ) -> Result<(), AccountError> {
     let account = store.get(account_id).ok_or(AccountError::NotFound)?;
@@ -77,7 +77,7 @@ pub(crate) fn delete_account_with_caller(
 /// Add or change a member of an Org. Owner-only.
 pub(crate) fn add_member_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     target: Principal,
     role: Role,
     store: &AccountStore,
@@ -91,7 +91,7 @@ pub(crate) fn add_member_with_caller(
 /// Remove a member of an Org. Owner-only.
 pub(crate) fn remove_member_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     target: Principal,
     store: &AccountStore,
 ) -> Result<(), AccountError> {
@@ -102,14 +102,14 @@ pub(crate) fn remove_member_with_caller(
 pub(crate) fn resolve_my_accounts_with_caller(
     caller: Principal,
     store: &AccountStore,
-) -> Vec<String> {
+) -> Vec<Principal> {
     store.accounts_of(caller)
 }
 
 /// Register a Router under an account. Owner/admin only.
 pub(crate) fn register_router_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     router: RouterEntry,
     store: &AccountStore,
 ) -> Result<(), AccountError> {
@@ -119,7 +119,7 @@ pub(crate) fn register_router_with_caller(
 /// Unregister a Router. Owner only.
 pub(crate) fn unregister_router_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     router_id: &str,
     store: &AccountStore,
 ) -> Result<(), AccountError> {
@@ -129,7 +129,7 @@ pub(crate) fn unregister_router_with_caller(
 /// List the account's Routers. Any member.
 pub(crate) fn list_routers_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     store: &AccountStore,
 ) -> Result<Vec<RouterEntry>, AccountError> {
     store.list_routers(account_id, caller)
@@ -138,7 +138,7 @@ pub(crate) fn list_routers_with_caller(
 /// Resolve a Router's canister id. Any member. NotFound if not issued.
 pub(crate) fn resolve_router_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     router_id: &str,
     store: &AccountStore,
 ) -> Result<Principal, AccountError> {
@@ -153,7 +153,7 @@ pub(crate) fn resolve_router_with_caller(
 /// itself, so the first-issuance result returns here for `register_router`.
 pub(crate) async fn authorize_router_issuance_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     router_id: &str,
     provision_canister: Principal,
     store: &AccountStore,
@@ -169,7 +169,7 @@ pub(crate) async fn authorize_router_issuance_with_caller(
 /// is unit-testable without a WASM runtime.
 async fn send_issuance_request(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     router_id: &str,
     provision_canister: Principal,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
@@ -179,12 +179,13 @@ async fn send_issuance_request(
     use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
     use ic_cdk::call::Call;
 
+    let deployment_id = account_id.to_text();
     let request = ProvisionRequest {
-        deployment_id: account_id.to_owned(),
+        deployment_id: deployment_id.clone(),
         request_id: format!("{router_id}-{}", caller.to_text()),
         request_fingerprint: format!("{router_id}-{}", caller.to_text()),
         intent_key: ProvisioningIntentKey::new(
-            account_id,
+            &deployment_id,
             ProvisionableResourceKind::GraphShard,
             "shard-0",
         ),
@@ -217,7 +218,7 @@ async fn send_issuance_request(
 /// is issued.
 pub(crate) async fn complete_bootstrap_with_caller(
     caller: Principal,
-    account_id: &str,
+    account_id: &Principal,
     provision_canister: Principal,
     store: &AccountStore,
 ) -> Result<(), AccountError> {
@@ -228,9 +229,10 @@ pub(crate) async fn complete_bootstrap_with_caller(
     use gleaph_graph_kernel::provisioning::wire::ProvisionIngressError;
     use ic_cdk::call::Call;
 
+    let deployment_id = account_id.to_text();
     let result: Result<(), ProvisionIngressError> =
         Call::unbounded_wait(provision_canister, "complete_bootstrap")
-            .with_args(&(account_id.to_owned(),))
+            .with_args(&(deployment_id,))
             .await
             .map_err(|e| AccountError::Message(format!("provision complete_bootstrap: {e}")))?
             .candid()
@@ -260,7 +262,7 @@ mod tests {
         let bob = p(2);
         let org = Account::Org {
             name: "team".into(),
-            account_id: "org-x".into(),
+            account_id: p(7),
             members: [(alice, Role::Owner), (bob, Role::Member)].into(),
             routers: Default::default(),
         };
@@ -293,7 +295,7 @@ mod tests {
             Err(AccountError::AnonymousPrincipal)
         );
         let personal = create_account_with_caller(alice, "a".into(), &store).unwrap();
-        assert_eq!(personal.id(), alice.to_text());
+        assert_eq!(personal.id(), alice);
         assert_eq!(
             create_account_with_caller(alice, "a".into(), &store),
             Err(AccountError::AlreadyExists)
@@ -311,7 +313,7 @@ mod tests {
 
         let mut mine = resolve_my_accounts_with_caller(alice, &store);
         mine.sort();
-        let mut expect = vec![alice.to_text(), org_id];
+        let mut expect = vec![alice, org_id];
         expect.sort();
         assert_eq!(mine, expect);
     }
