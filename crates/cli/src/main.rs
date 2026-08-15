@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use thiserror::Error;
 
+pub mod auth;
 pub mod config;
 pub mod deploy;
 pub mod load;
@@ -66,6 +67,33 @@ enum TopLevelCommand {
     Prepared(PreparedCommand),
     /// Provision the user's Router and graph on the target environment.
     Deploy(DeployArgs),
+    /// Resolve the caller's principal and store the active session.
+    Login(LoginArgs),
+    /// Register an Account for the caller's principal.
+    Signup(SignupArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct LoginArgs {
+    /// PEM file containing a Secp256k1 identity.
+    #[arg(long, value_name = "PATH")]
+    identity: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct SignupArgs {
+    /// Account display name.
+    #[arg(long, value_name = "NAME")]
+    name: String,
+    /// Network name (ic/local) or an HTTP(S) endpoint URL.
+    #[arg(short = 'n', long, value_name = "NETWORK")]
+    network: Option<String>,
+    /// PEM file containing a Secp256k1 identity.
+    #[arg(long, value_name = "PATH")]
+    identity: Option<PathBuf>,
+    /// Fetch the network root key before querying a custom endpoint.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    fetch_root_key: Option<bool>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -240,7 +268,53 @@ fn dispatch(
         }
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
         TopLevelCommand::Deploy(args) => execute_deploy(args, env, loaded),
+        TopLevelCommand::Login(args) => execute_login(args),
+        TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
     }
+}
+
+/// `gleaph login`: resolve and store the caller's principal.
+fn execute_login(args: LoginArgs) -> Result<(), CliError> {
+    let principal = auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?;
+    println!("logged in as {principal}");
+    Ok(())
+}
+
+/// `gleaph signup`: resolve the principal, then create a Personal account for it.
+fn execute_signup(
+    args: SignupArgs,
+    env: &ConfigEnv,
+    loaded: Option<&LoadedConfig>,
+) -> Result<(), CliError> {
+    let network =
+        config::effective_network(args.network.as_deref(), env, loaded.map(|l| &l.config));
+    let principal = auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?;
+    let loaded = loaded.ok_or_else(|| {
+        CliError::Message("no gleaph.toml; `gleaph signup` needs a project config".into())
+    })?;
+    let environment = config::effective_environment(env, &network);
+    let mapping = config::read_mapping(loaded, &environment).map_err(CliError::Config)?;
+    let account_canister = mapping.get("account").ok_or_else(|| {
+        CliError::Message(
+            "no account canister in .gleaph/data/mappings; the platform must be deployed first"
+                .into(),
+        )
+    })?;
+    let transport = remote::RemoteTransport::connect(
+        account_canister,
+        &network,
+        args.identity.as_deref(),
+        args.fetch_root_key.unwrap_or(false),
+    )
+    .map_err(CliError::Message)?;
+    let account_principal = candid::Principal::from_text(account_canister)
+        .map_err(|e| CliError::Message(format!("invalid account canister id: {e}")))?;
+    let result: Result<candid::Principal, String> = transport
+        .update_on(&account_principal, "create_account", &(args.name))
+        .map_err(|e| CliError::Message(format!("create_account: {e}")))?;
+    result.map_err(|e| CliError::Message(format!("create_account: {e}")))?;
+    println!("registered account for {principal}");
+    Ok(())
 }
 
 /// `gleaph deploy`: register the caller's Account and write the platform mapping.
