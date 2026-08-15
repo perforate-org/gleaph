@@ -13,6 +13,7 @@ pub mod deploy;
 pub mod identity;
 pub mod load;
 pub mod migration;
+pub mod network;
 pub mod prepared;
 pub mod progress;
 pub mod remote;
@@ -75,6 +76,22 @@ enum TopLevelCommand {
     /// Manage Gleaph identities.
     #[command(subcommand)]
     Identity(IdentityCommand),
+    /// Start a local IC network and deploy the platform canisters.
+    #[command(subcommand)]
+    Network(NetworkCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum NetworkCommand {
+    /// Start the local network and deploy Account/Provision, writing the mapping.
+    Start(NetworkStartArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct NetworkStartArgs {
+    /// Network name (ic/local) or an HTTP(S) endpoint URL.
+    #[arg(short = 'n', long, value_name = "NETWORK", default_value = "local")]
+    network: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -305,6 +322,28 @@ fn dispatch(
         TopLevelCommand::Login(args) => execute_login(args, loaded),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
         TopLevelCommand::Identity(command) => execute_identity(command),
+        TopLevelCommand::Network(command) => execute_network(command, loaded),
+    }
+}
+
+/// `gleaph network`: start the local network and deploy the platform canisters.
+fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Result<(), CliError> {
+    match command {
+        NetworkCommand::Start(args) => {
+            let loaded = loaded.ok_or_else(|| {
+                CliError::Message(
+                    "no gleaph.toml; `gleaph network start` needs a project config".into(),
+                )
+            })?;
+            let project_root = loaded
+                .path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let mapping =
+                network::start(&args.network, project_root, loaded).map_err(CliError::Message)?;
+            println!("network started; platform mapping: {mapping:?}");
+            Ok(())
+        }
     }
 }
 
