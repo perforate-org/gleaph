@@ -286,6 +286,30 @@ pub fn read_mapping(
     })
 }
 
+/// Write the platform-fixed canister ids for an environment to
+/// `.gleaph/data/mappings/<env>.ids.json`, creating the directory as needed.
+pub fn write_mapping(
+    loaded: &LoadedConfig,
+    environment: &str,
+    mapping: &BTreeMap<String, String>,
+) -> Result<(), ConfigError> {
+    let path = mapping_path(loaded, environment);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| ConfigError::Read {
+            path: parent.to_owned(),
+            error: format!("create mapping dir: {error}"),
+        })?;
+    }
+    let text = serde_json::to_string_pretty(mapping).map_err(|error| ConfigError::Read {
+        path: path.clone(),
+        error: format!("encode mapping: {error}"),
+    })?;
+    std::fs::write(&path, text).map_err(|error| ConfigError::Read {
+        path,
+        error: format!("write mapping: {error}"),
+    })
+}
+
 /// The per-user Router-id cache file: `<config_dir>/.gleaph/cache/account/<env>.router.json`.
 pub fn router_cache_path(loaded: &LoadedConfig, environment: &str) -> PathBuf {
     gleaph_dir(loaded)
@@ -325,7 +349,9 @@ pub fn effective_network(flag: Option<&str>, env: &ConfigEnv, config: Option<&Co
 /// `.gleaph/data/mappings/<env>.ids.json` and `.gleaph/cache/account/<env>.router.json` files.
 /// It defaults to the network name so a single-network project needs no extra config.
 pub fn effective_environment(env: &ConfigEnv, network: &str) -> String {
-    env.environment.clone().unwrap_or_else(|| network.to_owned())
+    env.environment
+        .clone()
+        .unwrap_or_else(|| network.to_owned())
 }
 
 /// One resolved connection field set. `canister` stays optional until the caller requires it
@@ -797,5 +823,27 @@ canister = \"config-local\"
 
         // Environments are isolated.
         assert_eq!(read_router_cache(&loaded, "ic"), None);
+    }
+
+    #[test]
+    fn mapping_round_trips_per_environment() {
+        let root = temp_root("mapping");
+        write_config(&root, "format_version = 1\n");
+        let loaded = load_at(&root, &ConfigEnv::default())
+            .expect("config must load")
+            .expect("config must exist");
+
+        // Absent mapping -> empty.
+        assert!(read_mapping(&loaded, "local").expect("read").is_empty());
+
+        // Write then read back.
+        let mut mapping = BTreeMap::new();
+        mapping.insert("account".to_owned(), "aaaaa-aa".to_owned());
+        mapping.insert("provision".to_owned(), "bbbbb-bb".to_owned());
+        write_mapping(&loaded, "local", &mapping).expect("write");
+        assert_eq!(read_mapping(&loaded, "local").expect("read"), mapping);
+
+        // Environments are isolated.
+        assert!(read_mapping(&loaded, "ic").expect("read").is_empty());
     }
 }
