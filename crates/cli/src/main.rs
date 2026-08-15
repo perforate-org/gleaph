@@ -72,6 +72,30 @@ enum TopLevelCommand {
     Login(LoginArgs),
     /// Register an Account for the caller's principal.
     Signup(SignupArgs),
+    /// Manage Gleaph identities.
+    #[command(subcommand)]
+    Identity(IdentityCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum IdentityCommand {
+    /// Import a PEM file (or an icp-cli identity) into the Gleaph identity store.
+    Import(IdentityImportArgs),
+    /// List identities in the Gleaph store.
+    List,
+}
+
+#[derive(Debug, clap::Args)]
+struct IdentityImportArgs {
+    /// Name for the imported identity.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// PEM file to import.
+    #[arg(long, value_name = "PATH", conflicts_with = "from_icp")]
+    pem: Option<PathBuf>,
+    /// Import an icp-cli identity by name (via `icp identity export`).
+    #[arg(long, value_name = "NAME", conflicts_with = "pem")]
+    from_icp: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -280,6 +304,42 @@ fn dispatch(
         TopLevelCommand::Deploy(args) => execute_deploy(args, env, loaded),
         TopLevelCommand::Login(args) => execute_login(args),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
+        TopLevelCommand::Identity(command) => execute_identity(command),
+    }
+}
+
+/// `gleaph identity`: manage Gleaph identities.
+fn execute_identity(command: IdentityCommand) -> Result<(), CliError> {
+    match command {
+        IdentityCommand::Import(args) => {
+            let dest = if let Some(pem) = args.pem {
+                identity::import(&args.name, &pem).map_err(CliError::Message)?
+            } else if let Some(icp_name) = args.from_icp {
+                identity::import_from_icp(&icp_name).map_err(CliError::Message)?
+            } else {
+                return Err(CliError::Message(
+                    "identity import requires --pem <PATH> or --from-icp <NAME>".into(),
+                ));
+            };
+            println!("imported {} -> {}", args.name, dest.display());
+            Ok(())
+        }
+        IdentityCommand::List => {
+            let root = identity::store_root().map_err(CliError::Message)?;
+            let keys = root.join("keys");
+            let mut names: Vec<String> = std::fs::read_dir(&keys)
+                .map_err(|e| CliError::Message(format!("read identity store: {e}")))?
+                .filter_map(|entry| {
+                    let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+                    name.strip_suffix(".pem").map(str::to_owned)
+                })
+                .collect();
+            names.sort();
+            for name in names {
+                println!("{name}");
+            }
+            Ok(())
+        }
     }
 }
 

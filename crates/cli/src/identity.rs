@@ -28,7 +28,7 @@ impl Session {
 }
 
 /// Gleaph identity store root: `~/.config/gleaph/identity`.
-fn store_root() -> Result<PathBuf, String> {
+pub fn store_root() -> Result<PathBuf, String> {
     let base = std::env::var_os("GLEAPH_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|p| PathBuf::from(p).join("gleaph")))
@@ -121,4 +121,34 @@ pub fn principal_from_pem(identity: &Path) -> Result<String, String> {
 pub fn principal_from_session(session: &Session) -> Result<String, String> {
     let pem = session_pem(session)?;
     principal_from_pem(&pem)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_config_home() -> PathBuf {
+        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("gleaph-identity-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp config home");
+        dir
+    }
+
+    #[test]
+    fn import_copies_pem_into_store() {
+        let home = temp_config_home();
+        // SAFETY: single-threaded test.
+        unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", &home) };
+        let src = home.join("src.pem");
+        std::fs::write(&src, "dummy-pem").expect("write source");
+        let dest = import("alice", &src).expect("import");
+        assert_eq!(dest, store_pem_path("alice").expect("path"));
+        assert_eq!(std::fs::read_to_string(&dest).expect("read"), "dummy-pem");
+        // SAFETY: single-threaded test; cleanup.
+        unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") };
+    }
 }
