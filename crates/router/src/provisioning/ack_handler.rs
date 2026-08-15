@@ -56,8 +56,9 @@ fn map_ack_commit_error(err: AckCommitError) -> RouterError {
 mod tests {
     use super::*;
     use candid::Principal;
+    use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::provisioning::wire::RouterProvisionAck;
-    use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+    use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentKey};
 
     use crate::facade::store::RouterStore;
     use crate::facade::store::provisioning::RouterProvisioningRequestStore;
@@ -92,8 +93,7 @@ mod tests {
             graph_name: "g".to_owned(),
             reserved_graph_id: None,
             requested_resources: vec![ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "shard-0".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
             state: RouterProvisioningRequestState::AwaitingAck,
             provision_receipt: None,
@@ -189,8 +189,7 @@ mod tests {
             !store.intent_locked(
                 &ProvisioningIntentKey::new(
                     deployment_id,
-                    ProvisionableResourceKind::GraphShard,
-                    "shard-0"
+                    LogicalResource::GraphShard(ShardId::new(0)),
                 ),
                 &owner,
             ),

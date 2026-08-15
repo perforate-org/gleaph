@@ -15,7 +15,7 @@ pub use gleaph_graph_kernel::provisioning::wire::{
     CreatedResource, ProvisionAcceptResponse, ProvisionRequest, ProvisionResult,
     ProvisionResultOutcome, ProvisionableResource, RouterProvisionAck,
 };
-pub use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentKey};
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
     VectorMaintenanceStepResult, VectorMetric, VectorPartitionPageHealth, VectorRebuildStatus,

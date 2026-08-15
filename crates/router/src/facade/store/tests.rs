@@ -5984,13 +5984,14 @@ mod provisioning_tests {
     use crate::facade::store::RouterStore;
     use crate::init::RouterInitArgs;
     use crate::types::{
-        CreatedResource, IntentLockOwner, ProvisionRequest, ProvisionResult,
-        ProvisionResultOutcome, ProvisionableResource, ProvisionableResourceKind,
-        ProvisioningIntentKey, ProvisioningRequestKey, RouterProvisionAck,
-        RouterProvisioningRequest, RouterProvisioningRequestState,
+        CreatedResource, IntentLockOwner, LogicalResource, ProvisionRequest, ProvisionResult,
+        ProvisionResultOutcome, ProvisionableResource, ProvisioningIntentKey,
+        ProvisioningRequestKey, RouterProvisionAck, RouterProvisioningRequest,
+        RouterProvisioningRequestState,
     };
     use candid::{Decode, Encode, Principal};
     use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::{IndexClusterId, ShardId};
     use ic_stable_structures::Storable;
 
     fn store() -> RouterProvisioningRequestStore {
@@ -6012,8 +6013,7 @@ mod provisioning_tests {
             graph_name: "tenant.main".to_owned(),
             reserved_graph_id: Some(GraphId::from_raw(7)),
             requested_resources: vec![ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "shard-0".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
             state: RouterProvisioningRequestState::Pending,
             provision_receipt: None,
@@ -6053,8 +6053,7 @@ mod provisioning_tests {
         second_req.graph_name = "mutated.graph".to_owned();
         second_req.reserved_graph_id = Some(GraphId::from_raw(99));
         second_req.requested_resources = vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::PropertyIndex,
-            logical_resource_key: "mutated".to_owned(),
+            logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         }];
         let second = s.insert("deploy-a", second_req).expect("second");
         assert_eq!(second, InsertionOutcome::Existing(first_record.clone()));
@@ -6087,11 +6086,8 @@ mod provisioning_tests {
         let listed = s.list_by_graph("deploy-a", "graph-conflict");
         assert_eq!(listed, vec![req1.clone()]);
         // The first request's intent lock must remain held.
-        let intent_key = ProvisioningIntentKey::new(
-            "deploy-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         assert!(s.intent_locked(&intent_key, &owner("req-1", "deploy-a", "fp-1")));
     }
 
@@ -6100,10 +6096,12 @@ mod provisioning_tests {
         let s = store();
         let mut req_a = sample_request("req-a", "fp-a");
         req_a.graph_name = "graph-a".to_owned();
-        req_a.requested_resources[0].logical_resource_key = "res-a".to_owned();
+        req_a.requested_resources[0].logical_resource =
+            LogicalResource::GraphShard(ShardId::new(0));
         let mut req_b = sample_request("req-b", "fp-b");
         req_b.graph_name = "graph-b".to_owned();
-        req_b.requested_resources[0].logical_resource_key = "res-b".to_owned();
+        req_b.requested_resources[0].logical_resource =
+            LogicalResource::GraphShard(ShardId::new(1));
         s.insert("deploy-a", req_a.clone()).expect("insert a");
         s.insert("deploy-a", req_b.clone()).expect("insert b");
         let listed = s.list_by_graph("deploy-a", "graph-a");
@@ -6115,11 +6113,8 @@ mod provisioning_tests {
     fn intent_lock_acquire() {
         let s = store();
         let req = sample_request("req-1", "fp-1");
-        let key = ProvisioningIntentKey::new(
-            "deploy-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let key =
+            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         assert!(!s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
         s.insert("deploy-a", req).expect("insert");
         assert!(s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
@@ -6129,11 +6124,8 @@ mod provisioning_tests {
     fn intent_lock_release() {
         let s = store();
         let req = sample_request("req-1", "fp-1");
-        let key = ProvisioningIntentKey::new(
-            "deploy-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let key =
+            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         s.insert("deploy-a", req).expect("insert");
         assert!(s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
         s.clear_request(&ProvisioningRequestKey::new("req-1", "deploy-a"))
@@ -6147,16 +6139,12 @@ mod provisioning_tests {
         let mut req_a = sample_request("req-a", "fp-a");
         req_a.graph_name = "graph-x".to_owned();
         s.insert("deploy-a", req_a.clone()).expect("insert a");
-        let intent_key = ProvisioningIntentKey::new(
-            "deploy-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         let mut req_b = sample_request("req-b", "fp-b");
         req_b.graph_name = "graph-x".to_owned();
         req_b.requested_resources = vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-0".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }];
         let err = s
             .insert("deploy-a", req_b.clone())
@@ -6185,24 +6173,18 @@ mod provisioning_tests {
         let mut req = sample_request("req-m", "fp-m");
         req.requested_resources = vec![
             ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "shard-0".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             },
             ProvisionableResource {
-                kind: ProvisionableResourceKind::PropertyIndex,
-                logical_resource_key: "idx-0".to_owned(),
+                logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(0)),
             },
         ];
         s.insert("deploy-a", req.clone()).expect("insert");
-        let key1 = ProvisioningIntentKey::new(
-            "deploy-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let key1 =
+            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         let key2 = ProvisioningIntentKey::new(
             "deploy-a",
-            ProvisionableResourceKind::PropertyIndex,
-            "idx-0",
+            LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         );
         assert!(s.intent_locked(&key1, &owner("req-m", "deploy-a", "fp-m")));
         assert!(s.intent_locked(&key2, &owner("req-m", "deploy-a", "fp-m")));
@@ -6218,12 +6200,10 @@ mod provisioning_tests {
         let mut req = sample_request("req-d", "fp-d");
         req.requested_resources = vec![
             ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "same".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             },
             ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "same".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             },
         ];
         let err = s
@@ -6236,7 +6216,7 @@ mod provisioning_tests {
         );
         assert!(s.list_by_graph("deploy-a", "tenant.main").is_empty());
         let key =
-            ProvisioningIntentKey::new("deploy-a", ProvisionableResourceKind::GraphShard, "same");
+            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         assert!(!s.intent_locked(&key, &owner("req-d", "deploy-a", "fp-d")));
     }
 
@@ -6248,14 +6228,12 @@ mod provisioning_tests {
             request_fingerprint: "fp-1".to_owned(),
             intent_key: ProvisioningIntentKey::new(
                 "deploy-a",
-                ProvisionableResourceKind::GraphShard,
-                "shard-0",
+                LogicalResource::GraphShard(ShardId::new(0)),
             ),
             reserved_graph_id: Some(GraphId::from_raw(7)),
             graph_name: "tenant.main".to_owned(),
             requested_resources: vec![ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "shard-0".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
             authorized_caller: Principal::from_slice(&[2; 29]),
             release_id: "rel-1".to_owned(),
@@ -6273,7 +6251,7 @@ mod provisioning_tests {
             request_fingerprint: "fp-1".to_owned(),
             release_id: "rel-1".to_owned(),
             created_resources: vec![CreatedResource {
-                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
                 canister_id: Principal::from_slice(&[4; 29]),
                 artifact_hash: "deadbeef".to_owned(),
             }],
@@ -6315,7 +6293,8 @@ mod provisioning_tests {
         // Normal request in the same graph.
         let mut req_normal = sample_request("normal-req", "fp-normal");
         req_normal.graph_name = "graph-sentinel".to_owned();
-        req_normal.requested_resources[0].logical_resource_key = "shard-normal".to_owned();
+        req_normal.requested_resources[0].logical_resource =
+            LogicalResource::GraphShard(ShardId::new(1));
         s.insert("deploy-sentinel", req_normal.clone())
             .expect("insert normal");
         // Same request_id in a different deployment must not leak into the result.
@@ -6326,7 +6305,8 @@ mod provisioning_tests {
         // Same request_id in a neighboring graph under the same deployment must not leak.
         let mut req_other_graph = sample_request("\u{10ffff}z", "fp-graph");
         req_other_graph.graph_name = "graph-sentinelz".to_owned();
-        req_other_graph.requested_resources[0].logical_resource_key = "shard-neighbor".to_owned();
+        req_other_graph.requested_resources[0].logical_resource =
+            LogicalResource::GraphShard(ShardId::new(2));
         s.insert("deploy-sentinel", req_other_graph)
             .expect("insert other graph");
         let listed = s.list_by_graph("deploy-sentinel", "graph-sentinel");
@@ -6365,11 +6345,8 @@ mod provisioning_tests {
         assert_eq!(record.state, RouterProvisioningRequestState::Completed);
         assert_eq!(record.accepted_registry_version, Some(7));
 
-        let intent_key = ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
         assert!(
             !s.intent_locked(&intent_key, &owner(request_id, deployment_id, "fp-await")),
             "intent lock released after Completed"
@@ -6454,11 +6431,8 @@ mod provisioning_tests {
         s.insert(deployment_id, req).expect("insert awaiting");
 
         // Manually release the intent lock to simulate corruption.
-        let intent_key = ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.remove(&intent_key);
         });
@@ -6488,11 +6462,8 @@ mod provisioning_tests {
         s.insert(deployment_id, req).expect("insert awaiting");
 
         // Replace the rightful owner with an impostor that holds the same resource.
-        let intent_key = ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
         let impostor = IntentLockOwner::new(
             ProvisioningRequestKey::new("other-request", deployment_id),
             "other-fp".to_owned(),
@@ -6528,11 +6499,8 @@ mod provisioning_tests {
         // A foreign request holds the same resource. This can only happen in a corrupt
         // scenario because `insert` preflight rejects conflicting locks; we force it to
         // test that release is owner-scoped.
-        let intent_key = ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
         let foreign = IntentLockOwner::new(
             ProvisioningRequestKey::new("foreign-request", deployment_id),
             "foreign-fp".to_owned(),
@@ -6605,11 +6573,8 @@ mod provisioning_tests {
         s.rollback_if_inserted_and_awaiting(&key, &outcome);
         assert!(s.get_by_request_id(&key).is_none());
 
-        let intent_key = ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
         assert!(
             !s.intent_locked(
                 &intent_key,
@@ -6646,11 +6611,8 @@ mod provisioning_tests {
         assert_eq!(record.state, RouterProvisioningRequestState::AwaitingAck);
         assert_eq!(record.accepted_registry_version, None);
 
-        let intent_key = ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "shard-0",
-        );
+        let intent_key =
+            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
         assert!(
             s.intent_locked(
                 &intent_key,

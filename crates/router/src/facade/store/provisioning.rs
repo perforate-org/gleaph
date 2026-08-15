@@ -84,7 +84,7 @@ impl RouterProvisioningRequestStore {
         // 1. Reject duplicate resource intents inside the same request.
         let mut seen = HashSet::new();
         for resource in &req.requested_resources {
-            if !seen.insert((resource.kind, resource.logical_resource_key.clone())) {
+            if !seen.insert(resource.logical_resource) {
                 return Err(InsertError::InvalidDuplicateIntent);
             }
         }
@@ -104,7 +104,7 @@ impl RouterProvisioningRequestStore {
         let intent_keys: Vec<ProvisioningIntentKey> = req
             .requested_resources
             .iter()
-            .map(|r| ProvisioningIntentKey::new(deployment_id, r.kind, &r.logical_resource_key))
+            .map(|r| ProvisioningIntentKey::new(deployment_id, r.logical_resource))
             .collect();
         let new_owner = IntentLockOwner::new(request_key.clone(), req.request_fingerprint.clone());
         let conflicting_lock = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| {
@@ -189,11 +189,7 @@ impl RouterProvisioningRequestStore {
 
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             for resource in &record.requested_resources {
-                let key = ProvisioningIntentKey::new(
-                    &deployment_id,
-                    resource.kind,
-                    &resource.logical_resource_key,
-                );
+                let key = ProvisioningIntentKey::new(&deployment_id, resource.logical_resource);
                 locks.remove(&key);
             }
         });
@@ -247,11 +243,7 @@ impl RouterProvisioningRequestStore {
         );
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             for resource in &record.requested_resources {
-                let key = ProvisioningIntentKey::new(
-                    deployment_id,
-                    resource.kind,
-                    &resource.logical_resource_key,
-                );
+                let key = ProvisioningIntentKey::new(deployment_id, resource.logical_resource);
                 if locks
                     .get(&key)
                     .is_some_and(|stored| stored == expected_owner)
@@ -323,9 +315,7 @@ impl RouterProvisioningRequestStore {
         let intent_keys: Vec<ProvisioningIntentKey> = record
             .requested_resources
             .iter()
-            .map(|r| {
-                ProvisioningIntentKey::new(&key.deployment_id, r.kind, &r.logical_resource_key)
-            })
+            .map(|r| ProvisioningIntentKey::new(&key.deployment_id, r.logical_resource))
             .collect();
         let expected_owner = IntentLockOwner::new(key.clone(), record.request_fingerprint.clone());
         let all_owned = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| {

@@ -7,6 +7,7 @@
 //! outbound/ack coverage; it is removed in Slice B.
 
 use candid::Principal;
+use gleaph_graph_kernel::provisioning::LogicalResource;
 use ic_cdk::api::msg_caller;
 use ic_cdk_macros::{query, update};
 
@@ -693,8 +694,8 @@ async fn provision_graph(
 ) -> Result<types::ProvisionGraphResponse, RouterError> {
     use crate::facade::store::provisioning::{InsertError, RouterProvisioningRequestStore};
     use crate::types::{
-        ProvisionableResourceKind, ProvisioningIntentKey, ProvisioningRequestKey,
-        RouterProvisioningRequest, RouterProvisioningRequestState,
+        ProvisioningIntentKey, ProvisioningRequestKey, RouterProvisioningRequest,
+        RouterProvisioningRequestState,
     };
 
     let caller = ic_cdk::api::msg_caller();
@@ -713,17 +714,13 @@ async fn provision_graph(
     let canonical = args
         .requested_resources
         .iter()
-        .find(|r| r.kind == ProvisionableResourceKind::GraphShard)
+        .find(|r| matches!(r.logical_resource, LogicalResource::GraphShard(_)))
         .ok_or_else(|| {
             RouterError::InvalidArgument(
                 "requested_resources must contain at least one GraphShard resource".to_owned(),
             )
         })?;
-    let intent_key = ProvisioningIntentKey::new(
-        &args.deployment_id,
-        canonical.kind,
-        &canonical.logical_resource_key,
-    );
+    let intent_key = ProvisioningIntentKey::new(&args.deployment_id, canonical.logical_resource);
 
     // Seed the Router-side provisioning-request catalog before the outbound send so the
     // ack callback has a canonical record to advance. We need deployment_id for the key, so
@@ -897,14 +894,15 @@ fn router_ack(
 #[cfg(test)]
 mod provision_graph_tests {
     use candid::Principal;
+    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::{ProvisionAcceptResponse, ProvisionJobSummary};
 
     use crate::facade::store::provisioning::{InsertionOutcome, RouterProvisioningRequestStore};
     use crate::state::RouterError;
     use crate::types::{
-        ProvisionGraphResponse, ProvisionableResource, ProvisionableResourceKind,
-        ProvisioningRequestKey, RouterOutboundError, RouterProvisioningRequest,
-        RouterProvisioningRequestState,
+        ProvisionGraphResponse, ProvisionableResource, ProvisioningRequestKey, RouterOutboundError,
+        RouterProvisioningRequest, RouterProvisioningRequestState,
     };
 
     fn sample_record(
@@ -921,8 +919,7 @@ mod provision_graph_tests {
             graph_name: "tenant.main".to_owned(),
             reserved_graph_id: None,
             requested_resources: vec![ProvisionableResource {
-                kind: ProvisionableResourceKind::GraphShard,
-                logical_resource_key: "shard-0".to_owned(),
+                logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
             state,
             provision_receipt: None,
