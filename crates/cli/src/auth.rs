@@ -1,11 +1,31 @@
-//! `gleaph login` — resolve the caller's principal and store it as the active session.
+//! `gleaph login` — resolve the caller's principal and store the active session.
 //!
 //! Delegates the browser/Internet Identity flow to `icp identity link web`, or reads a local
-//! PEM identity's principal. The resolved principal is persisted so subsequent commands act as
-//! that principal.
+//! PEM identity's principal. The session stores a **reference to the signing source** (a PEM
+//! path or an icp identity name), never the secret itself.
 
 use ic_agent::Identity;
 use std::path::{Path, PathBuf};
+
+/// A reference to the signing source for the active session. The secret stays in the referenced
+/// store (PEM file or icp-cli keyring); only the reference is persisted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Session {
+    /// A PEM file path.
+    Pem(PathBuf),
+    /// An icp-cli identity name (keyring-backed).
+    IcpIdentity(String),
+}
+
+impl Session {
+    /// The PEM path, if this session is a PEM identity.
+    pub fn pem_path(&self) -> Option<&Path> {
+        match self {
+            Session::Pem(path) => Some(path),
+            Session::IcpIdentity(_) => None,
+        }
+    }
+}
 
 /// Session file under the user config dir: `~/.config/gleaph/session`.
 fn session_path() -> Result<PathBuf, String> {
@@ -19,22 +39,28 @@ fn session_path() -> Result<PathBuf, String> {
     Ok(base.join("session"))
 }
 
-/// Persist the active session principal.
-pub fn save_session(principal: &str) -> Result<(), String> {
+/// Persist the active session (a reference to the signing source).
+pub fn save_session(session: &Session) -> Result<(), String> {
     let path = session_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create config dir {}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, principal).map_err(|e| format!("write session {}: {e}", path.display()))
+    let text = match session {
+        Session::Pem(path) => format!("pem:{}", path.display()),
+        Session::IcpIdentity(name) => format!("icp:{}", name),
+    };
+    std::fs::write(&path, text).map_err(|e| format!("write session {}: {e}", path.display()))
 }
 
-/// Read the active session principal, if any.
-pub fn load_session() -> Option<String> {
+/// Read the active session, if any.
+pub fn load_session() -> Option<Session> {
     let path = session_path().ok()?;
-    std::fs::read_to_string(&path)
-        .ok()
-        .map(|s| s.trim().to_owned())
+    let text = std::fs::read_to_string(&path).ok()?;
+    let text = text.trim();
+    text.strip_prefix("pem:")
+        .map(|rest| Session::Pem(PathBuf::from(rest)))
+        .or_else(|| text.strip_prefix("icp:").map(|rest| Session::IcpIdentity(rest.to_owned())))
 }
 
 /// Resolve the caller's principal from a local PEM identity (no browser flow).
@@ -49,13 +75,32 @@ pub fn principal_from_pem(identity: &Path) -> Result<String, String> {
         .to_text())
 }
 
+/// Resolve the caller's principal from a session (PEM path or icp identity name).
+pub fn principal_from_session(session: &Session) -> Result<String, String> {
+    match session {
+        Session::Pem(path) => principal_from_pem(path),
+        Session::IcpIdentity(name) => {
+            let output = std::process::Command::new("icp")
+                .args(["identity", "principal", "--identity", name])
+                .output()
+                .map_err(|e| format!("run `icp identity principal`: {e}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(stdout.trim().to_owned())
+        }
+    }
+}
+
 /// The active session principal. Prefers an explicit PEM identity, then the saved session.
 pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
     match identity {
         Some(path) => principal_from_pem(path),
-        None => load_session().ok_or_else(|| {
-            "no identity; pass --identity <PEM>, run `gleaph login`, or set a session".into()
-        }),
+        None => {
+            let session: Session = load_session().ok_or_else(|| {
+                "no identity; pass --identity <PEM>, run `gleaph login`, or set a session"
+                    .to_owned()
+            })?;
+            principal_from_session(&session)
+        }
     }
 }
 
@@ -105,8 +150,16 @@ mod tests {
         // SAFETY: single-threaded test; no other thread reads this env var concurrently.
         unsafe { std::env::set_var("GLEAPH_CONFIG_HOME", &home) };
         assert_eq!(load_session(), None);
-        save_session("aaaaa-aa").expect("save");
-        assert_eq!(load_session().as_deref(), Some("aaaaa-aa"));
+        save_session(&Session::Pem(PathBuf::from("/tmp/id.pem"))).expect("save");
+        assert_eq!(
+            load_session(),
+            Some(Session::Pem(PathBuf::from("/tmp/id.pem")))
+        );
+        save_session(&Session::IcpIdentity("demo-admin".into())).expect("save icp");
+        assert_eq!(
+            load_session(),
+            Some(Session::IcpIdentity("demo-admin".into()))
+        );
         // SAFETY: single-threaded test; cleanup after the assertion.
         unsafe { std::env::remove_var("GLEAPH_CONFIG_HOME") };
     }

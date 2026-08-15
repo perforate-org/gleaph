@@ -284,12 +284,20 @@ fn dispatch(
 
 /// `gleaph login`: resolve and store the caller's principal.
 fn execute_login(args: LoginArgs) -> Result<(), CliError> {
-    let principal = if args.web {
-        auth::login_with_web(&args.name, &args.app).map_err(CliError::Message)?
+    let (principal, session) = if args.web {
+        let principal = auth::login_with_web(&args.name, &args.app).map_err(CliError::Message)?;
+        (principal, auth::Session::IcpIdentity(args.name.clone()))
+    } else if let Some(path) = args.identity.as_deref() {
+        let principal = auth::principal_from_pem(path).map_err(CliError::Message)?;
+        (principal, auth::Session::Pem(path.to_owned()))
     } else {
-        auth::resolve_principal(args.identity.as_deref()).map_err(CliError::Message)?
+        let principal = auth::resolve_principal(None).map_err(CliError::Message)?;
+        let session = auth::load_session().ok_or_else(|| {
+            CliError::Message("no identity; pass --identity <PEM> or --web".into())
+        })?;
+        (principal, session)
     };
-    auth::save_session(&principal).map_err(CliError::Message)?;
+    auth::save_session(&session).map_err(CliError::Message)?;
     println!("logged in as {principal}");
     Ok(())
 }
@@ -314,10 +322,15 @@ fn execute_signup(
                 .into(),
         )
     })?;
+    // Use the explicit identity, else the session's PEM path.
+    let identity = match args.identity.as_deref() {
+        Some(path) => Some(path.to_owned()),
+        None => auth::load_session().and_then(|s| s.pem_path().map(|p| p.to_owned())),
+    };
     let transport = remote::RemoteTransport::connect(
         account_canister,
         &network,
-        args.identity.as_deref(),
+        identity.as_deref(),
         args.fetch_root_key.unwrap_or(false),
     )
     .map_err(CliError::Message)?;

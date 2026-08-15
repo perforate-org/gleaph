@@ -3,10 +3,11 @@
 //! Flow: register the caller's Account (if absent), authorize the first-Router issuance via
 //! Provision, then resolve and cache the Router id.
 
+use crate::auth;
 use crate::config::{self, ConfigEnv, LoadedConfig};
 use crate::remote::{RemoteTransport, resolve_router_id};
 use candid::Principal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Register the caller's Account, issue the first Router via Provision, and cache the Router id.
 pub fn deploy(
@@ -27,7 +28,19 @@ pub fn deploy(
         "no provision canister in .gleaph/data/mappings; the platform must be deployed first",
     )?;
 
-    let transport = RemoteTransport::connect(account_canister, network, identity, fetch_root_key)?;
+    // Use the explicit identity, else the session's PEM path (icp identity names are a later
+    // slice; RemoteTransport::connect takes a PEM path).
+    let identity: Option<PathBuf> = match identity {
+        Some(path) => Some(path.to_owned()),
+        None => auth::load_session().and_then(|s| s.pem_path().map(|p| p.to_owned())),
+    };
+
+    let transport = RemoteTransport::connect(
+        account_canister,
+        network,
+        identity.as_deref(),
+        fetch_root_key,
+    )?;
     let account_principal = Principal::from_text(account_canister)
         .map_err(|e| format!("invalid account canister id: {e}"))?;
     let provision_principal = Principal::from_text(provision_canister)
@@ -39,7 +52,9 @@ pub fn deploy(
         .map_err(|e| format!("resolve_my_accounts: {e}"))?;
     let account_id = match accounts.as_slice() {
         [] => {
-            return Err("no account registered for this identity; register an account first".into());
+            return Err(
+                "no account registered for this identity; register an account first".into(),
+            );
         }
         [single] => single.clone(),
         _ => {
