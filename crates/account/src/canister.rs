@@ -145,6 +145,73 @@ pub(crate) fn resolve_router_with_caller(
     store.resolve_router(account_id, caller, router_id)
 }
 
+/// Authorize the first-Router issuance: the Account (as bootstrap trust subject) sends a
+/// `ProvisionRequest` to the Provision canister's `accept_envelope`. Owner/admin only.
+///
+/// `provision_canister` is the platform-fixed Provision canister id. `deployment_id` is the
+/// account id (Personal principal or Org generated id). The Router callback is the Account
+/// itself, so the first-issuance result returns here for `register_router`.
+pub(crate) async fn authorize_router_issuance_with_caller(
+    caller: Principal,
+    account_id: &str,
+    router_id: &str,
+    provision_canister: Principal,
+    store: &AccountStore,
+) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
+    let account = store.get(account_id).ok_or(AccountError::NotFound)?;
+    if !account.is_owner_or_admin(&caller) {
+        return Err(AccountError::NotAuthorized);
+    }
+    send_issuance_request(caller, account_id, router_id, provision_canister).await
+}
+
+/// The cross-canister `accept_envelope` send. Split out so the owner/admin authorization check
+/// is unit-testable without a WASM runtime.
+async fn send_issuance_request(
+    caller: Principal,
+    account_id: &str,
+    router_id: &str,
+    provision_canister: Principal,
+) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
+    use gleaph_graph_kernel::provisioning::wire::{
+        ProvisionIngressResult, ProvisionRequest, ProvisionableResource,
+    };
+    use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+    use ic_cdk::call::Call;
+
+    let request = ProvisionRequest {
+        deployment_id: account_id.to_owned(),
+        request_id: format!("{router_id}-{}", caller.to_text()),
+        request_fingerprint: format!("{router_id}-{}", caller.to_text()),
+        intent_key: ProvisioningIntentKey::new(
+            account_id,
+            ProvisionableResourceKind::GraphShard,
+            "shard-0",
+        ),
+        reserved_graph_id: None,
+        graph_name: "default".to_owned(),
+        requested_resources: vec![ProvisionableResource {
+            kind: ProvisionableResourceKind::GraphShard,
+            logical_resource_key: "shard-0".to_owned(),
+        }],
+        authorized_caller: caller,
+        release_id: "default".to_owned(),
+        router_callback_principal: ic_cdk::api::canister_self(),
+    };
+
+    let result: ProvisionIngressResult =
+        Call::unbounded_wait(provision_canister, "accept_envelope")
+            .with_args(&(request,))
+            .await
+            .map_err(|e| AccountError::Message(format!("provision accept_envelope: {e}")))?
+            .candid()
+            .map_err(|e| AccountError::Message(format!("provision decode: {e}")))?;
+    match result {
+        ProvisionIngressResult::Ok(response) => Ok(response),
+        ProvisionIngressResult::Err(e) => Err(AccountError::Message(format!("provision: {e:?}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -265,5 +332,28 @@ mod tests {
             resolve_router_with_caller(bob, &org_id, "nope", &store),
             Err(AccountError::NotFound)
         );
+    }
+
+    #[test]
+    fn authorize_router_issuance_rejects_non_owner_before_cross_canister() {
+        memory::reset_all();
+        let store = AccountStore::new();
+        let alice = p(1);
+        let bob = p(2);
+        let org = create_org_account_with_caller(alice, "team".into(), 0, &store).unwrap();
+        let org_id = org.id();
+
+        // bob is not a member -> NotAuthorized, before any Provision call.
+        let result = crate::canister::authorize_router_issuance_with_caller(
+            bob,
+            &org_id,
+            "default",
+            p(9),
+            &store,
+        );
+        // The async fn returns a future; drive it to completion. Non-owner short-circuits
+        // before the cross-canister call, so this is safe off-wasm.
+        let result = futures::executor::block_on(result);
+        assert_eq!(result, Err(AccountError::NotAuthorized));
     }
 }

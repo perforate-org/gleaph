@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 candid = { workspace = true }
+gleaph-graph-kernel = { workspace = true }
 ic-cdk = { workspace = true }
 ic-cdk-macros = { workspace = true }
 ic-stable-memory-backend = { workspace = true }
@@ -18,3 +19,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 candid_parser = "0.4.0"
+futures = "0.3"

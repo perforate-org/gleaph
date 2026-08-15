@@ -128,6 +128,8 @@ pub enum AccountError {
     AlreadyExists,
     AnonymousPrincipal,
     InvalidRole,
+    /// Cross-canister or internal failure (e.g. Provision call).
+    Message(String),
 }
 
 /// Generate an Org `account_id`. `now_ns` is injected for deterministic tests.

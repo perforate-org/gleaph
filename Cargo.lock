@@ -1669,6 +1669,8 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "candid_parser",
+ "futures",
+ "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-memory-backend",
