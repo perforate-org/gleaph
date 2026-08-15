@@ -10,6 +10,7 @@ use thiserror::Error;
 pub mod auth;
 pub mod config;
 pub mod deploy;
+pub mod identity;
 pub mod load;
 pub mod migration;
 pub mod prepared;
@@ -286,10 +287,10 @@ fn dispatch(
 fn execute_login(args: LoginArgs) -> Result<(), CliError> {
     let (principal, session) = if args.web {
         let principal = auth::login_with_web(&args.name, &args.app).map_err(CliError::Message)?;
-        (principal, auth::Session::IcpIdentity(args.name.clone()))
+        (principal, identity::Session::IcpIdentity(args.name.clone()))
     } else if let Some(path) = args.identity.as_deref() {
-        let principal = auth::principal_from_pem(path).map_err(CliError::Message)?;
-        (principal, auth::Session::Pem(path.to_owned()))
+        let principal = identity::principal_from_pem(path).map_err(CliError::Message)?;
+        (principal, identity::Session::Pem(path.to_owned()))
     } else {
         let principal = auth::resolve_principal(None).map_err(CliError::Message)?;
         let session = auth::load_session().ok_or_else(|| {

@@ -1,31 +1,11 @@
 //! `gleaph login` — resolve the caller's principal and store the active session.
 //!
-//! Delegates the browser/Internet Identity flow to `icp identity link web`, or reads a local
-//! PEM identity's principal. The session stores a **reference to the signing source** (a PEM
-//! path or an icp identity name), never the secret itself.
+//! The session stores a **reference to the signing source** (a PEM path or an icp identity
+//! name), never the secret itself. Identity storage and signing-source resolution live in
+//! [`crate::identity`].
 
-use ic_agent::Identity;
+use crate::identity::{self, Session};
 use std::path::{Path, PathBuf};
-
-/// A reference to the signing source for the active session. The secret stays in the referenced
-/// store (PEM file or icp-cli keyring); only the reference is persisted.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Session {
-    /// A PEM file path.
-    Pem(PathBuf),
-    /// An icp-cli identity name (keyring-backed).
-    IcpIdentity(String),
-}
-
-impl Session {
-    /// The PEM path, if this session is a PEM identity.
-    pub fn pem_path(&self) -> Option<&Path> {
-        match self {
-            Session::Pem(path) => Some(path),
-            Session::IcpIdentity(_) => None,
-        }
-    }
-}
 
 /// Session file under the user config dir: `~/.config/gleaph/session`.
 fn session_path() -> Result<PathBuf, String> {
@@ -60,46 +40,22 @@ pub fn load_session() -> Option<Session> {
     let text = text.trim();
     text.strip_prefix("pem:")
         .map(|rest| Session::Pem(PathBuf::from(rest)))
-        .or_else(|| text.strip_prefix("icp:").map(|rest| Session::IcpIdentity(rest.to_owned())))
-}
-
-/// Resolve the caller's principal from a local PEM identity (no browser flow).
-///
-/// `--identity` is a PEM path (current CLI convention). Returns the principal as text.
-pub fn principal_from_pem(identity: &Path) -> Result<String, String> {
-    let id = ic_agent::identity::Secp256k1Identity::from_pem_file(identity)
-        .map_err(|e| format!("read identity {}: {e}", identity.display()))?;
-    Ok(id
-        .sender()
-        .unwrap_or(candid::Principal::anonymous())
-        .to_text())
-}
-
-/// Resolve the caller's principal from a session (PEM path or icp identity name).
-pub fn principal_from_session(session: &Session) -> Result<String, String> {
-    match session {
-        Session::Pem(path) => principal_from_pem(path),
-        Session::IcpIdentity(name) => {
-            let output = std::process::Command::new("icp")
-                .args(["identity", "principal", "--identity", name])
-                .output()
-                .map_err(|e| format!("run `icp identity principal`: {e}"))?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(stdout.trim().to_owned())
-        }
-    }
+        .or_else(|| {
+            text.strip_prefix("icp:")
+                .map(|rest| Session::IcpIdentity(rest.to_owned()))
+        })
 }
 
 /// The active session principal. Prefers an explicit PEM identity, then the saved session.
 pub fn resolve_principal(identity: Option<&Path>) -> Result<String, String> {
     match identity {
-        Some(path) => principal_from_pem(path),
+        Some(path) => identity::principal_from_pem(path),
         None => {
             let session: Session = load_session().ok_or_else(|| {
                 "no identity; pass --identity <PEM>, run `gleaph login`, or set a session"
                     .to_owned()
             })?;
-            principal_from_session(&session)
+            identity::principal_from_session(&session)
         }
     }
 }
