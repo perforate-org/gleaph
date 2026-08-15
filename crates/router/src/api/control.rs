@@ -90,24 +90,29 @@ async fn get_graph_health(graph_name: String) -> Result<types::GraphHealthView, 
         .await
 }
 
-/// Intent-based graph creation (ADR 0056 §6 Slice A): dev mode registers the graph and its
-/// shards synchronously; provisioned mode is `NotImplemented` until Slice B.
+/// Intent-based graph creation (ADR 0056 §6).
+///
+/// Dev mode (no `provision_canister` configured) registers the graph and its shards
+/// synchronously from caller-installed canisters. Provisioned mode folds the provisioning
+/// protocol: it sends the resolved envelope to the configured Provision canister and registers
+/// the returned graph shards into the catalog, so `register_graph` is the single public surface
+/// for graph creation in both modes.
 #[update]
 async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterError> {
     use gleaph_gql_ic::graph_registry::{GraphStatus, ProvisioningState};
 
-    auth::require_admin(&msg_caller())?;
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+
     if crate::provisioning::config::get().is_some() {
-        return Err(RouterError::NotImplemented(
-            "provisioned graph registration lands in ADR 0056 Slice B".into(),
-        ));
+        return register_provisioned_graph(caller, args).await;
     }
+
     if args.shards.is_empty() {
         return Err(RouterError::InvalidArgument(
             "dev-mode register_graph requires at least one shard".into(),
         ));
     }
-    let caller = msg_caller();
     let store = RouterStore::new();
     let entry = gleaph_gql_ic::graph_registry::GraphRegistryEntry {
         graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(0), // store assigns
@@ -138,6 +143,39 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
             .await?;
     }
     Ok(())
+}
+
+/// Provisioned-mode `register_graph`: derive the provisioning envelope from the intent, send it
+/// through the shared admission flow, and surface success/failure. The flow itself registers the
+/// returned graph shards into the catalog on a fresh `Accepted`. `deployment_id` is the owner
+/// principal (ADR 0068), `request_fingerprint` the graph name, `release_id` the default.
+async fn register_provisioned_graph(
+    caller: Principal,
+    args: types::RegisterGraphArgs,
+) -> Result<(), RouterError> {
+    if args.requested_resources.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "provisioned register_graph requires at least one requested resource".into(),
+        ));
+    }
+    let provision_args = types::ProvisionGraphArgs {
+        deployment_id: caller.to_text(),
+        request_fingerprint: args.graph_name.clone(),
+        graph_name: args.graph_name.clone(),
+        requested_resources: args.requested_resources,
+        authorized_caller: caller,
+        release_id: "default".to_owned(),
+        owner: args.owner,
+        admins: args.admins,
+    };
+    let response = crate::provisioning::graph::provision_graph_flow(caller, provision_args).await?;
+    // Accepted (fresh), Replay (already admitted), and Completed (already acked) all mean the
+    // provisioned graph is registered and data-plane resolvable.
+    match response {
+        types::ProvisionGraphResponse::Accepted { .. }
+        | types::ProvisionGraphResponse::Replay { .. }
+        | types::ProvisionGraphResponse::Completed { .. } => Ok(()),
+    }
 }
 
 #[update]

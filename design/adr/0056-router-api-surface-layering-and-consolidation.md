@@ -2,8 +2,8 @@
 
 Date: 2026-08-01
 Status: implemented
-Last revised: 2026-08-02
-Anchor timestamp: 2026-08-02 14:40:37 UTC +0000
+Last revised: 2026-08-15 22:59:22 UTC +0000
+Anchor timestamp: 2026-08-15 22:59:22 UTC +0000
 
 ## Context
 
@@ -203,24 +203,32 @@ vec record { shard_id : nat32; graph_canister : principal; index_canister : prin
   documented-internal L3 seam through Slice A (so the `adr0035` outbound/ack E2E coverage keeps
   running unchanged) and is removed in Slice B when the new flow replaces it.
 
-**Slice B — provisioning integration with topology transport (wire change).**
+**Slice B — provisioning integration (implemented 2026-08-15; synchronous registration).**
 
-- `RouterProvisionAck` gains the deployed topology: `shards: vec record { shard_id : nat32;
-canister : principal }`. This changes `gleaph-graph-kernel::provisioning::wire` and the Provision
-  canister's ack send side (breaking, but nothing is deployed).
-- The ack handler links the ack to the graph entry via the already-reserved
-  `ProvisionRequest.reserved_graph_id`, commits shard registry entries from the topology, and
-  transitions the graph to `ProvisioningState::None` / `status: Active`; only then does the entry
-  become data-plane resolvable (Slice A guard). The ack handler orchestrates only; registry
-  mutations go through the registry store's commit API (`facade/store/registry.rs`), which remains
-  the invariant owner.
-- Ack replay keeps the existing idempotency contract: the same
-  `(request_id, deployment_id, accepted_registry_version)` returns the same `RouterAckResponse`, and
-  shard commits are idempotent, so a retried ack cannot double-register shards.
-- `unregister_graph` becomes symmetric: notify the Provision canister for teardown when configured,
-  local teardown otherwise.
-- The `provision_graph` L3 seam (Slice A) is removed, and
-  `adr0035_router_outbound_accept_envelope.rs` is rewritten against the new flow.
+The original Slice B plan routed the deployed topology through the ack callback
+(`RouterProvisionAck.shards`, reserved_graph_id link, non-async register on ack). The implemented
+integration instead folds provisioning into `register_graph` **synchronously**, because the
+`accept_envelope` deploy is synchronous (ADR 0035 Slice 8): the Provision canister returns the
+installed canister ids in `created_resources` on the admission response, so there is no separate
+ack to carry topology. The synchronous choice keeps admission → deploy → register in one call
+and avoids an intermediate "admitted but not yet registered" state. Deferred to a future slice:
+a fully asynchronous saga (heartbeat/outbound-ack driven deploy) would reintroduce the ack
+topology transport and split registration onto the Router's `router_ack` callback.
+
+Implemented behavior:
+
+- `register_graph(intent)` is the single public graph-creation surface for both modes. With a
+  `provision_canister` configured it folds into the provisioning flow; `deployment_id` derives
+  from the caller's owner principal (ADR 0068), `request_fingerprint` from the graph name, and
+  `release_id` defaults to `"default"`.
+- The shared admission flow lives in `crate::provisioning::graph::provision_graph_flow`: it seeds
+  the `RouterProvisioningRequest`, sends `accept_envelope`, and on a fresh `Accepted` with non-empty
+  `created_resources` registers the graph and its shards (via
+  `admin_register_graph_with_random_key` / `admin_register_shard`).
+- `provision_graph` remains as a thin L3 seam that delegates to the same flow, retained so the
+  `adr0035_router_outbound_accept_envelope.rs` E2E coverage runs unchanged.
+- `unregister_graph` is unchanged for now; symmetric Provision teardown notification is a future
+  lifecycle slice (ADR 0037).
 
 ### 7. `list_graphs` / `get_graph` / `get_graph_health` return types
 

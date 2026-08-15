@@ -732,3 +732,69 @@ fn release_install_succeeds() {
     assert_eq!(install.outcome, ArtifactAuditOutcome::Success);
     assert_eq!(install.target_canister, Some(target));
 }
+
+/// `register_graph` provisioned fold (ADR 0056 §6): when a Provision canister is configured, the
+/// intent folds into the shared provisioning flow. `deployment_id` derives from the admin
+/// principal, so the bootstrap binding must use that value. With no release activated, the
+/// admission returns `Reserved` and the fold surfaces success (no created resources to register).
+#[test]
+fn register_graph_provisioned_fold_admits_with_owner_deployment_id() {
+    use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+    use gleaph_router::types::RegisterGraphArgs;
+
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = pic.create_canister();
+    pic.add_cycles(router, 2_000_000_000_000);
+
+    let binding = DeploymentBinding {
+        deployment_id: admin.to_text(),
+        router_principal: router,
+        governance_principal: admin,
+        binding_version: 1,
+        bootstrap_principal: None,
+    };
+    let provision = install_provision_canister(&pic, binding);
+
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            provision_canister: Some(provision),
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let intent = RegisterGraphArgs {
+        graph_name: "provisioned.graph".to_owned(),
+        owner: admin,
+        admins: std::collections::BTreeSet::new(),
+        is_home: false,
+        shards: vec![],
+        requested_resources: vec![ProvisionableResource {
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+        }],
+    };
+
+    let bytes = pic
+        .update_call(
+            router,
+            admin,
+            "register_graph",
+            Encode!(&intent).expect("encode register_graph"),
+        )
+        .unwrap_or_else(|e| panic!("register_graph on router: {e:?}"));
+    let result: Result<(), gleaph_graph_kernel::federation::RouterError> = Decode!(
+        &bytes,
+        Result<(), gleaph_graph_kernel::federation::RouterError>
+    )
+    .expect("register_graph provisioned fold must succeed");
+    assert!(
+        result.is_ok(),
+        "register_graph fold must succeed: {result:?}"
+    );
+}
