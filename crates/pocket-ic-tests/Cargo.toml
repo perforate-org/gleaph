@@ -70,6 +70,7 @@ gleaph-gql = { workspace = true }
 gleaph-gql-planner = { path = "../gql-planner", features = ["plan-wire"] }
 gleaph-gql-ic.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-account = { path = "../account" }
 gleaph-prepared-api.workspace = true
 gleaph-router = { path = "../router", features = ["pocket-ic-e2e"] }
 gleaph-provision = { path = "../provision" }

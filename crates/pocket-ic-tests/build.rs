@@ -202,6 +202,8 @@ fn build_wasm(manifest_dir: &Path) {
         "build",
         "--release",
         "-p",
+        "gleaph-account",
+        "-p",
         "gleaph-router",
         "-p",
         "gleaph-graph-index",
@@ -290,6 +292,10 @@ fn build_wasm(manifest_dir: &Path) {
     set_wasm_env(
         "PROVISION_WASM",
         wasm_dir.join("gleaph_provision.wasm").into_std_path_buf(),
+    );
+    set_wasm_env(
+        "ACCOUNT_WASM",
+        wasm_dir.join("gleaph_account.wasm").into_std_path_buf(),
     );
 }
 

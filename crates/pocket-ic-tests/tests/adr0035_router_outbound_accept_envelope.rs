@@ -15,7 +15,8 @@
 //!      assert `Err(AckConflict { stored: 7 })`.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::provisioning::ProvisionableResourceKind;
+use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::{
     ProvisionJobSummary, ProvisionableResource, RouterAckResponse, RouterProvisionAck,
 };
@@ -49,6 +50,7 @@ fn install_router_and_provision() -> Env {
         router_principal: router,
         governance_principal: admin,
         binding_version: 1,
+        bootstrap_principal: None,
     };
     let provision = install_provision_canister(&pic, binding);
 
@@ -146,8 +148,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         request_fingerprint: "fp-fresh-1".to_owned(),
         graph_name: "p0058.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-0".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
         authorized_caller: env.admin,
         release_id: "rel-1".to_owned(),
@@ -217,6 +218,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         router_principal: env.router,
         governance_principal: env.admin,
         binding_version: 2,
+        bootstrap_principal: None,
     };
     let admin_install_result = call_admin_install(&env, env.admin, &admin_install_args)
         .expect("bootstrap governance admin_install must succeed");
@@ -231,8 +233,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         request_fingerprint: "fp-admin-1".to_owned(),
         graph_name: "admin1.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-admin-1".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(10)),
         }],
         authorized_caller: env.admin,
         release_id: "rel-admin-1".to_owned(),
@@ -252,6 +253,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         router_principal: env.router,
         governance_principal: wrong_principal,
         binding_version: 3,
+        bootstrap_principal: None,
     };
     let reject = call_admin_install(&env, wrong_principal, &missing_install_args)
         .expect_err("unauthorized admin_install must be rejected");
@@ -265,8 +267,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         request_fingerprint: "fp-missing-1".to_owned(),
         graph_name: "missing.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-missing-1".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(11)),
         }],
         authorized_caller: env.admin,
         release_id: "rel-missing-1".to_owned(),
@@ -295,8 +296,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
     let post_args = ProvisionGraphArgs {
         request_fingerprint: "fp-post-upgrade-1".to_owned(),
         requested_resources: vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-1".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
         }],
         ..args
     };

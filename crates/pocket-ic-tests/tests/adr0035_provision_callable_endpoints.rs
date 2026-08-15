@@ -5,7 +5,8 @@
 //! contracts from Plan 0057 are preserved as assertion labels.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::provisioning::ProvisionableResourceKind;
+use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::canister::init::ProvisionInitArgs;
@@ -32,26 +33,21 @@ fn deployment_binding() -> DeploymentBinding {
         router_principal: router_principal(),
         governance_principal: governance_principal(),
         binding_version: 1,
+        bootstrap_principal: Some(governance_principal()),
     }
 }
 
-fn test_request(request_id: &str, logical_key: &str) -> ProvisionRequest {
+fn test_request(request_id: &str, shard: u32) -> ProvisionRequest {
     use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
+    let logical_resource = LogicalResource::GraphShard(ShardId::new(shard));
     ProvisionRequest {
         deployment_id: "d1".to_owned(),
         request_id: request_id.to_owned(),
         request_fingerprint: format!("fp-{request_id}"),
-        intent_key: ProvisioningIntentKey::new(
-            "d1",
-            ProvisionableResourceKind::GraphShard,
-            logical_key,
-        ),
+        intent_key: ProvisioningIntentKey::new("d1", logical_resource),
         reserved_graph_id: None,
         graph_name: "g1".to_owned(),
-        requested_resources: vec![ProvisionableResource {
-            kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: logical_key.to_owned(),
-        }],
+        requested_resources: vec![ProvisionableResource { logical_resource }],
         authorized_caller: Principal::from_slice(&[0x30; 29]),
         release_id: "rel1".to_owned(),
         router_callback_principal: Principal::from_slice(&[0x40; 29]),
@@ -103,7 +99,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
     // (install_provision_canister already asserts the install succeeds.)
 
     // Scenario 2: wrong principal accept_envelope -> NotAuthorized.
-    let wrong_accept_req = test_request("r-wrong-accept", "shard-wrong-accept");
+    let wrong_accept_req = test_request("r-wrong-accept", 7);
     let wrong_accept = accept_envelope(&pic, provision, other_principal(), &wrong_accept_req);
     assert!(
         matches!(
@@ -114,7 +110,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
     );
 
     // Scenario 3: Router accept_envelope admits a fresh request.
-    let fresh_req = test_request("r1", "shard1");
+    let fresh_req = test_request("r1", 1);
     let fresh = accept_envelope(&pic, provision, router_principal(), &fresh_req);
     match fresh {
         ProvisionIngressResult::Ok(ProvisionAcceptResponse::Accepted {
@@ -165,7 +161,7 @@ fn provision_callable_endpoints_upgrade_durability() {
     let provision = install_provision_canister(&pic, deployment_binding());
 
     // Pre-upgrade admission.
-    let pre_req = test_request("r-pre", "shard-pre");
+    let pre_req = test_request("r-pre", 5);
     let before = accept_envelope(&pic, provision, router_principal(), &pre_req);
     assert!(
         matches!(
@@ -188,7 +184,7 @@ fn provision_callable_endpoints_upgrade_durability() {
     .expect("scenario 10: upgrade provision canister");
 
     // Post-upgrade admission with a distinct intent so it is not blocked by the pre-upgrade lock.
-    let post_req = test_request("r-post", "shard-post");
+    let post_req = test_request("r-post", 6);
     let after = accept_envelope(&pic, provision, router_principal(), &post_req);
     assert!(
         matches!(

@@ -291,6 +291,18 @@ pub fn install_provision_canister(
     provision
 }
 
+/// Install the Account canister.
+pub fn install_account_canister(pic: &PocketIc) -> Principal {
+    let account = create_funded_canister(pic);
+    pic.install_canister(
+        account,
+        wasm_bytes("ACCOUNT_WASM"),
+        Encode!(&()).expect("encode account init"),
+        None,
+    );
+    account
+}
+
 /// Router + index only (no graph WASM). Used for placement smoke tests.
 pub fn install_router_and_index() -> FederationEnv {
     let pic = new_pocket_ic();
