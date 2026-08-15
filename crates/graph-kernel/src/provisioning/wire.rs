@@ -2,17 +2,18 @@ use candid::{CandidType, Principal};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::GraphId;
-use crate::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+use crate::provisioning::{LogicalResource, ProvisioningIntentKey};
 
+/// A requested provisionable resource. The enum variant is the discriminator (it doubles as the
+/// resource kind).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
 pub struct ProvisionableResource {
-    pub kind: ProvisionableResourceKind,
-    pub logical_resource_key: String,
+    pub logical_resource: LogicalResource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct CreatedResource {
-    pub kind: ProvisionableResourceKind,
+    pub logical_resource: LogicalResource,
     pub canister_id: Principal,
     pub artifact_hash: String,
 }

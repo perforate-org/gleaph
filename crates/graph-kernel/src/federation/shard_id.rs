@@ -89,6 +89,78 @@ impl Storable for ShardId {
     }
 }
 
+/// Graph shard group (index cluster) ordinal. Property Index canisters are assigned per group
+/// (`index_cluster[group_index]`), so this identifies the group an index serves.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct IndexClusterId(pub u32);
+
+impl IndexClusterId {
+    #[inline]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+}
+
+impl From<u32> for IndexClusterId {
+    #[inline]
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<IndexClusterId> for u32 {
+    #[inline]
+    fn from(value: IndexClusterId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for IndexClusterId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Storable for IndexClusterId {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 4,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Vec::from(self.to_le_bytes()))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Vec::from(self.to_le_bytes())
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(bytes.as_ref());
+        Self::from_le_bytes(raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
