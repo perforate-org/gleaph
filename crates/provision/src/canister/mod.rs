@@ -356,6 +356,7 @@ async fn deploy_job_resources(
         let kind = match resource.logical_resource {
             LogicalResource::GraphShard(_) => CanisterKind::Graph,
             LogicalResource::PropertyIndex(_) => CanisterKind::PropertyIndex,
+            LogicalResource::VectorIndex(_) => CanisterKind::VectorCanister,
         };
 
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which

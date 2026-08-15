@@ -1,5 +1,5 @@
 use super::{LogicalResource, ProvisioningIntentKey};
-use crate::federation::{IndexClusterId, ShardId};
+use crate::federation::{IndexClusterId, ShardId, VectorIndexId};
 use ic_stable_structures::Storable;
 
 #[test]
@@ -16,6 +16,13 @@ fn logical_resource_bytes_roundtrip() {
     assert_eq!(
         LogicalResource::from_bytes(vec![1, 3, 0, 0, 0].into()),
         index
+    );
+
+    let vector = LogicalResource::VectorIndex(VectorIndexId::new(9));
+    assert_eq!(vector.into_bytes(), vec![2, 9, 0, 0, 0]);
+    assert_eq!(
+        LogicalResource::from_bytes(vec![2, 9, 0, 0, 0].into()),
+        vector
     );
 }
 

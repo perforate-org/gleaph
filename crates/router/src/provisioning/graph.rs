@@ -305,7 +305,10 @@ async fn register_provisioned_graph(
 /// The Router owns logical topology and constructs these; Provision installs them verbatim.
 fn build_install_args(args: &types::ProvisionGraphArgs) -> Vec<Vec<u8>> {
     use candid::Encode;
-    use gleaph_graph_kernel::provisioning::init_args::{GraphInitArgs, IndexInitArgs};
+    use gleaph_graph_kernel::provisioning::init_args::{
+        DEFAULT_DEFINITION_MAP_SEED, DEFAULT_SUBJECT_MAP_SEED, GraphInitArgs, IndexInitArgs,
+        VectorCanisterInitArgs,
+    };
     let router_principal = ic_cdk::api::canister_self();
     args.requested_resources
         .iter()
@@ -324,6 +327,14 @@ fn build_install_args(args: &types::ProvisionGraphArgs) -> Vec<Vec<u8>> {
                     router_canister: router_principal,
                 };
                 Encode!(&init).expect("encode IndexInitArgs")
+            }
+            LogicalResource::VectorIndex(_) => {
+                let init = VectorCanisterInitArgs {
+                    router_canister: router_principal,
+                    definition_map_seed: DEFAULT_DEFINITION_MAP_SEED,
+                    subject_map_seed: DEFAULT_SUBJECT_MAP_SEED,
+                };
+                Encode!(&init).expect("encode VectorCanisterInitArgs")
             }
         })
         .collect()

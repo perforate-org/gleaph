@@ -232,6 +232,7 @@ type CreatedResource = record {
 // as the resource kind); the inner nat32 is a shared newtype (ShardId or IndexClusterId).
 type LogicalResource = variant {
   PropertyIndex : nat32;
+  VectorIndex : nat32;
   GraphShard : nat32;
 };
 // Intent lock key for Map 47: (deployment_id, logical_resource) → marker.

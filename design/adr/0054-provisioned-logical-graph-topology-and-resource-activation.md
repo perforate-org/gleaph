@@ -86,8 +86,9 @@ request explicitly includes one of those resources under the applicable resource
 The target model is that additional resources are provisioned through subsequent requests using
 the existing ADR 0035 idempotent issuance protocol. The current implementation does not yet
 provide all of these request paths: Router `provision_graph` currently requires a `GraphShard`
-resource in every request, and `ProvisionableResourceKind` currently contains only `GraphShard`,
-`PropertyIndex`, and `VectorIndex`. The following are target behaviors:
+resource in every request, and `LogicalResource` currently contains `GraphShard`, `PropertyIndex`,
+and `VectorIndex` (a `VectorIndexId` u32 newtype supplied from the kernel, mirroring
+`IndexClusterId`). The following are target behaviors:
 
 - Property Index creation is requested when an index is needed; existing Graph shards are then
   attached and backfilled according to the Property Index contract.
@@ -160,7 +161,7 @@ The following gaps must be closed before this ADR can describe the implemented d
 - Add Router admission for Property Index or Vector Index requests that do not contain a new
   GraphShard.
 - Extend or separate the provisioning model for Text Index and Procedure; neither is currently
-  a `ProvisionableResourceKind` or artifact `CanisterKind`.
+  a `LogicalResource` variant or artifact `CanisterKind`.
 - Keep the current Vector Index invariant of one target per logical graph until federation policy
   is decided.
 

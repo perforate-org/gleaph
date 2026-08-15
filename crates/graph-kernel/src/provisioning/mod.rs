@@ -9,7 +9,7 @@ use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-use crate::federation::{IndexClusterId, ShardId};
+use crate::federation::{IndexClusterId, ShardId, VectorIndexId};
 
 /// A provisionable resource within a deployment. The enum variant is the discriminator (it
 /// doubles as the resource kind); the inner type is a shared newtype so the stable encoding is
@@ -20,7 +20,8 @@ use crate::federation::{IndexClusterId, ShardId};
 pub enum LogicalResource {
     GraphShard(ShardId),
     PropertyIndex(IndexClusterId),
-    // Future: VectorIndex(...), TextIndex(...), Procedure(...)
+    VectorIndex(VectorIndexId),
+    // Future: TextIndex(...), Procedure(...)
 }
 
 impl Storable for LogicalResource {
@@ -45,6 +46,10 @@ impl Storable for LogicalResource {
                 out.push(1u8);
                 out.extend_from_slice(&cluster.to_le_bytes());
             }
+            LogicalResource::VectorIndex(vector) => {
+                out.push(2u8);
+                out.extend_from_slice(&vector.to_le_bytes());
+            }
         }
         out
     }
@@ -56,6 +61,7 @@ impl Storable for LogicalResource {
         match bytes[0] {
             0 => LogicalResource::GraphShard(ShardId::from_le_bytes(raw)),
             1 => LogicalResource::PropertyIndex(IndexClusterId::from_le_bytes(raw)),
+            2 => LogicalResource::VectorIndex(VectorIndexId::from_le_bytes(raw)),
             other => panic!("unknown LogicalResource variant {other}"),
         }
     }

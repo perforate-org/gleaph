@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-08-14
-Anchor timestamp: 2026-08-14 09:52:44 UTC +0000
+Last updated: 2026-08-15
+Anchor timestamp: 2026-08-15 23:32:06 UTC +0000
 
 ## Status
 
@@ -440,6 +440,11 @@ Single canister today; two future split axes are distinguished:
 
 Prepared now:
 
+- `LogicalResource::VectorIndex(VectorIndexId)` is a provisionable resource; `VectorIndexId` is a
+  u32 newtype supplied from the kernel (mirrors `IndexClusterId`). Today a graph has a single
+  vector target (`VectorIndexId(0)` = whole graph); the future shard-group split assigns one id per
+  contiguous graph shard group. Router builds `VectorCanisterInitArgs`
+  (`router_canister` + definition/subject map seeds) for the Provision install.
 - Router vector resolution returns a **target list** and the search orchestration is fan-out + merge
   with a **global deterministic top-k** contract (scores are comparable: same metric/dims/encoding).
 - `VectorIndexOwnershipConfig` gains `index_group_size` / `group_index` (Option; `None` = whole
