@@ -215,22 +215,20 @@ type ProvisionRouterAckResult = record {
   accepted_registry_version : nat64;
 };
 type ProvisionableResource = record {
-  kind : ProvisionableResourceKind;
-  logical_resource_key : text;
+  logical_resource : LogicalResource;
 };
-// Shared stable+wire resource kind. One-byte ordinal in stable memory.
-type ProvisionableResourceKind = variant {
-  PropertyIndex;
-  VectorCanister;
-  GraphShard;
+// A provisionable resource within a deployment. The variant is the discriminator (it doubles
+// as the resource kind); the inner nat32 is a shared newtype (ShardId or IndexClusterId).
+type LogicalResource = variant {
+  PropertyIndex : nat32;
+  GraphShard : nat32;
 };
-// Intent lock key for Map 47: (deployment_id, resource_kind, logical_resource_key) → marker.
+// Intent lock key for Map 47: (deployment_id, logical_resource) → marker.
 // 
 // This key is used by Router Map 47 and by Provision Maps 2/3. The stable byte encoding is
 // preserved exactly across both canisters.
 type ProvisioningIntentKey = record {
-  resource_kind : ProvisionableResourceKind;
-  logical_resource_key : text;
+  logical_resource : LogicalResource;
   deployment_id : text;
 };
 // Arguments for `release_activate`.
@@ -289,9 +287,8 @@ type ReleasePublishArgs = record {
 };
 type ResourceJobView = record {
   artifact_hash : opt text;
+  logical_resource : LogicalResource;
   canister_id : opt principal;
-  resource_kind : ProvisionableResourceKind;
-  logical_resource_key : text;
 };
 type Result = variant { Ok : BootstrapAuthEntry; Err : AdminInstallError };
 type Result_1 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };

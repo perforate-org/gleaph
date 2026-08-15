@@ -18,10 +18,11 @@ use crate::types::{
     ReleaseId, ReleaseManifest, ReleasePublishArgs, sha256,
 };
 use crate::types::{
-    DeploymentBinding, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
-    ProvisionJobRequestKey, ProvisionableResourceKind, ProvisioningIntentKey, ResourceJobEntry,
+    DeploymentBinding, JobState, LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord,
+    ProvisionJobRequestKey, ProvisioningIntentKey, ResourceJobEntry,
 };
 use candid::Principal;
+use gleaph_graph_kernel::federation::{IndexClusterId, ShardId};
 use ic_stable_structures::Storable;
 
 fn test_principal(id: u8) -> Principal {
@@ -42,19 +43,17 @@ fn test_record_with_resources(
     request_id: &str,
     deployment_id: &str,
     fingerprint: &str,
-    resource_keys: &[(&str, ProvisionableResourceKind)],
+    resources: &[LogicalResource],
 ) -> ProvisionJobRecord {
-    let intent_key = if resource_keys.is_empty() {
+    let intent_key = if resources.is_empty() {
         ProvisioningIntentKey {
             deployment_id: deployment_id.to_owned(),
-            resource_kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "__empty".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }
     } else {
         ProvisioningIntentKey {
             deployment_id: deployment_id.to_owned(),
-            resource_kind: resource_keys[0].1,
-            logical_resource_key: resource_keys[0].0.to_owned(),
+            logical_resource: resources[0],
         }
     };
     ProvisionJobRecord {
@@ -67,11 +66,10 @@ fn test_record_with_resources(
         authorized_caller: test_principal(0),
         release_id: "r1".to_owned(),
         router_callback_principal: test_principal(1),
-        resources: resource_keys
+        resources: resources
             .iter()
-            .map(|(key, kind)| ResourceJobEntry {
-                resource_kind: *kind,
-                logical_resource_key: key.to_string(),
+            .map(|logical_resource| ResourceJobEntry {
+                logical_resource: *logical_resource,
                 canister_id: None,
                 artifact_hash: None,
             })
@@ -90,7 +88,7 @@ fn test_record(request_id: &str, deployment_id: &str, fingerprint: &str) -> Prov
         request_id,
         deployment_id,
         fingerprint,
-        &[("shard-1", ProvisionableResourceKind::GraphShard)],
+        &[LogicalResource::GraphShard(ShardId::new(1))],
     )
 }
 
@@ -310,8 +308,7 @@ fn test_intent_lock_acquire_and_release() {
     let store = ProvisionJobStore::new();
     let key = ProvisioningIntentKey {
         deployment_id: "dep-1".to_owned(),
-        resource_kind: ProvisionableResourceKind::GraphShard,
-        logical_resource_key: "shard-1".to_owned(),
+        logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
     };
     assert!(store.acquire_intent_lock(key.clone()));
     assert!(store.intent_locked(&key));
@@ -325,8 +322,7 @@ fn test_intent_lock_blocks_second_acquirer() {
     let store = ProvisionJobStore::new();
     let key = ProvisioningIntentKey {
         deployment_id: "dep-1".to_owned(),
-        resource_kind: ProvisionableResourceKind::GraphShard,
-        logical_resource_key: "shard-1".to_owned(),
+        logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
     };
     assert!(store.acquire_intent_lock(key.clone()));
     assert!(!store.acquire_intent_lock(key.clone()));
@@ -341,21 +337,20 @@ fn test_acquire_intent_locks_for_record_multi_resource() {
         "dep-1",
         "fp-1",
         &[
-            ("shard-1", ProvisionableResourceKind::GraphShard),
-            ("idx-1", ProvisionableResourceKind::PropertyIndex),
-            ("vec-1", ProvisionableResourceKind::VectorCanister),
+            LogicalResource::GraphShard(ShardId::new(1)),
+            LogicalResource::PropertyIndex(IndexClusterId::new(1)),
+            LogicalResource::GraphShard(ShardId::new(2)),
         ],
     );
     assert_eq!(store.acquire_intent_locks_for_record(&record).unwrap(), 3);
-    for (name, kind) in &[
-        ("shard-1", ProvisionableResourceKind::GraphShard),
-        ("idx-1", ProvisionableResourceKind::PropertyIndex),
-        ("vec-1", ProvisionableResourceKind::VectorCanister),
+    for logical_resource in &[
+        LogicalResource::GraphShard(ShardId::new(1)),
+        LogicalResource::PropertyIndex(IndexClusterId::new(1)),
+        LogicalResource::GraphShard(ShardId::new(2)),
     ] {
         let lock_key = ProvisioningIntentKey {
             deployment_id: "dep-1".to_owned(),
-            resource_kind: *kind,
-            logical_resource_key: name.to_string(),
+            logical_resource: *logical_resource,
         };
         assert!(store.intent_locked(&lock_key));
     }
@@ -370,14 +365,13 @@ fn test_acquire_intent_locks_for_record_already_held() {
         "dep-1",
         "fp-1",
         &[
-            ("shard-1", ProvisionableResourceKind::GraphShard),
-            ("idx-1", ProvisionableResourceKind::PropertyIndex),
+            LogicalResource::GraphShard(ShardId::new(1)),
+            LogicalResource::PropertyIndex(IndexClusterId::new(1)),
         ],
     );
     let held_key = ProvisioningIntentKey {
         deployment_id: "dep-1".to_owned(),
-        resource_kind: ProvisionableResourceKind::PropertyIndex,
-        logical_resource_key: "idx-1".to_owned(),
+        logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(1)),
     };
     assert!(store.acquire_intent_lock(held_key.clone()));
     assert_eq!(
@@ -387,8 +381,7 @@ fn test_acquire_intent_locks_for_record_already_held() {
     // First resource's marker must have been rolled back (no partial leakage).
     let first_key = ProvisioningIntentKey {
         deployment_id: "dep-1".to_owned(),
-        resource_kind: ProvisionableResourceKind::GraphShard,
-        logical_resource_key: "shard-1".to_owned(),
+        logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
     };
     assert!(!store.intent_locked(&first_key));
     // Re-try after clearing the held key succeeds.
@@ -405,22 +398,21 @@ fn test_clear_intent_locks_for_record_releases_all() {
         "dep-1",
         "fp-1",
         &[
-            ("shard-1", ProvisionableResourceKind::GraphShard),
-            ("idx-1", ProvisionableResourceKind::PropertyIndex),
-            ("vec-1", ProvisionableResourceKind::VectorCanister),
+            LogicalResource::GraphShard(ShardId::new(1)),
+            LogicalResource::PropertyIndex(IndexClusterId::new(1)),
+            LogicalResource::GraphShard(ShardId::new(2)),
         ],
     );
     assert_eq!(store.acquire_intent_locks_for_record(&record).unwrap(), 3);
     assert_eq!(store.clear_intent_locks_for_record(&record), 3);
-    for (name, kind) in &[
-        ("shard-1", ProvisionableResourceKind::GraphShard),
-        ("idx-1", ProvisionableResourceKind::PropertyIndex),
-        ("vec-1", ProvisionableResourceKind::VectorCanister),
+    for logical_resource in &[
+        LogicalResource::GraphShard(ShardId::new(1)),
+        LogicalResource::PropertyIndex(IndexClusterId::new(1)),
+        LogicalResource::GraphShard(ShardId::new(2)),
     ] {
         let lock_key = ProvisioningIntentKey {
             deployment_id: "dep-1".to_owned(),
-            resource_kind: *kind,
-            logical_resource_key: name.to_string(),
+            logical_resource: *logical_resource,
         };
         assert!(!store.intent_locked(&lock_key));
     }
@@ -479,9 +471,9 @@ fn test_set_resource_canister_id_persists_target_and_preserves_siblings() {
         "dep-set",
         "fp-set",
         &[
-            ("shard-0", ProvisionableResourceKind::GraphShard),
-            ("idx-0", ProvisionableResourceKind::PropertyIndex),
-            ("vec-0", ProvisionableResourceKind::VectorCanister),
+            LogicalResource::GraphShard(ShardId::new(0)),
+            LogicalResource::PropertyIndex(IndexClusterId::new(0)),
+            LogicalResource::GraphShard(ShardId::new(0)),
         ],
     );
     let key = ProvisionJobRequestKey::new("req-set", "dep-set");
@@ -494,7 +486,10 @@ fn test_set_resource_canister_id_persists_target_and_preserves_siblings() {
     assert_eq!(updated.resources[0].canister_id, None);
     assert_eq!(updated.resources[1].canister_id, Some(canister_id));
     assert_eq!(updated.resources[2].canister_id, None);
-    assert_eq!(updated.resources[1].logical_resource_key, "idx-0");
+    assert_eq!(
+        updated.resources[1].logical_resource,
+        LogicalResource::PropertyIndex(IndexClusterId::new(0))
+    );
 }
 
 #[test]
@@ -526,8 +521,8 @@ fn test_insert_writes_job_by_deployment_derived_index() {
         "dep-derived",
         "fp-derived",
         &[
-            ("shard-0", ProvisionableResourceKind::GraphShard),
-            ("idx-0", ProvisionableResourceKind::PropertyIndex),
+            LogicalResource::GraphShard(ShardId::new(0)),
+            LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         ],
     );
     let expected_key = ProvisionJobRequestKey::new("req-derived", "dep-derived");
@@ -536,13 +531,11 @@ fn test_insert_writes_job_by_deployment_derived_index() {
     super::JOB_BY_DEPLOYMENT.with_borrow(|map| {
         let shard_intent = ProvisioningIntentKey {
             deployment_id: "dep-derived".to_owned(),
-            resource_kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-0".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         };
         let idx_intent = ProvisioningIntentKey {
             deployment_id: "dep-derived".to_owned(),
-            resource_kind: ProvisionableResourceKind::PropertyIndex,
-            logical_resource_key: "idx-0".to_owned(),
+            logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         };
         assert_eq!(map.get(&shard_intent), Some(expected_key.clone()));
         assert_eq!(map.get(&idx_intent), Some(expected_key));
@@ -557,20 +550,18 @@ fn test_job_by_deployment_derived_index_has_no_cross_leakage() {
         "req-leak",
         "dep-leak",
         "fp-leak",
-        &[("shard-0", ProvisionableResourceKind::GraphShard)],
+        &[LogicalResource::GraphShard(ShardId::new(0))],
     );
     store.insert_or_idempotent(record).unwrap();
 
     super::JOB_BY_DEPLOYMENT.with_borrow(|map| {
         let wrong_deployment = ProvisioningIntentKey {
             deployment_id: "other-dep".to_owned(),
-            resource_kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "shard-0".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         };
         let wrong_intent = ProvisioningIntentKey {
             deployment_id: "dep-leak".to_owned(),
-            resource_kind: ProvisionableResourceKind::GraphShard,
-            logical_resource_key: "different-key".to_owned(),
+            logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
         };
         assert_eq!(map.get(&wrong_deployment), None);
         assert_eq!(map.get(&wrong_intent), None);
@@ -587,15 +578,14 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
         "req-a",
         "dep-a",
         "fp-a",
-        &[("shard-a", ProvisionableResourceKind::GraphShard)],
+        &[LogicalResource::GraphShard(ShardId::new(0))],
     );
     let key_a = ProvisionJobRequestKey::new("req-a", "dep-a");
     store.insert_with_intent_locks(record_a, 1).unwrap();
     assert_eq!(
         store.assert_intent_to_request_for_test(
             "dep-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-a"
+            LogicalResource::GraphShard(ShardId::new(0))
         ),
         Some(key_a.clone()),
         "derived index must map R1.intent to A.key after seeding"
@@ -606,7 +596,7 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
         "req-b",
         "dep-a",
         "fp-b",
-        &[("shard-a", ProvisionableResourceKind::GraphShard)],
+        &[LogicalResource::GraphShard(ShardId::new(0))],
     );
     assert!(matches!(
         store.insert_with_intent_locks(record_b, 2),
@@ -615,8 +605,7 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
     assert_eq!(
         store.assert_intent_to_request_for_test(
             "dep-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-a"
+            LogicalResource::GraphShard(ShardId::new(0))
         ),
         Some(key_a),
         "derived index must still map R1.intent to A.key after B is rejected"

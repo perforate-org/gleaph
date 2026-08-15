@@ -16,8 +16,8 @@ use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
     ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
     ArtifactUploadState, BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource,
-    JobState, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionResult, ProvisionResultOutcome, ProvisionableResourceKind, ProvisioningIntentKey,
+    JobState, LogicalResource, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey,
+    ProvisionRequest, ProvisionResult, ProvisionResultOutcome, ProvisioningIntentKey,
     ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest,
     ReleasePublishArgs, ResourceJobEntry, RouterProvisionAck, sha256, state_name,
 };
@@ -96,8 +96,7 @@ pub struct ProvisionJobView {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ResourceJobView {
-    pub resource_kind: ProvisionableResourceKind,
-    pub logical_resource_key: String,
+    pub logical_resource: LogicalResource,
     pub canister_id: Option<Principal>,
     pub artifact_hash: Option<String>,
 }
@@ -125,8 +124,7 @@ pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> P
             .requested_resources
             .into_iter()
             .map(|r| ResourceJobEntry {
-                resource_kind: r.kind,
-                logical_resource_key: r.logical_resource_key,
+                logical_resource: r.logical_resource,
                 canister_id: None,
                 artifact_hash: None,
             })
@@ -162,7 +160,7 @@ pub(crate) fn record_to_result(
                         .clone()
                         .ok_or(ProvisionIngressError::ResultMappingError)?;
                     Ok(CreatedResource {
-                        kind: r.resource_kind,
+                        logical_resource: r.logical_resource,
                         canister_id,
                         artifact_hash,
                     })
@@ -215,8 +213,7 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
             .resources
             .iter()
             .map(|r| ResourceJobView {
-                resource_kind: r.resource_kind,
-                logical_resource_key: r.logical_resource_key.clone(),
+                logical_resource: r.logical_resource,
                 canister_id: r.canister_id,
                 artifact_hash: r.artifact_hash.clone(),
             })
@@ -255,19 +252,16 @@ pub(crate) fn accept_envelope_with_caller(
     }
     let mut seen = HashSet::new();
     for resource in &req.requested_resources {
-        if !seen.insert((resource.kind, resource.logical_resource_key.clone())) {
+        if !seen.insert(resource.logical_resource) {
             return Err(ProvisionIngressError::InvalidResources {
-                reason: format!(
-                    "duplicate resource: {:?}/{}",
-                    resource.kind, resource.logical_resource_key
-                ),
+                reason: format!("duplicate resource: {:?}", resource.logical_resource),
             });
         }
     }
-    let canonical_intent_present = req.requested_resources.iter().any(|resource| {
-        resource.kind == req.intent_key.resource_kind
-            && resource.logical_resource_key == req.intent_key.logical_resource_key
-    });
+    let canonical_intent_present = req
+        .requested_resources
+        .iter()
+        .any(|resource| resource.logical_resource == req.intent_key.logical_resource);
     if !canonical_intent_present {
         return Err(ProvisionIngressError::InvalidResources {
             reason: "envelope intent_key is not represented in requested_resources".to_owned(),
@@ -363,8 +357,7 @@ pub(crate) fn router_ack_with_caller(
     for resource in &record.resources {
         let lock_key = ProvisioningIntentKey {
             deployment_id: record.deployment_id.clone(),
-            resource_kind: resource.resource_kind,
-            logical_resource_key: resource.logical_resource_key.clone(),
+            logical_resource: resource.logical_resource,
         };
         if !store.intent_locked(&lock_key) {
             return Err(ProvisionIngressError::InvalidState);

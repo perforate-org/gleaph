@@ -18,12 +18,13 @@ use crate::stable::store::{
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind,
-    DeploymentBinding, InstallError, JobState, ProvisionAdminError, ProvisionJobRequestKey,
-    ProvisionRequest, ProvisionableResource, ProvisionableResourceKind, ProvisioningIntentKey,
+    DeploymentBinding, InstallError, JobState, LogicalResource, ProvisionAdminError,
+    ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource, ProvisioningIntentKey,
     ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs,
     RouterProvisionAck, sha256,
 };
 use candid::Principal;
+use gleaph_graph_kernel::federation::ShardId;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
@@ -53,11 +54,8 @@ fn test_binding(deployment_id: &str) -> DeploymentBinding {
     }
 }
 
-fn test_resource(kind: ProvisionableResourceKind, key: &str) -> ProvisionableResource {
-    ProvisionableResource {
-        kind,
-        logical_resource_key: key.to_owned(),
-    }
+fn test_resource(logical_resource: LogicalResource) -> ProvisionableResource {
+    ProvisionableResource { logical_resource }
 }
 
 fn test_request(
@@ -67,17 +65,9 @@ fn test_request(
     resources: Vec<ProvisionableResource>,
 ) -> ProvisionRequest {
     let intent_key = if resources.is_empty() {
-        ProvisioningIntentKey::new(
-            deployment_id,
-            ProvisionableResourceKind::GraphShard,
-            "__empty",
-        )
+        ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)))
     } else {
-        ProvisioningIntentKey::new(
-            deployment_id,
-            resources[0].kind,
-            &resources[0].logical_resource_key,
-        )
+        ProvisioningIntentKey::new(deployment_id, resources[0].logical_resource)
     };
     ProvisionRequest {
         deployment_id: deployment_id.to_owned(),
@@ -166,10 +156,7 @@ fn test_provision_accept_wrong_caller_rejected() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result = accept_envelope_with_caller(other_principal(), &store, &deployment_store, req, 1);
     assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
@@ -188,10 +175,7 @@ fn test_provision_accept_unknown_deployment_rejected() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
     assert_eq!(result, Err(ProvisionIngressError::UnknownDeployment));
@@ -205,10 +189,7 @@ fn test_provision_accept_idempotent_replay_returns_existing() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(
         router_principal(),
@@ -240,20 +221,14 @@ fn test_provision_accept_conflict_different_fingerprint() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req1, 1).unwrap();
     let req2 = test_request(
         "dep-a",
         "req-a",
         "fp-b",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result =
         accept_envelope_with_caller(router_principal(), &store, &deployment_store, req2, 2);
@@ -268,17 +243,14 @@ fn test_provision_no_partial_writes_on_lock_failure() {
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     // Pre-lock the only intent.
     let held_key =
-        ProvisioningIntentKey::new("dep-a", ProvisionableResourceKind::GraphShard, "shard-a");
+        ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
     assert!(store.acquire_intent_lock(held_key.clone()));
 
     let req = test_request(
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
     assert_eq!(result, Err(ProvisionIngressError::IntentLockHeld));
@@ -313,8 +285,8 @@ fn test_provision_accept_duplicate_resources_rejected() {
         "req-dup",
         "fp-dup",
         vec![
-            test_resource(ProvisionableResourceKind::GraphShard, "shard-a"),
-            test_resource(ProvisionableResourceKind::GraphShard, "shard-a"),
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
         ],
     );
     let result = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1);
@@ -338,10 +310,7 @@ fn test_provision_query_wrong_caller_rejected() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let result = query_job_with_caller(
@@ -362,10 +331,7 @@ fn test_provision_query_returns_redacted_view() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let view = query_job_with_caller(
@@ -428,10 +394,7 @@ fn test_provision_router_ack_wrong_router_rejected() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -458,10 +421,7 @@ fn test_provision_router_ack_invalid_state() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     // Record is in Reserved after accept.
@@ -487,10 +447,7 @@ fn test_provision_router_ack_persists_registry_version() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -514,8 +471,7 @@ fn test_provision_router_ack_persists_registry_version() {
     assert_eq!(record.accepted_registry_version, Some(7));
     assert!(!store.intent_locked(&ProvisioningIntentKey::new(
         "dep-a",
-        ProvisionableResourceKind::GraphShard,
-        "shard-a",
+        LogicalResource::GraphShard(ShardId::new(0))
     )));
 }
 
@@ -527,17 +483,14 @@ fn test_provision_router_ack_missing_lock_returns_invalid_state() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     // Release the lock behind the store's back.
     let lock_key =
-        ProvisioningIntentKey::new("dep-a", ProvisionableResourceKind::GraphShard, "shard-a");
+        ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
     assert!(store.release_intent_lock(&lock_key));
     let result = router_ack_with_caller(
         router_principal(),
@@ -561,10 +514,7 @@ fn test_provision_router_ack_idempotent_replay() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -596,10 +546,7 @@ fn test_provision_router_ack_completed_replay_returns_ok() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -629,10 +576,7 @@ fn test_provision_router_ack_completed_version_conflict_returns_ack_conflict() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -663,10 +607,7 @@ fn test_provision_router_ack_state_advance_failed_returns_state_advance_failed()
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -701,10 +642,7 @@ fn test_provision_router_ack_unknown_deployment() {
             "dep-orphan",
             "req-o",
             "fp-o",
-            vec![test_resource(
-                ProvisionableResourceKind::GraphShard,
-                "shard-o",
-            )],
+            vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
     );
@@ -731,10 +669,7 @@ fn test_provision_accept_envelope_fresh_admission_reports_accepted() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result =
         accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
@@ -762,10 +697,7 @@ fn test_provision_accept_envelope_replay_reports_replay() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(
         router_principal(),
@@ -812,10 +744,7 @@ fn test_provision_accept_envelope_allows_bootstrap_principal() {
         "dep-boot",
         "req-boot",
         "fp-boot",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-boot",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     // The bootstrap principal (Account) may issue the first Router.
     let result =
@@ -874,10 +803,7 @@ fn test_provision_wrong_impl_returning_failed_for_admission_would_fail() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result =
         accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
@@ -898,27 +824,21 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let _a = accept_envelope_with_caller(router_principal(), &store, &deployment_store, req_a, 1)
         .unwrap();
 
     let key_a = ProvisionJobRequestKey::new("req-a", "dep-a");
     let intent_key =
-        ProvisioningIntentKey::new("dep-a", ProvisionableResourceKind::GraphShard, "shard-a");
+        ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
 
     // Job B: same deployment, same resource, different request_id.
     let req_b = test_request(
         "dep-a",
         "req-b",
         "fp-b",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let result =
         accept_envelope_with_caller(router_principal(), &store, &deployment_store, req_b, 2);
@@ -935,8 +855,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     assert_eq!(
         store.assert_intent_to_request_for_test(
             "dep-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-a"
+            LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(key_a.clone()),
         "derived index must map R1.intent to A.key before B is attempted"
@@ -946,8 +865,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     assert_eq!(
         store.assert_intent_to_request_for_test(
             "dep-a",
-            ProvisionableResourceKind::GraphShard,
-            "shard-a"
+            LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(key_a.clone()),
         "derived index must still map R1.intent to A.key after B is rejected"
@@ -997,19 +915,13 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
         "d1",
         "r1",
         "fp-1",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-1",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(1)))],
     );
     let req2 = test_request(
         "d2",
         "r1",
         "fp-2",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-2",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(2)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req1, 1).unwrap();
     accept_envelope_with_caller(other_principal(), &store, &deployment_store, req2, 2).unwrap();
@@ -1079,10 +991,7 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -1137,10 +1046,7 @@ fn test_provision_router_ack_completed_then_retry_returns_replay() {
         "dep-a",
         "req-a",
         "fp-a",
-        vec![test_resource(
-            ProvisionableResourceKind::GraphShard,
-            "shard-a",
-        )],
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     accept_envelope_with_caller(router_principal(), &store, &deployment_store, req, 1).unwrap();
     let key = ProvisionJobRequestKey::new("req-a", "dep-a");
@@ -1174,10 +1080,7 @@ fn test_provision_record_to_result_reserved_state_returns_err() {
             "dep-a",
             "req-a",
             "fp-a",
-            vec![test_resource(
-                ProvisionableResourceKind::GraphShard,
-                "shard-a",
-            )],
+            vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
     );
@@ -1214,10 +1117,7 @@ fn test_provision_record_to_result_completed_with_missing_canister_id() {
             "dep-a",
             "req-a",
             "fp-a",
-            vec![test_resource(
-                ProvisionableResourceKind::GraphShard,
-                "shard-a",
-            )],
+            vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
     );
@@ -1237,10 +1137,7 @@ fn test_provision_get_by_request_exact_key_lookup() {
             "dep-a",
             "req-a",
             "fp-a",
-            vec![test_resource(
-                ProvisionableResourceKind::GraphShard,
-                "shard-a",
-            )],
+            vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
     );
@@ -1249,10 +1146,7 @@ fn test_provision_get_by_request_exact_key_lookup() {
             "dep-b",
             "req-b",
             "fp-b",
-            vec![test_resource(
-                ProvisionableResourceKind::GraphShard,
-                "shard-b",
-            )],
+            vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
     );

@@ -10,7 +10,7 @@ use std::borrow::Cow;
 // Re-exports for the catalog key and the lock key (P2-5, P2-A).
 // P1-A: `IntentLockMarker` is `pub(crate)` in router and cannot be re-exported.
 // Use the provision-local marker defined below.
-pub use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentKey};
 
 pub use gleaph_graph_kernel::provisioning::wire::{
     CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
@@ -101,8 +101,7 @@ pub(crate) enum DeploymentBindingStableRecord {
 /// the parent `JobState` advances and `active_resource_index` moves to the next entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ResourceJobEntry {
-    pub resource_kind: ProvisionableResourceKind,
-    pub logical_resource_key: String,
+    pub logical_resource: LogicalResource,
     /// None until canister creation completes.
     pub canister_id: Option<Principal>,
     /// Artifact hash set after install.

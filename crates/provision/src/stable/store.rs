@@ -170,8 +170,7 @@ impl ProvisionJobStore {
             for resource in &record.resources {
                 let intent_key = ProvisioningIntentKey {
                     deployment_id: record.deployment_id.clone(),
-                    resource_kind: resource.resource_kind,
-                    logical_resource_key: resource.logical_resource_key.clone(),
+                    logical_resource: resource.logical_resource,
                 };
                 map.insert(
                     intent_key,
@@ -206,8 +205,7 @@ impl ProvisionJobStore {
         for resource in &record.resources {
             let intent_key = ProvisioningIntentKey {
                 deployment_id: record.deployment_id.clone(),
-                resource_kind: resource.resource_kind,
-                logical_resource_key: resource.logical_resource_key.clone(),
+                logical_resource: resource.logical_resource,
             };
             if INTENT_LOCK.with_borrow(|map| map.contains_key(&intent_key)) {
                 return Err(InsertWithLocksError::IntentLockHeld);
@@ -222,8 +220,7 @@ impl ProvisionJobStore {
             for resource in &record.resources {
                 let intent_key = ProvisioningIntentKey {
                     deployment_id: record.deployment_id.clone(),
-                    resource_kind: resource.resource_kind,
-                    logical_resource_key: resource.logical_resource_key.clone(),
+                    logical_resource: resource.logical_resource,
                 };
                 map.insert(intent_key, key.clone());
             }
@@ -232,8 +229,7 @@ impl ProvisionJobStore {
             for resource in &record.resources {
                 let intent_key = ProvisioningIntentKey {
                     deployment_id: record.deployment_id.clone(),
-                    resource_kind: resource.resource_kind,
-                    logical_resource_key: resource.logical_resource_key.clone(),
+                    logical_resource: resource.logical_resource,
                 };
                 map.insert(intent_key, ProvisionIntentLockMarker);
             }
@@ -353,8 +349,7 @@ impl ProvisionJobStore {
             for resource in &record.resources {
                 let lock_key = ProvisioningIntentKey {
                     deployment_id: record.deployment_id.clone(),
-                    resource_kind: resource.resource_kind,
-                    logical_resource_key: resource.logical_resource_key.clone(),
+                    logical_resource: resource.logical_resource,
                 };
                 if map.contains_key(&lock_key) {
                     // Roll back partial acquisitions.
@@ -377,8 +372,7 @@ impl ProvisionJobStore {
             for resource in &record.resources {
                 let lock_key = ProvisioningIntentKey {
                     deployment_id: record.deployment_id.clone(),
-                    resource_kind: resource.resource_kind,
-                    logical_resource_key: resource.logical_resource_key.clone(),
+                    logical_resource: resource.logical_resource,
                 };
                 if map.remove(&lock_key).is_some() {
                     count += 1;
@@ -403,8 +397,7 @@ impl ProvisionJobStore {
                 for resource in &record.resources {
                     let intent_key = ProvisioningIntentKey {
                         deployment_id: record.deployment_id.clone(),
-                        resource_kind: resource.resource_kind,
-                        logical_resource_key: resource.logical_resource_key.clone(),
+                        logical_resource: resource.logical_resource,
                     };
                     map.remove(&intent_key);
                 }
@@ -414,18 +407,16 @@ impl ProvisionJobStore {
     }
 
     /// Test-only lookup: return the `ProvisionJobRequestKey` stored in `JOB_BY_DEPLOYMENT`
-    /// for the derived intent `(deployment_id, resource_kind, logical_resource_key)`, if any.
+    /// for the derived intent `(deployment_id, logical_resource)`, if any.
     #[cfg(test)]
     pub(crate) fn assert_intent_to_request_for_test(
         &self,
         deployment_id: &str,
-        resource_kind: crate::types::ProvisionableResourceKind,
-        logical_resource_key: &str,
+        logical_resource: crate::types::LogicalResource,
     ) -> Option<ProvisionJobRequestKey> {
         let intent_key = ProvisioningIntentKey {
             deployment_id: deployment_id.to_owned(),
-            resource_kind,
-            logical_resource_key: logical_resource_key.to_owned(),
+            logical_resource,
         };
         JOB_BY_DEPLOYMENT.with_borrow(|map| map.get(&intent_key))
     }
@@ -439,8 +430,7 @@ impl ProvisionJobStore {
                 .filter(|resource| {
                     let intent_key = ProvisioningIntentKey {
                         deployment_id: record.deployment_id.clone(),
-                        resource_kind: resource.resource_kind,
-                        logical_resource_key: resource.logical_resource_key.clone(),
+                        logical_resource: resource.logical_resource,
                     };
                     map.contains_key(&intent_key)
                 })
