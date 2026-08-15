@@ -345,7 +345,7 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 .path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
-            let mapping = network::start(
+            let result = network::start(
                 &args.network,
                 project_root,
                 loaded,
@@ -353,7 +353,24 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 &args.provision_wasm,
             )
             .map_err(CliError::Message)?;
-            println!("network started; platform mapping: {mapping:?}");
+            if let Some(port) = result.gateway_port {
+                println!("Network started on port {port}");
+            }
+            println!("platform mapping: {:?}", result.mapping);
+
+            // For a Gleaph-owned network, keep the launcher child alive so the network persists.
+            // The command blocks until the launcher exits (e.g. Ctrl-C).
+            if let Some(mut child) = result.launcher_child {
+                println!("network running; press Ctrl-C to stop");
+                let status = child
+                    .wait()
+                    .map_err(|e| CliError::Message(format!("wait for launcher: {e}")))?;
+                if !status.success() {
+                    return Err(CliError::Message(format!(
+                        "launcher exited with status {status}"
+                    )));
+                }
+            }
             Ok(())
         }
     }
