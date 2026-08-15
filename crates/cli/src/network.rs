@@ -36,13 +36,18 @@ pub fn start(
     loaded: &LoadedConfig,
     account_wasm: &Path,
     provision_wasm: &Path,
+    background: bool,
 ) -> Result<StartResult, String> {
     let mut launcher_child = None;
     let mut gateway_port = None;
     if crate::identity::has_icp_yaml(project_root) {
         // Delegate network start to icp-cli.
-        let status = std::process::Command::new("icp")
-            .args(["network", "start", network, "-d"])
+        let mut cmd = std::process::Command::new("icp");
+        cmd.args(["network", "start", network]);
+        if background {
+            cmd.arg("-d");
+        }
+        let status = cmd
             .status()
             .map_err(|e| format!("run `icp network start`: {e}"))?;
         if !status.success() {
@@ -53,7 +58,7 @@ pub fn start(
     } else {
         // Gleaph-owned local network: download and run the launcher.
         let launcher = download_launcher()?;
-        let (child, port) = spawn_launcher(&launcher, network)?;
+        let (child, port) = spawn_launcher(&launcher, network, background)?;
         launcher_child = Some(child);
         gateway_port = Some(port);
     }
@@ -142,27 +147,40 @@ fn download_launcher() -> Result<PathBuf, String> {
 
 /// Spawn the launcher as a child process, waiting for its status file. Returns the child and the
 /// gateway port.
-fn spawn_launcher(launcher_path: &Path, network: &str) -> Result<(Child, u16), String> {
+///
+/// In background mode the child is detached (its stdio is redirected) and the PID is recorded so
+/// `gleaph network stop` can terminate it; the returned `Child` is still owned by the caller but
+/// the process outlives it.
+fn spawn_launcher(
+    launcher_path: &Path,
+    network: &str,
+    background: bool,
+) -> Result<(Child, u16), String> {
     let state_dir = std::env::temp_dir().join(format!("gleaph-{network}-state"));
     let status_dir = std::env::temp_dir().join(format!("gleaph-{network}-status"));
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("create state dir: {e}"))?;
     std::fs::create_dir_all(&status_dir).map_err(|e| format!("create status dir: {e}"))?;
 
-    let child = std::process::Command::new(launcher_path)
-        .args([
-            "--interface-version",
-            "1.1.0",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--bind",
-            "127.0.0.1",
-            "--gateway-port",
-            "8000",
-            "--status-dir",
-            status_dir.to_str().unwrap(),
-        ])
-        .spawn()
-        .map_err(|e| format!("spawn launcher: {e}"))?;
+    let mut cmd = std::process::Command::new(launcher_path);
+    cmd.args([
+        "--interface-version",
+        "1.1.0",
+        "--state-dir",
+        state_dir.to_str().unwrap(),
+        "--bind",
+        "127.0.0.1",
+        "--gateway-port",
+        "8000",
+        "--status-dir",
+        status_dir.to_str().unwrap(),
+    ]);
+    if background {
+        // Detach: redirect stdio so the child outlives the parent.
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
+    }
+    let child = cmd.spawn().map_err(|e| format!("spawn launcher: {e}"))?;
 
     // Wait for the status file to appear.
     let status_file = status_dir.join("status.json");
@@ -172,12 +190,44 @@ fn spawn_launcher(launcher_path: &Path, network: &str) -> Result<(Child, u16), S
             let status: LauncherStatus =
                 serde_json::from_str(&text).map_err(|e| format!("parse launcher status: {e}"))?;
             if status.v == "1" {
+                if background {
+                    // Record the PID so `gleaph network stop` can terminate it.
+                    let _ = std::fs::write(pid_file(network), child.id().to_string());
+                }
                 return Ok((child, status.gateway_port));
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     Err("launcher did not become ready within 30s".into())
+}
+
+/// The PID file for a background network, under the user config dir.
+fn pid_file(network: &str) -> PathBuf {
+    std::env::var_os("GLEAPH_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("gleaph"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(format!("network-{network}.pid"))
+}
+
+/// Stop a background network by reading its PID file and terminating the process.
+pub fn stop(network: &str) -> Result<(), String> {
+    let path = pid_file(network);
+    let pid_text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read pid file {}: {e}", path.display()))?;
+    let pid: u32 = pid_text
+        .trim()
+        .parse()
+        .map_err(|e| format!("parse pid: {e}"))?;
+    // Send SIGINT (like icp-cli) so the launcher cleans up.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGINT);
+    }
+    let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 /// The launcher's status file format (mirrors icp-cli).

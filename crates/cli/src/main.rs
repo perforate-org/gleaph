@@ -85,6 +85,15 @@ enum TopLevelCommand {
 enum NetworkCommand {
     /// Start the local network and deploy Account/Provision, writing the mapping.
     Start(NetworkStartArgs),
+    /// Stop a background network.
+    Stop(NetworkStopArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct NetworkStopArgs {
+    /// Network name (ic/local) or an HTTP(S) endpoint URL.
+    #[arg(short = 'n', long, value_name = "NETWORK", default_value = "local")]
+    network: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -98,6 +107,9 @@ struct NetworkStartArgs {
     /// Path to the Provision canister wasm.
     #[arg(long, value_name = "PATH")]
     provision_wasm: PathBuf,
+    /// Start the network in the background; the command exits once it is running.
+    #[arg(short = 'd', long)]
+    background: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -351,6 +363,7 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 loaded,
                 &args.account_wasm,
                 &args.provision_wasm,
+                args.background,
             )
             .map_err(CliError::Message)?;
             if let Some(port) = result.gateway_port {
@@ -359,18 +372,28 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
             println!("platform mapping: {:?}", result.mapping);
 
             // For a Gleaph-owned network, keep the launcher child alive so the network persists.
-            // The command blocks until the launcher exits (e.g. Ctrl-C).
+            // In background mode the child is detached and the command returns; otherwise it
+            // blocks until the launcher exits (e.g. Ctrl-C).
             if let Some(mut child) = result.launcher_child {
-                println!("network running; press Ctrl-C to stop");
-                let status = child
-                    .wait()
-                    .map_err(|e| CliError::Message(format!("wait for launcher: {e}")))?;
-                if !status.success() {
-                    return Err(CliError::Message(format!(
-                        "launcher exited with status {status}"
-                    )));
+                if args.background {
+                    println!("network running in the background; `gleaph network stop` to stop");
+                } else {
+                    println!("network running; press Ctrl-C to stop");
+                    let status = child
+                        .wait()
+                        .map_err(|e| CliError::Message(format!("wait for launcher: {e}")))?;
+                    if !status.success() {
+                        return Err(CliError::Message(format!(
+                            "launcher exited with status {status}"
+                        )));
+                    }
                 }
             }
+            Ok(())
+        }
+        NetworkCommand::Stop(args) => {
+            network::stop(&args.network).map_err(CliError::Message)?;
+            println!("network stopped");
             Ok(())
         }
     }
