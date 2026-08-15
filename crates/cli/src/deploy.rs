@@ -28,11 +28,21 @@ pub fn deploy(
         "no provision canister in .gleaph/data/mappings; the platform must be deployed first",
     )?;
 
-    // Use the explicit identity, else the session's PEM path (icp identity names are a later
-    // slice; RemoteTransport::connect takes a PEM path).
+    // Use the explicit identity, else resolve the session's signing source (PEM path or
+    // icp-cli identity, depending on icp.yaml presence).
     let identity: Option<PathBuf> = match identity {
         Some(path) => Some(path.to_owned()),
-        None => auth::load_session().and_then(|s| s.pem_path().map(|p| p.to_owned())),
+        None => {
+            let session = auth::load_session();
+            let has_icp_yaml = loaded
+                .path
+                .parent()
+                .is_some_and(crate::identity::has_icp_yaml);
+            session
+                .as_ref()
+                .map(|s| crate::identity::session_pem(s, has_icp_yaml))
+                .transpose()?
+        }
     };
 
     let transport = RemoteTransport::connect(

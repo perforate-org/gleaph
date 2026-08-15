@@ -386,10 +386,19 @@ fn execute_signup(
                 .into(),
         )
     })?;
-    // Use the explicit identity, else the session's PEM path.
+    // Use the explicit identity, else resolve the session's signing source (PEM path or
+    // icp-cli identity, depending on icp.yaml presence).
     let identity = match args.identity.as_deref() {
         Some(path) => Some(path.to_owned()),
-        None => auth::load_session().and_then(|s| s.pem_path().map(|p| p.to_owned())),
+        None => {
+            let session = auth::load_session();
+            let has_icp_yaml = loaded.path.parent().is_some_and(identity::has_icp_yaml);
+            session
+                .as_ref()
+                .map(|s| identity::session_pem(s, has_icp_yaml))
+                .transpose()
+                .map_err(CliError::Message)?
+        }
     };
     let transport = remote::RemoteTransport::connect(
         account_canister,
