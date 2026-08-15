@@ -60,5 +60,6 @@ pub(crate) fn binding_from_admin_args(
         router_principal: args.router_principal,
         governance_principal: args.governance_principal,
         binding_version: args.binding_version,
+        bootstrap_principal: args.bootstrap_principal,
     }
 }

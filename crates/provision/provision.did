@@ -3,6 +3,7 @@ type AdminInstallDeploymentBindingArgs = record {
   binding_version : nat64;
   router_principal : principal;
   governance_principal : principal;
+  bootstrap_principal : opt principal;
   deployment_id : text;
 };
 // Error returned by `admin_install_deployment_binding`.
@@ -130,6 +131,7 @@ type DeploymentBinding = record {
   router_principal : principal;
   // Governance/recovery principal that can update this binding.
   governance_principal : principal;
+  bootstrap_principal : opt principal;
   deployment_id : text;
 };
 // Errors returned by `release_install`.

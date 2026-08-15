@@ -239,7 +239,11 @@ pub(crate) fn accept_envelope_with_caller(
     let binding = deployment_store
         .get(&req.deployment_id)
         .ok_or(ProvisionIngressError::UnknownDeployment)?;
-    if caller != binding.router_principal {
+    // The Router principal is the normal issuer; the bootstrap principal (Account) may issue
+    // only the first Router before the Router principal exists (ADR 0035 Amendment).
+    let is_router = caller == binding.router_principal;
+    let is_bootstrap = binding.bootstrap_principal.is_some_and(|p| caller == p);
+    if !is_router && !is_bootstrap {
         return Err(ProvisionIngressError::NotAuthorized);
     }
 

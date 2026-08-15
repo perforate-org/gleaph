@@ -62,6 +62,10 @@ pub struct DeploymentBinding {
     pub governance_principal: Principal,
     /// Registry version at time of binding install.
     pub binding_version: u64,
+    /// Optional bootstrap trust subject (ADR 0035 Amendment): the Account canister that may
+    /// issue the first Router before the Router principal exists. Transient; after the first
+    /// Router is issued the binding is handed to the Router principal.
+    pub bootstrap_principal: Option<Principal>,
 }
 
 impl Storable for DeploymentBinding {
@@ -390,6 +394,8 @@ pub struct AdminInstallDeploymentBindingArgs {
     pub router_principal: Principal,
     pub governance_principal: Principal,
     pub binding_version: u64,
+    /// Optional bootstrap trust subject (Account) for the first-Router issuance.
+    pub bootstrap_principal: Option<Principal>,
 }
 
 /// Error returned by `admin_install_deployment_binding`.

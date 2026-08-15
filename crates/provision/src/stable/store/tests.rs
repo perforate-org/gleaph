@@ -34,6 +34,7 @@ fn test_deployment_binding(deployment_id: &str, router_id: u8, gov_id: u8) -> De
         router_principal: test_principal(router_id),
         governance_principal: test_principal(gov_id),
         binding_version: 1,
+        bootstrap_principal: None,
     }
 }
 
@@ -643,6 +644,7 @@ fn admin_binding(
         router_principal: test_principal(router_id),
         governance_principal: test_principal(gov_id),
         binding_version: version,
+        bootstrap_principal: None,
     }
 }
 

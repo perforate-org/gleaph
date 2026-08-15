@@ -49,6 +49,7 @@ fn test_binding(deployment_id: &str) -> DeploymentBinding {
         router_principal: router_principal(),
         governance_principal: gov_principal(),
         binding_version: 1,
+        bootstrap_principal: None,
     }
 }
 
@@ -792,6 +793,45 @@ fn test_provision_accept_envelope_replay_reports_replay() {
 }
 
 #[test]
+fn test_provision_accept_envelope_allows_bootstrap_principal() {
+    reset_all_maps();
+    // Seed a binding whose bootstrap principal is the Account (other_principal), distinct from
+    // the Router principal.
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![DeploymentBinding {
+            deployment_id: "dep-boot".to_owned(),
+            router_principal: router_principal(),
+            governance_principal: gov_principal(),
+            binding_version: 1,
+            bootstrap_principal: Some(other_principal()),
+        }],
+    });
+    let deployment_store = DeploymentTrustStore::new();
+    let store = ProvisionJobStore::new();
+    let req = test_request(
+        "dep-boot",
+        "req-boot",
+        "fp-boot",
+        vec![test_resource(
+            ProvisionableResourceKind::GraphShard,
+            "shard-boot",
+        )],
+    );
+    // The bootstrap principal (Account) may issue the first Router.
+    let result =
+        accept_envelope_with_caller(other_principal(), &store, &deployment_store, req.clone(), 1)
+            .unwrap();
+    assert!(
+        matches!(result, ProvisionAcceptResponse::Accepted { .. }),
+        "bootstrap principal must be accepted for the first Router"
+    );
+    // A non-router, non-bootstrap caller is still rejected.
+    let err = accept_envelope_with_caller(gov_principal(), &store, &deployment_store, req, 2)
+        .unwrap_err();
+    assert_eq!(err, ProvisionIngressError::NotAuthorized);
+}
+
+#[test]
 fn test_provision_wrong_impl_returning_failed_for_admission_would_fail() {
     // Adversarial test: a wrong implementation of accept_envelope that returns a
     // terminal ProvisionResult with Failed{reason} for a fresh admission would not
@@ -912,12 +952,14 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
                 router_principal: router_principal(),
                 governance_principal: gov_principal(),
                 binding_version: 1,
+                bootstrap_principal: None,
             },
             DeploymentBinding {
                 deployment_id: "d2".to_owned(),
                 router_principal: other_principal(),
                 governance_principal: gov_principal(),
                 binding_version: 1,
+                bootstrap_principal: None,
             },
         ],
     });
@@ -1284,6 +1326,7 @@ fn admin_args(
         router_principal: pid(router_id),
         governance_principal: pid(gov_id),
         binding_version,
+        bootstrap_principal: None,
     }
 }
 
