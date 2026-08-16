@@ -1,0 +1,15 @@
+[package]
+name = "gpui-graph"
+description = "A composable property graph visualization component for GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui = "0.2.2"
+slotmap = "1.0"
+bitvec = "1.0"
+glam = "0.29"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }

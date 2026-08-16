@@ -17,6 +17,7 @@ members = [
     "crates/graph-catalog",
     "crates/graph-index",
     "crates/graph-kernel",
+    "crates/gpui-graph",
     "crates/message-sizing",
     "crates/migration-api",
     "crates/prepared-runtime",
