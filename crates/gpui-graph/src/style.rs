@@ -1,53 +1,11 @@
 //! Graph styling (§26.2).
 //!
 //! Graph-specific appearance (node radius, fill, stroke, edge width, ...) is
-//! distinct from GPUI element styling (§26.1). The style is kept independent of
-//! GPUI types so the paint layer can be tested without a running GPUI app; the
-//! view layer converts these to GPUI colors.
+//! distinct from GPUI element styling (§26.1). The style reuses GPUI types
+//! (`Hsla`, `TextStyle`) so graph appearance and text share a single color and
+//! font vocabulary with the rest of the application.
 
-/// An RGBA color in `[0, 1]` components.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rgba {
-    /// Red.
-    pub r: f32,
-    /// Green.
-    pub g: f32,
-    /// Blue.
-    pub b: f32,
-    /// Alpha.
-    pub a: f32,
-}
-
-impl Rgba {
-    /// A fully opaque color.
-    pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
-        Self { r, g, b, a: 1.0 }
-    }
-
-    /// A fully transparent black.
-    pub const TRANSPARENT: Self = Self {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0,
-    };
-}
-
-/// A stroke (outline) style.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Stroke {
-    /// Stroke width in pixels.
-    pub width: f32,
-    /// Stroke color.
-    pub color: Rgba,
-}
-
-impl Stroke {
-    /// A stroke with the given width and color.
-    pub const fn new(width: f32, color: Rgba) -> Self {
-        Self { width, color }
-    }
-}
+use gpui::{Hsla, TextStyle, hsla};
 
 /// The shape of a directed edge's arrowhead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,44 +24,53 @@ pub struct GraphStyle {
     /// Node radius in pixels.
     pub node_radius: f32,
     /// Node fill color.
-    pub node_fill: Rgba,
-    /// Node stroke.
-    pub node_stroke: Stroke,
+    pub node_fill: Hsla,
+    /// Node stroke width in pixels.
+    pub node_stroke_width: f32,
+    /// Node stroke color.
+    pub node_stroke_color: Hsla,
     /// Node fill color when selected.
-    pub node_fill_selected: Rgba,
+    pub node_fill_selected: Hsla,
     /// Node fill color when hovered.
-    pub node_fill_hovered: Rgba,
+    pub node_fill_hovered: Hsla,
     /// Edge width in pixels.
     pub edge_width: f32,
     /// Edge color.
-    pub edge_color: Rgba,
+    pub edge_color: Hsla,
     /// Edge color when selected.
-    pub edge_color_selected: Rgba,
+    pub edge_color_selected: Hsla,
     /// Edge color when hovered.
-    pub edge_color_hovered: Rgba,
+    pub edge_color_hovered: Hsla,
     /// Whether directed edges render an arrowhead.
     pub edge_arrow_enabled: bool,
     /// Arrowhead size in pixels (length along the edge).
     pub edge_arrow_size: f32,
     /// Arrowhead shape.
     pub edge_arrow_shape: ArrowShape,
+    /// Text style for node and edge labels.
+    pub label_style: TextStyle,
+    /// Vertical offset of a node label below the node, in pixels.
+    pub label_offset: f32,
 }
 
 impl Default for GraphStyle {
     fn default() -> Self {
         Self {
             node_radius: 6.0,
-            node_fill: Rgba::rgb(0.35, 0.55, 0.9),
-            node_stroke: Stroke::new(1.0, Rgba::rgb(0.1, 0.1, 0.1)),
-            node_fill_selected: Rgba::rgb(0.9, 0.5, 0.2),
-            node_fill_hovered: Rgba::rgb(0.5, 0.7, 0.95),
+            node_fill: hsla(0.6, 0.5, 0.6, 1.0),
+            node_stroke_width: 1.0,
+            node_stroke_color: hsla(0.0, 0.0, 0.1, 1.0),
+            node_fill_selected: hsla(0.08, 0.7, 0.55, 1.0),
+            node_fill_hovered: hsla(0.6, 0.5, 0.7, 1.0),
             edge_width: 1.5,
-            edge_color: Rgba::rgb(0.5, 0.5, 0.5),
-            edge_color_selected: Rgba::rgb(0.9, 0.5, 0.2),
-            edge_color_hovered: Rgba::rgb(0.7, 0.7, 0.7),
+            edge_color: hsla(0.0, 0.0, 0.5, 1.0),
+            edge_color_selected: hsla(0.08, 0.7, 0.55, 1.0),
+            edge_color_hovered: hsla(0.0, 0.0, 0.7, 1.0),
             edge_arrow_enabled: true,
             edge_arrow_size: 8.0,
             edge_arrow_shape: ArrowShape::Triangle,
+            label_style: TextStyle::default(),
+            label_offset: 4.0,
         }
     }
 }
@@ -116,26 +83,32 @@ impl GraphStyle {
     }
 
     /// Set the node fill color.
-    pub fn with_node_fill(mut self, fill: Rgba) -> Self {
+    pub fn with_node_fill(mut self, fill: Hsla) -> Self {
         self.node_fill = fill;
         self
     }
 
     /// Set the node fill color when hovered.
-    pub fn with_node_fill_hovered(mut self, fill: Rgba) -> Self {
+    pub fn with_node_fill_hovered(mut self, fill: Hsla) -> Self {
         self.node_fill_hovered = fill;
         self
     }
 
     /// Set the node fill color when selected.
-    pub fn with_node_fill_selected(mut self, fill: Rgba) -> Self {
+    pub fn with_node_fill_selected(mut self, fill: Hsla) -> Self {
         self.node_fill_selected = fill;
         self
     }
 
-    /// Set the node stroke.
-    pub fn with_node_stroke(mut self, stroke: Stroke) -> Self {
-        self.node_stroke = stroke;
+    /// Set the node stroke width.
+    pub fn with_node_stroke_width(mut self, width: f32) -> Self {
+        self.node_stroke_width = width;
+        self
+    }
+
+    /// Set the node stroke color.
+    pub fn with_node_stroke_color(mut self, color: Hsla) -> Self {
+        self.node_stroke_color = color;
         self
     }
 
@@ -146,19 +119,19 @@ impl GraphStyle {
     }
 
     /// Set the edge color.
-    pub fn with_edge_color(mut self, color: Rgba) -> Self {
+    pub fn with_edge_color(mut self, color: Hsla) -> Self {
         self.edge_color = color;
         self
     }
 
     /// Set the edge color when hovered.
-    pub fn with_edge_color_hovered(mut self, color: Rgba) -> Self {
+    pub fn with_edge_color_hovered(mut self, color: Hsla) -> Self {
         self.edge_color_hovered = color;
         self
     }
 
     /// Set the edge color when selected.
-    pub fn with_edge_color_selected(mut self, color: Rgba) -> Self {
+    pub fn with_edge_color_selected(mut self, color: Hsla) -> Self {
         self.edge_color_selected = color;
         self
     }
@@ -178,6 +151,18 @@ impl GraphStyle {
     /// Set the arrowhead shape.
     pub fn with_edge_arrow_shape(mut self, shape: ArrowShape) -> Self {
         self.edge_arrow_shape = shape;
+        self
+    }
+
+    /// Set the label text style.
+    pub fn with_label_style(mut self, style: TextStyle) -> Self {
+        self.label_style = style;
+        self
+    }
+
+    /// Set the node label vertical offset in pixels.
+    pub fn with_label_offset(mut self, offset: f32) -> Self {
+        self.label_offset = offset;
         self
     }
 }

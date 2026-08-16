@@ -23,8 +23,11 @@ use crate::hit_test;
 use crate::interaction::{GraphEvent, Hover, MouseButton, Selection};
 use crate::layout::LayoutBudget;
 use crate::scene::GraphScene;
-use crate::style::{ArrowShape, GraphStyle, Rgba};
+use crate::style::{ArrowShape, GraphStyle};
 use crate::viewport::{Viewport, WorldBounds};
+
+/// A resolver that returns the label text for a node, or `None` for no label.
+type NodeLabelResolver<N> = Rc<dyn Fn(NodeId, &N) -> Option<String>>;
 
 /// The state of a particular view into a graph scene (§16).
 pub struct GraphViewState<NK, EK, N, E> {
@@ -33,6 +36,7 @@ pub struct GraphViewState<NK, EK, N, E> {
     selection: Selection,
     hover: Hover,
     style: GraphStyle,
+    node_label: NodeLabelResolver<N>,
     dragging: Option<NodeId>,
     panning: bool,
     last_mouse: Vec2,
@@ -126,6 +130,7 @@ enum TestPaintPrimitive {
     Edge { source: Vec2, target: Vec2 },
     Arrow { source: Vec2, target: Vec2 },
     Node { origin: Vec2, size: Vec2 },
+    Label { position: Vec2 },
 }
 
 #[cfg(test)]
@@ -158,6 +163,7 @@ where
             selection: Selection::new(),
             hover: Hover::default(),
             style: GraphStyle::default(),
+            node_label: Rc::new(|_id, _node| None),
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
@@ -207,6 +213,14 @@ where
     /// The graph style, mutably.
     pub fn style_mut(&mut self) -> &mut GraphStyle {
         &mut self.style
+    }
+
+    /// Set the node label resolver.
+    ///
+    /// The resolver returns the label text for a node, or `None` to render no
+    /// label. It is called during prepaint for every visible node.
+    pub fn set_node_label(&mut self, resolver: impl Fn(NodeId, &N) -> Option<String> + 'static) {
+        self.node_label = Rc::new(resolver);
     }
 
     /// Fit the viewport to the bounds of all nodes in the scene.
@@ -373,9 +387,11 @@ where
                         });
                         let vs = view_prepaint.read(cx);
                         let scene = vs.scene.read(cx);
+                        let node_label = vs.node_label.clone();
                         crate::paint::build_paint_frame(
                             scene.graph(),
                             &|id| scene.node_position(id),
+                            &|id, node| node_label(id, node),
                             &vs.viewport,
                             &vs.style,
                             &vs.selection,
@@ -403,17 +419,11 @@ where
                             builder.move_to(point(px(line_source.x), px(line_source.y)));
                             builder.line_to(point(px(line_target.x), px(line_target.y)));
                             if let Ok(path) = builder.build() {
-                                window.paint_path(path, to_gpui(color));
+                                window.paint_path(path, color);
                             }
                             if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
                             {
-                                paint_edge_arrow(
-                                    window,
-                                    line_source,
-                                    line_target,
-                                    &style,
-                                    to_gpui(color),
-                                );
+                                paint_edge_arrow(window, line_source, line_target, &style, color);
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
                                     trace
@@ -440,9 +450,9 @@ where
                             window.paint_quad(quad(
                                 bounds,
                                 px(node.radius),
-                                to_gpui(color),
-                                px(style.node_stroke.width),
-                                to_gpui(style.node_stroke.color),
+                                color,
+                                px(style.node_stroke_width),
+                                style.node_stroke_color,
                                 Default::default(),
                             ));
                             #[cfg(test)]
@@ -458,6 +468,9 @@ where
                                     ),
                                 });
                             });
+                        }
+                        for label in &frame.labels {
+                            paint_label(window, cx, &coordinates, label, &style);
                         }
                     },
                 )
@@ -506,7 +519,7 @@ fn paint_edge_arrow(
     source: Vec2,
     target: Vec2,
     style: &GraphStyle,
-    color: gpui::Rgba,
+    color: gpui::Hsla,
 ) {
     let dir = target - source;
     let len = dir.length();
@@ -657,14 +670,49 @@ where
     }
 }
 
-/// Convert a crate color to a GPUI color.
-fn to_gpui(color: Rgba) -> gpui::Rgba {
-    gpui::Rgba {
-        r: color.r,
-        g: color.g,
-        b: color.b,
-        a: color.a,
+/// Paint a node label centered below the node.
+fn paint_label(
+    window: &mut Window,
+    cx: &mut gpui::App,
+    coordinates: &CanvasCoordinates,
+    label: &crate::paint::PaintLabel,
+    style: &GraphStyle,
+) {
+    let anchor = coordinates.canvas_to_window(label.position);
+    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
+    let line_height = style
+        .label_style
+        .line_height
+        .to_pixels(font_size.into(), window.rem_size());
+    let run = style.label_style.to_run(label.text.len());
+    let Ok(lines) =
+        window
+            .text_system()
+            .shape_text(label.text.clone().into(), font_size, &[run], None, None)
+    else {
+        return;
+    };
+    let mut origin = point(
+        px(anchor.x),
+        px(anchor.y + style.node_radius + style.label_offset),
+    );
+    for line in &lines {
+        let _ = line.paint(
+            origin,
+            line_height,
+            gpui::TextAlign::Center,
+            None,
+            window,
+            cx,
+        );
+        origin.y += line.size(line_height).height;
     }
+    #[cfg(test)]
+    TEST_PAINT_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .push(TestPaintPrimitive::Label { position: anchor });
+    });
 }
 
 #[cfg(test)]
@@ -1002,5 +1050,32 @@ mod tests {
                 .any(|primitive| matches!(primitive, TestPaintPrimitive::Edge { .. })),
             "the edge itself should still be painted"
         );
+    }
+
+    #[gpui::test]
+    fn graph_view_paints_node_labels(cx: &mut TestAppContext) {
+        let view = test_view(cx);
+        cx.update_entity(&view, |state, _| {
+            state.viewport_mut().set_size(Vec2::new(200.0, 100.0));
+            state.viewport_mut().focus(Vec2::ZERO);
+            state.set_node_label(|_id, _node| Some("label".to_string()));
+        });
+
+        let cx = cx.add_empty_window();
+        let origin = Vec2::new(80.0, 40.0);
+        clear_test_paint_trace();
+        draw_graph_view(cx, &view, origin, Vec2::new(200.0, 100.0));
+
+        let trace = take_test_paint_trace();
+        let labels: Vec<_> = trace
+            .iter()
+            .filter_map(|primitive| match primitive {
+                TestPaintPrimitive::Label { position } => Some(*position),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels.len(), 2, "both nodes should have a label");
+        assert_eq!(labels[0], Vec2::new(origin.x + 90.0, origin.y + 30.0));
+        assert_eq!(labels[1], Vec2::new(origin.x + 130.0, origin.y + 90.0));
     }
 }

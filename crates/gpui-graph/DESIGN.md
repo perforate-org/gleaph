@@ -1429,6 +1429,15 @@ configurable through `GraphStyle`:
 
 Undirected edges never draw an arrowhead regardless of these settings.
 
+Graph styling reuses GPUI types. Colors are `gpui::Hsla` and label text uses
+`gpui::TextStyle`, so graph appearance shares a single color and font vocabulary
+with the rest of the application. The node stroke is split into
+`node_stroke_width` and `node_stroke_color`.
+
+Node labels are resolved by a callback set on the view state
+(`set_node_label`) and rendered centered below the node. Label appearance is
+configured through `label_style` (`gpui::TextStyle`) and `label_offset`.
+
 ---
 
 # 27. Public API Shape
@@ -1837,7 +1846,6 @@ The following should remain intentionally open until implementation and profilin
 - Bézier routing,
 - parallel-edge separation,
 - self-loop geometry,
-- label placement,
 - label collision avoidance,
 - text LOD.
 
