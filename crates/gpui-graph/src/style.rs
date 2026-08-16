@@ -101,6 +101,12 @@ impl GraphStyle {
         self
     }
 
+    /// Set the node stroke.
+    pub fn with_node_stroke(mut self, stroke: Stroke) -> Self {
+        self.node_stroke = stroke;
+        self
+    }
+
     /// Set the edge width.
     pub fn with_edge_width(mut self, width: f32) -> Self {
         self.edge_width = width;

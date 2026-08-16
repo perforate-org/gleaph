@@ -420,8 +420,8 @@ where
                                 bounds,
                                 px(node.radius),
                                 to_gpui(color),
-                                px(0.0),
-                                gpui::transparent_black(),
+                                px(style.node_stroke.width),
+                                to_gpui(style.node_stroke.color),
                                 Default::default(),
                             ));
                             #[cfg(test)]
