@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-08-16 00:23:25 UTC +0000
-Anchor timestamp: 2026-08-16 00:23:25 UTC +0000
+Last revised: 2026-08-16 10:12:10 UTC +0000
+Anchor timestamp: 2026-08-16 10:12:10 UTC +0000
 
 ## Context
 
@@ -173,8 +173,10 @@ Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISI
 Slice 8 (2026-08-16) implements Provision-side canister deployment execution. `accept_envelope`
 is now async: after atomically reserving the job and its intent locks, it drives
 `Reserved -> CreatePending -> CanisterCreated -> InstallPending -> Installed ->
-RouterRegistrationPending` per resource, calling `create_canister` (controllers `[Provision,
-governance]`) and `install_chunked_code` from the active release's verified artifact chunks.
+RouterRegistrationPending` per resource, calling the management `create_canister` operation via
+`create_canister_with_extra_cycles` (controllers `[Provision, governance]`) with a bounded initial
+target-canister cycle balance and calling
+`install_chunked_code` from the active release's verified artifact chunks.
 `ProvisionRequest` gains `install_args: Vec<Vec<u8>>` (one Candid-encoded init args blob per
 requested resource, constructed by the Router — the sole owner of logical topology);
 `ProvisionAcceptResponse::Accepted`/`Replay` gain `created_resources: Vec<CreatedResource>` so

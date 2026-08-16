@@ -2118,3 +2118,8 @@ fn accept_envelope_drives_deploy_to_router_ack_pending() {
         "ack must release intent locks"
     );
 }
+
+#[test]
+fn initial_canister_cycles_budget_is_one_trillion() {
+    assert_eq!(super::initial_canister_cycles(), 1_000_000_000_000);
+}

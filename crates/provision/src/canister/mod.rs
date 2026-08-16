@@ -1321,21 +1321,34 @@ pub(crate) fn artifact_audit_history_with_caller(
 
 const MAX_INSTALL_CHUNK_BYTES: usize = 1024 * 1024;
 
+// A newly created canister starts with no cycles after the management-canister creation fee is
+// charged. Keep a bounded install budget on the target so its first memory growth and install can
+// complete. The amount is intentionally local to this deployment step; ADR 0038's durable cycle
+// reservation and allocation policy remain proposed.
+const INITIAL_CANISTER_CYCLES: u128 = 1_000_000_000_000;
+
+#[inline]
+const fn initial_canister_cycles() -> u128 {
+    INITIAL_CANISTER_CYCLES
+}
+
 /// Create a canister with controllers `[Provision, governance]`. Returns the new canister id.
 /// On wasm this calls the IC management canister; on native (unit tests) it synthesizes a
 /// deterministic principal so the state machine can be exercised without a management call.
 #[cfg(target_family = "wasm")]
 async fn create_canister_call(governance_principal: Principal) -> Option<Principal> {
-    use ic_cdk_management_canister::{CanisterSettings, CreateCanisterArgs, create_canister};
+    use ic_cdk_management_canister::{
+        CanisterSettings, CreateCanisterArgs, create_canister_with_extra_cycles,
+    };
     let args = CreateCanisterArgs {
         settings: Some(CanisterSettings {
             controllers: Some(vec![ic_cdk::api::canister_self(), governance_principal]),
             ..CanisterSettings::default()
         }),
     };
-    match create_canister(&args).await {
+    match create_canister_with_extra_cycles(&args, initial_canister_cycles()).await {
         Ok(id) => Some(id.canister_id),
-        Err(_e) => None,
+        Err(_) => None,
     }
 }
 
