@@ -218,7 +218,8 @@ where
     /// Set the node label resolver.
     ///
     /// The resolver returns the label text for a node, or `None` to render no
-    /// label. It is called during prepaint for every visible node.
+    /// label. It is called during prepaint for every visible node. This
+    /// overrides any default label resolution.
     pub fn set_node_label(&mut self, resolver: impl Fn(NodeId, &N) -> Option<String> + 'static) {
         self.node_label = Rc::new(resolver);
     }
@@ -296,6 +297,36 @@ where
             scene.step_layout(LayoutBudget::default());
             cx.notify();
         });
+    }
+}
+
+impl<NK, EK, N, E> GraphViewState<NK, EK, N, E>
+where
+    NK: Eq + std::hash::Hash + 'static,
+    EK: Eq + std::hash::Hash + 'static,
+    N: std::fmt::Display + 'static,
+    E: 'static,
+{
+    /// Create a view state over the given scene with default node labels.
+    ///
+    /// Each node's label is its `Display` representation. Callers can still
+    /// override this per node with [`Self::set_node_label`].
+    pub fn new_with_default_labels(
+        scene: Entity<GraphScene<NK, EK, N, E>>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            scene,
+            viewport: Viewport::new(),
+            selection: Selection::new(),
+            hover: Hover::default(),
+            style: GraphStyle::default(),
+            node_label: Rc::new(|_id, node| Some(node.to_string())),
+            dragging: None,
+            panning: false,
+            last_mouse: Vec2::ZERO,
+            initial_auto_fit: InitialAutoFitState::default(),
+        }
     }
 }
 
@@ -697,15 +728,20 @@ fn paint_label(
         px(anchor.y + style.node_radius + style.label_offset),
     );
     for line in &lines {
+        // Center the label horizontally on the node by shifting the origin by
+        // half the line width. `WrappedLine::paint` only honors `TextAlign`
+        // when a bounds width is provided, so we center manually.
+        let line_size = line.size(line_height);
+        let centered = point(px(anchor.x - f32::from(line_size.width) * 0.5), origin.y);
         let _ = line.paint(
-            origin,
+            centered,
             line_height,
             gpui::TextAlign::Center,
             None,
             window,
             cx,
         );
-        origin.y += line.size(line_height).height;
+        origin.y += line_size.height;
     }
     #[cfg(test)]
     TEST_PAINT_TRACE.with(|trace| {
@@ -760,9 +796,9 @@ mod tests {
         cx.new(|cx| GraphViewState::new(scene, cx))
     }
 
-    fn draw_graph_view(
+    fn draw_graph_view<N: 'static>(
         cx: &mut VisualTestContext,
-        view: &Entity<TestView>,
+        view: &Entity<GraphViewState<&'static str, &'static str, N, ()>>,
         origin: Vec2,
         canvas_size: Vec2,
     ) {
@@ -1077,5 +1113,43 @@ mod tests {
         assert_eq!(labels.len(), 2, "both nodes should have a label");
         assert_eq!(labels[0], Vec2::new(origin.x + 90.0, origin.y + 30.0));
         assert_eq!(labels[1], Vec2::new(origin.x + 130.0, origin.y + 90.0));
+    }
+
+    #[gpui::test]
+    fn default_labels_use_display_and_can_be_overridden(cx: &mut TestAppContext) {
+        let scene: Entity<GraphScene<&'static str, &'static str, &'static str, ()>> =
+            cx.new(|_| {
+                let mut scene = GraphScene::new();
+                scene.merge(GraphBatch::new().node("a", "Alice").node("b", "Bob"));
+                let a = scene.node_id(&"a").unwrap();
+                let b = scene.node_id(&"b").unwrap();
+                scene.set_position(a, Vec2::new(-10.0, -20.0));
+                scene.set_position(b, Vec2::new(30.0, 40.0));
+                scene
+            });
+        let view: Entity<GraphViewState<&'static str, &'static str, &'static str, ()>> =
+            cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
+        cx.update_entity(&view, |state, _| {
+            state.viewport_mut().set_size(Vec2::new(200.0, 100.0));
+            state.viewport_mut().focus(Vec2::ZERO);
+        });
+
+        let cx = cx.add_empty_window();
+        let origin = Vec2::new(80.0, 40.0);
+        clear_test_paint_trace();
+        draw_graph_view(cx, &view, origin, Vec2::new(200.0, 100.0));
+        let trace = take_test_paint_trace();
+        let labels: Vec<_> = trace
+            .iter()
+            .filter_map(|primitive| match primitive {
+                TestPaintPrimitive::Label { position } => Some(*position),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels.len(),
+            2,
+            "default labels should render for Display nodes"
+        );
     }
 }

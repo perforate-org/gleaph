@@ -5,8 +5,8 @@
 //! a composable `GraphView` rendered inside ordinary GPUI layout.
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, size,
+    App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, rems, size, white,
 };
 use gpui_graph::{EdgeDirection, ForceAtlas2, GraphBatch, GraphScene, GraphView, GraphViewState};
 
@@ -48,8 +48,22 @@ impl Example {
         });
 
         // 3. A view state over the scene. The view auto-fits the graph on its
-        //    first layout, so no explicit `fit_all` is required here.
-        let view = cx.new(|cx| GraphViewState::new(scene, cx));
+        //    first layout, so no explicit `fit_all` is required here. Because
+        //    the node data type (`&'static str`) implements `Display`, default
+        //    labels are shown automatically.
+        let view = cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
+
+        // 4. Style the label text and its offset below the node.
+        view.update(cx, |view, cx| {
+            let style = view.style_mut();
+            style.label_style = TextStyle {
+                color: white(),
+                font_size: rems(0.8).into(),
+                ..TextStyle::default()
+            };
+            style.label_offset = 4.0;
+            cx.notify();
+        });
 
         Self { view }
     }
