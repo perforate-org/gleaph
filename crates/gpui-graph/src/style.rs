@@ -49,6 +49,17 @@ impl Stroke {
     }
 }
 
+/// The shape of a directed edge's arrowhead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrowShape {
+    /// A filled triangle pointing along the edge.
+    Triangle,
+    /// An open chevron (two lines) pointing along the edge.
+    Line,
+    /// A filled circle at the target end.
+    Circle,
+}
+
 /// Graph-specific appearance settings (§26.2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphStyle {
@@ -70,6 +81,12 @@ pub struct GraphStyle {
     pub edge_color_selected: Rgba,
     /// Edge color when hovered.
     pub edge_color_hovered: Rgba,
+    /// Whether directed edges render an arrowhead.
+    pub edge_arrow_enabled: bool,
+    /// Arrowhead size in pixels (length along the edge).
+    pub edge_arrow_size: f32,
+    /// Arrowhead shape.
+    pub edge_arrow_shape: ArrowShape,
 }
 
 impl Default for GraphStyle {
@@ -84,6 +101,9 @@ impl Default for GraphStyle {
             edge_color: Rgba::rgb(0.5, 0.5, 0.5),
             edge_color_selected: Rgba::rgb(0.9, 0.5, 0.2),
             edge_color_hovered: Rgba::rgb(0.7, 0.7, 0.7),
+            edge_arrow_enabled: true,
+            edge_arrow_size: 8.0,
+            edge_arrow_shape: ArrowShape::Triangle,
         }
     }
 }
@@ -101,6 +121,18 @@ impl GraphStyle {
         self
     }
 
+    /// Set the node fill color when hovered.
+    pub fn with_node_fill_hovered(mut self, fill: Rgba) -> Self {
+        self.node_fill_hovered = fill;
+        self
+    }
+
+    /// Set the node fill color when selected.
+    pub fn with_node_fill_selected(mut self, fill: Rgba) -> Self {
+        self.node_fill_selected = fill;
+        self
+    }
+
     /// Set the node stroke.
     pub fn with_node_stroke(mut self, stroke: Stroke) -> Self {
         self.node_stroke = stroke;
@@ -110,6 +142,42 @@ impl GraphStyle {
     /// Set the edge width.
     pub fn with_edge_width(mut self, width: f32) -> Self {
         self.edge_width = width;
+        self
+    }
+
+    /// Set the edge color.
+    pub fn with_edge_color(mut self, color: Rgba) -> Self {
+        self.edge_color = color;
+        self
+    }
+
+    /// Set the edge color when hovered.
+    pub fn with_edge_color_hovered(mut self, color: Rgba) -> Self {
+        self.edge_color_hovered = color;
+        self
+    }
+
+    /// Set the edge color when selected.
+    pub fn with_edge_color_selected(mut self, color: Rgba) -> Self {
+        self.edge_color_selected = color;
+        self
+    }
+
+    /// Set whether directed edges render an arrowhead.
+    pub fn with_edge_arrow_enabled(mut self, enabled: bool) -> Self {
+        self.edge_arrow_enabled = enabled;
+        self
+    }
+
+    /// Set the arrowhead size in pixels.
+    pub fn with_edge_arrow_size(mut self, size: f32) -> Self {
+        self.edge_arrow_size = size;
+        self
+    }
+
+    /// Set the arrowhead shape.
+    pub fn with_edge_arrow_shape(mut self, shape: ArrowShape) -> Self {
+        self.edge_arrow_shape = shape;
         self
     }
 }

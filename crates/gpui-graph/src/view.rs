@@ -11,19 +11,19 @@
 use glam::Vec2;
 use gpui::{
     Bounds, Context, Div, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement,
-    PathBuilder, ScrollDelta, StyleRefinement, Styled, canvas, div, point, px, quad, size,
+    PathBuilder, ScrollDelta, StyleRefinement, Styled, Window, canvas, div, point, px, quad, size,
 };
 use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
 #[cfg(test)]
 use std::cell::RefCell;
 
-use crate::graph::NodeId;
+use crate::graph::{EdgeDirection, NodeId};
 use crate::hit_test;
 use crate::interaction::{GraphEvent, Hover, MouseButton, Selection};
 use crate::layout::LayoutBudget;
 use crate::scene::GraphScene;
-use crate::style::{GraphStyle, Rgba};
+use crate::style::{ArrowShape, GraphStyle, Rgba};
 use crate::viewport::{Viewport, WorldBounds};
 
 /// The state of a particular view into a graph scene (§16).
@@ -124,6 +124,7 @@ impl CanvasCoordinates {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TestPaintPrimitive {
     Edge { source: Vec2, target: Vec2 },
+    Arrow { source: Vec2, target: Vec2 },
     Node { origin: Vec2, size: Vec2 },
 }
 
@@ -386,26 +387,46 @@ where
                         let style = view_paint.read(cx).style.clone();
                         // Edges first, then nodes (§18.1).
                         for edge in &frame.edges {
-                            let mut builder = PathBuilder::stroke(px(style.edge_width));
                             let (source, target) = coordinates.edge_endpoints(edge);
-                            builder.move_to(point(px(source.x), px(source.y)));
-                            builder.line_to(point(px(target.x), px(target.y)));
+                            let color = if edge.selected {
+                                style.edge_color_selected
+                            } else if edge.hovered {
+                                style.edge_color_hovered
+                            } else {
+                                style.edge_color
+                            };
+                            // Trim both endpoints to the node boundary so the line
+                            // and arrowhead are not hidden beneath the nodes.
+                            let (line_source, line_target) =
+                                trim_to_node_boundary(source, target, style.node_radius);
+                            let mut builder = PathBuilder::stroke(px(style.edge_width));
+                            builder.move_to(point(px(line_source.x), px(line_source.y)));
+                            builder.line_to(point(px(line_target.x), px(line_target.y)));
                             if let Ok(path) = builder.build() {
-                                let color = if edge.selected {
-                                    style.edge_color_selected
-                                } else if edge.hovered {
-                                    style.edge_color_hovered
-                                } else {
-                                    style.edge_color
-                                };
                                 window.paint_path(path, to_gpui(color));
+                            }
+                            if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
+                            {
+                                paint_edge_arrow(
+                                    window,
+                                    line_source,
+                                    line_target,
+                                    &style,
+                                    to_gpui(color),
+                                );
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
                                     trace
                                         .borrow_mut()
-                                        .push(TestPaintPrimitive::Edge { source, target });
+                                        .push(TestPaintPrimitive::Arrow { source, target });
                                 });
                             }
+                            #[cfg(test)]
+                            TEST_PAINT_TRACE.with(|trace| {
+                                trace
+                                    .borrow_mut()
+                                    .push(TestPaintPrimitive::Edge { source, target });
+                            });
                         }
                         for node in &frame.nodes {
                             let bounds = coordinates.node_bounds(node);
@@ -460,6 +481,93 @@ impl<NK, EK, N, E> IntoElement for GraphView<NK, EK, N, E> {
 
     fn into_element(self) -> Div {
         self.element
+    }
+}
+
+/// Trim an edge's endpoints inward by `radius` along the edge direction so the
+/// line and arrowhead stop at the node boundary instead of beneath the nodes.
+fn trim_to_node_boundary(source: Vec2, target: Vec2, radius: f32) -> (Vec2, Vec2) {
+    let dir = target - source;
+    let len = dir.length();
+    if len < f32::EPSILON {
+        return (source, target);
+    }
+    let unit = dir / len;
+    let inset = radius.min(len * 0.5);
+    (source + unit * inset, target - unit * inset)
+}
+
+/// Paint an arrowhead at the target end of a directed edge.
+///
+/// `source` and `target` are window-space endpoints. The arrowhead is drawn
+/// with the edge's resolved color and the shape/size from `style`.
+fn paint_edge_arrow(
+    window: &mut Window,
+    source: Vec2,
+    target: Vec2,
+    style: &GraphStyle,
+    color: gpui::Rgba,
+) {
+    let dir = target - source;
+    let len = dir.length();
+    if len < f32::EPSILON {
+        return;
+    }
+    let unit = dir / len;
+    let arrow_size = style.edge_arrow_size;
+    let tip = target;
+    let base = tip - unit * arrow_size;
+    let normal = Vec2::new(-unit.y, unit.x);
+
+    match style.edge_arrow_shape {
+        ArrowShape::Triangle => {
+            let half = arrow_size * 0.5;
+            let mut builder = PathBuilder::fill();
+            builder.move_to(point(px(tip.x), px(tip.y)));
+            builder.line_to(point(
+                px(base.x + normal.x * half),
+                px(base.y + normal.y * half),
+            ));
+            builder.line_to(point(
+                px(base.x - normal.x * half),
+                px(base.y - normal.y * half),
+            ));
+            builder.close();
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        }
+        ArrowShape::Line => {
+            let half = arrow_size * 0.5;
+            let mut builder = PathBuilder::stroke(px(style.edge_width));
+            builder.move_to(point(
+                px(base.x + normal.x * half),
+                px(base.y + normal.y * half),
+            ));
+            builder.line_to(point(px(tip.x), px(tip.y)));
+            builder.line_to(point(
+                px(base.x - normal.x * half),
+                px(base.y - normal.y * half),
+            ));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        }
+        ArrowShape::Circle => {
+            let radius = arrow_size * 0.5;
+            let center = tip - unit * radius;
+            window.paint_quad(quad(
+                Bounds {
+                    origin: point(px(center.x - radius), px(center.y - radius)),
+                    size: size(px(radius * 2.0), px(radius * 2.0)),
+                },
+                px(radius),
+                color,
+                px(0.0),
+                gpui::transparent_black(),
+                Default::default(),
+            ));
+        }
     }
 }
 
@@ -847,6 +955,10 @@ mod tests {
         assert_eq!(
             take_test_paint_trace(),
             vec![
+                TestPaintPrimitive::Arrow {
+                    source: Vec2::new(origin.x + 90.0, origin.y + 50.0),
+                    target: Vec2::new(origin.x + 110.0, origin.y + 50.0),
+                },
                 TestPaintPrimitive::Edge {
                     source: Vec2::new(origin.x + 90.0, origin.y + 50.0),
                     target: Vec2::new(origin.x + 110.0, origin.y + 50.0),
@@ -860,6 +972,35 @@ mod tests {
                     size: Vec2::splat(12.0),
                 },
             ]
+        );
+    }
+
+    #[gpui::test]
+    fn graph_view_skips_arrow_when_disabled(cx: &mut TestAppContext) {
+        let view = test_view_with_edge(cx);
+        cx.update_entity(&view, |state, _| {
+            state.viewport_mut().set_size(Vec2::new(200.0, 100.0));
+            state.viewport_mut().focus(Vec2::ZERO);
+            state.style_mut().edge_arrow_enabled = false;
+        });
+
+        let cx = cx.add_empty_window();
+        let origin = Vec2::new(80.0, 40.0);
+        clear_test_paint_trace();
+        draw_graph_view(cx, &view, origin, Vec2::new(200.0, 100.0));
+
+        let trace = take_test_paint_trace();
+        assert!(
+            trace
+                .iter()
+                .all(|primitive| !matches!(primitive, TestPaintPrimitive::Arrow { .. })),
+            "no arrow should be painted when disabled"
+        );
+        assert!(
+            trace
+                .iter()
+                .any(|primitive| matches!(primitive, TestPaintPrimitive::Edge { .. })),
+            "the edge itself should still be painted"
         );
     }
 }

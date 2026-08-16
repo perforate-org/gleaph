@@ -1420,6 +1420,15 @@ GraphView::new(view)
 
 The exact style API should remain small in v0.1 and evolve from real use cases.
 
+Directed edges render an arrowhead at the target end. The arrowhead is
+configurable through `GraphStyle`:
+
+- `edge_arrow_enabled` — whether directed edges draw an arrowhead,
+- `edge_arrow_size` — arrowhead length along the edge in pixels,
+- `edge_arrow_shape` — one of `Triangle`, `Line`, or `Circle`.
+
+Undirected edges never draw an arrowhead regardless of these settings.
+
 ---
 
 # 27. Public API Shape
@@ -1828,7 +1837,6 @@ The following should remain intentionally open until implementation and profilin
 - Bézier routing,
 - parallel-edge separation,
 - self-loop geometry,
-- arrow rendering,
 - label placement,
 - label collision avoidance,
 - text LOD.

@@ -9,7 +9,7 @@
 
 use glam::Vec2;
 
-use crate::graph::{EdgeId, Graph, NodeId};
+use crate::graph::{EdgeDirection, EdgeId, Graph, NodeId};
 use crate::interaction::{Hover, Selection};
 use crate::style::GraphStyle;
 use crate::viewport::Viewport;
@@ -38,6 +38,8 @@ pub struct PaintEdge {
     pub source: Vec2,
     /// Canvas-local pixel target position.
     pub target: Vec2,
+    /// Whether the edge is directed.
+    pub direction: EdgeDirection,
     /// Whether the edge is selected.
     pub selected: bool,
     /// Whether the edge is hovered.
@@ -126,6 +128,7 @@ pub fn build_paint_frame<N, E>(
             id,
             source: viewport.world_to_screen(source_world),
             target: viewport.world_to_screen(target_world),
+            direction: edge.direction,
             selected: selection.contains_edge(id),
             hovered: hover.edge == Some(id),
         });

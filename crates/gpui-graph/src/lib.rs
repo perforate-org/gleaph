@@ -33,6 +33,6 @@ pub use paint::{PaintEdge, PaintFrame, PaintNode, build_paint_frame};
 pub use patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
 pub use runtime::GraphRuntime;
 pub use scene::{EdgeSceneState, GraphScene, NodeSceneState};
-pub use style::{GraphStyle, Rgba, Stroke};
+pub use style::{ArrowShape, GraphStyle, Rgba, Stroke};
 pub use view::{GraphView, GraphViewState};
 pub use viewport::{Viewport, WorldBounds};
