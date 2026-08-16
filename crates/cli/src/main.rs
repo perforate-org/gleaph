@@ -178,6 +178,18 @@ struct DeployArgs {
     /// Fetch the network root key before querying a custom endpoint.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     fetch_root_key: Option<bool>,
+    /// Path to the Router canister wasm.
+    #[arg(long, value_name = "PATH")]
+    router_wasm: PathBuf,
+    /// Path to the graph-index canister wasm.
+    #[arg(long, value_name = "PATH")]
+    graph_index_wasm: PathBuf,
+    /// Path to the graph-shard canister wasm.
+    #[arg(long, value_name = "PATH")]
+    graph_shard_wasm: PathBuf,
+    /// Logical graph name to provision; the migrations bind a schema to this graph.
+    #[arg(long, value_name = "NAME", default_value = "default")]
+    graph: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -538,6 +550,10 @@ fn execute_deploy(
         args.fetch_root_key.unwrap_or(false),
         env,
         loaded,
+        &args.router_wasm,
+        &args.graph_index_wasm,
+        &args.graph_shard_wasm,
+        &args.graph,
     )
     .map_err(CliError::Message)
 }

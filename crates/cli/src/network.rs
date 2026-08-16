@@ -282,10 +282,23 @@ struct LauncherStatus {
     root_key: String,
 }
 
-/// Create a canister and install the given wasm, returning its id.
+/// Create a canister and install the given wasm with an empty init argument, returning its id.
 fn deploy_canister(
     transport: &RemoteTransport,
     wasm_path: &Path,
+) -> Result<candid::Principal, String> {
+    install_canister(transport, wasm_path, Vec::new())
+}
+
+/// Create a canister and install the given wasm with the given Candid-encoded init argument,
+/// returning its id.
+///
+/// `deploy` uses this to install the Router / graph-index / graph-shard canisters with their
+/// typed init args; the platform canisters (Account / Provision) install with an empty argument.
+pub(crate) fn install_canister(
+    transport: &RemoteTransport,
+    wasm_path: &Path,
+    init_arg: Vec<u8>,
 ) -> Result<candid::Principal, String> {
     let wasm =
         std::fs::read(wasm_path).map_err(|e| format!("read wasm {}: {e}", wasm_path.display()))?;
@@ -301,7 +314,7 @@ fn deploy_canister(
         mode: CanisterInstallMode::Install,
         canister_id,
         wasm_module: wasm,
-        arg: Vec::new(),
+        arg: init_arg,
         sender_canister_version: None,
     };
     transport.management_call::<()>("install_code", &install_args)?;

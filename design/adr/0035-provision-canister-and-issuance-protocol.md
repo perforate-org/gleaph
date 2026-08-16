@@ -234,10 +234,14 @@ retry; `attach_provisioned_index_canisters` is idempotent per group.
 
 ## Amendment: Account as bootstrap trust subject (planned)
 
-**Status of this amendment: planned, not implemented.** The original ADR above is accepted and
-partially implemented as written. This section records the changes required by the Account-canister
-design ([ADR 0068](0068-account-canister-and-per-developer-router-issuance.md)) for the first-Router
-bootstrap handover. Until implemented, the original sections remain authoritative.
+**Status of this amendment: partially implemented for the dev-mode CLI path.** The original ADR
+above is accepted and partially implemented as written. The Provision-crate pieces (Account as a
+bootstrap trust subject in `accept_envelope`, `complete_bootstrap`) are implemented and covered by
+the `adr0068_gleaph_deploy` PocketIC test. The **production first-Router issuance through the
+artifact catalog** (`LogicalResource::Router` via `accept_envelope` driving a Router canister
+install) is **not yet implemented**; the CLI dev-mode path instead installs the Router directly
+via the management canister. Until the catalog path is implemented, the original sections remain
+authoritative for the issuance protocol.
 
 ### 1. Account as a transient trust subject
 

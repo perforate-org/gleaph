@@ -22,11 +22,28 @@ by name).
 
 ## Prerequisites
 
-The Gleaph platform must be running and the `social` graph registered:
+The Gleaph platform must be running and the `social` graph registered. There are two paths:
 
-1. Deploy the platform canisters (Router, graph index, graph shard, vector) and
-   register the `social` graph with the deployer as owner. The repository operator
-   script does all of this (platform bootstrap, then the demo flow below):
+1. **Gleaph CLI (dev mode).** Start the local network and deploy the platform canisters
+   (Account / Provision), then register an account and provision your Router + graph + shard:
+
+   ```sh
+   gleaph network start \
+     --account-wasm <account.wasm> --provision-wasm <provision.wasm>
+   gleaph signup --name <you>
+   gleaph deploy \
+     --router-wasm <router.wasm> \
+     --graph-index-wasm <graph-index.wasm> \
+     --graph-shard-wasm <graph-shard.wasm> \
+     --graph social
+   ```
+
+   The Router/graph-index/graph-shard wasm artifacts are produced by the repository-root
+   `icp.yaml` build (under `target/wasm64-unknown-unknown/release/`). `--graph social` pre-registers
+   the `social` graph so the migrations and `gleaph load` resolve it.
+
+2. **Repository operator script.** Deploy the platform canisters and register the `social` graph
+   with the deployer as owner (platform bootstrap, then the demo flow below):
 
    ```sh
    scripts/deploy-demo-local.sh
@@ -35,8 +52,8 @@ The Gleaph platform must be running and the `social` graph registered:
    (or deploy `icp.yaml` at the repository root manually and call
    `admin_register_graph` / `admin_register_shard`).
 
-2. The vector canister wiring (`admin_register_vector_index` etc.) is provisional
-   and handled separately; the four non-semantic scenarios work without it.
+The vector canister wiring (`admin_register_vector_index` etc.) is provisional and handled
+separately; the four non-semantic scenarios work without it.
 
 ## User flow
 
@@ -53,6 +70,12 @@ export GLEAPH_FETCH_ROOT_KEY=true                        # required for custom-U
 (The Gleaph CLI's `local` name points at `http://localhost:8000`, which is not where the
 icp-cli managed network listens; `deploy-local.sh` resolves and passes the real URL
 automatically, and the manual flow above pins it through `GLEAPH_NETWORK`.)
+
+If you provisioned the Router through `gleaph deploy` (dev mode, above), the Router principal is
+already written to the per-environment Router cache (`.gleaph/cache/account/<env>.router.json`), so
+`gleaph migration apply` / `gleaph load` / `gleaph prepared apply` resolve it automatically and
+`GLEAPH_CANISTER` is not required. When the platform was deployed by `scripts/deploy-demo-local.sh`
+instead, export `GLEAPH_CANISTER` as shown.
 
 Then the whole demo is six commands:
 

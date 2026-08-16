@@ -177,7 +177,14 @@ CLI ──▶ resolve_router(id, router_id) → Router canister id
 
 ## Implementation status
 
-**Proposed.** No Account canister exists. The design contract is fixed in
+**Partially implemented.** The Account canister and the dev-mode CLI path exist. The dev-mode
+`gleaph deploy` installs the Router, graph-index, and graph-shard canisters directly via the
+management canister (mirroring `scripts/deploy-demo-local.sh`), registers the graph + shard through
+Router `register_graph`, and registers the issued Router under the caller's Account so
+`Account.resolve_router` succeeds. The **Provision artifact-catalog issuance path** (`LogicalResource::Router`
+via `accept_envelope`), which ADR 0035's amendment describes for the first-Router bootstrap
+handover, remains **proposed / not implemented**; the CLI dev-mode path does not drive it. The
+design contract is fixed in
 [`design/architecture/account-and-provisioning.md`](../architecture/account-and-provisioning.md).
 
 ## Cross-links

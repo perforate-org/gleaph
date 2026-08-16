@@ -7,10 +7,14 @@ per-developer Router issuance and CLI resolution.
 
 ## Status
 
-**Planned.** Not implemented. The design decisions are fixed in
-[ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md), which is the
-**single source of truth** for the account model. This document is an overview only; do not restate
-the ADR's contracts here.
+**Partially implemented.** The Account canister exists, and the dev-mode `gleaph deploy` path is
+implemented: it installs the Router / graph-index / graph-shard canisters directly via the
+management canister, registers the graph + shard through Router `register_graph`, and registers the
+Router under the caller's Account. The **Provision artifact-catalog issuance** described below
+(`LogicalResource::Router` via `accept_envelope`) remains **planned**, not implemented; the design
+decisions are fixed in [ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md),
+which is the **single source of truth** for the account model. This document is an overview only; do
+not restate the ADR's contracts here.
 
 ## Non-goals
 
@@ -45,14 +49,20 @@ subnets, or run `icp deploy`.
 
 ### `gleaph deploy` (user workflow)
 
-`gleaph deploy` (no flags) defaults to the **`local`** environment:
+`gleaph deploy` (dev mode) defaults to the **`local`** environment:
 
-1. Ensure a local IC network (start it behind the scenes if absent).
-2. Ensure the platform canisters (Account / Provision) exist; provision them if not.
-3. Issue the user's Router + graph + first shard through Provision
-   (Account `authorize_router_issuance` → Provision).
-4. Generate/update `.gleaph/data/mappings/local.ids.json`.
-5. Set up the initial graph / schema as needed.
+1. Ensure a local IC network is running (delegated to icp-cli when an `icp.yaml` is present; the
+   `local` name otherwise points at `http://localhost:8000`).
+2. Ensure the platform canisters (Account / Provision) exist; `gleaph network start` deploys them.
+3. **Dev-mode (implemented):** install the caller's Router + graph-index + graph-shard canisters
+   directly via the management canister, register the graph + shard through Router `register_graph`,
+   and register the Router under the caller's Account.
+4. Write `.gleaph/data/mappings/<env>.ids.json` (account/provision) and the per-environment Router
+   cache (`.gleaph/cache/account/<env>.router.json`).
+5. Set up the initial graph / schema as needed (migrations).
+
+The **Provision artifact-catalog issuance** path (step 3 via `LogicalResource::Router` and
+`accept_envelope`) remains proposed and is not the CLI dev-mode path.
 
 ### Network resolution (delegation to icp-cli)
 
