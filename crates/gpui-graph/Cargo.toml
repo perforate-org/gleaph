@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 gpui = "0.2.2"
-slotmap = "1.0"
-bitvec = "1.0"
-glam = "0.29"
+slotmap = "1.1"
+bitvec = "1.1"
+glam = "0.33"
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
