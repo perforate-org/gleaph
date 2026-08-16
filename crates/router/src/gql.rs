@@ -1974,7 +1974,7 @@ pub(crate) fn ensure_gql_query_result_payload(
     Ok(())
 }
 
-fn try_execute_vector_index_ddl<C, R>(
+async fn try_execute_vector_index_ddl<C, R>(
     query: &str,
     mode: GqlExecutionMode,
     entrypoint: &str,
@@ -1987,22 +1987,31 @@ where
     R: FnOnce(Principal) -> Result<GraphId, RouterError>,
 {
     let ddl = crate::index_ddl::try_parse_vector(query)?;
-    Some((|| {
-        let caller = caller();
-        authorize_index_ddl(&caller)?;
-        if mode == GqlExecutionMode::Query && !force {
-            return Err(RouterError::ExecutionPathMismatch {
-                entrypoint: entrypoint.to_string(),
-                program_kind: "write".to_string(),
-                call_kind: "query".to_string(),
-                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
-            });
+    let caller = caller();
+    let stmt = match ddl {
+        Ok(s) => s,
+        Err(e) => return Some(Err(RouterError::InvalidArgument(e.to_string()))),
+    };
+    if let Err(e) = authorize_index_ddl(&caller) {
+        return Some(Err(e));
+    }
+    if mode == GqlExecutionMode::Query && !force {
+        return Some(Err(RouterError::ExecutionPathMismatch {
+            entrypoint: entrypoint.to_string(),
+            program_kind: "write".to_string(),
+            call_kind: "query".to_string(),
+            remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+        }));
+    }
+    match resolve_graph(caller) {
+        Ok(graph_id) => {
+            match crate::index_catalog::execute_vector_index_ddl_for_graph(graph_id, stmt).await {
+                Ok(()) => Some(Ok(GqlQueryResult::row_count_only(0))),
+                Err(e) => Some(Err(e)),
+            }
         }
-        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        let graph_id = resolve_graph(caller)?;
-        crate::index_catalog::execute_vector_index_ddl_for_graph(graph_id, stmt)?;
-        Ok(GqlQueryResult::row_count_only(0))
-    })())
+        Err(e) => Some(Err(e)),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2021,6 +2030,7 @@ async fn run_gql_unchecked(
             let store = RouterStore::new();
             crate::graph_context::resolve_default_graph_id(&store, caller)
         })
+        .await
     {
         return result;
     }
@@ -4775,14 +4785,14 @@ mod tests {
             crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
 
         let anonymous = Principal::anonymous();
-        let anonymous_err = super::try_execute_vector_index_ddl(
+        let anonymous_err = futures::executor::block_on(super::try_execute_vector_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
             false,
             || anonymous,
             |_| Ok(graph_id),
-        )
+        ))
         .expect("vector DDL detected")
         .expect_err("anonymous caller must be rejected");
         assert!(matches!(anonymous_err, RouterError::Forbidden));
@@ -4798,14 +4808,14 @@ mod tests {
             )
             .expect("read auth record");
         });
-        let read_err = super::try_execute_vector_index_ddl(
+        let read_err = futures::executor::block_on(super::try_execute_vector_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
             false,
             || read,
             |_| Ok(graph_id),
-        )
+        ))
         .expect("vector DDL detected")
         .expect_err("read caller must be rejected");
         assert!(matches!(read_err, RouterError::Forbidden));
@@ -4842,14 +4852,14 @@ mod tests {
             )
             .expect("manager auth record");
         });
-        let result = super::try_execute_vector_index_ddl(
+        let result = futures::executor::block_on(super::try_execute_vector_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
             false,
             || manager,
             |_| Ok(graph_id),
-        )
+        ))
         .expect("vector DDL detected")
         .expect("manager with PREPARE_REGISTER may create");
         assert_eq!(result.row_count, 0);

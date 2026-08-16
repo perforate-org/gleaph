@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-08-15
-Anchor timestamp: 2026-08-15 23:32:06 UTC +0000
+Last updated: 2026-08-16
+Anchor timestamp: 2026-08-16 00:23:25 UTC +0000
 
 ## Status
 
@@ -445,6 +445,13 @@ Prepared now:
   vector target (`VectorIndexId(0)` = whole graph); the future shard-group split assigns one id per
   contiguous graph shard group. Router builds `VectorCanisterInitArgs`
   (`router_canister` + definition/subject map seeds) for the Provision install.
+- **On-demand provision (implemented):** a `CREATE VECTOR INDEX` in provisioned mode (a
+  `provision_canister` is configured) on a graph with no vector target first provisions a vector
+  canister via the shared admission flow (`requested_resources = [VectorIndex(0)]`), then registers
+  the definition against that canister as its target. If the graph already has a vector target, the
+  new definition inherits it (no re-provision). Dev mode (no `provision_canister`) registers a
+  targetless `Registered` definition as before. The `CREATE VECTOR INDEX` path is async because
+  provisioning is a cross-canister call.
 - Router vector resolution returns a **target list** and the search orchestration is fan-out + merge
   with a **global deterministic top-k** contract (scores are comparable: same metric/dims/encoding).
 - `VectorIndexOwnershipConfig` gains `index_group_size` / `group_index` (Option; `None` = whole

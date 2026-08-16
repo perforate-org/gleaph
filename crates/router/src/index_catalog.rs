@@ -45,9 +45,11 @@ pub(crate) async fn execute_index_ddl_for_graph(
     }
 }
 
-/// Execute Router-owned semantic vector DDL. This path is synchronous and performs no Graph or
-/// vector-canister call; creation commits one targetless `Registered` definition.
-pub(crate) fn execute_vector_index_ddl_for_graph(
+/// Execute Router-owned semantic vector DDL. In provisioned mode (a `provision_canister` is
+/// configured) a `CREATE VECTOR INDEX` on a graph with no vector target provisions a vector
+/// canister first, then registers the definition against that target; otherwise it commits one
+/// targetless `Registered` definition (dev mode).
+pub(crate) async fn execute_vector_index_ddl_for_graph(
     graph_id: GraphId,
     stmt: VectorIndexDdlStatement,
 ) -> Result<(), RouterError> {
@@ -56,7 +58,7 @@ pub(crate) fn execute_vector_index_ddl_for_graph(
             index_name,
             if_not_exists,
             target,
-        } => create_vector_index(graph_id, &index_name, if_not_exists, &target),
+        } => create_vector_index(graph_id, &index_name, if_not_exists, &target).await,
     }
 }
 
@@ -79,7 +81,7 @@ pub(crate) fn ensure_vector_index_name_available(
     Ok(())
 }
 
-fn create_vector_index(
+async fn create_vector_index(
     graph_id: GraphId,
     index_name: &str,
     if_not_exists: bool,
@@ -97,6 +99,16 @@ fn create_vector_index(
     }
 
     let store = RouterStore::new();
+
+    // In provisioned mode, the graph may not yet have a vector canister. If none is set, provision
+    // one before registering the definition so the created index has a dispatch target.
+    let provisioned_target = if crate::provisioning::config::get().is_some()
+        && vector_index_catalog::graph_single_target(graph_id).is_none()
+    {
+        Some(provision_vector_canister(graph_id).await?)
+    } else {
+        vector_index_catalog::graph_single_target(graph_id)
+    };
     let label_id = store.lookup_vertex_label_id(graph_id, &target.label)?;
     let existing_index_name_id = lookup_index_name_id(graph_id, index_name);
     let existing_embedding_name_id = lookup_embedding_name_id(graph_id, &target.embedding_name);
@@ -154,10 +166,58 @@ fn create_vector_index(
         target.metric,
         target.encoding,
         target.dims,
-        None,
+        provisioned_target.map(|canister| vector_index_catalog::VectorIndexTarget { canister }),
         false,
     )?;
     Ok(())
+}
+
+/// Provision a vector canister for a graph that currently has no vector target, and return the
+/// created canister principal. Uses the shared provisioned graph-admission flow with a single
+/// `VectorIndex(0)` resource (the whole-graph target, ADR 0031 Slice 4). Only callable when a
+/// `provision_canister` is configured.
+async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principal, RouterError> {
+    use gleaph_graph_kernel::federation::VectorIndexId;
+    use gleaph_graph_kernel::provisioning::LogicalResource;
+    use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+
+    let caller = ic_cdk::api::msg_caller();
+    let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
+        .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
+    let args = crate::types::ProvisionGraphArgs {
+        deployment_id: caller.to_text(),
+        request_fingerprint: format!("vector-{}", graph_name),
+        graph_name,
+        requested_resources: vec![ProvisionableResource {
+            logical_resource: LogicalResource::VectorIndex(VectorIndexId::new(0)),
+        }],
+        authorized_caller: caller,
+        release_id: "default".to_owned(),
+        owner: caller,
+        admins: std::collections::BTreeSet::new(),
+    };
+    let response = crate::provisioning::graph::provision_graph_flow(caller, args).await?;
+    match response {
+        crate::types::ProvisionGraphResponse::Accepted {
+            created_resources, ..
+        } => created_resources
+            .into_iter()
+            .find(|r| matches!(r.logical_resource, LogicalResource::VectorIndex(_)))
+            .map(|r| r.canister_id)
+            .ok_or_else(|| {
+                RouterError::Internal(
+                    "provisioned vector canister missing from created_resources".to_owned(),
+                )
+            }),
+        crate::types::ProvisionGraphResponse::Replay { .. }
+        | crate::types::ProvisionGraphResponse::Completed { .. } => {
+            // A replayed/acknowledged admission means a prior call already provisioned the canister;
+            // resolve it from the catalog.
+            vector_index_catalog::graph_single_target(graph_id).ok_or_else(|| {
+                RouterError::Internal("vector target not set after provision".to_owned())
+            })
+        }
+    }
 }
 
 pub(crate) struct ResolvedIndexDefinition {
@@ -444,10 +504,10 @@ mod tests {
         let graph_id = register_test_graph(&store, graph_name);
         register_vector_label(&store, graph_name, "Document");
 
-        execute_vector_index_ddl_for_graph(
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
             graph_id,
             vector_statement("document_embedding_idx", "embedding", 768, false),
-        )
+        ))
         .expect("create vector index");
 
         let index_name_id =
@@ -474,18 +534,18 @@ mod tests {
         let graph_id = register_test_graph(&store, graph_name);
         register_vector_label(&store, graph_name, "Document");
 
-        execute_vector_index_ddl_for_graph(
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
             graph_id,
             vector_statement("document_embedding_idx", "embedding", 384, false),
-        )
+        ))
         .expect("initial create");
         let next_before =
             crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
 
-        execute_vector_index_ddl_for_graph(
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
             graph_id,
             vector_statement("document_embedding_idx", "embedding", 384, true),
-        )
+        ))
         .expect("exact replay");
         assert_eq!(
             crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get()),
@@ -493,10 +553,10 @@ mod tests {
             "exact replay must not allocate a physical id"
         );
 
-        let err = execute_vector_index_ddl_for_graph(
+        let err = futures::executor::block_on(execute_vector_index_ddl_for_graph(
             graph_id,
             vector_statement("document_embedding_idx", "other_embedding", 385, true),
-        )
+        ))
         .expect_err("shape mismatch must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
         assert_eq!(
@@ -541,14 +601,14 @@ mod tests {
             ("metric", metric_mismatch),
             ("encoding", encoding_mismatch),
         ] {
-            let result = execute_vector_index_ddl_for_graph(
+            let result = futures::executor::block_on(execute_vector_index_ddl_for_graph(
                 graph_id,
                 VectorIndexDdlStatement::Create {
                     index_name: "document_embedding_idx".into(),
                     if_not_exists: true,
                     target,
                 },
-            );
+            ));
             assert!(
                 matches!(result, Err(RouterError::Conflict(_))),
                 "single-field {field} mismatch must conflict: {result:?}"
@@ -916,6 +976,56 @@ mod tests {
         assert!(
             matches!(err, RouterError::Conflict(_)),
             "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn vector_ddl_new_definition_inherits_existing_graph_target() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.vector.target";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+
+        // First definition is targetless (dev mode, no provision_canister, no prior target).
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("first_idx", "embedding", 384, false),
+        ))
+        .expect("first create");
+        let first_idx = lookup_index_name_id(graph_id, "first_idx").expect("first index name");
+        let first_def = vector_index_catalog::get_vector_index_by_name_id(graph_id, first_idx)
+            .expect("first def");
+        assert!(first_def.target.is_none());
+
+        // Set the graph's single target to a concrete canister.
+        let target_canister = candid::Principal::from_slice(&[0x50; 29]);
+        vector_index_catalog::set_vector_index_target(
+            graph_id,
+            first_def.index_id,
+            vector_index_catalog::VectorIndexTarget {
+                canister: target_canister,
+            },
+        )
+        .expect("set target");
+        assert_eq!(
+            vector_index_catalog::graph_single_target(graph_id),
+            Some(target_canister)
+        );
+
+        // A second definition in the same graph inherits the graph's single target.
+        register_vector_label(&store, graph_name, "OtherDocument");
+        futures::executor::block_on(execute_vector_index_ddl_for_graph(
+            graph_id,
+            vector_statement("second_idx", "embedding2", 384, false),
+        ))
+        .expect("second create");
+        let second_idx = lookup_index_name_id(graph_id, "second_idx").expect("second index name");
+        let second_def = vector_index_catalog::get_vector_index_by_name_id(graph_id, second_idx)
+            .expect("second def");
+        assert_eq!(
+            second_def.target.map(|t| t.canister),
+            Some(target_canister),
+            "new definition must inherit the graph's single target"
         );
     }
 }

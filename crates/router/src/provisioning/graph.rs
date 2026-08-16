@@ -32,7 +32,9 @@ pub(crate) async fn provision_graph_flow(
         RouterError::NotImplemented("provision_canister not configured".to_owned())
     })?;
 
-    // Validate requested_resources non-empty and canonical intent present.
+    // Validate requested_resources non-empty and canonical intent present. The canonical intent is
+    // the first resource; for a graph bootstrap that is a GraphShard, for an add-on provisioning it
+    // is the requested index/vector resource.
     if args.requested_resources.is_empty() {
         return Err(RouterError::InvalidArgument(
             "requested_resources is empty".to_owned(),
@@ -40,13 +42,8 @@ pub(crate) async fn provision_graph_flow(
     }
     let canonical = args
         .requested_resources
-        .iter()
-        .find(|r| matches!(r.logical_resource, LogicalResource::GraphShard(_)))
-        .ok_or_else(|| {
-            RouterError::InvalidArgument(
-                "requested_resources must contain at least one GraphShard resource".to_owned(),
-            )
-        })?;
+        .first()
+        .ok_or_else(|| RouterError::InvalidArgument("requested_resources is empty".to_owned()))?;
     let intent_key = ProvisioningIntentKey::new(&args.deployment_id, canonical.logical_resource);
 
     // Seed the Router-side provisioning-request catalog before the outbound send so the
@@ -113,7 +110,13 @@ pub(crate) async fn provision_graph_flow(
         created_resources, ..
     } = &response
         && !created_resources.is_empty()
+        && created_resources
+            .iter()
+            .any(|r| matches!(r.logical_resource, LogicalResource::GraphShard(_)))
     {
+        // A graph bootstrap (or a batch that created a shard) registers the graph and its shards.
+        // An add-on provision (e.g. a VectorIndex for an existing graph) carries no GraphShard; the
+        // graph is already registered and needs no graph/shard registration here.
         register_provisioned_graph(caller, &args, created_resources).await?;
     }
 

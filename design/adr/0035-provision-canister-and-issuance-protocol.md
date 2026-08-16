@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-08-15 22:06:57 UTC +0000
-Anchor timestamp: 2026-08-15 22:06:57 UTC +0000
+Last revised: 2026-08-16 00:23:25 UTC +0000
+Anchor timestamp: 2026-08-16 00:23:25 UTC +0000
 
 ## Context
 
@@ -199,6 +199,15 @@ shards. `register_provisioned_graph` runs only on a fresh `Accepted` with non-em
 `created_resources` is paired with the Graph shard during registration. The `register_graph`
 provisioned-mode fold (ADR 0056 Slice B) remains a separate integration surface; this slice
 implements the seam's registration behavior.
+
+Slice 9 (2026-08-16) wires on-demand vector provisioning into `CREATE VECTOR INDEX`. The vector DDL
+path (`execute_vector_index_ddl_for_graph`) is now async. In provisioned mode, a `CREATE VECTOR
+INDEX` on a graph with no vector target provisions a vector canister through the shared admission
+flow (`requested_resources = [VectorIndex(0)]`) and registers the definition against that canister;
+a graph that already has a vector target just reuses it. `provision_graph_flow` relaxes its
+"GraphShard required" canonical-intent rule so a vector-only add-on provision is admitted without a
+graph bootstrap; graph/shard registration runs only when the batch actually created a GraphShard.
+Dev mode (no `provision_canister`) still registers a targetless `Registered` definition.
 
 ## Cross-links
 
