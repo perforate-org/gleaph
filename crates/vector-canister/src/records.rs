@@ -158,6 +158,19 @@ impl Storable for PartitionKey {
     }
 }
 
+impl StableHashKey for PartitionKey {
+    const KEY_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTKEY-0";
+    const KEY_ROUTING_ID: [u8; 16] = *b"GLEAPH-PARTRTE-0";
+    type HashBytes<'a>
+        = [u8; 16]
+    where
+        Self: 'a;
+
+    fn stable_hash_bytes(&self) -> Self::HashBytes<'_> {
+        self.to_array()
+    }
+}
+
 /// `(index_id, index_version, partition_id, page_id)` key for `VECTOR_PAGE_META` (ADR 0032).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageKey {
@@ -597,6 +610,10 @@ impl Storable for PartitionHead {
             next_page_id: u64::from_le_bytes(b[32..40].try_into().expect("next_page_id")),
         }
     }
+}
+
+impl StableMapValue for PartitionHead {
+    const VALUE_STORAGE_ID: [u8; 16] = *b"GLEAPH-PARTVAL-0";
 }
 
 /// Durable per-index rebuild lifecycle (`VECTOR_REBUILD_STATE`, ADR 0031 Slice 7/8).

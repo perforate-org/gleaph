@@ -427,6 +427,7 @@ fn active_live_count(index_id: u32, active: u64, nlist: u32) -> u64 {
         (0..nlist)
             .map(|p| {
                 h.get(&PartitionKey::new(index_id, active, p))
+                    .expect("partition head get")
                     .map(|head| head.live_len)
                     .unwrap_or(0)
             })

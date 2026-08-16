@@ -2195,7 +2195,11 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
     );
     let target_live_after_failure = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
         (0..2)
-            .filter_map(|partition| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
+            .filter_map(|partition| {
+                heads
+                    .get(&PartitionKey::new(INDEX_ID, TARGET_V, partition))
+                    .expect("partition head get")
+            })
             .map(|head| head.live_len)
             .sum::<u64>()
     });
@@ -2216,7 +2220,11 @@ fn rebuild_building_link_failure_tombstones_unlinked_suffix_and_retry_converges(
 
     let target_live_after_cleanup = VECTOR_PARTITION_HEADS.with_borrow(|heads| {
         (0..2)
-            .filter_map(|partition| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
+            .filter_map(|partition| {
+                heads
+                    .get(&PartitionKey::new(INDEX_ID, TARGET_V, partition))
+                    .expect("partition head get")
+            })
             .map(|head| head.live_len)
             .sum::<u64>()
     });
@@ -3108,11 +3116,13 @@ fn publish_succeeds_with_an_empty_partition() {
         })
         .expect("removed vector remains a target centroid");
     let empty_head = VECTOR_PARTITION_HEADS
-        .with_borrow(|heads| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, empty_partition)));
+        .with_borrow(|heads| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, empty_partition)))
+        .expect("partition head get");
     assert!(empty_head.is_none(), "empty partition materializes no head");
     for partition in (0..3).filter(|partition| *partition != empty_partition) {
         let head = VECTOR_PARTITION_HEADS
             .with_borrow(|heads| heads.get(&PartitionKey::new(INDEX_ID, TARGET_V, partition)))
+            .expect("partition head get")
             .expect("non-removed centroid partition materializes a head");
         assert_eq!(head.live_len, 2, "remaining partition keeps two live rows");
     }

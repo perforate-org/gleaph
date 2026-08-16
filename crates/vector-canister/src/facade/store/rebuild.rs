@@ -86,7 +86,10 @@ pub(super) fn partition_health_summary(
     let mut max_partition_live_rows = 0u64;
     VECTOR_PARTITION_HEADS.with_borrow(|heads| {
         for p in 0..nlist {
-            if let Some(head) = heads.get(&PartitionKey::new(index_id, active, p)) {
+            if let Some(head) = heads
+                .get(&PartitionKey::new(index_id, active, p))
+                .expect("partition head get")
+            {
                 partitions_examined += 1;
                 live_rows = live_rows.saturating_add(head.live_len);
                 page_count = page_count.saturating_add(head.page_count);
@@ -396,7 +399,7 @@ fn drop_version_heads_and_centroids(index_id: u32, version: u64, nlist: u32) {
         for p in 0..nlist {
             heads
                 .remove(&PartitionKey::new(index_id, version, p))
-                .expect("remove retired partition head");
+                .expect("partition head remove");
         }
     });
     IVF_CENTROIDS.with_borrow_mut(|centroids| {

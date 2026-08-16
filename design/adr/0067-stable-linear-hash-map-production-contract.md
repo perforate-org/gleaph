@@ -94,11 +94,16 @@ under an exact epoch/incarnation fence.
 
 ## Gleaph ownership boundary
 
-Vector binds MemoryId 4 (`DEFINITION_STORE`) and MemoryId 7 (`SUBJECT_STORE`) through private
-`Uninitialized -> Ready | Unavailable` owners. Fresh install uses trusted definition/subject seeds
-with strict create; post-upgrade uses seed-free exact open. Raw map handles do not escape the owner.
-Existing bytes from another format remain unavailable and require the intentional pre-release
-reinstall described above.
+Vector binds MemoryId 4 (`DEFINITION_STORE`), MemoryId 7 (`SUBJECT_STORE`), and MemoryId 9
+(`VECTOR_PARTITION_HEADS`) through private `Uninitialized -> Ready | Unavailable` owners. Fresh
+install uses trusted definition/subject seeds with strict create; post-upgrade uses seed-free exact
+open. Raw map handles do not escape the owner. Existing bytes from another format remain unavailable
+and require the intentional pre-release reinstall described above.
+
+`VECTOR_PARTITION_HEADS` is derived state (partition page chains + `next_page_id` allocator), so its
+coordinated reset uses the map's `clear` (which preserves the incarnation and hash seed) rather than
+`reset(expected_incarnation)`. The defs/subjects owners are canonical and use the incarnation-fenced
+`reset` path.
 
 The additive typed Vector batch maps real definition/subject admission pressure to terminal item
 outcomes and owner availability failures to an outer result. Graph validates the outcome against

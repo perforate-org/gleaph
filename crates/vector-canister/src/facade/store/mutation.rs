@@ -1126,11 +1126,13 @@ impl VectorCanisterStore {
         index_version: u64,
     ) -> Option<crate::records::PartitionHead> {
         VECTOR_PARTITION_HEADS.with_borrow(|heads| {
-            heads.get(&PartitionKey::new(
-                index_id,
-                index_version,
-                DEGENERATE_PARTITION_ID,
-            ))
+            heads
+                .get(&PartitionKey::new(
+                    index_id,
+                    index_version,
+                    DEGENERATE_PARTITION_ID,
+                ))
+                .expect("partition head get")
         })
     }
 }

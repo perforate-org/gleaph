@@ -1,12 +1,12 @@
 use crate::control;
 use crate::header::{
-    self, ControlRegion, Header, InitError, BUCKETS_OFFSET, CONTROL_BYTES, HEADER_SIZE,
+    self, BUCKETS_OFFSET, CONTROL_BYTES, ControlRegion, HEADER_SIZE, Header, InitError,
     PAGES_PER_BUCKET, PRIMARY_SLOTS, SLOTS_PER_BUCKET,
 };
-use crate::memory::{grow_to_bytes, GrowError};
+use crate::memory::{GrowError, grow_to_bytes};
 use crate::{StableHashKey, StableMapValue};
 use ic_stable_structures::{Memory, Storable};
-use rapidhash::v3::{rapidhash_v3_inline, RapidSecrets};
+use rapidhash::v3::{RapidSecrets, rapidhash_v3_inline};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fmt;
@@ -738,6 +738,66 @@ impl<K: StableHashKey, V: StableMapValue, M: Memory> StableLinearHashMap<K, V, M
             },
         );
         Ok(incarnation)
+    }
+
+    /// Clears every entry while preserving the persisted incarnation and hash seed.
+    ///
+    /// Unlike [`Self::reset`], this does not advance the incarnation fence: it is intended for
+    /// derived/derivable regions whose contents are reconstructed from a canonical source, so a
+    /// concurrent scan cursor keyed on the old incarnation must be invalidated by the caller
+    /// (e.g. by also resetting the canonical owner). The mutation is failure-atomic: on a returned
+    /// error the logical map bytes, header, length, and control region remain unchanged and
+    /// reopenable.
+    pub fn clear(&self) -> Result<(), MutationError> {
+        let control = control::read(
+            &self.memory,
+            self.header.control_offset,
+            self.header.hash_seed,
+        );
+        if !control.mutation_epoch.is_multiple_of(2) {
+            return Err(MutationError::InProgress);
+        }
+        let completed_epoch = control
+            .mutation_epoch
+            .checked_add(2)
+            .ok_or(MutationError::EpochExhausted)?;
+        let end = Self::bucket_end_for(self.header, INITIAL_BUCKETS)
+            .ok_or(MutationError::CapacityOverflow)?;
+        let zero_block = vec![0; self.header.bucket_block_stride as usize];
+        if self
+            .memory
+            .size()
+            .checked_mul(crate::memory::WASM_PAGE_SIZE)
+            .ok_or(MutationError::CapacityOverflow)?
+            < end
+        {
+            return Err(MutationError::CapacityOverflow);
+        }
+        control::write_mutation_epoch(
+            &self.memory,
+            self.header.control_offset,
+            control.mutation_epoch + 1,
+        );
+        for bucket in 0..INITIAL_BUCKETS {
+            self.memory
+                .write(Self::bucket_base(self.header, bucket), &zero_block);
+        }
+        control::write(
+            &self.memory,
+            self.header.control_offset,
+            ControlRegion {
+                len: 0,
+                physical_buckets: INITIAL_BUCKETS,
+                mutation_epoch: completed_epoch,
+                incarnation: control.incarnation,
+                split_debt: 0,
+                overflow_entries: 0,
+                level: INITIAL_LEVEL,
+                split_cursor: 0,
+                hash_seed: self.header.hash_seed,
+            },
+        );
+        Ok(())
     }
 
     pub fn scrub_snapshot(&self) -> Result<ScrubCursor, ScrubError> {
@@ -2024,5 +2084,36 @@ mod tests {
         while let ScrubStep::InProgress(next) = map.scrub_step(cursor, 3).expect("scrub step") {
             cursor = next;
         }
+    }
+
+    #[test]
+    fn clear_empties_entries_and_preserves_incarnation_and_seed() {
+        let map = map();
+        for key in 0..256u64 {
+            map.insert(key, key ^ 0xaa).expect("clear insert");
+        }
+        assert_eq!(map.len(), Ok(256));
+        let incarnation = map.control_region().expect("control").incarnation;
+        let seed = map.hash_seed().expect("seed");
+
+        map.clear().expect("clear");
+
+        assert_eq!(map.len(), Ok(0));
+        assert!(map.is_empty().expect("is empty"));
+        for key in 0..256u64 {
+            assert_eq!(map.get(&key), Ok(None), "cleared key {key}");
+        }
+        let control = map.control_region().expect("after clear control");
+        assert_eq!(control.incarnation, incarnation, "incarnation preserved");
+        assert_eq!(map.hash_seed().expect("seed after clear"), seed);
+
+        // The map remains usable after clear.
+        assert_eq!(map.insert(7, 42), Ok(None));
+        assert_eq!(map.get(&7), Ok(Some(42)));
+
+        // Clear survives reopen.
+        let reopened = Map::open(map.into_memory()).expect("reopen cleared map");
+        assert_eq!(reopened.len(), Ok(1));
+        assert_eq!(reopened.get(&7), Ok(Some(42)));
     }
 }

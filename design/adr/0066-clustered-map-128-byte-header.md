@@ -1,9 +1,13 @@
 # 0066. Clustered hash map uses a 128-byte V1 metadata boundary
 
 Date: 2026-08-11
-Status: accepted
-Last revised: 2026-08-11
+Status: superseded by 0067
+Last revised: 2026-08-16
 Anchor timestamp: 2026-08-11 19:54:21 UTC +0000
+
+> **Superseded.** The `ic-stable-clustered-hash-map` crate is retired. Its last consumer,
+> `VECTOR_PARTITION_HEADS`, migrated to `ic-stable-linear-hash-map` (ADR 0067), and the crate was
+> removed from the workspace. This record is retained for historical context only.
 
 ## Context
 

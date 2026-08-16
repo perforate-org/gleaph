@@ -58,7 +58,7 @@ pub(crate) fn reset_definition_domain(
                     DefinitionDomainResetError::RegionHandleUnavailable("VECTOR_DELETED_SUBJECTS")
                 })?;
                 VECTOR_PARTITION_HEADS.with(|heads| {
-                    let mut heads = heads.try_borrow_mut().map_err(|_| {
+                    let heads = heads.try_borrow_mut().map_err(|_| {
                         DefinitionDomainResetError::RegionHandleUnavailable(
                             "VECTOR_PARTITION_HEADS",
                         )
@@ -86,7 +86,7 @@ pub(crate) fn reset_definition_domain(
                                 centroid_meta.clear_new();
                                 centroids.clear_new();
                                 deleted.clear_new();
-                                heads.clear_new();
+                                heads.clear().expect("clear partition heads");
                                 pages.reset();
                                 rebuild.clear_new();
                                 maintenance.clear_new();

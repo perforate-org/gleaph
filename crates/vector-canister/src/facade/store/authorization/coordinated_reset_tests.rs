@@ -149,7 +149,11 @@ fn successful_reset_clears_coupled_state_and_preserves_independent_lifecycle_sta
     assert!(IVF_CENTROIDS.with_borrow(|state| state.is_empty()));
     assert!(subject_store::is_empty_for_test().expect("subject map empty"));
     assert!(VECTOR_DELETED_SUBJECTS.with_borrow(|state| state.is_empty()));
-    assert!(VECTOR_PARTITION_HEADS.with_borrow(|state| state.is_empty()));
+    assert!(
+        VECTOR_PARTITION_HEADS
+            .with_borrow(|state| state.is_empty())
+            .expect("partition heads empty")
+    );
     assert!(VECTOR_REBUILD_STATE.with_borrow(|state| state.is_empty()));
     assert!(VECTOR_MAINTENANCE_STATE.with_borrow(|state| state.is_empty()));
     assert_eq!(PAGE_STORE.with_borrow(|pages| pages.occupied_tail()), 32);

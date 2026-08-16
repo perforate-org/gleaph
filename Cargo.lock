@@ -790,9 +790,9 @@ dependencies = [
 
 [[package]]
 name = "bitvec"
-version = "1.0.1"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bc2832c24239b0141d5674bb9174f9d68a8b5b3f2753311927c172ca46f7e9c"
+checksum = "ddcec3d12c579d40898fe0a9a358a803c23e9c52ca3c425707f81c9436211837"
 dependencies = [
  "funty",
  "radium",
@@ -3096,9 +3096,9 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.29.3"
+version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+checksum = "7360bd2cd76e0cd9032d42cf2922155cecea2685b0cfa4630c3246df030bcfd6"
 
 [[package]]
 name = "gleaph-account"
@@ -3561,7 +3561,6 @@ dependencies = [
  "gleaph-message-sizing",
  "ic-cdk",
  "ic-cdk-macros",
- "ic-stable-clustered-hash-map",
  "ic-stable-linear-hash-map",
  "ic-stable-memory-backend",
  "ic-stable-structures",
@@ -4380,17 +4379,6 @@ dependencies = [
  "candid",
  "serde",
  "serde_bytes",
-]
-
-[[package]]
-name = "ic-stable-clustered-hash-map"
-version = "0.1.0"
-dependencies = [
- "canbench-rs",
- "candid",
- "ic-cdk",
- "ic-stable-structures",
- "rapidhash",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use crate::header::{ControlRegion, CONTROL_BYTES};
+use crate::header::{CONTROL_BYTES, ControlRegion};
 use crate::memory::write_u64;
 use ic_stable_structures::Memory;
 

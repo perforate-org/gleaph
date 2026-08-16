@@ -694,7 +694,7 @@ impl VectorSlabStore {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("append_head_get");
             VECTOR_PARTITION_HEADS
-                .with_borrow(|h| h.get(&head_key))
+                .with_borrow(|h| h.get(&head_key).expect("partition head get"))
                 .unwrap_or_default()
         };
 
@@ -868,7 +868,7 @@ impl VectorSlabStore {
 
         let head_key = PartitionKey::new(index_id, index_version, partition_id);
         let head = VECTOR_PARTITION_HEADS
-            .with_borrow(|h| h.get(&head_key))
+            .with_borrow(|h| h.get(&head_key).expect("partition head get"))
             .unwrap_or_default();
 
         // Plan every page boundary and run-table roll without touching stable state.
@@ -1075,7 +1075,7 @@ impl VectorSlabStore {
 
         let head_key = PartitionKey::new(index_id, slot.index_version as u64, slot.partition_id);
         VECTOR_PARTITION_HEADS.with_borrow_mut(|h| {
-            if let Some(mut head) = h.get(&head_key) {
+            if let Some(mut head) = h.get(&head_key).expect("partition head get") {
                 head.live_len = head.live_len.saturating_sub(1);
                 h.insert(head_key, head).expect("tombstone head insert");
             }
@@ -1502,12 +1502,15 @@ mod tests {
     /// Clears the global partition-head allocator so an isolated store test is not perturbed by heads
     /// left over from another test on the same thread.
     fn clear_heads() {
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|h| h.clear_new());
+        VECTOR_PARTITION_HEADS
+            .with_borrow_mut(|h| h.clear())
+            .expect("clear partition heads");
     }
 
     fn head_live_len(index_id: u32, version: u64, partition: u32) -> u64 {
         VECTOR_PARTITION_HEADS
             .with_borrow(|h| h.get(&PartitionKey::new(index_id, version, partition)))
+            .expect("partition head get")
             .map(|head| head.live_len)
             .unwrap_or(0)
     }
@@ -1791,6 +1794,7 @@ mod tests {
         let head_key = PartitionKey::new(1, 1, 0);
         let head_before = VECTOR_PARTITION_HEADS
             .with_borrow(|heads| heads.get(&head_key))
+            .expect("partition head get")
             .expect("seeded partition head");
         let tail_before = store.occupied_tail();
         let page_count_before = store.version_page_count(1, 1);
@@ -1816,7 +1820,9 @@ mod tests {
         assert_eq!(store.occupied_tail(), tail_before);
         assert_eq!(store.version_page_count(1, 1), page_count_before);
         assert_eq!(
-            VECTOR_PARTITION_HEADS.with_borrow(|heads| heads.get(&head_key)),
+            VECTOR_PARTITION_HEADS
+                .with_borrow(|heads| heads.get(&head_key))
+                .expect("partition head get"),
             Some(head_before),
             "all partition-head fields, including live_len, remain unchanged"
         );
