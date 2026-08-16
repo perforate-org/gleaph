@@ -49,8 +49,8 @@ impl Example {
 
         // 3. A view state over the scene. The view auto-fits the graph on its
         //    first layout, so no explicit `fit_all` is required here. Because
-        //    the node data type (`&'static str`) implements `Display`, default
-        //    labels are shown automatically.
+        //    the node and edge data types (`&'static str`) implement `Display`,
+        //    default node and edge labels are shown automatically.
         let view = cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
 
         // 4. Style the label text and its offset below the node.

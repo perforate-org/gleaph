@@ -1435,8 +1435,11 @@ with the rest of the application. The node stroke is split into
 `node_stroke_width` and `node_stroke_color`.
 
 Node labels are resolved by a callback set on the view state
-(`set_node_label`) and rendered centered below the node. Label appearance is
-configured through `label_style` (`gpui::TextStyle`) and `label_offset`.
+(`set_node_label`) and rendered centered below the node. Edge labels are
+resolved by `set_edge_label` and rendered centered at the edge midpoint. When
+the node and edge data types implement `Display`, `new_with_default_labels`
+shows both automatically. Label appearance is configured through `label_style`
+(`gpui::TextStyle`) and `label_offset`.
 
 ---
 

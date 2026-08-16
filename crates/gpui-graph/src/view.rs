@@ -18,7 +18,7 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc};
 #[cfg(test)]
 use std::cell::RefCell;
 
-use crate::graph::{EdgeDirection, NodeId};
+use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::hit_test;
 use crate::interaction::{GraphEvent, Hover, MouseButton, Selection};
 use crate::layout::LayoutBudget;
@@ -29,6 +29,9 @@ use crate::viewport::{Viewport, WorldBounds};
 /// A resolver that returns the label text for a node, or `None` for no label.
 type NodeLabelResolver<N> = Rc<dyn Fn(NodeId, &N) -> Option<String>>;
 
+/// A resolver that returns the label text for an edge, or `None` for no label.
+type EdgeLabelResolver<E> = Rc<dyn Fn(EdgeId, &E) -> Option<String>>;
+
 /// The state of a particular view into a graph scene (§16).
 pub struct GraphViewState<NK, EK, N, E> {
     scene: Entity<GraphScene<NK, EK, N, E>>,
@@ -37,6 +40,7 @@ pub struct GraphViewState<NK, EK, N, E> {
     hover: Hover,
     style: GraphStyle,
     node_label: NodeLabelResolver<N>,
+    edge_label: EdgeLabelResolver<E>,
     dragging: Option<NodeId>,
     panning: bool,
     last_mouse: Vec2,
@@ -131,6 +135,7 @@ enum TestPaintPrimitive {
     Arrow { source: Vec2, target: Vec2 },
     Node { origin: Vec2, size: Vec2 },
     Label { position: Vec2 },
+    EdgeLabel { position: Vec2 },
 }
 
 #[cfg(test)]
@@ -164,6 +169,7 @@ where
             hover: Hover::default(),
             style: GraphStyle::default(),
             node_label: Rc::new(|_id, _node| None),
+            edge_label: Rc::new(|_id, _edge| None),
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
@@ -222,6 +228,15 @@ where
     /// overrides any default label resolution.
     pub fn set_node_label(&mut self, resolver: impl Fn(NodeId, &N) -> Option<String> + 'static) {
         self.node_label = Rc::new(resolver);
+    }
+
+    /// Set the edge label resolver.
+    ///
+    /// The resolver returns the label text for an edge, or `None` to render no
+    /// label. It is called during prepaint for every visible edge. This
+    /// overrides any default edge label resolution.
+    pub fn set_edge_label(&mut self, resolver: impl Fn(EdgeId, &E) -> Option<String> + 'static) {
+        self.edge_label = Rc::new(resolver);
     }
 
     /// Fit the viewport to the bounds of all nodes in the scene.
@@ -305,12 +320,13 @@ where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
     N: std::fmt::Display + 'static,
-    E: 'static,
+    E: std::fmt::Display + 'static,
 {
-    /// Create a view state over the given scene with default node labels.
+    /// Create a view state over the given scene with default node and edge labels.
     ///
-    /// Each node's label is its `Display` representation. Callers can still
-    /// override this per node with [`Self::set_node_label`].
+    /// Each node's label is its `Display` representation and each edge's label
+    /// is its `Display` representation. Callers can still override these per
+    /// element with [`Self::set_node_label`] and [`Self::set_edge_label`].
     pub fn new_with_default_labels(
         scene: Entity<GraphScene<NK, EK, N, E>>,
         _cx: &mut Context<Self>,
@@ -322,6 +338,7 @@ where
             hover: Hover::default(),
             style: GraphStyle::default(),
             node_label: Rc::new(|_id, node| Some(node.to_string())),
+            edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
@@ -419,15 +436,17 @@ where
                         let vs = view_prepaint.read(cx);
                         let scene = vs.scene.read(cx);
                         let node_label = vs.node_label.clone();
-                        crate::paint::build_paint_frame(
-                            scene.graph(),
-                            &|id| scene.node_position(id),
-                            &|id, node| node_label(id, node),
-                            &vs.viewport,
-                            &vs.style,
-                            &vs.selection,
-                            &vs.hover,
-                        )
+                        let edge_label = vs.edge_label.clone();
+                        crate::paint::build_paint_frame(crate::paint::PaintFrameInput {
+                            graph: scene.graph(),
+                            node_position: &|id| scene.node_position(id),
+                            node_label: &|id, node| node_label(id, node),
+                            edge_label: &|id, edge| edge_label(id, edge),
+                            viewport: &vs.viewport,
+                            style: &vs.style,
+                            selection: &vs.selection,
+                            hover: &vs.hover,
+                        })
                     },
                     move |_bounds, frame: crate::paint::PaintFrame, window, cx| {
                         let coordinates = coordinates_paint.get();
@@ -502,6 +521,9 @@ where
                         }
                         for label in &frame.labels {
                             paint_label(window, cx, &coordinates, label, &style);
+                        }
+                        for label in &frame.edge_labels {
+                            paint_edge_label(window, cx, &coordinates, label, &style);
                         }
                     },
                 )
@@ -751,6 +773,50 @@ fn paint_label(
     });
 }
 
+/// Paint an edge label centered at the edge midpoint.
+fn paint_edge_label(
+    window: &mut Window,
+    cx: &mut gpui::App,
+    coordinates: &CanvasCoordinates,
+    label: &crate::paint::PaintEdgeLabel,
+    style: &GraphStyle,
+) {
+    let anchor = coordinates.canvas_to_window(label.position);
+    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
+    let line_height = style
+        .label_style
+        .line_height
+        .to_pixels(font_size.into(), window.rem_size());
+    let run = style.label_style.to_run(label.text.len());
+    let Ok(lines) =
+        window
+            .text_system()
+            .shape_text(label.text.clone().into(), font_size, &[run], None, None)
+    else {
+        return;
+    };
+    let mut origin = point(px(anchor.x), px(anchor.y));
+    for line in &lines {
+        let line_size = line.size(line_height);
+        let centered = point(px(anchor.x - f32::from(line_size.width) * 0.5), origin.y);
+        let _ = line.paint(
+            centered,
+            line_height,
+            gpui::TextAlign::Center,
+            None,
+            window,
+            cx,
+        );
+        origin.y += line_size.height;
+    }
+    #[cfg(test)]
+    TEST_PAINT_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .push(TestPaintPrimitive::EdgeLabel { position: anchor });
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,9 +862,9 @@ mod tests {
         cx.new(|cx| GraphViewState::new(scene, cx))
     }
 
-    fn draw_graph_view<N: 'static>(
+    fn draw_graph_view<N: 'static, E: 'static>(
         cx: &mut VisualTestContext,
-        view: &Entity<GraphViewState<&'static str, &'static str, N, ()>>,
+        view: &Entity<GraphViewState<&'static str, &'static str, N, E>>,
         origin: Vec2,
         canvas_size: Vec2,
     ) {
@@ -1117,17 +1183,23 @@ mod tests {
 
     #[gpui::test]
     fn default_labels_use_display_and_can_be_overridden(cx: &mut TestAppContext) {
-        let scene: Entity<GraphScene<&'static str, &'static str, &'static str, ()>> =
-            cx.new(|_| {
+        let scene: Entity<GraphScene<&'static str, &'static str, &'static str, &'static str>> = cx
+            .new(|_| {
                 let mut scene = GraphScene::new();
-                scene.merge(GraphBatch::new().node("a", "Alice").node("b", "Bob"));
+                scene.merge(GraphBatch::new().node("a", "Alice").node("b", "Bob").edge(
+                    "ab",
+                    "a",
+                    "b",
+                    EdgeDirection::Directed,
+                    "knows",
+                ));
                 let a = scene.node_id(&"a").unwrap();
                 let b = scene.node_id(&"b").unwrap();
                 scene.set_position(a, Vec2::new(-10.0, -20.0));
                 scene.set_position(b, Vec2::new(30.0, 40.0));
                 scene
             });
-        let view: Entity<GraphViewState<&'static str, &'static str, &'static str, ()>> =
+        let view: Entity<GraphViewState<&'static str, &'static str, &'static str, &'static str>> =
             cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
         cx.update_entity(&view, |state, _| {
             state.viewport_mut().set_size(Vec2::new(200.0, 100.0));
@@ -1150,6 +1222,18 @@ mod tests {
             labels.len(),
             2,
             "default labels should render for Display nodes"
+        );
+        let edge_labels: Vec<_> = trace
+            .iter()
+            .filter_map(|primitive| match primitive {
+                TestPaintPrimitive::EdgeLabel { position } => Some(*position),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            edge_labels.len(),
+            1,
+            "default edge labels should render for Display edges"
         );
     }
 }

@@ -55,6 +55,15 @@ pub struct PaintLabel {
     pub text: String,
 }
 
+/// An edge label record ready for painting.
+#[derive(Debug, Clone)]
+pub struct PaintEdgeLabel {
+    /// Canvas-local pixel anchor position (the edge midpoint).
+    pub position: Vec2,
+    /// The label text.
+    pub text: String,
+}
+
 /// The set of primitives to paint for one frame (§18.2).
 #[derive(Debug, Clone, Default)]
 pub struct PaintFrame {
@@ -62,8 +71,10 @@ pub struct PaintFrame {
     pub nodes: Vec<PaintNode>,
     /// Visible edges.
     pub edges: Vec<PaintEdge>,
-    /// Visible labels.
+    /// Visible node labels.
     pub labels: Vec<PaintLabel>,
+    /// Visible edge labels.
+    pub edge_labels: Vec<PaintEdgeLabel>,
 }
 
 impl PaintFrame {
@@ -74,8 +85,31 @@ impl PaintFrame {
 
     /// Whether the frame contains no primitives.
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty() && self.edges.is_empty() && self.labels.is_empty()
+        self.nodes.is_empty()
+            && self.edges.is_empty()
+            && self.labels.is_empty()
+            && self.edge_labels.is_empty()
     }
+}
+
+/// Inputs to [`build_paint_frame`].
+pub struct PaintFrameInput<'a, N, E> {
+    /// The logical graph.
+    pub graph: &'a Graph<N, E>,
+    /// Resolves a node's world-space position.
+    pub node_position: &'a dyn Fn(NodeId) -> Option<Vec2>,
+    /// Resolves an optional node label string.
+    pub node_label: &'a dyn Fn(NodeId, &N) -> Option<String>,
+    /// Resolves an optional edge label string.
+    pub edge_label: &'a dyn Fn(EdgeId, &E) -> Option<String>,
+    /// The viewport.
+    pub viewport: &'a Viewport,
+    /// The graph style.
+    pub style: &'a GraphStyle,
+    /// The current selection.
+    pub selection: &'a Selection,
+    /// The current hover target.
+    pub hover: &'a Hover,
 }
 
 /// Build a paint frame from graph, scene positions, viewport, style, and
@@ -83,16 +117,20 @@ impl PaintFrame {
 ///
 /// `node_position` resolves a node's world-space position (typically from the
 /// scene's node scene state). `node_label` resolves an optional label string for
-/// a node; nodes without a label produce no label primitive.
-pub fn build_paint_frame<N, E>(
-    graph: &Graph<N, E>,
-    node_position: &impl Fn(NodeId) -> Option<Vec2>,
-    node_label: &impl Fn(NodeId, &N) -> Option<String>,
-    viewport: &Viewport,
-    style: &GraphStyle,
-    selection: &Selection,
-    hover: &Hover,
-) -> PaintFrame {
+/// a node; nodes without a label produce no label primitive. `edge_label`
+/// resolves an optional label string for an edge; edges without a label produce
+/// no edge-label primitive.
+pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
+    let PaintFrameInput {
+        graph,
+        node_position,
+        node_label,
+        edge_label,
+        viewport,
+        style,
+        selection,
+        hover,
+    } = input;
     let visible = viewport.visible_world_bounds();
     let margin = style.node_radius * 2.0;
 
@@ -151,6 +189,14 @@ pub fn build_paint_frame<N, E>(
             selected: selection.contains_edge(id),
             hovered: hover.edge == Some(id),
         });
+        if let Some(text) = edge_label(id, &edge.data) {
+            let source_screen = viewport.world_to_screen(source_world);
+            let target_screen = viewport.world_to_screen(target_world);
+            frame.edge_labels.push(PaintEdgeLabel {
+                position: (source_screen + target_screen) * 0.5,
+                text,
+            });
+        }
     }
 
     frame
@@ -185,6 +231,10 @@ mod tests {
         |_id, _node| None
     }
 
+    fn no_edge_labels<E>() -> impl Fn(EdgeId, &E) -> Option<String> {
+        |_id, _edge| None
+    }
+
     #[test]
     fn culls_nodes_outside_viewport() {
         let g = graph();
@@ -215,15 +265,16 @@ mod tests {
             }
         };
 
-        let frame = build_paint_frame(
-            &g,
-            &positions,
-            &no_labels(),
-            &vp,
-            &style,
-            &selection,
-            &hover,
-        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
         // Only the in-viewport node is painted; the out-of-viewport node is culled.
         assert_eq!(frame.nodes.len(), 1);
         assert_eq!(frame.nodes[0].id, a);
@@ -236,15 +287,16 @@ mod tests {
         let g = graph();
         let vp = Viewport::new(); // size zero
         let style = GraphStyle::default();
-        let frame = build_paint_frame(
-            &g,
-            &positions(),
-            &no_labels(),
-            &vp,
-            &style,
-            &Selection::new(),
-            &Hover::default(),
-        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions(),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
         assert!(frame.is_empty());
     }
 
@@ -261,15 +313,16 @@ mod tests {
             node: Some(node),
             edge: None,
         };
-        let frame = build_paint_frame(
-            &g,
-            &positions(),
-            &no_labels(),
-            &vp,
-            &style,
-            &selection,
-            &hover,
-        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions(),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
         let painted = frame.nodes.iter().find(|n| n.id == node).unwrap();
         assert!(painted.selected);
         assert!(painted.hovered);
@@ -292,15 +345,16 @@ mod tests {
         };
         let mut viewport = Viewport::new();
         viewport.set_size(Vec2::new(100.0, 100.0));
-        let frame = build_paint_frame(
-            &graph,
-            &positions,
-            &no_labels(),
-            &viewport,
-            &GraphStyle::default(),
-            &Selection::new(),
-            &Hover::default(),
-        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &graph,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
 
         let source_node = frame.nodes.iter().find(|node| node.id == source).unwrap();
         let target_node = frame.nodes.iter().find(|node| node.id == target).unwrap();
@@ -327,17 +381,51 @@ mod tests {
         let labels = move |_id: NodeId, node: &&str| Some(node.to_string());
         let mut vp = Viewport::new();
         vp.set_size(Vec2::new(100.0, 100.0));
-        let frame = build_paint_frame(
-            &g,
-            &positions,
-            &labels,
-            &vp,
-            &GraphStyle::default(),
-            &Selection::new(),
-            &Hover::default(),
-        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &labels,
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
         assert_eq!(frame.labels.len(), 2);
         assert_eq!(frame.labels[0].text, "alice");
         assert_eq!(frame.labels[1].text, "bob");
+    }
+
+    #[test]
+    fn produces_edge_labels_at_midpoint() {
+        let mut g: Graph<(), &str> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, "knows");
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(10.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let edge_labels = move |_id: EdgeId, edge: &&str| Some(edge.to_string());
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &edge_labels,
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(frame.edge_labels.len(), 1);
+        assert_eq!(frame.edge_labels[0].text, "knows");
+        assert_eq!(frame.edge_labels[0].position, Vec2::new(55.0, 50.0));
     }
 }

@@ -29,7 +29,10 @@ pub use layout::{
     FixedLayout, ForceAtlas2, LayoutBudget, LayoutController, LayoutEngine, LayoutGraph,
     LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, Placement,
 };
-pub use paint::{PaintEdge, PaintFrame, PaintNode, build_paint_frame};
+pub use paint::{
+    PaintEdge, PaintEdgeLabel, PaintFrame, PaintFrameInput, PaintLabel, PaintNode,
+    build_paint_frame,
+};
 pub use patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
 pub use runtime::GraphRuntime;
 pub use scene::{EdgeSceneState, GraphScene, NodeSceneState};
