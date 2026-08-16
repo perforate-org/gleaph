@@ -18,6 +18,7 @@ members = [
     "crates/graph-index",
     "crates/graph-kernel",
     "crates/gpui-graph",
+    "crates/gleaph-theme",
     "crates/message-sizing",
     "crates/migration-api",
     "crates/prepared-runtime",
@@ -65,6 +66,7 @@ gleaph-gql-value = { path = "crates/gql-value", default-features = false }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
+gleaph-theme = { path = "crates/gleaph-theme" }
 gleaph-index-ddl = { path = "crates/index-ddl" }
 gleaph-instruction-budget = { path = "crates/instruction-budget", default-features = false }
 gleaph-message-sizing = { path = "crates/message-sizing" }

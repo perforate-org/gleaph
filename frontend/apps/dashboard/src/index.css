@@ -1,51 +1,126 @@
+/* Gleaph Design Tokens */
+/* Generated from W3C DTCG format */
+/* Do not edit manually */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* shadcn/ui compatible theme tokens */
+    --background: 45 13.8% 88.6%;
+    --foreground: 0 0% 12.9%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 0 0% 12.9%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --popover-foreground: 0 0% 12.9%;
+    --primary: 225 65.2% 45.1%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 45 13.8% 88.6%;
+    --secondary-foreground: 0 0% 12.9%;
+    --muted: 40 23.1% 94.9%;
+    --muted-foreground: 0 0% 37.6%;
+    --accent: 225 65.2% 45.1%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --border: 0 0% 82%;
+    --input: 0 0% 82%;
+    --ring: 225 87.8% 67.8%;
+    --radius: 4px;
+
+    /* Primitive tokens */
+    --color-sand-0: #ffffff;
+    --color-sand-50: #f5f3ef;
+    --color-sand-100: #e6e4de;
+    --color-sand-200: #d1d1d1;
+    --color-sand-300: #c1c1c1;
+    --color-sand-400: #a0a0a0;
+    --color-sand-500: #808080;
+    --color-sand-600: #606060;
+    --color-sand-700: #404040;
+    --color-sand-800: #373737;
+    --color-sand-900: #212121;
+    --color-sand-950: #161616;
+    --color-blue-300: #6589f5;
+    --color-blue-400: #3460e6;
+    --color-blue-500: #284dbe;
+    --color-blue-600: #0d69be;
+    --color-blue-700: #0059ff;
+    --color-clay-300: #ddbcb8;
+    --color-clay-400: #dfcbc9;
+    --color-clay-500: #c9a89a;
+    --space-4: 16px;
+    --space-6: 24px;
+    --radius-md: 4px;
+
+    /* Semantic tokens */
+    --color-background-canvas: #e6e4de;
+    --color-background-surface: #ffffff;
+    --color-text-primary: #212121;
+    --color-text-secondary: #606060;
+    --color-accent-primary: #284dbe;
+    --color-border-default: #d1d1d1;
+    --color-focus-ring: #6589f5;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+    /* shadcn/ui compatible theme tokens */
+    --background: 0 0% 8.6%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 12.9%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 12.9%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 225 78.1% 55.3%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 8.6%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 40 23.1% 94.9%;
+    --muted-foreground: 0 0% 75.7%;
+    --accent: 225 78.1% 55.3%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --border: 0 0% 25.1%;
+    --input: 0 0% 25.1%;
+    --ring: 225 87.8% 67.8%;
+    --radius: 4px;
+
+    /* Primitive tokens */
+    --color-sand-0: #ffffff;
+    --color-sand-50: #f5f3ef;
+    --color-sand-100: #e6e4de;
+    --color-sand-200: #d1d1d1;
+    --color-sand-300: #c1c1c1;
+    --color-sand-400: #a0a0a0;
+    --color-sand-500: #808080;
+    --color-sand-600: #606060;
+    --color-sand-700: #404040;
+    --color-sand-800: #373737;
+    --color-sand-900: #212121;
+    --color-sand-950: #161616;
+    --color-blue-300: #6589f5;
+    --color-blue-400: #3460e6;
+    --color-blue-500: #284dbe;
+    --color-blue-600: #0d69be;
+    --color-blue-700: #0059ff;
+    --color-clay-300: #ddbcb8;
+    --color-clay-400: #dfcbc9;
+    --color-clay-500: #c9a89a;
+    --space-4: 16px;
+    --space-6: 24px;
+    --radius-md: 4px;
+
+    /* Semantic tokens */
+    --color-background-canvas: #161616;
+    --color-background-surface: #212121;
+    --color-text-primary: #ffffff;
+    --color-text-secondary: #c1c1c1;
+    --color-accent-primary: #3460e6;
+    --color-border-default: #404040;
+    --color-focus-ring: #6589f5;
   }
 }
 

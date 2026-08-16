@@ -1,0 +1,87 @@
+name: Design Tokens
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'design-tokens/**'
+  pull_request:
+    paths:
+      - 'design-tokens/**'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'design-tokens/scripts/package-lock.json'
+
+      - name: Install Node dependencies
+        run: cd design-tokens/scripts && npm ci
+
+      - name: Generate CSS
+        run: cd design-tokens/scripts && node resolve-to-css.js
+
+      - name: Generate Rust theme
+        run: cd design-tokens/scripts && node generate-gpui-theme.js
+
+      - name: Verify generated files are up-to-date
+        run: |
+          git diff --exit-code \
+            frontend/apps/dashboard/src/index.css \
+            crates/gleaph-theme/src/lib.rs
+
+      - name: Lint scripts
+        run: |
+          cd design-tokens/scripts && npx oxlint .
+
+      - name: Type-check scripts
+        run: |
+          cd design-tokens/scripts && npx tsc --noEmit
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check gleaph-theme compiles
+        run: cargo check -p gleaph-theme
+
+  sync-fig:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'design-tokens/scripts/package-lock.json'
+
+      - name: Install Node dependencies
+        run: cd design-tokens/scripts && npm ci
+
+      - name: Sync tokens to .fig
+        run: cd design-tokens/scripts && node sync-to-fig.js
+
+      - name: Commit updated .fig
+        run: |
+          git add design-tokens/gleaph-design-system.fig
+          git diff --cached --quiet || \
+            (git commit -m "chore: sync design tokens to .fig" && git push)

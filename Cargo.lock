@@ -3552,6 +3552,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-theme"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-graph",
+]
+
+[[package]]
 name = "gleaph-vector-canister"
 version = "0.1.0"
 dependencies = [

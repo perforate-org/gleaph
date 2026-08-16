@@ -1,0 +1,14 @@
+[package]
+name = "gleaph-theme"
+version = "0.1.0"
+edition = "2024"
+description = "Gleaph design tokens as GPUI theme constants"
+license = "MIT"
+
+[features]
+default = []
+test-support = ["gpui/test-support"]
+
+[dependencies]
+gpui = "0.2.2"
+gpui-graph = { path = "../gpui-graph" }

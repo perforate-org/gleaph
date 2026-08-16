@@ -1,0 +1,25 @@
+{
+  "$schema": "https://www.designtokens.org/schemas/2025.10/resolver.json",
+  "name": "Gleaph Design Tokens",
+  "version": "2025.10",
+  "description": "Gleaph design tokens following W3C DTCG specification",
+  "sets": {
+    "primitive": {
+      "sources": [{ "$ref": "primitive.json" }]
+    }
+  },
+  "modifiers": {
+    "theme": {
+      "description": "Light / dark theme modifier",
+      "contexts": {
+        "light": [{ "$ref": "semantic-light.json" }],
+        "dark": [{ "$ref": "semantic-dark.json" }]
+      },
+      "default": "light"
+    }
+  },
+  "resolutionOrder": [
+    { "$ref": "#/sets/primitive" },
+    { "$ref": "#/modifiers/theme" }
+  ]
+}

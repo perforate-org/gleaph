@@ -1,0 +1,36 @@
+{
+  "color": {
+    "$type": "color",
+    "background": {
+      "canvas": {
+        "$value": "{color.sand.100}"
+      },
+      "surface": {
+        "$value": "{color.sand.0}"
+      }
+    },
+    "text": {
+      "primary": {
+        "$value": "{color.sand.900}"
+      },
+      "secondary": {
+        "$value": "{color.sand.600}"
+      }
+    },
+    "accent": {
+      "primary": {
+        "$value": "{color.blue.500}"
+      }
+    },
+    "border": {
+      "default": {
+        "$value": "{color.sand.200}"
+      }
+    },
+    "focus": {
+      "ring": {
+        "$value": "{color.blue.300}"
+      }
+    }
+  }
+}
