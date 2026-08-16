@@ -23,6 +23,8 @@ INSTALL_MODE="${GLEAPH_DEMO_INSTALL_MODE:-auto}"
 VECTOR_INDEX_ID="${GLEAPH_DEMO_VECTOR_INDEX_ID:-1}"
 EMBEDDING_NAME="${GLEAPH_DEMO_EMBEDDING_NAME:-post_vec}"
 EMBEDDING_DIMS="${GLEAPH_DEMO_EMBEDDING_DIMS:-8}"
+# The vertex label the embedding is scoped to (the Router requires a non-empty `labels` set).
+EMBEDDING_LABEL="${GLEAPH_DEMO_EMBEDDING_LABEL:-Post}"
 
 # icp-cli's --debug flag couples two behaviors: it hides the managed recipe's
 # progress renderer (which can terminate early in non-interactive shells) and
@@ -249,7 +251,7 @@ setup_vector_index() {
 
   log "Registering vector index $EMBEDDING_NAME with target $vector_id"
   icp_call_expect_ok "Register post_vec vector index" "" -e local gleaph-router admin_register_vector_index \
-    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; embedding_name = "'"$EMBEDDING_NAME"'"; index_id = '"$VECTOR_INDEX_ID"' : nat32; dims = '"$EMBEDDING_DIMS"' : nat16; metric = opt variant { L2Squared }; target = opt principal "'"$vector_id"'"; if_not_exists = true })'
+    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; embedding_name = "'"$EMBEDDING_NAME"'"; index_id = '"$VECTOR_INDEX_ID"' : nat32; dims = '"$EMBEDDING_DIMS"' : nat16; labels = vec { "'"$EMBEDDING_LABEL"'" }; metric = opt variant { L2Squared }; target = opt principal "'"$vector_id"'"; if_not_exists = true })'
 
   log "Activating vector dispatch"
   icp_call_expect_ok "Activate vector dispatch" "" -e local gleaph-router set_vector_dispatch_enabled \
