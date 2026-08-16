@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-08-14
-Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
+Last updated: 2026-08-16
+Anchor timestamp: 2026-08-16 05:00:23 UTC +0000
 
 ## Status
 
@@ -97,6 +97,23 @@ Explain the **graph-index canister** and how the router uses it for query routin
 | **Graph-index** | Postings keyed by router-issued `property_id` (interpreted under the owning graph's dispatch / index-cluster boundary)                    |
 
 Standalone and test graphs without router resolution use hash-based test property ids (`crates/graph/src/test_labels.rs`) or explicit `ResolvedPropertyTable` on the plan wire.
+
+## On-demand provisioning (ADR 0035 Slice 10)
+
+**Implemented (Router-side).** In provisioned mode (a `provision_canister` is configured), a
+`CREATE INDEX` on a graph whose live shard groups have no index canister provisions one index
+canister per unassigned group through the shared admission flow
+(`requested_resources = [PropertyIndex(IndexClusterId(g)) for g in unassigned_groups]`), assigns
+each to `index_cluster`, and retrofit-attaches every live shard in the affected groups to its
+group's canister. Dev mode (no `provision_canister`) registers the definition indexless as before.
+The `CREATE INDEX` path is async because provisioning is a cross-canister call.
+
+Unlike vector (which separates provision from a manual `attach_vector_shard` admin API), property
+index attach runs inside `CREATE INDEX`: there is no existing retrofit attach path for property
+index, and the index canister is unusable until its shards are attached. `unassigned_index_groups`
+keys off the shards' own `index_canister` (not `index_cluster`) so a group whose canister was
+assigned but whose shards were not yet attached is re-provisioned idempotently on retry;
+`attach_provisioned_index_canisters` is idempotent per group.
 
 ## Posting model
 

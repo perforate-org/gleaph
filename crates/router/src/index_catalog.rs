@@ -336,6 +336,23 @@ async fn create_index(
         )));
     }
 
+    // Defer to `create_named_index`'s if_not_exists semantics without provisioning canisters for a
+    // no-op or a rejected re-declaration.
+    if let Some(index_name_id) = lookup_index_name_id(graph_id, index_name)
+        && get_named_index(graph_id, index_name_id).is_some()
+    {
+        if if_not_exists {
+            return Ok(());
+        }
+        return Err(RouterError::Conflict(format!(
+            "index already exists: {index_name}"
+        )));
+    }
+
+    // In provisioned mode, ensure every live shard group has an index canister before registering
+    // the definition so the created index has a dispatch target (ADR 0035 Slice 10).
+    ensure_index_canisters_provisioned(graph_id).await?;
+
     let index_name_id = intern_index_name(graph_id, index_name)?;
     // ADR 0023 D1: the router is the sole SSOT for index definitions. Shards learn
     // indexed-ness per operation from the router-supplied catalog, so CREATE INDEX
@@ -352,6 +369,100 @@ async fn create_index(
         if_not_exists,
     )?;
     Ok(())
+}
+
+/// In provisioned mode, ensure every live shard group of `graph_id` has an index canister
+/// assigned. Unassigned groups are provisioned through the shared admission flow and their
+/// canisters assigned to `index_cluster` + retrofit-attached to the group's shards. Dev mode (no
+/// `provision_canister`) is a no-op (indexless).
+async fn ensure_index_canisters_provisioned(graph_id: GraphId) -> Result<(), RouterError> {
+    if crate::provisioning::config::get().is_none() {
+        return Ok(());
+    }
+    let store = RouterStore::new();
+    let unassigned = store.unassigned_index_groups(graph_id)?;
+    if unassigned.is_empty() {
+        return Ok(());
+    }
+    let canisters = provision_index_canisters(graph_id, &unassigned).await?;
+    store
+        .attach_provisioned_index_canisters(graph_id, &canisters)
+        .await
+}
+
+/// Provision index canisters for the given shard groups through the shared admission flow and
+/// return `group_index -> canister`. Only callable when a `provision_canister` is configured.
+async fn provision_index_canisters(
+    graph_id: GraphId,
+    groups: &[u32],
+) -> Result<std::collections::BTreeMap<u32, candid::Principal>, RouterError> {
+    use gleaph_graph_kernel::federation::IndexClusterId;
+    use gleaph_graph_kernel::provisioning::LogicalResource;
+    use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+
+    let caller = ic_cdk::api::msg_caller();
+    let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
+        .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
+    let fingerprint = groups
+        .iter()
+        .map(|g| g.to_string())
+        .collect::<Vec<_>>()
+        .join("-");
+    let args = crate::types::ProvisionGraphArgs {
+        deployment_id: caller.to_text(),
+        request_fingerprint: format!("index-{fingerprint}"),
+        graph_name,
+        requested_resources: groups
+            .iter()
+            .map(|g| ProvisionableResource {
+                logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(*g)),
+            })
+            .collect(),
+        authorized_caller: caller,
+        release_id: "default".to_owned(),
+        owner: caller,
+        admins: std::collections::BTreeSet::new(),
+    };
+    let response = crate::provisioning::graph::provision_graph_flow(caller, args).await?;
+    match response {
+        crate::types::ProvisionGraphResponse::Accepted {
+            created_resources, ..
+        }
+        | crate::types::ProvisionGraphResponse::Replay {
+            created_resources, ..
+        } => {
+            let mut out = std::collections::BTreeMap::new();
+            for r in created_resources {
+                if let LogicalResource::PropertyIndex(cluster) = r.logical_resource {
+                    out.insert(cluster.raw(), r.canister_id);
+                }
+            }
+            for g in groups {
+                if !out.contains_key(g) {
+                    return Err(RouterError::Internal(format!(
+                        "provisioned index canister for group {g} missing from created_resources"
+                    )));
+                }
+            }
+            Ok(out)
+        }
+        crate::types::ProvisionGraphResponse::Completed { .. } => {
+            // A replayed/acknowledged admission means a prior call already provisioned and
+            // assigned the canisters; resolve them from the graph's index_cluster.
+            let cluster = RouterStore::new().graph_index_cluster(graph_id)?;
+            groups
+                .iter()
+                .map(|g| {
+                    let canister = *cluster.get(*g as usize).ok_or_else(|| {
+                        RouterError::Internal(format!(
+                            "index canister for group {g} missing after provision"
+                        ))
+                    })?;
+                    Ok((*g, canister))
+                })
+                .collect()
+        }
+    }
 }
 
 async fn drop_index(
@@ -1026,6 +1137,115 @@ mod tests {
             second_def.target.map(|t| t.canister),
             Some(target_canister),
             "new definition must inherit the graph's single target"
+        );
+    }
+
+    fn register_indexless_shard(
+        store: &RouterStore,
+        admin: candid::Principal,
+        graph_name: &str,
+        shard_id: u32,
+        graph_byte: u8,
+    ) {
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            crate::types::AdminRegisterShardArgs {
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(shard_id),
+                graph_canister: candid::Principal::from_slice(&[graph_byte; 29]),
+                index_canister: candid::Principal::anonymous(),
+                logical_graph_name: graph_name.into(),
+            },
+        ))
+        .expect("register indexless shard");
+    }
+
+    #[test]
+    fn create_index_dev_mode_leaves_graph_indexless() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.indexless.dev";
+        let graph_id = register_test_graph(&store, graph_name);
+        let admin = candid::Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, graph_name, "Person")
+            .expect("intern label");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, graph_name, "age",
+        );
+        register_indexless_shard(&store, admin, graph_name, 0, 0x50);
+
+        // No provision_canister configured (dev mode): CREATE INDEX must not assign an index
+        // canister; the graph stays indexless.
+        futures::executor::block_on(create_index(
+            graph_id,
+            "age_idx",
+            false,
+            &IndexTarget {
+                kind: IndexedPropertyKind::Vertex,
+                label: "Person".into(),
+                property: "age".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create index");
+        let shard = store
+            .resolve_shard(graph_id, gleaph_graph_kernel::federation::ShardId::new(0))
+            .expect("shard");
+        assert_eq!(shard.index_canister, candid::Principal::anonymous());
+        assert_eq!(
+            store.graph_index_cluster(graph_id).expect("cluster"),
+            Vec::<candid::Principal>::new()
+        );
+    }
+
+    #[test]
+    fn unassigned_index_groups_reports_indexless_groups() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.indexless.groups";
+        let graph_id = register_test_graph(&store, graph_name);
+        let admin = candid::Principal::from_slice(&[1; 29]);
+        // index_group_size defaults to 1, so shard 0 → group 0 and shard 1 → group 1.
+        register_indexless_shard(&store, admin, graph_name, 0, 0x50);
+        register_indexless_shard(&store, admin, graph_name, 1, 0x51);
+        assert_eq!(
+            store.unassigned_index_groups(graph_id).expect("groups"),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn attach_provisioned_index_canisters_assigns_cluster_and_attaches() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.indexless.attach";
+        let graph_id = register_test_graph(&store, graph_name);
+        let admin = candid::Principal::from_slice(&[1; 29]);
+        register_indexless_shard(&store, admin, graph_name, 0, 0x50);
+
+        let canister = candid::Principal::from_slice(&[0x60; 29]);
+        futures::executor::block_on(store.attach_provisioned_index_canisters(
+            graph_id,
+            &std::collections::BTreeMap::from([(0u32, canister)]),
+        ))
+        .expect("attach");
+        let shard = store
+            .resolve_shard(graph_id, gleaph_graph_kernel::federation::ShardId::new(0))
+            .expect("shard");
+        assert_eq!(shard.index_canister, canister);
+        assert_eq!(
+            store.graph_index_cluster(graph_id).expect("cluster"),
+            vec![canister]
+        );
+        // Idempotent: re-attaching the same canister is a no-op.
+        futures::executor::block_on(store.attach_provisioned_index_canisters(
+            graph_id,
+            &std::collections::BTreeMap::from([(0u32, canister)]),
+        ))
+        .expect("re-attach");
+        assert_eq!(
+            store
+                .resolve_shard(graph_id, gleaph_graph_kernel::federation::ShardId::new(0))
+                .expect("shard")
+                .index_canister,
+            canister
         );
     }
 }

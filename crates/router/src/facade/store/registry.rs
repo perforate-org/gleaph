@@ -353,6 +353,24 @@ impl RouterStore {
         Self::verify_registry_invariants_after_commit()
     }
 
+    /// Retrofit an existing (indexless) shard's index target to a newly provisioned index canister.
+    /// Unlike `complete_shard_index_attach`, a failed remote attach does NOT unregister the shard —
+    /// the shard stays indexless and the error propagates for the caller to retry.
+    fn commit_set_shard_index_canister(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_canister: Principal,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            entry.index_canister = index_canister;
+            shards.insert(key, entry);
+            Ok(())
+        })?;
+        Self::verify_registry_invariants_after_commit()
+    }
+
     #[cfg(not(feature = "pocket-ic-e2e"))]
     async fn attach_shard_to_index(
         graph_id: GraphId,
@@ -427,6 +445,29 @@ impl RouterStore {
         {
             self.finish_shard_index_attach(graph_id, shard_id, index_canister, graph_canister)
                 .await
+        }
+    }
+
+    /// Retrofit an existing (indexless) shard onto a newly provisioned index canister (ADR 0035
+    /// Slice 10). The remote attach runs first so a failure leaves the shard indexless (no partial
+    /// state); only a successful attach flips the shard's index target. Unlike
+    /// `complete_shard_index_attach`, a failed remote attach does NOT unregister the shard.
+    async fn retrofit_attach_shard_to_index(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        #[cfg(feature = "pocket-ic-e2e")]
+        {
+            let _ = (index_canister, graph_canister);
+            Self::commit_set_shard_index_canister(graph_id, shard_id, index_canister)
+        }
+        #[cfg(not(feature = "pocket-ic-e2e"))]
+        {
+            Self::attach_shard_to_index(graph_id, shard_id, index_canister, graph_canister).await?;
+            Self::commit_set_shard_index_canister(graph_id, shard_id, index_canister)
         }
     }
 
@@ -911,6 +952,83 @@ impl RouterStore {
             ))
         })?;
         Ok(index_canister)
+    }
+
+    /// The graph's full `index_cluster` (group ordinal → canister principal).
+    pub fn graph_index_cluster(&self, graph_id: GraphId) -> Result<Vec<Principal>, RouterError> {
+        ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|cfg| cfg.get(&graph_id).map(|c| c.index_cluster.clone()))
+            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))
+    }
+
+    /// Shard groups of `graph_id` that still have an indexless shard (anonymous index target).
+    /// In provisioned mode, `CREATE INDEX` provisions these before registering the definition.
+    /// Keyed off the shards' own `index_canister` (not `index_cluster`) so a group whose canister
+    /// was assigned but whose shards were not yet attached is still reported as unassigned and
+    /// re-provisioned idempotently on retry.
+    pub fn unassigned_index_groups(&self, graph_id: GraphId) -> Result<Vec<u32>, RouterError> {
+        let shards = list_live_shards_for_graph_id(graph_id)?;
+        if shards.is_empty() {
+            return Ok(Vec::new());
+        }
+        let runtime = ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|cfg| cfg.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))?;
+        let mut groups = std::collections::BTreeSet::new();
+        for shard in &shards {
+            if shard.index_canister == Principal::anonymous() {
+                let group = shard_group_index(shard.shard_id, runtime.index_group_size)?;
+                groups.insert(group as u32);
+            }
+        }
+        Ok(groups.into_iter().collect())
+    }
+
+    /// Assign newly provisioned index canisters to `index_cluster` and retrofit-attach every live
+    /// shard in the affected groups (ADR 0035 Slice 10). Idempotent per group: re-assigning the
+    /// same canister and re-attaching an already-attached shard are no-ops.
+    pub async fn attach_provisioned_index_canisters(
+        &self,
+        graph_id: GraphId,
+        group_canisters: &std::collections::BTreeMap<u32, Principal>,
+    ) -> Result<(), RouterError> {
+        // 1. Assign each group's canister to index_cluster (idempotent).
+        for (group, canister) in group_canisters {
+            let runtime = ROUTER_GRAPH_RUNTIME_CONFIG
+                .with_borrow(|cfg| cfg.get(&graph_id))
+                .ok_or_else(|| {
+                    RouterError::NotFound(format!("runtime config for graph {graph_id}"))
+                })?;
+            let rep_shard = ShardId::new(
+                group
+                    .checked_mul(runtime.index_group_size)
+                    .ok_or_else(|| RouterError::InvalidArgument("index group overflow".into()))?,
+            );
+            commit_index_group_canister_assignment(graph_id, rep_shard, *canister)?;
+        }
+        // 2. Retrofit-attach each live shard in an affected group to its canister.
+        let shards = list_live_shards_for_graph_id(graph_id)?;
+        for shard in &shards {
+            let runtime = ROUTER_GRAPH_RUNTIME_CONFIG
+                .with_borrow(|cfg| cfg.get(&graph_id))
+                .ok_or_else(|| {
+                    RouterError::NotFound(format!("runtime config for graph {graph_id}"))
+                })?;
+            let group = shard_group_index(shard.shard_id, runtime.index_group_size)? as u32;
+            if let Some(canister) = group_canisters.get(&group) {
+                if shard.index_canister == *canister {
+                    continue; // already attached to this canister
+                }
+                self.retrofit_attach_shard_to_index(
+                    graph_id,
+                    shard.shard_id,
+                    *canister,
+                    shard.graph_canister,
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     pub fn admin_unregister_graph(

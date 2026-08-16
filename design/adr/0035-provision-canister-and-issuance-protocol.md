@@ -209,6 +209,19 @@ a graph that already has a vector target just reuses it. `provision_graph_flow` 
 graph bootstrap; graph/shard registration runs only when the batch actually created a GraphShard.
 Dev mode (no `provision_canister`) still registers a targetless `Registered` definition.
 
+Slice 10 (2026-08-16) wires on-demand property-index provisioning into `CREATE INDEX`. The property
+DDL path (`create_index`) is now async. In provisioned mode, a `CREATE INDEX` on a graph whose live
+shard groups have no index canister provisions one index canister per unassigned group through the
+shared admission flow (`requested_resources = [PropertyIndex(IndexClusterId(g)) for g in
+unassigned_groups]`), assigns each to `index_cluster`, and retrofit-attaches every live shard in the
+affected groups to its group's canister. Unlike vector (which separates provision from a manual
+`attach_vector_shard` admin API), property-index attach runs inside `CREATE INDEX` because there is
+no existing retrofit attach path for property index and the index canister is unusable until its
+shards are attached. Dev mode (no `provision_canister`) still registers the definition indexless.
+`unassigned_index_groups` keys off the shards' own `index_canister` (not `index_cluster`) so a group
+whose canister was assigned but whose shards were not yet attached is re-provisioned idempotently on
+retry; `attach_provisioned_index_canisters` is idempotent per group.
+
 ## Cross-links
 
 - [ADR 0036](0036-versioned-wasm-artifact-catalog.md) — compatible release selection and artifacts.
