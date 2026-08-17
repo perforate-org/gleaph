@@ -176,6 +176,18 @@ Router owns the cross-shard execution flow. It persists an immutable mutation en
 first shard dispatch, including the request fingerprint, resolved catalogs, target shards, and seed
 bindings required for deterministic replay.
 
+The persisted seed bindings (`RouterMutationShardV1::seed_bindings_blob`) are the exact
+`SeedBindingsWire` bytes re-sent to each shard on replay. They are **not** re-derived: the Router
+resolves `SeedHits` from the current index state (`resolve_seed_hits_from_anchors` is async and
+index-state-dependent), so a later replay could produce a different hit set and dispatch different
+shards, breaking idempotency. The blob is therefore the SSOT for what was sent and must be stored
+verbatim. Capacity-wise it is a transient TTL-bounded working set (ADR 0025, seven-day terminal
+retention), not an ever-growing store; the `variable: String` inside each `SeedBindingEntry` cannot
+be interned to a global id because variable names are caller-chosen per query and must match the
+Graph executor's string-keyed row bindings (`row.insert(entry.variable, PlanBinding::Vertex(...))`).
+These constraints make a fingerprint/hash or interning reduction inapplicable and intentionally
+rejected.
+
 Each graph shard applies the same `mutation_id` idempotently. Router records per-shard canonical and
 projection progress and retries incomplete work. Recovery must not depend solely on the original
 client retrying.
