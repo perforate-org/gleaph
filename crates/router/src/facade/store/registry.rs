@@ -180,7 +180,10 @@ fn ensure_graph_registration_slot_available(
         let existing_home = ROUTER_GRAPHS.with_borrow(|graphs| {
             graphs.iter().find_map(|lazy| {
                 let existing = lazy.value();
-                existing.is_home.then(|| existing.graph_name.clone())
+                existing.is_home.then(|| {
+                    graph_catalog::graph_name(existing.graph_id)
+                        .unwrap_or_else(|| format!("{:?}", existing.graph_id))
+                })
             })
         });
         if let Some(name) = existing_home {
@@ -251,11 +254,12 @@ impl RouterStore {
     /// Atomically interns the graph name and inserts the registry entry.
     pub(super) fn commit_register_graph(
         mut entry: GraphRegistryEntry,
+        graph_name: &str,
         runtime_config: super::super::stable::memory::GraphRuntimeConfig,
     ) -> Result<GraphId, RouterError> {
-        let graph_id = intern_graph_name(&entry.graph_name)?;
+        let graph_id = intern_graph_name(graph_name)?;
         if ROUTER_GRAPHS.with_borrow(|graphs| graphs.get(&graph_id).is_some()) {
-            return Err(RouterError::Conflict(entry.graph_name.clone()));
+            return Err(RouterError::Conflict(graph_name.to_owned()));
         }
         entry.graph_id = graph_id;
         ROUTER_GRAPHS.with_borrow_mut(|g| {
@@ -773,9 +777,12 @@ impl RouterStore {
                 RouterError::InvalidState(format!("graph {graph_id:?} missing registry entry"))
             })?;
             let shard_count = graph_catalog::list_shards_for_graph_id(graph_id)?.len() as u32;
+            let graph_name = graph_catalog::graph_name(graph_id).ok_or_else(|| {
+                RouterError::InvalidState(format!("graph {graph_id:?} missing name"))
+            })?;
             out.push(GraphSummary {
                 graph_id,
-                graph_name: entry.graph_name,
+                graph_name,
                 status: entry.status,
                 provisioning_state: entry.provisioning_state,
                 shard_count,
@@ -873,14 +880,16 @@ impl RouterStore {
         &self,
         caller: Principal,
         entry: GraphRegistryEntry,
+        graph_name: &str,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
         validate_registration_principals(&entry)?;
-        ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
-        let graph_id = intern_graph_name(&entry.graph_name)?;
+        ensure_graph_registration_slot_available(graph_name, entry.is_home)?;
+        let graph_id = intern_graph_name(graph_name)?;
         let key = derive_element_id_encoding_key(graph_id, HOST_GRAPH_REGISTRATION_ENTROPY);
         Self::commit_register_graph(
             entry,
+            graph_name,
             super::super::stable::memory::GraphRuntimeConfig::with_element_id_encoding_key(key),
         )?;
         Ok(())
@@ -890,18 +899,20 @@ impl RouterStore {
         &self,
         caller: Principal,
         entry: GraphRegistryEntry,
+        graph_name: &str,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
         validate_registration_principals(&entry)?;
-        ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
+        ensure_graph_registration_slot_available(graph_name, entry.is_home)?;
 
         let random_bytes = graph_registration_random_entropy().await?;
-        ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
+        ensure_graph_registration_slot_available(graph_name, entry.is_home)?;
 
-        let graph_id = intern_graph_name(&entry.graph_name)?;
+        let graph_id = intern_graph_name(graph_name)?;
         let key = derive_element_id_encoding_key(graph_id, &random_bytes);
         Self::commit_register_graph(
             entry,
+            graph_name,
             super::super::stable::memory::GraphRuntimeConfig::with_element_id_encoding_key(key),
         )?;
         Ok(())

@@ -116,7 +116,6 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
     let store = RouterStore::new();
     let entry = gleaph_gql_ic::graph_registry::GraphRegistryEntry {
         graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(0), // store assigns
-        graph_name: args.graph_name.clone(),
         canister_id: args.shards[0].graph_canister,
         owner: args.owner,
         admins: args.admins,
@@ -127,7 +126,7 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
         is_home: args.is_home,
     };
     store
-        .admin_register_graph_with_random_key(caller, entry)
+        .admin_register_graph_with_random_key(caller, entry, &args.graph_name)
         .await?;
     for shard in args.shards {
         store

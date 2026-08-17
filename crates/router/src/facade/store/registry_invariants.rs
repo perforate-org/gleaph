@@ -31,29 +31,14 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
                 ));
             }
 
-            let catalog_name = ROUTER_GRAPH_CATALOG
+            // The graph name lives only in ROUTER_GRAPH_CATALOG (the SSOT). Every registry entry
+            // must have a corresponding catalog name; the name itself is not duplicated here.
+            if ROUTER_GRAPH_CATALOG
                 .with_borrow(|catalog| catalog.get_name(graph_id))
-                .ok_or_else(|| {
-                    format!("ROUTER_GRAPHS[{graph_id:?}] missing from ROUTER_GRAPH_CATALOG")
-                })?;
-            if catalog_name != entry.graph_name {
+                .is_none()
+            {
                 return Err(format!(
-                    "ROUTER_GRAPH_CATALOG name `{catalog_name}` != ROUTER_GRAPHS graph_name `{}`",
-                    entry.graph_name
-                ));
-            }
-            let catalog_id = ROUTER_GRAPH_CATALOG
-                .with_borrow(|catalog| catalog.get_id(&entry.graph_name))
-                .ok_or_else(|| {
-                    format!(
-                        "ROUTER_GRAPHS graph_name `{}` missing from ROUTER_GRAPH_CATALOG",
-                        entry.graph_name
-                    )
-                })?;
-            if catalog_id != graph_id {
-                return Err(format!(
-                    "ROUTER_GRAPH_CATALOG id for `{}` is {catalog_id:?}, expected {graph_id:?}",
-                    entry.graph_name
+                    "ROUTER_GRAPHS[{graph_id:?}] missing from ROUTER_GRAPH_CATALOG"
                 ));
             }
         }

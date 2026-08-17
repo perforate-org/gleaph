@@ -200,7 +200,6 @@ mod tests {
                 owner,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: name.to_owned(),
                     canister_id: Principal::management_canister(),
                     owner,
                     admins: Default::default(),
@@ -210,6 +209,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home,
                 },
+                name,
             )
             .expect("register");
     }
@@ -284,7 +284,6 @@ mod tests {
                 owner,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: "tenant_b".into(),
                     canister_id: Principal::management_canister(),
                     owner,
                     admins: Default::default(),
@@ -294,6 +293,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: true,
                 },
+                "tenant_b",
             )
             .expect_err("expected conflict");
         assert!(

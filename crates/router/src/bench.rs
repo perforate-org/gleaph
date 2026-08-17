@@ -129,7 +129,6 @@ fn bench_router_prepared_batch_register_32() -> canbench_rs::BenchResult {
             caller,
             GraphRegistryEntry {
                 graph_id: GraphId::from_raw(970_003),
-                graph_name: "bench-prepared-batch".to_owned(),
                 canister_id: Principal::management_canister(),
                 owner: caller,
                 admins: Default::default(),
@@ -139,6 +138,7 @@ fn bench_router_prepared_batch_register_32() -> canbench_rs::BenchResult {
                 provisioning_state: ProvisioningState::None,
                 is_home: true,
             },
+            "bench-prepared-batch",
         )
         .expect("register bench graph");
     let operations: Vec<PreparedRegistration> = (0..32)

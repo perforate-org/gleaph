@@ -65,7 +65,7 @@ do not** — they appear as raw `String` in stable keys and in stored records:
 
 | Store | Region | String usage (today) |
 |-------|--------|----------------------|
-| Graph registry map key | `ROUTER_GRAPHS` | `BTreeMap<String, GraphRegistryEntry>` |
+| Graph registry map key | `ROUTER_GRAPHS` | `BTreeMap<GraphId, GraphRegistryEntry>`; the graph **name** lives only in `ROUTER_GRAPH_CATALOG` (the name↔id SSOT), not on the registry entry |
 | Shard record field | `ROUTER_SHARDS` value | `ShardRegistryEntry.logical_graph_name` |
 | Shard listing | `list_shards_for_graph` | full scan + string compare (no graph-id index) |
 | Canister uniqueness map | `ROUTER_SHARD_BY_GRAPH` | `Principal → ShardId` (**not** logical graph name) |

@@ -258,7 +258,6 @@ async fn register_provisioned_graph(
 
     let entry = gleaph_gql_ic::graph_registry::GraphRegistryEntry {
         graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(0), // store assigns
-        graph_name: args.graph_name.clone(),
         canister_id: graph_canister,
         owner: args.owner,
         admins: args.admins.clone(),
@@ -269,7 +268,7 @@ async fn register_provisioned_graph(
         is_home: false,
     };
     store
-        .admin_register_graph_with_random_key(caller, entry)
+        .admin_register_graph_with_random_key(caller, entry, &args.graph_name)
         .await?;
 
     // Register each created graph shard, pairing it with the index canister from the same

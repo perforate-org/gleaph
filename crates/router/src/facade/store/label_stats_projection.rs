@@ -414,7 +414,6 @@ mod tests {
                 admin,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: "g".to_owned(),
                     canister_id: Principal::management_canister(),
                     owner: admin,
                     admins: BTreeSet::new(),
@@ -424,6 +423,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: false,
                 },
+                "g",
             )
             .expect("register graph");
         futures::executor::block_on(store.admin_register_shard(
@@ -499,7 +499,6 @@ mod tests {
                     admin,
                     GraphRegistryEntry {
                         graph_id: GraphId::from_raw(0),
-                        graph_name: name.to_owned(),
                         canister_id: Principal::management_canister(),
                         owner: admin,
                         admins: BTreeSet::new(),
@@ -509,6 +508,7 @@ mod tests {
                         provisioning_state: ProvisioningState::None,
                         is_home: false,
                     },
+                    name,
                 )
                 .expect("register graph");
             futures::executor::block_on(store.admin_register_shard(

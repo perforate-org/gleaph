@@ -414,9 +414,11 @@ impl RouterStore {
         let entry = graph_catalog::graph_entry(graph_id)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         let shards = self.list_shards_for_graph_id(graph_id)?;
+        let resolved_name = graph_catalog::graph_name(graph_id)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         let summary = GraphSummary {
             graph_id,
-            graph_name: entry.graph_name.clone(),
+            graph_name: resolved_name,
             status: entry.status,
             provisioning_state: entry.provisioning_state,
             shard_count: shards.len() as u32,
@@ -545,7 +547,6 @@ mod tests {
                 admin,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: name.to_owned(),
                     canister_id: Principal::management_canister(),
                     owner: admin,
                     admins: BTreeSet::new(),
@@ -555,6 +556,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: false,
                 },
+                name,
             )
             .expect("register graph");
     }

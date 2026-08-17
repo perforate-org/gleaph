@@ -172,7 +172,6 @@ pub(crate) mod catalog_test_support {
                 admin,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: name.to_owned(),
                     canister_id: Principal::management_canister(),
                     owner: admin,
                     admins: BTreeSet::new(),
@@ -182,6 +181,7 @@ pub(crate) mod catalog_test_support {
                     provisioning_state: ProvisioningState::None,
                     is_home: false,
                 },
+                name,
             )
             .expect("register graph");
     }

@@ -730,7 +730,6 @@ mod tests {
                 owner,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: "g1".to_owned(),
                     canister_id: Principal::management_canister(),
                     owner,
                     admins: Default::default(),
@@ -740,6 +739,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: true,
                 },
+                "g1",
             )
             .expect("register");
         let query = "MATCH ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c:CityDst) COST BY e.distance RETURN a, c";
@@ -771,7 +771,6 @@ mod tests {
                 owner,
                 GraphRegistryEntry {
                     graph_id,
-                    graph_name: "prepared-runtime-cache".to_owned(),
                     canister_id: Principal::management_canister(),
                     owner,
                     admins: Default::default(),
@@ -781,6 +780,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: false,
                 },
+                "prepared-runtime-cache",
             )
             .expect("register graph");
 
@@ -813,7 +813,6 @@ mod tests {
                 owner,
                 GraphRegistryEntry {
                     graph_id,
-                    graph_name: "prepared-runtime-invalid-source".to_owned(),
                     canister_id: Principal::management_canister(),
                     owner,
                     admins: Default::default(),
@@ -823,6 +822,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: false,
                 },
+                "prepared-runtime-invalid-source",
             )
             .expect("register graph");
 
@@ -862,7 +862,6 @@ mod tests {
                 owner,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: graph_name.to_owned(),
                     canister_id: Principal::management_canister(),
                     owner,
                     admins: Default::default(),
@@ -872,6 +871,7 @@ mod tests {
                     provisioning_state: ProvisioningState::None,
                     is_home: true,
                 },
+                graph_name,
             )
             .expect("register graph");
         // `admin_register_graph` interns the graph id from the name; resolve the canonical id.

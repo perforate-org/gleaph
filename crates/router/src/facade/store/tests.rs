@@ -55,7 +55,6 @@ pub(crate) fn register_test_graph(store: &RouterStore, admin: Principal, name: &
             admin,
             GraphRegistryEntry {
                 graph_id: GraphId::from_raw(0),
-                graph_name: name.to_owned(),
                 canister_id: Principal::management_canister(),
                 owner: admin,
                 admins: BTreeSet::new(),
@@ -65,6 +64,7 @@ pub(crate) fn register_test_graph(store: &RouterStore, admin: Principal, name: &
                 provisioning_state: ProvisioningState::None,
                 is_home: false,
             },
+            name,
         )
         .expect("register graph");
     assert_registry_invariants();
@@ -216,7 +216,6 @@ fn admin_register_graph_with_random_key_persists_runtime_config() {
     crate::facade::auth::grant_admins(&[admin]);
     let entry = GraphRegistryEntry {
         graph_id: GraphId::from_raw(0),
-        graph_name: "tenant.main".to_owned(),
         canister_id: Principal::management_canister(),
         owner: admin,
         admins: BTreeSet::new(),
@@ -227,8 +226,12 @@ fn admin_register_graph_with_random_key_persists_runtime_config() {
         is_home: false,
     };
 
-    futures::executor::block_on(store.admin_register_graph_with_random_key(admin, entry))
-        .expect("register graph");
+    futures::executor::block_on(store.admin_register_graph_with_random_key(
+        admin,
+        entry,
+        "tenant.main",
+    ))
+    .expect("register graph");
     let graph_id = lookup_graph_id("tenant.main").expect("graph id");
     let key = store
         .graph_element_id_encoding_key(graph_id)
@@ -252,7 +255,6 @@ fn admin_register_graph_derives_distinct_element_id_keys_per_graph() {
                 admin,
                 GraphRegistryEntry {
                     graph_id: GraphId::from_raw(0),
-                    graph_name: name.to_owned(),
                     canister_id: Principal::management_canister(),
                     owner: admin,
                     admins: BTreeSet::new(),
@@ -262,6 +264,7 @@ fn admin_register_graph_derives_distinct_element_id_keys_per_graph() {
                     provisioning_state: ProvisioningState::None,
                     is_home,
                 },
+                name,
             )
             .expect("register graph");
     }
@@ -794,7 +797,6 @@ fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
             admin,
             GraphRegistryEntry {
                 graph_id: GraphId::from_raw(0),
-                graph_name: "home.graph".into(),
                 canister_id: Principal::management_canister(),
                 owner: admin,
                 admins: BTreeSet::new(),
@@ -804,6 +806,7 @@ fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
                 provisioning_state: ProvisioningState::None,
                 is_home: true,
             },
+            "home.graph",
         )
         .expect("register home");
 
@@ -811,7 +814,6 @@ fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
         admin,
         GraphRegistryEntry {
             graph_id: GraphId::from_raw(0),
-            graph_name: "other.home".into(),
             canister_id: Principal::management_canister(),
             owner: admin,
             admins: BTreeSet::new(),
@@ -821,6 +823,7 @@ fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
             provisioning_state: ProvisioningState::None,
             is_home: true,
         },
+        "other.home",
     ))
     .expect_err("second home graph");
 
@@ -923,7 +926,6 @@ fn resolve_graph_checks_permissions() {
             admin,
             GraphRegistryEntry {
                 graph_id: GraphId::from_raw(0),
-                graph_name: "g".into(),
                 canister_id: owner,
                 owner,
                 admins: BTreeSet::new(),
@@ -933,6 +935,7 @@ fn resolve_graph_checks_permissions() {
                 provisioning_state: ProvisioningState::None,
                 is_home: false,
             },
+            "g",
         )
         .expect("register");
 
@@ -964,7 +967,6 @@ fn resolve_graph_id_authorized_enforces_tenancy() {
             admin,
             GraphRegistryEntry {
                 graph_id: GraphId::from_raw(0),
-                graph_name: "g".into(),
                 canister_id: owner,
                 owner,
                 admins,
@@ -974,6 +976,7 @@ fn resolve_graph_id_authorized_enforces_tenancy() {
                 provisioning_state: ProvisioningState::None,
                 is_home: false,
             },
+            "g",
         )
         .expect("register");
 
@@ -1044,7 +1047,6 @@ fn register_graph_rejects_anonymous_owner_and_admin() {
 
     let anon_owner = GraphRegistryEntry {
         graph_id: GraphId::from_raw(0),
-        graph_name: "g".into(),
         canister_id: Principal::management_canister(),
         owner: Principal::anonymous(),
         admins: BTreeSet::new(),
@@ -1055,7 +1057,7 @@ fn register_graph_rejects_anonymous_owner_and_admin() {
         is_home: false,
     };
     assert!(matches!(
-        store.admin_register_graph(admin, anon_owner),
+        store.admin_register_graph(admin, anon_owner, "g"),
         Err(RouterError::InvalidArgument(_))
     ));
     // Rejected before any state mutation: the name was never interned.
@@ -1066,7 +1068,6 @@ fn register_graph_rejects_anonymous_owner_and_admin() {
     admins.insert(Principal::anonymous());
     let anon_admin = GraphRegistryEntry {
         graph_id: GraphId::from_raw(0),
-        graph_name: "g2".into(),
         canister_id: owner,
         owner,
         admins,
@@ -1077,7 +1078,7 @@ fn register_graph_rejects_anonymous_owner_and_admin() {
         is_home: false,
     };
     assert!(matches!(
-        store.admin_register_graph(admin, anon_admin),
+        store.admin_register_graph(admin, anon_admin, "g2"),
         Err(RouterError::InvalidArgument(_))
     ));
 }
@@ -6734,7 +6735,10 @@ mod register_graph_provisioning_guard {
         let entry = store
             .get_graph_operator("tenant.main", admin)
             .expect("operator read sees pending graph");
-        assert_eq!(entry.graph_name, "tenant.main");
+        assert_eq!(
+            entry.graph_id,
+            lookup_graph_id("tenant.main").expect("tenant.main")
+        );
     }
 
     #[test]
@@ -6754,7 +6758,6 @@ mod register_graph_provisioning_guard {
 
         let dup = GraphRegistryEntry {
             graph_id: GraphId::from_raw(0),
-            graph_name: "tenant.main".to_owned(),
             canister_id: Principal::from_slice(&[9; 29]),
             owner: admin,
             admins: BTreeSet::new(),
@@ -6765,7 +6768,7 @@ mod register_graph_provisioning_guard {
             is_home: false,
         };
         let err = store
-            .admin_register_graph(admin, dup)
+            .admin_register_graph(admin, dup, "tenant.main")
             .expect_err("duplicate graph name rejected");
         assert!(matches!(err, RouterError::Conflict(_)));
 

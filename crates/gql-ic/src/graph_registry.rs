@@ -24,7 +24,6 @@ pub enum ProvisioningState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct GraphRegistryEntry {
     pub graph_id: GraphId,
-    pub graph_name: String,
     pub canister_id: Principal,
     pub owner: Principal,
     pub admins: BTreeSet<Principal>,
@@ -79,7 +78,7 @@ pub enum GraphRegistryError {
 pub trait GraphRegistryStore {
     fn resolve_graph(
         &self,
-        graph_name: &str,
+        graph_id: GraphId,
         caller: Principal,
     ) -> Result<GraphRegistryEntry, GraphRegistryError>;
 
@@ -88,7 +87,7 @@ pub trait GraphRegistryStore {
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryGraphRegistry {
-    entries: BTreeMap<String, GraphRegistryEntry>,
+    entries: BTreeMap<GraphId, GraphRegistryEntry>,
 }
 
 impl InMemoryGraphRegistry {
@@ -100,14 +99,14 @@ impl InMemoryGraphRegistry {
 impl GraphRegistryStore for InMemoryGraphRegistry {
     fn resolve_graph(
         &self,
-        graph_name: &str,
+        graph_id: GraphId,
         caller: Principal,
     ) -> Result<GraphRegistryEntry, GraphRegistryError> {
         let entry = self
             .entries
-            .get(graph_name)
+            .get(&graph_id)
             .cloned()
-            .ok_or_else(|| GraphRegistryError::NotFound(graph_name.to_owned()))?;
+            .ok_or_else(|| GraphRegistryError::NotFound(graph_id.to_string()))?;
         if caller != entry.owner && !entry.admins.contains(&caller) {
             return Err(GraphRegistryError::Forbidden);
         }
@@ -118,10 +117,10 @@ impl GraphRegistryStore for InMemoryGraphRegistry {
     }
 
     fn register_graph(&mut self, entry: GraphRegistryEntry) -> Result<(), GraphRegistryError> {
-        if self.entries.contains_key(&entry.graph_name) {
-            return Err(GraphRegistryError::Conflict(entry.graph_name));
+        if self.entries.contains_key(&entry.graph_id) {
+            return Err(GraphRegistryError::Conflict(entry.graph_id.to_string()));
         }
-        self.entries.insert(entry.graph_name.clone(), entry);
+        self.entries.insert(entry.graph_id, entry);
         Ok(())
     }
 }
@@ -141,7 +140,6 @@ mod tests {
         registry
             .register_graph(GraphRegistryEntry {
                 graph_id: GraphId::from_raw(1),
-                graph_name: "tenant.main".to_owned(),
                 canister_id: graph_canister,
                 owner,
                 admins: BTreeSet::new(),
@@ -154,12 +152,12 @@ mod tests {
             .expect("register");
 
         let ok = registry
-            .resolve_graph("tenant.main", owner)
+            .resolve_graph(GraphId::from_raw(1), owner)
             .expect("owner resolve");
-        assert_eq!(ok.graph_name, "tenant.main");
+        assert_eq!(ok.graph_id, GraphId::from_raw(1));
 
         let err = registry
-            .resolve_graph("tenant.main", other)
+            .resolve_graph(GraphId::from_raw(1), other)
             .expect_err("non-owner should fail");
         assert_eq!(err, GraphRegistryError::Forbidden);
     }
@@ -171,7 +169,6 @@ mod tests {
             Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").expect("graph canister");
         let entry = GraphRegistryEntry {
             graph_id: GraphId::from_raw(1),
-            graph_name: "tenant.main".to_owned(),
             canister_id: graph_canister,
             owner,
             admins: BTreeSet::new(),
