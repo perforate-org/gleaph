@@ -2,7 +2,11 @@
 //!
 //! Two independent stable structures on two dedicated MemoryIds:
 //! - `PROVISION_BOOTSTRAP_AUTH` (MemoryId 4): `StableCell<Option<BootstrapAuthorityRecord>>` singleton.
-//! - `PROVISION_BOOTSTRAP_AUDIT_LOG` (MemoryId 5): `StableBTreeMap<Principal, BootstrapAuthHistory>`.
+//! - `PROVISION_BOOTSTRAP_AUDIT_LOG` (MemoryId 5): append-oriented `(Principal, u64) -> BootstrapAuthEntry`.
+//!
+//! The audit log uses `(Principal, sequence) -> Entry` keys (matching the artifact audit log) so
+//! each append is O(1) rather than the old read-modify-write of an unbounded `Vec`, and enforces a
+//! per-principal cap by evicting the oldest rows.
 //!
 //! Placing both structures on the same MemoryId would corrupt them at runtime because each
 //! `ic_stable_structures` collection writes at offset 0 of its own `MemoryId`.
@@ -10,16 +14,20 @@
 use crate::stable::memory::{
     MEMORY_MANAGER, Memory, PROVISION_BOOTSTRAP_AUDIT_LOG, PROVISION_BOOTSTRAP_AUTH,
 };
-use crate::types::{BootstrapAuthEntry, BootstrapAuthHistory, BootstrapAuthorityRecord};
+use crate::types::{BootstrapAuthEntry, BootstrapAuthorityRecord};
 use candid::Principal;
 use ic_stable_structures::{StableBTreeMap, StableCell};
 use std::cell::RefCell;
 
+/// Per-principal cap on bootstrap audit-log entries. Bounded append-heavy log (R5 strict).
+pub(crate) const BOOTSTRAP_AUDIT_LOG_PER_PRINCIPAL_CAP: usize = 1024;
+
 thread_local! {
     static BOOTSTRAP_AUTH: RefCell<StableCell<Option<BootstrapAuthorityRecord>, Memory>> =
         RefCell::new(init_bootstrap_auth_cell());
-    static BOOTSTRAP_AUDIT_LOG: RefCell<StableBTreeMap<Principal, BootstrapAuthHistory, Memory>> =
-        RefCell::new(init_bootstrap_audit_log_map());
+    static BOOTSTRAP_AUDIT_LOG: RefCell<
+        StableBTreeMap<(Principal, u64), BootstrapAuthEntry, Memory>,
+    > = RefCell::new(init_bootstrap_audit_log_map());
 }
 
 fn init_bootstrap_auth_cell() -> StableCell<Option<BootstrapAuthorityRecord>, Memory> {
@@ -29,7 +37,7 @@ fn init_bootstrap_auth_cell() -> StableCell<Option<BootstrapAuthorityRecord>, Me
     )
 }
 
-fn init_bootstrap_audit_log_map() -> StableBTreeMap<Principal, BootstrapAuthHistory, Memory> {
+fn init_bootstrap_audit_log_map() -> StableBTreeMap<(Principal, u64), BootstrapAuthEntry, Memory> {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_BOOTSTRAP_AUDIT_LOG)))
 }
 
@@ -68,27 +76,58 @@ impl ProvisionBootstrapAuthStore {
         });
     }
 
-    /// Append one audit row under the caller's governance principal.
+    /// Return the next monotonic sequence number for `principal` in the audit log.
+    fn next_sequence(&self, principal: Principal) -> u64 {
+        BOOTSTRAP_AUDIT_LOG.with_borrow(|map| {
+            let end = (principal, u64::MAX);
+            map.range((principal, 0u64)..=end)
+                .last()
+                .map(|e| e.key().1.saturating_add(1))
+                .unwrap_or(0)
+        })
+    }
+
+    /// Append one audit row under `principal`. Enforces the per-principal cap by evicting the
+    /// oldest (lowest-sequence) entries when the bound is exceeded (R5 strict).
     pub fn put_record(&self, principal: Principal, entry: BootstrapAuthEntry) {
+        let seq = self.next_sequence(principal);
         BOOTSTRAP_AUDIT_LOG.with_borrow_mut(|map| {
-            let mut history = map
-                .get(&principal)
-                .unwrap_or_else(|| BootstrapAuthHistory { entries: vec![] });
-            history.entries.push(entry);
-            map.insert(principal, history);
+            map.insert((principal, seq), entry);
+
+            let start = (principal, 0u64);
+            let end = (principal, u64::MAX);
+            let count = map.range(start..=end).count();
+            if count > BOOTSTRAP_AUDIT_LOG_PER_PRINCIPAL_CAP {
+                let to_evict = count - BOOTSTRAP_AUDIT_LOG_PER_PRINCIPAL_CAP;
+                let evict_seqs: Vec<u64> = map
+                    .range(start..=end)
+                    .map(|e| e.key().1)
+                    .take(to_evict)
+                    .collect();
+                for evict_seq in evict_seqs {
+                    map.remove(&(principal, evict_seq));
+                }
+            }
         });
     }
 
-    /// Return the full audit history for a governance principal.
+    /// Return the bounded audit history for a governance principal, in sequence order.
     pub fn history(&self, principal: Principal) -> Vec<BootstrapAuthEntry> {
-        BOOTSTRAP_AUDIT_LOG
-            .with_borrow(|map| map.get(&principal).map(|h| h.entries).unwrap_or_default())
+        BOOTSTRAP_AUDIT_LOG.with_borrow(|map| {
+            let start = (principal, 0u64);
+            let end = (principal, u64::MAX);
+            map.range(start..=end).map(|e| e.value().clone()).collect()
+        })
     }
 
     /// Return the latest audit entry for a governance principal, if any.
     pub fn latest(&self, principal: Principal) -> Option<BootstrapAuthEntry> {
-        BOOTSTRAP_AUDIT_LOG
-            .with_borrow(|map| map.get(&principal).and_then(|h| h.entries.last().cloned()))
+        BOOTSTRAP_AUDIT_LOG.with_borrow(|map| {
+            let end = (principal, u64::MAX);
+            map.range((principal, 0u64)..=end)
+                .last()
+                .map(|e| e.value().clone())
+        })
     }
 }
 

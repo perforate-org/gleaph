@@ -1210,7 +1210,7 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             5,
             StableMemoryClass::Telemetry,
             "provisioning",
-            "Principal → BootstrapAuthHistory: durable audit trail of every admin-install attempt (success or reject)",
+            "Principal, u64 → BootstrapAuthEntry: append-oriented durable audit trail of every admin-install attempt (success or reject), per-principal cap enforced by eviction",
             RebuildPath::None,
         ),
         // ADR 0036 Slice 8a: immutable artifact catalog (MemoryId 6).
@@ -1219,7 +1219,7 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             6,
             StableMemoryClass::Canonical,
             "provisioning",
-            "ArtifactId → ArtifactMetadata: immutable published artifact identity and chunk-hash declaration",
+            "ArtifactId → ArtifactMetadata: immutable published artifact identity, chunk-hash declaration, and durable verified flag",
             RebuildPath::None,
         ),
         // ADR 0036 Slice 8a: mutable upload-progress scratch state (MemoryId 7).

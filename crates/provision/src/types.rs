@@ -367,25 +367,6 @@ impl Storable for BootstrapAuthEntry {
     }
 }
 
-/// Per-governance audit history wrapper persisted in the audit BTreeMap value.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BootstrapAuthHistory {
-    pub entries: Vec<BootstrapAuthEntry>,
-}
-
-impl Storable for BootstrapAuthHistory {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode BootstrapAuthHistory"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode BootstrapAuthHistory")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode BootstrapAuthHistory")
-    }
-}
-
 /// Arguments for `admin_install_deployment_binding`.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminInstallDeploymentBindingArgs {
@@ -446,13 +427,16 @@ impl ArtifactId {
     }
 }
 
-/// Immutable artifact metadata published by governance.
+/// Immutable artifact metadata published by governance. `verified` records that the uploaded
+/// chunks have passed full SHA-256 verification; it flips once on the final chunk and is then
+/// durable, so later uploads/activations/installs do not re-scan and re-hash the whole artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ArtifactMetadata {
     pub artifact_id: ArtifactId,
     pub byte_length: u64,
     pub chunk_hashes: Vec<[u8; 32]>,
     pub created_at_ns: u64,
+    pub verified: bool,
 }
 
 /// Mutable upload-progress state for an artifact. Reclaimed from stable memory once the artifact
@@ -490,6 +474,12 @@ pub enum ArtifactUploadState {
     Failed { reason: String },
 }
 
+/// Explicit bounds on artifact publication. These bound the per-chunk O(n²) upload work and
+/// prevent a malformed `byte_length` from driving a `Vec::with_capacity` allocation.
+pub const MAX_ARTIFACT_SEMANTIC_VERSION_LEN: usize = 128;
+pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_ARTIFACT_CHUNKS: u32 = 4096;
+
 /// Errors returned by artifact catalog ingress methods.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum ArtifactError {
@@ -514,6 +504,17 @@ pub enum ArtifactError {
     },
     Unauthorized,
     NotProvision(CanisterKind),
+    SemanticVersionTooLong {
+        max: u32,
+    },
+    ArtifactTooLarge {
+        byte_length: u64,
+        max: u64,
+    },
+    TooManyChunks {
+        declared: u32,
+        max: u32,
+    },
 }
 
 /// Arguments for `artifact_publish_metadata`.

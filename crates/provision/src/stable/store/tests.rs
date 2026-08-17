@@ -726,6 +726,7 @@ fn artifact_metadata(
         byte_length,
         chunk_hashes,
         created_at_ns: 1,
+        verified: false,
     }
 }
 
@@ -1564,6 +1565,172 @@ fn artifact_audit_history_returns_bounded_range() {
     }
 }
 
+#[test]
+fn bootstrap_auth_audit_log_cap_enforces_eviction() {
+    use crate::stable::bootstrap_auth::BOOTSTRAP_AUDIT_LOG_PER_PRINCIPAL_CAP;
+    super::reset_all_maps();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let gov = test_principal(9);
+    let cap = BOOTSTRAP_AUDIT_LOG_PER_PRINCIPAL_CAP;
+    for i in 0..=cap {
+        auth_store.put_record(
+            gov,
+            crate::types::BootstrapAuthEntry {
+                caller: gov,
+                deployment_id: Some(format!("dep-{i}")),
+                action: BootstrapAuthAction::AdminInstall,
+                timestamp_ns: 100 + i as u64,
+                registry_version: Some(i as u64),
+            },
+        );
+    }
+    let history = auth_store.history(gov);
+    assert_eq!(history.len(), cap, "oldest entry must be evicted");
+    assert_eq!(history[0].deployment_id, Some("dep-1".to_owned()));
+    assert_eq!(history[cap - 1].deployment_id, Some(format!("dep-{cap}")));
+    assert_eq!(
+        auth_store.latest(gov).unwrap().deployment_id,
+        Some(format!("dep-{cap}"))
+    );
+}
+
+#[test]
+fn bootstrap_auth_audit_log_append_is_sequence_ordered() {
+    super::reset_all_maps();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let gov = test_principal(10);
+    for i in 0..10 {
+        auth_store.put_record(
+            gov,
+            crate::types::BootstrapAuthEntry {
+                caller: gov,
+                deployment_id: Some(format!("dep-{i}")),
+                action: BootstrapAuthAction::AdminInstall,
+                timestamp_ns: 200 + i as u64,
+                registry_version: Some(i as u64),
+            },
+        );
+    }
+    let history = auth_store.history(gov);
+    assert_eq!(history.len(), 10);
+    for (i, entry) in history.iter().enumerate() {
+        assert_eq!(entry.deployment_id, Some(format!("dep-{i}")));
+        assert_eq!(entry.registry_version, Some(i as u64));
+    }
+    assert_eq!(
+        auth_store.latest(gov).unwrap().deployment_id,
+        Some("dep-9".to_owned())
+    );
+}
+
+#[test]
+fn artifact_publish_metadata_rejects_excessive_version_length() {
+    super::reset_all_maps();
+    use crate::canister::artifact_publish_metadata_with_caller;
+    use crate::types::{ArtifactPublishMetadataArgs, MAX_ARTIFACT_SEMANTIC_VERSION_LEN};
+    let gov = test_principal(11);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        binding_version_at_seed: 1,
+        seeded_at_ns: 1,
+    });
+    let long_version = "x".repeat(MAX_ARTIFACT_SEMANTIC_VERSION_LEN + 1);
+    let err = artifact_publish_metadata_with_caller(
+        gov,
+        ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: long_version,
+            sha256: sha256(b"v"),
+            byte_length: 1,
+            chunk_hashes: vec![sha256(b"c")],
+        },
+        1,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        crate::types::ArtifactError::SemanticVersionTooLong { max } if max as usize == MAX_ARTIFACT_SEMANTIC_VERSION_LEN
+    ));
+}
+
+#[test]
+fn artifact_publish_metadata_rejects_excessive_byte_length() {
+    super::reset_all_maps();
+    use crate::canister::artifact_publish_metadata_with_caller;
+    use crate::types::{ArtifactPublishMetadataArgs, MAX_ARTIFACT_BYTES};
+    let gov = test_principal(12);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        binding_version_at_seed: 1,
+        seeded_at_ns: 1,
+    });
+    let err = artifact_publish_metadata_with_caller(
+        gov,
+        ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: "0.1.0".to_owned(),
+            sha256: sha256(b"v"),
+            byte_length: MAX_ARTIFACT_BYTES + 1,
+            chunk_hashes: vec![sha256(b"c")],
+        },
+        1,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        crate::types::ArtifactError::ArtifactTooLarge { byte_length, max }
+            if byte_length == MAX_ARTIFACT_BYTES + 1 && max == MAX_ARTIFACT_BYTES
+    ));
+}
+
+#[test]
+fn artifact_publish_metadata_rejects_empty_or_excessive_chunk_count() {
+    super::reset_all_maps();
+    use crate::canister::artifact_publish_metadata_with_caller;
+    use crate::types::{ArtifactPublishMetadataArgs, MAX_ARTIFACT_CHUNKS};
+    let gov = test_principal(13);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        binding_version_at_seed: 1,
+        seeded_at_ns: 1,
+    });
+
+    let empty = artifact_publish_metadata_with_caller(
+        gov,
+        ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: "0.1.0".to_owned(),
+            sha256: sha256(b"v"),
+            byte_length: 0,
+            chunk_hashes: vec![],
+        },
+        1,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        empty,
+        crate::types::ArtifactError::TooManyChunks { declared: 0, .. }
+    ));
+
+    let many = artifact_publish_metadata_with_caller(
+        gov,
+        ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: "0.1.0".to_owned(),
+            sha256: sha256(b"v"),
+            byte_length: 0,
+            chunk_hashes: vec![[0u8; 32]; MAX_ARTIFACT_CHUNKS as usize + 1],
+        },
+        2,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        many,
+        crate::types::ArtifactError::TooManyChunks { declared, max }
+            if declared as u64 == MAX_ARTIFACT_CHUNKS as u64 + 1 && max == MAX_ARTIFACT_CHUNKS
+    ));
+}
+
 /// (i) artifact audit stable layout uses separate MemoryId 11 (R1 carryover).
 #[test]
 fn artifact_audit_stable_layout_uses_separate_memory_id() {
@@ -1591,6 +1758,7 @@ fn artifact_audit_stable_layout_uses_separate_memory_id() {
         byte_length: 1,
         chunk_hashes: vec![sha256(b"i")],
         created_at_ns: 501,
+        verified: false,
     };
     catalog_map.insert(artifact_id.clone(), metadata.clone());
 

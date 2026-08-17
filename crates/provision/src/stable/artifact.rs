@@ -85,6 +85,26 @@ impl ProvisionArtifactStore {
         })
     }
 
+    /// Return `true` if the artifact has been durably marked verified (chunks present and full
+    /// SHA-256 matched). The flag is persisted on the metadata row, so this is O(1) and does not
+    /// re-scan or re-hash the chunk store.
+    pub fn is_verified(&self, artifact_id: &ArtifactId) -> bool {
+        ARTIFACT_CATALOG
+            .with_borrow(|map| map.get(artifact_id))
+            .map(|m| m.verified)
+            .unwrap_or(false)
+    }
+
+    /// Persist the verified flag on an existing metadata row. No-op if absent.
+    pub fn mark_verified(&self, artifact_id: &ArtifactId) {
+        ARTIFACT_CATALOG.with_borrow_mut(|map| {
+            if let Some(mut m) = map.get(artifact_id) {
+                m.verified = true;
+                map.insert(artifact_id.clone(), m);
+            }
+        });
+    }
+
     /// Return the current mutable upload state, if any.
     pub fn get_upload(&self, artifact_id: &ArtifactId) -> Option<ArtifactUpload> {
         ARTIFACT_UPLOAD.with_borrow(|map| map.get(artifact_id))
@@ -160,24 +180,6 @@ impl ProvisionArtifactStore {
                 map.remove(&key);
             }
         });
-    }
-
-    /// Read every chunk for `artifact_id` in `chunk_index` order.
-    pub fn chunks_in_order(&self, artifact_id: &ArtifactId, count: u32) -> Vec<ArtifactChunk> {
-        let mut out = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let key = ArtifactChunkKey {
-                artifact_id: artifact_id.clone(),
-                chunk_index: i,
-            };
-            if let Some(chunk) = self.get_chunk(&key) {
-                out.push(chunk);
-            } else {
-                // Stop at first missing chunk; caller handles incomplete set.
-                break;
-            }
-        }
-        out
     }
 
     /// Return the next monotonic sequence number for `principal` in the audit log.

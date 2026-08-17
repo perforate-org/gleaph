@@ -46,7 +46,13 @@ The governance/recovery principal configured at bootstrap uploads catalog chunks
 idempotent API. Repeating an artifact id resumes or returns its existing upload; conflicting metadata
 for the same id is rejected. Provision stores chunks in stable memory, checks each declared chunk
 hash, then streams the whole logical artifact through a full SHA-256 verification before marking the
-upload verified.
+upload verified. Full verification runs once on the final chunk; its result is persisted as a durable
+`verified` flag on the metadata row so later uploads, activations, and installs resolve verification
+in O(1) without re-scanning or re-hashing the chunk store, and without materializing the whole WASM
+in one heap buffer. Publication enforces explicit bounds on the semantic version length, the declared
+byte length, and the chunk count so a malformed artifact cannot drive an unbounded allocation. Target
+install reads and uploads each chunk one at a time from stable memory, keeping peak heap at roughly
+one chunk.
 
 For target installation, Provision uses the IC management-canister chunk path:
 

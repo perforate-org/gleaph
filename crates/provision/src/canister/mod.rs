@@ -6,6 +6,7 @@
 
 use candid::{CandidType, Principal};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashSet;
 
 use crate::canister::init::binding_from_admin_args;
@@ -16,10 +17,11 @@ use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
     ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
     ArtifactUploadState, BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource,
-    JobState, LogicalResource, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey,
-    ProvisionRequest, ProvisionResult, ProvisionResultOutcome, ProvisioningIntentKey,
-    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest,
-    ReleasePublishArgs, ResourceJobEntry, RouterProvisionAck, sha256, state_name,
+    JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
+    MAX_ARTIFACT_SEMANTIC_VERSION_LEN, ProvisionAdminError, ProvisionJobRecord,
+    ProvisionJobRequestKey, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
+    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId,
+    ReleaseManifest, ReleasePublishArgs, ResourceJobEntry, RouterProvisionAck, sha256, state_name,
 };
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, InstallError,
@@ -433,22 +435,23 @@ async fn install_resource(
         .get_metadata(artifact_id)
         .ok_or(InstallError::ArtifactNotFound(artifact_id.clone()))?;
 
-    let chunk_count = metadata.chunk_hashes.len() as u32;
-    let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
-    if staged.len() != chunk_count as usize {
-        return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
-    }
-    let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
-    for chunk in &staged {
-        full_bytes.extend_from_slice(&chunk.bytes);
-    }
-    if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+    // Re-validate via the durable verified flag (O(1)); avoids re-scanning/re-hashing the chunks.
+    if !artifact_store.is_verified(artifact_id) {
         return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
     }
 
+    // Upload each chunk one at a time, reading it from stable memory immediately before sending.
+    // The whole WASM is never materialized as one `Vec<u8>` and no chunk is cloned wholesale.
+    let chunk_count = metadata.chunk_hashes.len() as u32;
     let mut chunk_hashes = Vec::with_capacity(chunk_count as usize);
-    for chunk in &staged {
-        let hash = install_upload_chunk(target_canister_id, chunk.bytes.clone()).await?;
+    for i in 0..chunk_count {
+        let chunk = artifact_store
+            .get_chunk(&ArtifactChunkKey {
+                artifact_id: artifact_id.clone(),
+                chunk_index: i,
+            })
+            .ok_or_else(|| InstallError::ArtifactNotVerified(artifact_id.clone()))?;
+        let hash = install_upload_chunk(target_canister_id, chunk.bytes).await?;
         chunk_hashes.push(hash);
     }
 
@@ -699,6 +702,32 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         return Err(ArtifactError::NotProvision(args.canister_kind));
     }
 
+    // Explicit bounds on identity and payload. These reject a malformed artifact before any
+    // stable write, so a huge `byte_length` can never drive a `Vec::with_capacity` allocation.
+    if args.semantic_version.len() > MAX_ARTIFACT_SEMANTIC_VERSION_LEN {
+        return Err(ArtifactError::SemanticVersionTooLong {
+            max: MAX_ARTIFACT_SEMANTIC_VERSION_LEN as u32,
+        });
+    }
+    if args.byte_length > MAX_ARTIFACT_BYTES {
+        return Err(ArtifactError::ArtifactTooLarge {
+            byte_length: args.byte_length,
+            max: MAX_ARTIFACT_BYTES,
+        });
+    }
+    if args.chunk_hashes.is_empty() {
+        return Err(ArtifactError::TooManyChunks {
+            declared: 0,
+            max: MAX_ARTIFACT_CHUNKS,
+        });
+    }
+    if args.chunk_hashes.len() as u32 > MAX_ARTIFACT_CHUNKS {
+        return Err(ArtifactError::TooManyChunks {
+            declared: args.chunk_hashes.len() as u32,
+            max: MAX_ARTIFACT_CHUNKS,
+        });
+    }
+
     let artifact_id = ArtifactId::new(args.canister_kind, args.semantic_version, args.sha256);
     let store = ProvisionArtifactStore::new();
     let metadata = ArtifactMetadata {
@@ -706,6 +735,7 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         byte_length: args.byte_length,
         chunk_hashes: args.chunk_hashes,
         created_at_ns: now_ns,
+        verified: false,
     };
 
     let result = store.publish_metadata(metadata);
@@ -859,30 +889,23 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         });
     }
 
-    // Derived verified predicate: if all declared chunks exist in region 8 and their concatenated
-    // SHA-256 matches the published metadata, the artifact is already verified.
-    let existing_chunks = artifact_store.chunks_in_order(&args.artifact_id, chunk_count);
-    if existing_chunks.len() == chunk_count as usize {
-        let mut full = Vec::with_capacity(metadata.byte_length as usize);
-        for chunk in &existing_chunks {
-            full.extend_from_slice(&chunk.bytes);
-        }
-        if sha256(&full) == metadata.artifact_id.sha256 {
-            append_artifact_audit(
-                caller,
-                ArtifactAuditAction::UploadChunk,
-                Some(args.artifact_id.clone()),
-                None,
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("artifact already verified".to_owned()),
-                now_ns,
-            );
-            return Err(ArtifactError::ConflictingMetadata {
-                existing: args.artifact_id.clone(),
-                requested: args.artifact_id.clone(),
-            });
-        }
+    // Derived verified predicate: the durable metadata flag is set once on the final chunk after
+    // full SHA-256 verification, so this is O(1) and never re-scans or re-hashes the chunk store.
+    if artifact_store.is_verified(&args.artifact_id) {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::UploadChunk,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some("artifact already verified".to_owned()),
+            now_ns,
+        );
+        return Err(ArtifactError::ConflictingMetadata {
+            existing: args.artifact_id.clone(),
+            requested: args.artifact_id.clone(),
+        });
     }
 
     // Stage the chunk in region 8.
@@ -912,24 +935,59 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         return Ok(upload);
     }
 
-    // All chunks received: run full SHA-256 verification.
+    // All chunks received: run full SHA-256 verification, streaming each chunk through the hasher
+    // so the whole WASM is never materialized as a single `Vec<u8>`.
     upload.state = ArtifactUploadState::Verifying;
     artifact_store.put_upload(&args.artifact_id, upload.clone());
 
-    let staged_chunks = artifact_store.chunks_in_order(&args.artifact_id, chunk_count);
-    let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
-    for chunk in &staged_chunks {
-        full_bytes.extend_from_slice(&chunk.bytes);
+    let mut hasher = sha2::Sha256::new();
+    let mut stream_ok = true;
+    for i in 0..chunk_count {
+        let key = ArtifactChunkKey {
+            artifact_id: args.artifact_id.clone(),
+            chunk_index: i,
+        };
+        match artifact_store.get_chunk(&key) {
+            Some(chunk) => hasher.update(&chunk.bytes),
+            None => {
+                stream_ok = false;
+                break;
+            }
+        }
+    }
+    if !stream_ok {
+        // A chunk is missing after we just staged all of them: treat as verification failure.
+        artifact_store.remove_all_chunks(&args.artifact_id);
+        let reason = "chunk store incomplete during verification".to_owned();
+        upload.state = ArtifactUploadState::Failed {
+            reason: reason.clone(),
+        };
+        artifact_store.put_upload(&args.artifact_id, upload.clone());
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::VerifyArtifact,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Failed,
+            Some(reason),
+            now_ns,
+        );
+        return Err(ArtifactError::FullSha256Mismatch {
+            artifact_id: args.artifact_id.clone(),
+            expected: metadata.artifact_id.sha256,
+            actual: [0u8; 32],
+        });
     }
 
-    if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+    let full_sha: [u8; 32] = hasher.finalize().into();
+    if full_sha != metadata.artifact_id.sha256 {
         // Verification failure: remove all staged chunks and mark upload Failed.
         artifact_store.remove_all_chunks(&args.artifact_id);
-        let actual = sha256(&full_bytes);
         let reason = format!(
             "full SHA-256 mismatch: expected {}, got {}",
             hex_string(&metadata.artifact_id.sha256),
-            hex_string(&actual)
+            hex_string(&full_sha)
         );
         upload.state = ArtifactUploadState::Failed {
             reason: reason.clone(),
@@ -948,11 +1006,13 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         return Err(ArtifactError::FullSha256Mismatch {
             artifact_id: args.artifact_id.clone(),
             expected: metadata.artifact_id.sha256,
-            actual,
+            actual: full_sha,
         });
     }
 
-    // Verification success: promote region 8 chunks to verified canonical and reclaim region 7.
+    // Verification success: persist the verified flag, promote region 8 chunks to verified
+    // canonical, and reclaim region 7.
+    artifact_store.mark_verified(&args.artifact_id);
     upload.state = ArtifactUploadState::Verified {
         verified_at_ns: now_ns,
     };
@@ -1215,26 +1275,23 @@ pub(crate) fn release_activate_with_caller(
             );
             return Err(ReleaseError::ProvisionKindForbidden((*artifact_id).clone()));
         }
-        let metadata = match artifact_store.get_metadata(artifact_id) {
-            Some(m) => m,
-            None => {
-                append_artifact_audit(
-                    caller,
-                    ArtifactAuditAction::ActivateRelease,
-                    Some((*artifact_id).clone()),
-                    Some(manifest.release_id.clone()),
-                    None,
-                    ArtifactAuditOutcome::Rejected,
-                    Some("artifact metadata not found".to_owned()),
-                    now_ns,
-                );
-                return Err(ReleaseError::ArtifactNotFound((*artifact_id).clone()));
-            }
-        };
+        if artifact_store.get_metadata(artifact_id).is_none() {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::ActivateRelease,
+                Some((*artifact_id).clone()),
+                Some(manifest.release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("artifact metadata not found".to_owned()),
+                now_ns,
+            );
+            return Err(ReleaseError::ArtifactNotFound((*artifact_id).clone()));
+        }
 
-        let chunk_count = metadata.chunk_hashes.len() as u32;
-        let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
-        if staged.len() != chunk_count as usize {
+        // Re-validate via the durable verified flag (set once on the final upload chunk after full
+        // SHA-256 verification). This is O(1) and avoids re-reading/re-hashing the whole artifact.
+        if !artifact_store.is_verified(artifact_id) {
             append_artifact_audit(
                 caller,
                 ArtifactAuditAction::ActivateRelease,
@@ -1243,23 +1300,6 @@ pub(crate) fn release_activate_with_caller(
                 None,
                 ArtifactAuditOutcome::Rejected,
                 Some("artifact chunks missing or incomplete".to_owned()),
-                now_ns,
-            );
-            return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
-        }
-        let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
-        for chunk in &staged {
-            full_bytes.extend_from_slice(&chunk.bytes);
-        }
-        if sha256(&full_bytes) != metadata.artifact_id.sha256 {
-            append_artifact_audit(
-                caller,
-                ArtifactAuditAction::ActivateRelease,
-                Some((*artifact_id).clone()),
-                Some(manifest.release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("artifact full SHA-256 mismatch".to_owned()),
                 now_ns,
             );
             return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
@@ -1583,9 +1623,9 @@ pub(crate) async fn release_install_with_caller(
         }
     };
 
-    let chunk_count = metadata.chunk_hashes.len() as u32;
-    let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
-    if staged.len() != chunk_count as usize {
+    // Re-validate via the durable verified flag (set once on the final upload chunk). This is O(1)
+    // and does not re-scan or re-hash the chunk store.
+    if !artifact_store.is_verified(artifact_id) {
         append_artifact_audit(
             caller,
             ArtifactAuditAction::InstallRelease,
@@ -1598,27 +1638,33 @@ pub(crate) async fn release_install_with_caller(
         );
         return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
     }
-    let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
-    for chunk in &staged {
-        full_bytes.extend_from_slice(&chunk.bytes);
-    }
-    if sha256(&full_bytes) != metadata.artifact_id.sha256 {
-        append_artifact_audit(
-            caller,
-            ArtifactAuditAction::InstallRelease,
-            Some(artifact_id.clone()),
-            Some(manifest.release_id.clone()),
-            Some(target_canister_id),
-            ArtifactAuditOutcome::Failed,
-            Some("artifact full SHA-256 mismatch".to_owned()),
-            now_ns,
-        );
-        return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
-    }
 
+    // Upload each chunk to the target one at a time, reading each chunk from stable memory and
+    // uploading it immediately. We never materialize the whole WASM as a single `Vec<u8>` nor
+    // clone every chunk, so peak heap stays ~one chunk. The per-chunk stable read is O(1).
+    let chunk_count = metadata.chunk_hashes.len() as u32;
     let mut chunk_hashes = Vec::with_capacity(chunk_count as usize);
-    for chunk in &staged {
-        let hash = match install_upload_chunk(target_canister_id, chunk.bytes.clone()).await {
+    for i in 0..chunk_count {
+        let chunk = match artifact_store.get_chunk(&ArtifactChunkKey {
+            artifact_id: artifact_id.clone(),
+            chunk_index: i,
+        }) {
+            Some(c) => c,
+            None => {
+                append_artifact_audit(
+                    caller,
+                    ArtifactAuditAction::InstallRelease,
+                    Some(artifact_id.clone()),
+                    Some(manifest.release_id.clone()),
+                    Some(target_canister_id),
+                    ArtifactAuditOutcome::Failed,
+                    Some("artifact chunks missing or incomplete".to_owned()),
+                    now_ns,
+                );
+                return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
+            }
+        };
+        let hash = match install_upload_chunk(target_canister_id, chunk.bytes).await {
             Ok(h) => h,
             Err(e) => {
                 append_artifact_audit(

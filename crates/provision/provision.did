@@ -40,6 +40,7 @@ type ArtifactAuditEntry = record {
 type ArtifactAuditOutcome = variant { Failed; Rejected; Success };
 // Errors returned by artifact catalog ingress methods.
 type ArtifactError = variant {
+  TooManyChunks : record { max : nat32; declared : nat32 };
   NotProvision : CanisterKind;
   UnknownArtifact : ArtifactId;
   Unauthorized;
@@ -58,6 +59,8 @@ type ArtifactError = variant {
     artifact_id : ArtifactId;
     expected : blob;
   };
+  ArtifactTooLarge : record { max : nat64; byte_length : nat64 };
+  SemanticVersionTooLong : record { max : nat32 };
 };
 // Composite stable key identifying one published artifact.
 // The SHA-256 is part of identity, not a value field.
@@ -68,6 +71,7 @@ type ArtifactId = record {
 };
 // Immutable artifact metadata published by governance.
 type ArtifactMetadata = record {
+  verified : bool;
   artifact_id : ArtifactId;
   chunk_hashes : vec blob;
   byte_length : nat64;
