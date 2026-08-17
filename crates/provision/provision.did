@@ -186,7 +186,7 @@ type ProvisionIngressResult = variant {
 type ProvisionInitArgs = record { bootstrap_bindings : vec DeploymentBinding };
 // Redacted job summary for admission responses.
 type ProvisionJobSummary = record {
-  request_id : text;
+  request_id : blob;
   active_resource_index : nat32;
   completed_effect_count : nat32;
   state : text;
@@ -194,10 +194,9 @@ type ProvisionJobSummary = record {
   deployment_id : text;
 };
 type ProvisionJobView = record {
-  request_id : text;
+  request_id : blob;
   is_authorized_caller : bool;
   active_resource_index : nat32;
-  request_fingerprint : text;
   resources : vec ResourceJobView;
   reserved_graph_id : opt nat32;
   has_router_callback : bool;
@@ -208,9 +207,8 @@ type ProvisionJobView = record {
   deployment_id : text;
 };
 type ProvisionRequest = record {
-  request_id : text;
+  request_id : blob;
   requested_resources : vec ProvisionableResource;
-  request_fingerprint : text;
   reserved_graph_id : opt nat32;
   router_callback_principal : principal;
   release_id : text;
@@ -228,7 +226,7 @@ type ProvisionableResource = record {
   logical_resource : LogicalResource;
 };
 type CreatedResource = record {
-  artifact_hash : text;
+  artifact_hash : blob;
   logical_resource : LogicalResource;
   canister_id : principal;
 };
@@ -302,7 +300,7 @@ type ReleasePublishArgs = record {
   release_id : text;
 };
 type ResourceJobView = record {
-  artifact_hash : opt text;
+  artifact_hash : opt blob;
   logical_resource : LogicalResource;
   canister_id : opt principal;
 };
@@ -320,7 +318,7 @@ type RouterAckResult = variant {
   Err : ProvisionIngressError;
 };
 type RouterProvisionAck = record {
-  request_id : text;
+  request_id : blob;
   accepted_registry_version : nat64;
   deployment_id : text;
 };
@@ -334,7 +332,7 @@ service : (ProvisionInitArgs) -> {
   artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_2);
   artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_3);
   complete_bootstrap : (text) -> (Result_4);
-  query_job : (text, text) -> (opt ProvisionJobView) query;
+  query_job : (blob, text) -> (opt ProvisionJobView) query;
   release_activate : (ReleaseActivateArgs) -> (Result_5);
   release_get_active : () -> (opt ReleaseActivateResult) query;
   release_install : (ReleaseInstallArgs) -> (Result_6);

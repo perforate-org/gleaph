@@ -39,10 +39,18 @@ fn test_deployment_binding(deployment_id: &str, router_id: u8, gov_id: u8) -> De
     }
 }
 
+fn test_request_id(label: &str) -> [u8; 32] {
+    let mut id = [0u8; 32];
+    let bytes = label.as_bytes();
+    let n = bytes.len().min(32);
+    id[..n].copy_from_slice(&bytes[..n]);
+    id
+}
+
 fn test_record_with_resources(
     request_id: &str,
     deployment_id: &str,
-    fingerprint: &str,
+    _fingerprint: &str,
     resources: &[LogicalResource],
 ) -> ProvisionJobRecord {
     let intent_key = if resources.is_empty() {
@@ -57,9 +65,8 @@ fn test_record_with_resources(
         }
     };
     ProvisionJobRecord {
-        request_id: request_id.to_owned(),
+        request_id: test_request_id(request_id),
         deployment_id: deployment_id.to_owned(),
-        request_fingerprint: fingerprint.to_owned(),
         intent_key,
         reserved_graph_id: None,
         graph_name: "test-graph".to_owned(),
@@ -155,22 +162,20 @@ fn test_insert_idempotent_same_fingerprint() {
     let record = test_record("req-1", "dep-1", "fp-1");
     let first = store.insert_or_idempotent(record.clone()).unwrap();
     let second = store.insert_or_idempotent(record).unwrap();
-    assert_eq!(first.request_id, "req-1");
-    assert_eq!(second.request_id, "req-1");
-    assert_eq!(first.request_fingerprint, "fp-1");
+    assert_eq!(first.request_id, test_request_id("req-1"));
+    assert_eq!(second.request_id, test_request_id("req-1"));
 }
 
 #[test]
-fn test_insert_conflict_different_fingerprint() {
+fn test_insert_idempotent_same_request_id_returns_existing() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    store.insert_or_idempotent(record).unwrap();
-    let conflict = test_record("req-1", "dep-1", "fp-2");
-    assert_eq!(
-        store.insert_or_idempotent(conflict),
-        Err(super::JobInsertError::Conflict)
-    );
+    let first = store.insert_or_idempotent(record.clone()).unwrap();
+    // Same request_id (content hash) is idempotent: the existing record is returned unchanged.
+    let second = store.insert_or_idempotent(record).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.request_id, test_request_id("req-1"));
 }
 
 #[test]
@@ -178,7 +183,7 @@ fn test_advance_state_valid_transition() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new("req-1", "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
     store.insert_or_idempotent(record).unwrap();
     assert!(
         store
@@ -195,7 +200,7 @@ fn test_advance_state_full_machine() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new("req-1", "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
     store.insert_or_idempotent(record).unwrap();
     let steps = [
         JobState::Reserved,
@@ -228,7 +233,7 @@ fn test_advance_state_invalid_transition() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new("req-1", "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
     store.insert_or_idempotent(record).unwrap();
     assert_eq!(
         store.advance_state(&key, JobState::Completed, None, 100),
@@ -244,7 +249,7 @@ fn test_advance_state_to_failed() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new("req-1", "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
     store.insert_or_idempotent(record).unwrap();
     assert!(
         store
@@ -273,7 +278,7 @@ fn test_advance_state_failed_terminal() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new("req-1", "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
     store.insert_or_idempotent(record).unwrap();
     store
         .advance_state(
@@ -423,7 +428,7 @@ fn test_advance_state_persists_last_transition_ns() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new("req-1", "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
     store.insert_or_idempotent(record).unwrap();
     store
         .advance_state(&key, JobState::Reserved, None, 42)
@@ -447,7 +452,7 @@ fn test_storable_round_trip() {
     let record = test_record("req-1", "dep-1", "fp-1");
     let bytes = record.into_bytes();
     let decoded = ProvisionJobRecord::from_bytes(bytes.into());
-    assert_eq!(decoded.request_id, "req-1");
+    assert_eq!(decoded.request_id, test_request_id("req-1"));
     assert_eq!(decoded.current_state, JobState::Submitted);
 }
 
@@ -476,7 +481,7 @@ fn test_set_resource_canister_id_persists_target_and_preserves_siblings() {
             LogicalResource::GraphShard(ShardId::new(0)),
         ],
     );
-    let key = ProvisionJobRequestKey::new("req-set", "dep-set");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-set"), "dep-set");
     store.insert_or_idempotent(record).unwrap();
 
     let canister_id = test_principal(42);
@@ -497,7 +502,7 @@ fn test_set_resource_canister_id_persists_target_and_preserves_siblings() {
 fn test_set_resource_canister_id_missing_record_panics() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
-    let key = ProvisionJobRequestKey::new("req-missing", "dep-missing");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-missing"), "dep-missing");
     store.set_resource_canister_id(&key, 0, test_principal(7));
 }
 
@@ -507,7 +512,7 @@ fn test_set_resource_canister_id_out_of_bounds_panics() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-bounds", "dep-bounds", "fp-bounds");
-    let key = ProvisionJobRequestKey::new("req-bounds", "dep-bounds");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-bounds"), "dep-bounds");
     store.insert_or_idempotent(record).unwrap();
     store.set_resource_canister_id(&key, 5, test_principal(7));
 }
@@ -525,7 +530,7 @@ fn test_insert_writes_job_by_deployment_derived_index() {
             LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         ],
     );
-    let expected_key = ProvisionJobRequestKey::new("req-derived", "dep-derived");
+    let expected_key = ProvisionJobRequestKey::new(&test_request_id("req-derived"), "dep-derived");
     store.insert_or_idempotent(record).unwrap();
 
     super::JOB_BY_DEPLOYMENT.with_borrow(|map| {
@@ -580,7 +585,7 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
         "fp-a",
         &[LogicalResource::GraphShard(ShardId::new(0))],
     );
-    let key_a = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key_a = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     store.insert_with_intent_locks(record_a, 1).unwrap();
     assert_eq!(
         store.assert_intent_to_request_for_test(
@@ -611,7 +616,7 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
         "derived index must still map R1.intent to A.key after B is rejected"
     );
     assert_eq!(
-        store.get_by_request("req-b", "dep-a"),
+        store.get_by_request(&test_request_id("req-b"), "dep-a"),
         None,
         "B must not leave a canonical row"
     );
@@ -1362,7 +1367,10 @@ fn release_activate_atomically_swaps_pointer_and_preserves_jobs() {
     assert_eq!(second.previous_release_id, Some(r1.clone()));
 
     // Non-retroactivity: the pre-existing job is untouched.
-    assert_eq!(job_store.get_by_request("req-f", "dep-f"), Some(pre_job));
+    assert_eq!(
+        job_store.get_by_request(&test_request_id("req-f"), "dep-f"),
+        Some(pre_job)
+    );
 }
 
 /// (g) release_activate rejects an unverified artifact and leaves the active pointer unchanged.

@@ -58,10 +58,18 @@ fn test_resource(logical_resource: LogicalResource) -> ProvisionableResource {
     ProvisionableResource { logical_resource }
 }
 
+fn test_request_id(label: &str) -> [u8; 32] {
+    let mut id = [0u8; 32];
+    let bytes = label.as_bytes();
+    let n = bytes.len().min(32);
+    id[..n].copy_from_slice(&bytes[..n]);
+    id
+}
+
 fn test_request(
     deployment_id: &str,
     request_id: &str,
-    fingerprint: &str,
+    _fingerprint: &str,
     resources: Vec<ProvisionableResource>,
 ) -> ProvisionRequest {
     let intent_key = if resources.is_empty() {
@@ -71,8 +79,7 @@ fn test_request(
     };
     ProvisionRequest {
         deployment_id: deployment_id.to_owned(),
-        request_id: request_id.to_owned(),
-        request_fingerprint: fingerprint.to_owned(),
+        request_id: test_request_id(request_id),
         intent_key,
         reserved_graph_id: None,
         graph_name: "test-graph".to_owned(),
@@ -130,7 +137,7 @@ fn complete_record(
     let mut record = store.get_by_request_key(key).unwrap();
     for resource in &mut record.resources {
         resource.canister_id = Some(pid(42));
-        resource.artifact_hash = Some("hash".to_owned());
+        resource.artifact_hash = Some([0xAB; 32]);
     }
     store.put(key, record);
     router_ack_with_caller(
@@ -139,7 +146,7 @@ fn complete_record(
         &DeploymentTrustStore::new(),
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: key.request_id.clone(),
+            request_id: key.request_id,
             accepted_registry_version: version,
         },
         now_ns,
@@ -167,7 +174,11 @@ fn test_provision_accept_wrong_caller_rejected() {
         1,
     ));
     assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
-    assert!(store.get_by_request("req-a", "dep-a").is_none());
+    assert!(
+        store
+            .get_by_request(&test_request_id("req-a"), "dep-a")
+            .is_none()
+    );
 }
 
 #[test]
@@ -222,18 +233,20 @@ fn test_provision_accept_idempotent_replay_returns_existing() {
     .unwrap();
     match replay {
         ProvisionAcceptResponse::Replay { job_view, .. } => {
-            assert_eq!(job_view.request_id, "req-a");
+            assert_eq!(job_view.request_id, test_request_id("req-a"));
             assert_eq!(job_view.deployment_id, "dep-a");
             assert_eq!(job_view.state, "Reserved");
         }
         _ => panic!("expected Replay, got {:?}", replay),
     }
-    let record = store.get_by_request("req-a", "dep-a").unwrap();
+    let record = store
+        .get_by_request(&test_request_id("req-a"), "dep-a")
+        .unwrap();
     assert_eq!(record.current_state, JobState::Reserved);
 }
 
 #[test]
-fn test_provision_accept_conflict_different_fingerprint() {
+fn test_provision_accept_same_content_is_idempotent_replay() {
     reset_all_maps();
     let (deployment_store, store) = insert_binding_and_init("dep-a");
     let req1 = test_request(
@@ -250,6 +263,7 @@ fn test_provision_accept_conflict_different_fingerprint() {
         1,
     ))
     .unwrap();
+    // Same graph_name + resources => same content-hash request_id => idempotent replay.
     let req2 = test_request(
         "dep-a",
         "req-a",
@@ -262,10 +276,62 @@ fn test_provision_accept_conflict_different_fingerprint() {
         &deployment_store,
         req2,
         2,
-    ));
-    assert_eq!(result, Err(ProvisionIngressError::Conflict));
-    let record = store.get_by_request("req-a", "dep-a").unwrap();
-    assert_eq!(record.request_fingerprint, "fp-a");
+    ))
+    .unwrap();
+    assert!(
+        matches!(result, ProvisionAcceptResponse::Replay { .. }),
+        "same content must be an idempotent replay, got {result:?}"
+    );
+    let record = store
+        .get_by_request(&test_request_id("req-a"), "dep-a")
+        .unwrap();
+    assert_eq!(record.request_id, test_request_id("req-a"));
+}
+
+#[test]
+fn test_provision_accept_different_content_yields_distinct_request_ids() {
+    reset_all_maps();
+    let (deployment_store, store) = insert_binding_and_init("dep-a");
+    // Different resources => different content-hash request_id => both admitted independently.
+    let req1 = test_request(
+        "dep-a",
+        "req-a",
+        "fp-a",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let req2 = test_request(
+        "dep-a",
+        "req-b",
+        "fp-b",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(1)))],
+    );
+    assert_ne!(req1.request_id, req2.request_id);
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req1,
+        1,
+    ))
+    .unwrap();
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req2,
+        2,
+    ))
+    .unwrap();
+    assert!(
+        store
+            .get_by_request(&test_request_id("req-a"), "dep-a")
+            .is_some()
+    );
+    assert!(
+        store
+            .get_by_request(&test_request_id("req-b"), "dep-a")
+            .is_some()
+    );
 }
 
 #[test]
@@ -293,7 +359,11 @@ fn test_provision_no_partial_writes_on_lock_failure() {
     assert_eq!(result, Err(ProvisionIngressError::IntentLockHeld));
 
     // No canonical record and no derived Map 2 entries remain.
-    assert!(store.get_by_request("req-a", "dep-a").is_none());
+    assert!(
+        store
+            .get_by_request(&test_request_id("req-a"), "dep-a")
+            .is_none()
+    );
     assert!(!store.has_live_job_for_deployment("dep-a"));
     // Pre-held lock is untouched.
     assert!(store.intent_locked(&held_key));
@@ -373,7 +443,7 @@ fn test_provision_query_wrong_caller_rejected() {
         other_principal(),
         &store,
         &deployment_store,
-        "req-a".to_owned(),
+        test_request_id("req-a"),
         "dep-a".to_owned(),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotAuthorized));
@@ -401,11 +471,11 @@ fn test_provision_query_returns_redacted_view() {
         router_principal(),
         &store,
         &deployment_store,
-        "req-a".to_owned(),
+        test_request_id("req-a"),
         "dep-a".to_owned(),
     )
     .unwrap();
-    assert_eq!(view.request_id, "req-a");
+    assert_eq!(view.request_id, test_request_id("req-a"));
     assert_eq!(view.state_name, "Reserved");
     assert!(view.has_router_callback);
     assert!(view.is_authorized_caller);
@@ -423,7 +493,7 @@ fn test_provision_query_unknown_deployment_returns_not_found() {
         router_principal(),
         &store,
         &deployment_store,
-        "req-a".to_owned(),
+        test_request_id("req-a"),
         "dep-missing".to_owned(),
     );
     assert_eq!(result, Err(ProvisionQueryError::UnknownDeployment));
@@ -441,7 +511,7 @@ fn test_provision_router_ack_not_found() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "missing".to_owned(),
+            request_id: test_request_id("missing"),
             accepted_registry_version: 1,
         },
         1,
@@ -467,7 +537,7 @@ fn test_provision_router_ack_wrong_router_rejected() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let result = router_ack_with_caller(
         other_principal(),
@@ -475,7 +545,7 @@ fn test_provision_router_ack_wrong_router_rejected() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 1,
         },
         20,
@@ -508,7 +578,7 @@ fn test_provision_router_ack_invalid_state() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 1,
         },
         2,
@@ -534,7 +604,7 @@ fn test_provision_router_ack_persists_registry_version() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let result = router_ack_with_caller(
         router_principal(),
@@ -542,7 +612,7 @@ fn test_provision_router_ack_persists_registry_version() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 7,
         },
         20,
@@ -550,7 +620,9 @@ fn test_provision_router_ack_persists_registry_version() {
     .unwrap();
     assert!(result.completed);
     assert_eq!(result.accepted_registry_version, 7);
-    let record = store.get_by_request("req-a", "dep-a").unwrap();
+    let record = store
+        .get_by_request(&test_request_id("req-a"), "dep-a")
+        .unwrap();
     assert_eq!(record.current_state, JobState::Completed);
     assert_eq!(record.accepted_registry_version, Some(7));
     assert!(!store.intent_locked(&ProvisioningIntentKey::new(
@@ -577,7 +649,7 @@ fn test_provision_router_ack_missing_lock_returns_invalid_state() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     // Release the lock behind the store's back.
     let lock_key =
@@ -589,7 +661,7 @@ fn test_provision_router_ack_missing_lock_returns_invalid_state() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 1,
         },
         20,
@@ -615,11 +687,11 @@ fn test_provision_router_ack_idempotent_replay() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let ack = RouterProvisionAck {
         deployment_id: "dep-a".to_owned(),
-        request_id: "req-a".to_owned(),
+        request_id: test_request_id("req-a"),
         accepted_registry_version: 7,
     };
     let first = router_ack_with_caller(
@@ -654,7 +726,7 @@ fn test_provision_router_ack_completed_replay_returns_ok() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     complete_record(&store, &key, 5, 30);
     let result = router_ack_with_caller(
@@ -663,7 +735,7 @@ fn test_provision_router_ack_completed_replay_returns_ok() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 5,
         },
         31,
@@ -691,7 +763,7 @@ fn test_provision_router_ack_completed_version_conflict_returns_ack_conflict() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     complete_record(&store, &key, 5, 30);
     let result = router_ack_with_caller(
@@ -700,7 +772,7 @@ fn test_provision_router_ack_completed_version_conflict_returns_ack_conflict() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 9,
         },
         31,
@@ -729,7 +801,7 @@ fn test_provision_router_ack_state_advance_failed_returns_state_advance_failed()
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     set_force_advance_error(true);
     let result = router_ack_with_caller(
@@ -738,7 +810,7 @@ fn test_provision_router_ack_state_advance_failed_returns_state_advance_failed()
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 1,
         },
         20,
@@ -772,7 +844,7 @@ fn test_provision_router_ack_unknown_deployment() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-orphan".to_owned(),
-            request_id: "req-o".to_owned(),
+            request_id: test_request_id("req-o"),
             accepted_registry_version: 1,
         },
         2,
@@ -804,7 +876,7 @@ fn test_provision_accept_envelope_fresh_admission_reports_accepted() {
             intent_lock_count,
             created_resources,
         } => {
-            assert_eq!(job_view.request_id, "req-a");
+            assert_eq!(job_view.request_id, test_request_id("req-a"));
             assert_eq!(job_view.deployment_id, "dep-a");
             assert_eq!(job_view.state, "Reserved");
             assert_eq!(intent_lock_count, 1);
@@ -851,7 +923,7 @@ fn test_provision_accept_envelope_replay_reports_replay() {
             intent_lock_count,
             created_resources,
         } => {
-            assert_eq!(job_view.request_id, "req-a");
+            assert_eq!(job_view.request_id, test_request_id("req-a"));
             assert_eq!(job_view.state, "Reserved");
             assert_eq!(intent_lock_count, 1);
             assert!(
@@ -993,7 +1065,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     ))
     .unwrap();
 
-    let key_a = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key_a = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     let intent_key =
         ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
 
@@ -1014,8 +1086,10 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     assert_eq!(result, Err(ProvisionIngressError::IntentLockHeld));
 
     // A's canonical record is unchanged.
-    let record_a = store.get_by_request("req-a", "dep-a").unwrap();
-    assert_eq!(record_a.request_id, "req-a");
+    let record_a = store
+        .get_by_request(&test_request_id("req-a"), "dep-a")
+        .unwrap();
+    assert_eq!(record_a.request_id, test_request_id("req-a"));
 
     // A's lock survives.
     assert!(store.intent_locked(&intent_key));
@@ -1042,12 +1116,15 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
 
     // B leaves no canonical or derived row.
     assert_eq!(
-        store.get_by_request("req-b", "dep-a"),
+        store.get_by_request(&test_request_id("req-b"), "dep-a"),
         None,
         "B must not leave a canonical row"
     );
     assert_eq!(
-        store.get_by_request_key(&ProvisionJobRequestKey::new("req-b", "dep-a")),
+        store.get_by_request_key(&ProvisionJobRequestKey::new(
+            &test_request_id("req-b"),
+            "dep-a"
+        )),
         None,
         "B must not leave a canonical row via its composite key"
     );
@@ -1109,8 +1186,8 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
     ))
     .unwrap();
 
-    let key1 = ProvisionJobRequestKey::new("r1", "d1");
-    let key2 = ProvisionJobRequestKey::new("r1", "d2");
+    let key1 = ProvisionJobRequestKey::new(&test_request_id("r1"), "d1");
+    let key2 = ProvisionJobRequestKey::new(&test_request_id("r1"), "d2");
     advance_to_ack_pending(&store, &key1, 10);
     advance_to_ack_pending(&store, &key2, 20);
 
@@ -1124,13 +1201,13 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "d2".to_owned(),
-            request_id: "r1".to_owned(),
+            request_id: test_request_id("r1"),
             accepted_registry_version: 1,
         },
         30,
     );
     assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
-    let a2_before = store.get_by_request("r1", "d2").unwrap();
+    let a2_before = store.get_by_request(&test_request_id("r1"), "d2").unwrap();
     assert_eq!(a2_before.current_state, JobState::RouterAckPending);
 
     // Correct ack (r1, d1) advances A1.
@@ -1140,13 +1217,13 @@ fn test_provision_router_ack_cross_deployment_ambiguity() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "d1".to_owned(),
-            request_id: "r1".to_owned(),
+            request_id: test_request_id("r1"),
             accepted_registry_version: 7,
         },
         31,
     );
     assert!(result.unwrap().completed);
-    let a1_after = store.get_by_request("r1", "d1").unwrap();
+    let a1_after = store.get_by_request(&test_request_id("r1"), "d1").unwrap();
     assert_eq!(a1_after.current_state, JobState::Completed);
     assert_eq!(a1_after.accepted_registry_version, Some(7));
 }
@@ -1184,7 +1261,7 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
 
     // First ack persists version 7 and advances to Completed.
@@ -1194,7 +1271,7 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 7,
         },
         20,
@@ -1202,7 +1279,9 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
     .unwrap();
     assert_eq!(first.accepted_registry_version, 7);
 
-    let record = store.get_by_request("req-a", "dep-a").unwrap();
+    let record = store
+        .get_by_request(&test_request_id("req-a"), "dep-a")
+        .unwrap();
     assert_eq!(record.current_state, JobState::Completed);
     assert_eq!(record.accepted_registry_version, Some(7));
 
@@ -1213,7 +1292,7 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
         &deployment_store,
         RouterProvisionAck {
             deployment_id: "dep-a".to_owned(),
-            request_id: "req-a".to_owned(),
+            request_id: test_request_id("req-a"),
             accepted_registry_version: 9,
         },
         21,
@@ -1224,7 +1303,9 @@ fn test_provision_router_ack_ack_conflict_after_durable_completion() {
     );
 
     // The durable record must still retain the first ack's version.
-    let record = store.get_by_request("req-a", "dep-a").unwrap();
+    let record = store
+        .get_by_request(&test_request_id("req-a"), "dep-a")
+        .unwrap();
     assert_eq!(record.accepted_registry_version, Some(7));
 }
 
@@ -1246,11 +1327,11 @@ fn test_provision_router_ack_completed_then_retry_returns_replay() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new("req-a", "dep-a");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
     advance_to_ack_pending(&store, &key, 10);
     let ack = RouterProvisionAck {
         deployment_id: "dep-a".to_owned(),
-        request_id: "req-a".to_owned(),
+        request_id: test_request_id("req-a"),
         accepted_registry_version: 5,
     };
     let first = router_ack_with_caller(
@@ -1292,8 +1373,7 @@ fn test_provision_record_to_result_reserved_state_returns_err() {
     // Adversarial: a wrong impl that fabricates Ok(Failed { reason }) for Reserved
     // would not satisfy this assertion, because the helper contract now returns Err.
     let wrong_result = ProvisionResult {
-        request_id: record.request_id.clone(),
-        request_fingerprint: record.request_fingerprint.clone(),
+        request_id: record.request_id,
         release_id: record.release_id.clone(),
         created_resources: vec![],
         terminal_outcome: ProvisionResultOutcome::Failed {
@@ -1349,8 +1429,14 @@ fn test_provision_get_by_request_exact_key_lookup() {
     );
     store.insert_or_idempotent(record_a.clone()).unwrap();
     store.insert_or_idempotent(record_b).unwrap();
-    assert_eq!(store.get_by_request("missing", "dep-a"), None);
-    assert_eq!(store.get_by_request("req-a", "dep-a"), Some(record_a));
+    assert_eq!(
+        store.get_by_request(&test_request_id("missing"), "dep-a"),
+        None
+    );
+    assert_eq!(
+        store.get_by_request(&test_request_id("req-a"), "dep-a"),
+        Some(record_a)
+    );
 }
 
 #[test]
@@ -1424,7 +1510,7 @@ fn test_provision_query_not_found() {
         router_principal(),
         &store,
         &deployment_store,
-        "missing".to_owned(),
+        test_request_id("missing"),
         "dep-a".to_owned(),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotFound));
@@ -2095,7 +2181,9 @@ fn accept_envelope_drives_deploy_to_router_ack_pending() {
     }
 
     // The job record persisted the canister id and hash.
-    let record = store.get_by_request("req-deploy", "dep-a").unwrap();
+    let record = store
+        .get_by_request(&test_request_id("req-deploy"), "dep-a")
+        .unwrap();
     assert_eq!(record.current_state, JobState::RouterRegistrationPending);
     let entry = &record.resources[0];
     assert!(entry.canister_id.is_some());
@@ -2105,11 +2193,13 @@ fn accept_envelope_drives_deploy_to_router_ack_pending() {
     // the intent locks.
     let ack = RouterProvisionAck {
         deployment_id: "dep-a".to_owned(),
-        request_id: "req-deploy".to_owned(),
+        request_id: test_request_id("req-deploy"),
         accepted_registry_version: 1,
     };
     router_ack_with_caller(router_principal(), &store, &deployment_store, ack, 2).unwrap();
-    let record = store.get_by_request("req-deploy", "dep-a").unwrap();
+    let record = store
+        .get_by_request(&test_request_id("req-deploy"), "dep-a")
+        .unwrap();
     assert_eq!(record.current_state, JobState::Completed);
     let intent_key =
         ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));

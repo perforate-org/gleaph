@@ -50,12 +50,14 @@ pub(crate) async fn provision_graph_flow(
     // ack callback has a canonical record to advance. We need deployment_id for the key, so
     // clone it before moving fields into the ProvisionRequest wire struct.
     let deployment_id = args.deployment_id.clone();
-    let request_id = format!("{}-{}", args.graph_name, args.request_fingerprint);
+    let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+        &args.graph_name,
+        &args.requested_resources,
+    );
     let request_key = ProvisioningRequestKey::new(&request_id, &deployment_id);
     let store = RouterProvisioningRequestStore::new();
     let seed_record = RouterProvisioningRequest {
-        request_id: request_id.clone(),
-        request_fingerprint: args.request_fingerprint.clone(),
+        request_id,
         caller,
         graph_name: args.graph_name.clone(),
         reserved_graph_id: None,
@@ -68,9 +70,6 @@ pub(crate) async fn provision_graph_flow(
     let outcome = store
         .insert(&deployment_id, seed_record)
         .map_err(|err| match err {
-            InsertError::Conflict => {
-                RouterError::Conflict("provisioning request fingerprint conflict".to_owned())
-            }
             InsertError::IntentConflict => {
                 RouterError::Conflict("provisioning intent already locked".to_owned())
             }
@@ -85,7 +84,6 @@ pub(crate) async fn provision_graph_flow(
     let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
         deployment_id,
         request_id,
-        request_fingerprint: args.request_fingerprint.clone(),
         intent_key,
         reserved_graph_id: None,
         graph_name: graph_name_for_request,
@@ -361,13 +359,12 @@ mod tests {
     fn sample_record(
         request_id: &str,
         _deployment_id: &str,
-        fingerprint: &str,
+        _fingerprint: &str,
         state: RouterProvisioningRequestState,
         version: Option<u64>,
     ) -> RouterProvisioningRequest {
         RouterProvisioningRequest {
-            request_id: request_id.to_owned(),
-            request_fingerprint: fingerprint.to_owned(),
+            request_id: test_request_id(request_id),
             caller: Principal::anonymous(),
             graph_name: "tenant.main".to_owned(),
             reserved_graph_id: None,
@@ -381,9 +378,17 @@ mod tests {
         }
     }
 
+    fn test_request_id(label: &str) -> [u8; 32] {
+        let mut id = [0u8; 32];
+        let bytes = label.as_bytes();
+        let n = bytes.len().min(32);
+        id[..n].copy_from_slice(&bytes[..n]);
+        id
+    }
+
     fn job_view() -> ProvisionJobSummary {
         ProvisionJobSummary {
-            request_id: "req".to_owned(),
+            request_id: test_request_id("req"),
             deployment_id: "deploy".to_owned(),
             state: "AwaitingAck".to_owned(),
             active_resource_index: 0,
@@ -412,7 +417,8 @@ mod tests {
             s.insert(deployment_id, record.clone())
                 .expect("insert completed");
 
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let request_key =
+                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
             let outcome = InsertionOutcome::Existing(record);
 
             let result = dispatch_provision_send(
@@ -454,7 +460,8 @@ mod tests {
             s.insert(deployment_id, record.clone())
                 .expect("insert awaiting");
 
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let request_key =
+                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
             let outcome = InsertionOutcome::Existing(record);
 
             let result = dispatch_provision_send(request_key.clone(), outcome, s, || async {
@@ -488,7 +495,8 @@ mod tests {
             );
             s.insert(deployment_id, record).expect("insert pending");
 
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let request_key =
+                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
             let outcome = InsertionOutcome::Existing(s.get_by_request_id(&request_key).unwrap());
 
             let result = dispatch_provision_send(request_key, outcome, s, || async {
@@ -521,7 +529,8 @@ mod tests {
             s.insert(deployment_id, record.clone())
                 .expect("insert failed");
 
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let request_key =
+                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
             let outcome = InsertionOutcome::Existing(record);
 
             let result = dispatch_provision_send(request_key, outcome, s, || async {
@@ -550,7 +559,8 @@ mod tests {
                 None,
             );
             let outcome = InsertionOutcome::Inserted(record);
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let request_key =
+                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
 
             let result = dispatch_provision_send(request_key.clone(), outcome, s, || async {
                 Err(RouterOutboundError::CallFailed("simulated".to_owned()))
@@ -579,7 +589,8 @@ mod tests {
                 None,
             );
             let outcome = InsertionOutcome::Inserted(record);
-            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let request_key =
+                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
 
             let result = dispatch_provision_send(request_key, outcome, s, || async {
                 Ok(ProvisionAcceptResponse::Accepted {
@@ -614,7 +625,6 @@ mod tests {
 
             let args = crate::types::ProvisionGraphArgs {
                 deployment_id: "dep-1".to_owned(),
-                request_fingerprint: "fp-1".to_owned(),
                 graph_name: "tenant.provisioned".to_owned(),
                 requested_resources: vec![ProvisionableResource {
                     logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
@@ -628,7 +638,7 @@ mod tests {
             let created = vec![CreatedResource {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
                 canister_id: graph_canister,
-                artifact_hash: "abc".to_owned(),
+                artifact_hash: [0xAB; 32],
             }];
 
             register_provisioned_graph(admin, &args, &created)

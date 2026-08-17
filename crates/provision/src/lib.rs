@@ -42,7 +42,7 @@ async fn accept_envelope(req: ProvisionRequest) -> ProvisionIngressResult {
 }
 
 #[query]
-fn query_job(request_id: String, deployment_id: String) -> Option<ProvisionJobView> {
+fn query_job(request_id: [u8; 32], deployment_id: String) -> Option<ProvisionJobView> {
     handlers::query_job_handler(request_id, deployment_id)
 }
 

@@ -37,6 +37,16 @@ struct Env {
     provision: Principal,
 }
 
+/// The content-hash request_id for the `p0058.graph` graph with a single GraphShard(0) resource.
+fn expected_request_id() -> [u8; 32] {
+    gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+        "p0058.graph",
+        &[ProvisionableResource {
+            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+        }],
+    )
+}
+
 fn install_router_and_provision() -> Env {
     let pic = new_pocket_ic();
     let admin = Principal::from_slice(&[0xAB; 29]);
@@ -145,8 +155,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     let args = ProvisionGraphArgs {
         deployment_id: "deploy-p0058".to_owned(),
-        request_fingerprint: "fp-fresh-1".to_owned(),
-        graph_name: "p0058.graph".to_owned(),
+                graph_name: "p0058.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }],
@@ -183,7 +192,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
     // Scenario 4: Provision -> Router ack with accepted_registry_version=7.
     let ack = RouterProvisionAck {
         deployment_id: "deploy-p0058".to_owned(),
-        request_id: "p0058.graph-fp-fresh-1".to_owned(),
+        request_id: expected_request_id(),
         accepted_registry_version: 7,
     };
     let ack_response = call_router_ack(&env, &ack).expect("router_ack accepted");
@@ -202,7 +211,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
     // Scenario 6: differing registry version returns AckConflict.
     let bad_ack = RouterProvisionAck {
         deployment_id: "deploy-p0058".to_owned(),
-        request_id: "p0058.graph-fp-fresh-1".to_owned(),
+        request_id: expected_request_id(),
         accepted_registry_version: 8,
     };
     let conflict =
@@ -233,8 +242,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     let admin_installed_args = ProvisionGraphArgs {
         deployment_id: "deploy-admin-1".to_owned(),
-        request_fingerprint: "fp-admin-1".to_owned(),
-        graph_name: "admin1.graph".to_owned(),
+                graph_name: "admin1.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(10)),
         }],
@@ -269,8 +277,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
 
     let missing_args = ProvisionGraphArgs {
         deployment_id: "deploy-admin-missing".to_owned(),
-        request_fingerprint: "fp-missing-1".to_owned(),
-        graph_name: "missing.graph".to_owned(),
+                graph_name: "missing.graph".to_owned(),
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(11)),
         }],
@@ -301,8 +308,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         .expect("upgrade router canister");
 
     let post_args = ProvisionGraphArgs {
-        request_fingerprint: "fp-post-upgrade-1".to_owned(),
-        requested_resources: vec![ProvisionableResource {
+                requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
         }],
         ..args

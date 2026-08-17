@@ -1811,14 +1811,14 @@ pub struct VectorMaintenanceStatusView {
 /// Stable-memory key for Map 45: RouterProvisioningRequest by (request_id, deployment_id).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ProvisioningRequestKey {
-    pub request_id: String,
+    pub request_id: [u8; 32],
     pub deployment_id: String,
 }
 
 impl ProvisioningRequestKey {
-    pub(crate) fn new(request_id: &str, deployment_id: &str) -> Self {
+    pub(crate) fn new(request_id: &[u8; 32], deployment_id: &str) -> Self {
         Self {
-            request_id: request_id.to_owned(),
+            request_id: *request_id,
             deployment_id: deployment_id.to_owned(),
         }
     }
@@ -1832,9 +1832,8 @@ impl Storable for ProvisioningRequestKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + self.request_id.len() + self.deployment_id.len());
-        out.extend_from_slice(&(self.request_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.request_id.as_bytes());
+        let mut out = Vec::with_capacity(32 + 4 + self.deployment_id.len());
+        out.extend_from_slice(&self.request_id);
         out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
         out.extend_from_slice(self.deployment_id.as_bytes());
         out
@@ -1842,16 +1841,9 @@ impl Storable for ProvisioningRequestKey {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
-        let mut offset = 0usize;
-        let request_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("request_id len"),
-        ) as usize;
-        offset += 4;
-        let request_id = String::from_utf8(bytes[offset..offset + request_id_len].to_vec())
-            .expect("request_id utf8");
-        offset += request_id_len;
+        let mut request_id = [0u8; 32];
+        request_id.copy_from_slice(&bytes[0..32]);
+        let mut offset = 32usize;
         let deployment_id_len = u32::from_le_bytes(
             bytes[offset..offset + 4]
                 .try_into()
@@ -1872,15 +1864,15 @@ impl Storable for ProvisioningRequestKey {
 pub(crate) struct ProvisioningByGraphKey {
     pub deployment_id: String,
     pub graph_name: String,
-    pub request_id: String,
+    pub request_id: [u8; 32],
 }
 
 impl ProvisioningByGraphKey {
-    pub(crate) fn new(deployment_id: &str, graph_name: &str, request_id: &str) -> Self {
+    pub(crate) fn new(deployment_id: &str, graph_name: &str, request_id: &[u8; 32]) -> Self {
         Self {
             deployment_id: deployment_id.to_owned(),
             graph_name: graph_name.to_owned(),
-            request_id: request_id.to_owned(),
+            request_id: *request_id,
         }
     }
 }
@@ -1893,15 +1885,12 @@ impl Storable for ProvisioningByGraphKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            12 + self.deployment_id.len() + self.graph_name.len() + self.request_id.len(),
-        );
+        let mut out = Vec::with_capacity(8 + self.deployment_id.len() + self.graph_name.len() + 32);
         out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
         out.extend_from_slice(self.deployment_id.as_bytes());
         out.extend_from_slice(&(self.graph_name.len() as u32).to_le_bytes());
         out.extend_from_slice(self.graph_name.as_bytes());
-        out.extend_from_slice(&(self.request_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.request_id.as_bytes());
+        out.extend_from_slice(&self.request_id);
         out
     }
 
@@ -1926,14 +1915,8 @@ impl Storable for ProvisioningByGraphKey {
         let graph_name = String::from_utf8(bytes[offset..offset + graph_name_len].to_vec())
             .expect("graph_name utf8");
         offset += graph_name_len;
-        let request_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("request_id len"),
-        ) as usize;
-        offset += 4;
-        let request_id = String::from_utf8(bytes[offset..offset + request_id_len].to_vec())
-            .expect("request_id utf8");
+        let mut request_id = [0u8; 32];
+        request_id.copy_from_slice(&bytes[offset..offset + 32]);
         Self {
             deployment_id,
             graph_name,
@@ -1944,21 +1927,18 @@ impl Storable for ProvisioningByGraphKey {
 
 /// Identity of the provisioning request that holds an intent lock in Map 47.
 ///
-/// Each lock is owner-bound to a specific `(request_id, deployment_id)` and fingerprint,
-/// so a lock held by one request cannot satisfy the preflight of another request, and a
-/// release can only remove locks owned by the request being advanced or rolled back.
+/// Each lock is owner-bound to a specific `(request_id, deployment_id)`, so a lock held by one
+/// request cannot satisfy the preflight of another request, and a release can only remove locks
+/// owned by the request being advanced or rolled back. `request_id` is the content hash, so it
+/// already distinguishes different request content; no separate fingerprint is needed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IntentLockOwner {
     pub request_key: ProvisioningRequestKey,
-    pub request_fingerprint: String,
 }
 
 impl IntentLockOwner {
-    pub(crate) fn new(request_key: ProvisioningRequestKey, request_fingerprint: String) -> Self {
-        Self {
-            request_key,
-            request_fingerprint,
-        }
+    pub(crate) fn new(request_key: ProvisioningRequestKey) -> Self {
+        Self { request_key }
     }
 }
 
@@ -1966,43 +1946,16 @@ impl Storable for IntentLockOwner {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut out = self.request_key.to_bytes().into_owned();
-        out.extend_from_slice(&((self.request_fingerprint.len() as u32).to_le_bytes()));
-        out.extend_from_slice(self.request_fingerprint.as_bytes());
-        Cow::Owned(out)
+        self.request_key.to_bytes()
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
+        self.request_key.into_bytes()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let bytes = bytes.as_ref();
-        // request_key uses two u32 length prefixes plus the string bytes.
-        let request_id_len =
-            u32::from_le_bytes(bytes[0..4].try_into().expect("request_id len")) as usize;
-        let deployment_id_offset = 4 + request_id_len;
-        let deployment_id_len = u32::from_le_bytes(
-            bytes[deployment_id_offset..deployment_id_offset + 4]
-                .try_into()
-                .expect("deployment_id len"),
-        ) as usize;
-        let key_bytes_end = deployment_id_offset + 4 + deployment_id_len;
-        let request_key =
-            ProvisioningRequestKey::from_bytes(Cow::Borrowed(&bytes[..key_bytes_end]));
-        let mut offset = key_bytes_end;
-        let fingerprint_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("fingerprint len"),
-        ) as usize;
-        offset += 4;
-        let request_fingerprint =
-            String::from_utf8(bytes[offset..offset + fingerprint_len].to_vec())
-                .expect("fingerprint utf8");
         Self {
-            request_key,
-            request_fingerprint,
+            request_key: ProvisioningRequestKey::from_bytes(bytes),
         }
     }
 }
@@ -2020,8 +1973,7 @@ pub(crate) enum RouterProvisioningRequestState {
 /// Router canonical record for an issuance intent (ADR 0035 §Router orchestration state).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub(crate) struct RouterProvisioningRequest {
-    pub request_id: String,
-    pub request_fingerprint: String,
+    pub request_id: [u8; 32],
     pub caller: Principal,
     pub graph_name: String,
     pub reserved_graph_id: Option<GraphId>,
@@ -2757,7 +2709,6 @@ pub enum RouterOutboundError {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ProvisionGraphArgs {
     pub deployment_id: String,
-    pub request_fingerprint: String,
     pub graph_name: String,
     pub requested_resources: Vec<ProvisionableResource>,
     pub authorized_caller: Principal,
@@ -2817,7 +2768,6 @@ mod outbound_tests {
     fn test_provision_graph_args_roundtrip() {
         let args = ProvisionGraphArgs {
             deployment_id: "deploy-1".to_owned(),
-            request_fingerprint: "fp-1".to_owned(),
             graph_name: "g".to_owned(),
             requested_resources: vec![],
             authorized_caller: Principal::from_slice(&[0xAB; 29]),
@@ -2835,7 +2785,7 @@ mod outbound_tests {
     fn test_provision_graph_response_roundtrip() {
         use gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary;
         let summary = ProvisionJobSummary {
-            request_id: "req-1".to_owned(),
+            request_id: [1u8; 32],
             deployment_id: "deploy-1".to_owned(),
             state: "Submitted".to_owned(),
             active_resource_index: 0,

@@ -62,7 +62,7 @@ mod tests {
     fn accepted_response() -> ProvisionAcceptResponse {
         ProvisionAcceptResponse::Accepted {
             job_view: ProvisionJobSummary {
-                request_id: "req-1".to_owned(),
+                request_id: [1u8; 32],
                 deployment_id: "deploy-1".to_owned(),
                 state: "Reserved".to_owned(),
                 active_resource_index: 0,

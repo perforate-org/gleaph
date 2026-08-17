@@ -186,7 +186,6 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
     let args = crate::types::ProvisionGraphArgs {
         deployment_id: caller.to_text(),
-        request_fingerprint: format!("vector-{}", graph_name),
         graph_name,
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::VectorIndex(VectorIndexId::new(0)),
@@ -403,14 +402,8 @@ async fn provision_index_canisters(
     let caller = ic_cdk::api::msg_caller();
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
-    let fingerprint = groups
-        .iter()
-        .map(|g| g.to_string())
-        .collect::<Vec<_>>()
-        .join("-");
     let args = crate::types::ProvisionGraphArgs {
         deployment_id: caller.to_text(),
-        request_fingerprint: format!("index-{fingerprint}"),
         graph_name,
         requested_resources: groups
             .iter()

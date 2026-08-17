@@ -37,22 +37,35 @@ fn deployment_binding() -> DeploymentBinding {
     }
 }
 
-fn test_request(request_id: &str, shard: u32) -> ProvisionRequest {
+fn test_request(_request_id: &str, shard: u32) -> ProvisionRequest {
     use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
     let logical_resource = LogicalResource::GraphShard(ShardId::new(shard));
+    let graph_name = "g1".to_owned();
+    let requested_resources = vec![ProvisionableResource { logical_resource }];
+    let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+        &graph_name,
+        &requested_resources,
+    );
     ProvisionRequest {
         deployment_id: "d1".to_owned(),
-        request_id: request_id.to_owned(),
-        request_fingerprint: format!("fp-{request_id}"),
+        request_id,
         intent_key: ProvisioningIntentKey::new("d1", logical_resource),
         reserved_graph_id: None,
-        graph_name: "g1".to_owned(),
-        requested_resources: vec![ProvisionableResource { logical_resource }],
+        graph_name,
+        requested_resources,
         install_args: vec![vec![0u8; 0]],
         authorized_caller: Principal::from_slice(&[0x30; 29]),
         release_id: "rel1".to_owned(),
         router_callback_principal: Principal::from_slice(&[0x40; 29]),
     }
+}
+
+fn expected_request_id(shard: u32) -> [u8; 32] {
+    let logical_resource = LogicalResource::GraphShard(ShardId::new(shard));
+    gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+        "g1",
+        &[ProvisionableResource { logical_resource }],
+    )
 }
 
 fn accept_envelope(
@@ -76,7 +89,7 @@ fn query_job(
     pic: &pocket_ic::PocketIc,
     canister: Principal,
     caller: Principal,
-    request_id: &str,
+    request_id: [u8; 32],
     deployment_id: &str,
 ) -> Option<ProvisionJobView> {
     let bytes = pic
@@ -84,7 +97,7 @@ fn query_job(
             canister,
             caller,
             "query_job",
-            Encode!(&request_id.to_owned(), &deployment_id.to_owned()).expect("encode query_job"),
+            Encode!(&request_id, &deployment_id.to_owned()).expect("encode query_job"),
         )
         .expect("query_job call");
     Decode!(&bytes, Option<ProvisionJobView>).expect("decode query_job result")
@@ -120,7 +133,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
             created_resources,
         }) => {
             assert_eq!(job_view.deployment_id, "d1", "scenario 3 deployment_id");
-            assert_eq!(job_view.request_id, "r1", "scenario 3 request_id");
+            assert_eq!(job_view.request_id, expected_request_id(1), "scenario 3 request_id");
             assert_eq!(job_view.state, "Reserved", "scenario 3 state");
             assert_eq!(intent_lock_count, 1, "scenario 3 intent_lock_count");
             assert!(
@@ -142,20 +155,20 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
     );
 
     // Scenario 5: wrong principal query_job maps to None.
-    let wrong_query = query_job(&pic, provision, other_principal(), "r1", "d1");
+    let wrong_query = query_job(&pic, provision, other_principal(), expected_request_id(1), "d1");
     assert!(
         wrong_query.is_none(),
         "scenario 5: wrong principal query must map to None"
     );
 
     // Scenario 6: Router query_job returns Some(view).
-    let view = query_job(&pic, provision, router_principal(), "r1", "d1");
+    let view = query_job(&pic, provision, router_principal(), expected_request_id(1), "d1");
     assert!(
         view.is_some(),
         "scenario 6: router query must return Some(view)"
     );
     let view = view.unwrap();
-    assert_eq!(view.request_id, "r1", "scenario 6 request_id");
+    assert_eq!(view.request_id, expected_request_id(1), "scenario 6 request_id");
     assert_eq!(view.deployment_id, "d1", "scenario 6 deployment_id");
     assert_eq!(view.state_name, "Reserved", "scenario 6 state_name");
 }

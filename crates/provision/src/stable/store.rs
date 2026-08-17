@@ -151,8 +151,7 @@ impl ProvisionJobStore {
         Self
     }
 
-    /// Insert a job record idempotently. Same request_id + same fingerprint returns the existing
-    /// record. Same request_id + different fingerprint returns Conflict.
+    /// Insert a job record idempotently. Same request_id returns the existing record.
     pub fn insert_or_idempotent(
         &self,
         record: ProvisionJobRecord,
@@ -160,9 +159,6 @@ impl ProvisionJobStore {
         let key = ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id);
         let existing = JOB_BY_REQUEST.with_borrow(|map| map.get(&key));
         if let Some(existing) = existing {
-            if existing.request_fingerprint != record.request_fingerprint {
-                return Err(JobInsertError::Conflict);
-            }
             return Ok(existing);
         }
         JOB_BY_REQUEST.with_borrow_mut(|map| map.insert(key, record.clone()));
@@ -182,8 +178,7 @@ impl ProvisionJobStore {
     }
 
     /// Preflight all lock conflicts, then in one block co-write Map 1, Map 2, and Map 3.
-    /// Same-key same-fingerprint returns the existing record without any write.
-    /// Same-key different-fingerprint returns Conflict. Any held intent returns
+    /// Same-key returns the existing record without any write. Any held intent returns
     /// IntentLockHeld before any canonical or derived mutation.
     pub fn insert_with_intent_locks(
         &self,
@@ -192,12 +187,9 @@ impl ProvisionJobStore {
     ) -> Result<InsertWithLocksOutcome, InsertWithLocksError> {
         let key = ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id);
 
-        // 1. Idempotency / conflict pre-check (read-only so far).
+        // 1. Idempotency pre-check (read-only so far).
         let existing = JOB_BY_REQUEST.with_borrow(|map| map.get(&key));
         if let Some(existing) = existing {
-            if existing.request_fingerprint != record.request_fingerprint {
-                return Err(InsertWithLocksError::Conflict);
-            }
             return Ok(InsertWithLocksOutcome::IdempotentReplay(existing));
         }
 
@@ -246,7 +238,7 @@ impl ProvisionJobStore {
 
     pub fn get_by_request(
         &self,
-        request_id: &str,
+        request_id: &[u8; 32],
         deployment_id: &str,
     ) -> Option<ProvisionJobRecord> {
         JOB_BY_REQUEST
@@ -323,7 +315,7 @@ impl ProvisionJobStore {
         &self,
         key: &ProvisionJobRequestKey,
         resource_index: usize,
-        artifact_hash: String,
+        artifact_hash: [u8; 32],
     ) {
         JOB_BY_REQUEST.with_borrow_mut(|map| {
             let mut record = map

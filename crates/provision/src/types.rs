@@ -105,7 +105,7 @@ pub struct ResourceJobEntry {
     /// None until canister creation completes.
     pub canister_id: Option<Principal>,
     /// Artifact hash set after install.
-    pub artifact_hash: Option<String>,
+    pub artifact_hash: Option<[u8; 32]>,
 }
 
 // ResourceJobEntry is nested inside ProvisionJobRecord; it does not need its own Storable
@@ -116,9 +116,8 @@ pub struct ResourceJobEntry {
 /// Stable key: (request_id, deployment_id).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobRecord {
-    pub request_id: String,
+    pub request_id: [u8; 32],
     pub deployment_id: String,
-    pub request_fingerprint: String,
     pub intent_key: ProvisioningIntentKey,
     pub reserved_graph_id: Option<GraphId>,
     pub graph_name: String,
@@ -249,14 +248,14 @@ pub(crate) fn is_legal_transition(from: &JobState, to: &JobState) -> bool {
 /// Mirrors `gleaph_router::types::ProvisioningRequestKey` (P2-3).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProvisionJobRequestKey {
-    pub request_id: String,
+    pub request_id: [u8; 32],
     pub deployment_id: String,
 }
 
 impl ProvisionJobRequestKey {
-    pub fn new(request_id: &str, deployment_id: &str) -> Self {
+    pub fn new(request_id: &[u8; 32], deployment_id: &str) -> Self {
         Self {
-            request_id: request_id.to_owned(),
+            request_id: *request_id,
             deployment_id: deployment_id.to_owned(),
         }
     }
@@ -270,9 +269,8 @@ impl Storable for ProvisionJobRequestKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + self.request_id.len() + self.deployment_id.len());
-        out.extend_from_slice(&(self.request_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.request_id.as_bytes());
+        let mut out = Vec::with_capacity(32 + 4 + self.deployment_id.len());
+        out.extend_from_slice(&self.request_id);
         out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
         out.extend_from_slice(self.deployment_id.as_bytes());
         out
@@ -280,16 +278,9 @@ impl Storable for ProvisionJobRequestKey {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
-        let mut offset = 0usize;
-        let request_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("request_id len"),
-        ) as usize;
-        offset += 4;
-        let request_id = String::from_utf8(bytes[offset..offset + request_id_len].to_vec())
-            .expect("request_id utf8");
-        offset += request_id_len;
+        let mut request_id = [0u8; 32];
+        request_id.copy_from_slice(&bytes[0..32]);
+        let mut offset = 32usize;
         let deployment_id_len = u32::from_le_bytes(
             bytes[offset..offset + 4]
                 .try_into()

@@ -87,8 +87,7 @@ mod tests {
 
     fn sample_record() -> RouterProvisioningRequest {
         RouterProvisioningRequest {
-            request_id: "req-1".to_owned(),
-            request_fingerprint: "fp-1".to_owned(),
+            request_id: test_request_id("req-1"),
             caller: Principal::anonymous(),
             graph_name: "g".to_owned(),
             reserved_graph_id: None,
@@ -102,11 +101,19 @@ mod tests {
         }
     }
 
+    fn test_request_id(label: &str) -> [u8; 32] {
+        let mut id = [0u8; 32];
+        let bytes = label.as_bytes();
+        let n = bytes.len().min(32);
+        id[..n].copy_from_slice(&bytes[..n]);
+        id
+    }
+
     fn insert_awaiting(deployment_id: &str) {
         reset_store();
         let store = RouterProvisioningRequestStore::new();
         let mut record = sample_record();
-        record.request_id = format!("{}-req", deployment_id);
+        record.request_id = test_request_id(&format!("{}-req", deployment_id));
         let _ = store.insert(deployment_id, record).expect("insert sample");
     }
 
@@ -116,7 +123,7 @@ mod tests {
         crate::provisioning::config::set(Some(provision_principal()));
         let ack = RouterProvisionAck {
             deployment_id: "d".to_owned(),
-            request_id: "r".to_owned(),
+            request_id: test_request_id("r"),
             accepted_registry_version: 1,
         };
         let result = handle_router_ack(other_principal(), ack);
@@ -129,7 +136,7 @@ mod tests {
         crate::provisioning::config::set(None);
         let ack = RouterProvisionAck {
             deployment_id: "d".to_owned(),
-            request_id: "r".to_owned(),
+            request_id: test_request_id("r"),
             accepted_registry_version: 1,
         };
         let result = handle_router_ack(provision_principal(), ack);
@@ -142,10 +149,10 @@ mod tests {
         crate::provisioning::config::set(Some(provision_principal()));
         let deployment_id = "d-zero";
         insert_awaiting(deployment_id);
-        let request_id = format!("{}-req", deployment_id);
+        let request_id = test_request_id(&format!("{}-req", deployment_id));
         let ack = RouterProvisionAck {
             deployment_id: deployment_id.to_owned(),
-            request_id: request_id.clone(),
+            request_id,
             accepted_registry_version: 0,
         };
         let result = handle_router_ack(provision_principal(), ack);
@@ -167,10 +174,10 @@ mod tests {
         crate::provisioning::config::set(Some(provision_principal()));
         let deployment_id = "d-await";
         insert_awaiting(deployment_id);
-        let request_id = format!("{}-req", deployment_id);
+        let request_id = test_request_id(&format!("{}-req", deployment_id));
         let ack = RouterProvisionAck {
             deployment_id: deployment_id.to_owned(),
-            request_id: request_id.clone(),
+            request_id,
             accepted_registry_version: 7,
         };
         let response = handle_router_ack(provision_principal(), ack).expect("ack accepted");
@@ -181,10 +188,7 @@ mod tests {
         let record = store.get_by_request_id(&key).expect("record exists");
         assert_eq!(record.state, RouterProvisioningRequestState::Completed);
         assert_eq!(record.accepted_registry_version, Some(7));
-        let owner = IntentLockOwner::new(
-            ProvisioningRequestKey::new(&request_id, deployment_id),
-            "fp-1".to_owned(),
-        );
+        let owner = IntentLockOwner::new(ProvisioningRequestKey::new(&request_id, deployment_id));
         assert!(
             !store.intent_locked(
                 &ProvisioningIntentKey::new(
@@ -203,10 +207,10 @@ mod tests {
         crate::provisioning::config::set(Some(provision_principal()));
         let deployment_id = "d-replay";
         insert_awaiting(deployment_id);
-        let request_id = format!("{}-req", deployment_id);
+        let request_id = test_request_id(&format!("{}-req", deployment_id));
         let ack = RouterProvisionAck {
             deployment_id: deployment_id.to_owned(),
-            request_id: request_id.clone(),
+            request_id,
             accepted_registry_version: 7,
         };
         let first = handle_router_ack(provision_principal(), ack.clone()).expect("first ack");
@@ -222,10 +226,10 @@ mod tests {
         crate::provisioning::config::set(Some(provision_principal()));
         let deployment_id = "d-conflict";
         insert_awaiting(deployment_id);
-        let request_id = format!("{}-req", deployment_id);
+        let request_id = test_request_id(&format!("{}-req", deployment_id));
         let first = RouterProvisionAck {
             deployment_id: deployment_id.to_owned(),
-            request_id: request_id.clone(),
+            request_id,
             accepted_registry_version: 7,
         };
         handle_router_ack(provision_principal(), first).expect("first ack");
@@ -245,7 +249,7 @@ mod tests {
         crate::provisioning::config::set(Some(provision_principal()));
         let ack = RouterProvisionAck {
             deployment_id: "d-missing".to_owned(),
-            request_id: "no-such".to_owned(),
+            request_id: test_request_id("no-such"),
             accepted_registry_version: 1,
         };
         let result = handle_router_ack(provision_principal(), ack);
@@ -267,7 +271,7 @@ mod tests {
 
         let ack = RouterProvisionAck {
             deployment_id: "d-complete-none".to_owned(),
-            request_id: "req-1".to_owned(),
+            request_id: test_request_id("req-1"),
             accepted_registry_version: 7,
         };
         let result = handle_router_ack(provision_principal(), ack);
@@ -288,7 +292,7 @@ mod tests {
 
         let ack = RouterProvisionAck {
             deployment_id: "d-pending".to_owned(),
-            request_id: "req-1".to_owned(),
+            request_id: test_request_id("req-1"),
             accepted_registry_version: 7,
         };
         let result = handle_router_ack(provision_principal(), ack);

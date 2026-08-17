@@ -148,7 +148,7 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
 /// Provisioned-mode `register_graph`: derive the provisioning envelope from the intent, send it
 /// through the shared admission flow, and surface success/failure. The flow itself registers the
 /// returned graph shards into the catalog on a fresh `Accepted`. `deployment_id` is the owner
-/// principal (ADR 0068), `request_fingerprint` the graph name, `release_id` the default.
+/// principal (ADR 0068), `release_id` the default.
 async fn register_provisioned_graph(
     caller: Principal,
     args: types::RegisterGraphArgs,
@@ -160,7 +160,6 @@ async fn register_provisioned_graph(
     }
     let provision_args = types::ProvisionGraphArgs {
         deployment_id: caller.to_text(),
-        request_fingerprint: args.graph_name.clone(),
         graph_name: args.graph_name.clone(),
         requested_resources: args.requested_resources,
         authorized_caller: caller,

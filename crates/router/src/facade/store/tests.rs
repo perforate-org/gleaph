@@ -6005,10 +6005,17 @@ mod provisioning_tests {
         RouterProvisioningRequestStore::new()
     }
 
-    fn sample_request(request_id: &str, fingerprint: &str) -> RouterProvisioningRequest {
+    fn test_request_id(label: &str) -> [u8; 32] {
+        let mut id = [0u8; 32];
+        let bytes = label.as_bytes();
+        let n = bytes.len().min(32);
+        id[..n].copy_from_slice(&bytes[..n]);
+        id
+    }
+
+    fn sample_request(request_id: &str, _fingerprint: &str) -> RouterProvisioningRequest {
         RouterProvisioningRequest {
-            request_id: request_id.to_owned(),
-            request_fingerprint: fingerprint.to_owned(),
+            request_id: test_request_id(request_id),
             caller: Principal::from_slice(&[1; 29]),
             graph_name: "tenant.main".to_owned(),
             reserved_graph_id: Some(GraphId::from_raw(7)),
@@ -6022,11 +6029,11 @@ mod provisioning_tests {
         }
     }
 
-    fn owner(request_id: &str, deployment_id: &str, fingerprint: &str) -> IntentLockOwner {
-        IntentLockOwner::new(
-            ProvisioningRequestKey::new(request_id, deployment_id),
-            fingerprint.to_owned(),
-        )
+    fn owner(request_id: &str, deployment_id: &str, _fingerprint: &str) -> IntentLockOwner {
+        IntentLockOwner::new(ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            deployment_id,
+        ))
     }
 
     #[test]
@@ -6035,7 +6042,7 @@ mod provisioning_tests {
         let req = sample_request("req-1", "fp-1");
         let outcome = s.insert("deploy-a", req.clone()).expect("insert");
         assert!(matches!(outcome, InsertionOutcome::Inserted(_)));
-        let key = ProvisioningRequestKey::new("req-1", "deploy-a");
+        let key = ProvisioningRequestKey::new(&test_request_id("req-1"), "deploy-a");
         let got = s.get_by_request_id(&key).expect("exists");
         assert_eq!(got, req);
     }
@@ -6057,38 +6064,14 @@ mod provisioning_tests {
         }];
         let second = s.insert("deploy-a", second_req).expect("second");
         assert_eq!(second, InsertionOutcome::Existing(first_record.clone()));
-        assert_eq!(first_record.request_id, "req-1");
-        assert_eq!(first_record.request_fingerprint, "fp-1");
+        assert_eq!(first_record.request_id, test_request_id("req-1"));
         // Canonical store and derived index must still contain the first record.
-        let key = ProvisioningRequestKey::new("req-1", "deploy-a");
+        let key = ProvisioningRequestKey::new(&test_request_id("req-1"), "deploy-a");
         assert_eq!(s.get_by_request_id(&key), Some(first_record.clone()));
         let listed = s.list_by_graph("deploy-a", "tenant.main");
         assert_eq!(listed, vec![first_record]);
         // The mutated graph name from the second request was never stored.
         assert!(s.list_by_graph("deploy-a", "mutated.graph").is_empty());
-    }
-
-    #[test]
-    fn insert_rejects_different_fingerprint_with_conflict() {
-        let s = store();
-        let mut req1 = sample_request("req-1", "fp-1");
-        req1.graph_name = "graph-conflict".to_owned();
-        let first = s.insert("deploy-a", req1.clone()).expect("insert");
-        assert!(matches!(first, InsertionOutcome::Inserted(_)));
-        let mut req2 = sample_request("req-1", "fp-2");
-        req2.graph_name = "graph-conflict".to_owned();
-        let err = s.insert("deploy-a", req2.clone()).expect_err("conflict");
-        assert_eq!(err, InsertError::Conflict);
-        // The first canonical record must survive unchanged.
-        let key = ProvisioningRequestKey::new("req-1", "deploy-a");
-        assert_eq!(s.get_by_request_id(&key), Some(req1.clone()));
-        // The graph index entry must still resolve to the first request.
-        let listed = s.list_by_graph("deploy-a", "graph-conflict");
-        assert_eq!(listed, vec![req1.clone()]);
-        // The first request's intent lock must remain held.
-        let intent_key =
-            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
-        assert!(s.intent_locked(&intent_key, &owner("req-1", "deploy-a", "fp-1")));
     }
 
     #[test]
@@ -6128,8 +6111,11 @@ mod provisioning_tests {
             ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
         s.insert("deploy-a", req).expect("insert");
         assert!(s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
-        s.clear_request(&ProvisioningRequestKey::new("req-1", "deploy-a"))
-            .expect("clear");
+        s.clear_request(&ProvisioningRequestKey::new(
+            &test_request_id("req-1"),
+            "deploy-a",
+        ))
+        .expect("clear");
         assert!(!s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
     }
 
@@ -6152,18 +6138,24 @@ mod provisioning_tests {
         assert_eq!(err, InsertError::IntentConflict);
         // B's canonical record and graph-index entry must not exist.
         assert!(
-            s.get_by_request_id(&ProvisioningRequestKey::new("req-b", "deploy-a"))
-                .is_none()
+            s.get_by_request_id(&ProvisioningRequestKey::new(
+                &test_request_id("req-b"),
+                "deploy-a"
+            ))
+            .is_none()
         );
         let listed = s.list_by_graph("deploy-a", "graph-x");
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].request_id, "req-a");
+        assert_eq!(listed[0].request_id, test_request_id("req-a"));
         // A's intent lock and canonical record must remain untouched.
         assert!(s.intent_locked(&intent_key, &owner("req-a", "deploy-a", "fp-a")));
         assert_eq!(
-            s.get_by_request_id(&ProvisioningRequestKey::new("req-a", "deploy-a"))
-                .map(|r| r.request_id),
-            Some("req-a".to_owned())
+            s.get_by_request_id(&ProvisioningRequestKey::new(
+                &test_request_id("req-a"),
+                "deploy-a"
+            ))
+            .map(|r| r.request_id),
+            Some(test_request_id("req-a"))
         );
     }
 
@@ -6188,8 +6180,11 @@ mod provisioning_tests {
         );
         assert!(s.intent_locked(&key1, &owner("req-m", "deploy-a", "fp-m")));
         assert!(s.intent_locked(&key2, &owner("req-m", "deploy-a", "fp-m")));
-        s.clear_request(&ProvisioningRequestKey::new("req-m", "deploy-a"))
-            .expect("clear");
+        s.clear_request(&ProvisioningRequestKey::new(
+            &test_request_id("req-m"),
+            "deploy-a",
+        ))
+        .expect("clear");
         assert!(!s.intent_locked(&key1, &owner("req-m", "deploy-a", "fp-m")));
         assert!(!s.intent_locked(&key2, &owner("req-m", "deploy-a", "fp-m")));
     }
@@ -6211,8 +6206,11 @@ mod provisioning_tests {
             .expect_err("duplicate intent");
         assert_eq!(err, InsertError::InvalidDuplicateIntent);
         assert!(
-            s.get_by_request_id(&ProvisioningRequestKey::new("req-d", "deploy-a"))
-                .is_none()
+            s.get_by_request_id(&ProvisioningRequestKey::new(
+                &test_request_id("req-d"),
+                "deploy-a"
+            ))
+            .is_none()
         );
         assert!(s.list_by_graph("deploy-a", "tenant.main").is_empty());
         let key =
@@ -6224,8 +6222,7 @@ mod provisioning_tests {
     fn provision_request_candid_roundtrip() {
         let req = ProvisionRequest {
             deployment_id: "deploy-a".to_owned(),
-            request_id: "req-1".to_owned(),
-            request_fingerprint: "fp-1".to_owned(),
+            request_id: test_request_id("req-1"),
             intent_key: ProvisioningIntentKey::new(
                 "deploy-a",
                 LogicalResource::GraphShard(ShardId::new(0)),
@@ -6248,13 +6245,12 @@ mod provisioning_tests {
     #[test]
     fn provision_result_candid_roundtrip() {
         let result = ProvisionResult {
-            request_id: "req-1".to_owned(),
-            request_fingerprint: "fp-1".to_owned(),
+            request_id: test_request_id("req-1"),
             release_id: "rel-1".to_owned(),
             created_resources: vec![CreatedResource {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
                 canister_id: Principal::from_slice(&[4; 29]),
-                artifact_hash: "deadbeef".to_owned(),
+                artifact_hash: [0xDE; 32],
             }],
             terminal_outcome: ProvisionResultOutcome::Installed,
         };
@@ -6267,7 +6263,7 @@ mod provisioning_tests {
     fn router_provision_ack_candid_roundtrip() {
         let ack = RouterProvisionAck {
             deployment_id: "deploy-1".to_owned(),
-            request_id: "req-1".to_owned(),
+            request_id: test_request_id("req-1"),
             accepted_registry_version: 17,
         };
         let bytes = candid::Encode!(&ack).expect("encode");
@@ -6278,7 +6274,7 @@ mod provisioning_tests {
     fn clear_request_absent_returns_not_found() {
         let s = store();
         let absent_key = ProvisioningRequestKey {
-            request_id: "does-not-exist".to_owned(),
+            request_id: test_request_id("does-not-exist"),
             deployment_id: "deploy-none".to_owned(),
         };
         assert_eq!(s.clear_request(&absent_key), Err(ClearError::NotFound));
@@ -6316,10 +6312,16 @@ mod provisioning_tests {
             2,
             "U+10FFFF request_id must not be silently omitted"
         );
-        assert!(listed.iter().any(|r| r.request_id == "\u{10ffff}req"));
-        assert!(listed.iter().any(|r| r.request_id == "normal-req"));
-        assert!(!listed.iter().any(|r| r.request_fingerprint == "fp-other"));
-        assert!(!listed.iter().any(|r| r.request_fingerprint == "fp-graph"));
+        assert!(
+            listed
+                .iter()
+                .any(|r| r.request_id == test_request_id("\u{10ffff}req"))
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|r| r.request_id == test_request_id("normal-req"))
+        );
     }
 
     fn sample_awaiting(
@@ -6341,7 +6343,7 @@ mod provisioning_tests {
         let request_id = "req-ack";
         sample_awaiting(&s, deployment_id, request_id);
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let record = s.commit_ack(&key, 7).expect("commit ack");
         assert_eq!(record.state, RouterProvisioningRequestState::Completed);
         assert_eq!(record.accepted_registry_version, Some(7));
@@ -6361,7 +6363,7 @@ mod provisioning_tests {
         let request_id = "req-replay";
         sample_awaiting(&s, deployment_id, request_id);
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let first = s.commit_ack(&key, 7).expect("first ack");
         let second = s.commit_ack(&key, 7).expect("replay ack");
         assert_eq!(first, second);
@@ -6374,7 +6376,7 @@ mod provisioning_tests {
         let request_id = "req-conflict";
         sample_awaiting(&s, deployment_id, request_id);
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         s.commit_ack(&key, 7).expect("first ack");
         let err = s
             .commit_ack(&key, 8)
@@ -6393,7 +6395,7 @@ mod provisioning_tests {
         s.insert(deployment_id, req)
             .expect("insert completed no version");
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let err = s
             .commit_ack(&key, 7)
             .expect_err("missing version must be invalid state");
@@ -6412,7 +6414,7 @@ mod provisioning_tests {
         let s = store();
         s.insert(deployment_id, req).expect("insert pending");
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let err = s
             .commit_ack(&key, 7)
             .expect_err("Pending must be invalid state");
@@ -6438,7 +6440,7 @@ mod provisioning_tests {
             locks.remove(&intent_key);
         });
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let err = s
             .commit_ack(&key, 7)
             .expect_err("missing locks must be invalid state");
@@ -6465,15 +6467,15 @@ mod provisioning_tests {
         // Replace the rightful owner with an impostor that holds the same resource.
         let intent_key =
             ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
-        let impostor = IntentLockOwner::new(
-            ProvisioningRequestKey::new("other-request", deployment_id),
-            "other-fp".to_owned(),
-        );
+        let impostor = IntentLockOwner::new(ProvisioningRequestKey::new(
+            &test_request_id("other-request"),
+            deployment_id,
+        ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.insert(intent_key.clone(), impostor);
         });
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let err = s
             .commit_ack(&key, 7)
             .expect_err("wrong owner must be invalid state");
@@ -6502,17 +6504,20 @@ mod provisioning_tests {
         // test that release is owner-scoped.
         let intent_key =
             ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
-        let foreign = IntentLockOwner::new(
-            ProvisioningRequestKey::new("foreign-request", deployment_id),
-            "foreign-fp".to_owned(),
-        );
+        let foreign = IntentLockOwner::new(ProvisioningRequestKey::new(
+            &test_request_id("foreign-request"),
+            deployment_id,
+        ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.insert(intent_key.clone(), foreign.clone());
         });
 
         // Releasing locks for the local record must leave the foreign lock intact.
         let local_record = s
-            .get_by_request_id(&ProvisioningRequestKey::new(request_id, deployment_id))
+            .get_by_request_id(&ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                deployment_id,
+            ))
             .expect("local record");
         s.release_intent_locks_owned_by(deployment_id, &local_record);
         assert!(
@@ -6524,7 +6529,7 @@ mod provisioning_tests {
     #[test]
     fn commit_ack_not_found_for_missing_record() {
         let s = store();
-        let key = ProvisioningRequestKey::new("no-such", "deploy-none");
+        let key = ProvisioningRequestKey::new(&test_request_id("no-such"), "deploy-none");
         let err = s
             .commit_ack(&key, 7)
             .expect_err("missing record must be NotFound");
@@ -6544,7 +6549,7 @@ mod provisioning_tests {
         let outcome = s.insert(deployment_id, req).expect("insert awaiting");
         assert!(matches!(outcome, InsertionOutcome::Inserted(_)));
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         s.commit_ack(&key, 7).expect("commit to completed");
 
         // A retry whose outbound send failed must not delete the durable Completed record.
@@ -6565,7 +6570,7 @@ mod provisioning_tests {
         let outcome = s.insert(deployment_id, req).expect("insert awaiting");
         assert!(matches!(outcome, InsertionOutcome::Inserted(_)));
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
         let record = s.get_by_request_id(&key).expect("record exists");
         assert_eq!(record.state, RouterProvisioningRequestState::AwaitingAck);
 
@@ -6601,7 +6606,7 @@ mod provisioning_tests {
         let second_outcome = s.insert(deployment_id, req.clone()).expect("retry insert");
         assert!(matches!(second_outcome, InsertionOutcome::Existing(_)));
 
-        let key = ProvisioningRequestKey::new(request_id, deployment_id);
+        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
 
         // A transient send failure during the retry must NOT undo the prior invocation's work.
         s.rollback_if_inserted_and_awaiting(&key, &second_outcome);
@@ -6627,8 +6632,7 @@ mod provisioning_tests {
     fn router_provisioning_request_stable_roundtrip_without_accepted_version() {
         // Simulate a record encoded before accepted_registry_version existed.
         let record = RouterProvisioningRequest {
-            request_id: "old-req".to_owned(),
-            request_fingerprint: "old-fp".to_owned(),
+            request_id: test_request_id("old-req"),
             caller: Principal::anonymous(),
             graph_name: "old.graph".to_owned(),
             reserved_graph_id: None,

@@ -28,10 +28,15 @@ Router adds a provisioning-request catalog separate from `GraphRegistryEntry`:
 ```text
 ProvisioningIntentKey = (deployment_id, resource_kind, logical_resource_key)
 RouterProvisioningRequest = {
-  request_id, request_fingerprint, caller, graph_name, reserved_graph_id?,
+  request_id, caller, graph_name, reserved_graph_id?,
   requested_resources, state, provision_receipt?
 }
 ```
+
+`request_id` is the SHA-256 of `(graph_name, requested_resources)` — a content hash. Identical
+content always yields the same id (idempotency) and different content yields a different id
+(conflict detection), so no separate `request_fingerprint` field is needed. The id is fixed at
+32 bytes across every Router/Provision map and wire type.
 
 This record can exist before a canister id exists. Router creates `GraphRegistryEntry` and related
 shard/index catalog records only after Provision reports installed canisters. The existing
@@ -45,7 +50,7 @@ After authenticating the caller and reserving graph identity, Router sends a res
 
 ```text
 ProvisionRequest = {
-  deployment_id, request_id, request_fingerprint,
+  deployment_id, request_id,
   intent_key, reserved_graph_id?, graph_name,
   requested_resources,
   authorized_caller, release_id,
@@ -54,10 +59,10 @@ ProvisionRequest = {
 ```
 
 Provision accepts envelopes only from the Router principal registered for `deployment_id`. It does
-not read Router tenancy state or re-derive authorization. The same `request_id` and fingerprint
-returns the existing job/receipt; the same id with a different fingerprint returns `Conflict`.
-A durable intent lock rejects or joins a distinct request id targeting the same unfinished
-`ProvisioningIntentKey`.
+not read Router tenancy state or re-derive authorization. The same `request_id` (content hash)
+returns the existing job/receipt idempotently; different content yields a different id, so a
+conflict is detected by the id itself. A durable intent lock rejects or joins a distinct request id
+targeting the same unfinished `ProvisioningIntentKey`.
 
 The `deployment_id -> Router principal, governance principal` binding is canonical Provision
 bootstrap configuration, written only by the governance/recovery principal. It is authentication
@@ -68,14 +73,14 @@ Provision reports:
 
 ```text
 ProvisionResult = {
-  request_id, request_fingerprint, release_id,
+  request_id, release_id,
   created_resources[{kind, canister_id, artifact_hash}],
   terminal_outcome
 }
 RouterProvisionAck = { deployment_id, request_id, accepted_registry_version }  (P1-3: the only Slice 1 wire-shape change; makes ACK addressing unambiguous across deployments)
 ```
 
-Router verifies the fingerprint and intent lock, atomically commits the affected Router catalogs,
+Router verifies the intent lock, atomically commits the affected Router catalogs,
 then returns the acknowledgement. Provision records `Completed` only after receiving that ack.
 
 ### Durable job state

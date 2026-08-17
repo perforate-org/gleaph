@@ -156,7 +156,7 @@ pub(crate) fn resolve_router_with_caller(
 pub(crate) async fn authorize_router_issuance_with_caller(
     caller: Principal,
     account_id: &Principal,
-    router_id: &str,
+    _router_id: &str,
     provision_canister: Principal,
     store: &AccountStore,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
@@ -164,7 +164,7 @@ pub(crate) async fn authorize_router_issuance_with_caller(
     if !account.is_owner_or_admin(&caller) {
         return Err(AccountError::NotAuthorized);
     }
-    send_issuance_request(caller, account_id, router_id, provision_canister).await
+    send_issuance_request(caller, account_id, provision_canister).await
 }
 
 /// The cross-canister `accept_envelope` send. Split out so the owner/admin authorization check
@@ -172,7 +172,6 @@ pub(crate) async fn authorize_router_issuance_with_caller(
 async fn send_issuance_request(
     caller: Principal,
     account_id: &Principal,
-    router_id: &str,
     provision_canister: Principal,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
     use candid::Encode;
@@ -190,19 +189,24 @@ async fn send_issuance_request(
         provision_canister: Some(provision_canister),
     };
     let install_args = vec![Encode!(&router_init).expect("encode RouterInitArgs")];
+    let graph_name = "default".to_owned();
+    let requested_resources = vec![ProvisionableResource {
+        logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+    }];
+    let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+        &graph_name,
+        &requested_resources,
+    );
     let request = ProvisionRequest {
         deployment_id: deployment_id.clone(),
-        request_id: format!("{router_id}-{}", caller.to_text()),
-        request_fingerprint: format!("{router_id}-{}", caller.to_text()),
+        request_id,
         intent_key: ProvisioningIntentKey::new(
             &deployment_id,
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         reserved_graph_id: None,
-        graph_name: "default".to_owned(),
-        requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
-        }],
+        graph_name,
+        requested_resources,
         install_args,
         authorized_caller: caller,
         release_id: "default".to_owned(),

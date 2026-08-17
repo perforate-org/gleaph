@@ -22,8 +22,6 @@ use crate::types::{
 /// Failure modes for `RouterProvisioningRequestStore::insert`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertError {
-    /// Same `request_id` with a different `request_fingerprint`.
-    Conflict,
     /// At least one requested intent is already locked by another non-terminal request.
     IntentConflict,
     /// The request contains duplicate `(kind, logical_resource_key)` resources.
@@ -91,13 +89,11 @@ impl RouterProvisioningRequestStore {
 
         let request_key = ProvisioningRequestKey::new(&req.request_id, deployment_id);
 
-        // 2. Idempotency / conflict check on the canonical record.
+        // 2. Idempotency check on the canonical record. `request_id` is the content hash, so a
+        //    matching key already implies identical content; no separate fingerprint is needed.
         let existing = ROUTER_PROVISIONING_REQUESTS.with_borrow(|map| map.get(&request_key));
         if let Some(existing) = existing {
-            if existing.request_fingerprint == req.request_fingerprint {
-                return Ok(InsertionOutcome::Existing(existing));
-            }
-            return Err(InsertError::Conflict);
+            return Ok(InsertionOutcome::Existing(existing));
         }
 
         // 3. Preflight every derived intent lock.
@@ -106,7 +102,7 @@ impl RouterProvisioningRequestStore {
             .iter()
             .map(|r| ProvisioningIntentKey::new(deployment_id, r.logical_resource))
             .collect();
-        let new_owner = IntentLockOwner::new(request_key.clone(), req.request_fingerprint.clone());
+        let new_owner = IntentLockOwner::new(request_key.clone());
         let conflicting_lock = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| {
             intent_keys
                 .iter()
@@ -119,7 +115,7 @@ impl RouterProvisioningRequestStore {
         // 4. Write canonical record, secondary index, and all intent locks synchronously.
         let graph_key =
             ProvisioningByGraphKey::new(deployment_id, &req.graph_name, &req.request_id);
-        let lock_owner = IntentLockOwner::new(request_key.clone(), req.request_fingerprint.clone());
+        let lock_owner = IntentLockOwner::new(request_key.clone());
         ROUTER_PROVISIONING_REQUESTS.with_borrow_mut(|map| {
             map.insert(request_key.clone(), req.clone());
         });
@@ -148,7 +144,7 @@ impl RouterProvisioningRequestStore {
         deployment_id: &str,
         graph_name: &str,
     ) -> Vec<RouterProvisioningRequest> {
-        let start = ProvisioningByGraphKey::new(deployment_id, graph_name, "");
+        let start = ProvisioningByGraphKey::new(deployment_id, graph_name, &[0u8; 32]);
         let keys: Vec<ProvisioningRequestKey> = ROUTER_PROVISIONING_BY_GRAPH.with_borrow(|map| {
             map.range(start..)
                 .take_while(|entry| {
@@ -237,10 +233,10 @@ impl RouterProvisioningRequestStore {
         deployment_id: &str,
         record: &RouterProvisioningRequest,
     ) {
-        let expected_owner = IntentLockOwner::new(
-            ProvisioningRequestKey::new(&record.request_id, deployment_id),
-            record.request_fingerprint.clone(),
-        );
+        let expected_owner = IntentLockOwner::new(ProvisioningRequestKey::new(
+            &record.request_id,
+            deployment_id,
+        ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             for resource in &record.requested_resources {
                 let key = ProvisioningIntentKey::new(deployment_id, resource.logical_resource);
@@ -283,7 +279,7 @@ impl RouterProvisioningRequestStore {
         let maybe_record = ROUTER_PROVISIONING_REQUESTS.with_borrow(|map| map.get(key));
         let Some(record) = maybe_record else {
             return Err(AckCommitError::NotFound(format!(
-                "no provisioning request for {}/{}",
+                "no provisioning request for {}/{:02x?}",
                 key.deployment_id, key.request_id
             )));
         };
@@ -317,7 +313,7 @@ impl RouterProvisioningRequestStore {
             .iter()
             .map(|r| ProvisioningIntentKey::new(&key.deployment_id, r.logical_resource))
             .collect();
-        let expected_owner = IntentLockOwner::new(key.clone(), record.request_fingerprint.clone());
+        let expected_owner = IntentLockOwner::new(key.clone());
         let all_owned = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| {
             intent_keys.iter().all(|k| {
                 locks

@@ -46,7 +46,7 @@ pub async fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressR
 /// The wire surface returns `opt ProvisionJobView` per `provision.did`; callers do not
 /// distinguish NotAuthorized from NotFound. The auth check still runs inside
 /// `query_job_with_caller` before the mapping.
-pub fn query_job_handler(request_id: String, deployment_id: String) -> Option<ProvisionJobView> {
+pub fn query_job_handler(request_id: [u8; 32], deployment_id: String) -> Option<ProvisionJobView> {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     let deployment_store = DeploymentTrustStore::new();

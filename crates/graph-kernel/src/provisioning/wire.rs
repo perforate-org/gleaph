@@ -1,8 +1,29 @@
 use candid::{CandidType, Principal};
+use ic_stable_structures::storable::Storable;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::entry::GraphId;
 use crate::provisioning::{LogicalResource, ProvisioningIntentKey};
+
+/// Derive the canonical `request_id` for a provisioning intent from its content.
+///
+/// The id is the SHA-256 of `(graph_name, requested_resources)`, so identical content always
+/// yields the same id (idempotency) and different content yields a different id (conflict
+/// detection). This replaces the former `graph_name + "-" + request_fingerprint` string
+/// concatenation and removes the redundant `request_fingerprint` field entirely: the id itself
+/// is the content fingerprint, fixed at 32 bytes.
+pub fn provisioning_request_id(
+    graph_name: &str,
+    requested_resources: &[ProvisionableResource],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(graph_name.as_bytes());
+    for resource in requested_resources {
+        hasher.update(resource.logical_resource.into_bytes());
+    }
+    hasher.finalize().into()
+}
 
 /// A requested provisionable resource. The enum variant is the discriminator (it doubles as the
 /// resource kind).
@@ -15,7 +36,7 @@ pub struct ProvisionableResource {
 pub struct CreatedResource {
     pub logical_resource: LogicalResource,
     pub canister_id: Principal,
-    pub artifact_hash: String,
+    pub artifact_hash: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -27,8 +48,7 @@ pub enum ProvisionResultOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionResult {
-    pub request_id: String,
-    pub request_fingerprint: String,
+    pub request_id: [u8; 32],
     pub release_id: String,
     pub created_resources: Vec<CreatedResource>,
     pub terminal_outcome: ProvisionResultOutcome,
@@ -59,15 +79,14 @@ pub struct RouterProvisionAck {
     // (request_id, deployment_id) can be formed without ambiguity across
     // deployment bindings. This is the only Slice 1 wire-shape change.
     pub deployment_id: String,
-    pub request_id: String,
+    pub request_id: [u8; 32],
     pub accepted_registry_version: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionRequest {
     pub deployment_id: String,
-    pub request_id: String,
-    pub request_fingerprint: String,
+    pub request_id: [u8; 32],
     pub intent_key: ProvisioningIntentKey,
     pub reserved_graph_id: Option<GraphId>,
     pub graph_name: String,
@@ -111,7 +130,7 @@ pub enum ProvisionIngressResult {
 /// Redacted job summary for admission responses.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobSummary {
-    pub request_id: String,
+    pub request_id: [u8; 32],
     pub deployment_id: String,
     pub state: String,
     pub active_resource_index: u32,

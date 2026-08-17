@@ -82,9 +82,8 @@ pub enum ProvisionQueryError {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobView {
-    pub request_id: String,
+    pub request_id: [u8; 32],
     pub deployment_id: String,
-    pub request_fingerprint: String,
     pub reserved_graph_id: Option<gleaph_graph_kernel::entry::GraphId>,
     pub graph_name: String,
     pub state_name: String,
@@ -100,7 +99,7 @@ pub struct ProvisionJobView {
 pub struct ResourceJobView {
     pub logical_resource: LogicalResource,
     pub canister_id: Option<Principal>,
-    pub artifact_hash: Option<String>,
+    pub artifact_hash: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -115,7 +114,6 @@ pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> P
     ProvisionJobRecord {
         request_id: req.request_id,
         deployment_id: req.deployment_id,
-        request_fingerprint: req.request_fingerprint,
         intent_key: req.intent_key,
         reserved_graph_id: req.reserved_graph_id,
         graph_name: req.graph_name,
@@ -159,7 +157,6 @@ pub(crate) fn record_to_result(
                         .ok_or(ProvisionIngressError::ResultMappingError)?;
                     let artifact_hash = r
                         .artifact_hash
-                        .clone()
                         .ok_or(ProvisionIngressError::ResultMappingError)?;
                     Ok(CreatedResource {
                         logical_resource: r.logical_resource,
@@ -169,16 +166,14 @@ pub(crate) fn record_to_result(
                 })
                 .collect();
             Ok(ProvisionResult {
-                request_id: record.request_id.clone(),
-                request_fingerprint: record.request_fingerprint.clone(),
+                request_id: record.request_id,
                 release_id: record.release_id.clone(),
                 created_resources: created_resources?,
                 terminal_outcome: ProvisionResultOutcome::Installed,
             })
         }
         JobState::Failed { reason } => Ok(ProvisionResult {
-            request_id: record.request_id.clone(),
-            request_fingerprint: record.request_fingerprint.clone(),
+            request_id: record.request_id,
             release_id: record.release_id.clone(),
             created_resources: vec![],
             terminal_outcome: ProvisionResultOutcome::Failed {
@@ -191,7 +186,7 @@ pub(crate) fn record_to_result(
 
 pub(crate) fn build_job_summary(record: &ProvisionJobRecord) -> ProvisionJobSummary {
     ProvisionJobSummary {
-        request_id: record.request_id.clone(),
+        request_id: record.request_id,
         deployment_id: record.deployment_id.clone(),
         state: state_name(&record.current_state).to_owned(),
         active_resource_index: record.active_resource_index as u32,
@@ -202,9 +197,8 @@ pub(crate) fn build_job_summary(record: &ProvisionJobRecord) -> ProvisionJobSumm
 
 fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJobView {
     ProvisionJobView {
-        request_id: record.request_id.clone(),
+        request_id: record.request_id,
         deployment_id: record.deployment_id.clone(),
-        request_fingerprint: record.request_fingerprint.clone(),
         reserved_graph_id: record.reserved_graph_id,
         graph_name: record.graph_name.clone(),
         state_name: state_name(&record.current_state).to_owned(),
@@ -217,7 +211,7 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
             .map(|r| ResourceJobView {
                 logical_resource: r.logical_resource,
                 canister_id: r.canister_id,
-                artifact_hash: r.artifact_hash.clone(),
+                artifact_hash: r.artifact_hash,
             })
             .collect(),
         is_authorized_caller: record.authorized_caller != Principal::anonymous(),
@@ -307,7 +301,7 @@ pub(crate) async fn accept_envelope_with_caller(
                     Some(CreatedResource {
                         logical_resource: r.logical_resource,
                         canister_id: r.canister_id?,
-                        artifact_hash: r.artifact_hash.clone()?,
+                        artifact_hash: r.artifact_hash?,
                     })
                 })
                 .collect();
@@ -392,7 +386,7 @@ async fn deploy_job_resources(
             }
         };
 
-        store.set_resource_artifact_hash(&key, index, artifact_hash.clone());
+        store.set_resource_artifact_hash(&key, index, artifact_hash);
         let _ = store.advance_state(&key, JobState::Installed, Some(index), now_ns);
 
         created.push(CreatedResource {
@@ -408,12 +402,12 @@ async fn deploy_job_resources(
 }
 
 /// Install the release artifact for one resource into an already-created canister. Returns the
-/// artifact's full SHA-256 as hex on success.
+/// artifact's full SHA-256 on success.
 async fn install_resource(
     kind: CanisterKind,
     target_canister_id: Principal,
     install_args: &[u8],
-) -> Result<String, InstallError> {
+) -> Result<[u8; 32], InstallError> {
     let release_store = ProvisionReleaseStore::new();
     let artifact_store = ProvisionArtifactStore::new();
 
@@ -463,14 +457,14 @@ async fn install_resource(
     )
     .await?;
 
-    Ok(hex_string(&metadata.artifact_id.sha256))
+    Ok(metadata.artifact_id.sha256)
 }
 
 pub(crate) fn query_job_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
     deployment_store: &DeploymentTrustStore,
-    request_id: String,
+    request_id: [u8; 32],
     deployment_id: String,
 ) -> Result<ProvisionJobView, ProvisionQueryError> {
     let binding = deployment_store
