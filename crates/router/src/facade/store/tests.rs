@@ -4169,6 +4169,37 @@ fn terminal_failure_is_refused_unless_uncommitted_dispatch() {
     assert!(!store.terminally_fail_uncommitted_dispatch(&missing, 1, "x".into()));
 }
 
+#[test]
+fn terminal_failure_diagnostic_is_bounded_to_utf8_boundary() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let uncommitted = insert_mutation_record_with_shards(
+        graph_principal(5),
+        "uncommitted",
+        0,
+        vec![shard_with(0, false, false)],
+    );
+    let diagnostic = format!(
+        "a{}",
+        "é".repeat(crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES)
+    );
+    assert!(store.terminally_fail_uncommitted_dispatch(&uncommitted, 1, diagnostic));
+    let record = ROUTER_MUTATION_BY_CLIENT_KEY
+        .with_borrow(|m| m.get(&uncommitted))
+        .expect("terminal record");
+    let terminal_failure = record.as_v1().terminal_failure.as_ref().expect("set");
+    assert_eq!(
+        terminal_failure.len(),
+        crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES - 1,
+        "the byte bound must not split the final two-byte character"
+    );
+    assert!(terminal_failure.ends_with('é'));
+}
+
 // ADR 0030 slice 6: the reverse index counts a mutation's non-terminal reservations — fresh inserts
 // at Try bump it (creating the row, pinned to the owning client key), each FreshlyCommitted/Cancel
 // release decrements, and the row (and pin) only vanishes at zero. A unique high mutation_id keeps

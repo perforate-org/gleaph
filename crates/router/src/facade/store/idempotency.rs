@@ -615,6 +615,8 @@ impl RouterStore {
             if !record.is_uncommitted_dispatch() {
                 return false;
             }
+            let error =
+                crate::facade::stable::label_stats::bound_mutation_recovery_diagnostic(error);
             record.as_v1_mut().terminal_failure = Some(error);
             record.mark_terminal_at_ns(ic_time_ns());
             m.insert(key.clone(), record);

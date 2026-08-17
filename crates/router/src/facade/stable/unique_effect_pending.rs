@@ -246,7 +246,9 @@ pub(crate) fn quarantine(
             record.state = PendingEffectState::Quarantined;
             record.attempts = record.attempts.saturating_add(1);
             record.next_retry_ns = next_retry_ns;
-            record.diagnostic = Some(diagnostic);
+            record.diagnostic = Some(
+                crate::facade::stable::label_stats::bound_mutation_recovery_diagnostic(diagnostic),
+            );
             table.insert(key, record);
         }
     });
@@ -552,6 +554,25 @@ mod tests {
     fn quarantine_missing_row_is_noop() {
         quarantine(g(24), 1, ShardId::new(0), 5_000, "x".to_string());
         assert_eq!(lookup(g(24), 1, ShardId::new(0)), None);
+    }
+
+    #[test]
+    fn quarantine_diagnostic_is_bounded_to_utf8_boundary() {
+        let c = Principal::anonymous();
+        register(g(25), 1, ShardId::new(0), c, ck());
+        let diagnostic = format!(
+            "a{}",
+            "é".repeat(crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES)
+        );
+        quarantine(g(25), 1, ShardId::new(0), 5_000, diagnostic);
+        let record = lookup(g(25), 1, ShardId::new(0)).expect("still present");
+        let diagnostic = record.diagnostic.as_ref().expect("set");
+        assert_eq!(
+            diagnostic.len(),
+            crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES - 1,
+            "the byte bound must not split the final two-byte character"
+        );
+        assert!(diagnostic.ends_with('é'));
     }
 
     #[test]
