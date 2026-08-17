@@ -1,25 +1,44 @@
 /**
  * Sync JSON tokens back into .fig file
- * Reads primitive.json and semantic-{light,dark}.json,
- * updates matching VARIABLE nodes in .fig by GUID map,
- * and re-encodes the .fig file.
+ *
+ * The JSON files (primitive.json + semantic-{light,dark}.json) are the source of
+ * truth for the design tokens. This script regenerates the VARIABLE nodes inside
+ * the `.fig` file to match the JSON:
+ *
+ *   - Renames primitive nodes to the JSON names (gray -> sand, teal -> blue)
+ *   - Revalues every primitive from JSON
+ *   - Creates missing primitives (clay)
+ *   - Renames semantic nodes (bg -> background) and re-points their aliases
+ *   - Updates the Figma WEB code-syntax strings
+ *
+ * It then re-encodes the `.fig` binary.
  */
 
-import { parseFig, encodeFigParts, assembleCanvasFig, createFigZip } from 'openfig-core';
-import { run as zstdRun } from 'zstd-codec';
-import { readFileSync, writeFileSync } from 'fs';
+import {
+  parseFig,
+  encodeFigParts,
+  assembleCanvasFig,
+  createFigZip,
+} from "openfig-core";
+import pkg from "zstd-codec";
+const zstdRun = pkg.ZstdCodec.run;
+import { readFileSync, writeFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const FIG_PATH = '/Users/yota/dev/gleaph/design-tokens/gleaph-design-system.fig';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const baseDir = join(__dirname, "..");
+const FIG_PATH = join(baseDir, "gleaph-design-system.fig");
 
 // Flatten nested JSON token structure into dot-paths
-function flattenTokens(obj, prefix = '') {
+function flattenTokens(obj, prefix = "") {
   const result = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (key.startsWith('$')) continue;
+    if (key.startsWith("$")) continue;
     const newKey = prefix ? `${prefix}.${key}` : key;
-    if (value && typeof value === 'object') {
-      if ('$value' in value) {
-        result[newKey] = value['$value'];
+    if (value && typeof value === "object") {
+      if ("$value" in value) {
+        result[newKey] = value["$value"];
       } else {
         Object.assign(result, flattenTokens(value, newKey));
       }
@@ -36,152 +55,178 @@ function hexToSrgb(hex) {
   return { r, g, b, a: 1 };
 }
 
+// Update the Figma WEB code-syntax string to match a token name
+function updateCodeSyntax(node, name) {
+  if (!node.codeSyntax?.entries) return;
+  for (const e of node.codeSyntax.entries) {
+    e.value = `var(--${name.replace(/\//g, "-")})`;
+  }
+}
+
+const isPrimitiveSet = (node) => node.variableSetID?.guid?.sessionID === 4;
+const isSemanticSet = (node) => node.variableSetID?.guid?.sessionID === 6;
+
 // Parse .fig
 const data = new Uint8Array(readFileSync(FIG_PATH));
 const doc = parseFig(data);
 
-// Build name -> node map
-const varMap = new Map();
-for (const node of doc.message.nodeChanges) {
-  if (node.type === 'VARIABLE') {
-    varMap.set(node.name, node);
-  }
-}
+const varNodes = doc.message.nodeChanges.filter((n) => n.type === "VARIABLE");
+let byName = new Map(varNodes.map((n) => [n.name, n]));
 
 // Load JSON tokens
-const primitiveData = JSON.parse(readFileSync('/Users/yota/dev/gleaph/design-tokens/primitive.json', 'utf8'));
-const lightData = JSON.parse(readFileSync('/Users/yota/dev/gleaph/design-tokens/semantic-light.json', 'utf8'));
-const darkData = JSON.parse(readFileSync('/Users/yota/dev/gleaph/design-tokens/semantic-dark.json', 'utf8'));
+const primitiveData = JSON.parse(
+  readFileSync(join(baseDir, "primitive.json"), "utf8"),
+);
+const lightData = JSON.parse(
+  readFileSync(join(baseDir, "semantic-light.json"), "utf8"),
+);
+const darkData = JSON.parse(
+  readFileSync(join(baseDir, "semantic-dark.json"), "utf8"),
+);
 
-const primitives = flattenTokens(primitiveData);
+const primitives = flattenTokens(primitiveData); // key: dot-path, value: $value
 const lightSemantic = flattenTokens(lightData);
 const darkSemantic = flattenTokens(darkData);
 
-// Resolve aliases in semantic tokens
-function resolveSemantic(semantic, primitives) {
-  const resolved = {};
-  for (const [key, value] of Object.entries(semantic)) {
-    if (typeof value === 'string' && value.startsWith('{') && value.endsWith('}')) {
-      const path = value.slice(1, -1);
-      resolved[key] = primitives[path];
-    } else {
-      resolved[key] = value;
-    }
-  }
-  return resolved;
+// Target primitive names + values (slash paths)
+const primitiveTargets = {};
+for (const [key, value] of Object.entries(primitives)) {
+  primitiveTargets[key.replace(/\./g, "/")] = value;
 }
 
-const lightResolved = resolveSemantic(lightSemantic, primitives);
-const darkResolved = resolveSemantic(darkSemantic, primitives);
+// Resolve semantic alias targets: name -> { light, dark } primitive slash-paths
+function aliasTarget(value) {
+  if (
+    typeof value === "string" &&
+    value.startsWith("{") &&
+    value.endsWith("}")
+  ) {
+    return value.slice(1, -1).replace(/\./g, "/");
+  }
+  throw new Error(`Unsupported semantic value: ${JSON.stringify(value)}`);
+}
+const semanticTargets = {};
+for (const key of Object.keys(lightSemantic)) {
+  semanticTargets[key.replace(/\./g, "/")] = {
+    light: aliasTarget(lightSemantic[key]),
+    dark: aliasTarget(darkSemantic[key]),
+  };
+}
 
-// Update primitive tokens in .fig
-let updated = 0;
-for (const [jsonPath, value] of Object.entries(primitives)) {
-  // Convert json dot-path to fig slash-path
-  const figName = jsonPath.replace(/\./g, '/');
-  const node = varMap.get(figName);
-  if (!node) {
-    console.warn(`Skipping unknown primitive token: ${figName}`);
+// Allocate fresh GUIDs for newly created primitive nodes
+let nextLocal = 30;
+function allocGuid() {
+  const g = { sessionID: 4, localID: nextLocal };
+  nextLocal++;
+  return g;
+}
+
+let renamed = 0;
+let revalued = 0;
+
+// --- 1. Rename + revalue primitives (gray -> sand, teal -> blue, space/radius) ---
+for (const node of varNodes) {
+  if (!isPrimitiveSet(node)) continue;
+  const oldName = node.name;
+  let newName = oldName;
+  if (oldName.startsWith("color/gray/"))
+    newName = `color/sand/${oldName.slice("color/gray/".length)}`;
+  else if (oldName.startsWith("color/teal/"))
+    newName = `color/blue/${oldName.slice("color/teal/".length)}`;
+
+  if (newName !== oldName) {
+    node.name = newName;
+    renamed++;
+  }
+
+  const target = primitiveTargets[newName];
+  if (!target) {
+    console.warn(`No JSON value for primitive: ${newName}`);
     continue;
   }
 
-  if (figName.startsWith('color/')) {
-    const hex = typeof value === 'string' ? value : (value.hex || '');
-    if (!hex) {
-      console.warn(`No hex for ${figName}`);
+  const entry = node.variableDataValues.entries[0];
+  if (newName.startsWith("color/")) {
+    const hex = typeof target === "string" ? target : target.hex;
+    entry.variableData.value.colorValue = hexToSrgb(hex);
+  } else {
+    const num = typeof target === "object" ? target.value : target;
+    entry.variableData.value.floatValue = num;
+  }
+  revalued++;
+  updateCodeSyntax(node, newName);
+}
+
+// Rebuild name map after primitive renames so semantic aliases resolve correctly
+byName = new Map(
+  doc.message.nodeChanges
+    .filter((n) => n.type === "VARIABLE")
+    .map((n) => [n.name, n]),
+);
+
+// --- 2. Create missing primitives (clay) ---
+let created = 0;
+for (const name of ["color/clay/300", "color/clay/400", "color/clay/500"]) {
+  if (byName.has(name)) continue;
+  const template = varNodes.find(
+    (n) => isPrimitiveSet(n) && n.name.startsWith("color/"),
+  );
+  if (!template) throw new Error("No primitive template available to clone");
+  const clone = JSON.parse(JSON.stringify(template));
+  const g = allocGuid();
+  clone.guid = g;
+  clone.name = name;
+  clone.version = `${g.sessionID}:${g.localID}`;
+  clone.userFacingVersion = `${g.sessionID}:${g.localID}`;
+  const target = primitiveTargets[name];
+  const entry = clone.variableDataValues.entries[0];
+  entry.variableData.value.colorValue = hexToSrgb(
+    typeof target === "string" ? target : target.hex,
+  );
+  updateCodeSyntax(clone, name);
+  doc.message.nodeChanges.push(clone);
+  byName.set(name, clone);
+  created++;
+}
+
+// --- 3. Rename semantic nodes + re-point aliases (bg -> background) ---
+for (const node of varNodes) {
+  if (!isSemanticSet(node)) continue;
+  const oldName = node.name;
+  const newName = oldName.replace("color/bg/", "color/background/");
+  if (newName !== oldName) {
+    node.name = newName;
+    renamed++;
+  }
+  updateCodeSyntax(node, newName);
+
+  const target = semanticTargets[newName];
+  if (!target) {
+    console.warn(`No JSON semantic target for: ${newName}`);
+    continue;
+  }
+  for (const e of node.variableDataValues.entries) {
+    const mode = `${e.modeID.sessionID}:${e.modeID.localID}`;
+    const targetName =
+      mode === "6:0" ? target.light : mode === "6:1" ? target.dark : null;
+    if (!targetName) continue;
+    const targetNode = byName.get(targetName);
+    if (!targetNode) {
+      console.warn(`Primitive not found for alias: ${targetName}`);
       continue;
     }
-    const c = hexToSrgb(hex);
-    // Update the color value
-    node.variableDataValues.entries[0].variableData.value.colorValue = c;
-    updated++;
-  } else if (figName.startsWith('space/') || figName.startsWith('radius/')) {
-    const num = typeof value === 'object' ? value.value : value;
-    node.variableDataValues.entries[0].variableData.value.floatValue = num;
-    updated++;
+    e.variableData.value = { alias: { guid: targetNode.guid } };
   }
 }
 
-// Update semantic tokens in .fig
-// Semantic tokens have two mode entries: light (6:0) and dark (6:1)
-const semanticLightModes = {};
-const semanticDarkModes = {};
-for (const [jsonPath, value] of Object.entries(lightResolved)) {
-  semanticLightModes[jsonPath] = value;
-}
-for (const [jsonPath, value] of Object.entries(darkResolved)) {
-  semanticDarkModes[jsonPath] = value;
-}
+console.log(
+  `Primitives: ${renamed} renamed, ${revalued} revalued, ${created} created`,
+);
 
-// Semantic name mapping: json path -> fig name
-// json: color.background.canvas -> fig: color/bg/canvas
-for (const [jsonPath, lightValue] of Object.entries(lightResolved)) {
-  const figName = jsonPath.replace(/\./g, '/');
-  const darkValue = darkResolved[jsonPath];
-  const node = varMap.get(figName);
-  if (!node) {
-    console.warn(`Skipping unknown semantic token: ${figName}`);
-    continue;
-  }
-
-  // Find target primitive GUIDs for light and dark
-  function findPrimitiveGuid(targetValue) {
-    if (typeof targetValue === 'string' && targetValue.startsWith('{') && targetValue.endsWith('}')) {
-      const path = targetValue.slice(1, -1).replace(/\./g, '/');
-      const targetNode = varMap.get(path);
-      if (targetNode) return targetNode.guid;
-    }
-    // If it's a direct hex, find matching primitive by value
-    const targetHex = typeof targetValue === 'string' ? targetValue : (targetValue.hex || '');
-    if (targetHex) {
-      for (const [n, v] of varMap.entries()) {
-        if (!n.startsWith('color/')) continue;
-        const entry = v.variableDataValues.entries[0]?.variableData?.value;
-        if (entry?.colorValue) {
-          const c = entry.colorValue;
-          const hex = `#${Math.round(c.r*255).toString(16).padStart(2,'0')}${Math.round(c.g*255).toString(16).padStart(2,'0')}${Math.round(c.b*255).toString(16).padStart(2,'0')}`;
-          if (hex.toLowerCase() === targetHex.toLowerCase()) return v.guid;
-        }
-      }
-    }
-    return null;
-  }
-
-  const lightGuid = findPrimitiveGuid(lightValue);
-  const darkGuid = findPrimitiveGuid(darkValue);
-
-  if (!lightGuid || !darkGuid) {
-    console.warn(`Could not resolve alias for ${figName}`);
-    continue;
-  }
-
-  node.variableDataValues.entries = [
-    {
-      modeID: { sessionID: 6, localID: 0 },
-      variableData: {
-        value: { alias: { guid: lightGuid } },
-        dataType: "ALIAS",
-        resolvedDataType: "COLOR"
-      }
-    },
-    {
-      modeID: { sessionID: 6, localID: 1 },
-      variableData: {
-        value: { alias: { guid: darkGuid } },
-        dataType: "ALIAS",
-        resolvedDataType: "COLOR"
-      }
-    }
-  ];
-  updated++;
-}
-
-console.log(`Updated ${updated} VARIABLE nodes`);
-
-// Re-encode
+// --- Re-encode ---
 const parts = encodeFigParts(doc);
 
-zstdRun(zstd => {
+zstdRun((zstd) => {
   const simple = new zstd.Simple();
   const messageCompressed = simple.compress(parts.messageRaw, 3);
   const canvasFig = assembleCanvasFig({
@@ -198,5 +243,5 @@ zstdRun(zstd => {
     images: doc.images,
   });
   writeFileSync(FIG_PATH, figZip);
-  console.log('Saved updated .fig');
+  console.log(`Saved regenerated .fig -> ${FIG_PATH}`);
 });
