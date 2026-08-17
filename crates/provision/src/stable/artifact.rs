@@ -11,12 +11,12 @@
 
 use super::memory::{
     StableArtifactAuditLogMap, StableArtifactCatalogMap, StableArtifactChunksMap,
-    StableArtifactUploadMap, init_artifact_audit_log, init_artifact_catalog, init_artifact_chunks,
-    init_artifact_upload,
+    StableArtifactStorageIdCell, StableArtifactUploadMap, init_artifact_audit_log,
+    init_artifact_catalog, init_artifact_chunks, init_artifact_storage_id, init_artifact_upload,
 };
 use crate::types::{
     ArtifactAuditEntry, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
-    ArtifactMetadata, ArtifactUpload, ArtifactUploadState,
+    ArtifactMetadata, ArtifactStorageId, ArtifactUpload, ArtifactUploadState,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -31,6 +31,8 @@ thread_local! {
         RefCell::new(init_artifact_upload());
     static ARTIFACT_CHUNKS: RefCell<StableArtifactChunksMap> =
         RefCell::new(init_artifact_chunks());
+    static ARTIFACT_STORAGE_ID: RefCell<StableArtifactStorageIdCell> =
+        RefCell::new(init_artifact_storage_id());
     static ARTIFACT_AUDIT_LOG: RefCell<StableArtifactAuditLogMap> =
         RefCell::new(init_artifact_audit_log());
 }
@@ -48,6 +50,9 @@ pub(crate) fn reset_artifact_maps() {
     ARTIFACT_CATALOG.with_borrow_mut(|map| map.clear_new());
     ARTIFACT_UPLOAD.with_borrow_mut(|map| map.clear_new());
     ARTIFACT_CHUNKS.with_borrow_mut(|map| map.clear_new());
+    ARTIFACT_STORAGE_ID.with_borrow_mut(|cell| {
+        cell.set(0);
+    });
     reset_artifact_audit_log();
 }
 
@@ -65,12 +70,18 @@ impl ProvisionArtifactStore {
         ARTIFACT_CATALOG.with_borrow(|map| map.get(artifact_id))
     }
 
-    /// Publish immutable artifact metadata. Rejects a duplicate identity with
+    /// Return the internal storage id for `artifact_id`, if published.
+    pub fn storage_id_of(&self, artifact_id: &ArtifactId) -> Option<ArtifactStorageId> {
+        self.get_metadata(artifact_id).map(|m| m.storage_id)
+    }
+
+    /// Publish immutable artifact metadata. Assigns a fresh fixed-length `ArtifactStorageId`
+    /// (the chunk-store key prefix) and rejects a duplicate identity with
     /// `ArtifactError::ConflictingMetadata`.
     #[allow(clippy::result_large_err)]
     pub fn publish_metadata(
         &self,
-        metadata: ArtifactMetadata,
+        mut metadata: ArtifactMetadata,
     ) -> Result<ArtifactMetadata, ArtifactError> {
         let artifact_id = metadata.artifact_id.clone();
         ARTIFACT_CATALOG.with_borrow_mut(|map| {
@@ -80,8 +91,22 @@ impl ProvisionArtifactStore {
                     requested: artifact_id,
                 });
             }
+            let storage_id = ArtifactStorageId(self.alloc_storage_id());
+            metadata.storage_id = storage_id;
             map.insert(artifact_id, metadata.clone());
             Ok(metadata)
+        })
+    }
+
+    /// Allocate the next monotonic internal storage id.
+    fn alloc_storage_id(&self) -> u64 {
+        ARTIFACT_STORAGE_ID.with_borrow_mut(|cell| {
+            let next = cell
+                .get()
+                .checked_add(1)
+                .expect("artifact storage id overflow");
+            cell.set(next);
+            next
         })
     }
 
@@ -161,14 +186,14 @@ impl ProvisionArtifactStore {
         });
     }
 
-    /// Remove every chunk belonging to `artifact_id`. Used on verification failure.
-    pub fn remove_all_chunks(&self, artifact_id: &ArtifactId) {
+    /// Remove every chunk belonging to `storage_id`. Used on verification failure.
+    pub fn remove_all_chunks(&self, storage_id: ArtifactStorageId) {
         let start = ArtifactChunkKey {
-            artifact_id: artifact_id.clone(),
+            storage_id,
             chunk_index: 0,
         };
         let end = ArtifactChunkKey {
-            artifact_id: artifact_id.clone(),
+            storage_id,
             chunk_index: u32::MAX,
         };
         ARTIFACT_CHUNKS.with_borrow_mut(|map| {

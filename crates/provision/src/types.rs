@@ -418,12 +418,24 @@ impl ArtifactId {
     }
 }
 
+/// Internal fixed-length storage id for an artifact, assigned at publish time. The public
+/// `ArtifactId` (canister_kind + semantic_version + sha256) stays the wire identity, but the
+/// chunk store keys on this compact `u64` so the full composite id is not multiplied across every
+/// chunk row.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct ArtifactStorageId(pub u64);
+
 /// Immutable artifact metadata published by governance. `verified` records that the uploaded
 /// chunks have passed full SHA-256 verification; it flips once on the final chunk and is then
 /// durable, so later uploads/activations/installs do not re-scan and re-hash the whole artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ArtifactMetadata {
     pub artifact_id: ArtifactId,
+    /// Internal fixed-length storage id used as the chunk-store key prefix. Derived at publish;
+    /// the canonical `artifact_id` remains the wire identity.
+    pub storage_id: ArtifactStorageId,
     pub byte_length: u64,
     pub chunk_hashes: Vec<[u8; 32]>,
     pub created_at_ns: u64,
@@ -441,12 +453,13 @@ pub struct ArtifactUpload {
     pub verified_at_ns: Option<u64>,
 }
 
-/// Composite stable key for one chunk of one artifact.
+/// Stable key for one chunk of one artifact: fixed-length `(storage_id, chunk_index)` so the
+/// compact internal storage id (not the full `ArtifactId`) is carried per chunk row.
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
 )]
 pub struct ArtifactChunkKey {
-    pub artifact_id: ArtifactId,
+    pub storage_id: ArtifactStorageId,
     pub chunk_index: u32,
 }
 

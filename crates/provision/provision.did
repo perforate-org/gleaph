@@ -76,6 +76,7 @@ type ArtifactMetadata = record {
   chunk_hashes : vec blob;
   byte_length : nat64;
   created_at_ns : nat64;
+  storage_id : nat64;
 };
 // Arguments for `artifact_publish_metadata`.
 type ArtifactPublishMetadataArgs = record {

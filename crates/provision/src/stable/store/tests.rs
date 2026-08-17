@@ -728,6 +728,7 @@ fn artifact_metadata(
 ) -> ArtifactMetadata {
     ArtifactMetadata {
         artifact_id: id,
+        storage_id: crate::types::ArtifactStorageId(0),
         byte_length,
         chunk_hashes,
         created_at_ns: 1,
@@ -838,7 +839,7 @@ fn artifact_upload_chunk_promotes_to_verified_on_full_match() {
     assert!(
         artifact_store
             .get_chunk(&ArtifactChunkKey {
-                artifact_id: id.clone(),
+                storage_id: artifact_store.storage_id_of(&id).unwrap(),
                 chunk_index: 0
             })
             .is_some()
@@ -846,7 +847,7 @@ fn artifact_upload_chunk_promotes_to_verified_on_full_match() {
     assert!(
         artifact_store
             .get_chunk(&ArtifactChunkKey {
-                artifact_id: id.clone(),
+                storage_id: artifact_store.storage_id_of(&id).unwrap(),
                 chunk_index: 1
             })
             .is_some()
@@ -872,7 +873,7 @@ fn artifact_upload_chunk_promotes_to_verified_on_full_match() {
     assert_eq!(
         artifact_store
             .get_chunk(&ArtifactChunkKey {
-                artifact_id: id.clone(),
+                storage_id: artifact_store.storage_id_of(&id).unwrap(),
                 chunk_index: 0
             })
             .unwrap()
@@ -950,7 +951,7 @@ fn artifact_upload_chunk_full_sha256_mismatch_returns_error_and_preserves_state(
     assert!(
         artifact_store
             .get_chunk(&ArtifactChunkKey {
-                artifact_id: id.clone(),
+                storage_id: artifact_store.storage_id_of(&id).unwrap(),
                 chunk_index: 0
             })
             .is_none()
@@ -958,7 +959,7 @@ fn artifact_upload_chunk_full_sha256_mismatch_returns_error_and_preserves_state(
     assert!(
         artifact_store
             .get_chunk(&ArtifactChunkKey {
-                artifact_id: id.clone(),
+                storage_id: artifact_store.storage_id_of(&id).unwrap(),
                 chunk_index: 1
             })
             .is_none()
@@ -993,7 +994,7 @@ fn artifact_stable_layout_uses_separate_memory_ids() {
     );
     chunks.insert(
         ArtifactChunkKey {
-            artifact_id: id_a.clone(),
+            storage_id: crate::types::ArtifactStorageId(1),
             chunk_index: 0,
         },
         ArtifactChunk { bytes: vec![0xAB] },
@@ -1005,7 +1006,7 @@ fn artifact_stable_layout_uses_separate_memory_ids() {
     assert!(
         chunks
             .get(&ArtifactChunkKey {
-                artifact_id: id_a.clone(),
+                storage_id: crate::types::ArtifactStorageId(1),
                 chunk_index: 0
             })
             .is_some()
@@ -1015,7 +1016,7 @@ fn artifact_stable_layout_uses_separate_memory_ids() {
     assert!(
         chunks
             .get(&ArtifactChunkKey {
-                artifact_id: id_b,
+                storage_id: crate::types::ArtifactStorageId(2),
                 chunk_index: 0
             })
             .is_none()
@@ -1055,11 +1056,14 @@ fn artifact_metadata_round_trip_stable_encoding() {
     assert_eq!(id_decoded, id);
 
     let chunk_key = ArtifactChunkKey {
-        artifact_id: id.clone(),
+        storage_id: crate::types::ArtifactStorageId(7),
         chunk_index: 7,
     };
     let chunk_key_decoded = ArtifactChunkKey::from_bytes(chunk_key.into_bytes().into());
-    assert_eq!(chunk_key_decoded.artifact_id, id);
+    assert_eq!(
+        chunk_key_decoded.storage_id,
+        crate::types::ArtifactStorageId(7)
+    );
     assert_eq!(chunk_key_decoded.chunk_index, 7);
 }
 
@@ -1763,6 +1767,7 @@ fn artifact_audit_stable_layout_uses_separate_memory_id() {
     let artifact_id = mk_artifact_id(CanisterKind::Router, "0.0.0", sha256(b"i"));
     let metadata = ArtifactMetadata {
         artifact_id: artifact_id.clone(),
+        storage_id: crate::types::ArtifactStorageId(0),
         byte_length: 1,
         chunk_hashes: vec![sha256(b"i")],
         created_at_ns: 501,

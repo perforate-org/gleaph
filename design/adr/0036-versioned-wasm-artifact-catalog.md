@@ -21,7 +21,7 @@ Provision owns an immutable artifact catalog and immutable compatible release ma
 
 ```text
 ArtifactId = (canister_kind, semantic_version, sha256)
-ArtifactMetadata = { artifact_id, byte_length, chunk_hashes, created_at_ns }
+ArtifactMetadata = { artifact_id, storage_id, byte_length, chunk_hashes, created_at_ns, verified }
 ArtifactUpload = { artifact_id, state, received_chunks, verified_at_ns? }
 ReleaseManifest = {
   release_id,
@@ -32,7 +32,9 @@ ReleaseManifest = {
 }
 ```
 
-`ArtifactMetadata` and `ReleaseManifest` never change after publication. Upload and verification
+`ArtifactMetadata` and `ReleaseManifest` never change after publication. `storage_id` is an
+internal fixed-length `u64` assigned at publish and used as the chunk-store key prefix, so the full
+composite `ArtifactId` is not multiplied across every chunk row. Upload and verification
 progress lives in `ArtifactUpload`; verification failure does not mutate immutable metadata. A single
 atomic `active_release_id` selects the compatible set used for new issuance. Activation succeeds only
 when every referenced artifact is fully present and SHA-256 verified.

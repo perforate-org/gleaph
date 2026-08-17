@@ -2065,7 +2065,10 @@ fn release_install_rejects_unverified_artifact() {
     .unwrap();
 
     // Remove the verified chunks for the vector artifact to make it unverified at install time.
-    ProvisionArtifactStore::new().remove_all_chunks(&vector);
+    let vector_storage_id = ProvisionArtifactStore::new()
+        .storage_id_of(&vector)
+        .expect("vector storage id");
+    ProvisionArtifactStore::new().remove_all_chunks(vector_storage_id);
 
     let args = ReleaseInstallArgs {
         target_canister_kind: CanisterKind::VectorCanister,

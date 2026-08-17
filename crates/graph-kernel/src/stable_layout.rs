@@ -1237,7 +1237,7 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             8,
             StableMemoryClass::Canonical,
             "provisioning",
-            "ArtifactChunkKey → ArtifactChunk: verified canonical WASM chunk bytes retained until explicit GC",
+            "(storage_id: u64, chunk_index: u32) → ArtifactChunk: verified canonical WASM chunk bytes keyed on the internal fixed-length storage id",
             RebuildPath::None,
         ),
         // ADR 0036 Slice 8b: immutable release manifest (MemoryId 9).
@@ -1265,6 +1265,15 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             StableMemoryClass::Telemetry,
             "provisioning",
             "(Principal, u64) -> ArtifactAuditEntry: append-oriented audit trail of artifact/release operations",
+            RebuildPath::None,
+        ),
+        // ADR 0036 Slice 8a: internal artifact storage-id counter (MemoryId 12).
+        region(
+            "PROVISION_ARTIFACT_STORAGE_ID",
+            12,
+            StableMemoryClass::Maintenance,
+            "provisioning",
+            "StableCell<u64>: monotonic chunk-store key prefix allocator for published artifacts",
             RebuildPath::None,
         ),
     ],
@@ -1896,8 +1905,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 12);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(11));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 13);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(12));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived

@@ -441,7 +441,7 @@ async fn install_resource(
     for i in 0..chunk_count {
         let chunk = artifact_store
             .get_chunk(&ArtifactChunkKey {
-                artifact_id: artifact_id.clone(),
+                storage_id: metadata.storage_id,
                 chunk_index: i,
             })
             .ok_or_else(|| InstallError::ArtifactNotVerified(artifact_id.clone()))?;
@@ -724,8 +724,10 @@ pub(crate) fn artifact_publish_metadata_with_caller(
 
     let artifact_id = ArtifactId::new(args.canister_kind, args.semantic_version, args.sha256);
     let store = ProvisionArtifactStore::new();
+    // `storage_id` is assigned by `publish_metadata` (the internal chunk-store prefix).
     let metadata = ArtifactMetadata {
         artifact_id: artifact_id.clone(),
+        storage_id: crate::types::ArtifactStorageId(0),
         byte_length: args.byte_length,
         chunk_hashes: args.chunk_hashes,
         created_at_ns: now_ns,
@@ -904,7 +906,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
 
     // Stage the chunk in region 8.
     let chunk_key = ArtifactChunkKey {
-        artifact_id: args.artifact_id.clone(),
+        storage_id: metadata.storage_id,
         chunk_index: args.chunk_index,
     };
     artifact_store.put_chunk(chunk_key, ArtifactChunk { bytes: args.bytes });
@@ -938,7 +940,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     let mut stream_ok = true;
     for i in 0..chunk_count {
         let key = ArtifactChunkKey {
-            artifact_id: args.artifact_id.clone(),
+            storage_id: metadata.storage_id,
             chunk_index: i,
         };
         match artifact_store.get_chunk(&key) {
@@ -951,7 +953,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     }
     if !stream_ok {
         // A chunk is missing after we just staged all of them: treat as verification failure.
-        artifact_store.remove_all_chunks(&args.artifact_id);
+        artifact_store.remove_all_chunks(metadata.storage_id);
         let reason = "chunk store incomplete during verification".to_owned();
         upload.state = ArtifactUploadState::Failed {
             reason: reason.clone(),
@@ -977,7 +979,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     let full_sha: [u8; 32] = hasher.finalize().into();
     if full_sha != metadata.artifact_id.sha256 {
         // Verification failure: remove all staged chunks and mark upload Failed.
-        artifact_store.remove_all_chunks(&args.artifact_id);
+        artifact_store.remove_all_chunks(metadata.storage_id);
         let reason = format!(
             "full SHA-256 mismatch: expected {}, got {}",
             hex_string(&metadata.artifact_id.sha256),
@@ -1640,7 +1642,7 @@ pub(crate) async fn release_install_with_caller(
     let mut chunk_hashes = Vec::with_capacity(chunk_count as usize);
     for i in 0..chunk_count {
         let chunk = match artifact_store.get_chunk(&ArtifactChunkKey {
-            artifact_id: artifact_id.clone(),
+            storage_id: metadata.storage_id,
             chunk_index: i,
         }) {
             Some(c) => c,

@@ -45,6 +45,9 @@ pub(crate) const PROVISION_ACTIVE_RELEASE: MemoryId = MemoryId::new(10);
 // ADR 0036 Slice 8c: artifact audit log (MemoryId 11).
 pub(crate) const PROVISION_ARTIFACT_AUDIT_LOG: MemoryId = MemoryId::new(11);
 
+// ADR 0036 Slice 8a: internal artifact storage-id counter (MemoryId 12).
+pub(crate) const PROVISION_ARTIFACT_STORAGE_ID: MemoryId = MemoryId::new(12);
+
 pub(crate) type StableDeploymentTrustMap = StableBTreeMap<String, DeploymentBinding, Memory>;
 pub(crate) type StableJobByRequestMap =
     StableBTreeMap<ProvisionJobRequestKey, ProvisionJobRecord, Memory>;
@@ -58,6 +61,7 @@ pub(crate) type StableJobIntentLockMap =
 pub(crate) type StableArtifactCatalogMap = StableBTreeMap<ArtifactId, ArtifactMetadata, Memory>;
 pub(crate) type StableArtifactUploadMap = StableBTreeMap<ArtifactId, ArtifactUpload, Memory>;
 pub(crate) type StableArtifactChunksMap = StableBTreeMap<ArtifactChunkKey, ArtifactChunk, Memory>;
+pub(crate) type StableArtifactStorageIdCell = StableCell<u64, Memory>;
 
 pub(crate) type StableReleaseManifestMap = StableBTreeMap<ReleaseId, ReleaseManifest, Memory>;
 pub(crate) type StableActiveReleaseCell = StableCell<Option<ReleaseId>, Memory>;
@@ -91,6 +95,13 @@ pub(crate) fn init_artifact_upload() -> StableArtifactUploadMap {
 
 pub(crate) fn init_artifact_chunks() -> StableArtifactChunksMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ARTIFACT_CHUNKS)))
+}
+
+pub(crate) fn init_artifact_storage_id() -> StableArtifactStorageIdCell {
+    StableCell::init(
+        MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ARTIFACT_STORAGE_ID)),
+        0,
+    )
 }
 
 pub(crate) fn init_release_manifest() -> StableReleaseManifestMap {
