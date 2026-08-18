@@ -244,9 +244,9 @@ mod tests {
         );
         let style = GraphStyle::default();
         // The fanned curve bows toward its control point. With two parallel
-        // edges, the control offset is ±0.2 * len = ±20 world units, so the
-        // curve passes through the midpoint offset by half that (10).
-        let screen = vp.world_to_screen(Vec2::new(50.0, 10.0));
+        // edges, the control offset is ±0.5 * len * 0.2 = ±10 world units, so
+        // the curve passes through the midpoint offset by half that (±5).
+        let screen = vp.world_to_screen(Vec2::new(50.0, 5.0));
         let result = hit_test(&g, &positions, &vp, &style, screen);
         assert!(
             result.edge.is_some(),
