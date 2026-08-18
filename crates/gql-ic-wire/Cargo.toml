@@ -32,6 +32,10 @@ jiff = ["dep:jiff"]
 chrono = ["dep:chrono"]
 nightly-f128 = ["gleaph-gql/f128", "gleaph-gql-value/f128"]
 f256 = ["dep:f256", "gleaph-gql/f256", "gleaph-gql-value/f256"]
+# rkyv archive decode hook for Value::Extension (Principal). Opt-in: consumers that
+# load rkyv archives containing IC.PRINCIPAL must enable this so the process-wide
+# decoder is installed. Kept off by default to keep the wire-only build lightweight.
+rkyv = ["gleaph-gql/ast-rkyv-no-span"]
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -3238,6 +3238,7 @@ dependencies = [
  "ethnum",
  "f256",
  "gleaph-gql",
+ "gleaph-gql-ic-wire",
  "gleaph-graph-kernel",
  "half 2.7.1",
  "ic-stable-structures",

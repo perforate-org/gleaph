@@ -16,101 +16,30 @@
 
 #![cfg_attr(test, feature(f128))]
 
-use std::borrow::Cow;
-use std::fmt;
-use std::ops::Deref;
-
 pub use candid::Principal;
 pub mod graph_registry;
 pub mod plan_result_wire;
 pub mod unique_key;
 pub mod wire;
 
+pub use gleaph_gql_ic_wire::{
+    IcExtensionBinaryDecode, PRINCIPAL_EXTENSION_SORTABLE_DOMAIN, PrincipalValue,
+    install_ic_extension_binary_decode_for_rkyv, principal_to_value, value_as_principal,
+};
 pub use plan_result_wire::{IcWirePlanQueryResult, IcWirePlanQueryRow};
 pub use unique_key::{
     MAX_UNIQUE_ENCODED_VALUE_LEN, UniqueKeyOutcome, UniqueKeyRejection, encode_unique_value,
 };
 pub use wire::{
     IcWirePathElement, IcWireValue, WireError, decode_gql_params_blob, encode_gql_params_blob,
-    principal_to_value, value_as_principal,
 };
-
-use gleaph_gql::extensions::gql_extension;
-use gleaph_gql::value::{ExtensionValue, Value, ValueBinaryError};
-
-/// Sortable-index domain for [`PrincipalValue`] (not the GQL extension type string).
-pub const PRINCIPAL_EXTENSION_SORTABLE_DOMAIN: &str = "Pr";
-
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct PrincipalValue(pub Principal);
-
-impl Deref for PrincipalValue {
-    type Target = Principal;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl fmt::Display for PrincipalValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-fn decode_principal_payload(payload: &[u8]) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
-    let p = Principal::try_from_slice(payload)
-        .map_err(|_| ValueBinaryError::InvalidExtensionPayload)?;
-    Ok(Box::new(PrincipalValue(p)))
-}
-
-gql_extension! {
-    prefix: "IC",
-    types: [
-        {
-            rust_type: PrincipalValue,
-            type_name: "PRINCIPAL",
-            decoder: IcExtensionBinaryDecode,
-            eq: |this, other| this.0 == other.0,
-            cmp: |this, other| this.0.cmp(&other.0),
-            sortable_index_key: {
-                domain: PRINCIPAL_EXTENSION_SORTABLE_DOMAIN,
-                bytes: |this| Cow::Borrowed(this.0.as_slice()),
-            },
-            binary_payload: |this| Cow::Borrowed(this.0.as_slice()),
-            short_blob: |this| Cow::Borrowed(this.0.as_slice()),
-            short_blob_decode: decode_principal_payload,
-        },
-    ],
-}
-
-impl From<Principal> for PrincipalValue {
-    fn from(value: Principal) -> Self {
-        Self(value)
-    }
-}
-
-impl From<PrincipalValue> for Value {
-    fn from(value: PrincipalValue) -> Self {
-        Value::Extension(Box::new(value))
-    }
-}
-
-/// Registers [`IcExtensionBinaryDecode`] for deserializing extension values embedded in rkyv archives (e.g. AST or property [`Value`](Value) blobs).
-///
-/// Idempotent for the process: only the first successful [`gleaph_gql::try_install_global_rkyv_extension_binary_decode`] wins. Call during canister or service startup before loading rkyv data that may contain [`Principal`](Principal).
-pub fn install_ic_extension_binary_decode_for_rkyv() {
-    let _ = gleaph_gql::try_install_global_rkyv_extension_binary_decode(
-        &IcExtensionBinaryDecode::INSTANCE,
-    );
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use gleaph_gql::ExtensionBinaryDecode;
     use gleaph_gql::value::cmp::compare_values;
+    use gleaph_gql::value::{Value, ValueBinaryError};
     use gleaph_gql::value_to_index_key_bytes;
 
     #[test]

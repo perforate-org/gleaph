@@ -8,12 +8,105 @@
 use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
+use std::ops::Deref;
 
 use candid::{CandidType, Principal};
 #[cfg(any(feature = "i256", feature = "u256"))]
 use ethnum::{I256, U256};
-use gleaph_gql::{ExtensionValue, Value};
+use gleaph_gql::extensions::gql_extension;
+use gleaph_gql::value::{ExtensionValue, Value, ValueBinaryError};
 use serde::{Deserialize, Serialize};
+
+/// Sortable-index domain for [`PrincipalValue`] (not the GQL extension type string).
+pub const PRINCIPAL_EXTENSION_SORTABLE_DOMAIN: &str = "Pr";
+
+/// Internet Computer [`Principal`] as a [`gleaph_gql::Value::Extension`].
+///
+/// Shared by `gleaph-gql-ic` and `gleaph-gql-ic-wire` so both Candid wire enums resolve to one
+/// Principal Extension type. Compact-binary encoding is tag 34 (see the `gql_extension!` block).
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct PrincipalValue(pub Principal);
+
+impl Deref for PrincipalValue {
+    type Target = Principal;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for PrincipalValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+fn decode_principal_payload(payload: &[u8]) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
+    let p = Principal::try_from_slice(payload)
+        .map_err(|_| ValueBinaryError::InvalidExtensionPayload)?;
+    Ok(Box::new(PrincipalValue(p)))
+}
+
+gql_extension! {
+    prefix: "IC",
+    types: [
+        {
+            rust_type: PrincipalValue,
+            type_name: "PRINCIPAL",
+            decoder: IcExtensionBinaryDecode,
+            eq: |this, other| this.0 == other.0,
+            cmp: |this, other| this.0.cmp(&other.0),
+            sortable_index_key: {
+                domain: PRINCIPAL_EXTENSION_SORTABLE_DOMAIN,
+                bytes: |this| Cow::Borrowed(this.0.as_slice()),
+            },
+            binary_payload: |this| Cow::Borrowed(this.0.as_slice()),
+            short_blob: |this| Cow::Borrowed(this.0.as_slice()),
+            short_blob_decode: decode_principal_payload,
+        },
+    ],
+}
+
+impl From<Principal> for PrincipalValue {
+    fn from(value: Principal) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PrincipalValue> for Value {
+    fn from(value: PrincipalValue) -> Self {
+        Value::Extension(Box::new(value))
+    }
+}
+
+/// Extract a [`Principal`] if this value is a [`PrincipalValue`] extension.
+pub fn value_as_principal(value: &Value) -> Option<Principal> {
+    match value {
+        Value::Extension(ext) => ext.as_any().downcast_ref::<PrincipalValue>().map(|p| p.0),
+        _ => None,
+    }
+}
+
+/// Wrap a [`Principal`] as [`Value::Extension`].
+#[inline]
+pub fn principal_to_value(p: Principal) -> Value {
+    Value::Extension(Box::new(PrincipalValue(p)))
+}
+
+/// Registers [`IcExtensionBinaryDecode`] for deserializing extension values embedded in rkyv
+/// archives (e.g. AST or property [`Value`] blobs).
+///
+/// Idempotent for the process: only the first successful
+/// [`gleaph_gql::try_install_global_rkyv_extension_binary_decode`] wins. Call during canister or
+/// service startup before loading rkyv data that may contain [`Principal`]. Requires the `rkyv`
+/// feature.
+#[cfg(feature = "rkyv")]
+pub fn install_ic_extension_binary_decode_for_rkyv() {
+    let _ = gleaph_gql::try_install_global_rkyv_extension_binary_decode(
+        &IcExtensionBinaryDecode::INSTANCE,
+    );
+}
 
 #[cfg(feature = "chrono")]
 mod temporal_chrono;

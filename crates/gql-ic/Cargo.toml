@@ -16,6 +16,7 @@ gleaph-gql = { path = "../gql", features = [
     "f128",
     "f256",
 ] }
+gleaph-gql-ic-wire = { workspace = true, features = ["rkyv"] }
 gleaph-graph-kernel.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
