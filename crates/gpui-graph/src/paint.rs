@@ -37,16 +37,14 @@ pub struct PaintNode {
 pub struct PaintEdge {
     /// Stable edge identity.
     pub id: EdgeId,
-    /// Canvas-local pixel source position.
+    /// Canvas-local pixel source position (the source node center).
     pub source: Vec2,
-    /// Canvas-local pixel target position.
+    /// Canvas-local pixel target position (the target node center).
     pub target: Vec2,
-    /// Optional quadratic Bézier control point. `None` renders a straight line.
-    pub control: Option<Vec2>,
-    /// The onigiri self-loop path, present only for a self-loop
-    /// (`source == target`). Mutually exclusive with `control`: when this is
-    /// `Some`, `control` is `None`.
-    pub self_loop: Option<Vec<Bezier>>,
+    /// The trimmed quadratic Bézier path to draw. A self-loop is a list of
+    /// onigiri segments; any other edge is a single segment trimmed to the node
+    /// boundaries. The path already stops just outside each node boundary.
+    pub path: Vec<Bezier>,
     /// Whether the edge is directed.
     pub direction: EdgeDirection,
     /// Whether the edge is selected.
@@ -264,38 +262,32 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
         let is_self_loop = (*source - *target).length() < f32::EPSILON;
-        let (control, self_loop, apex) = if is_self_loop {
-            let path = self_loop_path(edge.source, *source, graph, node_position, viewport, style);
-            let apex = path
-                .first()
-                .map(|(_, _, p2)| *p2)
-                .expect("self-loop has an apex");
-            (None, Some(path), Some(apex))
+        let path = edge_path(
+            edge,
+            &groups,
+            *candidate_index,
+            graph,
+            node_position,
+            viewport,
+            style,
+        );
+        let apex = if is_self_loop {
+            path.first().map(|(_, _, p2)| *p2)
         } else {
-            (
-                edge_control_point(*source, *target, &groups, *candidate_index),
-                None,
-                None,
-            )
+            None
         };
-        frame.edges.push(PaintEdge {
-            id: *id,
-            source: *source,
-            target: *target,
-            control,
-            self_loop,
-            direction: edge.direction,
-            selected: selection.contains_edge(*id),
-            hovered: hover.edge == Some(*id),
-        });
-        if let Some(text) = edge_label(*id, &edge.data) {
-            // Place the label at the curve's actual midpoint (quadratic Bézier
-            // at t = 0.5), offset perpendicular to the curve so it does not
-            // overlap the edge line. A self-loop's label sits at the onigiri's
-            // base center (away from the node) so it is clear of the node.
-            let (position, offset) = if is_self_loop {
-                (apex.expect("self-loop has a base"), Vec2::new(0.0, -1.0))
+        // Compute the label position before moving `path` into the edge.
+        let label = edge_label(*id, &edge.data).map(|text| {
+            if is_self_loop {
+                // A self-loop's label sits at the onigiri's base center (away
+                // from the node) so it is clear of the node.
+                (apex.expect("self-loop has a base"), Vec2::new(0.0, -1.0), text)
             } else {
+                // The label sits at the midpoint of the trimmed curve, so
+                // parallel edges (which bow to different control points) get
+                // distinct label positions instead of overlapping.
+                let (p0, p1, p2) = path[0];
+                let position = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
                 let tangent = *target - *source;
                 let len = tangent.length();
                 // Normalize the normal so its y component is always upward.
@@ -307,12 +299,19 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 } else {
                     Vec2::new(0.0, -1.0)
                 };
-                let position = match control {
-                    Some(control) => 0.25 * *source + 0.5 * control + 0.25 * *target,
-                    None => (*source + *target) * 0.5,
-                };
-                (position, normal)
-            };
+                (position, normal, text)
+            }
+        });
+        frame.edges.push(PaintEdge {
+            id: *id,
+            source: *source,
+            target: *target,
+            path,
+            direction: edge.direction,
+            selected: selection.contains_edge(*id),
+            hovered: hover.edge == Some(*id),
+        });
+        if let Some((position, offset, text)) = label {
             frame.edge_labels.push(PaintEdgeLabel {
                 position,
                 offset,
@@ -355,6 +354,117 @@ pub(crate) fn edge_control_point(
     // 0.2 * len provides a gentle curve similar to the reference image.
     let offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * len * 0.2;
     Some(midpoint + normal * offset)
+}
+
+/// Build the trimmed quadratic Bézier path for an edge, in screen/canvas-local
+/// coordinates.
+///
+/// A self-loop returns the onigiri path; any other edge returns a single
+/// segment trimmed to the node boundaries. Both the paint layer and hit testing
+/// use this so the drawn and selectable geometry always match.
+pub(crate) fn edge_path<N, E>(
+    edge: &Edge<E>,
+    groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
+    index: usize,
+    graph: &Graph<N, E>,
+    node_position: &dyn Fn(NodeId) -> Option<Vec2>,
+    viewport: &Viewport,
+    style: &GraphStyle,
+) -> Vec<Bezier> {
+    let source = viewport
+        .world_to_screen(node_position(edge.source).expect("edge source has a position"));
+    let target = viewport
+        .world_to_screen(node_position(edge.target).expect("edge target has a position"));
+    if (source - target).length() < f32::EPSILON {
+        self_loop_path(edge.source, source, graph, node_position, viewport, style)
+    } else {
+        let control = edge_control_point(source, target, groups, index);
+        let control = control.unwrap_or((source + target) * 0.5);
+        vec![trim_curve_to_node_boundary(source, control, target, style.node_radius)]
+    }
+}
+
+/// Trim a quadratic Bézier edge `(source, control, target)` along its own path
+/// so the endpoints stop just outside each node boundary, emerging from the
+/// node center rather than the node edge.
+///
+/// `source` and `target` are the two node centers. The curve is trimmed at the
+/// parameter `t` where it first leaves the source node's boundary and the
+/// parameter where it last enters the target node's boundary, found by binary
+/// search on the curve parameter so the result is smooth under zoom.
+pub(crate) fn trim_curve_to_node_boundary(
+    source: Vec2,
+    control: Vec2,
+    target: Vec2,
+    radius: f32,
+) -> Bezier {
+    let gap = radius + 2.0;
+    let t_start = boundary_t(source, control, target, source, gap, true);
+    let t_end = boundary_t(source, control, target, target, gap, false);
+    sub_bezier(source, control, target, t_start, t_end)
+}
+
+/// Find the parameter `t` where the curve first leaves (or last enters) the
+/// node boundary centered at `center` with radius `gap`.
+///
+/// `leaving` is `true` to find the first `t` where the curve is at least `gap`
+/// from `center` (the source end), and `false` to find the last `t` where it is
+/// still at least `gap` from `center` (the target end). Binary search on the
+/// curve parameter keeps the result smooth under zoom.
+fn boundary_t(
+    p0: Vec2,
+    p1: Vec2,
+    p2: Vec2,
+    center: Vec2,
+    gap: f32,
+    leaving: bool,
+) -> f32 {
+    let mut lo = 0.0f32;
+    let mut hi = 1.0f32;
+    for _ in 0..32 {
+        let mid = (lo + hi) * 0.5;
+        let p = bezier_point(p0, p1, p2, mid);
+        let outside = (p - center).length() >= gap;
+        if leaving {
+            // Move hi down while outside, lo up while inside.
+            if outside {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        } else {
+            // Move lo up while outside, hi down while inside.
+            if outside {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+    }
+    (lo + hi) * 0.5
+}
+
+/// A point on a quadratic Bézier at parameter `t`.
+fn bezier_point(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> Vec2 {
+    let inv = 1.0 - t;
+    inv * inv * p0 + 2.0 * inv * t * p1 + t * t * p2
+}
+
+/// The sub-curve of a quadratic Bézier from parameter `t0` to `t1`.
+fn sub_bezier(p0: Vec2, p1: Vec2, p2: Vec2, t0: f32, t1: f32) -> Bezier {
+    // Subdivide at t0 to get the [t0, 1] piece, then at the normalized t1.
+    let (_, right) = subdivide(p0, p1, p2, t0);
+    let s = (t1 - t0) / (1.0 - t0);
+    let (left, _) = subdivide(right.0, right.1, right.2, s);
+    left
+}
+
+/// Split a quadratic Bézier at parameter `t` into `[0, t]` and `[t, 1]`.
+fn subdivide(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> (Bezier, Bezier) {
+    let ab = p0 + (p1 - p0) * t;
+    let bc = p1 + (p2 - p1) * t;
+    let abc = ab + (bc - ab) * t;
+    ((p0, ab, abc), (abc, bc, p2))
 }
 
 /// Compute the onigiri self-loop path for a node.
@@ -776,7 +886,11 @@ mod tests {
         });
         assert_eq!(frame.edge_labels.len(), 1);
         assert_eq!(frame.edge_labels[0].text, "knows");
-        assert_eq!(frame.edge_labels[0].position, Vec2::new(55.0, 50.0));
+        let pos = frame.edge_labels[0].position;
+        assert!(
+            (pos - Vec2::new(55.0, 50.0)).length() < 1e-3,
+            "label should sit at the edge midpoint, got {pos:?}"
+        );
     }
 
     #[test]
@@ -807,7 +921,7 @@ mod tests {
             hover: &Hover::default(),
         });
         assert_eq!(frame.edges.len(), 1);
-        assert_eq!(frame.edges[0].control, None);
+        assert_eq!(frame.edges[0].path.len(), 1, "single edge is one segment");
     }
 
     #[test]
@@ -840,13 +954,18 @@ mod tests {
             hover: &Hover::default(),
         });
         assert_eq!(frame.edges.len(), 3);
-        let controls: Vec<_> = frame.edges.iter().map(|e| e.control).collect();
+        // Each parallel edge is a single curved segment; the control points
+        // (p1 of each segment) should be distinct and fanned vertically.
+        let controls: Vec<Vec2> = frame
+            .edges
+            .iter()
+            .map(|e| e.path[0].1)
+            .collect();
         assert!(
-            controls.iter().all(|c| c.is_some()),
+            controls.iter().all(|c| c.is_finite()),
             "parallel edges must curve"
         );
-        // The three control points should be distinct and fanned vertically.
-        let ys: Vec<f32> = controls.iter().map(|c| c.unwrap().y).collect();
+        let ys: Vec<f32> = controls.iter().map(|c| c.y).collect();
         assert!(
             ys[0] != ys[1] && ys[1] != ys[2],
             "control points must be fanned"
@@ -879,8 +998,7 @@ mod tests {
         });
         assert_eq!(frame.edges.len(), 1);
         let edge = &frame.edges[0];
-        assert!(edge.control.is_none(), "self-loop has no control point");
-        let path = edge.self_loop.as_ref().expect("self-loop has a path");
+        let path = &edge.path;
         assert_eq!(path.len(), 2, "onigiri has two segments");
         // The base center (p2 of the first segment) is above the node.
         let base = path[0].2;
@@ -914,7 +1032,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
-        let path = frame.edges[0].self_loop.as_ref().unwrap();
+        let path = &frame.edges[0].path;
         let base = path[0].2;
         // With no other edges the onigiri points straight up: base directly
         // above the node center.
@@ -953,13 +1071,13 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
-        // The self-loop is the edge with source == target.
+        // The self-loop is the edge with source == target (path has 2 segments).
         let self_edge = frame
             .edges
             .iter()
-            .find(|e| e.self_loop.is_some())
+            .find(|e| e.path.len() > 1)
             .expect("self-loop edge present");
-        let path = self_edge.self_loop.as_ref().unwrap();
+        let path = &self_edge.path;
         let base = path[0].2;
         // The other edge points right (+x), so the onigiri base points left (-x).
         assert!(
@@ -992,7 +1110,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
-        let path = frame.edges[0].self_loop.as_ref().unwrap();
+        let path = &frame.edges[0].path;
         let start = path[0].0;
         let end = path[1].2;
         let center = frame.edges[0].source;
@@ -1047,7 +1165,7 @@ mod tests {
                 selection: &Selection::new(),
                 hover: &Hover::default(),
             });
-            let path = frame.edges[0].self_loop.as_ref().unwrap();
+            let path = &frame.edges[0].path;
             let base = path[0].2;
             (frame.edges[0].source.y - base.y).abs()
         };

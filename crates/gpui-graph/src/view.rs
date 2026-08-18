@@ -111,11 +111,18 @@ impl CanvasCoordinates {
         position + self.origin
     }
 
-    fn edge_endpoints(self, edge: &crate::paint::PaintEdge) -> (Vec2, Vec2) {
-        (
-            self.canvas_to_window(edge.source),
-            self.canvas_to_window(edge.target),
-        )
+    /// Convert an edge's canvas-local path to window-space coordinates.
+    fn edge_path_window(self, edge: &crate::paint::PaintEdge) -> Vec<crate::paint::Bezier> {
+        edge.path
+            .iter()
+            .map(|(p0, p1, p2)| {
+                (
+                    self.canvas_to_window(*p0),
+                    self.canvas_to_window(*p1),
+                    self.canvas_to_window(*p2),
+                )
+            })
+            .collect()
     }
 
     fn node_bounds(self, node: &crate::paint::PaintNode) -> Bounds<gpui::Pixels> {
@@ -462,7 +469,6 @@ where
                             .collect();
                         // Edges first, then nodes (§18.1).
                         for edge in &frame.edges {
-                            let (source, target) = coordinates.edge_endpoints(edge);
                             let color = if edge.selected {
                                 style.edge_color_selected
                             } else if edge.hovered {
@@ -470,30 +476,43 @@ where
                             } else {
                                 style.edge_color
                             };
-                            paint_edge(
-                                window,
-                                edge,
-                                source,
-                                target,
-                                &style,
-                                color,
-                                &label_rects,
-                            );
+                            let path = coordinates.edge_path_window(edge);
+                            paint_edge(window, &path, &style, color, &label_rects);
                             if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
                             {
-                                paint_edge_arrow(window, source, target, &style, color);
+                                // The arrow sits at the end of the edge's path,
+                                // pointing along the curve's tangent there. For
+                                // a self-loop that is the onigiri's end; for any
+                                // other edge it is the trimmed curve's end, just
+                                // outside the target node.
+                                let (_, p1, p2) = path.last().expect("edge has segments");
+                                let dir = (*p2 - *p1).normalize();
+                                let arrow_source = *p2 - dir * style.edge_arrow_size;
+                                let arrow_target = *p2;
+                                paint_edge_arrow(
+                                    window,
+                                    arrow_source,
+                                    arrow_target,
+                                    &style,
+                                    color,
+                                );
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
-                                    trace
-                                        .borrow_mut()
-                                        .push(TestPaintPrimitive::Arrow { source, target });
+                                    trace.borrow_mut().push(TestPaintPrimitive::Arrow {
+                                        source: arrow_source,
+                                        target: arrow_target,
+                                    });
                                 });
                             }
                             #[cfg(test)]
                             TEST_PAINT_TRACE.with(|trace| {
-                                trace
-                                    .borrow_mut()
-                                    .push(TestPaintPrimitive::Edge { source, target });
+                                let first = path.first().map(|(p0, _, _)| *p0);
+                                let last = path.last().map(|(_, _, p2)| *p2);
+                                if let (Some(source), Some(target)) = (first, last) {
+                                    trace
+                                        .borrow_mut()
+                                        .push(TestPaintPrimitive::Edge { source, target });
+                                }
                             });
                         }
                         for node in &frame.nodes {
@@ -558,69 +577,25 @@ impl<NK, EK, N, E> IntoElement for GraphView<NK, EK, N, E> {
     }
 }
 
-/// Trim an edge's endpoints inward by `radius` along the edge direction so the
-/// line and arrowhead stop at the node boundary instead of beneath the nodes.
-fn trim_to_node_boundary(source: Vec2, target: Vec2, radius: f32) -> (Vec2, Vec2) {
-    let dir = target - source;
-    let len = dir.length();
-    if len < f32::EPSILON {
-        return (source, target);
-    }
-    let unit = dir / len;
-    let inset = radius.min(len * 0.5);
-    (source + unit * inset, target - unit * inset)
-}
-
-/// Paint an edge as a straight line, a quadratic Bézier curve, or an onigiri
-/// self-loop path.
+/// Paint an edge as a list of quadratic Bézier segments.
 ///
-/// `source` and `target` are window-space endpoints. When `control` is `Some`,
-/// the edge is drawn as a quadratic Bézier curve through that control point;
-/// otherwise it is a straight line. Both endpoints are trimmed to the node
-/// boundary so the edge is not hidden beneath the nodes. When `self_loop` is
-/// `Some`, the edge is a self-loop drawn as the given onigiri path (a list of
-/// quadratic Bézier segments that already start and end at the node boundary).
-///
-/// The edge is split at the boundaries of any edge-label rectangles so the
-/// label stays readable over any background: each curve is adaptively subdivided
-/// and only the sub-curves that do not pass behind a label are drawn. Each
-/// drawn piece remains a true quadratic Bézier, so the curve keeps its shape at
-/// any zoom level.
+/// `path` is the edge's trimmed path in window-space: a self-loop is a list of
+/// onigiri segments, and any other edge is a single segment trimmed to the node
+/// boundaries. Each segment is split at the boundaries of any edge-label
+/// rectangles so the label stays readable over any background: the curve is
+/// adaptively subdivided and only the sub-curves that do not pass behind a
+/// label are drawn. Each drawn piece remains a true quadratic Bézier, so the
+/// curve keeps its shape at any zoom level.
 fn paint_edge(
     window: &mut Window,
-    edge: &crate::paint::PaintEdge,
-    source: Vec2,
-    target: Vec2,
+    path: &[crate::paint::Bezier],
     style: &GraphStyle,
     color: gpui::Hsla,
     label_rects: &[Bounds<gpui::Pixels>],
 ) {
-    let radius = style.node_radius;
-    let (line_source, line_target) = if (source - target).length() < f32::EPSILON {
-        // Self-loop: the onigiri path already starts and ends at the node
-        // boundary, so the endpoints are used as-is.
-        (source, target)
-    } else {
-        trim_to_node_boundary(source, target, radius)
-    };
-
     let mut builder = PathBuilder::stroke(px(style.edge_width));
-    if let Some(path) = &edge.self_loop {
-        // Draw each onigiri segment, masking each behind labels.
-        for (p0, p1, p2) in path {
-            for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects) {
-                builder.move_to(point(px(curve.0.x), px(curve.0.y)));
-                builder.curve_to(
-                    point(px(curve.2.x), px(curve.2.y)),
-                    point(px(curve.1.x), px(curve.1.y)),
-                );
-            }
-        }
-    } else {
-        // Represent the edge as a quadratic Bézier. A straight edge uses the
-        // midpoint as its control point, which traces the same line.
-        let control = edge.control.unwrap_or((line_source + line_target) * 0.5);
-        for curve in visible_bezier_curves(line_source, control, line_target, label_rects) {
+    for (p0, p1, p2) in path {
+        for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects) {
             builder.move_to(point(px(curve.0.x), px(curve.0.y)));
             builder.curve_to(
                 point(px(curve.2.x), px(curve.2.y)),
@@ -1384,26 +1359,40 @@ mod tests {
         clear_test_paint_trace();
         draw_graph_view(cx, &view, origin, Vec2::new(200.0, 100.0));
 
+        let trace = take_test_paint_trace();
+        assert_eq!(trace.len(), 4);
+        // The arrow sits at the trimmed edge's end, just outside the target
+        // node (radius 6 + gap 2 = 8 from the node center at x=110), pointing
+        // left. The edge is trimmed to the same boundary. Compare with a small
+        // tolerance because the boundary is found by binary search.
+        let approx = |a: Vec2, b: Vec2| (a - b).length() < 1e-2;
+        match &trace[0] {
+            TestPaintPrimitive::Arrow { source, target } => {
+                assert!(approx(*source, Vec2::new(origin.x + 94.0, origin.y + 50.0)));
+                assert!(approx(*target, Vec2::new(origin.x + 102.0, origin.y + 50.0)));
+            }
+            other => panic!("expected arrow, got {other:?}"),
+        }
+        match &trace[1] {
+            TestPaintPrimitive::Edge { source, target } => {
+                assert!(approx(*source, Vec2::new(origin.x + 98.0, origin.y + 50.0)));
+                assert!(approx(*target, Vec2::new(origin.x + 102.0, origin.y + 50.0)));
+            }
+            other => panic!("expected edge, got {other:?}"),
+        }
         assert_eq!(
-            take_test_paint_trace(),
-            vec![
-                TestPaintPrimitive::Arrow {
-                    source: Vec2::new(origin.x + 90.0, origin.y + 50.0),
-                    target: Vec2::new(origin.x + 110.0, origin.y + 50.0),
-                },
-                TestPaintPrimitive::Edge {
-                    source: Vec2::new(origin.x + 90.0, origin.y + 50.0),
-                    target: Vec2::new(origin.x + 110.0, origin.y + 50.0),
-                },
-                TestPaintPrimitive::Node {
-                    origin: Vec2::new(origin.x + 84.0, origin.y + 44.0),
-                    size: Vec2::splat(12.0),
-                },
-                TestPaintPrimitive::Node {
-                    origin: Vec2::new(origin.x + 104.0, origin.y + 44.0),
-                    size: Vec2::splat(12.0),
-                },
-            ]
+            trace[2],
+            TestPaintPrimitive::Node {
+                origin: Vec2::new(origin.x + 84.0, origin.y + 44.0),
+                size: Vec2::splat(12.0),
+            }
+        );
+        assert_eq!(
+            trace[3],
+            TestPaintPrimitive::Node {
+                origin: Vec2::new(origin.x + 104.0, origin.y + 44.0),
+                size: Vec2::splat(12.0),
+            }
         );
     }
 

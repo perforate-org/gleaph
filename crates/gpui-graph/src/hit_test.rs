@@ -64,48 +64,35 @@ pub fn hit_test<N, E>(
     // curve control points match the paint layer.
     let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
         std::collections::HashMap::new();
-    let mut edge_screens: Vec<(EdgeId, Vec2, Vec2)> = Vec::new();
+    let mut edge_ids: Vec<EdgeId> = Vec::new();
     for (id, edge) in graph.edges() {
-        let Some(source_world) = node_position(edge.source) else {
+        if node_position(edge.source).is_none() || node_position(edge.target).is_none() {
             continue;
-        };
-        let Some(target_world) = node_position(edge.target) else {
-            continue;
-        };
-        let source = viewport.world_to_screen(source_world);
-        let target = viewport.world_to_screen(target_world);
-        let index = edge_screens.len();
+        }
+        let index = edge_ids.len();
         groups
             .entry((edge.source, edge.target))
             .or_default()
             .push(index);
-        edge_screens.push((id, source, target));
+        edge_ids.push(id);
     }
-    for (index, (id, source, target)) in edge_screens.iter().enumerate() {
-        let is_self_loop = (*source - *target).length() < f32::EPSILON;
-        let dist = if is_self_loop {
-            // A self-loop is an onigiri path; measure the minimum distance to
-            // any of its segments.
-            let path = crate::paint::self_loop_path(
-                graph.edge(*id).map(|e| e.source).unwrap_or_default(),
-                *source,
-                graph,
-                node_position,
-                viewport,
-                style,
-            );
-            path.iter()
-                .map(|(p0, p1, p2)| distance_to_quadratic_bezier(screen_point, *p0, *p1, *p2))
-                .fold(f32::INFINITY, f32::min)
-        } else {
-            let control = crate::paint::edge_control_point(*source, *target, &groups, index);
-            match control {
-                Some(control) => {
-                    distance_to_quadratic_bezier(screen_point, *source, control, *target)
-                }
-                None => distance_to_segment(screen_point, *source, *target),
-            }
-        };
+    for (index, id) in edge_ids.iter().enumerate() {
+        let edge = graph.edge(*id).expect("edge exists");
+        // Build the same trimmed path as the paint layer so the selectable
+        // geometry matches what is drawn.
+        let path = crate::paint::edge_path(
+            edge,
+            &groups,
+            index,
+            graph,
+            node_position,
+            viewport,
+            style,
+        );
+        let dist = path
+            .iter()
+            .map(|(p0, p1, p2)| distance_to_quadratic_bezier(screen_point, *p0, *p1, *p2))
+            .fold(f32::INFINITY, f32::min);
         let threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
         if dist <= threshold && best_edge.is_none_or(|(_, d)| dist < d) {
             best_edge = Some((*id, dist));

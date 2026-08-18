@@ -1132,16 +1132,15 @@ layer assigns a quadratic Bézier control point:
 - parallel edges are fanned perpendicular to the edge direction,
 - a self-loop renders as an onigiri (rounded triangle) path.
 
-The control point is stored on `PaintEdge.control` and computed in
-`build_paint_frame` by grouping edges by their `(source, target)` node pair.
-Hit testing samples the curve so curved edges remain selectable.
+Every edge is stored on `PaintEdge.path` as a list of quadratic Bézier segments
+already trimmed to the node boundaries, so the endpoints emerge from the node
+center rather than the node edge. A non-loop edge is a single segment; a
+self-loop is a list of onigiri segments. Hit testing samples each segment so
+curved edges and self-loops remain selectable.
 
 A self-loop uses the node as the apex (tip) of a rounded triangle: a wide,
-rounded base sits away from the node. The path is a list of quadratic Bézier
-segments stored on `PaintEdge.self_loop` (mutually exclusive with `control`).
-The loop points away from the node's other incident edges, defaulting to up
-when the node has no other edges. Hit testing samples each segment so the
-onigiri remains selectable.
+rounded base sits away from the node. The loop points away from the node's
+other incident edges, defaulting to up when the node has no other edges.
 
 ---
 
