@@ -763,7 +763,7 @@ mod tests {
                     ("data".into(), GqlWireValue::Bytes(vec![1, 2, 3])),
                     (
                         "owner".into(),
-                        GqlWireValue::Principal(Principal::anonymous().as_slice().to_vec()),
+                        GqlWireValue::Principal(Principal::anonymous()),
                     ),
                 ],
             }],

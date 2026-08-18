@@ -83,7 +83,7 @@ pub enum GqlWireValue {
         months: i32,
         nanos: i64,
     },
-    Principal(Vec<u8>),
+    Principal(Principal),
     ExtensionLeaf {
         type_name: String,
         payload: Vec<u8>,
@@ -758,10 +758,7 @@ impl GqlWireValue {
                 offset_seconds,
             } => Value::ZonedTime(nanos, offset_seconds),
             Self::Duration { months, nanos } => Value::Duration(months, nanos),
-            Self::Principal(bytes) => Value::Extension(Box::new(GqlPrincipal(
-                Principal::try_from_slice(&bytes)
-                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Principal"))?,
-            ))),
+            Self::Principal(principal) => Value::Extension(Box::new(GqlPrincipal(principal))),
             Self::ExtensionLeaf { .. } => {
                 return Err(GqlWireDecodeError::UnsupportedValue("ExtensionLeaf"));
             }
@@ -883,7 +880,7 @@ mod tests {
             "1.25"
         );
         let principal = Principal::anonymous();
-        let value = GqlWireValue::Principal(principal.as_slice().to_vec())
+        let value = GqlWireValue::Principal(principal)
             .try_into_gql_value()
             .unwrap();
         assert!(matches!(value, Value::Extension(_)));

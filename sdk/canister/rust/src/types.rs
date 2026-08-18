@@ -1,7 +1,7 @@
 //! Router-facing wire types, the query response envelope, read freshness contracts, and the
 //! typed-binding helpers used by `gleaph-codegen` output.
 
-use candid::{CandidType, Deserialize, Principal};
+use candid::{CandidType, Deserialize};
 
 /// Principal extension used when projecting IC wire values into logical GQL values.
 pub use gleaph_gql_ic_wire::GqlPrincipal;
@@ -473,11 +473,7 @@ pub fn gql_wire_value_to_json(
         GqlWireValue::Duration { months, nanos } => {
             serde_json::json!({ "months": months, "nanos": nanos })
         }
-        GqlWireValue::Principal(bytes) => {
-            let principal = Principal::try_from_slice(&bytes)
-                .map_err(|_| GqlWireDecodeError::InvalidNumeric("Principal"))?;
-            serde_json::Value::String(principal.to_text())
-        }
+        GqlWireValue::Principal(principal) => serde_json::Value::String(principal.to_text()),
         GqlWireValue::ExtensionLeaf { .. } => {
             return Err(GqlWireDecodeError::UnsupportedValue("ExtensionLeaf"));
         }
