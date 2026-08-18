@@ -3,8 +3,6 @@
 
 use candid::{CandidType, Deserialize};
 
-/// Principal extension used when projecting IC wire values into logical GQL values.
-pub use gleaph_gql_ic_wire::GqlPrincipal;
 /// Decode error for the Router rows blob.
 pub use gleaph_gql_ic_wire::GqlWireDecodeError;
 use gleaph_gql_ic_wire::GqlWirePathElement;
@@ -14,6 +12,8 @@ pub use gleaph_gql_ic_wire::GqlWireRow;
 pub use gleaph_gql_ic_wire::GqlWireRows;
 /// One wire value in a materialized row.
 pub use gleaph_gql_ic_wire::GqlWireValue;
+/// Principal extension used when projecting IC wire values into logical GQL values.
+pub use gleaph_gql_ic_wire::PrincipalValue;
 use gleaph_gql_ic_wire::decode_rows_blob;
 use gleaph_gql_params::GqlParams;
 use gleaph_gql_params::GqlPathElement;
@@ -346,7 +346,7 @@ pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDe
         }
         GqlValue::Extension(value) => value
             .as_any()
-            .downcast_ref::<GqlPrincipal>()
+            .downcast_ref::<PrincipalValue>()
             .map(|principal| serde_json::Value::String(principal.to_string()))
             .ok_or(GqlWireDecodeError::UnsupportedValue("extension"))?,
         #[cfg(any(
@@ -512,11 +512,11 @@ pub fn gql_wire_value_to_json(
 }
 
 /// Extract an IC Principal extension from a logical GQL value.
-pub fn gql_principal_from_value(value: GqlValue) -> Result<GqlPrincipal, GqlWireDecodeError> {
+pub fn gql_principal_from_value(value: GqlValue) -> Result<PrincipalValue, GqlWireDecodeError> {
     match value {
         GqlValue::Extension(value) => value
             .as_any()
-            .downcast_ref::<GqlPrincipal>()
+            .downcast_ref::<PrincipalValue>()
             .copied()
             .ok_or(GqlWireDecodeError::TypeMismatch("Principal")),
         _ => Err(GqlWireDecodeError::TypeMismatch("Principal")),

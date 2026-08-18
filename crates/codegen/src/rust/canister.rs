@@ -277,7 +277,7 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         crate::SemanticType::Text => format!("GqlValue::Text({access})"),
         crate::SemanticType::Bytes => format!("GqlValue::Bytes({access})"),
         crate::SemanticType::Principal => {
-            format!("GqlValue::Extension(Box::new(gleaph_cdk::GqlPrincipal::from_inner({access})))")
+            format!("GqlValue::Extension(Box::new(gleaph_cdk::PrincipalValue({access})))")
         }
         crate::SemanticType::Date => format!("GqlValue::from({access})"),
         crate::SemanticType::Time => format!("GqlValue::from({access})"),

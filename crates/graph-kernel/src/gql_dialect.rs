@@ -7,7 +7,7 @@
 //!
 //! Owners remain responsible for their semantics:
 //!
-//! - `gleaph-gql-ic` owns `IC.PRINCIPAL` value encoding/decoding.
+//! - `gleaph-gql-ic-wire` owns `IC.PRINCIPAL` value encoding/decoding (re-exported by `gleaph-gql-ic`).
 //! - Graph execution owns `MSG_CALLER()` and runtime-function context.
 //! - Graph planner integration owns `GLEAPH.COST` and `GLEAPH.VECTOR.*` fusion helpers.
 //! - Graph execution owns `INSERTION(e)` edge ordering.

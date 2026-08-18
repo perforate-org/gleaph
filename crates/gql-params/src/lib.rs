@@ -32,7 +32,7 @@ pub use gleaph_gql_value::types::PathElement as GqlPathElement;
 
 /// Principal extension used by named GQL parameters (wire-compatible with the Router's
 /// principal parameter decode).
-pub use gleaph_gql_ic_wire::GqlPrincipal;
+pub use gleaph_gql_ic_wire::PrincipalValue;
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql_value::Value as GqlValue;
 /// Error returned when a logical GQL value cannot be compact-binary encoded.
@@ -88,7 +88,7 @@ impl IntoGqlParam for GqlValue {
 
 impl IntoGqlParam for Principal {
     fn into_gql_param(self) -> GqlValue {
-        GqlValue::Extension(Box::new(GqlPrincipal::from_inner(self)))
+        GqlValue::Extension(Box::new(PrincipalValue(self)))
     }
 }
 

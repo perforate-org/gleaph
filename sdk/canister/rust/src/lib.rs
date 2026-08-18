@@ -39,9 +39,9 @@ pub use types::{
     AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
     BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
-    EdgePathElementId, FromGqlRow, GqlPrincipal, GqlQueryResult, GqlRecord, GqlRow, GqlValue,
-    GqlWireDecodeError, GqlWireRow, GqlWireRows, GqlWireValue, GqlZonedTime,
-    MutationLifecyclePhase, MutationToken, MutationTokenShard, PathElement, ReadMode, RouterError,
+    EdgePathElementId, FromGqlRow, GqlQueryResult, GqlRecord, GqlRow, GqlValue, GqlWireDecodeError,
+    GqlWireRow, GqlWireRows, GqlWireValue, GqlZonedTime, MutationLifecyclePhase, MutationToken,
+    MutationTokenShard, PathElement, PrincipalValue, ReadMode, RouterError,
     VectorActivationBlockReason, VertexPathElementId, gql_principal_from_value,
     gql_record_to_json_map, gql_value_to_json, gql_wire_value_to_json, take_gql_row_field,
 };
@@ -725,9 +725,9 @@ mod tests {
     #[test]
     fn principal_value_wraps_the_shared_extension() {
         let anonymous = Principal::anonymous();
-        let value = GqlValue::Extension(Box::new(GqlPrincipal::from_inner(anonymous)));
+        let value = GqlValue::Extension(Box::new(PrincipalValue(anonymous)));
         let parsed = gql_principal_from_value(value).expect("parse principal extension");
-        assert_eq!(parsed.into_inner(), anonymous);
+        assert_eq!(parsed.0, anonymous);
     }
 
     #[cfg(all(

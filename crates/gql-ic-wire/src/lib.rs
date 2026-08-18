@@ -5,7 +5,6 @@
 
 #![cfg_attr(feature = "nightly-f128", feature(f128))]
 
-use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Deref;
@@ -122,6 +121,26 @@ pub enum GqlWirePathElement {
     Edge(Vec<u8>),
 }
 
+impl From<&gleaph_gql::types::PathElement> for GqlWirePathElement {
+    fn from(value: &gleaph_gql::types::PathElement) -> Self {
+        match value {
+            gleaph_gql::types::PathElement::Vertex(id) => Self::Vertex(id.as_ref().to_vec()),
+            gleaph_gql::types::PathElement::Edge(id) => Self::Edge(id.as_ref().to_vec()),
+        }
+    }
+}
+
+impl From<&GqlWirePathElement> for gleaph_gql::types::PathElement {
+    fn from(value: &GqlWirePathElement) -> Self {
+        match value {
+            GqlWirePathElement::Vertex(id) => {
+                gleaph_gql::types::PathElement::Vertex(id.clone().into())
+            }
+            GqlWirePathElement::Edge(id) => gleaph_gql::types::PathElement::Edge(id.clone().into()),
+        }
+    }
+}
+
 /// A scalar or composite value in the Candid GQL result wire format.
 ///
 /// Exotic scalar values use opaque byte representations (big integers and decimals as
@@ -187,73 +206,6 @@ pub enum GqlWireValue {
     Record(Vec<(String, GqlWireValue)>),
 }
 
-/// Principal extension used when projecting IC wire values into logical GQL values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GqlPrincipal(pub Principal);
-
-impl GqlPrincipal {
-    /// Construct from an Internet Computer principal.
-    pub const fn from_inner(principal: Principal) -> Self {
-        Self(principal)
-    }
-
-    /// Return the wrapped Internet Computer principal.
-    pub const fn into_inner(self) -> Principal {
-        self.0
-    }
-}
-
-impl Serialize for GqlPrincipal {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0.to_text())
-    }
-}
-
-impl<'de> Deserialize<'de> for GqlPrincipal {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Principal::from_text(String::deserialize(deserializer)?)
-            .map(Self)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-impl fmt::Display for GqlPrincipal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl ExtensionValue for GqlPrincipal {
-    fn type_name(&self) -> &str {
-        "PRINCIPAL"
-    }
-
-    fn clone_box(&self) -> Box<dyn ExtensionValue> {
-        Box::new(*self)
-    }
-
-    fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|other| self == other)
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
-        Some(Cow::Borrowed(self.0.as_slice()))
-    }
-}
-
 /// One result row as ordered column/value pairs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, CandidType)]
 pub struct GqlWireRow {
@@ -261,11 +213,86 @@ pub struct GqlWireRow {
     pub columns: Vec<(String, GqlWireValue)>,
 }
 
+impl GqlWireRow {
+    /// Project one ordered logical GQL record into a wire row.
+    pub fn try_from_value_row(
+        row: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<Self, GqlWireDecodeError> {
+        let mut columns = Vec::with_capacity(row.len());
+        for (k, v) in row.iter() {
+            columns.push((k.clone(), GqlWireValue::try_from_value(v)?));
+        }
+        Ok(Self { columns })
+    }
+
+    /// Project one wire row into an ordered logical GQL record.
+    pub fn try_into_value_row(
+        self,
+    ) -> Result<std::collections::BTreeMap<String, Value>, GqlWireDecodeError> {
+        let mut out = std::collections::BTreeMap::new();
+        for (k, wv) in self.columns {
+            out.insert(k, wv.try_into_gql_value()?);
+        }
+        Ok(out)
+    }
+}
+
 /// Materialized rows returned in a Router response blob.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, CandidType)]
 pub struct GqlWireRows {
     /// Rows in result order.
     pub rows: Vec<GqlWireRow>,
+}
+
+impl GqlWireRows {
+    /// Project a slice of ordered logical GQL records into wire rows.
+    pub fn try_from_value_rows(
+        rows: &[std::collections::BTreeMap<String, Value>],
+    ) -> Result<Self, GqlWireDecodeError> {
+        rows.iter()
+            .map(GqlWireRow::try_from_value_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|rows| Self { rows })
+    }
+
+    /// Project all wire rows into ordered logical GQL records.
+    pub fn try_into_value_rows(
+        self,
+    ) -> Result<Vec<std::collections::BTreeMap<String, Value>>, GqlWireDecodeError> {
+        self.rows
+            .into_iter()
+            .map(GqlWireRow::try_into_value_row)
+            .collect()
+    }
+
+    /// Encode rows into the Router response blob format.
+    pub fn encode_blob(&self) -> Result<Vec<u8>, GqlWireDecodeError> {
+        candid::encode_one(self).map_err(|error| GqlWireDecodeError::Candid(error.to_string()))
+    }
+
+    /// Decode the opaque `rows_blob` carried by a Router response.
+    pub fn decode_blob(blob: &[u8]) -> Result<Self, GqlWireDecodeError> {
+        candid::decode_one(blob).map_err(|error| GqlWireDecodeError::Candid(error.to_string()))
+    }
+
+    /// Concatenate independent shard-local row batches (union merge).
+    pub fn merge_batch_blobs(left: &[u8], right: &[u8]) -> Result<Vec<u8>, GqlWireDecodeError> {
+        let mut merged = Self::decode_blob(left)?;
+        merged.rows.extend(Self::decode_blob(right)?.rows);
+        merged.encode_blob()
+    }
+
+    /// Merge two optional row blobs (union merge).
+    pub fn merge_optional_batch_blobs(
+        acc: Option<Vec<u8>>,
+        next: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, GqlWireDecodeError> {
+        match (acc, next) {
+            (None, None) => Ok(None),
+            (Some(blob), None) | (None, Some(blob)) => Ok(Some(blob)),
+            (Some(left), Some(right)) => Ok(Some(Self::merge_batch_blobs(&left, &right)?)),
+        }
+    }
 }
 
 /// Rust binary128 value used by generated canister bindings.
@@ -750,6 +777,21 @@ pub enum GqlWireDecodeError {
     /// A logical GQL value could not be represented as JSON.
     #[error("GQL value cannot be represented as JSON: {0}")]
     Json(String),
+    /// The GQL binary codec failed while projecting a value to/from the wire form.
+    #[error("gleaph_gql binary codec: {0:?}")]
+    Binary(#[from] ValueBinaryError),
+    /// An `ExtensionLeaf` payload could not be decoded.
+    #[error("GQL wire ExtensionLeaf payload could not be decoded ({type_name}): {source:?}")]
+    ExtensionLeafDecode {
+        type_name: String,
+        source: ValueBinaryError,
+    },
+    /// A wire value contains an invalid canonical float representation.
+    #[error("invalid canonical float representation for wire conversion: {kind}")]
+    InvalidFloatRepresentation { kind: &'static str },
+    /// A GQL params blob must decode to a Record at top level.
+    #[error("GQL params blob must decode to a Record at top level")]
+    ParamsTopLevelNotRecord,
 }
 
 /// Decode the opaque `rows_blob` carried by a Router response.
@@ -851,7 +893,7 @@ impl GqlWireValue {
                 offset_seconds,
             } => Value::ZonedTime(nanos, offset_seconds),
             Self::Duration { months, nanos } => Value::Duration(months, nanos),
-            Self::Principal(principal) => Value::Extension(Box::new(GqlPrincipal(principal))),
+            Self::Principal(principal) => Value::Extension(Box::new(PrincipalValue(principal))),
             Self::ExtensionLeaf { .. } => {
                 return Err(GqlWireDecodeError::UnsupportedValue("ExtensionLeaf"));
             }
@@ -884,6 +926,154 @@ impl GqlWireValue {
             ),
         })
     }
+
+    /// Project one IC wire value into the logical GQL value model, borrowing the value.
+    ///
+    /// Convenience for callers that hold a `&GqlWireValue` (e.g. row-column lookups) and do not
+    /// want to clone explicitly. Clones internally.
+    pub fn try_into_gql_value_ref(&self) -> Result<Value, GqlWireDecodeError> {
+        self.clone().try_into_gql_value()
+    }
+
+    /// Alias for [`Self::try_into_gql_value`], kept for callers that used the former
+    /// `IcWireValue::try_into_value` name.
+    pub fn try_into_value(&self) -> Result<Value, GqlWireDecodeError> {
+        self.try_into_gql_value_ref()
+    }
+
+    /// Project a GQL runtime value into the Candid wire value (lossless).
+    ///
+    /// Mirrors the encode direction of the shared wire enum so both the execution side and the SDK
+    /// can produce the same wire shape. `Value::Extension` is projected to [`Self::Principal`] when
+    /// it is a [`PrincipalValue`], otherwise to an opaque [`Self::ExtensionLeaf`].
+    pub fn try_from_value(value: &Value) -> Result<Self, GqlWireDecodeError> {
+        Ok(match value {
+            Value::Null => Self::Null,
+            Value::Bool(v) => Self::Bool(*v),
+            Value::Int8(v) => Self::Int8(*v),
+            Value::Int16(v) => Self::Int16(*v),
+            Value::Int32(v) => Self::Int32(*v),
+            Value::Int64(v) => Self::Int64(*v),
+            Value::Int128(v) => Self::Int128(*v),
+            #[cfg(feature = "i256")]
+            Value::Int256(v) => Self::Int256(v.0.to_le_bytes().to_vec()),
+            #[cfg(not(feature = "i256"))]
+            Value::Int256(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Int256"));
+            }
+            Value::Uint8(v) => Self::Uint8(*v),
+            Value::Uint16(v) => Self::Uint16(*v),
+            Value::Uint32(v) => Self::Uint32(*v),
+            Value::Uint64(v) => Self::Uint64(*v),
+            Value::Uint128(v) => Self::Uint128(*v),
+            #[cfg(feature = "u256")]
+            Value::Uint256(v) => Self::Uint256(v.0.to_le_bytes().to_vec()),
+            #[cfg(not(feature = "u256"))]
+            Value::Uint256(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Uint256"));
+            }
+            #[cfg(feature = "f16")]
+            Value::Float16(v) => Self::Float16(v.to_bits()),
+            #[cfg(not(feature = "f16"))]
+            Value::Float16(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Float16"));
+            }
+            Value::Float32(v) => Self::Float32(*v),
+            Value::Float64(v) => Self::Float64(*v),
+            #[cfg(feature = "nightly-f128")]
+            Value::Float128(_) => Self::Float128(canonical_float128_bytes(value)?),
+            #[cfg(feature = "f256")]
+            Value::Float256(v) => Self::Float256(v.to_le_bytes().to_vec()),
+            #[cfg(feature = "decimal")]
+            Value::Decimal(v) => Self::Decimal(v.0.serialize().to_vec()),
+            #[cfg(not(feature = "decimal"))]
+            Value::Decimal(_) => {
+                return Err(GqlWireDecodeError::UnsupportedValue("Decimal"));
+            }
+            Value::Text(v) => Self::Text(v.clone()),
+            Value::Bytes(v) => Self::Bytes(v.clone()),
+            Value::Date(v) => Self::Date(*v),
+            Value::Time(v) => Self::Time(*v),
+            Value::LocalTime(v) => Self::LocalTime(*v),
+            Value::DateTime(seconds, nanos) => Self::DateTime {
+                seconds: *seconds,
+                nanos: *nanos,
+            },
+            Value::LocalDateTime(seconds, nanos) => Self::LocalDateTime {
+                seconds: *seconds,
+                nanos: *nanos,
+            },
+            Value::ZonedDateTime(seconds, nanos, offset_seconds) => Self::ZonedDateTime {
+                seconds: *seconds,
+                nanos: *nanos,
+                offset_seconds: *offset_seconds,
+            },
+            Value::ZonedTime(nanos, offset_seconds) => Self::ZonedTime {
+                nanos: *nanos,
+                offset_seconds: *offset_seconds,
+            },
+            Value::Duration(months, nanos) => Self::Duration {
+                months: *months,
+                nanos: *nanos,
+            },
+            Value::Extension(ext) => {
+                if let Some(p) = ext.as_any().downcast_ref::<PrincipalValue>() {
+                    Self::Principal(p.0)
+                } else {
+                    Self::extension_leaf(ext.as_ref())?
+                }
+            }
+            Value::List(values) => Self::List(
+                values
+                    .iter()
+                    .map(Self::try_from_value)
+                    .collect::<Result<_, _>>()?,
+            ),
+            Value::Path(elements) => {
+                Self::Path(elements.iter().map(GqlWirePathElement::from).collect())
+            }
+            Value::Record(fields) => Self::Record(
+                fields
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), Self::try_from_value(v)?)))
+                    .collect::<Result<Vec<_>, GqlWireDecodeError>>()?,
+            ),
+        })
+    }
+
+    fn extension_leaf(ext: &dyn ExtensionValue) -> Result<Self, GqlWireDecodeError> {
+        let wrapped = Value::Extension(ext.clone_box());
+        let payload = wrapped.to_binary_bytes()?;
+        Ok(Self::ExtensionLeaf {
+            type_name: ext.type_name().to_owned(),
+            payload,
+        })
+    }
+}
+
+impl TryFrom<&Value> for GqlWireValue {
+    type Error = GqlWireDecodeError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        Self::try_from_value(value)
+    }
+}
+
+impl TryFrom<Value> for GqlWireValue {
+    type Error = GqlWireDecodeError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from_value(&value)
+    }
+}
+
+#[cfg(feature = "nightly-f128")]
+fn canonical_float128_bytes(value: &Value) -> Result<Vec<u8>, GqlWireDecodeError> {
+    let encoded = value.to_binary_bytes()?;
+    if encoded.len() != 17 || encoded[0] != 31 {
+        return Err(GqlWireDecodeError::InvalidFloatRepresentation { kind: "Float128" });
+    }
+    Ok(encoded[1..].to_vec())
 }
 
 impl GqlWireRow {
@@ -988,14 +1178,6 @@ mod tests {
         let decoded: Float256 = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded.to_le_bytes(), bytes);
         assert_eq!(decoded.into_inner(), value.into_inner());
-    }
-
-    #[test]
-    fn principal_serde_round_trips_text_form() {
-        let principal = GqlPrincipal::from_inner(Principal::anonymous());
-        let encoded = serde_json::to_string(&principal).unwrap();
-        let decoded: GqlPrincipal = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, principal);
     }
 
     #[test]

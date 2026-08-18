@@ -14,8 +14,6 @@
 //! ([`encode_gql_params_blob`] / [`decode_gql_params_blob`]): one [`Value::Record`] on the wire.
 //! [`wire::IcWireValue`] remains for Candid-structured tooling and tests where needed.
 
-#![cfg_attr(test, feature(f128))]
-
 pub use candid::Principal;
 pub mod graph_registry;
 pub mod plan_result_wire;

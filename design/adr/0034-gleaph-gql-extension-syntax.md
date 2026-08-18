@@ -17,7 +17,7 @@ Anchor timestamp: 2026-08-11 12:16:53 UTC +0000
 
 Gleaph already has several GQL-adjacent extensions:
 
-- `IC.PRINCIPAL` values in `gleaph-gql-ic`.
+- `IC.PRINCIPAL` values in `gleaph-gql-ic-wire` (single-sourced; re-exported by `gleaph-gql-ic`).
 - `MSG_CALLER()` as an IC runtime function in graph execution.
 - Ordinary `e.<inline-property>` access and `COST BY e.<inline-property>` for edge inline properties and shortest-path costs. The legacy `GLEAPH.WEIGHT(e)` compatibility surface has been removed (ADR 0051 Phase B).
 - Graph Type `ORDER BY INSERTION` and query `ORDER BY INSERTION(e)` for per-label edge insertion order (ADR 0052).
@@ -124,7 +124,7 @@ This ADR records why that contract exists and the top-level policy:
    as ad hoc string literals. A pure Rust manifest should record the canonical name, syntax class,
    implementation status, owner, and design-document anchor for each dialect extension. The manifest
    is a registry and recognizer layer, not an execution dispatcher: Router, Graph, planner
-   integration, `gleaph-gql-ic`, and the vector-index canister still own their respective semantics.
+   integration, `gleaph-gql-ic-wire`, and the vector-index canister still own their respective semantics.
 
 ## Consequences
 

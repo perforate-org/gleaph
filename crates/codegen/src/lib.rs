@@ -599,9 +599,10 @@ mod tests {
         ];
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub owner: gleaph_cdk::candid::Principal"));
-        assert!(output.contains(
-            "GqlValue::Extension(Box::new(gleaph_cdk::GqlPrincipal::from_inner(self.owner)))"
-        ));
+        assert!(
+            output
+                .contains("GqlValue::Extension(Box::new(gleaph_cdk::PrincipalValue(self.owner)))")
+        );
         assert!(output.contains(
             "GqlValue::Path(self.route.into_iter().map(gleaph_cdk::PathElement::into_gql).collect())"
         ));
