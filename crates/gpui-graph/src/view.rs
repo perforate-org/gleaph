@@ -708,6 +708,10 @@ fn masked_intervals(p0: Vec2, p1: Vec2, p2: Vec2, rmin: Vec2, rmax: Vec2) -> Vec
 
 /// The real roots in `[0, 1]` of a quadratic Bézier's coordinate equal to
 /// `value`. `axis` is `0` for x and `1` for y.
+///
+/// Uses a numerically stable quadratic solver to avoid catastrophic
+/// cancellation when the coefficients are large (e.g. a long edge with a
+/// fanned control point far from the endpoints).
 fn bezier_roots(p0: Vec2, p1: Vec2, p2: Vec2, value: f32, axis: usize) -> Vec<f32> {
     let (v0, v1, v2) = if axis == 0 {
         (p0.x, p1.x, p2.x)
@@ -720,26 +724,41 @@ fn bezier_roots(p0: Vec2, p1: Vec2, p2: Vec2, value: f32, axis: usize) -> Vec<f3
     let c = v0 - value;
 
     let mut roots = Vec::new();
-    if a.abs() < f32::EPSILON {
-        // Linear: b t + c = 0.
+    // If the quadratic term is negligible relative to the linear term, the
+    // curve is effectively linear on this axis; solve linearly to avoid
+    // catastrophic cancellation in the quadratic formula.
+    if a.abs() <= b.abs() * 1e-6 {
         if b.abs() > f32::EPSILON {
             let t = -c / b;
             if (0.0..=1.0).contains(&t) {
                 roots.push(t);
             }
         }
-    } else {
-        let disc = b * b - 4.0 * a * c;
-        if disc >= 0.0 {
-            let sqrt = disc.sqrt();
-            let t1 = (-b - sqrt) / (2.0 * a);
-            let t2 = (-b + sqrt) / (2.0 * a);
-            if (0.0..=1.0).contains(&t1) {
-                roots.push(t1);
+        return roots;
+    }
+
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return roots;
+    }
+    let sqrt = disc.sqrt();
+    if b.abs() <= f32::EPSILON {
+        // Symmetric curve (b == 0): roots are ±sqrt(-c/a).
+        let t = (-c / a).sqrt();
+        for t in [-t, t] {
+            if (0.0..=1.0).contains(&t) {
+                roots.push(t);
             }
-            if (0.0..=1.0).contains(&t2) {
-                roots.push(t2);
-            }
+        }
+        return roots;
+    }
+    // Stable quadratic formula: q = -0.5 * (b + sign(b) * sqrt(disc)).
+    let q = -0.5 * (b + b.signum() * sqrt);
+    let t1 = q / a;
+    let t2 = c / q;
+    for t in [t1, t2] {
+        if (0.0..=1.0).contains(&t) {
+            roots.push(t);
         }
     }
     roots
@@ -1005,10 +1024,17 @@ fn edge_label_bounds(
         width = width.max(f32::from(line_size.width));
         height += f32::from(line_size.height);
     }
-    let origin = point(px(anchor.x - width * 0.5), px(anchor.y));
+    // Center the label vertically on the anchor by shifting the origin up by
+    // half the total text height. Add a horizontal margin so the edge is cut
+    // slightly beyond the text, keeping the label clear of the line.
+    let margin = 4.0f32;
+    let origin = point(
+        px(anchor.x - width * 0.5 - margin),
+        px(anchor.y - height * 0.5),
+    );
     Some(Bounds {
         origin,
-        size: size(px(width), px(height)),
+        size: size(px(width + margin * 2.0), px(height)),
     })
 }
 
@@ -1036,7 +1062,10 @@ fn paint_edge_label(
     else {
         return;
     };
-    let mut origin = point(px(anchor.x), px(anchor.y));
+    // Center the label vertically on the anchor by shifting the origin up by
+    // half the total text height.
+    let total_height: f32 = lines.iter().map(|l| f32::from(l.size(line_height).height)).sum();
+    let mut origin = point(px(anchor.x), px(anchor.y - total_height * 0.5));
     for line in &lines {
         let line_size = line.size(line_height);
         let centered = point(px(anchor.x - f32::from(line_size.width) * 0.5), origin.y);
@@ -1057,7 +1086,6 @@ fn paint_edge_label(
             .push(TestPaintPrimitive::EdgeLabel { position: anchor });
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,6 +1443,38 @@ mod tests {
         // second starts exactly at the rect's right edge (x = 10).
         assert!((curves[0].2.x - 0.0).abs() < 1e-3);
         assert!((curves[1].0.x - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn visible_bezier_curves_stable_for_long_near_straight_edge() {
+        // A long edge whose control point is far from the endpoints (a fanned
+        // parallel edge). The curve is nearly straight and passes through the
+        // label rect. The mask must be a small interval around the rect, not
+        // the whole edge.
+        let rect = Bounds {
+            origin: point(px(0.0), px(-5.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        // Alice at origin, Bob far to the right; the fanned control point is
+        // far above, making a long, gently curved edge through the rect.
+        let curves = visible_bezier_curves(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(500.0, -2000.0),
+            Vec2::new(1000.0, 0.0),
+            &[rect],
+        );
+        assert!(!curves.is_empty(), "edge must not disappear");
+        // The masked region must be small: the total visible length should be
+        // close to the full edge length (only a small gap at the label).
+        let total_visible = curves
+            .iter()
+            .map(|(a, _, c)| (c - a).length())
+            .sum::<f32>();
+        let full = (Vec2::new(1000.0, 0.0) - Vec2::new(0.0, 0.0)).length();
+        assert!(
+            total_visible > full * 0.9,
+            "mask must be small, got visible {total_visible} of {full}"
+        );
     }
 
     #[test]

@@ -70,7 +70,7 @@ impl Default for GraphStyle {
             edge_arrow_size: 8.0,
             edge_arrow_shape: ArrowShape::Triangle,
             label_style: TextStyle::default(),
-            label_offset: 4.0,
+            label_offset: 0.0,
         }
     }
 }
