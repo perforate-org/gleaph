@@ -451,6 +451,15 @@ where
                     move |_bounds, frame: crate::paint::PaintFrame, window, cx| {
                         let coordinates = coordinates_paint.get();
                         let style = view_paint.read(cx).style.clone();
+                        // Compute the window-space bounds of every edge label so
+                        // edges can be cut where they pass behind a label.
+                        let label_rects: Vec<Bounds<gpui::Pixels>> = frame
+                            .edge_labels
+                            .iter()
+                            .filter_map(|label| {
+                                edge_label_bounds(window, &coordinates, label, &style)
+                            })
+                            .collect();
                         // Edges first, then nodes (§18.1).
                         for edge in &frame.edges {
                             let (source, target) = coordinates.edge_endpoints(edge);
@@ -461,7 +470,15 @@ where
                             } else {
                                 style.edge_color
                             };
-                            paint_edge(window, source, target, edge.control, &style, color);
+                            paint_edge(
+                                window,
+                                source,
+                                target,
+                                edge.control,
+                                &style,
+                                color,
+                                &label_rects,
+                            );
                             if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
                             {
                                 paint_edge_arrow(window, source, target, &style, color);
@@ -562,6 +579,12 @@ fn trim_to_node_boundary(source: Vec2, target: Vec2, radius: f32) -> (Vec2, Vec2
 /// boundary so the edge is not hidden beneath the nodes. A self-loop
 /// (`source == target`) is drawn as a loop that leaves and re-enters the node
 /// boundary.
+///
+/// The edge is split at the boundaries of any edge-label rectangles so the
+/// label stays readable over any background: the curve is adaptively subdivided
+/// and only the sub-curves that do not pass behind a label are drawn. Each
+/// drawn piece remains a true quadratic Bézier, so the curve keeps its shape at
+/// any zoom level.
 fn paint_edge(
     window: &mut Window,
     source: Vec2,
@@ -569,6 +592,7 @@ fn paint_edge(
     control: Option<Vec2>,
     style: &GraphStyle,
     color: gpui::Hsla,
+    label_rects: &[Bounds<gpui::Pixels>],
 ) {
     let radius = style.node_radius;
     let (line_source, line_target) = if (source - target).length() < f32::EPSILON {
@@ -579,22 +603,106 @@ fn paint_edge(
     } else {
         trim_to_node_boundary(source, target, radius)
     };
+
+    // Represent the edge as a quadratic Bézier. A straight edge uses the
+    // midpoint as its control point, which traces the same line.
+    let control = control.unwrap_or((line_source + line_target) * 0.5);
     let mut builder = PathBuilder::stroke(px(style.edge_width));
-    builder.move_to(point(px(line_source.x), px(line_source.y)));
-    match control {
-        Some(control) => {
-            builder.curve_to(
-                point(px(line_target.x), px(line_target.y)),
-                point(px(control.x), px(control.y)),
-            );
-        }
-        None => {
-            builder.line_to(point(px(line_target.x), px(line_target.y)));
-        }
+    for curve in visible_bezier_curves(line_source, control, line_target, label_rects) {
+        builder.move_to(point(px(curve.0.x), px(curve.0.y)));
+        builder.curve_to(
+            point(px(curve.2.x), px(curve.2.y)),
+            point(px(curve.1.x), px(curve.1.y)),
+        );
     }
     if let Ok(path) = builder.build() {
         window.paint_path(path, color);
     }
+}
+
+/// A quadratic Bézier curve `(p0, p1, p2)`.
+type Bezier = (Vec2, Vec2, Vec2);
+
+/// Adaptively subdivide a quadratic Bézier and return the sub-curves that do
+/// not pass behind any label rectangle.
+///
+/// The curve is split at the boundaries of the label rectangles. Each returned
+/// piece is a true quadratic Bézier, so the original curve shape is preserved
+/// at any zoom. Subdivision continues until a piece's control-point bounding
+/// box is smaller than the smallest label rectangle (so the bounding-box test
+/// is accurate) or no longer intersects any label rectangle. This keeps the
+/// dropped region label-sized regardless of zoom, so a long edge never
+/// disappears entirely.
+fn visible_bezier_curves(
+    p0: Vec2,
+    p1: Vec2,
+    p2: Vec2,
+    label_rects: &[Bounds<gpui::Pixels>],
+) -> Vec<Bezier> {
+    // The smallest label dimension; pieces smaller than this are treated as
+    // points for the intersection test. If there are no labels, the whole
+    // curve is returned.
+    let Some(min_label_size) = label_rects
+        .iter()
+        .map(|rect| f32::from(rect.size.width).min(f32::from(rect.size.height)))
+        .min_by(|a, b| a.total_cmp(b))
+    else {
+        return vec![(p0, p1, p2)];
+    };
+
+    let mut visible = Vec::new();
+    let mut stack = vec![(p0, p1, p2, 0usize)];
+    while let Some((a, b, c, depth)) = stack.pop() {
+        let bbox = bezier_bounds(a, b, c);
+        if !intersects_any(&bbox, label_rects) {
+            // This piece is clear of every label; keep it whole.
+            visible.push((a, b, c));
+            continue;
+        }
+        let size = bbox.1 - bbox.0;
+        if size.x <= min_label_size && size.y <= min_label_size {
+            // The piece is smaller than the label and still overlaps it, so it
+            // lies behind the label; drop it.
+            continue;
+        }
+        if depth >= 24 {
+            // Safety cap; at this depth the piece is far smaller than any
+            // label, so dropping it is correct.
+            continue;
+        }
+        // de Casteljau subdivision at t = 0.5.
+        let ab = (a + b) * 0.5;
+        let bc = (b + c) * 0.5;
+        let mid = (ab + bc) * 0.5;
+        stack.push((a, ab, mid, depth + 1));
+        stack.push((mid, bc, c, depth + 1));
+    }
+    visible
+}
+
+/// The axis-aligned bounding box of a quadratic Bézier's control points.
+fn bezier_bounds(p0: Vec2, p1: Vec2, p2: Vec2) -> (Vec2, Vec2) {
+    let min = p0.min(p1).min(p2);
+    let max = p0.max(p1).max(p2);
+    (min, max)
+}
+
+/// Whether a bounding box `(min, max)` strictly intersects any label rectangle.
+///
+/// Strict inequalities are used so a piece that merely touches a label's edge
+/// (e.g. `[10, 20]` touching a label ending at `x = 10`) is treated as clear
+/// rather than overlapping. This prevents clear pieces from being dropped.
+fn intersects_any(bbox: &(Vec2, Vec2), label_rects: &[Bounds<gpui::Pixels>]) -> bool {
+    let (min, max) = *bbox;
+    label_rects.iter().any(|rect| {
+        let rmin = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
+        let rmax = rmin
+            + Vec2::new(
+                f32::from(rect.size.width),
+                f32::from(rect.size.height),
+            );
+        min.x < rmax.x && max.x > rmin.x && min.y < rmax.y && max.y > rmin.y
+    })
 }
 
 /// Paint an arrowhead at the target end of a directed edge.
@@ -807,6 +915,40 @@ fn paint_label(
     });
 }
 
+/// Compute the window-space bounds of an edge label, or `None` if the text
+/// cannot be shaped. The bounds are used to cut edges that pass behind the
+/// label so the label stays readable over any background.
+fn edge_label_bounds(
+    window: &mut Window,
+    coordinates: &CanvasCoordinates,
+    label: &crate::paint::PaintEdgeLabel,
+    style: &GraphStyle,
+) -> Option<Bounds<gpui::Pixels>> {
+    let anchor = coordinates.canvas_to_window(label.position + label.offset * style.label_offset);
+    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
+    let line_height = style
+        .label_style
+        .line_height
+        .to_pixels(font_size.into(), window.rem_size());
+    let run = style.label_style.to_run(label.text.len());
+    let lines = window
+        .text_system()
+        .shape_text(label.text.clone().into(), font_size, &[run], None, None)
+        .ok()?;
+    let mut width = 0.0f32;
+    let mut height = 0.0f32;
+    for line in &lines {
+        let line_size = line.size(line_height);
+        width = width.max(f32::from(line_size.width));
+        height += f32::from(line_size.height);
+    }
+    let origin = point(px(anchor.x - width * 0.5), px(anchor.y));
+    Some(Bounds {
+        origin,
+        size: size(px(width), px(height)),
+    })
+}
+
 /// Paint an edge label centered at the edge midpoint, offset off the edge line.
 fn paint_edge_label(
     window: &mut Window,
@@ -815,11 +957,9 @@ fn paint_edge_label(
     label: &crate::paint::PaintEdgeLabel,
     style: &GraphStyle,
 ) {
-    // label.position is already in canvas-local pixels. 
+    // label.position is already in canvas-local pixels.
     // Apply the user-defined label_offset along the label's fixed offset direction.
-    let anchor = coordinates.canvas_to_window(
-        label.position + label.offset * style.label_offset
-    );
+    let anchor = coordinates.canvas_to_window(label.position + label.offset * style.label_offset);
     let font_size = style.label_style.font_size.to_pixels(window.rem_size());
     let line_height = style
         .label_style
@@ -1190,6 +1330,141 @@ mod tests {
                 .any(|primitive| matches!(primitive, TestPaintPrimitive::Edge { .. })),
             "the edge itself should still be painted"
         );
+    }
+
+    #[test]
+    fn visible_bezier_curves_skips_curves_inside_label_rect() {
+        // A straight horizontal edge from (-20, 0) to (20, 0), with a label
+        // rect covering x in [0, 10]. The edge is split so no returned piece
+        // passes behind the rect, and pieces remain on both sides of it.
+        let rect = Bounds {
+            origin: point(px(0.0), px(-5.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let curves = visible_bezier_curves(
+            Vec2::new(-20.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(20.0, 0.0),
+            &[rect],
+        );
+        assert!(!curves.is_empty());
+        // Every returned piece must be clear of the rect (strict overlap, so a
+        // piece touching the boundary is allowed).
+        for (a, b, c) in &curves {
+            let (min, max) = bezier_bounds(*a, *b, *c);
+            assert!(
+                max.x <= 0.0 || min.x >= 10.0,
+                "returned piece must not overlap the label rect"
+            );
+        }
+        // Pieces exist on both sides of the rect.
+        let left = curves
+            .iter()
+            .any(|(a, _, _)| a.x < 0.0);
+        let right = curves
+            .iter()
+            .any(|(a, _, _)| a.x >= 10.0);
+        assert!(left && right, "edge should remain visible on both sides of the label");
+    }
+
+    #[test]
+    fn visible_bezier_curves_returns_single_curve_when_no_label() {
+        let curves = visible_bezier_curves(
+            Vec2::new(-20.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(20.0, 0.0),
+            &[],
+        );
+        assert_eq!(curves.len(), 1);
+        assert_eq!(curves[0], (Vec2::new(-20.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(20.0, 0.0)));
+    }
+
+    #[test]
+    fn visible_bezier_curves_keeps_visible_pieces_at_high_zoom() {
+        // Simulate a high-zoom scenario: the edge spans a large window-space
+        // distance and a label rect sits near the center. The edge must not
+        // disappear entirely; visible pieces must remain on both sides.
+        let rect = Bounds {
+            origin: point(px(0.0), px(-5.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let curves = visible_bezier_curves(
+            Vec2::new(-1000.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1000.0, 0.0),
+            &[rect],
+        );
+        assert!(!curves.is_empty(), "edge must not disappear at high zoom");
+        let left = curves.iter().any(|(a, _, _)| a.x < 0.0);
+        let right = curves.iter().any(|(a, _, _)| a.x > 10.0);
+        assert!(left && right, "edge should remain visible on both sides of the label");
+    }
+
+    #[test]
+    fn visible_bezier_curves_keeps_curved_edge_at_high_zoom() {
+        // A curved edge at high zoom: the control point is far from the label
+        // rect, so most of the curve is clear of it. The edge must not
+        // disappear entirely.
+        let rect = Bounds {
+            origin: point(px(0.0), px(-5.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let curves = visible_bezier_curves(
+            Vec2::new(-1000.0, 0.0),
+            Vec2::new(0.0, 500.0),
+            Vec2::new(1000.0, 0.0),
+            &[rect],
+        );
+        assert!(!curves.is_empty(), "curved edge must not disappear at high zoom");
+    }
+
+    #[test]
+    fn visible_bezier_curves_keeps_edge_when_label_centered_at_high_zoom() {
+        // Reproduces the reported bug: at high zoom a label near the center of
+        // a long edge caused the whole edge to disappear. The edge must remain
+        // visible on both sides of the label.
+        let rect = Bounds {
+            origin: point(px(0.0), px(-5.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let curves = visible_bezier_curves(
+            Vec2::new(-1.0e6, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0e6, 0.0),
+            &[rect],
+        );
+        assert!(!curves.is_empty(), "edge must not disappear at high zoom");
+        let left = curves.iter().any(|(a, _, _)| a.x < 0.0);
+        let right = curves.iter().any(|(a, _, _)| a.x > 10.0);
+        assert!(left && right, "edge should remain visible on both sides of the label");
+    }
+
+    #[test]
+    fn visible_bezier_curves_preserves_curve_shape() {
+        // A curved edge whose control-point bounding box does not intersect the
+        // label rect should be returned whole.
+        let rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let curves = visible_bezier_curves(
+            Vec2::new(-20.0, 0.0),
+            Vec2::new(0.0, 50.0),
+            Vec2::new(20.0, 0.0),
+            &[rect],
+        );
+        // The curve's bbox (y in [0, 50]) intersects the rect (y in [0, 10]),
+        // so it is subdivided; the pieces that pass behind the rect are dropped.
+        assert!(!curves.is_empty());
+        // Every returned piece must be clear of the rect (strict overlap, so a
+        // piece touching the boundary is allowed).
+        for (a, b, c) in &curves {
+            let (min, max) = bezier_bounds(*a, *b, *c);
+            assert!(
+                max.y <= 0.0 || min.y >= 10.0 || max.x <= 0.0 || min.x >= 10.0,
+                "returned piece must not overlap the label rect"
+            );
+        }
     }
 
     #[gpui::test]

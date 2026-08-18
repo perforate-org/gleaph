@@ -172,9 +172,9 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         }
     }
 
-    // Collect visible edges, then assign curve control points so parallel
+    // Collect candidate edges, then assign curve control points so parallel
     // edges and self-loops are separated visually.
-    let mut visible_edges: Vec<(EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
+    let mut candidate_edges: Vec<(EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
     for (id, edge) in graph.edges() {
         let Some(source_world) = node_position(edge.source) else {
             continue;
@@ -182,32 +182,60 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         let Some(target_world) = node_position(edge.target) else {
             continue;
         };
-        // Cull edges whose endpoints are both outside the visible bounds.
-        let source_visible = point_in_bounds(source_world, &visible, margin);
-        let target_visible = point_in_bounds(target_world, &visible, margin);
-        if !source_visible && !target_visible {
-            continue;
-        }
-        visible_edges.push((
-            id,
-            edge,
-            viewport.world_to_screen(source_world),
-            viewport.world_to_screen(target_world),
-        ));
+        candidate_edges.push((id, edge, source_world, target_world));
     }
 
     // Group edges by their (source, target) node pair to detect parallels.
     let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
         std::collections::HashMap::new();
-    for (index, (_, edge, _, _)) in visible_edges.iter().enumerate() {
+    for (index, (_, edge, _, _)) in candidate_edges.iter().enumerate() {
         groups
             .entry((edge.source, edge.target))
             .or_default()
             .push(index);
     }
 
-    for (index, (id, edge, source, target)) in visible_edges.iter().enumerate() {
-        let control = edge_control_point(*source, *target, &groups, index);
+    let mut visible_edges: Vec<(usize, EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
+    for (index, (id, edge, source_world, target_world)) in candidate_edges.iter().enumerate() {
+        // Cull edges whose curve's bounding box is entirely outside the visible
+        // bounds. A curved edge may pass through the view even when both
+        // endpoints are outside it, so the control point is included in the
+        // bounds test.
+        let source_visible = point_in_bounds(*source_world, &visible, margin);
+        let target_visible = point_in_bounds(*target_world, &visible, margin);
+        if !source_visible && !target_visible {
+            // Both endpoints are outside; keep the edge only if its curve
+            // (including the control point) still crosses the visible bounds.
+            let control_world = edge_control_point(*source_world, *target_world, &groups, index);
+            let curve_visible = match control_world {
+                Some(control) => {
+                    let min = (*source_world).min(*target_world).min(control);
+                    let max = (*source_world).max(*target_world).max(control);
+                    bounds_intersect(&visible, margin, min, max)
+                }
+                None => {
+                    // Straight edge: keep it if the segment's bounding box
+                    // crosses the visible bounds.
+                    let min = (*source_world).min(*target_world);
+                    let max = (*source_world).max(*target_world);
+                    bounds_intersect(&visible, margin, min, max)
+                }
+            };
+            if !curve_visible {
+                continue;
+            }
+        }
+        visible_edges.push((
+            index,
+            *id,
+            edge,
+            viewport.world_to_screen(*source_world),
+            viewport.world_to_screen(*target_world),
+        ));
+    }
+
+    for (candidate_index, id, edge, source, target) in visible_edges.iter() {
+        let control = edge_control_point(*source, *target, &groups, *candidate_index);
         frame.edges.push(PaintEdge {
             id: *id,
             source: *source,
@@ -294,6 +322,20 @@ fn point_in_bounds(p: Vec2, bounds: &crate::viewport::WorldBounds, margin: f32) 
         && p.y <= bounds.max.y + margin
 }
 
+/// Whether the axis-aligned box `(min, max)` intersects the visible bounds
+/// (expanded by `margin`).
+fn bounds_intersect(
+    bounds: &crate::viewport::WorldBounds,
+    margin: f32,
+    min: Vec2,
+    max: Vec2,
+) -> bool {
+    min.x <= bounds.max.x + margin
+        && max.x >= bounds.min.x - margin
+        && min.y <= bounds.max.y + margin
+        && max.y >= bounds.min.y - margin
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +406,98 @@ mod tests {
         assert_eq!(frame.nodes.len(), 1);
         assert_eq!(frame.nodes[0].id, a);
         // The edge is kept because one endpoint (`a`) is visible.
+        assert_eq!(frame.edges.len(), 1);
+    }
+
+    #[test]
+    fn keeps_curved_edge_whose_curve_crosses_viewport() {
+        // Two nodes are both far outside the viewport, but a parallel edge
+        // between them curves through the visible area. The edge must be kept
+        // even though both endpoints are off-screen.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(10.0, 10.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default();
+
+        // Both nodes are far to the left and right, but the fanned curve
+        // control point passes through the viewport.
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(-1000.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(1000.0, 0.0))
+            } else {
+                None
+            }
+        };
+
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        // The parallel edges curve through the viewport, so they are kept.
+        assert_eq!(frame.edges.len(), 2);
+    }
+
+    #[test]
+    fn keeps_straight_edge_whose_segment_crosses_viewport() {
+        // A single (straight) edge whose endpoints are both outside the
+        // viewport but whose segment passes through it must be kept.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(10.0, 10.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default();
+
+        // The segment from (-1000, 0) to (1000, 0) passes through the viewport.
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(-1000.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(1000.0, 0.0))
+            } else {
+                None
+            }
+        };
+
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
         assert_eq!(frame.edges.len(), 1);
     }
 

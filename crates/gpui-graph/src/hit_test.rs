@@ -60,6 +60,11 @@ pub fn hit_test<N, E>(
 
     // Precise edge test.
     let mut best_edge: Option<(EdgeId, f32)> = None;
+    // Group edges by their (source, target) node pair to detect parallels, so
+    // curve control points match the paint layer.
+    let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+        std::collections::HashMap::new();
+    let mut edge_screens: Vec<(EdgeId, Vec2, Vec2)> = Vec::new();
     for (id, edge) in graph.edges() {
         let Some(source_world) = node_position(edge.source) else {
             continue;
@@ -69,10 +74,22 @@ pub fn hit_test<N, E>(
         };
         let source = viewport.world_to_screen(source_world);
         let target = viewport.world_to_screen(target_world);
-        let dist = distance_to_segment(screen_point, source, target);
+        let index = edge_screens.len();
+        groups
+            .entry((edge.source, edge.target))
+            .or_default()
+            .push(index);
+        edge_screens.push((id, source, target));
+    }
+    for (index, (id, source, target)) in edge_screens.iter().enumerate() {
+        let control = crate::paint::edge_control_point(*source, *target, &groups, index);
+        let dist = match control {
+            Some(control) => distance_to_quadratic_bezier(screen_point, *source, control, *target),
+            None => distance_to_segment(screen_point, *source, *target),
+        };
         let threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
         if dist <= threshold && best_edge.is_none_or(|(_, d)| dist < d) {
-            best_edge = Some((id, dist));
+            best_edge = Some((*id, dist));
         }
     }
 
@@ -80,6 +97,21 @@ pub fn hit_test<N, E>(
         node: None,
         edge: best_edge.map(|(e, _)| e),
     }
+}
+
+/// Distance from a point to a quadratic Bézier curve, sampled at fixed steps.
+fn distance_to_quadratic_bezier(p: Vec2, a: Vec2, control: Vec2, b: Vec2) -> f32 {
+    const SAMPLES: usize = 16;
+    let mut min = f32::INFINITY;
+    let mut prev = a;
+    for i in 1..=SAMPLES {
+        let t = i as f32 / SAMPLES as f32;
+        let inv = 1.0 - t;
+        let point = inv * inv * a + 2.0 * inv * t * control + t * t * b;
+        min = min.min(distance_to_segment(p, prev, point));
+        prev = point;
+    }
+    min
 }
 
 /// Distance from a point to a line segment.
@@ -164,5 +196,42 @@ mod tests {
         let result = hit_test(&g, &pos, &vp, &style, screen);
         assert!(result.node.is_some());
         assert!(result.edge.is_none());
+    }
+
+    #[test]
+    fn hits_curved_parallel_edge() {
+        let mut g = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(100.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(110.0, 10.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default();
+        // The fanned curve bows toward its control point. With two parallel
+        // edges, the control offset is ±0.2 * len = ±20 world units, so the
+        // curve passes through the midpoint offset by half that (10).
+        let screen = vp.world_to_screen(Vec2::new(50.0, 10.0));
+        let result = hit_test(&g, &positions, &vp, &style, screen);
+        assert!(
+            result.edge.is_some(),
+            "curved parallel edge should be hittable"
+        );
     }
 }

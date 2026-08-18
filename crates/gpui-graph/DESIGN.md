@@ -1122,6 +1122,20 @@ This separates graph and scene state from rendering mechanics.
 
 The frame may contain already transformed geometry or compact records optimized for painting.
 
+## 18.3 Edge curves
+
+Edges render as straight lines by default. To keep parallel edges (multiple
+edges between the same node pair) and self-loops visually distinct, the paint
+layer assigns a quadratic Bézier control point:
+
+- a single edge between two distinct nodes has no control point (straight line),
+- parallel edges are fanned perpendicular to the edge direction,
+- a self-loop gets a control point above the node.
+
+The control point is stored on `PaintEdge.control` and computed in
+`build_paint_frame` by grouping edges by their `(source, target)` node pair.
+Hit testing samples the curve so curved edges remain selectable.
+
 ---
 
 # 19. Rich Overlays
@@ -1845,10 +1859,7 @@ The following should remain intentionally open until implementation and profilin
 
 ## Rendering
 
-- straight vs curved edge defaults,
 - Bézier routing,
-- parallel-edge separation,
-- self-loop geometry,
 - label collision avoidance,
 - text LOD.
 
