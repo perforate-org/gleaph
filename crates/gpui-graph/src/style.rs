@@ -51,6 +51,10 @@ pub struct GraphStyle {
     pub label_style: TextStyle,
     /// Vertical offset of a node label below the node, in pixels.
     pub label_offset: f32,
+    /// Distance in pixels below which an edge label is hidden because it has
+    /// drifted too close to a node center. This prevents a label from sitting
+    /// on top of a node after sliding along its edge.
+    pub edge_label_hide_distance: f32,
 }
 
 impl Default for GraphStyle {
@@ -71,6 +75,7 @@ impl Default for GraphStyle {
             edge_arrow_shape: ArrowShape::Triangle,
             label_style: TextStyle::default(),
             label_offset: 0.0,
+            edge_label_hide_distance: 20.0,
         }
     }
 }
@@ -163,6 +168,13 @@ impl GraphStyle {
     /// Set the node label vertical offset in pixels.
     pub fn with_label_offset(mut self, offset: f32) -> Self {
         self.label_offset = offset;
+        self
+    }
+
+    /// Set the distance below which an edge label is hidden because it has
+    /// drifted too close to a node center.
+    pub fn with_edge_label_hide_distance(mut self, distance: f32) -> Self {
+        self.edge_label_hide_distance = distance;
         self
     }
 }

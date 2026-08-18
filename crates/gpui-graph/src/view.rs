@@ -476,6 +476,7 @@ where
                             &style,
                             &node_label_rects,
                         );
+                        hide_edge_labels_near_nodes(&mut frame, &style);
                         let mut label_rects: Vec<Bounds<gpui::Pixels>> = frame
                             .edge_labels
                             .iter()
@@ -1453,6 +1454,22 @@ fn resolve_edge_label_collisions(
 /// The index of `i` within `movable`.
 fn position_of(movable: &[usize], i: usize) -> usize {
     movable.iter().position(|&m| m == i).unwrap_or(0)
+}
+
+/// Remove edge labels that have drifted within `edge_label_hide_distance`
+/// pixels of a node center. Collision resolution slides labels along their
+/// edges to avoid other labels, which can push a label onto a node; such a
+/// label would sit over the node and look broken, so it is hidden instead.
+/// Distance is measured from the label's position to the nearest node center in
+/// canvas-local pixels (the same space as the label's `position`).
+fn hide_edge_labels_near_nodes(frame: &mut crate::paint::PaintFrame, style: &GraphStyle) {
+    let hide = style.edge_label_hide_distance;
+    frame.edge_labels.retain(|label| {
+        frame
+            .nodes
+            .iter()
+            .all(|node| (label.position - node.position).length() >= hide)
+    });
 }
 
 /// The overlapping region of two axis-aligned bounds as `(x, y, width, height)`
@@ -2477,5 +2494,50 @@ mod tests {
             (long_pos - Vec2::new(0.0, -40.0)).length() > 1.0,
             "longer edge label must move away from the self-loop, got {long_pos:?}"
         );
+    }
+
+    #[test]
+    fn edge_label_hidden_near_node_center() {
+        // An edge label sits 10px from a node center. With the default hide
+        // distance of 20px it must be hidden; raising the threshold keeps it.
+        let mut frame = crate::paint::PaintFrame::new();
+        frame.nodes.push(crate::paint::PaintNode {
+            id: NodeId::default(),
+            position: Vec2::new(0.0, 0.0),
+            radius: 6.0,
+            selected: false,
+            hovered: false,
+        });
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(10.0, 0.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "edge".to_string(),
+            path: vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))],
+            t: 0.5,
+        });
+
+        let default_style = GraphStyle::default();
+        hide_edge_labels_near_nodes(&mut frame, &default_style);
+        assert!(
+            frame.edge_labels.is_empty(),
+            "a label 10px from a node center must be hidden at the default threshold"
+        );
+
+        // A far label is kept.
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(50.0, 50.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "far".to_string(),
+            path: vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))],
+            t: 0.5,
+        });
+        let wide_style = GraphStyle::default().with_edge_label_hide_distance(5.0);
+        hide_edge_labels_near_nodes(&mut frame, &wide_style);
+        assert_eq!(
+            frame.edge_labels.len(),
+            1,
+            "a label 50px away must survive a 5px hide distance"
+        );
+        assert_eq!(frame.edge_labels[0].text, "far");
     }
 }

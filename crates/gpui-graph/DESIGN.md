@@ -1226,6 +1226,13 @@ slides away from the self-loop while the self-loop stays put — the longer edge
 has more room to move, giving a better result. A self-loop is recognized by its
 two-segment onigiri path; any other edge has a single segment.
 
+Sliding a label along its edge to avoid another label can push it onto a node,
+where it would sit over the node and look broken. Before painting, any edge
+label within `edge_label_hide_distance` pixels of a node center is hidden. The
+distance is measured from the label's position to the nearest node center in
+canvas-local pixels, and is configurable through `GraphStyle`
+(`with_edge_label_hide_distance`, default 20px).
+
 ---
 
 # 19. Rich Overlays
