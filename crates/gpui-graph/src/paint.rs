@@ -383,12 +383,15 @@ pub(crate) fn self_loop_path<N, E>(
     let start = Vec2::new(-r * 0.5, -r * 0.866);
     let end = Vec2::new(r * 0.5, -r * 0.866);
     // The base size follows the graph's zoom so the loop stays proportionate to
-    // the graph as it scales, clamped to a readable range. At zoom 1 the base is
-    // 90px wide and 85px tall.
+    // the graph as it scales, clamped to a readable range. The base height
+    // (distance from the node) is kept short and the half-width is widened so
+    // the onigiri's opening angle is slightly larger than before.
     let scale = viewport.zoom().clamp(0.5, 3.0);
-    let base_left = Vec2::new(-45.0 * scale, -85.0 * scale);
-    let base_right = Vec2::new(45.0 * scale, -85.0 * scale);
-    let base_mid = Vec2::new(0.0, -85.0 * scale);
+    let base_height = 70.0 * scale;
+    let base_half_width = 40.0 * scale;
+    let base_left = Vec2::new(-base_half_width, -base_height);
+    let base_right = Vec2::new(base_half_width, -base_height);
+    let base_mid = Vec2::new(0.0, -base_height);
 
     // Average direction from the node to the other endpoints of its incident
     // edges; the onigiri points opposite that average.

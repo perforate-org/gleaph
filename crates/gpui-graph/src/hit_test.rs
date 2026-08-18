@@ -276,11 +276,11 @@ mod tests {
             0.0,
         );
         let style = GraphStyle::default();
-        // The onigiri base sits 85px above the node center, scaled by the
+        // The onigiri base sits 70px above the node center, scaled by the
         // clamped zoom. Hit at the base center.
         let scale = vp.zoom().clamp(0.5, 3.0);
         let node_screen = vp.world_to_screen(Vec2::new(0.0, 0.0));
-        let screen = node_screen + Vec2::new(0.0, -85.0 * scale);
+        let screen = node_screen + Vec2::new(0.0, -70.0 * scale);
         let result = hit_test(&g, &positions, &vp, &style, screen);
         assert!(
             result.edge.is_some(),
