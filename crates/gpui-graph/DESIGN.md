@@ -1183,14 +1183,26 @@ matches the label precisely and is independent of zoom or pan. Node labels use
 the same rectangle-mask technique as edge labels: a node label's bounds sit
 below the node (radius + offset) and cut any edge that passes behind them.
 
+The mask is a rounded rectangle (`RoundedRect`) whose corner radius matches the
+label background padding (4px). The curve is split at the rectangle's edge
+crossings, and each interval is masked only when its midpoint lies inside the
+rounded rectangle — so an edge hugging a rounded corner stays visible in the
+part that rounds into the corner. This keeps the mask aligned with the label's
+rounded outline instead of leaving a hard square notch.
+
+Because the edge is stroked, its ink extends half the edge width on either side
+of the centerline. The rounded mask is inflated by that half-width (a rounded
+rect grown by a disk), so no edge ink paints over the label. The arrowhead's
+mask is inflated the same way.
+
 A directed edge's arrowhead is masked the same way. The arrow is drawn as a
-single fill path that also carries the part of each overlapping label rectangle
-that lies inside the arrowhead as an extra sub-contour; the evenodd fill rule
-punches a hole exactly where the arrow passes behind a label. The hole is the
-arrow clipped to the label rect, not the whole rect, so a label that merely
-touches the arrow's edge does not leave a gray strip beyond the arrow. Only
-label rects that overlap the arrowhead are considered, so distant labels never
-alter the arrow.
+single fill path that also carries the part of each overlapping label (the
+label's rounded outline, clipped to the arrowhead) as an extra sub-contour; the
+evenodd fill rule punches a hole exactly where the arrow passes behind a label.
+The hole is the arrow clipped to the rounded label shape, not the whole rect, so
+a label that merely touches the arrow's edge does not leave a gray strip beyond
+the arrow. Only label rects that overlap the arrowhead are considered, so
+distant labels never alter the arrow.
 
 ## 18.5 Edge label collision avoidance
 

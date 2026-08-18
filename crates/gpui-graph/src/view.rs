@@ -615,7 +615,7 @@ fn paint_edge(
 ) {
     let mut builder = PathBuilder::stroke(px(style.edge_width));
     for (p0, p1, p2) in path {
-        for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects) {
+        for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects, style.edge_width) {
             builder.move_to(point(px(curve.0.x), px(curve.0.y)));
             builder.curve_to(
                 point(px(curve.2.x), px(curve.2.y)),
@@ -643,21 +643,22 @@ fn visible_bezier_curves(
     p1: Vec2,
     p2: Vec2,
     label_rects: &[Bounds<gpui::Pixels>],
+    edge_width: f32,
 ) -> Vec<Bezier> {
     if label_rects.is_empty() {
         return vec![(p0, p1, p2)];
     }
 
-    // Collect the t-intervals where the curve lies inside any label rectangle.
+    // The edge is stroked at `edge_width`, so its ink extends half the width on
+    // either side of the centerline. Inflate the rounded label mask by that
+    // half-width so no edge ink is drawn over the label. A rounded rect grown
+    // by a disk of radius `w/2` is a rounded rect with both its bounds and
+    // corner radius grown by `w/2`.
+    let inflate = edge_width * 0.5;
     let mut masked: Vec<(f32, f32)> = Vec::new();
     for rect in label_rects {
-        let rmin = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
-        let rmax = rmin
-            + Vec2::new(
-                f32::from(rect.size.width),
-                f32::from(rect.size.height),
-            );
-        masked.extend(masked_intervals(p0, p1, p2, rmin, rmax));
+        let rr = RoundedRect::from_bounds(rect).inflated(inflate);
+        masked.extend(masked_intervals(p0, p1, p2, &rr));
     }
 
     // Merge overlapping masked intervals.
@@ -688,30 +689,157 @@ fn visible_bezier_curves(
     visible
 }
 
-/// The t-intervals of a quadratic Bézier that lie strictly inside the axis
-/// aligned box `(rmin, rmax)`.
-fn masked_intervals(p0: Vec2, p1: Vec2, p2: Vec2, rmin: Vec2, rmax: Vec2) -> Vec<(f32, f32)> {
+/// The t-intervals of a quadratic Bézier that lie strictly inside a rounded
+/// label rectangle.
+///
+/// The t values where the curve crosses the rectangle's edges are collected
+/// (the rounded corners are strictly inside the box, so every masked interval
+/// is bounded by box-edge crossings), then each interval is masked only if its
+/// midpoint lies inside the rounded rectangle. A curve hugging a corner is
+/// therefore left visible where it passes the rounded corner.
+fn masked_intervals(p0: Vec2, p1: Vec2, p2: Vec2, rect: &RoundedRect) -> Vec<(f32, f32)> {
     // Collect every t where the curve crosses a box edge.
     let mut ts = vec![0.0, 1.0];
-    for value in [rmin.x, rmax.x] {
+    for value in [rect.min.x, rect.max.x] {
         ts.extend(bezier_roots(p0, p1, p2, value, 0));
     }
-    for value in [rmin.y, rmax.y] {
+    for value in [rect.min.y, rect.max.y] {
         ts.extend(bezier_roots(p0, p1, p2, value, 1));
     }
     ts.sort_by(|a, b| a.total_cmp(b));
     ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
 
-    // An interval is masked if its midpoint lies inside the box.
+    // An interval is masked if its midpoint lies inside the rounded rectangle.
     let mut masked = Vec::new();
     for window in ts.windows(2) {
         let (t0, t1) = (window[0], window[1]);
         let p = bezier_point(p0, p1, p2, (t0 + t1) * 0.5);
-        if p.x > rmin.x && p.x < rmax.x && p.y > rmin.y && p.y < rmax.y {
+        if rect.contains(p) {
             masked.push((t0, t1));
         }
     }
     masked
+}
+
+/// A rectangle with rounded corners used to mask edges and arrowheads that pass
+/// behind a label. The corner radius matches the label's background padding, so
+/// the masked region hugs the rounded corners instead of leaving a hard square
+/// notch in an edge.
+struct RoundedRect {
+    /// Bottom-left corner.
+    min: Vec2,
+    /// Top-right corner.
+    max: Vec2,
+    /// Corner radius in window pixels.
+    radius: f32,
+}
+
+impl RoundedRect {
+    /// The label background padding also used to compute label bounds.
+    const RADIUS: f32 = 4.0;
+
+    fn from_bounds(rect: &Bounds<gpui::Pixels>) -> Self {
+        let min = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
+        let max = min + Vec2::new(f32::from(rect.size.width), f32::from(rect.size.height));
+        Self {
+            min,
+            max,
+            radius: Self::RADIUS,
+        }
+    }
+
+    /// Grow the rectangle outward by `d` on all sides. A rounded rect grown by
+    /// a disk of radius `d` has both its bounds and its corner radius grown by
+    /// `d`.
+    fn inflated(self, d: f32) -> Self {
+        Self {
+            min: self.min - Vec2::splat(d),
+            max: self.max + Vec2::splat(d),
+            radius: self.radius + d,
+        }
+    }
+
+    /// Whether `p` lies strictly inside the rounded rectangle.
+    fn contains(&self, p: Vec2) -> bool {
+        let r = self.radius;
+        if p.x <= self.min.x || p.x >= self.max.x || p.y <= self.min.y || p.y >= self.max.y {
+            return false;
+        }
+        // In each corner square the outline is a quarter arc: a point there is
+        // inside only when it is within the corner circle's radius of its
+        // center.
+        let beyond = |cx: f32, cy: f32| {
+            let dx = p.x - cx;
+            let dy = p.y - cy;
+            dx * dx + dy * dy > r * r
+        };
+        if p.x > self.max.x - r && p.y > self.max.y - r && beyond(self.max.x - r, self.max.y - r) {
+            return false;
+        }
+        if p.x < self.min.x + r && p.y > self.max.y - r && beyond(self.min.x + r, self.max.y - r) {
+            return false;
+        }
+        if p.x > self.max.x - r && p.y < self.min.y + r && beyond(self.max.x - r, self.min.y + r) {
+            return false;
+        }
+        if p.x < self.min.x + r && p.y < self.min.y + r && beyond(self.min.x + r, self.min.y + r) {
+            return false;
+        }
+        true
+    }
+
+    /// The rounded outline as an approximating polygon, used to clip the
+    /// arrowhead hole against the label shape. Traverses counterclockwise from
+    /// the bottom-left edge.
+    fn as_polygon(&self, arc_steps: usize) -> Vec<Vec2> {
+        let r = self.radius;
+        let x0 = self.min.x;
+        let y0 = self.min.y;
+        let x1 = self.max.x;
+        let y1 = self.max.y;
+        let mut pts = Vec::new();
+        pts.push(Vec2::new(x0 + r, y0));
+        push_arc(
+            &mut pts,
+            Vec2::new(x1 - r, y0 + r),
+            r,
+            270.0,
+            360.0,
+            arc_steps,
+        );
+        pts.push(Vec2::new(x1, y0 + r));
+        push_arc(&mut pts, Vec2::new(x1 - r, y1 - r), r, 0.0, 90.0, arc_steps);
+        pts.push(Vec2::new(x1 - r, y1));
+        push_arc(
+            &mut pts,
+            Vec2::new(x0 + r, y1 - r),
+            r,
+            90.0,
+            180.0,
+            arc_steps,
+        );
+        pts.push(Vec2::new(x0, y1 - r));
+        push_arc(
+            &mut pts,
+            Vec2::new(x0 + r, y0 + r),
+            r,
+            180.0,
+            270.0,
+            arc_steps,
+        );
+        pts
+    }
+}
+
+/// Push the points of a circular arc onto `pts`. `start` and `end` are degrees
+/// measured counterclockwise from the +x axis.
+fn push_arc(pts: &mut Vec<Vec2>, center: Vec2, radius: f32, start: f32, end: f32, steps: usize) {
+    let n = steps.max(1);
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let a = (start + (end - start) * t).to_radians();
+        pts.push(center + Vec2::new(a.cos(), a.sin()) * radius);
+    }
 }
 
 /// The real roots in `[0, 1]` of a quadratic Bézier's coordinate equal to
@@ -848,7 +976,7 @@ fn paint_edge_arrow(
                 .iter()
                 .filter(|r| arrow_overlaps_rect(tip, base, half, normal, r))
             {
-                let hole = rect_intersection(tip, base, half, normal, rect);
+                let hole = rect_intersection(tip, base, half, normal, rect, style.edge_width);
                 if hole.len() >= 3 {
                     add_polygon_subpath(&mut builder, &hole);
                 }
@@ -910,31 +1038,29 @@ fn arrow_overlaps_rect(
     max_x > rmin.x && min_x < rmax.x && max_y > rmin.y && min_y < rmax.y
 }
 
-/// The part of the arrow triangle that lies inside the label `rect`, as a
+/// The part of the arrow triangle that lies inside the rounded label rect, as a
 /// polygon in window space. The triangle has tip `tip` and base corners
 /// `base ± normal * half`. This is the region punched out of the arrow; using
-/// the clipped region (not the whole rect) keeps a label that only overlaps the
-/// arrow's edge from leaving a gray strip beyond the arrow.
+/// the clipped region (not the whole label shape) keeps a label that only
+/// overlaps the arrow's edge from leaving a gray strip beyond the arrow, and
+/// hugging the rounded corners keeps the hole aligned with the label's outline.
 fn rect_intersection(
     tip: Vec2,
     base: Vec2,
     half: f32,
     normal: Vec2,
     rect: &Bounds<gpui::Pixels>,
+    edge_width: f32,
 ) -> Vec<Vec2> {
-    let x0 = f32::from(rect.origin.x);
-    let y0 = f32::from(rect.origin.y);
-    let x1 = x0 + f32::from(rect.size.width);
-    let y1 = y0 + f32::from(rect.size.height);
-    let mut poly = vec![
-        Vec2::new(x0, y0),
-        Vec2::new(x1, y0),
-        Vec2::new(x1, y1),
-        Vec2::new(x0, y1),
-    ];
-    // Clip the rect against each edge of the triangle (keep the inside). The
-    // triangle interior side of each edge is the side that contains the
-    // triangle's centroid, so the winding does not matter.
+    // Start from the rounded label outline and clip it against each edge of the
+    // triangle (keep the inside). The triangle interior side of each edge is
+    // the side that contains the triangle's centroid, so the winding does not
+    // matter. The outline is inflated by half the edge width so the arrow's
+    // ink (and the stroked edge line reaching it) does not paint over the
+    // label.
+    let mut poly = RoundedRect::from_bounds(rect)
+        .inflated(edge_width * 0.5)
+        .as_polygon(8);
     let triangle = [tip, base + normal * half, base - normal * half];
     let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
     for i in 0..3 {
@@ -1880,6 +2006,7 @@ mod tests {
             Vec2::new(0.0, 0.0),
             Vec2::new(20.0, 0.0),
             &[rect],
+            0.0,
         );
         assert_eq!(curves.len(), 2);
         // The first piece ends exactly at the rect's left edge (x = 0); the
@@ -1905,6 +2032,7 @@ mod tests {
             Vec2::new(500.0, -2000.0),
             Vec2::new(1000.0, 0.0),
             &[rect],
+            0.0,
         );
         assert!(!curves.is_empty(), "edge must not disappear");
         // The masked region must be small: the total visible length should be
@@ -1927,6 +2055,7 @@ mod tests {
             Vec2::new(0.0, 0.0),
             Vec2::new(20.0, 0.0),
             &[],
+            0.0,
         );
         assert_eq!(curves.len(), 1);
         assert_eq!(curves[0], (Vec2::new(-20.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(20.0, 0.0)));
@@ -1946,6 +2075,7 @@ mod tests {
             Vec2::new(0.0, 0.0),
             Vec2::new(1000.0, 0.0),
             &[rect],
+            0.0,
         );
         assert_eq!(curves.len(), 2, "edge must not disappear at high zoom");
         assert!(curves[0].2.x <= 0.0);
@@ -1966,6 +2096,7 @@ mod tests {
             Vec2::new(0.0, 500.0),
             Vec2::new(1000.0, 0.0),
             &[rect],
+            0.0,
         );
         assert!(!curves.is_empty(), "curved edge must not disappear at high zoom");
     }
@@ -1984,6 +2115,7 @@ mod tests {
             Vec2::new(0.0, 0.0),
             Vec2::new(1.0e6, 0.0),
             &[rect],
+            0.0,
         );
         assert_eq!(curves.len(), 2, "edge must not disappear at high zoom");
         assert!(curves[0].2.x <= 0.0);
@@ -2003,11 +2135,61 @@ mod tests {
             Vec2::new(0.0, 50.0),
             Vec2::new(20.0, 0.0),
             &[rect],
+            0.0,
         );
         // The curve's y stays above the rect (y in [0, 10]), so it never enters
         // the rect and is returned whole.
         assert_eq!(curves.len(), 1);
         assert_eq!(curves[0], (Vec2::new(-20.0, 0.0), Vec2::new(0.0, 50.0), Vec2::new(20.0, 0.0)));
+    }
+
+    #[test]
+    fn rounded_label_mask_excludes_corner_arc() {
+        // A label rect [0,10]x[0,10] with rounded corners of radius 4. Points
+        // inside the flat edges are inside the mask; points in the corner arc
+        // (outside the rounded rectangle) are not.
+        let rr = RoundedRect::from_bounds(&Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(10.0), px(10.0)),
+        });
+        // Center of the flat bottom edge: inside.
+        assert!(rr.contains(Vec2::new(5.0, 1.0)));
+        // Along the corner, a point on the arc's concave side is outside.
+        // Bottom-left arc center (4,4) with radius 4; (0.5, 1.5) is 4.3 from it.
+        assert!(!rr.contains(Vec2::new(0.5, 1.5)));
+        // A point still inside the rounded corner (within the arc radius).
+        // (2.5, 1.5) is 2.9 from the arc center, so it is inside.
+        assert!(rr.contains(Vec2::new(2.5, 1.5)));
+    }
+
+    #[test]
+    fn rounded_mask_inflates_by_half_edge_width() {
+        // The mask is inflated by half the edge width so the stroked edge's ink
+        // (which extends beyond the centerline) does not paint over the label.
+        // A 1px-wide edge has a 0.5px half-width, so a point just outside the
+        // label rect must be inside the inflated mask but outside the
+        // uninflated one.
+        let rect = Bounds {
+            origin: point(px(0.0), px(-5.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        let plain = RoundedRect::from_bounds(&rect);
+        let inflated = RoundedRect::from_bounds(&rect).inflated(0.5);
+        // y = -5.3 is 0.3 below the label's top edge (y = -5): outside the
+        // strict rect but within half an edge width of it.
+        assert!(!plain.contains(Vec2::new(5.0, -5.3)));
+        assert!(inflated.contains(Vec2::new(5.0, -5.3)));
+        // The edge-width split happens through visible_bezier_curves too: a
+        // horizontal edge just outside the rect is still masked when a stroke
+        // half-width is given.
+        let curves = visible_bezier_curves(
+            Vec2::new(-20.0, -5.2),
+            Vec2::new(0.0, -5.2),
+            Vec2::new(20.0, -5.2),
+            &[rect],
+            1.0,
+        );
+        assert_eq!(curves.len(), 2, "edge near the label must still be masked");
     }
 
     #[gpui::test]
@@ -2051,6 +2233,7 @@ mod tests {
             Vec2::new(0.0, 15.0),
             Vec2::new(30.0, 15.0),
             &[rect],
+            0.0,
         );
         assert_eq!(curves.len(), 2, "edge must be cut around the node label");
         assert!(curves[0].2.x <= 0.0);
@@ -2099,7 +2282,7 @@ mod tests {
             origin: point(px(70.0), px(40.0)),
             size: size(px(40.0), px(20.0)),
         };
-        let hole = rect_intersection(tip, base, half, normal, &rect);
+        let hole = rect_intersection(tip, base, half, normal, &rect, 0.0);
         assert!(hole.len() >= 3, "the clipped hole must be a polygon");
         for p in &hole {
             assert!(
