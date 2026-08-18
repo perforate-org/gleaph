@@ -5,7 +5,7 @@
 //! ordering, and accumulation. The legacy `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility
 //! surface has been removed (ADR 0051 Phase B).
 
-use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
@@ -42,23 +42,23 @@ fn setup() -> FederationEnv {
     env
 }
 
-fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
+fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
         .collect()
 }
 
-fn path_element_count(row: &BTreeMap<String, IcWireValue>, column: &str) -> usize {
+fn path_element_count(row: &BTreeMap<String, GqlWireValue>, column: &str) -> usize {
     match row.get(column) {
-        Some(IcWireValue::Path(elements)) => elements.len(),
+        Some(GqlWireValue::Path(elements)) => elements.len(),
         other => panic!("expected path column {column}, got {other:?}"),
     }
 }
 
-fn vertex_element_id(env: &FederationEnv, label: &str) -> IcWireValue {
+fn vertex_element_id(env: &FederationEnv, label: &str) -> GqlWireValue {
     let rows = extract_rows(gql_query_as_admin(
         env,
         &format!("MATCH (v:{label}) RETURN ELEMENT_ID(v) AS v_id"),
@@ -67,7 +67,7 @@ fn vertex_element_id(env: &FederationEnv, label: &str) -> IcWireValue {
     rows[0].get("v_id").cloned().expect("ELEMENT_ID(v) column")
 }
 
-fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
+fn build_cost_triangle(env: &FederationEnv) -> GqlWireValue {
     let edge_label_id = ensure_edge_label(env, EDGE_LABEL);
     let src_label_id = ensure_vertex_label(env, SRC_LABEL);
     let mid_label_id = ensure_vertex_label(env, MID_LABEL);
@@ -110,7 +110,7 @@ fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
     vertex_element_id(env, DST_LABEL)
 }
 
-fn cheapest_path_element_count(env: &FederationEnv, dst_id: &IcWireValue) -> usize {
+fn cheapest_path_element_count(env: &FederationEnv, dst_id: &GqlWireValue) -> usize {
     let rows = extract_rows(gql_query_as_admin(env, COST_BY_QUERY));
     let c_rows: Vec<_> = rows
         .iter()
@@ -124,7 +124,7 @@ fn cheapest_path_element_count(env: &FederationEnv, dst_id: &IcWireValue) -> usi
     path_element_count(c_rows[0], "p")
 }
 
-fn scenario_initial_cheapest_path_is_two_hops(env: &FederationEnv, dst_id: &IcWireValue) {
+fn scenario_initial_cheapest_path_is_two_hops(env: &FederationEnv, dst_id: &GqlWireValue) {
     assert_eq!(
         cheapest_path_element_count(env, dst_id),
         5,
@@ -134,7 +134,7 @@ fn scenario_initial_cheapest_path_is_two_hops(env: &FederationEnv, dst_id: &IcWi
 
 fn scenario_missing_cost_property_rejects_and_leaves_graph_unchanged(
     env: &FederationEnv,
-    dst_id: &IcWireValue,
+    dst_id: &GqlWireValue,
 ) {
     // Former contract: inline_cost_by_rejects_missing_inline_property.
     let err = gql_query_as_admin_expect_err(
@@ -157,7 +157,7 @@ fn scenario_missing_cost_property_rejects_and_leaves_graph_unchanged(
     );
 }
 
-fn scenario_mutation_switches_to_direct_path(env: &FederationEnv, dst_id: &IcWireValue) {
+fn scenario_mutation_switches_to_direct_path(env: &FederationEnv, dst_id: &GqlWireValue) {
     // Former contract: inline_cost_by_observes_mutation.
     gql_mutate_as_admin(
         env,
@@ -205,7 +205,7 @@ fn assert_directed_cost_by_path(
     env: &FederationEnv,
     query: &str,
     dst_id_column: &str,
-    expected_dst: &IcWireValue,
+    expected_dst: &GqlWireValue,
     direction: &str,
 ) {
     let rows = extract_rows(gql_query_as_admin(env, query));

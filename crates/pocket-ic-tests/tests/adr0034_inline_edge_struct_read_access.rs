@@ -8,7 +8,7 @@
 //! All scenarios run inside one fresh PocketIC fixture with distinct source-vertex labels so results
 //! remain independent.
 
-use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
@@ -53,9 +53,9 @@ fn setup() -> FederationEnv {
     env
 }
 
-fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
+fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -100,17 +100,17 @@ fn scenario_projection_returns_struct_fields(env: &FederationEnv, label_id: u16)
     );
     assert_eq!(
         rows[0].get("s"),
-        Some(&IcWireValue::Float64(3.5)),
+        Some(&GqlWireValue::Float64(3.5)),
         "projection scenario: score field must decode"
     );
     assert_eq!(
         rows[0].get("c"),
-        Some(&IcWireValue::Float64(0.75)),
+        Some(&GqlWireValue::Float64(0.75)),
         "projection scenario: confidence field must decode"
     );
     assert_eq!(
         rows[0].get("u"),
-        Some(&IcWireValue::Uint64(1_700_000_000)),
+        Some(&GqlWireValue::Uint64(1_700_000_000)),
         "projection scenario: updated_at field must decode"
     );
 }
@@ -143,7 +143,7 @@ fn scenario_filter_matches_struct_field(env: &FederationEnv, label_id: u16) {
     );
     assert_eq!(
         rows[0].get("s"),
-        Some(&IcWireValue::Float64(3.5)),
+        Some(&GqlWireValue::Float64(3.5)),
         "filter scenario: wrong edge selected"
     );
 }
@@ -165,12 +165,12 @@ fn scenario_order_by_sorts_by_struct_field(env: &FederationEnv, label_id: u16) {
     assert_eq!(rows.len(), 2, "order scenario: expected two edges");
     assert_eq!(
         rows[0].get("s"),
-        Some(&IcWireValue::Float64(2.0)),
+        Some(&GqlWireValue::Float64(2.0)),
         "order scenario: first row must be the smaller score"
     );
     assert_eq!(
         rows[1].get("s"),
-        Some(&IcWireValue::Float64(3.5)),
+        Some(&GqlWireValue::Float64(3.5)),
         "order scenario: second row must be the larger score"
     );
 }
@@ -194,7 +194,7 @@ fn scenario_aggregate_uses_struct_field(env: &FederationEnv, label_id: u16) {
         "aggregate scenario: expected one aggregate row"
     );
     let avg = rows[0].get("avg_score").expect("avg_score");
-    let expected = IcWireValue::Float64(3.0);
+    let expected = GqlWireValue::Float64(3.0);
     assert_eq!(
         avg, &expected,
         "aggregate scenario: AVG of 3.5 and 2.5 must be 3.0"
@@ -223,7 +223,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, label_id: u16
     );
     assert_eq!(
         rows[0].get("s"),
-        Some(&IcWireValue::Float64(3.5)),
+        Some(&GqlWireValue::Float64(3.5)),
         "precedence scenario: inline property bytes must win over sidecar value"
     );
 }
@@ -242,7 +242,7 @@ fn scenario_unknown_struct_field_returns_null(env: &FederationEnv, label_id: u16
     assert_eq!(rows.len(), 1, "unknown-field scenario: expected one row");
     assert_eq!(
         rows[0].get("m"),
-        Some(&IcWireValue::Null),
+        Some(&GqlWireValue::Null),
         "unknown-field scenario: missing struct field must be NULL"
     );
 }

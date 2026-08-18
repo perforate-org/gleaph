@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind};
 use gleaph_gql::value::cmp::compare_values;
-use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
 use gleaph_gql_planner::plan::{AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn};
 use gleaph_gql_planner::wire::encode_block_plans;
 
@@ -210,16 +210,16 @@ pub fn merge_aggregate_blobs(
     right: &[u8],
     spec: &FederatedAggregateMerge,
 ) -> Result<Vec<u8>, String> {
-    let left_rows = IcWirePlanQueryResult::decode_blob(left)
+    let left_rows = GqlWireRows::decode_blob(left)
         .map_err(|e| e.to_string())?
         .try_into_value_rows()
         .map_err(|e| e.to_string())?;
-    let right_rows = IcWirePlanQueryResult::decode_blob(right)
+    let right_rows = GqlWireRows::decode_blob(right)
         .map_err(|e| e.to_string())?
         .try_into_value_rows()
         .map_err(|e| e.to_string())?;
     let merged = merge_aggregate_value_rows(&left_rows, &right_rows, spec)?;
-    IcWirePlanQueryResult::try_from_value_rows(&merged)
+    GqlWireRows::try_from_value_rows(&merged)
         .map_err(|e| e.to_string())?
         .encode_blob()
         .map_err(|e| e.to_string())
@@ -315,7 +315,7 @@ fn encode_group_key(
         .collect::<Result<Vec<_>, _>>()?;
     let wire_values = key_values
         .iter()
-        .map(IcWireValue::try_from_value)
+        .map(GqlWireValue::try_from_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     candid::encode_one(wire_values).map_err(|e| e.to_string())
@@ -503,7 +503,7 @@ mod tests {
     }
 
     fn rows_blob(rows: Vec<BTreeMap<String, Value>>) -> Vec<u8> {
-        IcWirePlanQueryResult::try_from_value_rows(&rows)
+        GqlWireRows::try_from_value_rows(&rows)
             .expect("wire rows")
             .encode_blob()
             .expect("encode")
@@ -573,7 +573,7 @@ mod tests {
         let left = rows_blob(vec![int_row(&[("cnt", 5)])]);
         let right = rows_blob(vec![int_row(&[("cnt", 3)])]);
         let merged = merge_aggregate_blobs(&left, &right, &spec).expect("merge");
-        let decoded = IcWirePlanQueryResult::decode_blob(&merged)
+        let decoded = GqlWireRows::decode_blob(&merged)
             .expect("decode")
             .try_into_value_rows()
             .expect("values");
@@ -597,7 +597,7 @@ mod tests {
         ]);
         let right = rows_blob(vec![text_row(&[("country", "US")], &[("cnt", 1)])]);
         let merged = merge_aggregate_blobs(&left, &right, &spec).expect("merge");
-        let decoded = IcWirePlanQueryResult::decode_blob(&merged)
+        let decoded = GqlWireRows::decode_blob(&merged)
             .expect("decode")
             .try_into_value_rows()
             .expect("values");
@@ -627,7 +627,7 @@ mod tests {
         let left = rows_blob(vec![int_row(&[("min_v", 4), ("max_v", 9)])]);
         let right = rows_blob(vec![int_row(&[("min_v", 2), ("max_v", 11)])]);
         let merged = merge_aggregate_blobs(&left, &right, &spec).expect("merge");
-        let decoded = IcWirePlanQueryResult::decode_blob(&merged)
+        let decoded = GqlWireRows::decode_blob(&merged)
             .expect("decode")
             .try_into_value_rows()
             .expect("values");

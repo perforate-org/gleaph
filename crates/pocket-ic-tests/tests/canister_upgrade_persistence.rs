@@ -12,7 +12,7 @@
 use candid::{Decode, Encode};
 use gleaph_codegen::{generate_typescript, parse_manifest};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexPostingBatchProgress, IndexPostingMutation, PhysicalIndexId, PostingHit,
@@ -33,7 +33,7 @@ fn edge_ids(result: &GqlQueryResult) -> BTreeSet<String> {
         .rows_blob
         .as_ref()
         .expect("gql_query should return rows_blob");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows_blob");
     let mut ids = BTreeSet::new();
     for row in wire.rows {
         let value_row = row.try_into_value_row().expect("wire row to value row");

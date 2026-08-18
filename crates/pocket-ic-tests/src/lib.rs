@@ -2435,13 +2435,13 @@ pub fn element_id_bytes_from_gql_result(
     column: &str,
 ) -> Vec<u8> {
     use gleaph_gql::Value;
-    use gleaph_gql_ic::IcWirePlanQueryResult;
+    use gleaph_gql_ic::GqlWireRows;
 
     let rows_blob = result
         .rows_blob
         .as_ref()
         .unwrap_or_else(|| panic!("gql_query should return rows_blob for ELEMENT_ID projection"));
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows_blob");
     assert_eq!(wire.rows.len(), 1, "expected one ELEMENT_ID row");
     let row = wire
         .rows

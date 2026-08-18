@@ -43,7 +43,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
@@ -273,9 +273,9 @@ fn gql_query_with_params_as_admin_result(
 
 fn extract_rows(
     result: GqlQueryResult,
-) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -283,14 +283,14 @@ fn extract_rows(
 }
 
 fn assert_distance_at(
-    row: &std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>,
+    row: &std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue>,
     case: &str,
 ) -> f64 {
     match row
         .get("distance")
         .unwrap_or_else(|| panic!("{case}: distance column"))
     {
-        gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+        gleaph_gql_ic::GqlWireValue::Float64(d) => *d,
         other => panic!("{case}: distance must be Float64, got {other:?}"),
     }
 }
@@ -306,7 +306,7 @@ fn assert_aggregate_count(case: &str, result: GqlQueryResult, expected: i64) {
         .get("n")
         .unwrap_or_else(|| panic!("{case}: count column"))
     {
-        gleaph_gql_ic::IcWireValue::Int64(v) => {
+        gleaph_gql_ic::GqlWireValue::Int64(v) => {
             assert_eq!(*v, expected, "{case}: count mismatch")
         }
         other => panic!("{case}: count must be Int64, got {other:?}"),

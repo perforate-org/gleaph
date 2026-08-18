@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind};
 use gleaph_gql::value::cmp::compare_values;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 
 use super::aggregate_merge::FederatedAggregateMerge;
@@ -37,7 +37,7 @@ pub fn apply_federated_aggregate_having(
         result.row_count = 0;
         return Ok(());
     };
-    let rows = IcWirePlanQueryResult::decode_blob(blob)
+    let rows = GqlWireRows::decode_blob(blob)
         .map_err(|e| e.to_string())?
         .try_into_value_rows()
         .map_err(|e| e.to_string())?;
@@ -52,7 +52,7 @@ pub fn apply_federated_aggregate_having(
         None
     } else {
         Some(
-            IcWirePlanQueryResult::try_from_value_rows(&filtered)
+            GqlWireRows::try_from_value_rows(&filtered)
                 .map_err(|e| e.to_string())?
                 .encode_blob()
                 .map_err(|e| e.to_string())?,
@@ -205,7 +205,7 @@ fn eval_numeric_binary(op: BinaryOp, left: Value, right: Value) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind};
-    use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+    use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
 
     use super::*;
     use crate::federation::aggregate_merge::AggregateMergeColumn;
@@ -285,18 +285,18 @@ mod tests {
     #[test]
     fn apply_federated_aggregate_having_updates_blob_and_count() {
         let spec = spec_with_having(count_star_gt(1));
-        let rows_blob = IcWirePlanQueryResult {
+        let rows_blob = GqlWireRows {
             rows: vec![
-                gleaph_gql_ic::IcWirePlanQueryRow {
+                gleaph_gql_ic::GqlWireRow {
                     columns: vec![
-                        ("country".into(), IcWireValue::Text("US".into())),
-                        ("cnt".into(), IcWireValue::Int64(2)),
+                        ("country".into(), GqlWireValue::Text("US".into())),
+                        ("cnt".into(), GqlWireValue::Int64(2)),
                     ],
                 },
-                gleaph_gql_ic::IcWirePlanQueryRow {
+                gleaph_gql_ic::GqlWireRow {
                     columns: vec![
-                        ("country".into(), IcWireValue::Text("UK".into())),
-                        ("cnt".into(), IcWireValue::Int64(1)),
+                        ("country".into(), GqlWireValue::Text("UK".into())),
+                        ("cnt".into(), GqlWireValue::Int64(1)),
                     ],
                 },
             ],
@@ -310,7 +310,7 @@ mod tests {
         };
         apply_federated_aggregate_having(&mut result, &spec, &BTreeMap::new()).expect("apply");
         assert_eq!(result.row_count, 1);
-        let values = IcWirePlanQueryResult::decode_blob(result.rows_blob.as_ref().unwrap())
+        let values = GqlWireRows::decode_blob(result.rows_blob.as_ref().unwrap())
             .expect("decode")
             .try_into_value_rows()
             .expect("values");

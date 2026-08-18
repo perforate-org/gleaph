@@ -13,7 +13,7 @@
 use candid::{Decode, Encode};
 use gleaph_gql::Value;
 use gleaph_gql::value_to_index_key_bytes;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::index::{PhysicalIndexId, PostingHit};
 use gleaph_pocket_ic_tests::{
     create_vertex_property_index, ensure_property, gql_mutate_result_as_admin, gql_query_as_admin,
@@ -58,7 +58,7 @@ fn plan_batch_with_indexed_properties_completes_without_trapping_and_drains() {
         .rows_blob
         .as_ref()
         .expect("age query should return rows_blob");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode age rows");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode age rows");
     assert_eq!(wire.rows.len(), 1, "age 150 vertex must be inserted");
     let row = wire
         .rows

@@ -8,7 +8,7 @@ use gleaph_gql::index_key_bytes_to_value;
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql::value_to_index_key_bytes;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
@@ -132,7 +132,7 @@ pub fn gql_query_result_from_label_live_count(
                 .map_err(|_| format!("label live count overflow: {live_count}"))?,
         ),
     );
-    let rows_blob = IcWirePlanQueryResult::try_from_value_rows(&[row])
+    let rows_blob = GqlWireRows::try_from_value_rows(&[row])
         .map_err(|e| e.to_string())?
         .encode_blob()
         .map_err(|e| e.to_string())?;
@@ -245,7 +245,7 @@ pub fn gql_query_result_from_posting_counts(
         None
     } else {
         Some(
-            IcWirePlanQueryResult::try_from_value_rows(&rows)
+            GqlWireRows::try_from_value_rows(&rows)
                 .map_err(|e| e.to_string())?
                 .encode_blob()
                 .map_err(|e| e.to_string())?,

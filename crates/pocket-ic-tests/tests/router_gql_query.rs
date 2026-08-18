@@ -4,7 +4,7 @@
 //! multi-shard router index lookup with per-shard `seed_bindings_blob` fan-out.
 
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use gleaph_pocket_ic_tests::{
@@ -900,7 +900,7 @@ fn decode_single_value_row(
         .rows_blob
         .as_ref()
         .expect("router gql_query should return rows_blob");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows_blob");
     assert_eq!(wire.rows.len(), 1);
     wire.rows
         .into_iter()
@@ -934,7 +934,7 @@ fn vertex_ids_from_result(
         .rows_blob
         .as_ref()
         .expect("router gql_query should return rows_blob");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows_blob");
     wire.rows
         .into_iter()
         .map(|row| {
@@ -953,7 +953,7 @@ fn edge_bound_endpoint_ids_from_result(
         .rows_blob
         .as_ref()
         .expect("router gql_query should return rows_blob");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    let wire = GqlWireRows::decode_blob(rows_blob).expect("decode rows_blob");
     wire.rows
         .into_iter()
         .map(|row| {

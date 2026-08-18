@@ -7,7 +7,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{
     ElementIdEncodingKey, GlobalVertexId, RouterError, ShardId, encode_global_vertex_id,
 };
@@ -221,14 +221,14 @@ fn ingest(
         .expect("ingest succeeds")
 }
 
-fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::IcWireValue {
+fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::GqlWireValue {
     let result =
         gql_query_with_params_as_admin(env, "MATCH (v) RETURN ELEMENT_ID(v) AS v_id", vec![]);
     assert_eq!(result.row_count, 1, "exactly one vertex");
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     assert_eq!(wire.rows.len(), 1);
-    let mut columns: std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue> = wire
+    let mut columns: std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue> = wire
         .rows
         .into_iter()
         .next()
@@ -370,9 +370,9 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
     let gql = gql_query_with_params_as_admin(&env, &query, params);
     assert_eq!(gql.row_count, 1, "exact GQL search returns one row");
     let rows_blob = gql.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     assert_eq!(wire.rows.len(), 1);
-    let columns: std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue> =
+    let columns: std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue> =
         wire.rows[0].columns.clone().into_iter().collect();
     assert_eq!(
         columns.get("d_id").expect("d_id column"),
@@ -380,7 +380,7 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         "GQL must return the ingested vertex ELEMENT_ID"
     );
     let distance = match columns.get("distance").expect("distance column") {
-        gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+        gleaph_gql_ic::GqlWireValue::Float64(d) => *d,
         other => panic!("distance must be Float64, got {other:?}"),
     };
     assert!(
@@ -649,9 +649,9 @@ fn i8_canonical_ingestion_reaches_router_vector_search() {
     let gql = gql_query_with_params_as_admin(&env, &query, params);
     assert_eq!(gql.row_count, 1, "I8 exact GQL search returns one row");
     let rows_blob = gql.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     assert_eq!(wire.rows.len(), 1);
-    let columns: std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue> =
+    let columns: std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue> =
         wire.rows[0].columns.clone().into_iter().collect();
     assert_eq!(
         columns.get("d_id").expect("d_id column"),
@@ -659,7 +659,7 @@ fn i8_canonical_ingestion_reaches_router_vector_search() {
         "I8 GQL must return the ingested vertex ELEMENT_ID"
     );
     let distance = match columns.get("distance").expect("distance column") {
-        gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+        gleaph_gql_ic::GqlWireValue::Float64(d) => *d,
         other => panic!("distance must be Float64, got {other:?}"),
     };
     assert!(

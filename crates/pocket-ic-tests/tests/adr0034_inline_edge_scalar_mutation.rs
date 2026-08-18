@@ -4,7 +4,7 @@
 //! mutation value before writing, encodes it into the fixed-width inline property bytes, updates every physical
 //! mirror of the logical edge, and never writes the matching property to the sidecar store.
 
-use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
@@ -28,9 +28,9 @@ fn setup() -> FederationEnv {
     env
 }
 
-fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
+fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -63,7 +63,7 @@ fn scenario_assert_distance(env: &FederationEnv, expected: u64) {
     assert_eq!(rows.len(), 1, "expected exactly one ROAD edge");
     assert_eq!(
         rows[0].get("d"),
-        Some(&IcWireValue::Uint64(expected)),
+        Some(&GqlWireValue::Uint64(expected)),
         "expected e.distance == {expected}"
     );
 }
@@ -150,12 +150,12 @@ fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
     assert_eq!(rows.len(), 1, "expected exactly one mixed ROAD edge");
     assert_eq!(
         rows[0].get("d"),
-        Some(&IcWireValue::Uint64(7)),
+        Some(&GqlWireValue::Uint64(7)),
         "expected inline distance == 7"
     );
     assert_eq!(
         rows[0].get("s"),
-        Some(&IcWireValue::Text("asphalt".into())),
+        Some(&GqlWireValue::Text("asphalt".into())),
         "expected sidecar surface == 'asphalt'"
     );
 }

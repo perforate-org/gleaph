@@ -9,7 +9,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
@@ -198,9 +198,9 @@ fn seed_embedding(
 
 fn extract_rows(
     result: GqlQueryResult,
-) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -301,7 +301,7 @@ fn search_where_equality_excludes_globally_nearer_vertex() {
     assert_eq!(rows.len(), 2);
     for row in &rows {
         match row.get("distance").expect("distance column") {
-            gleaph_gql_ic::IcWireValue::Float64(d) => {
+            gleaph_gql_ic::GqlWireValue::Float64(d) => {
                 assert!(d.is_finite(), "distance must be finite, got {d}");
             }
             other => panic!("distance must be Float64, got {other:?}"),
@@ -371,7 +371,7 @@ fn search_where_equality_empty_result_aggregate() {
     let rows = extract_rows(result);
     assert_eq!(rows.len(), 1);
     match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
+        gleaph_gql_ic::GqlWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
         other => panic!("count must be Int64 0, got {other:?}"),
     }
 }
@@ -530,7 +530,7 @@ fn search_where_equality_label_filter_wins_over_closer_other_vertex() {
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].get("distance"),
-        Some(&gleaph_gql_ic::IcWireValue::Float64(
+        Some(&gleaph_gql_ic::GqlWireValue::Float64(
             10.0_f64.powi(2) * 16.0_f64
         )),
         "the Document vector at 10.0 must win, not the Other vertex at 0.0"

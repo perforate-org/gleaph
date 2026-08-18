@@ -3486,7 +3486,7 @@ mod tests {
 
         assert_eq!(result.row_count, 1);
         let rows_blob = result.rows_blob.expect("query rows_blob");
-        let wire = gleaph_gql_ic::IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode");
+        let wire = gleaph_gql_ic::GqlWireRows::decode_blob(&rows_blob).expect("decode");
         let materialized =
             crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
         assert_eq!(materialized.rows.len(), 1);

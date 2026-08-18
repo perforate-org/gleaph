@@ -16,7 +16,7 @@
 
 use candid::{Decode, Encode};
 use gleaph_gql::{Value, value_to_index_key_bytes};
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::index::PostingHit;
 use gleaph_graph_kernel::path::GraphPathVertexId;
@@ -202,7 +202,7 @@ fn unique_edge_target(
         result.row_count, 1,
         "expected exactly one row for `{query}`"
     );
-    let wire = IcWirePlanQueryResult::decode_blob(
+    let wire = GqlWireRows::decode_blob(
         result
             .rows_blob
             .as_ref()

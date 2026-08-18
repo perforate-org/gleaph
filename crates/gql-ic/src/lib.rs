@@ -12,25 +12,23 @@
 //!
 //! Graph canisters take GQL parameters as a single **compact-binary blob**
 //! ([`encode_gql_params_blob`] / [`decode_gql_params_blob`]): one [`Value::Record`] on the wire.
-//! [`wire::IcWireValue`] remains for Candid-structured tooling and tests where needed.
+//! The Candid wire value enum and row containers are single-sourced in `gleaph-gql-ic-wire` and
+//! re-exported from this crate root.
 
 pub use candid::Principal;
 pub mod graph_registry;
-pub mod plan_result_wire;
 pub mod unique_key;
 pub mod wire;
 
 pub use gleaph_gql_ic_wire::{
+    GqlWireDecodeError, GqlWirePathElement, GqlWireRow, GqlWireRows, GqlWireValue,
     IcExtensionBinaryDecode, PRINCIPAL_EXTENSION_SORTABLE_DOMAIN, PrincipalValue,
     install_ic_extension_binary_decode_for_rkyv, principal_to_value, value_as_principal,
 };
-pub use plan_result_wire::{IcWirePlanQueryResult, IcWirePlanQueryRow};
 pub use unique_key::{
     MAX_UNIQUE_ENCODED_VALUE_LEN, UniqueKeyOutcome, UniqueKeyRejection, encode_unique_value,
 };
-pub use wire::{
-    IcWirePathElement, IcWireValue, WireError, decode_gql_params_blob, encode_gql_params_blob,
-};
+pub use wire::{decode_gql_params_blob, encode_gql_params_blob};
 
 #[cfg(test)]
 mod tests {

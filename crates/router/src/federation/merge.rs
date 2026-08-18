@@ -5,7 +5,7 @@
 //! group-key merge instead (see `aggregate_merge.rs`).
 
 use candid::Encode;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 
 fn ensure_execute_plan_result_payload(result: &ExecutePlanResult) -> Result<(), String> {
@@ -53,7 +53,7 @@ pub fn merge_execute_plan_result(
         FederatedMergeMode::UnionRows => {
             acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
             merge_hot_forward_vertices(&mut acc.hot_forward_vertices, &shard.hot_forward_vertices);
-            IcWirePlanQueryResult::merge_optional_batch_blobs(acc.rows_blob.take(), shard.rows_blob)
+            GqlWireRows::merge_optional_batch_blobs(acc.rows_blob.take(), shard.rows_blob)
                 .map_err(|e| e.to_string())?
         }
         FederatedMergeMode::Aggregate(spec) => {
@@ -63,7 +63,7 @@ pub fn merge_execute_plan_result(
             acc.row_count = merged
                 .as_ref()
                 .map(|blob| {
-                    IcWirePlanQueryResult::decode_blob(blob)
+                    GqlWireRows::decode_blob(blob)
                         .map(|decoded| decoded.rows.len() as u64)
                         .map_err(|e| e.to_string())
                 })
@@ -94,7 +94,7 @@ fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[u32]) {
 #[cfg(test)]
 mod tests {
     use gleaph_gql::Value;
-    use gleaph_gql_ic::{IcWirePlanQueryResult, IcWirePlanQueryRow, IcWireValue};
+    use gleaph_gql_ic::{GqlWireRow, GqlWireRows, GqlWireValue};
 
     use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 
@@ -107,11 +107,11 @@ mod tests {
     use gleaph_gql::ast::AggregateFunc;
 
     fn sample_rows_blob(values: &[i64]) -> Vec<u8> {
-        IcWirePlanQueryResult {
+        GqlWireRows {
             rows: values
                 .iter()
-                .map(|n| IcWirePlanQueryRow {
-                    columns: vec![("n".into(), IcWireValue::Int64(*n))],
+                .map(|n| GqlWireRow {
+                    columns: vec![("n".into(), GqlWireValue::Int64(*n))],
                 })
                 .collect(),
         }
@@ -172,8 +172,8 @@ mod tests {
         )
         .expect("second shard");
         assert_eq!(acc.row_count, 3);
-        let merged = IcWirePlanQueryResult::decode_blob(acc.rows_blob.as_ref().unwrap())
-            .expect("decode merged");
+        let merged =
+            GqlWireRows::decode_blob(acc.rows_blob.as_ref().unwrap()).expect("decode merged");
         assert_eq!(merged.rows.len(), 3);
         let values = merged
             .try_into_value_rows()
@@ -200,9 +200,9 @@ mod tests {
         };
         let mut acc = empty_execute_plan_result();
         let count_blob = |n: i64| {
-            IcWirePlanQueryResult {
-                rows: vec![IcWirePlanQueryRow {
-                    columns: vec![("cnt".into(), IcWireValue::Int64(n))],
+            GqlWireRows {
+                rows: vec![GqlWireRow {
+                    columns: vec![("cnt".into(), GqlWireValue::Int64(n))],
                 }],
             }
             .encode_blob()
@@ -229,9 +229,8 @@ mod tests {
         )
         .expect("second shard");
         assert_eq!(acc.row_count, 1);
-        let merged =
-            IcWirePlanQueryResult::decode_blob(acc.rows_blob.as_ref().unwrap()).expect("decode");
+        let merged = GqlWireRows::decode_blob(acc.rows_blob.as_ref().unwrap()).expect("decode");
         assert_eq!(merged.rows.len(), 1);
-        assert_eq!(merged.rows[0].columns[0].1, IcWireValue::Int64(8));
+        assert_eq!(merged.rows[0].columns[0].1, GqlWireValue::Int64(8));
     }
 }

@@ -13,7 +13,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
@@ -200,9 +200,9 @@ fn enable_vector_dispatch(env: &FederationEnv, vector: Principal) {
     attach_shard(env, ShardId::new(1), vector);
 }
 
-fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, gleaph_gql_ic::GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -277,7 +277,7 @@ fn non_leading_search_join_preserves_multiplicity_l2_distance() {
         assert!(row.contains_key("a"), "author binding must be present");
         assert!(row.contains_key("d"), "document binding must be present");
         match row.get("distance").expect("distance column") {
-            gleaph_gql_ic::IcWireValue::Float64(d) => {
+            gleaph_gql_ic::GqlWireValue::Float64(d) => {
                 assert!(
                     (d - 0.0f64).abs() < 1e-6,
                     "exact match distance must be 0.0"
@@ -339,7 +339,7 @@ fn non_leading_search_join_score_as_cosine() {
     let rows = extract_rows(result);
     assert_eq!(rows.len(), 1);
     match rows[0].get("score").expect("score column") {
-        gleaph_gql_ic::IcWireValue::Float64(score) => {
+        gleaph_gql_ic::GqlWireValue::Float64(score) => {
             assert!(
                 (score - 1.0f64).abs() < 1e-6,
                 "identical directions score ~1.0"
@@ -434,7 +434,7 @@ fn non_leading_search_global_top_k_computed_before_join() {
     assert_eq!(rows.len(), 2);
     for row in &rows {
         match row.get("distance").expect("distance column") {
-            gleaph_gql_ic::IcWireValue::Float64(d) => {
+            gleaph_gql_ic::GqlWireValue::Float64(d) => {
                 assert!(
                     (d - 0.0f64).abs() < 1e-6,
                     "only the exact-match document survives global top-k"

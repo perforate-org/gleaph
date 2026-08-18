@@ -8,7 +8,8 @@ use candid::{Encode, Principal};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
-use gleaph_gql_ic::{IcWirePlanQueryResult, decode_gql_params_blob};
+use gleaph_gql_ic::GqlWireRows;
+use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
@@ -2519,12 +2520,11 @@ async fn dispatch_use_graph_join(
     })
 }
 
-fn decode_wire_result(result: GqlQueryResult) -> Result<IcWirePlanQueryResult, RouterError> {
+fn decode_wire_result(result: GqlQueryResult) -> Result<GqlWireRows, RouterError> {
     let blob = result.rows_blob.ok_or_else(|| {
         RouterError::InvalidArgument("multi-graph branch returned no rows_blob".into())
     })?;
-    IcWirePlanQueryResult::decode_blob(&blob)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))
+    GqlWireRows::decode_blob(&blob).map_err(|e| RouterError::InvalidArgument(e.to_string()))
 }
 
 /// Route and execute a plan blob (single- or multi-shard).
@@ -4736,7 +4736,7 @@ mod tests {
     use gleaph_gql::Value;
     use gleaph_gql::ast::CmpOp;
     use gleaph_gql::parser;
-    use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+    use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
@@ -5763,9 +5763,9 @@ mod tests {
 
     #[test]
     fn gql_query_result_from_merged_carries_rows_blob() {
-        let rows_blob = IcWirePlanQueryResult {
-            rows: vec![gleaph_gql_ic::IcWirePlanQueryRow {
-                columns: vec![("n".into(), IcWireValue::Int64(7))],
+        let rows_blob = GqlWireRows {
+            rows: vec![gleaph_gql_ic::GqlWireRow {
+                columns: vec![("n".into(), GqlWireValue::Int64(7))],
             }],
         }
         .encode_blob()

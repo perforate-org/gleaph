@@ -11,7 +11,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
@@ -201,9 +201,9 @@ fn seed_embedding(
 
 fn extract_rows(
     result: GqlQueryResult,
-) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -346,7 +346,7 @@ impl<'a> CommonConjunctionFixture<'a> {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].get("distance"),
-            Some(&gleaph_gql_ic::IcWireValue::Float64(
+            Some(&gleaph_gql_ic::GqlWireValue::Float64(
                 2.0_f64.powi(2) * 16.0_f64
             )),
             "doc_match at 2.0 must win, not the nearer one-arm vertices at 0.0"
@@ -400,7 +400,7 @@ impl<'a> CommonConjunctionFixture<'a> {
         let rows = extract_rows(result);
         assert_eq!(rows.len(), 1);
         match rows[0].get("n").expect("count column") {
-            gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
+            gleaph_gql_ic::GqlWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
             other => panic!("count must be Int64 0, got {other:?}"),
         }
     }
@@ -512,7 +512,7 @@ impl<'a> EightWayConjunctionFixture<'a> {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].get("distance"),
-            Some(&gleaph_gql_ic::IcWireValue::Float64(
+            Some(&gleaph_gql_ic::GqlWireValue::Float64(
                 2.0_f64.powi(2) * 16.0_f64
             )),
             "doc_match at 2.0 must win, not the nearer partial match at 0.0"
@@ -716,7 +716,7 @@ impl<'a> NonLeadingConjunctionFixture<'a> {
         assert_eq!(rows.len(), 2);
         for row in &rows {
             match row.get("distance").expect("distance column") {
-                gleaph_gql_ic::IcWireValue::Float64(d) => {
+                gleaph_gql_ic::GqlWireValue::Float64(d) => {
                     assert!(
                         (d - 16.0f64).abs() < 1e-6,
                         "only the exact-match intersection document survives global top-k"
@@ -748,7 +748,7 @@ impl<'a> NonLeadingConjunctionFixture<'a> {
         let rows = extract_rows(result);
         assert_eq!(rows.len(), 1);
         match rows[0].get("n").expect("count column") {
-            gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
+            gleaph_gql_ic::GqlWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
             other => panic!("count must be Int64 0, got {other:?}"),
         }
     }

@@ -19,7 +19,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
@@ -645,12 +645,12 @@ fn activation_flag_and_shard_attach_gate_empty_search_and_aggregate() {
         "global aggregate over empty leading search must return one row"
     );
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     assert_eq!(wire.rows.len(), 1);
-    let columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> =
+    let columns: BTreeMap<String, gleaph_gql_ic::GqlWireValue> =
         wire.rows[0].columns.clone().into_iter().collect();
     match columns.get("c").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(cnt) => {
+        gleaph_gql_ic::GqlWireValue::Int64(cnt) => {
             assert_eq!(*cnt, 0, "count over empty search hits must be 0");
         }
         other => panic!("count must be Int64, got {other:?}"),
@@ -916,16 +916,16 @@ fn vector_and_gql_search_reject_top_k_above_shared_bound() {
     );
 }
 
-fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::IcWireValue {
+fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::GqlWireValue {
     let result = gql_query_as_admin(env, "MATCH (v) RETURN ELEMENT_ID(v) AS v_id");
     assert_eq!(
         result.row_count, 1,
         "expected exactly one graph vertex for element-id lookup"
     );
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     assert_eq!(wire.rows.len(), 1);
-    let mut columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> = wire
+    let mut columns: BTreeMap<String, gleaph_gql_ic::GqlWireValue> = wire
         .rows
         .into_iter()
         .next()
@@ -938,33 +938,29 @@ fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::IcWireValue {
         .expect("ELEMENT_ID(v) column present")
 }
 
-fn extract_id_and_distance(
-    row: &gleaph_gql_ic::IcWirePlanQueryRow,
-) -> (gleaph_gql_ic::IcWireValue, f64) {
-    let columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> = row
+fn extract_id_and_distance(row: &gleaph_gql_ic::GqlWireRow) -> (gleaph_gql_ic::GqlWireValue, f64) {
+    let columns: BTreeMap<String, gleaph_gql_ic::GqlWireValue> = row
         .columns
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let id = columns.get("d_id").expect("d_id column present").clone();
     let distance = match columns.get("distance").expect("distance column present") {
-        gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+        gleaph_gql_ic::GqlWireValue::Float64(d) => *d,
         other => panic!("distance must be Float64, got {other:?}"),
     };
     (id, distance)
 }
 
-fn extract_id_and_score(
-    row: &gleaph_gql_ic::IcWirePlanQueryRow,
-) -> (gleaph_gql_ic::IcWireValue, f64) {
-    let columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> = row
+fn extract_id_and_score(row: &gleaph_gql_ic::GqlWireRow) -> (gleaph_gql_ic::GqlWireValue, f64) {
+    let columns: BTreeMap<String, gleaph_gql_ic::GqlWireValue> = row
         .columns
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let id = columns.get("d_id").expect("d_id column present").clone();
     let score = match columns.get("score").expect("score column present") {
-        gleaph_gql_ic::IcWireValue::Float64(s) => *s,
+        gleaph_gql_ic::GqlWireValue::Float64(s) => *s,
         other => panic!("score must be Float64, got {other:?}"),
     };
     (id, score)
@@ -1048,7 +1044,7 @@ fn seeded_l2_search_orders_exact_subject_and_returns_element_id_distance() {
         "exact L2 query should return the seeded graph vertex, not a row count"
     );
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     assert_eq!(wire.rows.len(), 1);
     let (id, distance) = extract_id_and_distance(&wire.rows[0]);
     assert_eq!(
@@ -1113,7 +1109,7 @@ fn cosine_score_as_is_exact_and_distance_as_rejected_without_poisoning() {
             "exact cosine query should return the seeded vertex"
         );
         let rows_blob = result.rows_blob.expect("rows blob");
-        let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+        let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
         assert_eq!(wire.rows.len(), 1);
         let (id, score) = extract_id_and_score(&wire.rows[0]);
         assert_eq!(
@@ -1154,7 +1150,7 @@ fn cosine_score_as_is_exact_and_distance_as_rejected_without_poisoning() {
         let result = gql_query_with_params_as_admin(&env, &score_query, params.clone());
         assert_eq!(result.row_count, 1, "SCORE AS still returns one row");
         let rows_blob = result.rows_blob.expect("rows blob");
-        let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+        let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
         assert_eq!(wire.rows.len(), 1);
         extract_id_and_score(&wire.rows[0])
     };

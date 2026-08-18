@@ -15,7 +15,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
@@ -204,9 +204,9 @@ fn seed_embedding(
     .expect("seed embedding");
 }
 
-fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, gleaph_gql_ic::GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -480,7 +480,9 @@ fn non_leading_search_where_empty_candidates_aggregate_returns_one_zero_row() {
     let rows = extract_rows(result);
     assert_eq!(rows.len(), 1);
     match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(n) => assert_eq!(*n, 0, "count over empty relation is 0"),
+        gleaph_gql_ic::GqlWireValue::Int64(n) => {
+            assert_eq!(*n, 0, "count over empty relation is 0")
+        }
         other => panic!("count must be Int64, got {other:?}"),
     }
 }

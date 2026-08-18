@@ -96,12 +96,11 @@ fn ordered_edge_request(key: &str, source: Vec<u8>, target: Vec<u8>) -> AtomicIn
 
 fn query_scores(env: &FederationEnv, query: &str) -> Vec<i128> {
     let result = gql_query_as_admin(env, query);
-    let rows = gleaph_gql_ic::IcWirePlanQueryResult::decode_blob(
-        result.rows_blob.as_ref().expect("rows blob"),
-    )
-    .expect("decode rows")
-    .try_into_value_rows()
-    .expect("convert rows");
+    let rows =
+        gleaph_gql_ic::GqlWireRows::decode_blob(result.rows_blob.as_ref().expect("rows blob"))
+            .expect("decode rows")
+            .try_into_value_rows()
+            .expect("convert rows");
     let values = rows
         .iter()
         .map(|row| row.get("score").and_then(Value::as_i128))
@@ -326,12 +325,11 @@ fn atomic_insert_persists_property_and_inline_values() {
 
     let result = gql_query_as_admin(&env, "MATCH (a)-[e:ROAD]->(b) RETURN e.score AS score");
     assert_eq!(result.row_count, 1);
-    let rows = gleaph_gql_ic::IcWirePlanQueryResult::decode_blob(
-        result.rows_blob.as_ref().expect("rows blob"),
-    )
-    .expect("decode rows")
-    .try_into_value_rows()
-    .expect("convert rows");
+    let rows =
+        gleaph_gql_ic::GqlWireRows::decode_blob(result.rows_blob.as_ref().expect("rows blob"))
+            .expect("decode rows")
+            .try_into_value_rows()
+            .expect("convert rows");
     assert_eq!(rows[0].get("score"), Some(&Value::Int64(42)));
     let inline_predicate = gql_query_as_admin(
         &env,

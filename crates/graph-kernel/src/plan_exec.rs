@@ -878,7 +878,7 @@ pub struct ConstrainedPropertyDispatch {
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanResult {
     pub row_count: u64,
-    /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
+    /// Candid-encoded [`gleaph_gql_ic::GqlWireRows`]; set on query shard execution.
     pub rows_blob: Option<Vec<u8>>,
     /// Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
@@ -959,7 +959,7 @@ pub struct MutationTokenShard {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GqlQueryResult {
     pub row_count: u64,
-    /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`] after federated merge.
+    /// Candid-encoded [`gleaph_gql_ic::GqlWireRows`] after federated merge.
     pub rows_blob: Option<Vec<u8>>,
     /// Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
     pub phase: Option<MutationLifecyclePhase>,

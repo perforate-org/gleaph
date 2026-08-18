@@ -9,7 +9,7 @@
 //! scenario owns a distinct source-vertex label so the read results remain independently observable
 //! and cannot be confused by edges created for another scenario.
 
-use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
+use gleaph_gql_ic::{GqlWireRows, GqlWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
@@ -42,9 +42,9 @@ fn setup() -> FederationEnv {
     env
 }
 
-fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
+fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, GqlWireValue>> {
     let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    let wire = GqlWireRows::decode_blob(&rows_blob).expect("decode rows");
     wire.rows
         .into_iter()
         .map(|row| row.columns.into_iter().collect())
@@ -81,7 +81,7 @@ fn scenario_projection_returns_inline_property(env: &FederationEnv, road_label_i
     );
     assert_eq!(
         rows[0].get("d"),
-        Some(&IcWireValue::Uint64(7)),
+        Some(&GqlWireValue::Uint64(7)),
         "projection scenario: inline property bytes must be returned"
     );
 }
@@ -106,7 +106,7 @@ fn scenario_filter_matches_inline_property(env: &FederationEnv, road_label_id: u
     );
     assert_eq!(
         rows[0].get("d"),
-        Some(&IcWireValue::Uint64(7)),
+        Some(&GqlWireValue::Uint64(7)),
         "filter scenario: must not select the edge with inline property bytes 9"
     );
 }
@@ -132,12 +132,12 @@ fn scenario_order_by_sorts_by_inline_property(env: &FederationEnv, road_label_id
     );
     assert_eq!(
         rows[0].get("d"),
-        Some(&IcWireValue::Uint64(7)),
+        Some(&GqlWireValue::Uint64(7)),
         "order scenario: first row must be the smaller inline property bytes"
     );
     assert_eq!(
         rows[1].get("d"),
-        Some(&IcWireValue::Uint64(9)),
+        Some(&GqlWireValue::Uint64(9)),
         "order scenario: second row must be the larger inline property bytes"
     );
 }
@@ -164,7 +164,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, road_label_id
     );
     assert_eq!(
         rows[0].get("d"),
-        Some(&IcWireValue::Uint64(7)),
+        Some(&GqlWireValue::Uint64(7)),
         "precedence scenario: inline property bytes must win over sidecar value 99"
     );
 }
