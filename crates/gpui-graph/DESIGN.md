@@ -164,7 +164,8 @@ Layout must not be tied to a single algorithm.
 v0.1 should support:
 
 - ForceAtlas2,
-- fixed/manual positioning.
+- fixed/manual positioning,
+- strongly-connected-component layered placement (§15.3).
 
 Future layout algorithms should be addable without changing the graph model or renderer.
 
@@ -980,6 +981,31 @@ It is useful for:
 - saved layouts,
 - tests,
 - deterministic demonstrations.
+
+---
+
+## 15.3 Strongly-Connected-Component circular
+
+`SccLayoutEngine` is a deterministic layout for directed graphs whose structure
+is best read through strongly connected components — the same block shape the
+Frobenius normal form of a matrix produces.
+
+It:
+
+1. computes the strongly connected components (Tarjan),
+2. contracts each component to a single node (the condensation DAG) and assigns
+   each component a layer by its longest-path depth (Mirsky's theorem), so
+   components at the same depth share a column,
+3. places each component's nodes on a circle centered at the component's
+   position, and arranges the component circles along the layers so the drawing
+   reads left-to-right block by block with edges flowing from earlier to later
+   columns.
+
+Because the placement derives entirely from topology, `rebuild` produces a full
+deterministic placement and `step` settles immediately (no iterations). Pinned
+nodes keep their position and are not overwritten. Spacing, circle radius, and
+orientation are currently fixed constants; a builder surface may be added later
+if a second concrete use demands it.
 
 ---
 

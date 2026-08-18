@@ -28,6 +28,7 @@ pub use keyed_graph::KeyedGraph;
 pub use layout::{
     FixedLayout, ForceAtlas2, LayoutBudget, LayoutController, LayoutEngine, LayoutGraph,
     LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, Placement,
+    SccLayoutEngine,
 };
 pub use paint::{
     PaintEdge, PaintEdgeLabel, PaintFrame, PaintFrameInput, PaintLabel, PaintNode,

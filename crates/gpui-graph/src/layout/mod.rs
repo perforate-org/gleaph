@@ -9,12 +9,14 @@ pub mod fixed;
 pub mod force_atlas2;
 pub mod graph;
 pub mod placement;
+pub mod scc;
 
 pub use controller::{LayoutController, LayoutRunState};
 pub use fixed::FixedLayout;
 pub use force_atlas2::ForceAtlas2;
 pub use graph::{LayoutEdge, LayoutGraph, LayoutIndex, LayoutNode, LayoutState};
 pub use placement::{Placement, Rng};
+pub use scc::SccLayoutEngine;
 
 use crate::graph::EdgeDirection;
 
