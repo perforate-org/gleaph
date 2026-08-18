@@ -458,15 +458,19 @@ where
                     move |_bounds, frame: crate::paint::PaintFrame, window, cx| {
                         let coordinates = coordinates_paint.get();
                         let style = view_paint.read(cx).style.clone();
-                        // Compute the window-space bounds of every edge label so
-                        // edges can be cut where they pass behind a label.
-                        let label_rects: Vec<Bounds<gpui::Pixels>> = frame
+                        // Compute the window-space bounds of every node and edge
+                        // label so edges can be cut where they pass behind a
+                        // label.
+                        let mut label_rects: Vec<Bounds<gpui::Pixels>> = frame
                             .edge_labels
                             .iter()
                             .filter_map(|label| {
                                 edge_label_bounds(window, &coordinates, label, &style)
                             })
                             .collect();
+                        label_rects.extend(frame.labels.iter().filter_map(|label| {
+                            node_label_bounds(window, &coordinates, label, &style)
+                        }));
                         // Edges first, then nodes (§18.1).
                         for edge in &frame.edges {
                             let color = if edge.selected {
@@ -995,15 +999,59 @@ fn edge_label_bounds(
     style: &GraphStyle,
 ) -> Option<Bounds<gpui::Pixels>> {
     let anchor = coordinates.canvas_to_window(label.position + label.offset * style.label_offset);
+    // Center the label vertically on the anchor by shifting the origin up by
+    // half the total text height.
+    label_bounds(
+        window,
+        &label.text,
+        anchor,
+        |anchor, height| anchor.y - height * 0.5,
+        style,
+    )
+}
+
+/// Compute the window-space bounds of a node label, or `None` if the text
+/// cannot be shaped. The bounds are used to cut edges that pass behind the
+/// label so the label stays readable over any background.
+fn node_label_bounds(
+    window: &mut Window,
+    coordinates: &CanvasCoordinates,
+    label: &crate::paint::PaintLabel,
+    style: &GraphStyle,
+) -> Option<Bounds<gpui::Pixels>> {
+    let anchor = coordinates.canvas_to_window(label.position);
+    // The label is centered horizontally on the node and starts below the node
+    // (radius + offset).
+    label_bounds(
+        window,
+        &label.text,
+        anchor,
+        |anchor, _height| anchor.y + style.node_radius + style.label_offset,
+        style,
+    )
+}
+
+/// Compute the window-space bounds of a label anchored at `anchor`, or `None`
+/// if the text cannot be shaped. `top_y` maps the anchor and the total text
+/// height to the label's top edge. The label is centered horizontally on the
+/// anchor with a horizontal margin so edges are cut slightly beyond the text,
+/// keeping the label clear of the line.
+fn label_bounds(
+    window: &mut Window,
+    text: &str,
+    anchor: Vec2,
+    top_y: impl Fn(Vec2, f32) -> f32,
+    style: &GraphStyle,
+) -> Option<Bounds<gpui::Pixels>> {
     let font_size = style.label_style.font_size.to_pixels(window.rem_size());
     let line_height = style
         .label_style
         .line_height
         .to_pixels(font_size.into(), window.rem_size());
-    let run = style.label_style.to_run(label.text.len());
+    let run = style.label_style.to_run(text.len());
     let lines = window
         .text_system()
-        .shape_text(label.text.clone().into(), font_size, &[run], None, None)
+        .shape_text(text.to_owned().into(), font_size, &[run], None, None)
         .ok()?;
     let mut width = 0.0f32;
     let mut height = 0.0f32;
@@ -1012,13 +1060,10 @@ fn edge_label_bounds(
         width = width.max(f32::from(line_size.width));
         height += f32::from(line_size.height);
     }
-    // Center the label vertically on the anchor by shifting the origin up by
-    // half the total text height. Add a horizontal margin so the edge is cut
-    // slightly beyond the text, keeping the label clear of the line.
     let margin = 4.0f32;
     let origin = point(
         px(anchor.x - width * 0.5 - margin),
-        px(anchor.y - height * 0.5),
+        px(top_y(anchor, height)),
     );
     Some(Bounds {
         origin,
@@ -1594,6 +1639,26 @@ mod tests {
         assert_eq!(labels.len(), 2, "both nodes should have a label");
         assert_eq!(labels[0], Vec2::new(origin.x + 90.0, origin.y + 30.0));
         assert_eq!(labels[1], Vec2::new(origin.x + 130.0, origin.y + 90.0));
+    }
+
+    #[test]
+    fn node_label_bounds_rect_cuts_edges_passing_behind_it() {
+        // A node label sits below a node at the origin. An edge passing through
+        // the label's rect must be cut into visible pieces on either side, just
+        // like an edge label.
+        let rect = Bounds {
+            origin: point(px(0.0), px(10.0)),
+            size: size(px(20.0), px(10.0)),
+        };
+        let curves = visible_bezier_curves(
+            Vec2::new(-30.0, 15.0),
+            Vec2::new(0.0, 15.0),
+            Vec2::new(30.0, 15.0),
+            &[rect],
+        );
+        assert_eq!(curves.len(), 2, "edge must be cut around the node label");
+        assert!(curves[0].2.x <= 0.0);
+        assert!(curves[1].0.x >= 20.0);
     }
 
     #[gpui::test]

@@ -1142,6 +1142,16 @@ A self-loop uses the node as the apex (tip) of a rounded triangle: a wide,
 rounded base sits away from the node. The loop points away from the node's
 other incident edges, defaulting to up when the node has no other edges.
 
+## 18.4 Label masking
+
+Edges are cut where they pass behind a label so the label stays readable over
+any background. The paint layer computes the window-space bounds of every node
+and edge label, then splits each edge's Bézier path exactly at the t values
+where it crosses a label rectangle (`visible_bezier_curves`). The masked region
+matches the label precisely and is independent of zoom or pan. Node labels use
+the same rectangle-mask technique as edge labels: a node label's bounds sit
+below the node (radius + offset) and cut any edge that passes behind them.
+
 ---
 
 # 19. Rich Overlays
