@@ -1138,6 +1138,12 @@ center rather than the node edge. A non-loop edge is a single segment; a
 self-loop is a list of onigiri segments. Hit testing samples each segment so
 curved edges and self-loops remain selectable.
 
+When two nodes overlap, the trimmed curve between them is degenerate (its start
+parameter is not before its end) and collapses to a point. Such an edge is
+skipped entirely: `edge_path` returns an empty path and `build_paint_frame`
+drops it, so no zero-length segment (whose arrow would normalize to NaN) reaches
+the paint layer.
+
 A self-loop uses the node as the apex (tip) of a rounded triangle: a wide,
 rounded base sits away from the node. The loop points away from the node's
 other incident edges, defaulting to up when the node has no other edges.

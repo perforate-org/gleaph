@@ -271,6 +271,11 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             viewport,
             style,
         );
+        // Skip degenerate edges (e.g. overlapping nodes) whose trimmed path is
+        // empty, so no non-finite geometry reaches the paint layer.
+        if path.is_empty() {
+            continue;
+        }
         let apex = if is_self_loop {
             path.first().map(|(_, _, p2)| *p2)
         } else {
@@ -380,7 +385,16 @@ pub(crate) fn edge_path<N, E>(
     } else {
         let control = edge_control_point(source, target, groups, index);
         let control = control.unwrap_or((source + target) * 0.5);
-        vec![trim_curve_to_node_boundary(source, control, target, style.node_radius)]
+        let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
+        // When the nodes overlap, the trimmed curve is degenerate (its start
+        // parameter is not before its end), collapsing to a point. Return an
+        // empty path so the edge is skipped rather than producing a zero-length
+        // segment whose arrow would normalize to NaN.
+        if (curve.2 - curve.0).length() > f32::EPSILON {
+            vec![curve]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -922,6 +936,44 @@ mod tests {
         });
         assert_eq!(frame.edges.len(), 1);
         assert_eq!(frame.edges[0].path.len(), 1, "single edge is one segment");
+    }
+
+    #[test]
+    fn overlapping_nodes_skip_degenerate_edge() {
+        // Two nodes close enough that their boundary circles overlap (distance
+        // less than 2 * (radius + gap)). The edge between them trims to a
+        // degenerate curve; it must be skipped rather than producing non-finite
+        // geometry that would crash the paint layer.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(2.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert!(
+            frame.edges.is_empty(),
+            "degenerate edge must be skipped, got {} edges",
+            frame.edges.len()
+        );
     }
 
     #[test]
