@@ -623,86 +623,149 @@ fn paint_edge(
 /// A quadratic Bézier curve `(p0, p1, p2)`.
 type Bezier = (Vec2, Vec2, Vec2);
 
-/// Adaptively subdivide a quadratic Bézier and return the sub-curves that do
-/// not pass behind any label rectangle.
+/// Split a quadratic Bézier into the sub-curves that do not pass behind any
+/// label rectangle.
 ///
-/// The curve is split at the boundaries of the label rectangles. Each returned
-/// piece is a true quadratic Bézier, so the original curve shape is preserved
-/// at any zoom. Subdivision continues until a piece's control-point bounding
-/// box is smaller than the smallest label rectangle (so the bounding-box test
-/// is accurate) or no longer intersects any label rectangle. This keeps the
-/// dropped region label-sized regardless of zoom, so a long edge never
-/// disappears entirely.
+/// The curve is split exactly at the t values where it crosses a label
+/// rectangle's edges, so the masked region matches the label precisely and is
+/// independent of zoom or pan. Each returned piece is a true quadratic Bézier,
+/// preserving the original curve shape.
 fn visible_bezier_curves(
     p0: Vec2,
     p1: Vec2,
     p2: Vec2,
     label_rects: &[Bounds<gpui::Pixels>],
 ) -> Vec<Bezier> {
-    // The smallest label dimension; pieces smaller than this are treated as
-    // points for the intersection test. If there are no labels, the whole
-    // curve is returned.
-    let Some(min_label_size) = label_rects
-        .iter()
-        .map(|rect| f32::from(rect.size.width).min(f32::from(rect.size.height)))
-        .min_by(|a, b| a.total_cmp(b))
-    else {
+    if label_rects.is_empty() {
         return vec![(p0, p1, p2)];
-    };
-
-    let mut visible = Vec::new();
-    let mut stack = vec![(p0, p1, p2, 0usize)];
-    while let Some((a, b, c, depth)) = stack.pop() {
-        let bbox = bezier_bounds(a, b, c);
-        if !intersects_any(&bbox, label_rects) {
-            // This piece is clear of every label; keep it whole.
-            visible.push((a, b, c));
-            continue;
-        }
-        let size = bbox.1 - bbox.0;
-        if size.x <= min_label_size && size.y <= min_label_size {
-            // The piece is smaller than the label and still overlaps it, so it
-            // lies behind the label; drop it.
-            continue;
-        }
-        if depth >= 24 {
-            // Safety cap; at this depth the piece is far smaller than any
-            // label, so dropping it is correct.
-            continue;
-        }
-        // de Casteljau subdivision at t = 0.5.
-        let ab = (a + b) * 0.5;
-        let bc = (b + c) * 0.5;
-        let mid = (ab + bc) * 0.5;
-        stack.push((a, ab, mid, depth + 1));
-        stack.push((mid, bc, c, depth + 1));
     }
-    visible
-}
 
-/// The axis-aligned bounding box of a quadratic Bézier's control points.
-fn bezier_bounds(p0: Vec2, p1: Vec2, p2: Vec2) -> (Vec2, Vec2) {
-    let min = p0.min(p1).min(p2);
-    let max = p0.max(p1).max(p2);
-    (min, max)
-}
-
-/// Whether a bounding box `(min, max)` strictly intersects any label rectangle.
-///
-/// Strict inequalities are used so a piece that merely touches a label's edge
-/// (e.g. `[10, 20]` touching a label ending at `x = 10`) is treated as clear
-/// rather than overlapping. This prevents clear pieces from being dropped.
-fn intersects_any(bbox: &(Vec2, Vec2), label_rects: &[Bounds<gpui::Pixels>]) -> bool {
-    let (min, max) = *bbox;
-    label_rects.iter().any(|rect| {
+    // Collect the t-intervals where the curve lies inside any label rectangle.
+    let mut masked: Vec<(f32, f32)> = Vec::new();
+    for rect in label_rects {
         let rmin = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
         let rmax = rmin
             + Vec2::new(
                 f32::from(rect.size.width),
                 f32::from(rect.size.height),
             );
-        min.x < rmax.x && max.x > rmin.x && min.y < rmax.y && max.y > rmin.y
-    })
+        masked.extend(masked_intervals(p0, p1, p2, rmin, rmax));
+    }
+
+    // Merge overlapping masked intervals.
+    masked.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f32, f32)> = Vec::new();
+    for (start, end) in masked {
+        if let Some(last) = merged.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+            continue;
+        }
+        merged.push((start, end));
+    }
+
+    // Emit the visible sub-curves between masked intervals.
+    let mut visible = Vec::new();
+    let mut t = 0.0;
+    for (start, end) in merged {
+        if start > t {
+            visible.push(sub_bezier(p0, p1, p2, t, start));
+        }
+        t = end;
+    }
+    if t < 1.0 {
+        visible.push(sub_bezier(p0, p1, p2, t, 1.0));
+    }
+    visible
+}
+
+/// The t-intervals of a quadratic Bézier that lie strictly inside the axis
+/// aligned box `(rmin, rmax)`.
+fn masked_intervals(p0: Vec2, p1: Vec2, p2: Vec2, rmin: Vec2, rmax: Vec2) -> Vec<(f32, f32)> {
+    // Collect every t where the curve crosses a box edge.
+    let mut ts = vec![0.0, 1.0];
+    for value in [rmin.x, rmax.x] {
+        ts.extend(bezier_roots(p0, p1, p2, value, 0));
+    }
+    for value in [rmin.y, rmax.y] {
+        ts.extend(bezier_roots(p0, p1, p2, value, 1));
+    }
+    ts.sort_by(|a, b| a.total_cmp(b));
+    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+
+    // An interval is masked if its midpoint lies inside the box.
+    let mut masked = Vec::new();
+    for window in ts.windows(2) {
+        let (t0, t1) = (window[0], window[1]);
+        let p = bezier_point(p0, p1, p2, (t0 + t1) * 0.5);
+        if p.x > rmin.x && p.x < rmax.x && p.y > rmin.y && p.y < rmax.y {
+            masked.push((t0, t1));
+        }
+    }
+    masked
+}
+
+/// The real roots in `[0, 1]` of a quadratic Bézier's coordinate equal to
+/// `value`. `axis` is `0` for x and `1` for y.
+fn bezier_roots(p0: Vec2, p1: Vec2, p2: Vec2, value: f32, axis: usize) -> Vec<f32> {
+    let (v0, v1, v2) = if axis == 0 {
+        (p0.x, p1.x, p2.x)
+    } else {
+        (p0.y, p1.y, p2.y)
+    };
+    // x(t) = a t^2 + b t + c, with x(t) - value = 0.
+    let a = v0 - 2.0 * v1 + v2;
+    let b = 2.0 * (v1 - v0);
+    let c = v0 - value;
+
+    let mut roots = Vec::new();
+    if a.abs() < f32::EPSILON {
+        // Linear: b t + c = 0.
+        if b.abs() > f32::EPSILON {
+            let t = -c / b;
+            if (0.0..=1.0).contains(&t) {
+                roots.push(t);
+            }
+        }
+    } else {
+        let disc = b * b - 4.0 * a * c;
+        if disc >= 0.0 {
+            let sqrt = disc.sqrt();
+            let t1 = (-b - sqrt) / (2.0 * a);
+            let t2 = (-b + sqrt) / (2.0 * a);
+            if (0.0..=1.0).contains(&t1) {
+                roots.push(t1);
+            }
+            if (0.0..=1.0).contains(&t2) {
+                roots.push(t2);
+            }
+        }
+    }
+    roots
+}
+
+/// A point on a quadratic Bézier at parameter `t`.
+fn bezier_point(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> Vec2 {
+    let inv = 1.0 - t;
+    inv * inv * p0 + 2.0 * inv * t * p1 + t * t * p2
+}
+
+/// The sub-curve of a quadratic Bézier from parameter `t0` to `t1`.
+fn sub_bezier(p0: Vec2, p1: Vec2, p2: Vec2, t0: f32, t1: f32) -> Bezier {
+    // Subdivide at t0 to get the [t0, 1] piece, then at the normalized t1.
+    let (_, right) = subdivide(p0, p1, p2, t0);
+    let s = (t1 - t0) / (1.0 - t0);
+    let (left, _) = subdivide(right.0, right.1, right.2, s);
+    left
+}
+
+/// Split a quadratic Bézier at parameter `t` into `[0, t]` and `[t, 1]`.
+fn subdivide(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> (Bezier, Bezier) {
+    let ab = p0 + (p1 - p0) * t;
+    let bc = p1 + (p2 - p1) * t;
+    let abc = ab + (bc - ab) * t;
+    ((p0, ab, abc), (abc, bc, p2))
 }
 
 /// Paint an arrowhead at the target end of a directed edge.
@@ -1335,8 +1398,8 @@ mod tests {
     #[test]
     fn visible_bezier_curves_skips_curves_inside_label_rect() {
         // A straight horizontal edge from (-20, 0) to (20, 0), with a label
-        // rect covering x in [0, 10]. The edge is split so no returned piece
-        // passes behind the rect, and pieces remain on both sides of it.
+        // rect covering x in [0, 10]. The edge is split exactly at the rect
+        // edges, so two visible pieces remain, one on each side.
         let rect = Bounds {
             origin: point(px(0.0), px(-5.0)),
             size: size(px(10.0), px(10.0)),
@@ -1347,24 +1410,11 @@ mod tests {
             Vec2::new(20.0, 0.0),
             &[rect],
         );
-        assert!(!curves.is_empty());
-        // Every returned piece must be clear of the rect (strict overlap, so a
-        // piece touching the boundary is allowed).
-        for (a, b, c) in &curves {
-            let (min, max) = bezier_bounds(*a, *b, *c);
-            assert!(
-                max.x <= 0.0 || min.x >= 10.0,
-                "returned piece must not overlap the label rect"
-            );
-        }
-        // Pieces exist on both sides of the rect.
-        let left = curves
-            .iter()
-            .any(|(a, _, _)| a.x < 0.0);
-        let right = curves
-            .iter()
-            .any(|(a, _, _)| a.x >= 10.0);
-        assert!(left && right, "edge should remain visible on both sides of the label");
+        assert_eq!(curves.len(), 2);
+        // The first piece ends exactly at the rect's left edge (x = 0); the
+        // second starts exactly at the rect's right edge (x = 10).
+        assert!((curves[0].2.x - 0.0).abs() < 1e-3);
+        assert!((curves[1].0.x - 10.0).abs() < 1e-3);
     }
 
     #[test]
@@ -1394,10 +1444,9 @@ mod tests {
             Vec2::new(1000.0, 0.0),
             &[rect],
         );
-        assert!(!curves.is_empty(), "edge must not disappear at high zoom");
-        let left = curves.iter().any(|(a, _, _)| a.x < 0.0);
-        let right = curves.iter().any(|(a, _, _)| a.x > 10.0);
-        assert!(left && right, "edge should remain visible on both sides of the label");
+        assert_eq!(curves.len(), 2, "edge must not disappear at high zoom");
+        assert!(curves[0].2.x <= 0.0);
+        assert!(curves[1].0.x >= 10.0);
     }
 
     #[test]
@@ -1433,16 +1482,15 @@ mod tests {
             Vec2::new(1.0e6, 0.0),
             &[rect],
         );
-        assert!(!curves.is_empty(), "edge must not disappear at high zoom");
-        let left = curves.iter().any(|(a, _, _)| a.x < 0.0);
-        let right = curves.iter().any(|(a, _, _)| a.x > 10.0);
-        assert!(left && right, "edge should remain visible on both sides of the label");
+        assert_eq!(curves.len(), 2, "edge must not disappear at high zoom");
+        assert!(curves[0].2.x <= 0.0);
+        assert!(curves[1].0.x >= 10.0);
     }
 
     #[test]
     fn visible_bezier_curves_preserves_curve_shape() {
-        // A curved edge whose control-point bounding box does not intersect the
-        // label rect should be returned whole.
+        // A curved edge whose control point is far from the label rect: the
+        // curve does not pass behind the rect, so it is returned whole.
         let rect = Bounds {
             origin: point(px(0.0), px(0.0)),
             size: size(px(10.0), px(10.0)),
@@ -1453,18 +1501,10 @@ mod tests {
             Vec2::new(20.0, 0.0),
             &[rect],
         );
-        // The curve's bbox (y in [0, 50]) intersects the rect (y in [0, 10]),
-        // so it is subdivided; the pieces that pass behind the rect are dropped.
-        assert!(!curves.is_empty());
-        // Every returned piece must be clear of the rect (strict overlap, so a
-        // piece touching the boundary is allowed).
-        for (a, b, c) in &curves {
-            let (min, max) = bezier_bounds(*a, *b, *c);
-            assert!(
-                max.y <= 0.0 || min.y >= 10.0 || max.x <= 0.0 || min.x >= 10.0,
-                "returned piece must not overlap the label rect"
-            );
-        }
+        // The curve's y stays above the rect (y in [0, 10]), so it never enters
+        // the rect and is returned whole.
+        assert_eq!(curves.len(), 1);
+        assert_eq!(curves[0], (Vec2::new(-20.0, 0.0), Vec2::new(0.0, 50.0), Vec2::new(20.0, 0.0)));
     }
 
     #[gpui::test]
