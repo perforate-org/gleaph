@@ -382,9 +382,13 @@ pub(crate) fn self_loop_path<N, E>(
     // angled 30° from the up-axis so they are distinct and point at the center.
     let start = Vec2::new(-r * 0.5, -r * 0.866);
     let end = Vec2::new(r * 0.5, -r * 0.866);
-    let base_left = Vec2::new(-45.0, -85.0);
-    let base_right = Vec2::new(45.0, -85.0);
-    let base_mid = Vec2::new(0.0, -85.0);
+    // The base size follows the graph's zoom so the loop stays proportionate to
+    // the graph as it scales, clamped to a readable range. At zoom 1 the base is
+    // 90px wide and 85px tall.
+    let scale = viewport.zoom().clamp(0.5, 3.0);
+    let base_left = Vec2::new(-45.0 * scale, -85.0 * scale);
+    let base_right = Vec2::new(45.0 * scale, -85.0 * scale);
+    let base_mid = Vec2::new(0.0, -85.0 * scale);
 
     // Average direction from the node to the other endpoints of its incident
     // edges; the onigiri points opposite that average.
@@ -1012,5 +1016,62 @@ mod tests {
                 "endpoint should point toward the node center"
             );
         }
+    }
+
+    #[test]
+    fn self_loop_scales_with_zoom() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let style = GraphStyle::default();
+
+        let base_height = |vp: &Viewport| {
+            let frame = build_paint_frame(PaintFrameInput {
+                graph: &g,
+                node_position: &positions,
+                node_label: &no_labels(),
+                edge_label: &no_edge_labels(),
+                viewport: vp,
+                style: &style,
+                selection: &Selection::new(),
+                hover: &Hover::default(),
+            });
+            let path = frame.edges[0].self_loop.as_ref().unwrap();
+            let base = path[0].2;
+            (frame.edges[0].source.y - base.y).abs()
+        };
+
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        // Fit a 200x200 world bounds -> zoom 1.0.
+        vp.fit_bounds(
+            crate::viewport::WorldBounds {
+                min: Vec2::new(-100.0, -100.0),
+                max: Vec2::new(100.0, 100.0),
+            },
+            0.0,
+        );
+        let h1 = base_height(&vp);
+        // Fit a 100x100 world bounds -> zoom 2.0.
+        vp.fit_bounds(
+            crate::viewport::WorldBounds {
+                min: Vec2::new(-50.0, -50.0),
+                max: Vec2::new(50.0, 50.0),
+            },
+            0.0,
+        );
+        let h2 = base_height(&vp);
+        // At higher zoom the loop is larger, tracking the graph scale.
+        assert!(
+            h2 > h1,
+            "self-loop should grow with zoom (h1={h1}, h2={h2})"
+        );
     }
 }
