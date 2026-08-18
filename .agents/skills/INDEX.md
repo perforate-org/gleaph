@@ -1,5 +1,11 @@
 # Skills Index
 
+## figma-file-io
+
+Read and write Figma `.fig` binary files directly using `openfig-core` and `zstd-codec`.
+Parse VARIABLE nodes, sync design tokens bidirectionally with JSON, and re-encode
+modified `.fig` files without REST API round-trips.
+
 ## supervisor-integrity
 
 Supervise Gleaph work from current-state inspection and bounded planning through delegated
