@@ -24,6 +24,7 @@ Read and write Figma `.fig` binary files directly — no REST API, no upload/dow
 - You want to sync design tokens (colors, spacing, radii) between JSON and `.fig` VARIABLE nodes
 - You need to extract a color palette, spacing scale, or component library from a `.fig` file
 - You want to batch-update styles or variables in a Figma file
+- **An AI agent needs to inspect the contents of a `.fig` file** (colors, frames, text, hierarchy) without opening Figma
 
 ## When NOT to use
 
