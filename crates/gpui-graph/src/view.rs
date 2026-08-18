@@ -1673,10 +1673,11 @@ mod tests {
 
         let trace = take_test_paint_trace();
         assert_eq!(trace.len(), 4);
-        // The arrow sits at the trimmed edge's end, just outside the target
-        // node (radius 6 + gap 2 = 8 from the node center at x=110), pointing
-        // left. The edge is trimmed to the same boundary. Compare with a small
-        // tolerance because the boundary is found by binary search.
+        // A lone edge with no neighbors is straight. The arrow sits at the
+        // trimmed edge's end, just outside the target node (radius 6 + gap 2 =
+        // 8 from the node center at x=110), pointing left. The edge is trimmed
+        // to the same boundary. Compare with a small tolerance because the
+        // boundary is found by binary search.
         let approx = |a: Vec2, b: Vec2| (a - b).length() < 1e-2;
         match &trace[0] {
             TestPaintPrimitive::Arrow { source, target } => {

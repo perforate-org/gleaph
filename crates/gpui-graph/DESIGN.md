@@ -1124,13 +1124,35 @@ The frame may contain already transformed geometry or compact records optimized 
 
 ## 18.3 Edge curves
 
-Edges render as straight lines by default. To keep parallel edges (multiple
-edges between the same node pair) and self-loops visually distinct, the paint
-layer assigns a quadratic Bézier control point:
+Edges render as quadratic Bézier curves that bow toward the side with lower
+local edge density, so edges in open space curve visibly while edges in dense
+regions stay nearly straight. To keep parallel edges (multiple edges between
+the same node pair) and self-loops visually distinct, the paint layer assigns a
+quadratic Bézier control point:
 
-- a single edge between two distinct nodes has no control point (straight line),
-- parallel edges are fanned perpendicular to the edge direction,
+- every non-loop edge bows toward the side with fewer neighbor edges; a lone
+  edge with no neighbors is straight,
+- parallel edges are fanned perpendicular to the edge direction on top of the
+  density bow,
 - a self-loop renders as an onigiri (rounded triangle) path.
+
+Self-loops count toward the local density of nearby edges (their midpoint is the
+node center), so they push neighboring edges' bows away, but a self-loop's own
+onigiri shape is independent of density.
+
+Local edge density is measured in world space so the neighbor set is
+zoom-invariant: each edge's midpoint is bucketed into a uniform grid, and the
+signed density is the distance-weighted sum of neighbor edges within a fixed
+radius, positive on the left of the edge's direction and negative on the right.
+Each neighbor contributes `cos(angle) * proximity`, where `cos(angle)` is the
+signed perpendicular distance normalized by the neighbor's distance and
+`proximity` falls off linearly to zero at the radius. Because `cos(angle)` is
+continuous through zero as a neighbor crosses the edge's axis, the bow
+transitions smoothly while a node is dragged, so edges do not jitter. The
+control point bows perpendicular to the edge by a fraction of the edge length
+proportional to the signed density difference (clamped), so the on-screen curve
+shape is stable under zoom. When the signed density is zero (no neighbors, or
+balanced left/right), the bow is zero and the edge is straight.
 
 Every edge is stored on `PaintEdge.path` as a list of quadratic Bézier segments
 already trimmed to the node boundaries, so the endpoints emerge from the node

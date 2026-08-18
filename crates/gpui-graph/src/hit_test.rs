@@ -65,25 +65,43 @@ pub fn hit_test<N, E>(
     let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
         std::collections::HashMap::new();
     let mut edge_ids: Vec<EdgeId> = Vec::new();
+    let mut midpoints: Vec<Vec2> = Vec::new();
+    let mut normals: Vec<Vec2> = Vec::new();
     for (id, edge) in graph.edges() {
-        if node_position(edge.source).is_none() || node_position(edge.target).is_none() {
+        let Some(source_world) = node_position(edge.source) else {
             continue;
-        }
+        };
+        let Some(target_world) = node_position(edge.target) else {
+            continue;
+        };
         let index = edge_ids.len();
         groups
             .entry((edge.source, edge.target))
             .or_default()
             .push(index);
         edge_ids.push(id);
+        midpoints.push((source_world + target_world) * 0.5);
+        let dir = target_world - source_world;
+        let len = dir.length();
+        normals.push(if len < f32::EPSILON {
+            Vec2::new(0.0, -1.0)
+        } else {
+            Vec2::new(-dir.y, dir.x) / len
+        });
     }
+    let signed_densities =
+        crate::paint::signed_densities(&midpoints, &normals, crate::paint::DENSITY_RADIUS);
     for (index, id) in edge_ids.iter().enumerate() {
         let edge = graph.edge(*id).expect("edge exists");
         // Build the same trimmed path as the paint layer so the selectable
         // geometry matches what is drawn.
         let path = crate::paint::edge_path(
             edge,
-            &groups,
-            index,
+            &crate::paint::EdgeCurveContext {
+                groups: &groups,
+                index,
+                signed_density: signed_densities[index],
+            },
             graph,
             node_position,
             viewport,
@@ -180,6 +198,8 @@ mod tests {
     #[test]
     fn hits_edge_midpoint() {
         let (g, pos, vp, style) = setup();
+        // A lone edge with no neighbors is straight, so its midpoint is at
+        // (50, 0).
         let screen = vp.world_to_screen(Vec2::new(50.0, 0.0));
         let result = hit_test(&g, &pos, &vp, &style, screen);
         assert!(result.edge.is_some());
@@ -231,8 +251,10 @@ mod tests {
         );
         let style = GraphStyle::default();
         // The fanned curve bows toward its control point. With two parallel
-        // edges, the control offset is ±0.5 * len * 0.2 = ±10 world units, so
-        // the curve passes through the midpoint offset by half that (±5).
+        // edges between the same node pair, their midpoints coincide, so the
+        // perpendicular density is zero and only the fan offset applies:
+        // ±0.5 * len * 0.2 = ±10 world units. The two curves pass through the
+        // midpoint offset by half that: (50, 5) and (50, -5).
         let screen = vp.world_to_screen(Vec2::new(50.0, 5.0));
         let result = hit_test(&g, &positions, &vp, &style, screen);
         assert!(

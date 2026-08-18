@@ -206,6 +206,27 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             .push(index);
     }
 
+    // Compute each edge's world-space midpoint and normal, then the signed local
+    // edge density (neighbors on the left minus on the right). Density is
+    // computed in world space so the neighbor set is zoom-invariant.
+    let midpoints: Vec<Vec2> = candidate_edges
+        .iter()
+        .map(|(_, _, s, t)| (*s + *t) * 0.5)
+        .collect();
+    let normals: Vec<Vec2> = candidate_edges
+        .iter()
+        .map(|(_, _, s, t)| {
+            let dir = *t - *s;
+            let len = dir.length();
+            if len < f32::EPSILON {
+                Vec2::new(0.0, -1.0)
+            } else {
+                Vec2::new(-dir.y, dir.x) / len
+            }
+        })
+        .collect();
+    let signed_densities = signed_densities(&midpoints, &normals, DENSITY_RADIUS);
+
     let mut visible_edges: Vec<(usize, EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
     for (index, (id, edge, source_world, target_world)) in candidate_edges.iter().enumerate() {
         // Cull edges whose curve's bounding box is entirely outside the visible
@@ -237,21 +258,16 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 }
                 bounds_intersect(&visible, margin, min, max)
             } else {
-                let control_world = edge_control_point(*source_world, *target_world, &groups, index);
-                match control_world {
-                    Some(control) => {
-                        let min = (*source_world).min(*target_world).min(control);
-                        let max = (*source_world).max(*target_world).max(control);
-                        bounds_intersect(&visible, margin, min, max)
-                    }
-                    None => {
-                        // Straight edge: keep it if the segment's bounding box
-                        // crosses the visible bounds.
-                        let min = (*source_world).min(*target_world);
-                        let max = (*source_world).max(*target_world);
-                        bounds_intersect(&visible, margin, min, max)
-                    }
-                }
+                let control_world = edge_control_point(
+                    *source_world,
+                    *target_world,
+                    &groups,
+                    index,
+                    signed_densities[index],
+                );
+                let min = (*source_world).min(*target_world).min(control_world);
+                let max = (*source_world).max(*target_world).max(control_world);
+                bounds_intersect(&visible, margin, min, max)
             };
             if !curve_visible {
                 continue;
@@ -270,8 +286,11 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         let is_self_loop = (*source - *target).length() < f32::EPSILON;
         let path = edge_path(
             edge,
-            &groups,
-            *candidate_index,
+            &EdgeCurveContext {
+                groups: &groups,
+                index: *candidate_index,
+                signed_density: signed_densities[*candidate_index],
+            },
             graph,
             node_position,
             viewport,
@@ -343,37 +362,149 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     frame
 }
 
+/// Radius (in world units) within which other edges count toward an edge's
+/// local density. Computed in world space so the neighbor set is zoom-invariant.
+pub(crate) const DENSITY_RADIUS: f32 = 40.0;
+/// Bow per unit of signed density difference, as a fraction of edge length.
+const BOW_DENSITY: f32 = 0.04;
+/// Upper bound on the bow as a fraction of edge length.
+const BOW_MAX: f32 = 0.35;
+
+/// A uniform grid over edge midpoints used to count nearby edges in O(E).
+struct DensityGrid {
+    cell_size: f32,
+    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+
+impl DensityGrid {
+    fn new(midpoints: &[Vec2], radius: f32) -> Self {
+        let cell_size = radius;
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, m) in midpoints.iter().enumerate() {
+            let cell = (
+                (m.x / cell_size).floor() as i32,
+                (m.y / cell_size).floor() as i32,
+            );
+            cells.entry(cell).or_default().push(i);
+        }
+        Self { cell_size, cells }
+    }
+
+    /// Indices of edges whose midpoint may lie within `radius` of `midpoint`.
+    fn candidates(&self, midpoint: Vec2, radius: f32) -> Vec<usize> {
+        let cell = (
+            (midpoint.x / self.cell_size).floor() as i32,
+            (midpoint.y / self.cell_size).floor() as i32,
+        );
+        let span = (radius / self.cell_size).ceil() as i32;
+        let mut out = Vec::new();
+        for dx in -span..=span {
+            for dy in -span..=span {
+                if let Some(bucket) = self.cells.get(&(cell.0 + dx, cell.1 + dy)) {
+                    out.extend_from_slice(bucket);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Compute the signed local edge density for each edge: the distance-weighted
+/// sum of other edges whose midpoint lies within `radius`, positive on the left
+/// of this edge's direction and negative on the right. Each neighbor
+/// contributes `cos(angle) * proximity`, where `cos(angle)` is the signed
+/// perpendicular distance normalized by the neighbor's distance (so it is
+/// continuous through zero as the neighbor crosses the edge's axis) and
+/// `proximity` falls off linearly to zero at `radius`. This keeps the bow
+/// continuous while a node is dragged (no hard sign flip, so edges do not
+/// jitter) while still favoring closer neighbors. A positive value means more or
+/// closer edges on the left, so the edge bows right (toward the lower-density
+/// side).
+pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
+    let grid = DensityGrid::new(midpoints, radius);
+    let mut result = vec![0.0f32; midpoints.len()];
+    for i in 0..midpoints.len() {
+        let mut signed = 0.0f32;
+        for j in grid.candidates(midpoints[i], radius) {
+            if i == j {
+                continue;
+            }
+            let delta = midpoints[j] - midpoints[i];
+            let dist = delta.length();
+            if dist > radius || dist < f32::EPSILON {
+                continue;
+            }
+            // Proximity weight: a neighbor at distance 0 contributes 1, at the
+            // radius edge contributes 0.
+            let proximity = 1.0 - dist / radius;
+            // Signed perpendicular distance normalized by the neighbor's distance
+            // (the cosine of the angle to the normal). This is continuous
+            // through zero as the neighbor crosses the edge's axis, so the bow
+            // does not jump.
+            let cos_angle = normals[i].dot(delta) / dist;
+            signed += cos_angle * proximity;
+        }
+        result[i] = signed;
+    }
+    result
+}
+
 /// Compute a quadratic Bézier control point for an edge.
 ///
 /// Self-loops get a loop above the node. Parallel edges (multiple edges between
 /// the same node pair) are fanned out perpendicular to the edge direction so
-/// they do not overlap. A single non-loop edge returns `None` (straight line).
+/// they do not overlap. Every non-loop edge bows toward the side with lower
+/// local edge density. Every non-loop edge bows toward the side with lower
+/// local edge density; a lone edge with no neighbors is straight.
 pub(crate) fn edge_control_point(
     source: Vec2,
     target: Vec2,
     groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
     index: usize,
-) -> Option<Vec2> {
+    signed_density: f32,
+) -> Vec2 {
     let dir = target - source;
     let len = dir.length();
     if len < f32::EPSILON {
         // Self-loop: control point above the node to create a loop.
         // The height is tuned to be approx 1.5x node radius.
-        return Some(source + Vec2::new(0.0, -80.0));
+        return source + Vec2::new(0.0, -80.0);
     }
     let unit = dir / len;
     let normal = Vec2::new(-unit.y, unit.x);
     let midpoint = (source + target) * 0.5;
-    // Find this edge's position among its parallel siblings.
-    let group = groups.values().find(|g| g.contains(&index))?;
-    if group.len() <= 1 {
-        return None;
+    // Parallel fan: separate multiple edges between the same node pair.
+    let mut offset = 0.0f32;
+    if let Some(group) = groups
+        .values()
+        .find(|g| g.contains(&index))
+        .filter(|g| g.len() > 1)
+    {
+        let position = group.iter().position(|i| *i == index).unwrap_or(0);
+        // Offset based on a percentage of the edge length to create a
+        // natural arc. 0.2 * len provides a gentle curve.
+        offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * len * 0.2;
     }
-    let position = group.iter().position(|i| *i == index).unwrap_or(0);
-    // Offset based on a percentage of the edge length to create a natural arc.
-    // 0.2 * len provides a gentle curve similar to the reference image.
-    let offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * len * 0.2;
-    Some(midpoint + normal * offset)
+    // Density bow: bow toward the side with fewer neighbor edges. The bow is a
+    // fraction of edge length, so the curve shape is stable under zoom. When the
+    // signed density is zero (no neighbors, or balanced left/right), the bow is
+    // zero and the edge is straight.
+    let direction = if signed_density > 0.0 { -1.0 } else { 1.0 };
+    let magnitude = (signed_density.abs() * BOW_DENSITY).min(BOW_MAX);
+    let bow = direction * magnitude * len;
+    midpoint + normal * (offset + bow)
+}
+
+/// Per-edge geometry context shared by the paint layer and hit testing so the
+/// drawn and selectable curves always match.
+pub(crate) struct EdgeCurveContext<'a> {
+    /// Edges grouped by their (source, target) node pair, for parallel fanning.
+    pub groups: &'a std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
+    /// This edge's index among all candidate edges.
+    pub index: usize,
+    /// Signed local edge density (neighbors on the left minus on the right).
+    pub signed_density: f32,
 }
 
 /// Build the trimmed quadratic Bézier path for an edge, in screen/canvas-local
@@ -384,8 +515,7 @@ pub(crate) fn edge_control_point(
 /// use this so the drawn and selectable geometry always match.
 pub(crate) fn edge_path<N, E>(
     edge: &Edge<E>,
-    groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
-    index: usize,
+    ctx: &EdgeCurveContext<'_>,
     graph: &Graph<N, E>,
     node_position: &dyn Fn(NodeId) -> Option<Vec2>,
     viewport: &Viewport,
@@ -398,8 +528,7 @@ pub(crate) fn edge_path<N, E>(
     if (source - target).length() < f32::EPSILON {
         self_loop_path(edge.source, source, graph, node_position, viewport, style)
     } else {
-        let control = edge_control_point(source, target, groups, index);
-        let control = control.unwrap_or((source + target) * 0.5);
+        let control = edge_control_point(source, target, ctx.groups, ctx.index, ctx.signed_density);
         let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
@@ -916,6 +1045,8 @@ mod tests {
         assert_eq!(frame.edge_labels.len(), 1);
         assert_eq!(frame.edge_labels[0].text, "knows");
         let pos = frame.edge_labels[0].position;
+        // A lone edge with no neighbors is straight, so the label sits at the
+        // straight midpoint.
         assert!(
             (pos - Vec2::new(55.0, 50.0)).length() < 1e-3,
             "label should sit at the edge midpoint, got {pos:?}"
@@ -923,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn single_edge_has_no_control_point() {
+    fn single_edge_with_no_neighbors_is_straight() {
         let mut g: Graph<(), ()> = Graph::new();
         let a = g.add_node(());
         let b = g.add_node(());
@@ -951,6 +1082,14 @@ mod tests {
         });
         assert_eq!(frame.edges.len(), 1);
         assert_eq!(frame.edges[0].path.len(), 1, "single edge is one segment");
+        // A lone edge with no neighbors has zero density, so it is straight: its
+        // control point is the straight midpoint.
+        let (p0, control, p2) = frame.edges[0].path[0];
+        let mid = (p0 + p2) * 0.5;
+        assert!(
+            (control - mid).length() < 1e-3,
+            "lone edge should be straight, control = {control:?}"
+        );
     }
 
     #[test]
@@ -1298,5 +1437,255 @@ mod tests {
             h2 > h1,
             "self-loop should grow with zoom (h1={h1}, h2={h2})"
         );
+    }
+
+    #[test]
+    fn edge_bows_away_from_neighbor_edge() {
+        // A horizontal edge a->b with a neighbor edge whose midpoint lies on
+        // the left (signed_density > 0) bows right, away from the density.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let c = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        g.add_edge(a, c, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(100.0, 0.0))
+            } else if id == c {
+                Some(Vec2::new(50.0, 30.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        vp.fit_bounds(
+            crate::viewport::WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(110.0, 40.0),
+            },
+            0.0,
+        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        // Find the horizontal edge a->b by its endpoints.
+        let horizontal = frame
+            .edges
+            .iter()
+            .find(|e| (e.source.y - e.target.y).abs() < 1e-3)
+            .expect("horizontal edge exists");
+        let (_, control, _) = horizontal.path[0];
+        // The neighbor edge's midpoint (25, 15) is on the left of a->b
+        // (direction +x, normal +y, dot > 0), so a->b bows right (control.y > 0),
+        // away from the neighbor.
+        assert!(
+            control.y > 0.0,
+            "edge should bow away from the neighbor on its left, control = {control:?}"
+        );
+    }
+
+    #[test]
+    fn edge_bow_grows_with_density_difference() {
+        // The bow magnitude grows with the signed density difference. A lone
+        // edge (density 0) is straight; a neighbor on the left (density +1)
+        // bows right.
+        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+            std::collections::HashMap::new();
+        let source = Vec2::new(0.0, 0.0);
+        let target = Vec2::new(100.0, 0.0);
+        let lone = edge_control_point(source, target, &groups, 0, 0.0);
+        let with_neighbor = edge_control_point(source, target, &groups, 0, 1.0);
+        // A neighbor on the left (signed_density +1) pushes the bow right
+        // (negative y, since normal +y is the left side of direction +x).
+        assert!(
+            with_neighbor.y < lone.y,
+            "bow should grow with density difference (lone={lone:?}, neighbor={with_neighbor:?})"
+        );
+    }
+
+    #[test]
+    fn edge_bow_is_stable_under_zoom() {
+        // The bow is a fraction of the edge length, so the curve shape is the
+        // same at any zoom. Compare the control point's offset from the straight
+        // midpoint, normalized by the edge length, at two zooms.
+        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+            std::collections::HashMap::new();
+        let bow_ratio = |source: Vec2, target: Vec2| {
+            let control = edge_control_point(source, target, &groups, 0, 0.0);
+            let mid = (source + target) * 0.5;
+            (control - mid).length() / (target - source).length()
+        };
+        // Zoom 1: world a(0,0) b(100,0) maps to screen (0,0) and (100,0).
+        let r1 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+        // Zoom 2: the same world edge maps to screen (0,0) and (200,0).
+        let r2 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
+        assert!(
+            (r1 - r2).abs() < 1e-3,
+            "bow ratio should be zoom-invariant (r1={r1}, r2={r2})"
+        );
+    }
+
+    #[test]
+    fn self_loop_counts_toward_neighbor_density_but_keeps_its_shape() {
+        // A self-loop on node a contributes to the local density of a nearby
+        // edge a->b, pushing that edge's bow away. The self-loop's own onigiri
+        // shape is unchanged (its curvature does not depend on density).
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(100.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        vp.fit_bounds(
+            crate::viewport::WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(110.0, 10.0),
+            },
+            0.0,
+        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(frame.edges.len(), 2);
+        // The self-loop is the two-segment onigiri; the a->b edge is the single
+        // curved segment.
+        let self_loop = frame
+            .edges
+            .iter()
+            .find(|e| e.path.len() == 2)
+            .expect("self-loop has two onigiri segments");
+        let ab = frame
+            .edges
+            .iter()
+            .find(|e| e.path.len() == 1)
+            .expect("a->b is a single segment");
+        // The self-loop's midpoint is at node a (0, 0), which is on the left of
+        // a->b (direction +x, normal +y, dot > 0), so a->b bows right
+        // (control.y > 0), away from the self-loop's density.
+        let (_, ab_control, _) = ab.path[0];
+        assert!(
+            ab_control.y > 0.0,
+            "a->b should bow away from the self-loop's density, control = {ab_control:?}"
+        );
+        // The self-loop keeps its onigiri shape: its base center (p2 of the
+        // first segment) sits away from the node center, unchanged by density.
+        let base = self_loop.path[0].2;
+        assert!(
+            (base - self_loop.source).length() > 1.0,
+            "self-loop should keep its onigiri shape, base = {base:?}"
+        );
+    }
+
+    #[test]
+    fn density_weights_closer_neighbors_more() {
+        // A neighbor edge on the left contributes more when it is closer. Two
+        // edges on the left at different distances yield different signed
+        // densities, so the bow magnitude differs.
+        let radius = 40.0;
+        // Neighbor at distance 10 on the left.
+        let near = signed_densities(
+            &[Vec2::new(0.0, 0.0), Vec2::new(0.0, 10.0)],
+            &[Vec2::new(0.0, 1.0), Vec2::new(0.0, 1.0)],
+            radius,
+        );
+        // Neighbor at distance 30 on the left.
+        let far = signed_densities(
+            &[Vec2::new(0.0, 0.0), Vec2::new(0.0, 30.0)],
+            &[Vec2::new(0.0, 1.0), Vec2::new(0.0, 1.0)],
+            radius,
+        );
+        // Both are positive (left side); the closer one contributes more.
+        assert!(near[0] > 0.0 && far[0] > 0.0);
+        assert!(
+            near[0] > far[0],
+            "closer neighbor should contribute more (near={}, far={})",
+            near[0],
+            far[0]
+        );
+    }
+
+    #[test]
+    fn density_balances_left_and_right_neighbors() {
+        // A neighbor on the left and a neighbor on the right at the same
+        // distance cancel out, so the signed density is near zero.
+        let radius = 40.0;
+        let densities = signed_densities(
+            &[
+                Vec2::new(0.0, 0.0),
+                Vec2::new(0.0, 10.0),
+                Vec2::new(0.0, -10.0),
+            ],
+            &[
+                Vec2::new(0.0, 1.0),
+                Vec2::new(0.0, 1.0),
+                Vec2::new(0.0, 1.0),
+            ],
+            radius,
+        );
+        assert!(
+            densities[0].abs() < 1e-3,
+            "balanced neighbors should cancel, got {}",
+            densities[0]
+        );
+    }
+
+    #[test]
+    fn density_is_continuous_across_edge_axis() {
+        // As a neighbor edge's midpoint crosses the edge's axis (the normal
+        // component passes through zero), the signed density must transition
+        // smoothly rather than jump. This is what keeps edges from jittering
+        // while a node is dragged. The neighbor sits at an along-axis distance
+        // of 10 with a small perpendicular offset that flips sign.
+        let radius = 40.0;
+        let normals = [Vec2::new(0.0, 1.0), Vec2::new(0.0, 1.0)];
+        // Neighbor just on the left of the axis.
+        let left = signed_densities(
+            &[Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.1)],
+            &normals,
+            radius,
+        );
+        // Neighbor just on the right of the axis.
+        let right = signed_densities(
+            &[Vec2::new(0.0, 0.0), Vec2::new(10.0, -0.1)],
+            &normals,
+            radius,
+        );
+        // The two densities are near zero and close to each other (no jump).
+        assert!(
+            (left[0] - right[0]).abs() < 0.02,
+            "density should be continuous across the axis (left={}, right={})",
+            left[0],
+            right[0]
+        );
+        // The sign flips smoothly through zero.
+        assert!(left[0] > 0.0 && right[0] < 0.0);
     }
 }
