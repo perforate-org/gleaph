@@ -1158,6 +1158,23 @@ matches the label precisely and is independent of zoom or pan. Node labels use
 the same rectangle-mask technique as edge labels: a node label's bounds sit
 below the node (radius + offset) and cut any edge that passes behind them.
 
+## 18.5 Edge label collision avoidance
+
+Edge labels that would overlap are slid apart along their edges so they stay
+readable. Each `PaintEdgeLabel` carries its edge's trimmed path and a parameter
+`t` in `[0, 1]` locating the label on it. Before painting, the view resolves
+overlapping label rectangles by displacing both labels apart along their paths
+by an amount proportional to the overlap depth — the one with the smaller `t`
+toward the start, the other toward the end — over a bounded number of passes.
+Because the displacement scales with the overlap, the motion is continuous and
+eases as the labels separate. Self-loop labels carry the onigiri path too, so
+they slide along the loop to avoid collisions just like non-loop labels.
+
+Node labels are fixed obstacles: edge labels slide along their paths to avoid
+overlapping a node label, but node labels never move. The edge label slides in
+whichever direction along its path moves it farther from the node label's
+center.
+
 ---
 
 # 19. Rich Overlays

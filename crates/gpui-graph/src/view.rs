@@ -455,12 +455,27 @@ where
                             hover: &vs.hover,
                         })
                     },
-                    move |_bounds, frame: crate::paint::PaintFrame, window, cx| {
+                    move |_bounds, mut frame: crate::paint::PaintFrame, window, cx| {
                         let coordinates = coordinates_paint.get();
                         let style = view_paint.read(cx).style.clone();
-                        // Compute the window-space bounds of every node and edge
+                        // Slide edge labels along their edges so they do not
+                        // overlap each other or the (fixed) node labels, then
+                        // compute the window-space bounds of every node and edge
                         // label so edges can be cut where they pass behind a
                         // label.
+                        let node_label_rects: Vec<Bounds<gpui::Pixels>> = frame
+                            .labels
+                            .iter()
+                            .filter_map(|label| {
+                                node_label_bounds_local(window, label, &style)
+                            })
+                            .collect();
+                        resolve_edge_label_collisions(
+                            window,
+                            &mut frame,
+                            &style,
+                            &node_label_rects,
+                        );
                         let mut label_rects: Vec<Bounds<gpui::Pixels>> = frame
                             .edge_labels
                             .iter()
@@ -1010,6 +1025,206 @@ fn edge_label_bounds(
     )
 }
 
+/// The canvas-local bounds of an edge label, used for collision detection. The
+/// anchor is the label's position plus its offset off the edge line.
+fn edge_label_bounds_local(
+    window: &mut Window,
+    label: &crate::paint::PaintEdgeLabel,
+    style: &GraphStyle,
+) -> Option<Bounds<gpui::Pixels>> {
+    let anchor = label.position + label.offset * style.label_offset;
+    label_bounds(
+        window,
+        &label.text,
+        anchor,
+        |anchor, height| anchor.y - height * 0.5,
+        style,
+    )
+}
+
+/// Slide edge labels along their edges so overlapping labels move apart
+/// smoothly. Each label keeps its offset off the edge line but shifts its
+/// anchor along the edge's trimmed path. The displacement is proportional to
+/// the overlap depth, so labels move continuously: the deeper the overlap, the
+/// farther they slide, and the motion eases as they separate. Node labels are
+/// fixed obstacles: edge labels slide to avoid them, but node labels never move.
+fn resolve_edge_label_collisions(
+    window: &mut Window,
+    frame: &mut crate::paint::PaintFrame,
+    style: &GraphStyle,
+    node_label_rects: &[Bounds<gpui::Pixels>],
+) {
+    // Every edge label carries its edge's path (self-loops included), so all
+    // of them can slide along it to avoid collisions.
+    let movable: Vec<usize> = frame
+        .edge_labels
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.path.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    // Precompute each label's path length to convert a pixel displacement into
+    // a parameter change along the curve.
+    let path_lengths: Vec<f32> = movable
+        .iter()
+        .map(|&i| path_length(&frame.edge_labels[i].path))
+        .collect();
+    // Resolve pairwise overlaps by displacing both labels along their paths by
+    // an amount proportional to the overlap depth. Iterate until the overlaps
+    // shrink below the intersection threshold or a bounded number of passes.
+    for _ in 0..16 {
+        let mut moved = false;
+        // Edge labels avoid the fixed node labels.
+        for &i in &movable {
+            let ra = match edge_label_bounds_local(window, &frame.edge_labels[i], style) {
+                Some(ra) => ra,
+                None => continue,
+            };
+            for rect in node_label_rects {
+                let Some(overlap) = bounds_intersection(&ra, rect) else {
+                    continue;
+                };
+                let dir = perpendicular(frame.edge_labels[i].offset);
+                let depth = project_rect(overlap, dir);
+                let dt = depth / path_lengths[position_of(&movable, i)].max(1.0);
+                // Slide the edge label away from the node label along its path.
+                let t = frame.edge_labels[i].t;
+                let toward_start = t - dt;
+                let toward_end = t + dt;
+                // Choose the direction that moves the label away from the node
+                // label's center.
+                let center = Vec2::new(
+                    f32::from(rect.origin.x) + f32::from(rect.size.width) * 0.5,
+                    f32::from(rect.origin.y) + f32::from(rect.size.height) * 0.5,
+                );
+                let start_pos = path_point(&frame.edge_labels[i].path, toward_start);
+                let end_pos = path_point(&frame.edge_labels[i].path, toward_end);
+                let d_start = (start_pos - center).length();
+                let d_end = (end_pos - center).length();
+                frame.edge_labels[i].t = if d_start > d_end {
+                    toward_start.max(0.0)
+                } else {
+                    toward_end.min(1.0)
+                };
+                frame.edge_labels[i].position =
+                    path_point(&frame.edge_labels[i].path, frame.edge_labels[i].t);
+                moved = true;
+            }
+        }
+        // Edge labels avoid each other.
+        for a in 0..movable.len() {
+            for b in (a + 1)..movable.len() {
+                let ia = movable[a];
+                let ib = movable[b];
+                let (ra, rb) = match (
+                    edge_label_bounds_local(window, &frame.edge_labels[ia], style),
+                    edge_label_bounds_local(window, &frame.edge_labels[ib], style),
+                ) {
+                    (Some(ra), Some(rb)) => (ra, rb),
+                    _ => continue,
+                };
+                let Some(overlap) = bounds_intersection(&ra, &rb) else {
+                    continue;
+                };
+                // The path direction is perpendicular to the label's offset
+                // (which points off the edge line). Project the overlap onto
+                // each label's path direction to get the pixel depth to slide.
+                let dir_a = perpendicular(frame.edge_labels[ia].offset);
+                let dir_b = perpendicular(frame.edge_labels[ib].offset);
+                let depth_a = project_rect(overlap, dir_a);
+                let depth_b = project_rect(overlap, dir_b);
+                // Convert the pixel depth to a parameter change along the path.
+                let dt_a = depth_a / path_lengths[a].max(1.0);
+                let dt_b = depth_b / path_lengths[b].max(1.0);
+                // Displace both labels apart: the one with the smaller t toward
+                // the start, the other toward the end.
+                let ta = frame.edge_labels[ia].t;
+                let tb = frame.edge_labels[ib].t;
+                if ta <= tb {
+                    frame.edge_labels[ia].t = (ta - dt_a).max(0.0);
+                    frame.edge_labels[ib].t = (tb + dt_b).min(1.0);
+                } else {
+                    frame.edge_labels[ia].t = (ta + dt_a).min(1.0);
+                    frame.edge_labels[ib].t = (tb - dt_b).max(0.0);
+                }
+                // Recompute the anchor position from the new t.
+                frame.edge_labels[ia].position =
+                    path_point(&frame.edge_labels[ia].path, frame.edge_labels[ia].t);
+                frame.edge_labels[ib].position =
+                    path_point(&frame.edge_labels[ib].path, frame.edge_labels[ib].t);
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+}
+
+/// The index of `i` within `movable`.
+fn position_of(movable: &[usize], i: usize) -> usize {
+    movable.iter().position(|&m| m == i).unwrap_or(0)
+}
+
+/// The overlapping region of two axis-aligned bounds as `(x, y, width, height)`
+/// in pixels, or `None` if they do not overlap.
+fn bounds_intersection(
+    a: &Bounds<gpui::Pixels>,
+    b: &Bounds<gpui::Pixels>,
+) -> Option<(f32, f32, f32, f32)> {
+    let ax = f32::from(a.origin.x);
+    let ay = f32::from(a.origin.y);
+    let aw = f32::from(a.size.width);
+    let ah = f32::from(a.size.height);
+    let bx = f32::from(b.origin.x);
+    let by = f32::from(b.origin.y);
+    let bw = f32::from(b.size.width);
+    let bh = f32::from(b.size.height);
+    let x0 = ax.max(bx);
+    let y0 = ay.max(by);
+    let x1 = (ax + aw).min(bx + bw);
+    let y1 = (ay + ah).min(by + bh);
+    if x1 > x0 && y1 > y0 {
+        Some((x0, y0, x1 - x0, y1 - y0))
+    } else {
+        None
+    }
+}
+
+/// The length of a rectangle `(x, y, width, height)` projected onto a unit
+/// direction `dir`.
+fn project_rect(rect: (f32, f32, f32, f32), dir: Vec2) -> f32 {
+    let (_, _, w, h) = rect;
+    w * dir.x.abs() + h * dir.y.abs()
+}
+
+/// A unit vector perpendicular to `v`.
+fn perpendicular(v: Vec2) -> Vec2 {
+    let n = Vec2::new(-v.y, v.x);
+    let len = n.length();
+    if len > f32::EPSILON {
+        n / len
+    } else {
+        Vec2::new(1.0, 0.0)
+    }
+}
+
+/// The total length of a multi-segment Bézier path, approximated by the sum of
+/// the chord lengths of its segments.
+fn path_length(path: &[crate::paint::Bezier]) -> f32 {
+    path.iter().map(|(p0, _, p2)| (*p2 - *p0).length()).sum()
+}
+
+/// A point on a multi-segment Bézier path at parameter `t` in `[0, 1]`.
+fn path_point(path: &[crate::paint::Bezier], t: f32) -> Vec2 {
+    let t = t.clamp(0.0, 1.0);
+    let n = path.len().max(1);
+    let seg = (t * n as f32).floor().min((n - 1) as f32) as usize;
+    let local = t * n as f32 - seg as f32;
+    let (p0, p1, p2) = path[seg];
+    bezier_point(p0, p1, p2, local)
+}
+
 /// Compute the window-space bounds of a node label, or `None` if the text
 /// cannot be shaped. The bounds are used to cut edges that pass behind the
 /// label so the label stays readable over any background.
@@ -1022,6 +1237,23 @@ fn node_label_bounds(
     let anchor = coordinates.canvas_to_window(label.position);
     // The label is centered horizontally on the node and starts below the node
     // (radius + offset).
+    label_bounds(
+        window,
+        &label.text,
+        anchor,
+        |anchor, _height| anchor.y + style.node_radius + style.label_offset,
+        style,
+    )
+}
+
+/// The canvas-local bounds of a node label, used as a fixed obstacle for edge
+/// label collision avoidance.
+fn node_label_bounds_local(
+    window: &mut Window,
+    label: &crate::paint::PaintLabel,
+    style: &GraphStyle,
+) -> Option<Bounds<gpui::Pixels>> {
+    let anchor = label.position;
     label_bounds(
         window,
         &label.text,
@@ -1715,5 +1947,94 @@ mod tests {
             1,
             "default edge labels should render for Display edges"
         );
+    }
+
+    #[test]
+    fn path_point_samples_along_segments() {
+        // A straight path from (0,0) to (10,0). t=0 is the start, t=1 the end,
+        // t=0.5 the midpoint.
+        let path = vec![(Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(10.0, 0.0))];
+        assert_eq!(path_point(&path, 0.0), Vec2::new(0.0, 0.0));
+        assert_eq!(path_point(&path, 0.5), Vec2::new(5.0, 0.0));
+        assert_eq!(path_point(&path, 1.0), Vec2::new(10.0, 0.0));
+        // t is clamped to [0, 1].
+        assert_eq!(path_point(&path, 1.5), Vec2::new(10.0, 0.0));
+    }
+
+    #[gpui::test]
+    fn edge_label_collisions_move_labels_apart(cx: &mut TestAppContext) {
+        // Two edge labels on the same straight path, both starting at the
+        // midpoint so they overlap. Collision resolution must slide them apart
+        // along the path.
+        let path = vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))];
+        let mut frame = crate::paint::PaintFrame::new();
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(50.0, 0.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "alpha".to_string(),
+            path: path.clone(),
+            t: 0.5,
+        });
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(50.0, 0.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "beta".to_string(),
+            path: path.clone(),
+            t: 0.5,
+        });
+
+        let cx = cx.add_empty_window();
+        let style = GraphStyle::default();
+        cx.update(|window, _| {
+            resolve_edge_label_collisions(window, &mut frame, &style, &[]);
+        });
+
+        // The two labels must have moved to distinct positions along the path.
+        let a = frame.edge_labels[0].position;
+        let b = frame.edge_labels[1].position;
+        assert!(
+            (a - b).length() > 1.0,
+            "labels must separate, got {a:?} and {b:?}"
+        );
+        // They stay on the path (y = 0).
+        assert_eq!(a.y, 0.0);
+        assert_eq!(b.y, 0.0);
+    }
+
+    #[gpui::test]
+    fn edge_label_avoids_fixed_node_label(cx: &mut TestAppContext) {
+        // An edge label sits at the midpoint of a path that passes through a
+        // fixed node label's rect. The edge label must slide away along its
+        // path, while the node label stays put.
+        let path = vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))];
+        let mut frame = crate::paint::PaintFrame::new();
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(50.0, 0.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "edge".to_string(),
+            path: path.clone(),
+            t: 0.5,
+        });
+        // A fixed node label whose rect covers the edge label's midpoint.
+        let node_rect = Bounds {
+            origin: point(px(40.0), px(-10.0)),
+            size: size(px(20.0), px(20.0)),
+        };
+
+        let cx = cx.add_empty_window();
+        let style = GraphStyle::default();
+        cx.update(|window, _| {
+            resolve_edge_label_collisions(window, &mut frame, &style, &[node_rect]);
+        });
+
+        // The edge label must have moved off the node label's rect.
+        let pos = frame.edge_labels[0].position;
+        assert!(
+            pos.x < 40.0 || pos.x > 60.0,
+            "edge label must move off the node label, got x = {}",
+            pos.x
+        );
+        // It stays on the path (y = 0).
+        assert_eq!(pos.y, 0.0);
     }
 }

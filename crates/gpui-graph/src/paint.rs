@@ -71,6 +71,12 @@ pub struct PaintEdgeLabel {
     pub offset: Vec2,
     /// The label text.
     pub text: String,
+    /// The edge's trimmed path, in canvas-local pixels. Empty for a self-loop,
+    /// whose label stays fixed at `position`.
+    pub path: Vec<Bezier>,
+    /// Position along `path` in `[0, 1]` where the label sits. Collision
+    /// resolution slides this to move labels apart smoothly along their edges.
+    pub t: f32,
 }
 
 /// The set of primitives to paint for one frame (§18.2).
@@ -285,8 +291,15 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         let label = edge_label(*id, &edge.data).map(|text| {
             if is_self_loop {
                 // A self-loop's label sits at the onigiri's base center (away
-                // from the node) so it is clear of the node.
-                (apex.expect("self-loop has a base"), Vec2::new(0.0, -1.0), text)
+                // from the node) so it is clear of the node. It carries the
+                // loop's path so it can slide along it to avoid collisions.
+                (
+                    apex.expect("self-loop has a base"),
+                    Vec2::new(0.0, -1.0),
+                    text,
+                    path.clone(),
+                    0.5,
+                )
             } else {
                 // The label sits at the midpoint of the trimmed curve, so
                 // parallel edges (which bow to different control points) get
@@ -304,7 +317,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 } else {
                     Vec2::new(0.0, -1.0)
                 };
-                (position, normal, text)
+                (position, normal, text, path.clone(), 0.5)
             }
         });
         frame.edges.push(PaintEdge {
@@ -316,11 +329,13 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             selected: selection.contains_edge(*id),
             hovered: hover.edge == Some(*id),
         });
-        if let Some((position, offset, text)) = label {
+        if let Some((position, offset, text, path, t)) = label {
             frame.edge_labels.push(PaintEdgeLabel {
                 position,
                 offset,
                 text,
+                path,
+                t,
             });
         }
     }
@@ -1058,6 +1073,42 @@ mod tests {
             base.y < edge.source.y,
             "loop should be above the node"
         );
+    }
+
+    #[test]
+    fn self_loop_label_carries_its_path() {
+        // A self-loop's label must carry the loop's path so it can slide along
+        // it to avoid collisions, just like a non-loop edge label.
+        let mut g: Graph<(), &str> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, "loop");
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let edge_labels = move |_id: EdgeId, edge: &&str| Some(edge.to_string());
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &edge_labels,
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(frame.edge_labels.len(), 1);
+        let label = &frame.edge_labels[0];
+        assert!(
+            !label.path.is_empty(),
+            "self-loop label must carry its path for collision avoidance"
+        );
+        assert_eq!(label.t, 0.5, "self-loop label starts at the base center");
     }
 
     #[test]
