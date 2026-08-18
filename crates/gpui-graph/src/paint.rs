@@ -264,6 +264,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     &groups,
                     index,
                     signed_densities[index],
+                    viewport.zoom(),
                 );
                 let min = (*source_world).min(*target_world).min(control_world);
                 let max = (*source_world).max(*target_world).max(control_world);
@@ -290,6 +291,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 groups: &groups,
                 index: *candidate_index,
                 signed_density: signed_densities[*candidate_index],
+                zoom: viewport.zoom(),
             },
             graph,
             node_position,
@@ -365,10 +367,19 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
 /// Radius (in world units) within which other edges count toward an edge's
 /// local density. Computed in world space so the neighbor set is zoom-invariant.
 pub(crate) const DENSITY_RADIUS: f32 = 40.0;
-/// Fixed world-space spacing between parallel edges, independent of edge length.
-/// Because the fan offset is constant, the sagitta (midpoint bow) stays constant
-/// as the node distance grows, so the curvature drops for longer edges.
-const PARALLEL_SPACING: f32 = 80.0;
+/// Base world-space spacing between parallel edges, at the reference apparent
+/// length. The actual spacing scales with the edge's apparent length (world
+/// length times zoom): a shorter apparent distance yields a narrower spacing, a
+/// longer apparent distance a wider spacing, so parallel edges keep a consistent
+/// on-screen separation. The power is sub-linear so the sagitta grows more
+/// slowly than the chord and curvature still drops as the node distance grows.
+const PARALLEL_SPACING: f32 = 60.0;
+/// Reference apparent length (world length * zoom) at which the spacing is the
+/// base value.
+const PARALLEL_SPACING_REF_APPARENT: f32 = 100.0;
+/// Power relating apparent length to spacing. 0 keeps spacing constant; 1 makes
+/// spacing proportional to apparent length.
+const PARALLEL_SPACING_POWER: f32 = 0.10;
 /// Bow per unit of signed density difference, as a fraction of edge length.
 const BOW_DENSITY: f32 = 0.20;
 /// Upper bound on the bow as a fraction of edge length.
@@ -467,6 +478,7 @@ pub(crate) fn edge_control_point(
     groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
     index: usize,
     signed_density: f32,
+    zoom: f32,
 ) -> Vec2 {
     let dir = target - source;
     let len = dir.length();
@@ -486,10 +498,14 @@ pub(crate) fn edge_control_point(
         .filter(|g| g.len() > 1)
     {
         let position = group.iter().position(|i| *i == index).unwrap_or(0);
-        // Fixed world-space fan offset, independent of edge length. The sagitta
-        // (midpoint bow) is half the control offset, so it stays constant as the
-        // node distance grows and the curvature drops for longer edges.
-        offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * PARALLEL_SPACING;
+        // The spacing scales with the edge's apparent length (world length times
+        // zoom): shorter apparent distance -> narrower spacing, longer -> wider.
+        // The power is sub-linear so the sagitta grows more slowly than the
+        // chord and curvature still drops for longer edges.
+        let apparent = len * zoom;
+        let spacing = PARALLEL_SPACING
+            * (apparent / PARALLEL_SPACING_REF_APPARENT).powf(PARALLEL_SPACING_POWER);
+        offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * spacing;
     }
     // Density bow: bow toward the side with fewer neighbor edges. The bow is a
     // fraction of edge length, so the curve shape is stable under zoom. When the
@@ -510,6 +526,8 @@ pub(crate) struct EdgeCurveContext<'a> {
     pub index: usize,
     /// Signed local edge density (neighbors on the left minus on the right).
     pub signed_density: f32,
+    /// Current zoom (pixels per world unit), used to vary parallel spacing.
+    pub zoom: f32,
 }
 
 /// Build the trimmed quadratic Bézier path for an edge, in screen/canvas-local
@@ -526,14 +544,21 @@ pub(crate) fn edge_path<N, E>(
     viewport: &Viewport,
     style: &GraphStyle,
 ) -> Vec<Bezier> {
-    let source = viewport
-        .world_to_screen(node_position(edge.source).expect("edge source has a position"));
-    let target = viewport
-        .world_to_screen(node_position(edge.target).expect("edge target has a position"));
+    let source =
+        viewport.world_to_screen(node_position(edge.source).expect("edge source has a position"));
+    let target =
+        viewport.world_to_screen(node_position(edge.target).expect("edge target has a position"));
     if (source - target).length() < f32::EPSILON {
         self_loop_path(edge.source, source, graph, node_position, viewport, style)
     } else {
-        let control = edge_control_point(source, target, ctx.groups, ctx.index, ctx.signed_density);
+        let control = edge_control_point(
+            source,
+            target,
+            ctx.groups,
+            ctx.index,
+            ctx.signed_density,
+            ctx.zoom,
+        );
         let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
@@ -574,14 +599,7 @@ pub(crate) fn trim_curve_to_node_boundary(
 /// from `center` (the source end), and `false` to find the last `t` where it is
 /// still at least `gap` from `center` (the target end). Binary search on the
 /// curve parameter keeps the result smooth under zoom.
-fn boundary_t(
-    p0: Vec2,
-    p1: Vec2,
-    p2: Vec2,
-    center: Vec2,
-    gap: f32,
-    leaving: bool,
-) -> f32 {
+fn boundary_t(p0: Vec2, p1: Vec2, p2: Vec2, center: Vec2, gap: f32, leaving: bool) -> f32 {
     let mut lo = 0.0f32;
     let mut hi = 1.0f32;
     for _ in 0..32 {
@@ -1167,11 +1185,7 @@ mod tests {
         assert_eq!(frame.edges.len(), 3);
         // Each parallel edge is a single curved segment; the control points
         // (p1 of each segment) should be distinct and fanned vertically.
-        let controls: Vec<Vec2> = frame
-            .edges
-            .iter()
-            .map(|e| e.path[0].1)
-            .collect();
+        let controls: Vec<Vec2> = frame.edges.iter().map(|e| e.path[0].1).collect();
         assert!(
             controls.iter().all(|c| c.is_finite()),
             "parallel edges must curve"
@@ -1213,10 +1227,7 @@ mod tests {
         assert_eq!(path.len(), 2, "onigiri has two segments");
         // The base center (p2 of the first segment) is above the node.
         let base = path[0].2;
-        assert!(
-            base.y < edge.source.y,
-            "loop should be above the node"
-        );
+        assert!(base.y < edge.source.y, "loop should be above the node");
     }
 
     #[test]
@@ -1509,8 +1520,8 @@ mod tests {
             std::collections::HashMap::new();
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
-        let lone = edge_control_point(source, target, &groups, 0, 0.0);
-        let with_neighbor = edge_control_point(source, target, &groups, 0, 1.0);
+        let lone = edge_control_point(source, target, &groups, 0, 0.0, 1.0);
+        let with_neighbor = edge_control_point(source, target, &groups, 0, 1.0, 1.0);
         // A neighbor on the left (signed_density +1) pushes the bow right
         // (negative y, since normal +y is the left side of direction +x).
         assert!(
@@ -1526,15 +1537,15 @@ mod tests {
         // midpoint, normalized by the edge length, at two zooms.
         let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
             std::collections::HashMap::new();
-        let bow_ratio = |source: Vec2, target: Vec2| {
-            let control = edge_control_point(source, target, &groups, 0, 0.0);
+        let bow_ratio = |source: Vec2, target: Vec2, zoom: f32| {
+            let control = edge_control_point(source, target, &groups, 0, 0.0, zoom);
             let mid = (source + target) * 0.5;
             (control - mid).length() / (target - source).length()
         };
         // Zoom 1: world a(0,0) b(100,0) maps to screen (0,0) and (100,0).
-        let r1 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+        let r1 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
         // Zoom 2: the same world edge maps to screen (0,0) and (200,0).
-        let r2 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
+        let r2 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), 1.0);
         assert!(
             (r1 - r2).abs() < 1e-3,
             "bow ratio should be zoom-invariant (r1={r1}, r2={r2})"
@@ -1543,14 +1554,14 @@ mod tests {
 
     #[test]
     fn parallel_curvature_drops_as_node_distance_grows() {
-        // The parallel fan offset is a fixed world-space spacing, so the sagitta
-        // (midpoint bow) is constant. As the node distance grows, the same
-        // sagitta over a longer chord means lower curvature.
+        // The parallel spacing scales sub-linearly with apparent length (power
+        // < 1), so the sagitta grows more slowly than the chord and curvature
+        // drops as the node distance grows.
         let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
             std::collections::HashMap::new();
         groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let sagitta = |source: Vec2, target: Vec2| {
-            let control = edge_control_point(source, target, &groups, 0, 0.0);
+            let control = edge_control_point(source, target, &groups, 0, 0.0, 1.0);
             let mid = (source + target) * 0.5;
             (control - mid).length()
         };
@@ -1558,16 +1569,45 @@ mod tests {
         let short = sagitta(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
         // Long edge: a(0,0) b(200,0).
         let long = sagitta(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
-        // The sagitta is the same (fixed spacing), so the long edge has lower
-        // curvature per unit length.
+        // The sagitta varies only slightly with length.
         assert!(
-            (short - long).abs() < 1e-3,
-            "sagitta should be constant (short={short}, long={long})"
+            (short - long).abs() < 20.0,
+            "sagitta should vary only slightly (short={short}, long={long})"
         );
         // Curvature is sagitta / length, so it drops for the longer edge.
         assert!(
             long / 200.0 < short / 100.0,
             "curvature should drop as node distance grows"
+        );
+    }
+
+    #[test]
+    fn parallel_spacing_varies_with_zoom_and_length() {
+        // The spacing scales with the edge's apparent length (world length times
+        // zoom): a longer apparent distance yields a wider spacing.
+        let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+            std::collections::HashMap::new();
+        groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
+        let control = |source: Vec2, target: Vec2, zoom: f32| {
+            edge_control_point(source, target, &groups, 0, 0.0, zoom)
+        };
+        // Base length and zoom.
+        let base = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
+        // Higher zoom widens the spacing (larger apparent length).
+        let high_zoom = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 2.0);
+        assert!(
+            high_zoom.y.abs() > base.y.abs(),
+            "higher zoom should widen the spacing (base={}, high={})",
+            base.y,
+            high_zoom.y
+        );
+        // Longer edge widens the spacing (larger apparent length).
+        let long = control(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), 1.0);
+        assert!(
+            long.y.abs() > base.y.abs(),
+            "longer edge should widen the spacing (base={}, long={})",
+            base.y,
+            long.y
         );
     }
 

@@ -101,6 +101,7 @@ pub fn hit_test<N, E>(
                 groups: &groups,
                 index,
                 signed_density: signed_densities[index],
+                zoom: viewport.zoom(),
             },
             graph,
             node_position,
@@ -111,6 +112,7 @@ pub fn hit_test<N, E>(
             .iter()
             .map(|(p0, p1, p2)| distance_to_quadratic_bezier(screen_point, *p0, *p1, *p2))
             .fold(f32::INFINITY, f32::min);
+        eprintln!("DBG {id:?} path={path:?} screen={screen_point:?} dist={dist}");
         let threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
         if dist <= threshold && best_edge.is_none_or(|(_, d)| dist < d) {
             best_edge = Some((*id, dist));
@@ -252,10 +254,10 @@ mod tests {
         let style = GraphStyle::default();
         // The fanned curve bows toward its control point. With two parallel
         // edges between the same node pair, their midpoints coincide, so the
-        // perpendicular density is zero and only the fan offset applies:
-        // ±0.5 * PARALLEL_SPACING = ±40 world units. The trimmed curve's
-        // midpoint is at (50, 12) and (50, -12).
-        let screen = vp.world_to_screen(Vec2::new(50.0, 12.0));
+        // perpendicular density is zero and only the fan offset applies. The
+        // trimmed curve's sagitta (midpoint bow) is half the control offset,
+        // so the midpoint sits at world (50, 8.3); hit there.
+        let screen = vp.world_to_screen(Vec2::new(50.0, 8.3));
         let result = hit_test(&g, &positions, &vp, &style, screen);
         assert!(
             result.edge.is_some(),
