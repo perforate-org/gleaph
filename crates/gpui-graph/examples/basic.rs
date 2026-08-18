@@ -51,16 +51,6 @@ impl Example {
                     .edge("aa", "alice", "alice", EdgeDirection::Directed, "self"),
             );
 
-            // Position nodes in a triangle: Alice at top, Bob/Carol at bottom.
-            if let Some(a) = scene.node_id(&"alice") {
-                scene.set_position(a, glam::Vec2::new(0.0, -100.0));
-            }
-            if let Some(b) = scene.node_id(&"bob") {
-                scene.set_position(b, glam::Vec2::new(-100.0, 100.0));
-            }
-            if let Some(c) = scene.node_id(&"carol") {
-                scene.set_position(c, glam::Vec2::new(100.0, 100.0));
-            }
             cx.notify();
         });
 
