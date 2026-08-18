@@ -378,10 +378,12 @@ pub(crate) fn self_loop_path<N, E>(
     // points on the node edge, both pointing toward the node center, so the
     // start and end are visually separate.
     let r = style.node_radius;
-    // Two points on the node's circumference, symmetric about the up-axis,
-    // angled 30° from the up-axis so they are distinct and point at the center.
-    let start = Vec2::new(-r * 0.5, -r * 0.866);
-    let end = Vec2::new(r * 0.5, -r * 0.866);
+    // Two points just outside the node's circumference, symmetric about the
+    // up-axis, angled 30° from the up-axis so they are distinct and point at
+    // the center. The small outward offset keeps the loop clear of the node.
+    let r_out = r + 2.0;
+    let start = Vec2::new(-r_out * 0.5, -r_out * 0.866);
+    let end = Vec2::new(r_out * 0.5, -r_out * 0.866);
     // The base size follows the graph's zoom linearly so the loop stays
     // proportionate to the graph as it scales. The base is kept small so the
     // loop does not dominate the node.
@@ -999,13 +1001,13 @@ mod tests {
             (start - end).length() > 1e-3,
             "start and end should be distinct"
         );
-        // Both lie on the node circumference (distance ~= node radius).
+        // Both lie just outside the node circumference (distance ~= radius + 2).
         let radius = GraphStyle::default().node_radius;
         for p in [start, end] {
             let d = (p - center).length();
             assert!(
-                (d - radius).abs() < 1e-2,
-                "endpoint should sit on the node edge, got {d}"
+                (d - (radius + 2.0)).abs() < 1e-2,
+                "endpoint should sit just outside the node edge, got {d}"
             );
         }
         // Both point toward the node center: the vector from the endpoint to
