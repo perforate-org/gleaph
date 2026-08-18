@@ -461,19 +461,10 @@ where
                             } else {
                                 style.edge_color
                             };
-                            // Trim both endpoints to the node boundary so the line
-                            // and arrowhead are not hidden beneath the nodes.
-                            let (line_source, line_target) =
-                                trim_to_node_boundary(source, target, style.node_radius);
-                            let mut builder = PathBuilder::stroke(px(style.edge_width));
-                            builder.move_to(point(px(line_source.x), px(line_source.y)));
-                            builder.line_to(point(px(line_target.x), px(line_target.y)));
-                            if let Ok(path) = builder.build() {
-                                window.paint_path(path, color);
-                            }
+                            paint_edge(window, source, target, edge.control, &style, color);
                             if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
                             {
-                                paint_edge_arrow(window, line_source, line_target, &style, color);
+                                paint_edge_arrow(window, source, target, &style, color);
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
                                     trace
@@ -561,6 +552,49 @@ fn trim_to_node_boundary(source: Vec2, target: Vec2, radius: f32) -> (Vec2, Vec2
     let unit = dir / len;
     let inset = radius.min(len * 0.5);
     (source + unit * inset, target - unit * inset)
+}
+
+/// Paint an edge as a straight line or a quadratic Bézier curve.
+///
+/// `source` and `target` are window-space endpoints. When `control` is `Some`,
+/// the edge is drawn as a quadratic Bézier curve through that control point;
+/// otherwise it is a straight line. Both endpoints are trimmed to the node
+/// boundary so the edge is not hidden beneath the nodes. A self-loop
+/// (`source == target`) is drawn as a loop that leaves and re-enters the node
+/// boundary.
+fn paint_edge(
+    window: &mut Window,
+    source: Vec2,
+    target: Vec2,
+    control: Option<Vec2>,
+    style: &GraphStyle,
+    color: gpui::Hsla,
+) {
+    let radius = style.node_radius;
+    let (line_source, line_target) = if (source - target).length() < f32::EPSILON {
+        // Self-loop: start and end slightly offset on the top of the node to create a teardrop.
+        let start = source + Vec2::new(-radius * 0.5, -radius * 0.2);
+        let end = source + Vec2::new(radius * 0.5, -radius * 0.2);
+        (start, end)
+    } else {
+        trim_to_node_boundary(source, target, radius)
+    };
+    let mut builder = PathBuilder::stroke(px(style.edge_width));
+    builder.move_to(point(px(line_source.x), px(line_source.y)));
+    match control {
+        Some(control) => {
+            builder.curve_to(
+                point(px(line_target.x), px(line_target.y)),
+                point(px(control.x), px(control.y)),
+            );
+        }
+        None => {
+            builder.line_to(point(px(line_target.x), px(line_target.y)));
+        }
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
 }
 
 /// Paint an arrowhead at the target end of a directed edge.
@@ -773,7 +807,7 @@ fn paint_label(
     });
 }
 
-/// Paint an edge label centered at the edge midpoint.
+/// Paint an edge label centered at the edge midpoint, offset off the edge line.
 fn paint_edge_label(
     window: &mut Window,
     cx: &mut gpui::App,
@@ -781,7 +815,11 @@ fn paint_edge_label(
     label: &crate::paint::PaintEdgeLabel,
     style: &GraphStyle,
 ) {
-    let anchor = coordinates.canvas_to_window(label.position);
+    // label.position is already in canvas-local pixels. 
+    // Apply the user-defined label_offset along the label's fixed offset direction.
+    let anchor = coordinates.canvas_to_window(
+        label.position + label.offset * style.label_offset
+    );
     let font_size = style.label_style.font_size.to_pixels(window.rem_size());
     let line_height = style
         .label_style

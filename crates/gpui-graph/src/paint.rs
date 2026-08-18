@@ -9,7 +9,7 @@
 
 use glam::Vec2;
 
-use crate::graph::{EdgeDirection, EdgeId, Graph, NodeId};
+use crate::graph::{Edge, EdgeDirection, EdgeId, Graph, NodeId};
 use crate::interaction::{Hover, Selection};
 use crate::style::GraphStyle;
 use crate::viewport::Viewport;
@@ -38,6 +38,8 @@ pub struct PaintEdge {
     pub source: Vec2,
     /// Canvas-local pixel target position.
     pub target: Vec2,
+    /// Optional quadratic Bézier control point. `None` renders a straight line.
+    pub control: Option<Vec2>,
     /// Whether the edge is directed.
     pub direction: EdgeDirection,
     /// Whether the edge is selected.
@@ -60,6 +62,8 @@ pub struct PaintLabel {
 pub struct PaintEdgeLabel {
     /// Canvas-local pixel anchor position (the edge midpoint).
     pub position: Vec2,
+    /// Unit offset direction to shift the label off the edge line.
+    pub offset: Vec2,
     /// The label text.
     pub text: String,
 }
@@ -168,6 +172,9 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         }
     }
 
+    // Collect visible edges, then assign curve control points so parallel
+    // edges and self-loops are separated visually.
+    let mut visible_edges: Vec<(EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
     for (id, edge) in graph.edges() {
         let Some(source_world) = node_position(edge.source) else {
             continue;
@@ -181,25 +188,103 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         if !source_visible && !target_visible {
             continue;
         }
-        frame.edges.push(PaintEdge {
+        visible_edges.push((
             id,
-            source: viewport.world_to_screen(source_world),
-            target: viewport.world_to_screen(target_world),
+            edge,
+            viewport.world_to_screen(source_world),
+            viewport.world_to_screen(target_world),
+        ));
+    }
+
+    // Group edges by their (source, target) node pair to detect parallels.
+    let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, (_, edge, _, _)) in visible_edges.iter().enumerate() {
+        groups
+            .entry((edge.source, edge.target))
+            .or_default()
+            .push(index);
+    }
+
+    for (index, (id, edge, source, target)) in visible_edges.iter().enumerate() {
+        let control = edge_control_point(*source, *target, &groups, index);
+        frame.edges.push(PaintEdge {
+            id: *id,
+            source: *source,
+            target: *target,
+            control,
             direction: edge.direction,
-            selected: selection.contains_edge(id),
-            hovered: hover.edge == Some(id),
+            selected: selection.contains_edge(*id),
+            hovered: hover.edge == Some(*id),
         });
-        if let Some(text) = edge_label(id, &edge.data) {
-            let source_screen = viewport.world_to_screen(source_world);
-            let target_screen = viewport.world_to_screen(target_world);
+        if let Some(text) = edge_label(*id, &edge.data) {
+            // Place the label at the curve's actual midpoint (quadratic Bézier
+            // at t = 0.5), offset perpendicular to the curve so it does not
+            // overlap the edge line. A self-loop's label sits at the loop's
+            // apex (the control point) so it is clear of the node.
+            let (position, offset) = if (*source - *target).length() < f32::EPSILON {
+                let control = control.expect("self-loop has a control point");
+                (control, Vec2::new(0.0, -1.0))
+            } else {
+                let tangent = *target - *source;
+                let len = tangent.length();
+                // Normalize the normal so its y component is always upward.
+                // This keeps labels on the same side of the edge regardless of
+                // whether the edge points left or right.
+                let normal = if len > f32::EPSILON {
+                    let n = Vec2::new(-tangent.y, tangent.x) / len;
+                    if n.y < 0.0 { -n } else { n }
+                } else {
+                    Vec2::new(0.0, -1.0)
+                };
+                let position = match control {
+                    Some(control) => 0.25 * *source + 0.5 * control + 0.25 * *target,
+                    None => (*source + *target) * 0.5,
+                };
+                (position, normal)
+            };
             frame.edge_labels.push(PaintEdgeLabel {
-                position: (source_screen + target_screen) * 0.5,
+                position,
+                offset,
                 text,
             });
         }
     }
 
     frame
+}
+
+/// Compute a quadratic Bézier control point for an edge.
+///
+/// Self-loops get a loop above the node. Parallel edges (multiple edges between
+/// the same node pair) are fanned out perpendicular to the edge direction so
+/// they do not overlap. A single non-loop edge returns `None` (straight line).
+pub(crate) fn edge_control_point(
+    source: Vec2,
+    target: Vec2,
+    groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
+    index: usize,
+) -> Option<Vec2> {
+    let dir = target - source;
+    let len = dir.length();
+    if len < f32::EPSILON {
+        // Self-loop: control point above the node to create a loop.
+        // The height is tuned to be approx 1.5x node radius.
+        return Some(source + Vec2::new(0.0, -80.0));
+    }
+    let unit = dir / len;
+    let normal = Vec2::new(-unit.y, unit.x);
+    let midpoint = (source + target) * 0.5;
+    // Find this edge's position among its parallel siblings.
+    let group = groups.values().find(|g| g.contains(&index))?;
+    if group.len() <= 1 {
+        return None;
+    }
+    let position = group.iter().position(|i| *i == index).unwrap_or(0);
+    // Offset based on a percentage of the edge length to create a natural arc.
+    // 0.2 * len provides a gentle curve similar to the reference image.
+    let offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * len * 0.2;
+    Some(midpoint + normal * offset)
 }
 
 fn point_in_bounds(p: Vec2, bounds: &crate::viewport::WorldBounds, margin: f32) -> bool {
@@ -427,5 +512,111 @@ mod tests {
         assert_eq!(frame.edge_labels.len(), 1);
         assert_eq!(frame.edge_labels[0].text, "knows");
         assert_eq!(frame.edge_labels[0].position, Vec2::new(55.0, 50.0));
+    }
+
+    #[test]
+    fn single_edge_has_no_control_point() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(10.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(frame.edges.len(), 1);
+        assert_eq!(frame.edges[0].control, None);
+    }
+
+    #[test]
+    fn parallel_edges_get_fanned_control_points() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(10.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(frame.edges.len(), 3);
+        let controls: Vec<_> = frame.edges.iter().map(|e| e.control).collect();
+        assert!(
+            controls.iter().all(|c| c.is_some()),
+            "parallel edges must curve"
+        );
+        // The three control points should be distinct and fanned vertically.
+        let ys: Vec<f32> = controls.iter().map(|c| c.unwrap().y).collect();
+        assert!(
+            ys[0] != ys[1] && ys[1] != ys[2],
+            "control points must be fanned"
+        );
+    }
+
+    #[test]
+    fn self_loop_gets_loop_control_point() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(frame.edges.len(), 1);
+        let control = frame.edges[0].control.expect("self-loop must curve");
+        assert!(
+            control.y < frame.edges[0].source.y,
+            "loop should be above the node"
+        );
     }
 }
