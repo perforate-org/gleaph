@@ -365,10 +365,14 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
 /// Radius (in world units) within which other edges count toward an edge's
 /// local density. Computed in world space so the neighbor set is zoom-invariant.
 pub(crate) const DENSITY_RADIUS: f32 = 40.0;
+/// Fixed world-space spacing between parallel edges, independent of edge length.
+/// Because the fan offset is constant, the sagitta (midpoint bow) stays constant
+/// as the node distance grows, so the curvature drops for longer edges.
+const PARALLEL_SPACING: f32 = 80.0;
 /// Bow per unit of signed density difference, as a fraction of edge length.
-const BOW_DENSITY: f32 = 0.04;
+const BOW_DENSITY: f32 = 0.20;
 /// Upper bound on the bow as a fraction of edge length.
-const BOW_MAX: f32 = 0.35;
+const BOW_MAX: f32 = 0.90;
 
 /// A uniform grid over edge midpoints used to count nearby edges in O(E).
 struct DensityGrid {
@@ -482,9 +486,10 @@ pub(crate) fn edge_control_point(
         .filter(|g| g.len() > 1)
     {
         let position = group.iter().position(|i| *i == index).unwrap_or(0);
-        // Offset based on a percentage of the edge length to create a
-        // natural arc. 0.2 * len provides a gentle curve.
-        offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * len * 0.2;
+        // Fixed world-space fan offset, independent of edge length. The sagitta
+        // (midpoint bow) is half the control offset, so it stays constant as the
+        // node distance grows and the curvature drops for longer edges.
+        offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * PARALLEL_SPACING;
     }
     // Density bow: bow toward the side with fewer neighbor edges. The bow is a
     // fraction of edge length, so the curve shape is stable under zoom. When the
@@ -1533,6 +1538,36 @@ mod tests {
         assert!(
             (r1 - r2).abs() < 1e-3,
             "bow ratio should be zoom-invariant (r1={r1}, r2={r2})"
+        );
+    }
+
+    #[test]
+    fn parallel_curvature_drops_as_node_distance_grows() {
+        // The parallel fan offset is a fixed world-space spacing, so the sagitta
+        // (midpoint bow) is constant. As the node distance grows, the same
+        // sagitta over a longer chord means lower curvature.
+        let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+            std::collections::HashMap::new();
+        groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
+        let sagitta = |source: Vec2, target: Vec2| {
+            let control = edge_control_point(source, target, &groups, 0, 0.0);
+            let mid = (source + target) * 0.5;
+            (control - mid).length()
+        };
+        // Short edge: a(0,0) b(100,0).
+        let short = sagitta(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+        // Long edge: a(0,0) b(200,0).
+        let long = sagitta(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
+        // The sagitta is the same (fixed spacing), so the long edge has lower
+        // curvature per unit length.
+        assert!(
+            (short - long).abs() < 1e-3,
+            "sagitta should be constant (short={short}, long={long})"
+        );
+        // Curvature is sagitta / length, so it drops for the longer edge.
+        assert!(
+            long / 200.0 < short / 100.0,
+            "curvature should drop as node distance grows"
         );
     }
 

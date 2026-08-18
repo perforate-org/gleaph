@@ -253,9 +253,9 @@ mod tests {
         // The fanned curve bows toward its control point. With two parallel
         // edges between the same node pair, their midpoints coincide, so the
         // perpendicular density is zero and only the fan offset applies:
-        // ±0.5 * len * 0.2 = ±10 world units. The two curves pass through the
-        // midpoint offset by half that: (50, 5) and (50, -5).
-        let screen = vp.world_to_screen(Vec2::new(50.0, 5.0));
+        // ±0.5 * PARALLEL_SPACING = ±40 world units. The trimmed curve's
+        // midpoint is at (50, 12) and (50, -12).
+        let screen = vp.world_to_screen(Vec2::new(50.0, 12.0));
         let result = hit_test(&g, &positions, &vp, &style, screen);
         assert!(
             result.edge.is_some(),

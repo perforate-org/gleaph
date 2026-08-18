@@ -1132,8 +1132,9 @@ quadratic Bézier control point:
 
 - every non-loop edge bows toward the side with fewer neighbor edges; a lone
   edge with no neighbors is straight,
-- parallel edges are fanned perpendicular to the edge direction on top of the
-  density bow,
+- parallel edges are fanned perpendicular to the edge direction by a fixed
+  world-space spacing (independent of edge length), so the sagitta stays
+  constant and the curvature drops as the node distance grows,
 - a self-loop renders as an onigiri (rounded triangle) path.
 
 Self-loops count toward the local density of nearby edges (their midpoint is the
