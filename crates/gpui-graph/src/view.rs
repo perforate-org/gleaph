@@ -514,6 +514,7 @@ where
                                     arrow_target,
                                     &style,
                                     color,
+                                    &label_rects,
                                 );
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
@@ -797,13 +798,17 @@ fn subdivide(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> (Bezier, Bezier) {
 /// Paint an arrowhead at the target end of a directed edge.
 ///
 /// `source` and `target` are window-space endpoints. The arrowhead is drawn
-/// with the edge's resolved color and the shape/size from `style`.
+/// with the edge's resolved color and the shape/size from `style`. The arrow is
+/// masked against the label rectangles (`label_rects`) in the same way as the
+/// edge line: any part of the arrow that would pass behind a label is punched
+/// out so the label stays readable over the arrowhead.
 fn paint_edge_arrow(
     window: &mut Window,
     source: Vec2,
     target: Vec2,
     style: &GraphStyle,
     color: gpui::Hsla,
+    label_rects: &[Bounds<gpui::Pixels>],
 ) {
     let dir = target - source;
     let len = dir.length();
@@ -815,10 +820,14 @@ fn paint_edge_arrow(
     let tip = target;
     let base = tip - unit * arrow_size;
     let normal = Vec2::new(-unit.y, unit.x);
+    let half = arrow_size * 0.5;
 
+    // The arrow is drawn as a single fill path (Triangle) or stroke path
+    // (Line). Any overlapping label rect is added as an extra sub-contour; the
+    // evenodd fill rule punches it out, so the label stays readable over the
+    // arrowhead. Distant rects never overlap the arrow and are skipped.
     match style.edge_arrow_shape {
         ArrowShape::Triangle => {
-            let half = arrow_size * 0.5;
             let mut builder = PathBuilder::fill();
             builder.move_to(point(px(tip.x), px(tip.y)));
             builder.line_to(point(
@@ -830,12 +839,25 @@ fn paint_edge_arrow(
                 px(base.y - normal.y * half),
             ));
             builder.close();
+            // Punch out the part of the arrow that lies behind a label. The
+            // hole is the arrow triangle clipped to the label rect — not the
+            // whole rect — so a rect that merely overlaps the arrow's edge does
+            // not leave a gray strip beyond the arrow. The evenodd fill rule
+            // carves the clipped region out of the arrow.
+            for rect in label_rects
+                .iter()
+                .filter(|r| arrow_overlaps_rect(tip, base, half, normal, r))
+            {
+                let hole = rect_intersection(tip, base, half, normal, rect);
+                if hole.len() >= 3 {
+                    add_polygon_subpath(&mut builder, &hole);
+                }
+            }
             if let Ok(path) = builder.build() {
                 window.paint_path(path, color);
             }
         }
         ArrowShape::Line => {
-            let half = arrow_size * 0.5;
             let mut builder = PathBuilder::stroke(px(style.edge_width));
             builder.move_to(point(
                 px(base.x + normal.x * half),
@@ -866,6 +888,112 @@ fn paint_edge_arrow(
             ));
         }
     }
+}
+
+/// Whether a label rect overlaps the arrowhead's bounding region. The arrow
+/// tip is `tip`, and `base ± normal * half` are the base corners.
+fn arrow_overlaps_rect(
+    tip: Vec2,
+    base: Vec2,
+    half: f32,
+    normal: Vec2,
+    rect: &Bounds<gpui::Pixels>,
+) -> bool {
+    let rmin = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
+    let rmax = rmin + Vec2::new(f32::from(rect.size.width), f32::from(rect.size.height));
+    let p1 = base + normal * half;
+    let p2 = base - normal * half;
+    let min_x = tip.x.min(p1.x).min(p2.x);
+    let max_x = tip.x.max(p1.x).max(p2.x);
+    let min_y = tip.y.min(p1.y).min(p2.y);
+    let max_y = tip.y.max(p1.y).max(p2.y);
+    max_x > rmin.x && min_x < rmax.x && max_y > rmin.y && min_y < rmax.y
+}
+
+/// The part of the arrow triangle that lies inside the label `rect`, as a
+/// polygon in window space. The triangle has tip `tip` and base corners
+/// `base ± normal * half`. This is the region punched out of the arrow; using
+/// the clipped region (not the whole rect) keeps a label that only overlaps the
+/// arrow's edge from leaving a gray strip beyond the arrow.
+fn rect_intersection(
+    tip: Vec2,
+    base: Vec2,
+    half: f32,
+    normal: Vec2,
+    rect: &Bounds<gpui::Pixels>,
+) -> Vec<Vec2> {
+    let x0 = f32::from(rect.origin.x);
+    let y0 = f32::from(rect.origin.y);
+    let x1 = x0 + f32::from(rect.size.width);
+    let y1 = y0 + f32::from(rect.size.height);
+    let mut poly = vec![
+        Vec2::new(x0, y0),
+        Vec2::new(x1, y0),
+        Vec2::new(x1, y1),
+        Vec2::new(x0, y1),
+    ];
+    // Clip the rect against each edge of the triangle (keep the inside). The
+    // triangle interior side of each edge is the side that contains the
+    // triangle's centroid, so the winding does not matter.
+    let triangle = [tip, base + normal * half, base - normal * half];
+    let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+    for i in 0..3 {
+        let a = triangle[i];
+        let b = triangle[(i + 1) % 3];
+        let keep_above = inside_half_plane(centroid, a, b);
+        poly = clip_half_plane(&poly, a, b, keep_above);
+        if poly.len() < 3 {
+            return Vec::new();
+        }
+    }
+    poly
+}
+
+/// Clip `poly` to the half-plane on the same side of the directed edge `a -> b`
+/// as the interior, keeping points where `inside_half_plane` equals
+/// `keep_above` (Sutherland–Hodgman).
+fn clip_half_plane(poly: &[Vec2], a: Vec2, b: Vec2, keep_above: bool) -> Vec<Vec2> {
+    let n = poly.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let cur = poly[i];
+        let next = poly[(i + 1) % n];
+        let cur_in = inside_half_plane(cur, a, b) == keep_above;
+        let next_in = inside_half_plane(next, a, b) == keep_above;
+        if cur_in {
+            out.push(cur);
+        }
+        if cur_in != next_in {
+            out.push(line_intersection(cur, next, a, b));
+        }
+    }
+    out
+}
+
+fn inside_half_plane(p: Vec2, a: Vec2, b: Vec2) -> bool {
+    // Left of a->b means the cross product (b - a) x (p - a) is >= 0.
+    (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) >= 0.0
+}
+
+fn line_intersection(p1: Vec2, p2: Vec2, a: Vec2, b: Vec2) -> Vec2 {
+    let d1 = p2 - p1;
+    let d2 = b - a;
+    let denom = d1.x * d2.y - d1.y * d2.x;
+    if denom.abs() < f32::EPSILON {
+        return p2;
+    }
+    let t = ((a.x - p1.x) * d2.y - (a.y - p1.y) * d2.x) / denom;
+    p1 + d1 * t
+}
+
+/// Add a closed polygon sub-contour to `builder`, used to punch the clipped
+/// arrow region out of a fill path via the evenodd fill rule.
+fn add_polygon_subpath(builder: &mut PathBuilder, poly: &[Vec2]) {
+    builder.move_to(point(px(poly[0].x), px(poly[0].y)));
+    for &p in &poly[1..] {
+        builder.line_to(point(px(p.x), px(p.y)));
+    }
+    builder.close();
 }
 
 impl<NK, EK, N, E> GraphViewState<NK, EK, N, E>
@@ -1927,6 +2055,58 @@ mod tests {
         assert_eq!(curves.len(), 2, "edge must be cut around the node label");
         assert!(curves[0].2.x <= 0.0);
         assert!(curves[1].0.x >= 20.0);
+    }
+
+    #[test]
+    fn arrow_overlaps_rect_masks_arrow_triangle() {
+        // A triangle arrowhead pointing left toward (80,50), tip at (100,50).
+        let tip = Vec2::new(100.0, 50.0);
+        let base = Vec2::new(80.0, 50.0);
+        let normal = Vec2::new(0.0, -1.0);
+        let half = 10.0;
+        // A label rect covering the tip: the arrow overlaps it and must be
+        // punched out there.
+        let tip_rect = Bounds {
+            origin: point(px(95.0), px(40.0)),
+            size: size(px(10.0), px(20.0)),
+        };
+        assert!(
+            arrow_overlaps_rect(tip, base, half, normal, &tip_rect),
+            "a rect over the tip must overlap the arrow"
+        );
+        // A distant rect that does not touch the arrow: no overlap.
+        let far_rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(10.0), px(10.0)),
+        };
+        assert!(
+            !arrow_overlaps_rect(tip, base, half, normal, &far_rect),
+            "a distant rect must not overlap the arrow"
+        );
+    }
+
+    #[test]
+    fn rect_intersection_clips_label_to_arrow_triangle() {
+        // Triangle pointing left, tip at (100,50), base corners (80,60)/(80,40).
+        let tip = Vec2::new(100.0, 50.0);
+        let base = Vec2::new(80.0, 50.0);
+        let normal = Vec2::new(0.0, -1.0);
+        let half = 10.0;
+        // A label rect whose left part pokes out beyond the arrow's base. The
+        // hole must stop at the triangle's base edge (x=80), not cover the whole
+        // rect — otherwise a gray strip would appear beyond the arrow.
+        let rect = Bounds {
+            origin: point(px(70.0), px(40.0)),
+            size: size(px(40.0), px(20.0)),
+        };
+        let hole = rect_intersection(tip, base, half, normal, &rect);
+        assert!(hole.len() >= 3, "the clipped hole must be a polygon");
+        for p in &hole {
+            assert!(
+                p.x >= 80.0 - 1e-3,
+                "hole must not extend past the arrow base"
+            );
+        }
     }
 
     #[gpui::test]

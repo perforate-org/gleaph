@@ -1183,6 +1183,15 @@ matches the label precisely and is independent of zoom or pan. Node labels use
 the same rectangle-mask technique as edge labels: a node label's bounds sit
 below the node (radius + offset) and cut any edge that passes behind them.
 
+A directed edge's arrowhead is masked the same way. The arrow is drawn as a
+single fill path that also carries the part of each overlapping label rectangle
+that lies inside the arrowhead as an extra sub-contour; the evenodd fill rule
+punches a hole exactly where the arrow passes behind a label. The hole is the
+arrow clipped to the label rect, not the whole rect, so a label that merely
+touches the arrow's edge does not leave a gray strip beyond the arrow. Only
+label rects that overlap the arrowhead are considered, so distant labels never
+alter the arrow.
+
 ## 18.5 Edge label collision avoidance
 
 Edge labels that would overlap are slid apart along their edges so they stay
