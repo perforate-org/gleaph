@@ -374,10 +374,14 @@ pub(crate) fn self_loop_path<N, E>(
 ) -> Vec<Bezier> {
     // Local frame with up = (0, -1), right = (1, 0), node center at origin.
     // The node is the apex (tip) of the onigiri; the wide base sits away from
-    // the node. A low, wide base with the node at the point gives a pronounced
-    // onigiri triangle.
+    // the node. The two sides leave and re-enter the node at two distinct
+    // points on the node edge, both pointing toward the node center, so the
+    // start and end are visually separate.
     let r = style.node_radius;
-    let node_top = Vec2::new(0.0, -r);
+    // Two points on the node's circumference, symmetric about the up-axis,
+    // angled 30° from the up-axis so they are distinct and point at the center.
+    let start = Vec2::new(-r * 0.5, -r * 0.866);
+    let end = Vec2::new(r * 0.5, -r * 0.866);
     let base_left = Vec2::new(-45.0, -85.0);
     let base_right = Vec2::new(45.0, -85.0);
     let base_mid = Vec2::new(0.0, -85.0);
@@ -429,8 +433,8 @@ pub(crate) fn self_loop_path<N, E>(
     };
 
     vec![
-        (rotate(node_top), rotate(base_left), rotate(base_mid)),
-        (rotate(base_mid), rotate(base_right), rotate(node_top)),
+        (rotate(start), rotate(base_left), rotate(base_mid)),
+        (rotate(base_mid), rotate(base_right), rotate(end)),
     ]
 }
 
@@ -954,5 +958,59 @@ mod tests {
             base.x < self_edge.source.x,
             "onigiri should point away from the other edge"
         );
+    }
+
+    #[test]
+    fn self_loop_start_and_end_are_distinct_and_point_at_center() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        let path = frame.edges[0].self_loop.as_ref().unwrap();
+        let start = path[0].0;
+        let end = path[1].2;
+        let center = frame.edges[0].source;
+        // The start and end are distinct points on the node edge.
+        assert!(
+            (start - end).length() > 1e-3,
+            "start and end should be distinct"
+        );
+        // Both lie on the node circumference (distance ~= node radius).
+        let radius = GraphStyle::default().node_radius;
+        for p in [start, end] {
+            let d = (p - center).length();
+            assert!(
+                (d - radius).abs() < 1e-2,
+                "endpoint should sit on the node edge, got {d}"
+            );
+        }
+        // Both point toward the node center: the vector from the endpoint to
+        // the center is roughly opposite the outward direction.
+        for p in [start, end] {
+            let to_center = (center - p).normalize();
+            let outward = (p - center).normalize();
+            assert!(
+                to_center.dot(outward) < -0.9,
+                "endpoint should point toward the node center"
+            );
+        }
     }
 }
