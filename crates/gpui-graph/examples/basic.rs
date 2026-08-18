@@ -46,7 +46,8 @@ impl Example {
                     // Parallel edges fan out as curves.
                     .edge("ab2", "alice", "bob", EdgeDirection::Directed, "likes")
                     .edge("ab3", "alice", "bob", EdgeDirection::Directed, "mentions")
-                    // A self-loop renders as a curve above the node.
+                    // A self-loop renders as an onigiri (rounded triangle) that
+                    // points away from the node's other edges.
                     .edge("aa", "alice", "alice", EdgeDirection::Directed, "self"),
             );
 

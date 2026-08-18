@@ -14,6 +14,9 @@ use crate::interaction::{Hover, Selection};
 use crate::style::GraphStyle;
 use crate::viewport::Viewport;
 
+/// A quadratic Bézier curve `(p0, p1, p2)`.
+pub type Bezier = (Vec2, Vec2, Vec2);
+
 /// A node record ready for painting.
 #[derive(Debug, Clone, Copy)]
 pub struct PaintNode {
@@ -30,7 +33,7 @@ pub struct PaintNode {
 }
 
 /// An edge record ready for painting.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PaintEdge {
     /// Stable edge identity.
     pub id: EdgeId,
@@ -40,6 +43,10 @@ pub struct PaintEdge {
     pub target: Vec2,
     /// Optional quadratic Bézier control point. `None` renders a straight line.
     pub control: Option<Vec2>,
+    /// The onigiri self-loop path, present only for a self-loop
+    /// (`source == target`). Mutually exclusive with `control`: when this is
+    /// `Some`, `control` is `None`.
+    pub self_loop: Option<Vec<Bezier>>,
     /// Whether the edge is directed.
     pub direction: EdgeDirection,
     /// Whether the edge is selected.
@@ -206,19 +213,40 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         if !source_visible && !target_visible {
             // Both endpoints are outside; keep the edge only if its curve
             // (including the control point) still crosses the visible bounds.
-            let control_world = edge_control_point(*source_world, *target_world, &groups, index);
-            let curve_visible = match control_world {
-                Some(control) => {
-                    let min = (*source_world).min(*target_world).min(control);
-                    let max = (*source_world).max(*target_world).max(control);
-                    bounds_intersect(&visible, margin, min, max)
+            let is_self_loop = (*source_world - *target_world).length() < f32::EPSILON;
+            let curve_visible = if is_self_loop {
+                // A self-loop's onigiri path may extend well beyond the node,
+                // so test the path's bounding box.
+                let path = self_loop_path(
+                    edge.source,
+                    *source_world,
+                    graph,
+                    node_position,
+                    viewport,
+                    style,
+                );
+                let mut min = Vec2::splat(f32::INFINITY);
+                let mut max = Vec2::splat(f32::NEG_INFINITY);
+                for (p0, p1, p2) in &path {
+                    min = min.min(*p0).min(*p1).min(*p2);
+                    max = max.max(*p0).max(*p1).max(*p2);
                 }
-                None => {
-                    // Straight edge: keep it if the segment's bounding box
-                    // crosses the visible bounds.
-                    let min = (*source_world).min(*target_world);
-                    let max = (*source_world).max(*target_world);
-                    bounds_intersect(&visible, margin, min, max)
+                bounds_intersect(&visible, margin, min, max)
+            } else {
+                let control_world = edge_control_point(*source_world, *target_world, &groups, index);
+                match control_world {
+                    Some(control) => {
+                        let min = (*source_world).min(*target_world).min(control);
+                        let max = (*source_world).max(*target_world).max(control);
+                        bounds_intersect(&visible, margin, min, max)
+                    }
+                    None => {
+                        // Straight edge: keep it if the segment's bounding box
+                        // crosses the visible bounds.
+                        let min = (*source_world).min(*target_world);
+                        let max = (*source_world).max(*target_world);
+                        bounds_intersect(&visible, margin, min, max)
+                    }
                 }
             };
             if !curve_visible {
@@ -235,12 +263,27 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     }
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
-        let control = edge_control_point(*source, *target, &groups, *candidate_index);
+        let is_self_loop = (*source - *target).length() < f32::EPSILON;
+        let (control, self_loop, apex) = if is_self_loop {
+            let path = self_loop_path(edge.source, *source, graph, node_position, viewport, style);
+            let apex = path
+                .first()
+                .map(|(_, _, p2)| *p2)
+                .expect("self-loop has an apex");
+            (None, Some(path), Some(apex))
+        } else {
+            (
+                edge_control_point(*source, *target, &groups, *candidate_index),
+                None,
+                None,
+            )
+        };
         frame.edges.push(PaintEdge {
             id: *id,
             source: *source,
             target: *target,
             control,
+            self_loop,
             direction: edge.direction,
             selected: selection.contains_edge(*id),
             hovered: hover.edge == Some(*id),
@@ -248,11 +291,10 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         if let Some(text) = edge_label(*id, &edge.data) {
             // Place the label at the curve's actual midpoint (quadratic Bézier
             // at t = 0.5), offset perpendicular to the curve so it does not
-            // overlap the edge line. A self-loop's label sits at the loop's
-            // apex (the control point) so it is clear of the node.
-            let (position, offset) = if (*source - *target).length() < f32::EPSILON {
-                let control = control.expect("self-loop has a control point");
-                (control, Vec2::new(0.0, -1.0))
+            // overlap the edge line. A self-loop's label sits at the onigiri's
+            // base center (away from the node) so it is clear of the node.
+            let (position, offset) = if is_self_loop {
+                (apex.expect("self-loop has a base"), Vec2::new(0.0, -1.0))
             } else {
                 let tangent = *target - *source;
                 let len = tangent.length();
@@ -313,6 +355,83 @@ pub(crate) fn edge_control_point(
     // 0.2 * len provides a gentle curve similar to the reference image.
     let offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * len * 0.2;
     Some(midpoint + normal * offset)
+}
+
+/// Compute the onigiri self-loop path for a node.
+///
+/// The node is the apex (tip) of the onigiri; a wide, rounded base sits away
+/// from the node. The path is a list of quadratic Bézier segments in the same
+/// coordinate space as `node_pos` (screen/canvas-local). The loop points away
+/// from the node's other incident edges (defaulting to up when the node has no
+/// other edges or the average direction is zero).
+pub(crate) fn self_loop_path<N, E>(
+    node: NodeId,
+    node_pos: Vec2,
+    graph: &Graph<N, E>,
+    node_position: &dyn Fn(NodeId) -> Option<Vec2>,
+    viewport: &Viewport,
+    style: &GraphStyle,
+) -> Vec<Bezier> {
+    // Local frame with up = (0, -1), right = (1, 0), node center at origin.
+    // The node is the apex (tip) of the onigiri; the wide base sits away from
+    // the node. A low, wide base with the node at the point gives a pronounced
+    // onigiri triangle.
+    let r = style.node_radius;
+    let node_top = Vec2::new(0.0, -r);
+    let base_left = Vec2::new(-45.0, -85.0);
+    let base_right = Vec2::new(45.0, -85.0);
+    let base_mid = Vec2::new(0.0, -85.0);
+
+    // Average direction from the node to the other endpoints of its incident
+    // edges; the onigiri points opposite that average.
+    let mut dir = Vec2::new(0.0, -1.0);
+    if let Some(incident) = graph.incident_edges(node) {
+        let mut sum = Vec2::ZERO;
+        let mut count = 0usize;
+        for edge_id in incident {
+            let Some(edge) = graph.edge(*edge_id) else {
+                continue;
+            };
+            let other = if edge.source == node {
+                edge.target
+            } else {
+                edge.source
+            };
+            if other == node {
+                continue;
+            }
+            let Some(other_world) = node_position(other) else {
+                continue;
+            };
+            let other_screen = viewport.world_to_screen(other_world);
+            let delta = other_screen - node_pos;
+            if delta.length_squared() > f32::EPSILON {
+                sum += delta.normalize();
+                count += 1;
+            }
+        }
+        if count > 0 {
+            let avg = sum / count as f32;
+            if avg.length_squared() > f32::EPSILON {
+                dir = -avg.normalize();
+            }
+        }
+    }
+
+    // Rotate the local frame so `up` maps to `dir`. For `dir = (dx, dy)` with
+    // `up = (0, -1)`, the rotation maps local `(lx, ly)` to
+    // `x' = lx * (-dy) - ly * dx`, `y' = lx * dx + ly * (-dy)`.
+    let (dx, dy) = (dir.x, dir.y);
+    let rotate = |p: Vec2| {
+        let x = p.x * (-dy) - p.y * dx;
+        let y = p.x * dx + p.y * (-dy);
+        node_pos + Vec2::new(x, y)
+    };
+
+    vec![
+        (rotate(node_top), rotate(base_left), rotate(base_mid)),
+        (rotate(base_mid), rotate(base_right), rotate(node_top)),
+    ]
 }
 
 fn point_in_bounds(p: Vec2, bounds: &crate::viewport::WorldBounds, margin: f32) -> bool {
@@ -747,10 +866,93 @@ mod tests {
             hover: &Hover::default(),
         });
         assert_eq!(frame.edges.len(), 1);
-        let control = frame.edges[0].control.expect("self-loop must curve");
+        let edge = &frame.edges[0];
+        assert!(edge.control.is_none(), "self-loop has no control point");
+        let path = edge.self_loop.as_ref().expect("self-loop has a path");
+        assert_eq!(path.len(), 2, "onigiri has two segments");
+        // The base center (p2 of the first segment) is above the node.
+        let base = path[0].2;
         assert!(
-            control.y < frame.edges[0].source.y,
+            base.y < edge.source.y,
             "loop should be above the node"
+        );
+    }
+
+    #[test]
+    fn self_loop_points_up_without_other_edges() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        let path = frame.edges[0].self_loop.as_ref().unwrap();
+        let base = path[0].2;
+        // With no other edges the onigiri points straight up: base directly
+        // above the node center.
+        assert!(
+            (base.x - frame.edges[0].source.x).abs() < 1e-3,
+            "base should be centered above the node"
+        );
+        assert!(base.y < frame.edges[0].source.y);
+    }
+
+    #[test]
+    fn self_loop_points_away_from_other_edge() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        g.add_edge(a, b, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(100.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &GraphStyle::default(),
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        // The self-loop is the edge with source == target.
+        let self_edge = frame
+            .edges
+            .iter()
+            .find(|e| e.self_loop.is_some())
+            .expect("self-loop edge present");
+        let path = self_edge.self_loop.as_ref().unwrap();
+        let base = path[0].2;
+        // The other edge points right (+x), so the onigiri base points left (-x).
+        assert!(
+            base.x < self_edge.source.x,
+            "onigiri should point away from the other edge"
         );
     }
 }

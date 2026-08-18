@@ -82,10 +82,29 @@ pub fn hit_test<N, E>(
         edge_screens.push((id, source, target));
     }
     for (index, (id, source, target)) in edge_screens.iter().enumerate() {
-        let control = crate::paint::edge_control_point(*source, *target, &groups, index);
-        let dist = match control {
-            Some(control) => distance_to_quadratic_bezier(screen_point, *source, control, *target),
-            None => distance_to_segment(screen_point, *source, *target),
+        let is_self_loop = (*source - *target).length() < f32::EPSILON;
+        let dist = if is_self_loop {
+            // A self-loop is an onigiri path; measure the minimum distance to
+            // any of its segments.
+            let path = crate::paint::self_loop_path(
+                graph.edge(*id).map(|e| e.source).unwrap_or_default(),
+                *source,
+                graph,
+                node_position,
+                viewport,
+                style,
+            );
+            path.iter()
+                .map(|(p0, p1, p2)| distance_to_quadratic_bezier(screen_point, *p0, *p1, *p2))
+                .fold(f32::INFINITY, f32::min)
+        } else {
+            let control = crate::paint::edge_control_point(*source, *target, &groups, index);
+            match control {
+                Some(control) => {
+                    distance_to_quadratic_bezier(screen_point, *source, control, *target)
+                }
+                None => distance_to_segment(screen_point, *source, *target),
+            }
         };
         let threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
         if dist <= threshold && best_edge.is_none_or(|(_, d)| dist < d) {
@@ -232,6 +251,38 @@ mod tests {
         assert!(
             result.edge.is_some(),
             "curved parallel edge should be hittable"
+        );
+    }
+
+    #[test]
+    fn hits_self_loop_onigiri() {
+        let mut g = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-50.0, -100.0),
+                max: Vec2::new(50.0, 10.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default();
+        // The onigiri base is 85px above the node center in screen space.
+        let node_screen = vp.world_to_screen(Vec2::new(0.0, 0.0));
+        let screen = node_screen + Vec2::new(0.0, -85.0);
+        let result = hit_test(&g, &positions, &vp, &style, screen);
+        assert!(
+            result.edge.is_some(),
+            "self-loop onigiri should be hittable at its base"
         );
     }
 }

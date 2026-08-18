@@ -472,9 +472,9 @@ where
                             };
                             paint_edge(
                                 window,
+                                edge,
                                 source,
                                 target,
-                                edge.control,
                                 &style,
                                 color,
                                 &label_rects,
@@ -571,49 +571,62 @@ fn trim_to_node_boundary(source: Vec2, target: Vec2, radius: f32) -> (Vec2, Vec2
     (source + unit * inset, target - unit * inset)
 }
 
-/// Paint an edge as a straight line or a quadratic Bézier curve.
+/// Paint an edge as a straight line, a quadratic Bézier curve, or an onigiri
+/// self-loop path.
 ///
 /// `source` and `target` are window-space endpoints. When `control` is `Some`,
 /// the edge is drawn as a quadratic Bézier curve through that control point;
 /// otherwise it is a straight line. Both endpoints are trimmed to the node
-/// boundary so the edge is not hidden beneath the nodes. A self-loop
-/// (`source == target`) is drawn as a loop that leaves and re-enters the node
-/// boundary.
+/// boundary so the edge is not hidden beneath the nodes. When `self_loop` is
+/// `Some`, the edge is a self-loop drawn as the given onigiri path (a list of
+/// quadratic Bézier segments that already start and end at the node boundary).
 ///
 /// The edge is split at the boundaries of any edge-label rectangles so the
-/// label stays readable over any background: the curve is adaptively subdivided
+/// label stays readable over any background: each curve is adaptively subdivided
 /// and only the sub-curves that do not pass behind a label are drawn. Each
 /// drawn piece remains a true quadratic Bézier, so the curve keeps its shape at
 /// any zoom level.
 fn paint_edge(
     window: &mut Window,
+    edge: &crate::paint::PaintEdge,
     source: Vec2,
     target: Vec2,
-    control: Option<Vec2>,
     style: &GraphStyle,
     color: gpui::Hsla,
     label_rects: &[Bounds<gpui::Pixels>],
 ) {
     let radius = style.node_radius;
     let (line_source, line_target) = if (source - target).length() < f32::EPSILON {
-        // Self-loop: start and end slightly offset on the top of the node to create a teardrop.
-        let start = source + Vec2::new(-radius * 0.5, -radius * 0.2);
-        let end = source + Vec2::new(radius * 0.5, -radius * 0.2);
-        (start, end)
+        // Self-loop: the onigiri path already starts and ends at the node
+        // boundary, so the endpoints are used as-is.
+        (source, target)
     } else {
         trim_to_node_boundary(source, target, radius)
     };
 
-    // Represent the edge as a quadratic Bézier. A straight edge uses the
-    // midpoint as its control point, which traces the same line.
-    let control = control.unwrap_or((line_source + line_target) * 0.5);
     let mut builder = PathBuilder::stroke(px(style.edge_width));
-    for curve in visible_bezier_curves(line_source, control, line_target, label_rects) {
-        builder.move_to(point(px(curve.0.x), px(curve.0.y)));
-        builder.curve_to(
-            point(px(curve.2.x), px(curve.2.y)),
-            point(px(curve.1.x), px(curve.1.y)),
-        );
+    if let Some(path) = &edge.self_loop {
+        // Draw each onigiri segment, masking each behind labels.
+        for (p0, p1, p2) in path {
+            for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects) {
+                builder.move_to(point(px(curve.0.x), px(curve.0.y)));
+                builder.curve_to(
+                    point(px(curve.2.x), px(curve.2.y)),
+                    point(px(curve.1.x), px(curve.1.y)),
+                );
+            }
+        }
+    } else {
+        // Represent the edge as a quadratic Bézier. A straight edge uses the
+        // midpoint as its control point, which traces the same line.
+        let control = edge.control.unwrap_or((line_source + line_target) * 0.5);
+        for curve in visible_bezier_curves(line_source, control, line_target, label_rects) {
+            builder.move_to(point(px(curve.0.x), px(curve.0.y)));
+            builder.curve_to(
+                point(px(curve.2.x), px(curve.2.y)),
+                point(px(curve.1.x), px(curve.1.y)),
+            );
+        }
     }
     if let Ok(path) = builder.build() {
         window.paint_path(path, color);
@@ -621,7 +634,7 @@ fn paint_edge(
 }
 
 /// A quadratic Bézier curve `(p0, p1, p2)`.
-type Bezier = (Vec2, Vec2, Vec2);
+type Bezier = crate::paint::Bezier;
 
 /// Split a quadratic Bézier into the sub-curves that do not pass behind any
 /// label rectangle.
