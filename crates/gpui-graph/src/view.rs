@@ -1126,6 +1126,41 @@ fn resolve_edge_label_collisions(
                 let Some(overlap) = bounds_intersection(&ra, &rb) else {
                     continue;
                 };
+                // A self-loop's path has two onigiri segments; any other edge
+                // has one. When a self-loop label collides with a longer edge's
+                // label, the longer edge slides away from the self-loop while
+                // the self-loop stays put — the longer edge has more room to
+                // move, giving a better result.
+                let a_is_self_loop = frame.edge_labels[ia].path.len() > 1;
+                let b_is_self_loop = frame.edge_labels[ib].path.len() > 1;
+                if a_is_self_loop != b_is_self_loop {
+                    let other_idx = if a_is_self_loop { ib } else { ia };
+                    let self_rect = if a_is_self_loop { ra } else { rb };
+                    let self_center = Vec2::new(
+                        f32::from(self_rect.origin.x) + f32::from(self_rect.size.width) * 0.5,
+                        f32::from(self_rect.origin.y) + f32::from(self_rect.size.height) * 0.5,
+                    );
+                    let dir = perpendicular(frame.edge_labels[other_idx].offset);
+                    let depth = project_rect(overlap, dir);
+                    let dt = depth / path_lengths[position_of(&movable, other_idx)].max(1.0);
+                    // Slide the longer edge away from the self-loop's center.
+                    let t = frame.edge_labels[other_idx].t;
+                    let toward_start = t - dt;
+                    let toward_end = t + dt;
+                    let start_pos = path_point(&frame.edge_labels[other_idx].path, toward_start);
+                    let end_pos = path_point(&frame.edge_labels[other_idx].path, toward_end);
+                    let d_start = (start_pos - self_center).length();
+                    let d_end = (end_pos - self_center).length();
+                    frame.edge_labels[other_idx].t = if d_start > d_end {
+                        toward_start.max(0.0)
+                    } else {
+                        toward_end.min(1.0)
+                    };
+                    frame.edge_labels[other_idx].position =
+                        path_point(&frame.edge_labels[other_idx].path, frame.edge_labels[other_idx].t);
+                    moved = true;
+                    continue;
+                }
                 // The path direction is perpendicular to the label's offset
                 // (which points off the edge line). Project the overlap onto
                 // each label's path direction to get the pixel depth to slide.
@@ -2036,5 +2071,47 @@ mod tests {
         );
         // It stays on the path (y = 0).
         assert_eq!(pos.y, 0.0);
+    }
+
+    #[gpui::test]
+    fn longer_edge_label_moves_away_from_self_loop(cx: &mut TestAppContext) {
+        // A self-loop label (two-segment onigiri path) collides with a longer
+        // edge's label (single-segment path). The longer edge must slide away
+        // from the self-loop while the self-loop stays put.
+        let self_loop_path = vec![
+            (Vec2::new(0.0, 0.0), Vec2::new(0.0, -20.0), Vec2::new(0.0, -40.0)),
+            (Vec2::new(0.0, -40.0), Vec2::new(0.0, -20.0), Vec2::new(0.0, 0.0)),
+        ];
+        let long_path = vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))];
+        let mut frame = crate::paint::PaintFrame::new();
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(0.0, -40.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "loop".to_string(),
+            path: self_loop_path,
+            t: 0.5,
+        });
+        frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            position: Vec2::new(50.0, 0.0),
+            offset: Vec2::new(0.0, -1.0),
+            text: "long".to_string(),
+            path: long_path,
+            t: 0.5,
+        });
+
+        let cx = cx.add_empty_window();
+        let style = GraphStyle::default();
+        cx.update(|window, _| {
+            resolve_edge_label_collisions(window, &mut frame, &style, &[]);
+        });
+
+        // The self-loop label stays at its base center.
+        assert_eq!(frame.edge_labels[0].position, Vec2::new(0.0, -40.0));
+        // The longer edge label must have moved off the self-loop label.
+        let long_pos = frame.edge_labels[1].position;
+        assert!(
+            (long_pos - Vec2::new(0.0, -40.0)).length() > 1.0,
+            "longer edge label must move away from the self-loop, got {long_pos:?}"
+        );
     }
 }

@@ -1175,6 +1175,11 @@ overlapping a node label, but node labels never move. The edge label slides in
 whichever direction along its path moves it farther from the node label's
 center.
 
+When a self-loop label collides with a longer edge's label, the longer edge
+slides away from the self-loop while the self-loop stays put — the longer edge
+has more room to move, giving a better result. A self-loop is recognized by its
+two-segment onigiri path; any other edge has a single segment.
+
 ---
 
 # 19. Rich Overlays
