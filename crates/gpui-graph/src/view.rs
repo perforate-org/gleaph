@@ -578,10 +578,17 @@ where
                             });
                         }
                         for label in &frame.labels {
-                            paint_label(window, cx, &coordinates, label, &style);
+                            paint_label(window, cx, &coordinates, label, &style, &viewport_rect);
                         }
                         for label in &frame.edge_labels {
-                            paint_edge_label(window, cx, &coordinates, label, &style);
+                            paint_edge_label(
+                                window,
+                                cx,
+                                &coordinates,
+                                label,
+                                &style,
+                                &viewport_rect,
+                            );
                         }
                     },
                 )
@@ -1134,6 +1141,27 @@ fn arrow_outside_viewport(
     max.x < vmin.x || min.x > vmax.x || max.y < vmin.y || min.y > vmax.y
 }
 
+/// Whether `point` lies within `margin` pixels of the viewport.
+///
+/// Used to skip shaping labels whose anchor is far off-screen. The margin is
+/// generous (a few hundred pixels) so labels near the viewport edge remain
+/// visible while those well off-screen are rejected.
+fn point_near_viewport(point: Vec2, viewport_rect: &Bounds<gpui::Pixels>, margin: f32) -> bool {
+    let vmin = Vec2::new(
+        f32::from(viewport_rect.origin.x),
+        f32::from(viewport_rect.origin.y),
+    );
+    let vmax = vmin
+        + Vec2::new(
+            f32::from(viewport_rect.size.width),
+            f32::from(viewport_rect.size.height),
+        );
+    point.x >= vmin.x - margin
+        && point.x <= vmax.x + margin
+        && point.y >= vmin.y - margin
+        && point.y <= vmax.y + margin
+}
+
 /// Whether a label rect overlaps the arrowhead's bounding region. The arrow
 /// tip is `tip`, and `base ± normal * half` are the base corners.
 fn arrow_overlaps_rect(
@@ -1333,8 +1361,16 @@ fn paint_label(
     coordinates: &CanvasCoordinates,
     label: &crate::paint::PaintLabel,
     style: &GraphStyle,
+    viewport_rect: &Bounds<gpui::Pixels>,
 ) {
     let anchor = coordinates.canvas_to_window(label.position);
+    // Skip labels whose anchor is far outside the viewport, so we do not shape
+    // text that will not be seen. The label is small (a few dozen pixels), so a
+    // generous margin keeps labels near the edge visible while rejecting those
+    // well off-screen.
+    if !point_near_viewport(anchor, viewport_rect, 200.0) {
+        return;
+    }
     let font_size = style.label_style.font_size.to_pixels(window.rem_size());
     let line_height = style
         .label_style
@@ -1735,10 +1771,16 @@ fn paint_edge_label(
     coordinates: &CanvasCoordinates,
     label: &crate::paint::PaintEdgeLabel,
     style: &GraphStyle,
+    viewport_rect: &Bounds<gpui::Pixels>,
 ) {
     // label.position is already in canvas-local pixels.
     // Apply the user-defined label_offset along the label's fixed offset direction.
     let anchor = coordinates.canvas_to_window(label.position + label.offset * style.label_offset);
+    // Skip labels whose anchor is far outside the viewport, so we do not shape
+    // text that will not be seen.
+    if !point_near_viewport(anchor, viewport_rect, 200.0) {
+        return;
+    }
     let font_size = style.label_style.font_size.to_pixels(window.rem_size());
     let line_height = style
         .label_style
@@ -2807,5 +2849,31 @@ mod tests {
             !arrow_outside_viewport(tip, base, normal, 5.0, &viewport),
             "an arrow inside the viewport must be kept"
         );
+    }
+
+    #[test]
+    fn point_near_viewport_accepts_inside_and_rejects_far() {
+        let viewport = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        // Inside the viewport.
+        assert!(point_near_viewport(
+            Vec2::new(400.0, 300.0),
+            &viewport,
+            200.0
+        ));
+        // Just outside the viewport but within the margin.
+        assert!(point_near_viewport(
+            Vec2::new(900.0, 300.0),
+            &viewport,
+            200.0
+        ));
+        // Far outside the viewport, beyond the margin.
+        assert!(!point_near_viewport(
+            Vec2::new(5000.0, 300.0),
+            &viewport,
+            200.0
+        ));
     }
 }
