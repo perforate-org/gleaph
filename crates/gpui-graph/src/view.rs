@@ -459,6 +459,16 @@ where
                     move |_bounds, mut frame: crate::paint::PaintFrame, window, cx| {
                         let coordinates = coordinates_paint.get();
                         let style = view_paint.read(cx).style.clone();
+                        // The window-space visible rectangle, used to clip edges
+                        // to the viewport so the tessellator never sees the huge
+                        // coordinates of off-screen nodes (which would make it
+                        // subdivide the curve excessively at deep zoom).
+                        let viewport = view_paint.read(cx).viewport();
+                        let viewport_size = viewport.size();
+                        let viewport_rect = Bounds {
+                            origin: point(px(coordinates.origin.x), px(coordinates.origin.y)),
+                            size: size(px(viewport_size.x), px(viewport_size.y)),
+                        };
                         // Slide edge labels along their edges so they do not
                         // overlap each other or the (fixed) node labels, then
                         // compute the window-space bounds of every node and edge
@@ -496,7 +506,7 @@ where
                                 style.edge_color
                             };
                             let path = coordinates.edge_path_window(edge);
-                            paint_edge(window, &path, &style, color, &label_rects);
+                            paint_edge(window, &path, &style, color, &label_rects, &viewport_rect);
                             if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
                             {
                                 // The arrow sits at the end of the edge's path,
@@ -602,30 +612,68 @@ impl<NK, EK, N, E> IntoElement for GraphView<NK, EK, N, E> {
 /// `path` is the edge's trimmed path in window-space: a self-loop is a list of
 /// onigiri segments, and any other edge is a single segment trimmed to the node
 /// boundaries. Each segment is split at the boundaries of any edge-label
-/// rectangles so the label stays readable over any background: the curve is
-/// adaptively subdivided and only the sub-curves that do not pass behind a
-/// label are drawn. Each drawn piece remains a true quadratic Bézier, so the
-/// curve keeps its shape at any zoom level.
+/// rectangles so the label stays readable over any background, and clipped to
+/// the viewport so the tessellator never sees the huge coordinates of
+/// off-screen nodes (which would make it subdivide the curve excessively at
+/// deep zoom). Each drawn piece remains a true quadratic Bézier, so the curve
+/// keeps its shape at any zoom level.
 fn paint_edge(
     window: &mut Window,
     path: &[crate::paint::Bezier],
     style: &GraphStyle,
     color: gpui::Hsla,
     label_rects: &[Bounds<gpui::Pixels>],
+    viewport_rect: &Bounds<gpui::Pixels>,
 ) {
     let mut builder = PathBuilder::stroke(px(style.edge_width));
     for (p0, p1, p2) in path {
         for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects, style.edge_width) {
-            builder.move_to(point(px(curve.0.x), px(curve.0.y)));
-            builder.curve_to(
-                point(px(curve.2.x), px(curve.2.y)),
-                point(px(curve.1.x), px(curve.1.y)),
-            );
+            for clipped in clip_bezier_to_rect(curve, viewport_rect) {
+                builder.move_to(point(px(clipped.0.x), px(clipped.0.y)));
+                builder.curve_to(
+                    point(px(clipped.2.x), px(clipped.2.y)),
+                    point(px(clipped.1.x), px(clipped.1.y)),
+                );
+            }
         }
     }
     if let Ok(path) = builder.build() {
         window.paint_path(path, color);
     }
+}
+
+/// Clip a quadratic Bézier to the axis-aligned `rect`, returning the sub-curves
+/// that lie inside it.
+///
+/// The curve is split at the t values where it crosses the rect's edges, then
+/// each interval whose midpoint is inside the rect is kept. This bounds the
+/// coordinates handed to the tessellator to the rect's extent, so a curve that
+/// passes through the viewport but whose endpoints are far off-screen (a long
+/// edge at deep zoom) is not tessellated at its full, huge scale.
+fn clip_bezier_to_rect(curve: Bezier, rect: &Bounds<gpui::Pixels>) -> Vec<Bezier> {
+    let (p0, p1, p2) = curve;
+    let min = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
+    let max = min + Vec2::new(f32::from(rect.size.width), f32::from(rect.size.height));
+    // Collect every t where the curve crosses a rect edge.
+    let mut ts = vec![0.0, 1.0];
+    for value in [min.x, max.x] {
+        ts.extend(bezier_roots(p0, p1, p2, value, 0));
+    }
+    for value in [min.y, max.y] {
+        ts.extend(bezier_roots(p0, p1, p2, value, 1));
+    }
+    ts.sort_by(|a, b| a.total_cmp(b));
+    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+
+    let mut clipped = Vec::new();
+    for window in ts.windows(2) {
+        let (t0, t1) = (window[0], window[1]);
+        let p = bezier_point(p0, p1, p2, (t0 + t1) * 0.5);
+        if p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y {
+            clipped.push(sub_bezier(p0, p1, p2, t0, t1));
+        }
+    }
+    clipped
 }
 
 /// A quadratic Bézier curve `(p0, p1, p2)`.
@@ -2597,5 +2645,47 @@ mod tests {
             "a label 50px away must survive a 5px hide distance"
         );
         assert_eq!(frame.edge_labels[0].text, "far");
+    }
+
+    #[test]
+    fn clip_bezier_to_rect_keeps_only_visible_piece() {
+        // A long horizontal curve whose endpoints are far outside the rect; only
+        // the sub-curve crossing the rect must be kept, and its coordinates must
+        // lie within the rect.
+        let rect = Bounds {
+            origin: point(px(100.0), px(50.0)),
+            size: size(px(200.0), px(100.0)),
+        };
+        let curve = (
+            Vec2::new(-10000.0, 100.0),
+            Vec2::new(0.0, 100.0),
+            Vec2::new(10000.0, 100.0),
+        );
+        let clipped = clip_bezier_to_rect(curve, &rect);
+        assert!(!clipped.is_empty(), "a crossing curve must be kept");
+        for (p0, p1, p2) in &clipped {
+            for p in [p0, p1, p2] {
+                assert!(
+                    p.x >= 100.0 && p.x <= 300.0,
+                    "clipped control point {p:?} must lie within the rect's x range"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clip_bezier_to_rect_returns_empty_when_fully_outside() {
+        let rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(100.0), px(100.0)),
+        };
+        // A curve entirely to the right of the rect.
+        let curve = (
+            Vec2::new(500.0, 50.0),
+            Vec2::new(600.0, 50.0),
+            Vec2::new(700.0, 50.0),
+        );
+        let clipped = clip_bezier_to_rect(curve, &rect);
+        assert!(clipped.is_empty(), "a fully-outside curve must be dropped");
     }
 }
