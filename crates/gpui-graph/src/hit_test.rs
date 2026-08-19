@@ -62,12 +62,15 @@ pub fn hit_test<N, E>(
     // Precise edge test.
     let mut best_edge: Option<(EdgeId, f32)> = None;
     // Collect obstacle node screen positions so the selectable edge geometry
-    // matches the drawn curves (which bow around nodes).
+    // matches the drawn curves (which bow around nodes). The grid lets each
+    // edge test only the nodes near its chord instead of every node.
     let obstacles: Vec<Vec2> = graph
         .nodes()
         .filter_map(|(id, _)| node_position(id))
         .map(|world| viewport.world_to_screen(world))
         .collect();
+    let obstacle_cell = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
+    let obstacles_grid = crate::paint::ObstacleGrid::new(&obstacles, obstacle_cell);
     // Group edges by their (source, target) node pair to detect parallels, so
     // curve control points match the paint layer.
     let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
@@ -132,7 +135,7 @@ pub fn hit_test<N, E>(
                 has_reverse: &has_reverse,
                 parallel: &parallel,
                 zoom: viewport.zoom(),
-                obstacles: &obstacles,
+                obstacles: &obstacles_grid,
                 node_radius: style.node_radius,
             },
             graph,

@@ -189,7 +189,8 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     }
 
     // Collect obstacle node positions (world and screen space) so edges can bow
-    // around nodes they would otherwise pass through.
+    // around nodes they would otherwise pass through. The grids let each edge
+    // test only the nodes near its chord instead of every node.
     let mut obstacles_world: Vec<Vec2> = Vec::new();
     let mut obstacles_screen: Vec<Vec2> = Vec::new();
     for (id, _) in graph.nodes() {
@@ -206,6 +207,9 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         obstacles_world.push(world);
         obstacles_screen.push(viewport.world_to_screen(world));
     }
+    let obstacle_cell = style.node_radius * 2.0 + OBSTACLE_RADIUS;
+    let obstacles_world_grid = ObstacleGrid::new(&obstacles_world, obstacle_cell);
+    let obstacles_screen_grid = ObstacleGrid::new(&obstacles_screen, obstacle_cell);
 
     // Collect candidate edges, then assign curve control points so parallel
     // edges and self-loops are separated visually.
@@ -312,7 +316,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     has_reverse: &has_reverse,
                     parallel: &parallel,
                     zoom: viewport.zoom(),
-                    obstacles: &obstacles_world,
+                    obstacles: &obstacles_world_grid,
                     node_radius: style.node_radius,
                 };
                 let control_world =
@@ -344,7 +348,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 has_reverse: &has_reverse,
                 parallel: &parallel,
                 zoom: viewport.zoom(),
-                obstacles: &obstacles_screen,
+                obstacles: &obstacles_screen_grid,
                 node_radius: style.node_radius,
             },
             graph,
@@ -441,7 +445,7 @@ const BOW_DENSITY: f32 = 0.20;
 const BOW_MAX: f32 = 0.90;
 /// Extra clearance around an obstacle node, in world units, that an edge's
 /// control point is pushed away from.
-const OBSTACLE_RADIUS: f32 = 30.0;
+pub(crate) const OBSTACLE_RADIUS: f32 = 30.0;
 /// Multiplier applied to a cluster edge's chord distance to push the control
 /// point outside the circle for outer edges, so they follow the circular arc.
 /// For adjacent nodes (chord at `radius·cos(45°)`) a gain of ~1.0 places the
@@ -483,6 +487,46 @@ impl DensityGrid {
         let cell = (
             (midpoint.x / self.cell_size).floor() as i32,
             (midpoint.y / self.cell_size).floor() as i32,
+        );
+        let span = (radius / self.cell_size).ceil() as i32;
+        let mut out = Vec::new();
+        for dx in -span..=span {
+            for dy in -span..=span {
+                if let Some(bucket) = self.cells.get(&(cell.0 + dx, cell.1 + dy)) {
+                    out.extend_from_slice(bucket);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A uniform grid over obstacle node positions, so an edge only tests the
+/// nodes near its chord instead of every node in the graph.
+pub(crate) struct ObstacleGrid {
+    cell_size: f32,
+    cells: std::collections::HashMap<(i32, i32), Vec<Vec2>>,
+}
+
+impl ObstacleGrid {
+    pub(crate) fn new(obstacles: &[Vec2], cell_size: f32) -> Self {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<Vec2>> =
+            std::collections::HashMap::new();
+        for &o in obstacles {
+            let cell = (
+                (o.x / cell_size).floor() as i32,
+                (o.y / cell_size).floor() as i32,
+            );
+            cells.entry(cell).or_default().push(o);
+        }
+        Self { cell_size, cells }
+    }
+
+    /// Obstacle positions that may lie within `radius` of `point`.
+    fn candidates(&self, point: Vec2, radius: f32) -> Vec<Vec2> {
+        let cell = (
+            (point.x / self.cell_size).floor() as i32,
+            (point.y / self.cell_size).floor() as i32,
         );
         let span = (radius / self.cell_size).ceil() as i32;
         let mut out = Vec::new();
@@ -674,7 +718,15 @@ fn apply_node_avoidance(
     // the full node clearance still applies.
     let max_push = half_len;
     let mut push = Vec2::ZERO;
-    for &obstacle in ctx.obstacles {
+    // Only test obstacles near the chord. The influence radius is the maximum
+    // perpendicular distance at which an obstacle can still push the edge, and
+    // an obstacle can sit anywhere along the segment (up to `half_len` from the
+    // midpoint), so the grid query radius is the sum of the two.
+    let influence_radius = ctx.node_radius * 2.0 + OBSTACLE_RADIUS;
+    for obstacle in ctx
+        .obstacles
+        .candidates(midpoint, half_len + influence_radius)
+    {
         // Skip the edge's own endpoints. Use a small tolerance so tiny
         // floating-point differences from the screen transform do not make the
         // edge treat its own endpoints as obstacles.
@@ -694,7 +746,7 @@ fn apply_node_avoidance(
         if along.abs() > half_len {
             continue;
         }
-        let influence = (ctx.node_radius * 2.0 + OBSTACLE_RADIUS - perp.abs()).max(0.0);
+        let influence = (influence_radius - perp.abs()).max(0.0);
         if influence > 0.0 {
             // Push away from the obstacle: opposite the obstacle's side. The
             // quadratic Bézier's maximum offset is half the control point's
@@ -727,9 +779,9 @@ pub(crate) struct EdgeCurveContext<'a> {
     pub parallel: &'a [Option<(usize, usize)>],
     /// Current zoom (pixels per world unit), used to vary parallel spacing.
     pub zoom: f32,
-    /// Positions of obstacle nodes the edge should bow around, in the same
-    /// coordinate space as the edge's endpoints.
-    pub obstacles: &'a [Vec2],
+    /// A grid over obstacle node positions the edge should bow around, in the
+    /// same coordinate space as the edge's endpoints.
+    pub obstacles: &'a ObstacleGrid,
     /// Node radius, used to size the clearance around obstacle nodes.
     pub node_radius: f32,
 }
@@ -1015,16 +1067,17 @@ mod tests {
         index: usize,
         signed_density: f32,
         zoom: f32,
-        obstacles: &'a [Vec2],
+        obstacles: &[Vec2],
         parallel: &'a [Option<(usize, usize)>],
     ) -> EdgeCurveContext<'a> {
+        let grid = Box::leak(Box::new(ObstacleGrid::new(obstacles, 42.0)));
         EdgeCurveContext {
             index,
             signed_density,
             has_reverse: &[false],
             parallel,
             zoom,
-            obstacles,
+            obstacles: grid,
             node_radius: 6.0,
         }
     }
