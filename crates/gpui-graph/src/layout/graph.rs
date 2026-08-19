@@ -71,6 +71,15 @@ pub struct LayoutState {
     pub positions: Vec<Vec2>,
     /// Whether each dense node is hard-pinned.
     pub pinned: BitVec,
+    /// Optional cluster center and radius for each dense node, in world
+    /// coordinates.
+    ///
+    /// A layout engine that groups nodes (e.g. an SCC circular layout) records
+    /// the center and radius of each node's cluster here so the paint layer can
+    /// bow edges within a cluster outward from its center, keeping the cluster's
+    /// circular shape readable even when node spacing is large. Nodes without a
+    /// cluster carry `None`.
+    pub cluster_centers: Vec<Option<(Vec2, f32)>>,
 }
 
 impl LayoutState {
@@ -79,6 +88,7 @@ impl LayoutState {
         Self {
             positions: Vec::new(),
             pinned: BitVec::new(),
+            cluster_centers: Vec::new(),
         }
     }
 
@@ -86,6 +96,7 @@ impl LayoutState {
     pub fn resize(&mut self, len: usize) {
         self.positions.resize(len, Vec2::ZERO);
         self.pinned.resize(len, false);
+        self.cluster_centers.resize(len, None);
     }
 
     /// Position of a dense node.
@@ -96,6 +107,11 @@ impl LayoutState {
     /// Whether a dense node is pinned.
     pub fn is_pinned(&self, index: LayoutIndex) -> bool {
         self.pinned[index.0 as usize]
+    }
+
+    /// Cluster center and radius of a dense node, if it belongs to a cluster.
+    pub fn cluster_center(&self, index: LayoutIndex) -> Option<(Vec2, f32)> {
+        self.cluster_centers[index.0 as usize]
     }
 }
 

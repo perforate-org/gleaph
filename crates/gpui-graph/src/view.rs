@@ -447,6 +447,7 @@ where
                         crate::paint::build_paint_frame(crate::paint::PaintFrameInput {
                             graph: scene.graph(),
                             node_position: &|id| scene.node_position(id),
+                            node_cluster_center: &|id| scene.node_cluster_center(id),
                             node_label: &|id, node| node_label(id, node),
                             edge_label: &|id, edge| edge_label(id, edge),
                             viewport: &vs.viewport,
@@ -1152,6 +1153,7 @@ where
             let hit = hit_test::hit_test(
                 scene.graph(),
                 &|id| scene.node_position(id),
+                &|id| scene.node_cluster_center(id),
                 &self.viewport,
                 &self.style,
                 pos,
@@ -1170,6 +1172,7 @@ where
         let hit = hit_test::hit_test(
             scene.graph(),
             &|id| scene.node_position(id),
+            &|id| scene.node_cluster_center(id),
             &self.viewport,
             &self.style,
             pos,

@@ -58,6 +58,11 @@ impl LayoutEngine for SccLayoutEngine {
                 let center = Vec2::new(x, center_y);
                 let members = &components[component_index];
                 let radius = BASE_RADIUS + (members.len() as f32 - 1.0) * RADIUS_PER_NODE;
+                // Record the cluster center and radius so the paint layer can bow
+                // edges within this component outward from it.
+                for &m in members {
+                    state.cluster_centers[m] = Some((center, radius));
+                }
                 place_on_circle(center, radius, members, state);
             }
         }

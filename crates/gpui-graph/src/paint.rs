@@ -113,6 +113,10 @@ pub struct PaintFrameInput<'a, N, E> {
     pub graph: &'a Graph<N, E>,
     /// Resolves a node's world-space position.
     pub node_position: &'a dyn Fn(NodeId) -> Option<Vec2>,
+    /// Resolves a node's cluster center and radius, if the layout grouped it
+    /// into a cluster. Used to bow edges within a cluster outward from its
+    /// center.
+    pub node_cluster_center: &'a dyn Fn(NodeId) -> Option<(Vec2, f32)>,
     /// Resolves an optional node label string.
     pub node_label: &'a dyn Fn(NodeId, &N) -> Option<String>,
     /// Resolves an optional edge label string.
@@ -139,6 +143,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     let PaintFrameInput {
         graph,
         node_position,
+        node_cluster_center,
         node_label,
         edge_label,
         viewport,
@@ -258,6 +263,8 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 }
                 bounds_intersect(&visible, margin, min, max)
             } else {
+                let cluster_center =
+                    shared_cluster_center(edge.source, edge.target, node_cluster_center);
                 let control_world = edge_control_point(
                     *source_world,
                     *target_world,
@@ -265,6 +272,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     index,
                     signed_densities[index],
                     viewport.zoom(),
+                    cluster_center,
                 );
                 let min = (*source_world).min(*target_world).min(control_world);
                 let max = (*source_world).max(*target_world).max(control_world);
@@ -295,6 +303,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             },
             graph,
             node_position,
+            node_cluster_center,
             viewport,
             style,
         );
@@ -384,6 +393,20 @@ const PARALLEL_SPACING_POWER: f32 = 0.10;
 const BOW_DENSITY: f32 = 0.20;
 /// Upper bound on the bow as a fraction of edge length.
 const BOW_MAX: f32 = 0.90;
+/// Multiplier applied to a cluster edge's chord distance to push the control
+/// point outside the circle for outer edges, so they follow the circular arc.
+/// For adjacent nodes (chord at `radius·cos(45°)`) a gain of ~1.0 places the
+/// control point at the exact circular-arc position `radius/cos(45°)`.
+const CLUSTER_GAIN: f32 = 0.9;
+/// Base outward bow of a cluster edge, as a fraction of the cluster radius,
+/// applied even to a chord through the center (a diameter) so it is not
+/// perfectly straight.
+const CLUSTER_BASE: f32 = 0.05;
+/// Perpendicular offset of a cluster edge's control point along its left
+/// normal, as a fraction of the cluster radius. Applied uniformly (like the
+/// parallel fan) so the two directions of a 2-node SCC separate and stay
+/// separated as nodes move, with no angle threshold.
+const CLUSTER_NORMAL_OFFSET: f32 = 0.3;
 
 /// A uniform grid over edge midpoints used to count nearby edges in O(E).
 struct DensityGrid {
@@ -465,6 +488,21 @@ pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32
     result
 }
 
+/// Whether the edge at `index` has a reverse edge (target -> source) in the
+/// same cluster. Used to separate the two directions of a 2-node SCC without
+/// pushing ordinary adjacent edges outward.
+fn has_reverse_edge(
+    groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
+    index: usize,
+) -> bool {
+    for (&(s, t), members) in groups {
+        if members.contains(&index) {
+            return groups.contains_key(&(t, s));
+        }
+    }
+    false
+}
+
 /// Compute a quadratic Bézier control point for an edge.
 ///
 /// Self-loops get a loop above the node. Parallel edges (multiple edges between
@@ -472,6 +510,13 @@ pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32
 /// they do not overlap. Every non-loop edge bows toward the side with lower
 /// local edge density. Every non-loop edge bows toward the side with lower
 /// local edge density; a lone edge with no neighbors is straight.
+///
+/// When both endpoints share a cluster center (e.g. the center of an SCC
+/// circle), the edge bows outward from that center so the cluster's circular
+/// shape stays readable even when node spacing is large. The control point is
+/// placed outside the cluster radius, so even a chord through the center bows
+/// outward rather than inward. The cluster bow is a fixed fraction of the edge
+/// length, independent of local density.
 pub(crate) fn edge_control_point(
     source: Vec2,
     target: Vec2,
@@ -479,6 +524,7 @@ pub(crate) fn edge_control_point(
     index: usize,
     signed_density: f32,
     zoom: f32,
+    cluster: Option<(Vec2, f32)>,
 ) -> Vec2 {
     let dir = target - source;
     let len = dir.length();
@@ -507,6 +553,61 @@ pub(crate) fn edge_control_point(
             * (apparent / PARALLEL_SPACING_REF_APPARENT).powf(PARALLEL_SPACING_POWER);
         offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * spacing;
     }
+    // Cluster bow: when both endpoints share a cluster center, bow the edge so
+    // the cluster reads as a circle. The control point's distance from the
+    // center is `chord_dist * (1 + gain) + base`, where `chord_dist` is the
+    // distance from the center to the chord's midpoint. Outer edges (adjacent
+    // nodes, chord near the circle) push the control point outside the circle
+    // to follow the arc, while a chord through the center (a diameter) keeps it
+    // near the center so the edge stays almost straight. A perpendicular offset
+    // along the edge's left normal is always added, exactly like the parallel
+    // fan, so the two directions of a 2-node SCC separate instead of
+    // overlapping — and stay separated as nodes move, with no angle threshold.
+    if let Some((center, radius)) = cluster {
+        let v1 = source - center;
+        let v2 = target - center;
+        let d1 = v1.length().max(f32::EPSILON);
+        let d2 = v2.length().max(f32::EPSILON);
+        let cos_angle = (v1.dot(v2) / (d1 * d2)).clamp(-1.0, 1.0);
+        // Distance from the center to the chord's midpoint: radius * cos(Δθ/2).
+        let chord_dist = radius * ((1.0 + cos_angle) * 0.5).sqrt();
+        // How close each node is to the circle. The bow fades as a node is
+        // dragged off the circle, so edges to it do not become extreme or
+        // U-turn when the node is far from the cluster.
+        let adhere1 = (1.0 - (d1 - radius).abs() / radius).clamp(0.0, 1.0);
+        let adhere2 = (1.0 - (d2 - radius).abs() / radius).clamp(0.0, 1.0);
+        let adherence = adhere1.min(adhere2);
+        // A perpendicular offset along the edge's left normal separates the two
+        // directions of a 2-node SCC (e.g. 8<->9) so they do not overlap. It is
+        // applied only when the reverse edge exists, so ordinary adjacent edges
+        // (e.g. 6-7) are not pushed outward.
+        let normal_offset = if has_reverse_edge(groups, index) {
+            CLUSTER_NORMAL_OFFSET * radius
+        } else {
+            0.0
+        };
+        // Outward direction: the angle bisector of the two node directions
+        // (v1/|v1| + v2/|v2|). This always points away from the center along
+        // the arc. As the nodes approach a diameter the bisector shrinks; the
+        // bow is faded continuously by `arc_weight` so the edge eases into a
+        // straight line instead of snapping.
+        let bisector = v1 / d1 + v2 / d2;
+        let bisector_len = bisector.length();
+        // arc_weight is 1 for adjacent nodes and eases to 0 as the nodes become
+        // opposite (a diameter), where the arc is a straight line.
+        let arc_weight = (bisector_len * 0.5).min(1.0);
+        let outward = if bisector_len > f32::EPSILON {
+            bisector / bisector_len
+        } else {
+            normal
+        };
+        // Control point at the chord midpoint plus a bow that fades with both
+        // adherence (node dragged off the circle) and arc_weight (near-diameter),
+        // so the transition to a straight edge is continuous.
+        let bow = (chord_dist * CLUSTER_GAIN + CLUSTER_BASE * radius) * adherence * arc_weight;
+        let control_dist = chord_dist + bow;
+        return center + outward * control_dist + normal * normal_offset;
+    }
     // Density bow: bow toward the side with fewer neighbor edges. The bow is a
     // fraction of edge length, so the curve shape is stable under zoom. When the
     // signed density is zero (no neighbors, or balanced left/right), the bow is
@@ -530,6 +631,27 @@ pub(crate) struct EdgeCurveContext<'a> {
     pub zoom: f32,
 }
 
+/// The cluster center and radius shared by two nodes, if both belong to the
+/// same cluster.
+///
+/// Returns `Some((center, radius))` only when both endpoints resolve to the
+/// same cluster center, so edges within a cluster bow outward from it while
+/// edges between clusters (which have different or no centers) keep their
+/// normal behavior.
+fn shared_cluster_center(
+    source: NodeId,
+    target: NodeId,
+    node_cluster_center: &dyn Fn(NodeId) -> Option<(Vec2, f32)>,
+) -> Option<(Vec2, f32)> {
+    let (s, sr) = node_cluster_center(source)?;
+    let (t, tr) = node_cluster_center(target)?;
+    if (s - t).length_squared() < f32::EPSILON {
+        Some((s, sr.max(tr)))
+    } else {
+        None
+    }
+}
+
 /// Build the trimmed quadratic Bézier path for an edge, in screen/canvas-local
 /// coordinates.
 ///
@@ -541,6 +663,7 @@ pub(crate) fn edge_path<N, E>(
     ctx: &EdgeCurveContext<'_>,
     graph: &Graph<N, E>,
     node_position: &dyn Fn(NodeId) -> Option<Vec2>,
+    node_cluster_center: &dyn Fn(NodeId) -> Option<(Vec2, f32)>,
     viewport: &Viewport,
     style: &GraphStyle,
 ) -> Vec<Bezier> {
@@ -551,6 +674,10 @@ pub(crate) fn edge_path<N, E>(
     if (source - target).length() < f32::EPSILON {
         self_loop_path(edge.source, source, graph, node_position, viewport, style)
     } else {
+        // The cluster center is in world coordinates; convert it to screen
+        // space so the bow direction matches the screen-space edge geometry.
+        let cluster_center = shared_cluster_center(edge.source, edge.target, node_cluster_center)
+            .map(|(center, radius)| (viewport.world_to_screen(center), radius * viewport.zoom()));
         let control = edge_control_point(
             source,
             target,
@@ -558,6 +685,7 @@ pub(crate) fn edge_path<N, E>(
             ctx.index,
             ctx.signed_density,
             ctx.zoom,
+            cluster_center,
         );
         let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
         // When the nodes overlap, the trimmed curve is degenerate (its start
@@ -784,6 +912,10 @@ mod tests {
         |_id, _edge| None
     }
 
+    fn no_clusters() -> impl Fn(NodeId) -> Option<(Vec2, f32)> {
+        |_id| None
+    }
+
     #[test]
     fn culls_nodes_outside_viewport() {
         let g = graph();
@@ -817,6 +949,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -868,6 +1001,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -913,6 +1047,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -931,6 +1066,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions(),
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -957,6 +1093,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions(),
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -989,6 +1126,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &graph,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &viewport,
@@ -1025,6 +1163,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &labels,
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1058,6 +1197,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &edge_labels,
             viewport: &vp,
@@ -1096,6 +1236,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1139,6 +1280,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1175,6 +1317,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1214,6 +1357,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1250,6 +1394,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &edge_labels,
             viewport: &vp,
@@ -1283,6 +1428,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1322,6 +1468,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1361,6 +1508,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1416,6 +1564,7 @@ mod tests {
             let frame = build_paint_frame(PaintFrameInput {
                 graph: &g,
                 node_position: &positions,
+                node_cluster_center: &no_clusters(),
                 node_label: &no_labels(),
                 edge_label: &no_edge_labels(),
                 viewport: vp,
@@ -1488,6 +1637,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,
@@ -1520,8 +1670,8 @@ mod tests {
             std::collections::HashMap::new();
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
-        let lone = edge_control_point(source, target, &groups, 0, 0.0, 1.0);
-        let with_neighbor = edge_control_point(source, target, &groups, 0, 1.0, 1.0);
+        let lone = edge_control_point(source, target, &groups, 0, 0.0, 1.0, None);
+        let with_neighbor = edge_control_point(source, target, &groups, 0, 1.0, 1.0, None);
         // A neighbor on the left (signed_density +1) pushes the bow right
         // (negative y, since normal +y is the left side of direction +x).
         assert!(
@@ -1538,7 +1688,7 @@ mod tests {
         let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
             std::collections::HashMap::new();
         let bow_ratio = |source: Vec2, target: Vec2, zoom: f32| {
-            let control = edge_control_point(source, target, &groups, 0, 0.0, zoom);
+            let control = edge_control_point(source, target, &groups, 0, 0.0, zoom, None);
             let mid = (source + target) * 0.5;
             (control - mid).length() / (target - source).length()
         };
@@ -1561,7 +1711,7 @@ mod tests {
             std::collections::HashMap::new();
         groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let sagitta = |source: Vec2, target: Vec2| {
-            let control = edge_control_point(source, target, &groups, 0, 0.0, 1.0);
+            let control = edge_control_point(source, target, &groups, 0, 0.0, 1.0, None);
             let mid = (source + target) * 0.5;
             (control - mid).length()
         };
@@ -1582,6 +1732,35 @@ mod tests {
     }
 
     #[test]
+    fn cluster_edge_bows_outward_from_center() {
+        // An edge whose endpoints share a cluster center bows outward from that
+        // center, independent of local density, so the cluster reads as a circle
+        // even for long edges.
+        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+            std::collections::HashMap::new();
+        let center = Vec2::new(0.0, 0.0);
+        let radius = 100.0;
+        // Two nodes on a circle of radius 100 around the origin: top and right.
+        let source = Vec2::new(0.0, -100.0);
+        let target = Vec2::new(100.0, 0.0);
+        let control =
+            edge_control_point(source, target, &groups, 0, 0.0, 1.0, Some((center, radius)));
+        let mid = (source + target) * 0.5;
+        // The control point must be farther from the center than the chord
+        // midpoint, i.e. bowed outward.
+        assert!(
+            control.length() > mid.length(),
+            "cluster edge should bow outward (control={control:?}, mid={mid:?})"
+        );
+        // Without a cluster center the same edge is straight (density 0).
+        let straight = edge_control_point(source, target, &groups, 0, 0.0, 1.0, None);
+        assert!(
+            (straight - mid).length() < 1e-3,
+            "unclustered edge should be straight"
+        );
+    }
+
+    #[test]
     fn parallel_spacing_varies_with_zoom_and_length() {
         // The spacing scales with the edge's apparent length (world length times
         // zoom): a longer apparent distance yields a wider spacing.
@@ -1589,7 +1768,7 @@ mod tests {
             std::collections::HashMap::new();
         groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let control = |source: Vec2, target: Vec2, zoom: f32| {
-            edge_control_point(source, target, &groups, 0, 0.0, zoom)
+            edge_control_point(source, target, &groups, 0, 0.0, zoom, None)
         };
         // Base length and zoom.
         let base = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
@@ -1642,6 +1821,7 @@ mod tests {
         let frame = build_paint_frame(PaintFrameInput {
             graph: &g,
             node_position: &positions,
+            node_cluster_center: &no_clusters(),
             node_label: &no_labels(),
             edge_label: &no_edge_labels(),
             viewport: &vp,

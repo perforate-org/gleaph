@@ -1007,6 +1007,17 @@ nodes keep their position and are not overwritten. Spacing, circle radius, and
 orientation are currently fixed constants; a builder surface may be added later
 if a second concrete use demands it.
 
+The engine records each node's cluster center and radius (the center and radius
+of its SCC circle) in `LayoutState::cluster_centers`. The paint layer reads this
+through `PaintFrameInput::node_cluster_center` and bows every edge whose
+endpoints share a cluster center outward from that center, placing the control
+point at least the cluster radius from the center so a chord through the center
+still bows outward rather than inward. This keeps a cluster readable as a circle
+even when node spacing is large enough that the density-based bow would
+otherwise leave the edge straight. Edges between clusters (different or no
+centers) keep their normal density-based bow. Hit testing uses the same cluster
+centers so the selectable geometry matches what is drawn.
+
 ---
 
 # 16. View State

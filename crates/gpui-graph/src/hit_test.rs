@@ -35,6 +35,7 @@ impl HitTestResult {
 pub fn hit_test<N, E>(
     graph: &Graph<N, E>,
     node_position: &impl Fn(NodeId) -> Option<Vec2>,
+    node_cluster_center: &impl Fn(NodeId) -> Option<(Vec2, f32)>,
     viewport: &Viewport,
     style: &GraphStyle,
     screen_point: Vec2,
@@ -105,6 +106,7 @@ pub fn hit_test<N, E>(
             },
             graph,
             node_position,
+            node_cluster_center,
             viewport,
             style,
         );
@@ -157,6 +159,10 @@ mod tests {
     use crate::graph::{EdgeDirection, Graph};
     use crate::viewport::WorldBounds;
 
+    fn no_clusters() -> impl Fn(NodeId) -> Option<(Vec2, f32)> {
+        |_id| None
+    }
+
     fn setup() -> (
         Graph<(), ()>,
         impl Fn(NodeId) -> Option<Vec2>,
@@ -192,7 +198,7 @@ mod tests {
     fn hits_node_at_center() {
         let (g, pos, vp, style) = setup();
         let screen = vp.world_to_screen(Vec2::new(0.0, 0.0));
-        let result = hit_test(&g, &pos, &vp, &style, screen);
+        let result = hit_test(&g, &pos, &no_clusters(), &vp, &style, screen);
         assert!(result.node.is_some());
         assert!(result.edge.is_none());
     }
@@ -203,7 +209,7 @@ mod tests {
         // A lone edge with no neighbors is straight, so its midpoint is at
         // (50, 0).
         let screen = vp.world_to_screen(Vec2::new(50.0, 0.0));
-        let result = hit_test(&g, &pos, &vp, &style, screen);
+        let result = hit_test(&g, &pos, &no_clusters(), &vp, &style, screen);
         assert!(result.edge.is_some());
         assert!(result.node.is_none());
     }
@@ -212,7 +218,7 @@ mod tests {
     fn misses_when_far_away() {
         let (g, pos, vp, style) = setup();
         let screen = vp.world_to_screen(Vec2::new(50.0, 500.0));
-        let result = hit_test(&g, &pos, &vp, &style, screen);
+        let result = hit_test(&g, &pos, &no_clusters(), &vp, &style, screen);
         assert!(!result.is_hit());
     }
 
@@ -221,7 +227,7 @@ mod tests {
         let (g, pos, vp, style) = setup();
         // Point at node a's center, which is also on the edge.
         let screen = vp.world_to_screen(Vec2::new(0.0, 0.0));
-        let result = hit_test(&g, &pos, &vp, &style, screen);
+        let result = hit_test(&g, &pos, &no_clusters(), &vp, &style, screen);
         assert!(result.node.is_some());
         assert!(result.edge.is_none());
     }
@@ -258,7 +264,7 @@ mod tests {
         // trimmed curve's sagitta (midpoint bow) is half the control offset,
         // so the midpoint sits at world (50, 8.3); hit there.
         let screen = vp.world_to_screen(Vec2::new(50.0, 8.3));
-        let result = hit_test(&g, &positions, &vp, &style, screen);
+        let result = hit_test(&g, &positions, &no_clusters(), &vp, &style, screen);
         assert!(
             result.edge.is_some(),
             "curved parallel edge should be hittable"
@@ -292,7 +298,7 @@ mod tests {
         let scale = vp.zoom();
         let node_screen = vp.world_to_screen(Vec2::new(0.0, 0.0));
         let screen = node_screen + Vec2::new(0.0, -8.5 * scale);
-        let result = hit_test(&g, &positions, &vp, &style, screen);
+        let result = hit_test(&g, &positions, &no_clusters(), &vp, &style, screen);
         assert!(
             result.edge.is_some(),
             "self-loop onigiri should be hittable at its base"

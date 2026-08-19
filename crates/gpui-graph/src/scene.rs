@@ -141,6 +141,17 @@ where
         self.node_scene.get(node).map(|s| s.position)
     }
 
+    /// Cluster center and radius of a node, if the layout grouped it into a
+    /// cluster.
+    ///
+    /// Returns the world-space center and radius of the node's cluster (e.g.
+    /// the center and radius of its SCC circle), or `None` if the node is not
+    /// clustered.
+    pub fn node_cluster_center(&self, node: NodeId) -> Option<(Vec2, f32)> {
+        let i = self.layout_graph.node_ids.iter().position(|&x| x == node)?;
+        self.layout_state.cluster_centers[i]
+    }
+
     /// Whether a node is pinned.
     pub fn is_pinned(&self, node: NodeId) -> bool {
         self.node_scene.get(node).map(|s| s.pinned).unwrap_or(false)
