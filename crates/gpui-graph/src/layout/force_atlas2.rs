@@ -33,12 +33,15 @@ pub struct ForceAtlas2 {
     gravity: f32,
     /// Use `log(1 + dist)` attraction instead of linear attraction.
     lin_log: bool,
-    /// Initial simulation speed.
+    /// Simulation speed: how much of the accumulated force is added to velocity
+    /// each iteration.
     speed: f32,
     /// Total displacement below which the layout is considered settled.
     settled_threshold: f32,
     /// Per-node velocity, algorithm-specific state (§11.4).
     velocity: Vec<Vec2>,
+    /// Reused per-iteration force buffer, so `iterate` does not allocate.
+    forces: Vec<Vec2>,
 }
 
 impl Default for ForceAtlas2 {
@@ -50,6 +53,7 @@ impl Default for ForceAtlas2 {
             speed: 0.1,
             settled_threshold: 0.001,
             velocity: Vec::new(),
+            forces: Vec::new(),
         }
     }
 }
@@ -73,6 +77,13 @@ impl ForceAtlas2 {
         self
     }
 
+    /// Set the simulation speed: how much of the accumulated force is added to
+    /// velocity each iteration.
+    pub fn with_speed(mut self, speed: f32) -> Self {
+        self.speed = speed;
+        self
+    }
+
     /// Set the total-displacement threshold below which the layout settles.
     pub fn with_settled_threshold(mut self, threshold: f32) -> Self {
         self.settled_threshold = threshold;
@@ -83,9 +94,10 @@ impl ForceAtlas2 {
 impl LayoutEngine for ForceAtlas2 {
     fn rebuild(&mut self, graph: &LayoutGraph, state: &mut LayoutState) {
         // Rebuild algorithm-specific state. Positions are owned by the scene
-        // and preserved across rebuilds (§11.6).
+        // and preserved across rebuilds (§11.6). Tunable parameters (scaling,
+        // gravity, speed, ...) are preserved across rebuilds.
         self.velocity.resize(graph.node_count(), Vec2::ZERO);
-        self.speed = 0.1;
+        self.forces.resize(graph.node_count(), Vec2::ZERO);
         let _ = state;
     }
 
@@ -101,6 +113,7 @@ impl LayoutEngine for ForceAtlas2 {
         }
         if self.velocity.len() != n {
             self.velocity.resize(n, Vec2::ZERO);
+            self.forces.resize(n, Vec2::ZERO);
         }
 
         let mut last_displacement = 0.0f32;
@@ -127,7 +140,8 @@ impl ForceAtlas2 {
     /// Run a single force-model iteration, returning total displacement.
     fn iterate(&mut self, graph: &LayoutGraph, state: &mut LayoutState) -> f32 {
         let n = graph.node_count();
-        let mut forces = vec![Vec2::ZERO; n];
+        let forces = &mut self.forces;
+        forces.fill(Vec2::ZERO);
 
         // Repulsion: every pair of nodes repels each other.
         for i in 0..n {
