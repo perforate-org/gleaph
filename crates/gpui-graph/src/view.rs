@@ -525,6 +525,7 @@ where
                                     &style,
                                     color,
                                     &label_rects,
+                                    &viewport_rect,
                                 );
                                 #[cfg(test)]
                                 TEST_PAINT_TRACE.with(|trace| {
@@ -985,6 +986,7 @@ fn paint_edge_arrow(
     style: &GraphStyle,
     color: gpui::Hsla,
     label_rects: &[Bounds<gpui::Pixels>],
+    viewport_rect: &Bounds<gpui::Pixels>,
 ) {
     let dir = target - source;
     let len = dir.length();
@@ -997,6 +999,13 @@ fn paint_edge_arrow(
     let base = tip - unit * arrow_size;
     let normal = Vec2::new(-unit.y, unit.x);
     let half = arrow_size * 0.5;
+
+    // Skip arrows entirely outside the viewport. The arrow is small (a few
+    // pixels), so its bounding box is a cheap reject test that avoids handing
+    // the tessellator the huge coordinates of an off-screen edge endpoint.
+    if arrow_outside_viewport(tip, base, normal, half, viewport_rect) {
+        return;
+    }
 
     // The arrow is drawn as a single fill path (Triangle) or stroke path
     // (Line). Any overlapping label rect is added as an extra sub-contour; the
@@ -1064,6 +1073,34 @@ fn paint_edge_arrow(
             ));
         }
     }
+}
+
+/// Whether the arrowhead's bounding box lies entirely outside the viewport.
+///
+/// The arrow is a triangle (or line/circle) with tip `tip` and base corners
+/// `base ± normal * half`. Its bounding box is a cheap reject test: if it does
+/// not intersect the viewport, the arrow is off-screen and need not be handed to
+/// the tessellator (which would otherwise see the huge coordinates of an
+/// off-screen edge endpoint).
+fn arrow_outside_viewport(
+    tip: Vec2,
+    base: Vec2,
+    normal: Vec2,
+    half: f32,
+    viewport_rect: &Bounds<gpui::Pixels>,
+) -> bool {
+    let min = tip.min(base + normal * half).min(base - normal * half);
+    let max = tip.max(base + normal * half).max(base - normal * half);
+    let vmin = Vec2::new(
+        f32::from(viewport_rect.origin.x),
+        f32::from(viewport_rect.origin.y),
+    );
+    let vmax = vmin
+        + Vec2::new(
+            f32::from(viewport_rect.size.width),
+            f32::from(viewport_rect.size.height),
+        );
+    max.x < vmin.x || min.x > vmax.x || max.y < vmin.y || min.y > vmax.y
 }
 
 /// Whether a label rect overlaps the arrowhead's bounding region. The arrow
@@ -2687,5 +2724,28 @@ mod tests {
         );
         let clipped = clip_bezier_to_rect(curve, &rect);
         assert!(clipped.is_empty(), "a fully-outside curve must be dropped");
+    }
+
+    #[test]
+    fn arrow_outside_viewport_rejects_off_screen_arrows() {
+        let viewport = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        // An arrow far to the right of the viewport.
+        let tip = Vec2::new(5000.0, 300.0);
+        let base = Vec2::new(4990.0, 300.0);
+        let normal = Vec2::new(0.0, -1.0);
+        assert!(
+            arrow_outside_viewport(tip, base, normal, 5.0, &viewport),
+            "an arrow far off-screen must be rejected"
+        );
+        // An arrow inside the viewport.
+        let tip = Vec2::new(400.0, 300.0);
+        let base = Vec2::new(390.0, 300.0);
+        assert!(
+            !arrow_outside_viewport(tip, base, normal, 5.0, &viewport),
+            "an arrow inside the viewport must be kept"
+        );
     }
 }
