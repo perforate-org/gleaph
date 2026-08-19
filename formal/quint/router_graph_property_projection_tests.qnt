@@ -5,88 +5,135 @@ module routerGraphPropertyProjectionTests {
     init
       .then(routerDispatch("m0"))
       .then(graphCommit("m0"))
-      .then(deliver("m0"))
-      .then(indexApply("m0"))
-      .then(graphFinalize("m0"))
+      .then(deliver)
+      .then(indexApplyPrefix(2))
+      .then(graphAcknowledge(2))
       .expect(and {
         canonical == Set("m0"),
-        projection == Set("m0"),
-        durableIntent == Set(),
-        acknowledged == Set("m0"),
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        durableQueue == List(),
+        protocolSafety,
+        graphAcknowledgementWitness,
       })
   }
 
-  run rejectionThenRetry = {
+  run rejectionObservedThenRetry = {
     init
       .then(routerDispatch("m0"))
       .then(graphCommit("m0"))
-      .then(deliver("m0"))
-      .then(indexReject("m0"))
+      .then(deliver)
+      .then(indexReject)
       .expect(and {
-        rejected == Set("m0"),
-        durableIntent == Set("m0"),
+        response == Rejected(postingsFor("m0")),
+        durableQueue == postingsFor("m0"),
         projection == Set(),
+        indexRejectWitness,
       })
-      .then(recover)
-      .then(indexApply("m0"))
-      .then(graphFinalize("m0"))
+      .then(graphObserveRejected)
+      .then(deliver)
+      .then(indexApplyPrefix(2))
+      .then(graphAcknowledge(2))
       .expect(and {
-        rejected == Set(),
-        projection == Set("m0"),
-        durableIntent == Set(),
+        response == ResponseIdle,
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        durableQueue == List(),
+        graphAcknowledgementWitness,
       })
   }
 
-  run duplicateDeliveryIsIdempotent = {
+  run sameMutationPartialPrefixDrain = {
     init
       .then(routerDispatch("m0"))
       .then(graphCommit("m0"))
-      .then(deliver("m0"))
-      .then(indexApply("m0"))
-      .then(duplicateDelivery("m0"))
+      .then(deliver)
+      .then(indexApplyPrefix(1))
       .expect(and {
-        projection == Set("m0"),
-        acknowledged == Set("m0"),
+        projection == Set(posting("m0", 0)),
+        response == Applied(List(posting("m0", 0))),
+        durableQueue == postingsFor("m0"),
+        oldestDurableMutationRank == 0,
+      })
+      .then(graphAcknowledge(1))
+      .expect(and {
+        durableQueue == List(posting("m0", 1)),
+        oldestDurableMutationRank == 0,
+        graphAcknowledgementWitness,
+      })
+      .then(deliver)
+      .then(indexApplyPrefix(1))
+      .then(graphAcknowledge(1))
+      .expect(and {
+        durableQueue == List(),
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        protocolSafety,
       })
   }
 
-  run partialAcknowledgementPinsSuffix = {
+  run appliedResponseLossDuplicateReplay = {
     init
       .then(routerDispatch("m0"))
       .then(graphCommit("m0"))
-      .then(routerDispatch("m1"))
-      .then(graphCommit("m1"))
-      .then(deliver("m1"))
-      .then(indexApply("m1"))
+      .then(deliver)
+      .then(indexApplyPrefix(2))
+      .then(loseAppliedResponse)
       .expect(and {
-        durableIntent == Set("m0", "m1"),
-        indexPendingMinMutationId == 0,
-        projection == Set("m1"),
+        response == ResponseIdle,
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        durableQueue == postingsFor("m0"),
+        appliedResponseLossWitness,
       })
-      .then(deliver("m0"))
-      .then(indexApply("m0"))
-      .then(graphFinalize("m0"))
-      .then(graphFinalize("m1"))
-      .expect(durableIntent == Set())
+      .then(deliver)
+      .then(indexApplyPrefix(2))
+      .then(graphAcknowledge(2))
+      .expect(and {
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        durableQueue == List(),
+        protocolSafety,
+      })
   }
 
-  run restartPreservesDurableWork = {
+  run restartDuringRequestThenRetry = {
     init
       .then(routerDispatch("m0"))
       .then(graphCommit("m0"))
-      .then(deliver("m0"))
+      .then(deliver)
       .then(restart)
       .expect(and {
-        durableIntent == Set("m0"),
-        volatileInFlight == Set(),
+        durableQueue == postingsFor("m0"),
+        delivery == DeliveryIdle,
+        response == ResponseIdle,
+        restartPending,
+        restartWitness,
       })
       .then(recover)
-      .then(indexApply("m0"))
-      .then(graphFinalize("m0"))
-      .expect(durableIntent == Set())
+      .then(indexApplyPrefix(2))
+      .then(graphAcknowledge(2))
+      .expect(and {
+        durableQueue == List(),
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        protocolSafety,
+      })
   }
 
-  run routerMayCompleteBeforeProjection = {
+  run restartAfterIndexApplyBeforeGraphObserveThenReplay = {
+    init
+      .then(routerDispatch("m0"))
+      .then(graphCommit("m0"))
+      .then(deliver)
+      .then(indexApplyPrefix(2))
+      .then(restart)
+      .then(recover)
+      .then(indexApplyPrefix(2))
+      .then(graphAcknowledge(2))
+      .expect(and {
+        projection == Set(posting("m0", 0), posting("m0", 1)),
+        durableQueue == List(),
+        restartPending == false,
+        protocolSafety,
+      })
+  }
+
+  run routerCompleteWithPendingProjection = {
     init
       .then(routerDispatch("m0"))
       .then(graphCommit("m0"))
@@ -95,7 +142,36 @@ module routerGraphPropertyProjectionTests {
         routerCompleted == Set("m0"),
         canonical == Set("m0"),
         projection == Set(),
-        durableIntent == Set("m0"),
+        durableQueue == postingsFor("m0"),
+        routerCompletionIndependence,
+        protocolSafety,
       })
   }
+
+  run applyWithoutDeliveryFails = init
+    .then(routerDispatch("m0"))
+    .then(graphCommit("m0"))
+    .then(indexApplyPrefix(1).fail())
+
+  run rejectWithoutDeliveryFails = init
+    .then(routerDispatch("m0"))
+    .then(graphCommit("m0"))
+    .then(indexReject.fail())
+
+  run acknowledgeWithoutAppliedResponseFails = init
+    .then(routerDispatch("m0"))
+    .then(graphCommit("m0"))
+    .then(graphAcknowledge(1).fail())
+
+  run observeRejectionWithoutRejectedResponseFails = init
+    .then(routerDispatch("m0"))
+    .then(graphCommit("m0"))
+    .then(graphObserveRejected.fail())
+
+  run overAcknowledgeFails = init
+    .then(routerDispatch("m0"))
+    .then(graphCommit("m0"))
+    .then(deliver)
+    .then(indexApplyPrefix(1))
+    .then(graphAcknowledge(2).fail())
 }
