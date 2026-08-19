@@ -662,6 +662,15 @@ fn apply_node_avoidance(
     normal: Vec2,
     ctx: &EdgeCurveContext<'_>,
 ) {
+    let half_len = (target - source).length() * 0.5;
+    // Cap the total push so a short edge (e.g. at very low zoom, where edges
+    // are only a few pixels on screen) does not bow far beyond its own length.
+    // The quadratic Bézier's maximum offset is half the control point's
+    // displacement, so capping the push at `half_len` keeps the curve within a
+    // quarter of the edge length. At normal zoom the cap is large enough that
+    // the full node clearance still applies.
+    let max_push = half_len;
+    let mut push = Vec2::ZERO;
     for &obstacle in ctx.obstacles {
         // Skip the edge's own endpoints. Use a small tolerance so tiny
         // floating-point differences from the screen transform do not make the
@@ -679,7 +688,6 @@ fn apply_node_avoidance(
         // the edge. `along` is the signed distance from the midpoint along the
         // chord direction; the segment spans [-half_len, half_len].
         let along = to_obstacle.dot(unit);
-        let half_len = (target - source).length() * 0.5;
         if along.abs() > half_len {
             continue;
         }
@@ -689,9 +697,13 @@ fn apply_node_avoidance(
             // quadratic Bézier's maximum offset is half the control point's
             // displacement, so double the push to clear the node.
             let away = if perp >= 0.0 { -normal } else { normal };
-            *control += away * influence * 2.0;
+            push += away * influence * 2.0;
         }
     }
+    if push.length() > max_push {
+        push = push.normalize() * max_push;
+    }
+    *control += push;
 }
 
 /// Per-edge geometry context shared by the paint layer and hit testing so the
