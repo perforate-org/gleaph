@@ -483,21 +483,21 @@ impl DensityGrid {
     }
 
     /// Indices of edges whose midpoint may lie within `radius` of `midpoint`.
-    fn candidates(&self, midpoint: Vec2, radius: f32) -> Vec<usize> {
+    fn candidates(&self, midpoint: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
         let cell = (
             (midpoint.x / self.cell_size).floor() as i32,
             (midpoint.y / self.cell_size).floor() as i32,
         );
         let span = (radius / self.cell_size).ceil() as i32;
-        let mut out = Vec::new();
-        for dx in -span..=span {
-            for dy in -span..=span {
-                if let Some(bucket) = self.cells.get(&(cell.0 + dx, cell.1 + dy)) {
-                    out.extend_from_slice(bucket);
-                }
-            }
-        }
-        out
+        (-span..=span).flat_map(move |dx| {
+            (-span..=span).flat_map(move |dy| {
+                self.cells
+                    .get(&(cell.0 + dx, cell.1 + dy))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+            })
+        })
     }
 }
 
@@ -523,21 +523,21 @@ impl ObstacleGrid {
     }
 
     /// Obstacle positions that may lie within `radius` of `point`.
-    fn candidates(&self, point: Vec2, radius: f32) -> Vec<Vec2> {
+    fn candidates(&self, point: Vec2, radius: f32) -> impl Iterator<Item = Vec2> + '_ {
         let cell = (
             (point.x / self.cell_size).floor() as i32,
             (point.y / self.cell_size).floor() as i32,
         );
         let span = (radius / self.cell_size).ceil() as i32;
-        let mut out = Vec::new();
-        for dx in -span..=span {
-            for dy in -span..=span {
-                if let Some(bucket) = self.cells.get(&(cell.0 + dx, cell.1 + dy)) {
-                    out.extend_from_slice(bucket);
-                }
-            }
-        }
-        out
+        (-span..=span).flat_map(move |dx| {
+            (-span..=span).flat_map(move |dy| {
+                self.cells
+                    .get(&(cell.0 + dx, cell.1 + dy))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+            })
+        })
     }
 }
 
@@ -877,7 +877,9 @@ pub(crate) fn trim_curve_to_node_boundary(
 fn boundary_t(p0: Vec2, p1: Vec2, p2: Vec2, center: Vec2, gap: f32, leaving: bool) -> f32 {
     let mut lo = 0.0f32;
     let mut hi = 1.0f32;
-    for _ in 0..32 {
+    // 20 iterations give a parameter precision of ~1e-6, far below a pixel at
+    // any zoom, so the result stays smooth while halving the per-edge cost.
+    for _ in 0..20 {
         let mid = (lo + hi) * 0.5;
         let p = bezier_point(p0, p1, p2, mid);
         let outside = (p - center).length() >= gap;
