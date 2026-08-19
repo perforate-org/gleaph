@@ -542,12 +542,15 @@ impl ObstacleGrid {
         Self { cell_size, cells }
     }
 
-    /// Obstacle positions that may lie within `radius` of `point`.
+    /// Invoke `f` for each obstacle position that may lie within `radius` of
+    /// `point`.
     ///
     /// When the query radius is large relative to the grid (e.g. a long edge at
     /// high zoom), scanning the span of cells is dominated by empty cells, so
-    /// fall back to iterating the occupied cells directly.
-    fn candidates(&self, point: Vec2, radius: f32) -> Box<dyn Iterator<Item = Vec2> + '_> {
+    /// fall back to iterating the occupied cells directly. A callback (rather
+    /// than an iterator) avoids a heap allocation and dynamic dispatch per
+    /// query, which matters because this runs once per visible edge.
+    fn for_each_candidate(&self, point: Vec2, radius: f32, mut f: impl FnMut(Vec2)) {
         let cell = (
             (point.x / self.cell_size).floor() as i32,
             (point.y / self.cell_size).floor() as i32,
@@ -556,17 +559,19 @@ impl ObstacleGrid {
         // If the span covers most of the grid, iterating every occupied cell is
         // cheaper than scanning a huge square of mostly-empty cells.
         if span > 4 {
-            Box::new(self.cells.values().flatten().copied())
+            for o in self.cells.values().flatten() {
+                f(*o);
+            }
         } else {
-            Box::new((-span..=span).flat_map(move |dx| {
-                (-span..=span).flat_map(move |dy| {
-                    self.cells
-                        .get(&(cell.0 + dx, cell.1 + dy))
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                })
-            }))
+            for dx in -span..=span {
+                for dy in -span..=span {
+                    if let Some(cell) = self.cells.get(&(cell.0 + dx, cell.1 + dy)) {
+                        for o in cell {
+                            f(*o);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -778,35 +783,36 @@ pub fn apply_node_avoidance(
     // its sides. Using the hypotenuse scans fewer cells for the same result.
     let influence_radius = ctx.node_radius * 2.0 + OBSTACLE_RADIUS;
     let query_radius = (half_len * half_len + influence_radius * influence_radius).sqrt();
-    for obstacle in ctx.obstacles.candidates(midpoint, query_radius) {
-        // Skip the edge's own endpoints. Use a small tolerance so tiny
-        // floating-point differences from the screen transform do not make the
-        // edge treat its own endpoints as obstacles.
-        if (obstacle - source).length_squared() < 1e-3
-            || (obstacle - target).length_squared() < 1e-3
-        {
-            continue;
-        }
-        let to_obstacle = obstacle - midpoint;
-        // Signed perpendicular distance from the obstacle to the chord line.
-        let perp = to_obstacle.dot(normal);
-        // Only consider obstacles whose projection onto the chord lies within
-        // the edge's segment, so nodes beyond the endpoints do not influence
-        // the edge. `along` is the signed distance from the midpoint along the
-        // chord direction; the segment spans [-half_len, half_len].
-        let along = to_obstacle.dot(unit);
-        if along.abs() > half_len {
-            continue;
-        }
-        let influence = (influence_radius - perp.abs()).max(0.0);
-        if influence > 0.0 {
-            // Push away from the obstacle: opposite the obstacle's side. The
-            // quadratic Bézier's maximum offset is half the control point's
-            // displacement, so double the push to clear the node.
-            let away = if perp >= 0.0 { -normal } else { normal };
-            push += away * influence * 2.0;
-        }
-    }
+    ctx.obstacles
+        .for_each_candidate(midpoint, query_radius, |obstacle| {
+            // Skip the edge's own endpoints. Use a small tolerance so tiny
+            // floating-point differences from the screen transform do not make the
+            // edge treat its own endpoints as obstacles.
+            if (obstacle - source).length_squared() < 1e-3
+                || (obstacle - target).length_squared() < 1e-3
+            {
+                return;
+            }
+            let to_obstacle = obstacle - midpoint;
+            // Signed perpendicular distance from the obstacle to the chord line.
+            let perp = to_obstacle.dot(normal);
+            // Only consider obstacles whose projection onto the chord lies within
+            // the edge's segment, so nodes beyond the endpoints do not influence
+            // the edge. `along` is the signed distance from the midpoint along the
+            // chord direction; the segment spans [-half_len, half_len].
+            let along = to_obstacle.dot(unit);
+            if along.abs() > half_len {
+                return;
+            }
+            let influence = (influence_radius - perp.abs()).max(0.0);
+            if influence > 0.0 {
+                // Push away from the obstacle: opposite the obstacle's side. The
+                // quadratic Bézier's maximum offset is half the control point's
+                // displacement, so double the push to clear the node.
+                let away = if perp >= 0.0 { -normal } else { normal };
+                push += away * influence * 2.0;
+            }
+        });
     if push.length() > max_push {
         push = push.normalize() * max_push;
     }
