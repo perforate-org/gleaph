@@ -51,6 +51,10 @@ pub struct GraphScene<NK, EK, N = (), E = ()> {
     edge_scene: SecondaryMap<EdgeId, EdgeSceneState>,
     layout_graph: LayoutGraph,
     layout_state: LayoutState,
+    /// Maps a node's stable identity to its dense index in `layout_graph` and
+    /// `layout_state`, so per-node lookups (e.g. cluster centers) are O(1)
+    /// instead of a linear scan of `layout_graph.node_ids`.
+    node_index: HashMap<NodeId, usize>,
     engine: Box<dyn LayoutEngine>,
     controller: LayoutController,
     placement: Placement,
@@ -79,6 +83,7 @@ where
                 topology_revision: 0,
             },
             layout_state: LayoutState::new(),
+            node_index: HashMap::new(),
             engine: Box::new(crate::layout::FixedLayout),
             controller: LayoutController::new(),
             placement: Placement::default(),
@@ -148,8 +153,8 @@ where
     /// the center and radius of its SCC circle), or `None` if the node is not
     /// clustered.
     pub fn node_cluster_center(&self, node: NodeId) -> Option<(Vec2, f32)> {
-        let i = self.layout_graph.node_ids.iter().position(|&x| x == node)?;
-        self.layout_state.cluster_centers[i]
+        let i = self.node_index.get(&node)?;
+        self.layout_state.cluster_centers[*i]
     }
 
     /// Whether a node is pinned.
@@ -162,8 +167,8 @@ where
         if let Some(scene) = self.node_scene.get_mut(node) {
             scene.pinned = true;
         }
-        if let Some(i) = self.layout_graph.node_ids.iter().position(|&x| x == node) {
-            self.layout_state.pinned.set(i, true);
+        if let Some(i) = self.node_index.get(&node) {
+            self.layout_state.pinned.set(*i, true);
         }
     }
 
@@ -172,8 +177,8 @@ where
         if let Some(scene) = self.node_scene.get_mut(node) {
             scene.pinned = false;
         }
-        if let Some(i) = self.layout_graph.node_ids.iter().position(|&x| x == node) {
-            self.layout_state.pinned.set(i, false);
+        if let Some(i) = self.node_index.get(&node) {
+            self.layout_state.pinned.set(*i, false);
         }
     }
 
@@ -182,8 +187,8 @@ where
         if let Some(scene) = self.node_scene.get_mut(node) {
             scene.position = position;
         }
-        if let Some(i) = self.layout_graph.node_ids.iter().position(|&x| x == node) {
-            self.layout_state.positions[i] = position;
+        if let Some(i) = self.node_index.get(&node) {
+            self.layout_state.positions[*i] = position;
         }
     }
 
@@ -272,6 +277,7 @@ where
             topology_revision: self.topology_revision,
         };
         self.layout_state = layout_state;
+        self.node_index = index_of;
         self.engine
             .rebuild(&self.layout_graph, &mut self.layout_state);
         self.controller.notify_topology_changed();
