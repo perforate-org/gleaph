@@ -188,10 +188,9 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         }
     }
 
-    // Collect obstacle node positions (world and screen space) so edges can bow
-    // around nodes they would otherwise pass through. The grids let each edge
-    // test only the nodes near its chord instead of every node.
-    let mut obstacles_world: Vec<Vec2> = Vec::new();
+    // Collect obstacle node screen positions so edges can bow around nodes they
+    // would otherwise pass through. The grid lets each edge test only the nodes
+    // near its chord instead of every node.
     let mut obstacles_screen: Vec<Vec2> = Vec::new();
     for (id, _) in graph.nodes() {
         let Some(world) = node_position(id) else {
@@ -204,12 +203,14 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         {
             continue;
         }
-        obstacles_world.push(world);
         obstacles_screen.push(viewport.world_to_screen(world));
     }
     let obstacle_cell = style.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let obstacles_world_grid = ObstacleGrid::new(&obstacles_world, obstacle_cell);
     let obstacles_screen_grid = ObstacleGrid::new(&obstacles_screen, obstacle_cell);
+    // An empty grid used only for culling: the cull test only needs the curve's
+    // bounding box, so it skips node avoidance (which is applied later, when
+    // the edge is actually drawn). This keeps off-screen edges cheap.
+    let empty_obstacle_grid = ObstacleGrid::new(&[], obstacle_cell);
 
     // Collect candidate edges, then assign curve control points so parallel
     // edges and self-loops are separated visually.
@@ -316,7 +317,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     has_reverse: &has_reverse,
                     parallel: &parallel,
                     zoom: viewport.zoom(),
-                    obstacles: &obstacles_world_grid,
+                    obstacles: &empty_obstacle_grid,
                     node_radius: style.node_radius,
                 };
                 let control_world =
