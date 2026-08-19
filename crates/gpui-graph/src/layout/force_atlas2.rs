@@ -24,6 +24,46 @@ const MAX_STEP: f32 = 0.1;
 /// equilibrium and the node jitters forever instead of settling.
 const VELOCITY_EPSILON: f32 = 0.01;
 
+/// A uniform grid over node positions, so repulsion only tests nodes within
+/// `repulsion_radius` of each other instead of every pair (O(N·k) vs O(N²)).
+struct RepulsionGrid {
+    cell_size: f32,
+    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+
+impl RepulsionGrid {
+    fn new(positions: &[Vec2], cell_size: f32) -> Self {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, p) in positions.iter().enumerate() {
+            let cell = (
+                (p.x / cell_size).floor() as i32,
+                (p.y / cell_size).floor() as i32,
+            );
+            cells.entry(cell).or_default().push(i);
+        }
+        Self { cell_size, cells }
+    }
+
+    /// Indices of nodes that may lie within `radius` of `point`.
+    fn candidates(&self, point: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
+        let cell = (
+            (point.x / self.cell_size).floor() as i32,
+            (point.y / self.cell_size).floor() as i32,
+        );
+        let span = (radius / self.cell_size).ceil() as i32;
+        (-span..=span).flat_map(move |dx| {
+            (-span..=span).flat_map(move |dy| {
+                self.cells
+                    .get(&(cell.0 + dx, cell.1 + dy))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+            })
+        })
+    }
+}
+
 /// ForceAtlas2 layout engine.
 #[derive(Debug, Clone)]
 pub struct ForceAtlas2 {
@@ -36,6 +76,11 @@ pub struct ForceAtlas2 {
     /// Simulation speed: how much of the accumulated force is added to velocity
     /// each iteration.
     speed: f32,
+    /// Distance beyond which two nodes no longer repel each other. Repulsion
+    /// falls off as `1/dist^2`, so beyond this radius it is negligible; the
+    /// spatial grid only tests nodes within this radius, making repulsion
+    /// O(N·k) instead of O(N²).
+    repulsion_radius: f32,
     /// Total displacement below which the layout is considered settled.
     settled_threshold: f32,
     /// Per-node velocity, algorithm-specific state (§11.4).
@@ -51,6 +96,7 @@ impl Default for ForceAtlas2 {
             gravity: 0.1,
             lin_log: false,
             speed: 0.1,
+            repulsion_radius: 100.0,
             settled_threshold: 0.001,
             velocity: Vec::new(),
             forces: Vec::new(),
@@ -81,6 +127,14 @@ impl ForceAtlas2 {
     /// velocity each iteration.
     pub fn with_speed(mut self, speed: f32) -> Self {
         self.speed = speed;
+        self
+    }
+
+    /// Set the repulsion radius: the distance beyond which two nodes no longer
+    /// repel each other. A smaller radius makes repulsion cheaper (fewer nearby
+    /// nodes per grid cell) at the cost of allowing nodes to pack more tightly.
+    pub fn with_repulsion_radius(mut self, radius: f32) -> Self {
+        self.repulsion_radius = radius;
         self
     }
 
@@ -143,11 +197,20 @@ impl ForceAtlas2 {
         let forces = &mut self.forces;
         forces.fill(Vec2::ZERO);
 
-        // Repulsion: every pair of nodes repels each other.
+        // Repulsion: nodes repel each other within `repulsion_radius`. The grid
+        // restricts the pair test to nearby nodes, so repulsion is O(N·k) with
+        // k the number of nodes within the radius, instead of O(N²).
+        let grid = RepulsionGrid::new(&state.positions, self.repulsion_radius);
         for i in 0..n {
-            for j in (i + 1)..n {
+            for j in grid.candidates(state.positions[i], self.repulsion_radius) {
+                if j <= i {
+                    continue;
+                }
                 let delta = state.positions[i] - state.positions[j];
                 let dist = delta.length().max(0.01);
+                if dist > self.repulsion_radius {
+                    continue;
+                }
                 let force = self.scaling / (dist * dist);
                 let dir = delta / dist;
                 forces[i] += dir * force;
