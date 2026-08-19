@@ -99,6 +99,13 @@ pub fn hit_test<N, E>(
     }
     let signed_densities =
         crate::paint::signed_densities(&midpoints, &normals, crate::paint::DENSITY_RADIUS);
+    let has_reverse: Vec<bool> = edge_ids
+        .iter()
+        .map(|id| {
+            let edge = graph.edge(*id).expect("edge exists");
+            groups.contains_key(&(edge.target, edge.source))
+        })
+        .collect();
     for (index, id) in edge_ids.iter().enumerate() {
         let edge = graph.edge(*id).expect("edge exists");
         // Build the same trimmed path as the paint layer so the selectable
@@ -109,6 +116,7 @@ pub fn hit_test<N, E>(
                 groups: &groups,
                 index,
                 signed_density: signed_densities[index],
+                has_reverse: &has_reverse,
                 zoom: viewport.zoom(),
                 obstacles: &obstacles,
                 node_radius: style.node_radius,

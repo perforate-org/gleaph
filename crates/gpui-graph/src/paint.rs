@@ -229,6 +229,13 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             .or_default()
             .push(index);
     }
+    // Precompute whether each edge has a reverse edge (target -> source), so
+    // cluster edges can separate the two directions of a 2-node SCC in O(1)
+    // instead of scanning every group.
+    let has_reverse: Vec<bool> = candidate_edges
+        .iter()
+        .map(|(_, edge, _, _)| groups.contains_key(&(edge.target, edge.source)))
+        .collect();
 
     // Compute each edge's world-space midpoint and normal, then the signed local
     // edge density (neighbors on the left minus on the right). Density is
@@ -288,6 +295,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     groups: &groups,
                     index,
                     signed_density: signed_densities[index],
+                    has_reverse: &has_reverse,
                     zoom: viewport.zoom(),
                     obstacles: &obstacles_world,
                     node_radius: style.node_radius,
@@ -319,6 +327,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 groups: &groups,
                 index: *candidate_index,
                 signed_density: signed_densities[*candidate_index],
+                has_reverse: &has_reverse,
                 zoom: viewport.zoom(),
                 obstacles: &obstacles_screen,
                 node_radius: style.node_radius,
@@ -513,21 +522,6 @@ pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32
     result
 }
 
-/// Whether the edge at `index` has a reverse edge (target -> source) in the
-/// same cluster. Used to separate the two directions of a 2-node SCC without
-/// pushing ordinary adjacent edges outward.
-fn has_reverse_edge(
-    groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
-    index: usize,
-) -> bool {
-    for (&(s, t), members) in groups {
-        if members.contains(&index) {
-            return groups.contains_key(&(t, s));
-        }
-    }
-    false
-}
-
 /// Compute a quadratic Bézier control point for an edge.
 ///
 /// Self-loops get a loop above the node. Parallel edges (multiple edges between
@@ -604,7 +598,7 @@ pub(crate) fn edge_control_point(
         // directions of a 2-node SCC (e.g. 8<->9) so they do not overlap. It is
         // applied only when the reverse edge exists, so ordinary adjacent edges
         // (e.g. 6-7) are not pushed outward.
-        let normal_offset = if has_reverse_edge(ctx.groups, ctx.index) {
+        let normal_offset = if ctx.has_reverse[ctx.index] {
             CLUSTER_NORMAL_OFFSET * radius
         } else {
             0.0
@@ -715,6 +709,10 @@ pub(crate) struct EdgeCurveContext<'a> {
     pub index: usize,
     /// Signed local edge density (neighbors on the left minus on the right).
     pub signed_density: f32,
+    /// Whether each edge has a reverse edge (target -> source) in the same
+    /// cluster, parallel to `groups`. Used to separate the two directions of a
+    /// 2-node SCC without pushing ordinary adjacent edges outward.
+    pub has_reverse: &'a [bool],
     /// Current zoom (pixels per world unit), used to vary parallel spacing.
     pub zoom: f32,
     /// Positions of obstacle nodes the edge should bow around, in the same
@@ -1012,6 +1010,7 @@ mod tests {
             groups,
             index,
             signed_density,
+            has_reverse: &[false],
             zoom,
             obstacles,
             node_radius: 6.0,
