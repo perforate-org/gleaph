@@ -27,7 +27,7 @@ pub use interaction::{GraphEvent, Hover, MouseButton, Selection};
 pub use keyed_graph::KeyedGraph;
 pub use layout::{
     FixedLayout, ForceAtlas2, LayoutBudget, LayoutController, LayoutEngine, LayoutGraph,
-    LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, Placement,
+    LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, Placement, Rng,
     SccLayoutEngine,
 };
 pub use paint::{

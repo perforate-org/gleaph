@@ -13,6 +13,17 @@ use glam::Vec2;
 use super::graph::{LayoutGraph, LayoutIndex, LayoutState};
 use super::{LayoutBudget, LayoutEngine, LayoutProgress};
 
+/// Velocity damping per iteration. Values below 1 dissipate energy so the
+/// layout converges instead of oscillating forever around an equilibrium.
+const DAMPING: f32 = 0.5;
+/// Maximum per-iteration step (world units) a node may move, so a single
+/// strong force cannot fling a node across the graph in one frame.
+const MAX_STEP: f32 = 0.1;
+/// Velocity magnitude below which a node's velocity is zeroed. Without this
+/// dead-band, the force model keeps re-injecting a tiny velocity at the
+/// equilibrium and the node jitters forever instead of settling.
+const VELOCITY_EPSILON: f32 = 0.01;
+
 /// ForceAtlas2 layout engine.
 #[derive(Debug, Clone)]
 pub struct ForceAtlas2 {
@@ -97,10 +108,14 @@ impl LayoutEngine for ForceAtlas2 {
             last_displacement = self.iterate(graph, state);
         }
 
-        if last_displacement < self.settled_threshold {
+        // `iterate` returns the total displacement across all nodes; compare the
+        // average per-node displacement so the threshold is independent of graph
+        // size. A small graph with a few jittering nodes must still settle.
+        let avg_displacement = last_displacement / n as f32;
+        if avg_displacement < self.settled_threshold {
             LayoutProgress::Settled
         } else {
-            let stability = (1.0 - (last_displacement / 10.0).min(1.0)).max(0.0);
+            let stability = (1.0 - (avg_displacement / 10.0).min(1.0)).max(0.0);
             LayoutProgress::Running {
                 stability: Some(stability),
             }
@@ -147,20 +162,31 @@ impl ForceAtlas2 {
             *force -= *pos * self.gravity;
         }
 
-        // Apply forces, respecting pins.
+        // Integrate velocity and apply it, respecting pins. Velocity accumulates
+        // force and is damped each iteration, so the system loses energy and
+        // converges to an equilibrium instead of oscillating forever around it.
         let mut total = 0.0f32;
         for (i, force) in forces.iter().enumerate() {
             if state.is_pinned(LayoutIndex(i as u32)) {
                 continue;
             }
-            let f = *force;
-            let len = f.length();
-            if len > 0.0 {
-                let step = (len * self.speed).min(0.1);
-                let move_vec = f / len * step;
-                state.positions[i] += move_vec;
-                total += step;
+            let v = &mut self.velocity[i];
+            *v += *force * self.speed;
+            *v *= DAMPING;
+            let len = v.length();
+            if len < VELOCITY_EPSILON {
+                // Dead-band: below the epsilon the node is effectively at rest.
+                // Zero it so the layout can report settled instead of jittering
+                // forever around the equilibrium.
+                *v = Vec2::ZERO;
+                continue;
             }
+            // Cap the per-iteration step so a single strong force cannot
+            // fling a node across the graph in one frame.
+            let step = len.min(MAX_STEP);
+            let move_vec = *v / len * step;
+            state.positions[i] += move_vec;
+            total += step;
         }
         total
     }
@@ -257,6 +283,38 @@ mod tests {
         assert_eq!(
             fa.step(&lg, &mut state, LayoutBudget::default()),
             LayoutProgress::Settled
+        );
+    }
+
+    #[test]
+    fn layout_converges_instead_of_oscillating() {
+        // A small graph with a hub and several neighbors. With velocity damping,
+        // the layout must eventually settle rather than oscillate forever around
+        // an equilibrium (which would leave the nodes jittering).
+        let mut g = Graph::new();
+        let ids: Vec<_> = (0..6).map(|_| g.add_node(())).collect();
+        for i in 1..ids.len() {
+            g.add_edge(ids[0], ids[i], EdgeDirection::Undirected, ());
+        }
+        let (lg, mut state) = project(&g);
+        // Start nodes spread out so the forces are strong.
+        for (i, pos) in state.positions.iter_mut().enumerate() {
+            *pos = Vec2::new((i as f32 - 2.5) * 40.0, 0.0);
+        }
+
+        let mut fa = ForceAtlas2::default();
+        fa.rebuild(&lg, &mut state);
+        let mut progress = LayoutProgress::Running { stability: None };
+        for _ in 0..2000 {
+            progress = fa.step(&lg, &mut state, LayoutBudget { max_iterations: 1 });
+            if progress == LayoutProgress::Settled {
+                break;
+            }
+        }
+        assert_eq!(
+            progress,
+            LayoutProgress::Settled,
+            "layout should converge with velocity damping"
         );
     }
 }
