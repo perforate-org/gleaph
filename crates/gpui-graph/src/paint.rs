@@ -524,21 +524,31 @@ impl ObstacleGrid {
     }
 
     /// Obstacle positions that may lie within `radius` of `point`.
-    fn candidates(&self, point: Vec2, radius: f32) -> impl Iterator<Item = Vec2> + '_ {
+    ///
+    /// When the query radius is large relative to the grid (e.g. a long edge at
+    /// high zoom), scanning the span of cells is dominated by empty cells, so
+    /// fall back to iterating the occupied cells directly.
+    fn candidates(&self, point: Vec2, radius: f32) -> Box<dyn Iterator<Item = Vec2> + '_> {
         let cell = (
             (point.x / self.cell_size).floor() as i32,
             (point.y / self.cell_size).floor() as i32,
         );
         let span = (radius / self.cell_size).ceil() as i32;
-        (-span..=span).flat_map(move |dx| {
-            (-span..=span).flat_map(move |dy| {
-                self.cells
-                    .get(&(cell.0 + dx, cell.1 + dy))
-                    .into_iter()
-                    .flatten()
-                    .copied()
-            })
-        })
+        // If the span covers most of the grid, iterating every occupied cell is
+        // cheaper than scanning a huge square of mostly-empty cells.
+        if span > 4 {
+            Box::new(self.cells.values().flatten().copied())
+        } else {
+            Box::new((-span..=span).flat_map(move |dx| {
+                (-span..=span).flat_map(move |dy| {
+                    self.cells
+                        .get(&(cell.0 + dx, cell.1 + dy))
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                })
+            }))
+        }
     }
 }
 
