@@ -61,6 +61,13 @@ pub fn hit_test<N, E>(
 
     // Precise edge test.
     let mut best_edge: Option<(EdgeId, f32)> = None;
+    // Collect obstacle node screen positions so the selectable edge geometry
+    // matches the drawn curves (which bow around nodes).
+    let obstacles: Vec<Vec2> = graph
+        .nodes()
+        .filter_map(|(id, _)| node_position(id))
+        .map(|world| viewport.world_to_screen(world))
+        .collect();
     // Group edges by their (source, target) node pair to detect parallels, so
     // curve control points match the paint layer.
     let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
@@ -103,6 +110,8 @@ pub fn hit_test<N, E>(
                 index,
                 signed_density: signed_densities[index],
                 zoom: viewport.zoom(),
+                obstacles: &obstacles,
+                node_radius: style.node_radius,
             },
             graph,
             node_position,

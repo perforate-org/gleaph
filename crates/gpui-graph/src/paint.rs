@@ -188,6 +188,25 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         }
     }
 
+    // Collect obstacle node positions (world and screen space) so edges can bow
+    // around nodes they would otherwise pass through.
+    let mut obstacles_world: Vec<Vec2> = Vec::new();
+    let mut obstacles_screen: Vec<Vec2> = Vec::new();
+    for (id, _) in graph.nodes() {
+        let Some(world) = node_position(id) else {
+            continue;
+        };
+        if world.x < visible.min.x - margin
+            || world.x > visible.max.x + margin
+            || world.y < visible.min.y - margin
+            || world.y > visible.max.y + margin
+        {
+            continue;
+        }
+        obstacles_world.push(world);
+        obstacles_screen.push(viewport.world_to_screen(world));
+    }
+
     // Collect candidate edges, then assign curve control points so parallel
     // edges and self-loops are separated visually.
     let mut candidate_edges: Vec<(EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
@@ -265,15 +284,16 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             } else {
                 let cluster_center =
                     shared_cluster_center(edge.source, edge.target, node_cluster_center);
-                let control_world = edge_control_point(
-                    *source_world,
-                    *target_world,
-                    &groups,
+                let cull_ctx = EdgeCurveContext {
+                    groups: &groups,
                     index,
-                    signed_densities[index],
-                    viewport.zoom(),
-                    cluster_center,
-                );
+                    signed_density: signed_densities[index],
+                    zoom: viewport.zoom(),
+                    obstacles: &obstacles_world,
+                    node_radius: style.node_radius,
+                };
+                let control_world =
+                    edge_control_point(*source_world, *target_world, &cull_ctx, cluster_center);
                 let min = (*source_world).min(*target_world).min(control_world);
                 let max = (*source_world).max(*target_world).max(control_world);
                 bounds_intersect(&visible, margin, min, max)
@@ -300,6 +320,8 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 index: *candidate_index,
                 signed_density: signed_densities[*candidate_index],
                 zoom: viewport.zoom(),
+                obstacles: &obstacles_screen,
+                node_radius: style.node_radius,
             },
             graph,
             node_position,
@@ -393,6 +415,9 @@ const PARALLEL_SPACING_POWER: f32 = 0.10;
 const BOW_DENSITY: f32 = 0.20;
 /// Upper bound on the bow as a fraction of edge length.
 const BOW_MAX: f32 = 0.90;
+/// Extra clearance around an obstacle node, in world units, that an edge's
+/// control point is pushed away from.
+const OBSTACLE_RADIUS: f32 = 30.0;
 /// Multiplier applied to a cluster edge's chord distance to push the control
 /// point outside the circle for outer edges, so they follow the circular arc.
 /// For adjacent nodes (chord at `radius·cos(45°)`) a gain of ~1.0 places the
@@ -520,10 +545,7 @@ fn has_reverse_edge(
 pub(crate) fn edge_control_point(
     source: Vec2,
     target: Vec2,
-    groups: &std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
-    index: usize,
-    signed_density: f32,
-    zoom: f32,
+    ctx: &EdgeCurveContext<'_>,
     cluster: Option<(Vec2, f32)>,
 ) -> Vec2 {
     let dir = target - source;
@@ -538,17 +560,18 @@ pub(crate) fn edge_control_point(
     let midpoint = (source + target) * 0.5;
     // Parallel fan: separate multiple edges between the same node pair.
     let mut offset = 0.0f32;
-    if let Some(group) = groups
+    if let Some(group) = ctx
+        .groups
         .values()
-        .find(|g| g.contains(&index))
+        .find(|g| g.contains(&ctx.index))
         .filter(|g| g.len() > 1)
     {
-        let position = group.iter().position(|i| *i == index).unwrap_or(0);
+        let position = group.iter().position(|i| *i == ctx.index).unwrap_or(0);
         // The spacing scales with the edge's apparent length (world length times
         // zoom): shorter apparent distance -> narrower spacing, longer -> wider.
         // The power is sub-linear so the sagitta grows more slowly than the
         // chord and curvature still drops for longer edges.
-        let apparent = len * zoom;
+        let apparent = len * ctx.zoom;
         let spacing = PARALLEL_SPACING
             * (apparent / PARALLEL_SPACING_REF_APPARENT).powf(PARALLEL_SPACING_POWER);
         offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * spacing;
@@ -581,7 +604,7 @@ pub(crate) fn edge_control_point(
         // directions of a 2-node SCC (e.g. 8<->9) so they do not overlap. It is
         // applied only when the reverse edge exists, so ordinary adjacent edges
         // (e.g. 6-7) are not pushed outward.
-        let normal_offset = if has_reverse_edge(groups, index) {
+        let normal_offset = if has_reverse_edge(ctx.groups, ctx.index) {
             CLUSTER_NORMAL_OFFSET * radius
         } else {
             0.0
@@ -606,16 +629,69 @@ pub(crate) fn edge_control_point(
         // so the transition to a straight edge is continuous.
         let bow = (chord_dist * CLUSTER_GAIN + CLUSTER_BASE * radius) * adherence * arc_weight;
         let control_dist = chord_dist + bow;
-        return center + outward * control_dist + normal * normal_offset;
+        let mut control = center + outward * control_dist + normal * normal_offset;
+        apply_node_avoidance(&mut control, source, target, midpoint, unit, normal, ctx);
+        return control;
     }
     // Density bow: bow toward the side with fewer neighbor edges. The bow is a
     // fraction of edge length, so the curve shape is stable under zoom. When the
     // signed density is zero (no neighbors, or balanced left/right), the bow is
     // zero and the edge is straight.
-    let direction = if signed_density > 0.0 { -1.0 } else { 1.0 };
-    let magnitude = (signed_density.abs() * BOW_DENSITY).min(BOW_MAX);
+    let direction = if ctx.signed_density > 0.0 { -1.0 } else { 1.0 };
+    let magnitude = (ctx.signed_density.abs() * BOW_DENSITY).min(BOW_MAX);
     let bow = direction * magnitude * len;
-    midpoint + normal * (offset + bow)
+    let mut control = midpoint + normal * (offset + bow);
+    apply_node_avoidance(&mut control, source, target, midpoint, unit, normal, ctx);
+    control
+}
+
+/// Push `control` away from any obstacle node that lies near the chord, so the
+/// edge does not run through another node.
+///
+/// For each obstacle, the signed perpendicular distance to the chord is
+/// `(obstacle - midpoint) · normal`. If it is within the influence radius, the
+/// control point is pushed perpendicular to the chord, away from the obstacle,
+/// by the remaining clearance. This handles obstacles anywhere along the chord,
+/// not just at its midpoint. The edge's own endpoints are skipped.
+fn apply_node_avoidance(
+    control: &mut Vec2,
+    source: Vec2,
+    target: Vec2,
+    midpoint: Vec2,
+    unit: Vec2,
+    normal: Vec2,
+    ctx: &EdgeCurveContext<'_>,
+) {
+    for &obstacle in ctx.obstacles {
+        // Skip the edge's own endpoints. Use a small tolerance so tiny
+        // floating-point differences from the screen transform do not make the
+        // edge treat its own endpoints as obstacles.
+        if (obstacle - source).length_squared() < 1e-3
+            || (obstacle - target).length_squared() < 1e-3
+        {
+            continue;
+        }
+        let to_obstacle = obstacle - midpoint;
+        // Signed perpendicular distance from the obstacle to the chord line.
+        let perp = to_obstacle.dot(normal);
+        // Only consider obstacles whose projection onto the chord lies within
+        // the edge's segment, so nodes beyond the endpoints do not influence
+        // the edge. `along` is the signed distance from the midpoint along the
+        // chord direction; the segment spans [-half_len, half_len].
+        let along = to_obstacle.dot(unit);
+        let half_len = (target - source).length() * 0.5;
+        if along.abs() > half_len {
+            continue;
+        }
+        let influence = (ctx.node_radius * 2.0 + OBSTACLE_RADIUS - perp.abs()).max(0.0);
+        if influence > 0.0 {
+            // Push away from the obstacle: opposite the obstacle's side. The
+            // quadratic Bézier's maximum offset is half the control point's
+            // displacement, so double the push to clear the node.
+            let away = if perp >= 0.0 { -normal } else { normal };
+            *control += away * influence * 2.0;
+        }
+    }
 }
 
 /// Per-edge geometry context shared by the paint layer and hit testing so the
@@ -629,6 +705,11 @@ pub(crate) struct EdgeCurveContext<'a> {
     pub signed_density: f32,
     /// Current zoom (pixels per world unit), used to vary parallel spacing.
     pub zoom: f32,
+    /// Positions of obstacle nodes the edge should bow around, in the same
+    /// coordinate space as the edge's endpoints.
+    pub obstacles: &'a [Vec2],
+    /// Node radius, used to size the clearance around obstacle nodes.
+    pub node_radius: f32,
 }
 
 /// The cluster center and radius shared by two nodes, if both belong to the
@@ -678,15 +759,7 @@ pub(crate) fn edge_path<N, E>(
         // space so the bow direction matches the screen-space edge geometry.
         let cluster_center = shared_cluster_center(edge.source, edge.target, node_cluster_center)
             .map(|(center, radius)| (viewport.world_to_screen(center), radius * viewport.zoom()));
-        let control = edge_control_point(
-            source,
-            target,
-            ctx.groups,
-            ctx.index,
-            ctx.signed_density,
-            ctx.zoom,
-            cluster_center,
-        );
+        let control = edge_control_point(source, target, ctx, cluster_center);
         let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
@@ -914,6 +987,23 @@ mod tests {
 
     fn no_clusters() -> impl Fn(NodeId) -> Option<(Vec2, f32)> {
         |_id| None
+    }
+
+    fn ctx<'a>(
+        groups: &'a std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
+        index: usize,
+        signed_density: f32,
+        zoom: f32,
+        obstacles: &'a [Vec2],
+    ) -> EdgeCurveContext<'a> {
+        EdgeCurveContext {
+            groups,
+            index,
+            signed_density,
+            zoom,
+            obstacles,
+            node_radius: 6.0,
+        }
     }
 
     #[test]
@@ -1670,8 +1760,9 @@ mod tests {
             std::collections::HashMap::new();
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
-        let lone = edge_control_point(source, target, &groups, 0, 0.0, 1.0, None);
-        let with_neighbor = edge_control_point(source, target, &groups, 0, 1.0, 1.0, None);
+        let lone = edge_control_point(source, target, &ctx(&groups, 0, 0.0, 1.0, &[]), None);
+        let with_neighbor =
+            edge_control_point(source, target, &ctx(&groups, 0, 1.0, 1.0, &[]), None);
         // A neighbor on the left (signed_density +1) pushes the bow right
         // (negative y, since normal +y is the left side of direction +x).
         assert!(
@@ -1688,7 +1779,8 @@ mod tests {
         let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
             std::collections::HashMap::new();
         let bow_ratio = |source: Vec2, target: Vec2, zoom: f32| {
-            let control = edge_control_point(source, target, &groups, 0, 0.0, zoom, None);
+            let control =
+                edge_control_point(source, target, &ctx(&groups, 0, 0.0, zoom, &[]), None);
             let mid = (source + target) * 0.5;
             (control - mid).length() / (target - source).length()
         };
@@ -1711,7 +1803,7 @@ mod tests {
             std::collections::HashMap::new();
         groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let sagitta = |source: Vec2, target: Vec2| {
-            let control = edge_control_point(source, target, &groups, 0, 0.0, 1.0, None);
+            let control = edge_control_point(source, target, &ctx(&groups, 0, 0.0, 1.0, &[]), None);
             let mid = (source + target) * 0.5;
             (control - mid).length()
         };
@@ -1743,8 +1835,12 @@ mod tests {
         // Two nodes on a circle of radius 100 around the origin: top and right.
         let source = Vec2::new(0.0, -100.0);
         let target = Vec2::new(100.0, 0.0);
-        let control =
-            edge_control_point(source, target, &groups, 0, 0.0, 1.0, Some((center, radius)));
+        let control = edge_control_point(
+            source,
+            target,
+            &ctx(&groups, 0, 0.0, 1.0, &[]),
+            Some((center, radius)),
+        );
         let mid = (source + target) * 0.5;
         // The control point must be farther from the center than the chord
         // midpoint, i.e. bowed outward.
@@ -1753,10 +1849,33 @@ mod tests {
             "cluster edge should bow outward (control={control:?}, mid={mid:?})"
         );
         // Without a cluster center the same edge is straight (density 0).
-        let straight = edge_control_point(source, target, &groups, 0, 0.0, 1.0, None);
+        let straight = edge_control_point(source, target, &ctx(&groups, 0, 0.0, 1.0, &[]), None);
         assert!(
             (straight - mid).length() < 1e-3,
             "unclustered edge should be straight"
+        );
+    }
+
+    #[test]
+    fn edge_bows_away_from_obstacle_node() {
+        // An edge from (0,0) to (100,0) with an obstacle node near its midpoint
+        // must bow its control point away from the obstacle.
+        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
+            std::collections::HashMap::new();
+        let source = Vec2::new(0.0, 0.0);
+        let target = Vec2::new(100.0, 0.0);
+        let obstacle = Vec2::new(50.0, 0.0);
+        let control = edge_control_point(
+            source,
+            target,
+            &ctx(&groups, 0, 0.0, 1.0, &[obstacle]),
+            None,
+        );
+        // The control point must be pushed off the chord (y != 0) away from the
+        // obstacle, which sits on the chord.
+        assert!(
+            control.y.abs() > 1e-3,
+            "edge should bow away from the obstacle (control={control:?})"
         );
     }
 
@@ -1768,7 +1887,7 @@ mod tests {
             std::collections::HashMap::new();
         groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let control = |source: Vec2, target: Vec2, zoom: f32| {
-            edge_control_point(source, target, &groups, 0, 0.0, zoom, None)
+            edge_control_point(source, target, &ctx(&groups, 0, 0.0, zoom, &[]), None)
         };
         // Base length and zoom.
         let base = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
