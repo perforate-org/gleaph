@@ -106,6 +106,20 @@ pub fn hit_test<N, E>(
             groups.contains_key(&(edge.target, edge.source))
         })
         .collect();
+    let parallel: Vec<Option<(usize, usize)>> = edge_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let edge = graph.edge(*id).expect("edge exists");
+            let group = &groups[&(edge.source, edge.target)];
+            if group.len() > 1 {
+                let position = group.iter().position(|&i| i == index).unwrap_or(0);
+                Some((position, group.len()))
+            } else {
+                None
+            }
+        })
+        .collect();
     for (index, id) in edge_ids.iter().enumerate() {
         let edge = graph.edge(*id).expect("edge exists");
         // Build the same trimmed path as the paint layer so the selectable
@@ -113,10 +127,10 @@ pub fn hit_test<N, E>(
         let path = crate::paint::edge_path(
             edge,
             &crate::paint::EdgeCurveContext {
-                groups: &groups,
                 index,
                 signed_density: signed_densities[index],
                 has_reverse: &has_reverse,
+                parallel: &parallel,
                 zoom: viewport.zoom(),
                 obstacles: &obstacles,
                 node_radius: style.node_radius,

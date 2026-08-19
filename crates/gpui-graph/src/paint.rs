@@ -236,6 +236,21 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         .iter()
         .map(|(_, edge, _, _)| groups.contains_key(&(edge.target, edge.source)))
         .collect();
+    // Precompute each edge's position within its parallel group and the group's
+    // size, so the parallel fan is O(1) instead of scanning every group.
+    let parallel: Vec<Option<(usize, usize)>> = candidate_edges
+        .iter()
+        .enumerate()
+        .map(|(index, (_, edge, _, _))| {
+            let group = &groups[&(edge.source, edge.target)];
+            if group.len() > 1 {
+                let position = group.iter().position(|&i| i == index).unwrap_or(0);
+                Some((position, group.len()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Compute each edge's world-space midpoint and normal, then the signed local
     // edge density (neighbors on the left minus on the right). Density is
@@ -292,10 +307,10 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 let cluster_center =
                     shared_cluster_center(edge.source, edge.target, node_cluster_center);
                 let cull_ctx = EdgeCurveContext {
-                    groups: &groups,
                     index,
                     signed_density: signed_densities[index],
                     has_reverse: &has_reverse,
+                    parallel: &parallel,
                     zoom: viewport.zoom(),
                     obstacles: &obstacles_world,
                     node_radius: style.node_radius,
@@ -324,10 +339,10 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         let path = edge_path(
             edge,
             &EdgeCurveContext {
-                groups: &groups,
                 index: *candidate_index,
                 signed_density: signed_densities[*candidate_index],
                 has_reverse: &has_reverse,
+                parallel: &parallel,
                 zoom: viewport.zoom(),
                 obstacles: &obstacles_screen,
                 node_radius: style.node_radius,
@@ -554,13 +569,7 @@ pub(crate) fn edge_control_point(
     let midpoint = (source + target) * 0.5;
     // Parallel fan: separate multiple edges between the same node pair.
     let mut offset = 0.0f32;
-    if let Some(group) = ctx
-        .groups
-        .values()
-        .find(|g| g.contains(&ctx.index))
-        .filter(|g| g.len() > 1)
-    {
-        let position = group.iter().position(|i| *i == ctx.index).unwrap_or(0);
+    if let Some((position, group_len)) = ctx.parallel[ctx.index] {
         // The spacing scales with the edge's apparent length (world length times
         // zoom): shorter apparent distance -> narrower spacing, longer -> wider.
         // The power is sub-linear so the sagitta grows more slowly than the
@@ -568,7 +577,7 @@ pub(crate) fn edge_control_point(
         let apparent = len * ctx.zoom;
         let spacing = PARALLEL_SPACING
             * (apparent / PARALLEL_SPACING_REF_APPARENT).powf(PARALLEL_SPACING_POWER);
-        offset = (position as f32 - (group.len() as f32 - 1.0) * 0.5) * spacing;
+        offset = (position as f32 - (group_len as f32 - 1.0) * 0.5) * spacing;
     }
     // Cluster bow: when both endpoints share a cluster center, bow the edge so
     // the cluster reads as a circle. The control point's distance from the
@@ -703,8 +712,6 @@ fn apply_node_avoidance(
 /// Per-edge geometry context shared by the paint layer and hit testing so the
 /// drawn and selectable curves always match.
 pub(crate) struct EdgeCurveContext<'a> {
-    /// Edges grouped by their (source, target) node pair, for parallel fanning.
-    pub groups: &'a std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
     /// This edge's index among all candidate edges.
     pub index: usize,
     /// Signed local edge density (neighbors on the left minus on the right).
@@ -713,6 +720,11 @@ pub(crate) struct EdgeCurveContext<'a> {
     /// cluster, parallel to `groups`. Used to separate the two directions of a
     /// 2-node SCC without pushing ordinary adjacent edges outward.
     pub has_reverse: &'a [bool],
+    /// For each edge, its position within its parallel group and the group's
+    /// size, when the group has more than one edge; `None` for a lone edge.
+    /// Parallel to `groups`, so the parallel fan is O(1) instead of scanning
+    /// every group.
+    pub parallel: &'a [Option<(usize, usize)>],
     /// Current zoom (pixels per world unit), used to vary parallel spacing.
     pub zoom: f32,
     /// Positions of obstacle nodes the edge should bow around, in the same
@@ -1000,17 +1012,17 @@ mod tests {
     }
 
     fn ctx<'a>(
-        groups: &'a std::collections::HashMap<(NodeId, NodeId), Vec<usize>>,
         index: usize,
         signed_density: f32,
         zoom: f32,
         obstacles: &'a [Vec2],
+        parallel: &'a [Option<(usize, usize)>],
     ) -> EdgeCurveContext<'a> {
         EdgeCurveContext {
-            groups,
             index,
             signed_density,
             has_reverse: &[false],
+            parallel,
             zoom,
             obstacles,
             node_radius: 6.0,
@@ -1767,13 +1779,11 @@ mod tests {
         // The bow magnitude grows with the signed density difference. A lone
         // edge (density 0) is straight; a neighbor on the left (density +1)
         // bows right.
-        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-            std::collections::HashMap::new();
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
-        let lone = edge_control_point(source, target, &ctx(&groups, 0, 0.0, 1.0, &[]), None);
+        let lone = edge_control_point(source, target, &ctx(0, 0.0, 1.0, &[], &[None]), None);
         let with_neighbor =
-            edge_control_point(source, target, &ctx(&groups, 0, 1.0, 1.0, &[]), None);
+            edge_control_point(source, target, &ctx(0, 1.0, 1.0, &[], &[None]), None);
         // A neighbor on the left (signed_density +1) pushes the bow right
         // (negative y, since normal +y is the left side of direction +x).
         assert!(
@@ -1787,11 +1797,9 @@ mod tests {
         // The bow is a fraction of the edge length, so the curve shape is the
         // same at any zoom. Compare the control point's offset from the straight
         // midpoint, normalized by the edge length, at two zooms.
-        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-            std::collections::HashMap::new();
         let bow_ratio = |source: Vec2, target: Vec2, zoom: f32| {
             let control =
-                edge_control_point(source, target, &ctx(&groups, 0, 0.0, zoom, &[]), None);
+                edge_control_point(source, target, &ctx(0, 0.0, zoom, &[], &[None]), None);
             let mid = (source + target) * 0.5;
             (control - mid).length() / (target - source).length()
         };
@@ -1810,11 +1818,13 @@ mod tests {
         // The parallel spacing scales sub-linearly with apparent length (power
         // < 1), so the sagitta grows more slowly than the chord and curvature
         // drops as the node distance grows.
-        let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-            std::collections::HashMap::new();
-        groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let sagitta = |source: Vec2, target: Vec2| {
-            let control = edge_control_point(source, target, &ctx(&groups, 0, 0.0, 1.0, &[]), None);
+            let control = edge_control_point(
+                source,
+                target,
+                &ctx(0, 0.0, 1.0, &[], &[Some((0, 2))]),
+                None,
+            );
             let mid = (source + target) * 0.5;
             (control - mid).length()
         };
@@ -1839,8 +1849,6 @@ mod tests {
         // An edge whose endpoints share a cluster center bows outward from that
         // center, independent of local density, so the cluster reads as a circle
         // even for long edges.
-        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-            std::collections::HashMap::new();
         let center = Vec2::new(0.0, 0.0);
         let radius = 100.0;
         // Two nodes on a circle of radius 100 around the origin: top and right.
@@ -1849,7 +1857,7 @@ mod tests {
         let control = edge_control_point(
             source,
             target,
-            &ctx(&groups, 0, 0.0, 1.0, &[]),
+            &ctx(0, 0.0, 1.0, &[], &[None]),
             Some((center, radius)),
         );
         let mid = (source + target) * 0.5;
@@ -1860,7 +1868,7 @@ mod tests {
             "cluster edge should bow outward (control={control:?}, mid={mid:?})"
         );
         // Without a cluster center the same edge is straight (density 0).
-        let straight = edge_control_point(source, target, &ctx(&groups, 0, 0.0, 1.0, &[]), None);
+        let straight = edge_control_point(source, target, &ctx(0, 0.0, 1.0, &[], &[None]), None);
         assert!(
             (straight - mid).length() < 1e-3,
             "unclustered edge should be straight"
@@ -1871,15 +1879,13 @@ mod tests {
     fn edge_bows_away_from_obstacle_node() {
         // An edge from (0,0) to (100,0) with an obstacle node near its midpoint
         // must bow its control point away from the obstacle.
-        let groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-            std::collections::HashMap::new();
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
         let obstacle = Vec2::new(50.0, 0.0);
         let control = edge_control_point(
             source,
             target,
-            &ctx(&groups, 0, 0.0, 1.0, &[obstacle]),
+            &ctx(0, 0.0, 1.0, &[obstacle], &[None]),
             None,
         );
         // The control point must be pushed off the chord (y != 0) away from the
@@ -1894,11 +1900,13 @@ mod tests {
     fn parallel_spacing_varies_with_zoom_and_length() {
         // The spacing scales with the edge's apparent length (world length times
         // zoom): a longer apparent distance yields a wider spacing.
-        let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-            std::collections::HashMap::new();
-        groups.insert((NodeId::default(), NodeId::default()), vec![0, 1]);
         let control = |source: Vec2, target: Vec2, zoom: f32| {
-            edge_control_point(source, target, &ctx(&groups, 0, 0.0, zoom, &[]), None)
+            edge_control_point(
+                source,
+                target,
+                &ctx(0, 0.0, zoom, &[], &[Some((0, 2))]),
+                None,
+            )
         };
         // Base length and zoom.
         let base = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
