@@ -467,9 +467,7 @@ where
                         let node_label_rects: Vec<Bounds<gpui::Pixels>> = frame
                             .labels
                             .iter()
-                            .filter_map(|label| {
-                                node_label_bounds_local(window, label, &style)
-                            })
+                            .filter_map(|label| node_label_bounds_local(window, label, &style))
                             .collect();
                         resolve_edge_label_collisions(
                             window,
@@ -1414,8 +1412,10 @@ fn resolve_edge_label_collisions(
                     } else {
                         toward_end.min(1.0)
                     };
-                    frame.edge_labels[other_idx].position =
-                        path_point(&frame.edge_labels[other_idx].path, frame.edge_labels[other_idx].t);
+                    frame.edge_labels[other_idx].position = path_point(
+                        &frame.edge_labels[other_idx].path,
+                        frame.edge_labels[other_idx].t,
+                    );
                     moved = true;
                     continue;
                 }
@@ -1638,7 +1638,10 @@ fn paint_edge_label(
     };
     // Center the label vertically on the anchor by shifting the origin up by
     // half the total text height.
-    let total_height: f32 = lines.iter().map(|l| f32::from(l.size(line_height).height)).sum();
+    let total_height: f32 = lines
+        .iter()
+        .map(|l| f32::from(l.size(line_height).height))
+        .sum();
     let mut origin = point(px(anchor.x), px(anchor.y - total_height * 0.5));
     for line in &lines {
         let line_size = line.size(line_height);
@@ -1956,14 +1959,20 @@ mod tests {
         match &trace[0] {
             TestPaintPrimitive::Arrow { source, target } => {
                 assert!(approx(*source, Vec2::new(origin.x + 94.0, origin.y + 50.0)));
-                assert!(approx(*target, Vec2::new(origin.x + 102.0, origin.y + 50.0)));
+                assert!(approx(
+                    *target,
+                    Vec2::new(origin.x + 102.0, origin.y + 50.0)
+                ));
             }
             other => panic!("expected arrow, got {other:?}"),
         }
         match &trace[1] {
             TestPaintPrimitive::Edge { source, target } => {
                 assert!(approx(*source, Vec2::new(origin.x + 98.0, origin.y + 50.0)));
-                assert!(approx(*target, Vec2::new(origin.x + 102.0, origin.y + 50.0)));
+                assert!(approx(
+                    *target,
+                    Vec2::new(origin.x + 102.0, origin.y + 50.0)
+                ));
             }
             other => panic!("expected edge, got {other:?}"),
         }
@@ -2057,10 +2066,7 @@ mod tests {
         assert!(!curves.is_empty(), "edge must not disappear");
         // The masked region must be small: the total visible length should be
         // close to the full edge length (only a small gap at the label).
-        let total_visible = curves
-            .iter()
-            .map(|(a, _, c)| (c - a).length())
-            .sum::<f32>();
+        let total_visible = curves.iter().map(|(a, _, c)| (c - a).length()).sum::<f32>();
         let full = (Vec2::new(1000.0, 0.0) - Vec2::new(0.0, 0.0)).length();
         assert!(
             total_visible > full * 0.9,
@@ -2078,7 +2084,14 @@ mod tests {
             0.0,
         );
         assert_eq!(curves.len(), 1);
-        assert_eq!(curves[0], (Vec2::new(-20.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(20.0, 0.0)));
+        assert_eq!(
+            curves[0],
+            (
+                Vec2::new(-20.0, 0.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(20.0, 0.0)
+            )
+        );
     }
 
     #[test]
@@ -2118,7 +2131,10 @@ mod tests {
             &[rect],
             0.0,
         );
-        assert!(!curves.is_empty(), "curved edge must not disappear at high zoom");
+        assert!(
+            !curves.is_empty(),
+            "curved edge must not disappear at high zoom"
+        );
     }
 
     #[test]
@@ -2160,7 +2176,14 @@ mod tests {
         // The curve's y stays above the rect (y in [0, 10]), so it never enters
         // the rect and is returned whole.
         assert_eq!(curves.len(), 1);
-        assert_eq!(curves[0], (Vec2::new(-20.0, 0.0), Vec2::new(0.0, 50.0), Vec2::new(20.0, 0.0)));
+        assert_eq!(
+            curves[0],
+            (
+                Vec2::new(-20.0, 0.0),
+                Vec2::new(0.0, 50.0),
+                Vec2::new(20.0, 0.0)
+            )
+        );
     }
 
     #[test]
@@ -2372,7 +2395,11 @@ mod tests {
     fn path_point_samples_along_segments() {
         // A straight path from (0,0) to (10,0). t=0 is the start, t=1 the end,
         // t=0.5 the midpoint.
-        let path = vec![(Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(10.0, 0.0))];
+        let path = vec![(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(5.0, 0.0),
+            Vec2::new(10.0, 0.0),
+        )];
         assert_eq!(path_point(&path, 0.0), Vec2::new(0.0, 0.0));
         assert_eq!(path_point(&path, 0.5), Vec2::new(5.0, 0.0));
         assert_eq!(path_point(&path, 1.0), Vec2::new(10.0, 0.0));
@@ -2385,7 +2412,11 @@ mod tests {
         // Two edge labels on the same straight path, both starting at the
         // midpoint so they overlap. Collision resolution must slide them apart
         // along the path.
-        let path = vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))];
+        let path = vec![(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(50.0, 0.0),
+            Vec2::new(100.0, 0.0),
+        )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
             position: Vec2::new(50.0, 0.0),
@@ -2425,7 +2456,11 @@ mod tests {
         // An edge label sits at the midpoint of a path that passes through a
         // fixed node label's rect. The edge label must slide away along its
         // path, while the node label stays put.
-        let path = vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))];
+        let path = vec![(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(50.0, 0.0),
+            Vec2::new(100.0, 0.0),
+        )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
             position: Vec2::new(50.0, 0.0),
@@ -2463,10 +2498,22 @@ mod tests {
         // edge's label (single-segment path). The longer edge must slide away
         // from the self-loop while the self-loop stays put.
         let self_loop_path = vec![
-            (Vec2::new(0.0, 0.0), Vec2::new(0.0, -20.0), Vec2::new(0.0, -40.0)),
-            (Vec2::new(0.0, -40.0), Vec2::new(0.0, -20.0), Vec2::new(0.0, 0.0)),
+            (
+                Vec2::new(0.0, 0.0),
+                Vec2::new(0.0, -20.0),
+                Vec2::new(0.0, -40.0),
+            ),
+            (
+                Vec2::new(0.0, -40.0),
+                Vec2::new(0.0, -20.0),
+                Vec2::new(0.0, 0.0),
+            ),
         ];
-        let long_path = vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))];
+        let long_path = vec![(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(50.0, 0.0),
+            Vec2::new(100.0, 0.0),
+        )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
             position: Vec2::new(0.0, -40.0),
@@ -2515,7 +2562,11 @@ mod tests {
             position: Vec2::new(10.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
             text: "edge".to_string(),
-            path: vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))],
+            path: vec![(
+                Vec2::new(0.0, 0.0),
+                Vec2::new(50.0, 0.0),
+                Vec2::new(100.0, 0.0),
+            )],
             t: 0.5,
         });
 
@@ -2531,7 +2582,11 @@ mod tests {
             position: Vec2::new(50.0, 50.0),
             offset: Vec2::new(0.0, -1.0),
             text: "far".to_string(),
-            path: vec![(Vec2::new(0.0, 0.0), Vec2::new(50.0, 0.0), Vec2::new(100.0, 0.0))],
+            path: vec![(
+                Vec2::new(0.0, 0.0),
+                Vec2::new(50.0, 0.0),
+                Vec2::new(100.0, 0.0),
+            )],
             t: 0.5,
         });
         let wide_style = GraphStyle::default().with_edge_label_hide_distance(5.0);
