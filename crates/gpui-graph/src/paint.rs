@@ -866,7 +866,8 @@ fn shared_cluster_center(
 /// A self-loop returns the onigiri path; any other edge returns a single
 /// segment trimmed to the node boundaries. Both the paint layer and hit testing
 /// use this so the drawn and selectable geometry always match.
-pub(crate) fn edge_path<N, E>(
+#[doc(hidden)]
+pub fn edge_path<N, E>(
     edge: &Edge<E>,
     ctx: &EdgeCurveContext<'_>,
     graph: &Graph<N, E>,
@@ -908,7 +909,8 @@ pub(crate) fn edge_path<N, E>(
 /// parameter `t` where it first leaves the source node's boundary and the
 /// parameter where it last enters the target node's boundary, found by binary
 /// search on the curve parameter so the result is smooth under zoom.
-pub(crate) fn trim_curve_to_node_boundary(
+#[doc(hidden)]
+pub fn trim_curve_to_node_boundary(
     source: Vec2,
     control: Vec2,
     target: Vec2,
@@ -930,12 +932,15 @@ pub(crate) fn trim_curve_to_node_boundary(
 fn boundary_t(p0: Vec2, p1: Vec2, p2: Vec2, center: Vec2, gap: f32, leaving: bool) -> f32 {
     let mut lo = 0.0f32;
     let mut hi = 1.0f32;
+    let gap_sq = gap * gap;
     // 20 iterations give a parameter precision of ~1e-6, far below a pixel at
     // any zoom, so the result stays smooth while halving the per-edge cost.
     for _ in 0..20 {
         let mid = (lo + hi) * 0.5;
         let p = bezier_point(p0, p1, p2, mid);
-        let outside = (p - center).length() >= gap;
+        // Compare squared distances to avoid a sqrt per iteration. Both sides
+        // are non-negative, so this is equivalent to `length() >= gap`.
+        let outside = (p - center).length_squared() >= gap_sq;
         if leaving {
             // Move hi down while outside, lo up while inside.
             if outside {

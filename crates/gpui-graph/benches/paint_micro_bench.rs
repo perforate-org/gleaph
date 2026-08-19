@@ -12,8 +12,11 @@ use glam::Vec2;
 use gpui_graph::graph::{EdgeDirection, Graph, NodeId};
 use gpui_graph::paint::{
     DENSITY_RADIUS, DensityGrid, EdgeCurveContext, ObstacleGrid, apply_node_avoidance,
-    edge_control_point, signed_densities, signed_densities_for,
+    edge_control_point, edge_path, signed_densities, signed_densities_for,
+    trim_curve_to_node_boundary,
 };
+use gpui_graph::style::GraphStyle;
+use gpui_graph::viewport::Viewport;
 
 /// A grid graph with `side * side` nodes and edges to the right and down
 /// neighbors, matching `paint_bench::BenchGraph::grid`.
@@ -240,10 +243,101 @@ fn bench_node_avoidance(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_edge_path(c: &mut Criterion) {
+    let mut group = c.benchmark_group("edge_path");
+
+    for side in [20usize, 50usize] {
+        let g = GridGraph::new(side);
+        let (midpoints, normals) = g.midpoints_and_normals();
+        let densities = signed_densities(&midpoints, &normals, DENSITY_RADIUS);
+        let has_reverse = vec![false; midpoints.len()];
+        let parallel = vec![None; midpoints.len()];
+        let obstacles: Vec<Vec2> = g.positions.values().copied().collect();
+        let obstacle_cell = 6.0 * 2.0 + 30.0;
+        let obstacle_grid = ObstacleGrid::new(&obstacles, obstacle_cell);
+        let style = GraphStyle::default();
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(1600.0, 1000.0));
+        vp.zoom_at(Vec2::new(800.0, 500.0), 1.0);
+
+        // Rebuild a graph with edges so `edge_path` can look up the edge.
+        let mut graph = Graph::new();
+        let mut ids = Vec::new();
+        for _ in 0..side * side {
+            ids.push(graph.add_node(()));
+        }
+        let at = |x: usize, y: usize| ids[y * side + x];
+        let mut edge_ids = Vec::new();
+        for y in 0..side {
+            for x in 0..side {
+                let id = at(x, y);
+                if x + 1 < side {
+                    edge_ids.push(graph.add_edge(id, at(x + 1, y), EdgeDirection::Directed, ()));
+                }
+                if y + 1 < side {
+                    edge_ids.push(graph.add_edge(id, at(x, y + 1), EdgeDirection::Directed, ()));
+                }
+            }
+        }
+        let first_edge = graph
+            .edge(edge_ids[0].expect("edge exists"))
+            .expect("edge exists");
+        let ctx = EdgeCurveContext {
+            index: 0,
+            signed_density: densities[0],
+            has_reverse: &has_reverse,
+            parallel: &parallel,
+            zoom: 1.0,
+            obstacles: &obstacle_grid,
+            node_radius: 6.0,
+        };
+        group.bench_with_input(
+            BenchmarkId::new("grid", format!("{}x{}", side, side)),
+            &(first_edge, &ctx, &graph, &g.positions, &vp, &style),
+            |b, (edge, ctx, graph, positions, vp, style)| {
+                b.iter(|| {
+                    edge_path(
+                        edge,
+                        ctx,
+                        graph,
+                        &|id| positions.get(&id).copied(),
+                        &|_| None,
+                        vp,
+                        style,
+                    )
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_trim(c: &mut Criterion) {
+    let mut group = c.benchmark_group("trim_curve");
+
+    for side in [20usize, 50usize] {
+        let g = GridGraph::new(side);
+        let (s, t) = g.edges[0];
+        let source = g.positions[&s];
+        let target = g.positions[&t];
+        let control = (source + target) * 0.5;
+        group.bench_with_input(
+            BenchmarkId::new("grid", format!("{}x{}", side, side)),
+            &(source, control, target),
+            |b, (s, c, t)| b.iter(|| trim_curve_to_node_boundary(*s, *c, *t, 6.0)),
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_density,
     bench_control_point,
-    bench_node_avoidance
+    bench_node_avoidance,
+    bench_edge_path,
+    bench_trim
 );
 criterion_main!(benches);
