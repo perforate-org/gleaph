@@ -439,7 +439,8 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
 
 /// Radius (in world units) within which other edges count toward an edge's
 /// local density. Computed in world space so the neighbor set is zoom-invariant.
-pub(crate) const DENSITY_RADIUS: f32 = 40.0;
+#[doc(hidden)]
+pub const DENSITY_RADIUS: f32 = 40.0;
 /// Base world-space spacing between parallel edges, at the reference apparent
 /// length. The actual spacing scales with the edge's apparent length (world
 /// length times zoom): a shorter apparent distance yields a narrower spacing, a
@@ -476,13 +477,15 @@ const CLUSTER_BASE: f32 = 0.05;
 const CLUSTER_NORMAL_OFFSET: f32 = 0.3;
 
 /// A uniform grid over edge midpoints used to count nearby edges in O(E).
-struct DensityGrid {
+#[doc(hidden)]
+pub struct DensityGrid {
     cell_size: f32,
     cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
 }
 
 impl DensityGrid {
-    fn new(midpoints: &[Vec2], radius: f32) -> Self {
+    #[doc(hidden)]
+    pub fn new(midpoints: &[Vec2], radius: f32) -> Self {
         let cell_size = radius;
         let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
             std::collections::HashMap::new();
@@ -497,7 +500,8 @@ impl DensityGrid {
     }
 
     /// Indices of edges whose midpoint may lie within `radius` of `midpoint`.
-    fn candidates(&self, midpoint: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
+    #[doc(hidden)]
+    pub fn candidates(&self, midpoint: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
         let cell = (
             (midpoint.x / self.cell_size).floor() as i32,
             (midpoint.y / self.cell_size).floor() as i32,
@@ -517,13 +521,15 @@ impl DensityGrid {
 
 /// A uniform grid over obstacle node positions, so an edge only tests the
 /// nodes near its chord instead of every node in the graph.
-pub(crate) struct ObstacleGrid {
+#[doc(hidden)]
+pub struct ObstacleGrid {
     cell_size: f32,
     cells: std::collections::HashMap<(i32, i32), Vec<Vec2>>,
 }
 
 impl ObstacleGrid {
-    pub(crate) fn new(obstacles: &[Vec2], cell_size: f32) -> Self {
+    #[doc(hidden)]
+    pub fn new(obstacles: &[Vec2], cell_size: f32) -> Self {
         let mut cells: std::collections::HashMap<(i32, i32), Vec<Vec2>> =
             std::collections::HashMap::new();
         for &o in obstacles {
@@ -576,7 +582,8 @@ impl ObstacleGrid {
 /// jitter) while still favoring closer neighbors. A positive value means more or
 /// closer edges on the left, so the edge bows right (toward the lower-density
 /// side).
-pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
+#[doc(hidden)]
+pub fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
     let grid = DensityGrid::new(midpoints, radius);
     let all: Vec<usize> = (0..midpoints.len()).collect();
     signed_densities_for(&grid, midpoints, normals, radius, &all)
@@ -588,7 +595,8 @@ pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32
 /// count toward a visible edge's density), but the pairwise loop runs only for
 /// the requested indices. This lets the paint layer compute density for just
 /// the visible edges after culling, instead of every edge in the graph.
-fn signed_densities_for(
+#[doc(hidden)]
+pub fn signed_densities_for(
     grid: &DensityGrid,
     midpoints: &[Vec2],
     normals: &[Vec2],
@@ -636,7 +644,8 @@ fn signed_densities_for(
 /// placed outside the cluster radius, so even a chord through the center bows
 /// outward rather than inward. The cluster bow is a fixed fraction of the edge
 /// length, independent of local density.
-pub(crate) fn edge_control_point(
+#[doc(hidden)]
+pub fn edge_control_point(
     source: Vec2,
     target: Vec2,
     ctx: &EdgeCurveContext<'_>,
@@ -741,7 +750,8 @@ pub(crate) fn edge_control_point(
 /// control point is pushed perpendicular to the chord, away from the obstacle,
 /// by the remaining clearance. This handles obstacles anywhere along the chord,
 /// not just at its midpoint. The edge's own endpoints are skipped.
-fn apply_node_avoidance(
+#[doc(hidden)]
+pub fn apply_node_avoidance(
     control: &mut Vec2,
     source: Vec2,
     target: Vec2,
@@ -762,12 +772,13 @@ fn apply_node_avoidance(
     // Only test obstacles near the chord. The influence radius is the maximum
     // perpendicular distance at which an obstacle can still push the edge, and
     // an obstacle can sit anywhere along the segment (up to `half_len` from the
-    // midpoint), so the grid query radius is the sum of the two.
+    // midpoint). The farthest relevant obstacle is at the corner of the
+    // `along ∈ [-half_len, half_len]` × `perp ∈ [-influence, influence]` box,
+    // so the grid query radius is the hypotenuse of that box, not the sum of
+    // its sides. Using the hypotenuse scans fewer cells for the same result.
     let influence_radius = ctx.node_radius * 2.0 + OBSTACLE_RADIUS;
-    for obstacle in ctx
-        .obstacles
-        .candidates(midpoint, half_len + influence_radius)
-    {
+    let query_radius = (half_len * half_len + influence_radius * influence_radius).sqrt();
+    for obstacle in ctx.obstacles.candidates(midpoint, query_radius) {
         // Skip the edge's own endpoints. Use a small tolerance so tiny
         // floating-point differences from the screen transform do not make the
         // edge treat its own endpoints as obstacles.
@@ -804,7 +815,8 @@ fn apply_node_avoidance(
 
 /// Per-edge geometry context shared by the paint layer and hit testing so the
 /// drawn and selectable curves always match.
-pub(crate) struct EdgeCurveContext<'a> {
+#[doc(hidden)]
+pub struct EdgeCurveContext<'a> {
     /// This edge's index among all candidate edges.
     pub index: usize,
     /// Signed local edge density (neighbors on the left minus on the right).

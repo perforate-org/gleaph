@@ -18,3 +18,7 @@ gpui = { version = "0.2.2", features = ["test-support"] }
 [[bench]]
 name = "paint_bench"
 harness = false
+
+[[bench]]
+name = "paint_micro_bench"
+harness = false
