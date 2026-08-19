@@ -628,14 +628,19 @@ fn paint_edge(
 ) {
     let mut builder = PathBuilder::stroke(px(style.edge_width));
     for (p0, p1, p2) in path {
-        for curve in visible_bezier_curves(*p0, *p1, *p2, label_rects, style.edge_width) {
-            for clipped in clip_bezier_to_rect(curve, viewport_rect) {
-                builder.move_to(point(px(clipped.0.x), px(clipped.0.y)));
-                builder.curve_to(
-                    point(px(clipped.2.x), px(clipped.2.y)),
-                    point(px(clipped.1.x), px(clipped.1.y)),
-                );
-            }
+        for curve in visible_edge_curves(
+            *p0,
+            *p1,
+            *p2,
+            label_rects,
+            style.edge_width,
+            Some(viewport_rect),
+        ) {
+            builder.move_to(point(px(curve.0.x), px(curve.0.y)));
+            builder.curve_to(
+                point(px(curve.2.x), px(curve.2.y)),
+                point(px(curve.1.x), px(curve.1.y)),
+            );
         }
     }
     if let Ok(path) = builder.build() {
@@ -643,73 +648,42 @@ fn paint_edge(
     }
 }
 
-/// Clip a quadratic Bézier to the axis-aligned `rect`, returning the sub-curves
-/// that lie inside it.
-///
-/// The curve is split at the t values where it crosses the rect's edges, then
-/// each interval whose midpoint is inside the rect is kept. This bounds the
-/// coordinates handed to the tessellator to the rect's extent, so a curve that
-/// passes through the viewport but whose endpoints are far off-screen (a long
-/// edge at deep zoom) is not tessellated at its full, huge scale.
-fn clip_bezier_to_rect(curve: Bezier, rect: &Bounds<gpui::Pixels>) -> Vec<Bezier> {
-    let (p0, p1, p2) = curve;
-    let min = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
-    let max = min + Vec2::new(f32::from(rect.size.width), f32::from(rect.size.height));
-    // Collect every t where the curve crosses a rect edge.
-    let mut ts = vec![0.0, 1.0];
-    for value in [min.x, max.x] {
-        ts.extend(bezier_roots(p0, p1, p2, value, 0));
-    }
-    for value in [min.y, max.y] {
-        ts.extend(bezier_roots(p0, p1, p2, value, 1));
-    }
-    ts.sort_by(|a, b| a.total_cmp(b));
-    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-
-    let mut clipped = Vec::new();
-    for window in ts.windows(2) {
-        let (t0, t1) = (window[0], window[1]);
-        let p = bezier_point(p0, p1, p2, (t0 + t1) * 0.5);
-        if p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y {
-            clipped.push(sub_bezier(p0, p1, p2, t0, t1));
-        }
-    }
-    clipped
-}
-
 /// A quadratic Bézier curve `(p0, p1, p2)`.
 type Bezier = crate::paint::Bezier;
 
-/// Split a quadratic Bézier into the sub-curves that do not pass behind any
-/// label rectangle.
+/// Split a quadratic Bézier into the sub-curves that are both inside the
+/// viewport and not behind any label rectangle.
 ///
-/// The curve is split exactly at the t values where it crosses a label
-/// rectangle's edges, so the masked region matches the label precisely and is
-/// independent of zoom or pan. Each returned piece is a true quadratic Bézier,
-/// preserving the original curve shape.
-fn visible_bezier_curves(
+/// The curve is split exactly at the t values where it crosses the viewport's
+/// edges and each label rectangle's edges, so the result matches both precisely
+/// and is independent of zoom or pan. Clipping to the viewport bounds the
+/// coordinates handed to the tessellator to the viewport's extent, so a curve
+/// that passes through the viewport but whose endpoints are far off-screen (a
+/// long edge at deep zoom) is not tessellated at its full, huge scale. Each
+/// returned piece is a true quadratic Bézier, preserving the original curve
+/// shape.
+fn visible_edge_curves(
     p0: Vec2,
     p1: Vec2,
     p2: Vec2,
     label_rects: &[Bounds<gpui::Pixels>],
     edge_width: f32,
+    viewport_rect: Option<&Bounds<gpui::Pixels>>,
 ) -> Vec<Bezier> {
-    if label_rects.is_empty() {
-        return vec![(p0, p1, p2)];
-    }
-
+    // The t-intervals inside the viewport (kept) and inside any label (masked).
+    let keep = match viewport_rect {
+        Some(rect) => viewport_intervals(p0, p1, p2, rect),
+        None => vec![(0.0, 1.0)],
+    };
     // The edge is stroked at `edge_width`, so its ink extends half the width on
     // either side of the centerline. Inflate the rounded label mask by that
-    // half-width so no edge ink is drawn over the label. A rounded rect grown
-    // by a disk of radius `w/2` is a rounded rect with both its bounds and
-    // corner radius grown by `w/2`.
+    // half-width so no edge ink is drawn over the label.
     let inflate = edge_width * 0.5;
     let mut masked: Vec<(f32, f32)> = Vec::new();
     for rect in label_rects {
         let rr = RoundedRect::from_bounds(rect).inflated(inflate);
         masked.extend(masked_intervals(p0, p1, p2, &rr));
     }
-
     // Merge overlapping masked intervals.
     masked.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut merged: Vec<(f32, f32)> = Vec::new();
@@ -723,19 +697,76 @@ fn visible_bezier_curves(
         merged.push((start, end));
     }
 
-    // Emit the visible sub-curves between masked intervals.
+    // Emit the sub-curves inside the viewport, minus the masked label intervals.
     let mut visible = Vec::new();
-    let mut t = 0.0;
-    for (start, end) in merged {
-        if start > t {
-            visible.push(sub_bezier(p0, p1, p2, t, start));
+    for (k0, k1) in keep {
+        let mut t = k0;
+        for (start, end) in &merged {
+            let s = start.max(k0);
+            let e = end.min(k1);
+            if s >= e {
+                continue;
+            }
+            if s > t {
+                visible.push(sub_bezier(p0, p1, p2, t, s));
+            }
+            t = t.max(e);
         }
-        t = end;
-    }
-    if t < 1.0 {
-        visible.push(sub_bezier(p0, p1, p2, t, 1.0));
+        if t < k1 {
+            visible.push(sub_bezier(p0, p1, p2, t, k1));
+        }
     }
     visible
+}
+
+/// The t-intervals of a quadratic Bézier that lie inside the axis-aligned
+/// `rect`.
+///
+/// The t values where the curve crosses the rect's edges are collected, then
+/// each interval whose midpoint is inside the rect is kept.
+fn viewport_intervals(
+    p0: Vec2,
+    p1: Vec2,
+    p2: Vec2,
+    rect: &Bounds<gpui::Pixels>,
+) -> Vec<(f32, f32)> {
+    let min = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
+    let max = min + Vec2::new(f32::from(rect.size.width), f32::from(rect.size.height));
+    let mut ts = vec![0.0, 1.0];
+    for value in [min.x, max.x] {
+        ts.extend(bezier_roots(p0, p1, p2, value, 0));
+    }
+    for value in [min.y, max.y] {
+        ts.extend(bezier_roots(p0, p1, p2, value, 1));
+    }
+    ts.sort_by(|a, b| a.total_cmp(b));
+    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+
+    let mut keep = Vec::new();
+    for window in ts.windows(2) {
+        let (t0, t1) = (window[0], window[1]);
+        let p = bezier_point(p0, p1, p2, (t0 + t1) * 0.5);
+        if p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y {
+            keep.push((t0, t1));
+        }
+    }
+    keep
+}
+
+/// Split a quadratic Bézier into the sub-curves that do not pass behind any
+/// label rectangle, ignoring the viewport.
+///
+/// Thin wrapper over [`visible_edge_curves`] with an unbounded viewport, used by
+/// tests that exercise label masking in isolation.
+#[cfg(test)]
+fn visible_bezier_curves(
+    p0: Vec2,
+    p1: Vec2,
+    p2: Vec2,
+    label_rects: &[Bounds<gpui::Pixels>],
+    edge_width: f32,
+) -> Vec<Bezier> {
+    visible_edge_curves(p0, p1, p2, label_rects, edge_width, None)
 }
 
 /// The t-intervals of a quadratic Bézier that lie strictly inside a rounded
@@ -2685,45 +2716,74 @@ mod tests {
     }
 
     #[test]
-    fn clip_bezier_to_rect_keeps_only_visible_piece() {
-        // A long horizontal curve whose endpoints are far outside the rect; only
-        // the sub-curve crossing the rect must be kept, and its coordinates must
-        // lie within the rect.
-        let rect = Bounds {
+    fn visible_edge_curves_keeps_only_viewport_piece() {
+        // A long horizontal curve whose endpoints are far outside the viewport;
+        // only the sub-curve crossing it must be kept, and its coordinates must
+        // lie within the viewport.
+        let viewport = Bounds {
             origin: point(px(100.0), px(50.0)),
             size: size(px(200.0), px(100.0)),
         };
-        let curve = (
+        let curves = visible_edge_curves(
             Vec2::new(-10000.0, 100.0),
             Vec2::new(0.0, 100.0),
             Vec2::new(10000.0, 100.0),
+            &[],
+            0.0,
+            Some(&viewport),
         );
-        let clipped = clip_bezier_to_rect(curve, &rect);
-        assert!(!clipped.is_empty(), "a crossing curve must be kept");
-        for (p0, p1, p2) in &clipped {
+        assert!(!curves.is_empty(), "a crossing curve must be kept");
+        for (p0, p1, p2) in &curves {
             for p in [p0, p1, p2] {
                 assert!(
                     p.x >= 100.0 && p.x <= 300.0,
-                    "clipped control point {p:?} must lie within the rect's x range"
+                    "clipped control point {p:?} must lie within the viewport's x range"
                 );
             }
         }
     }
 
     #[test]
-    fn clip_bezier_to_rect_returns_empty_when_fully_outside() {
-        let rect = Bounds {
+    fn visible_edge_curves_returns_empty_when_fully_outside() {
+        let viewport = Bounds {
             origin: point(px(0.0), px(0.0)),
             size: size(px(100.0), px(100.0)),
         };
-        // A curve entirely to the right of the rect.
-        let curve = (
+        // A curve entirely to the right of the viewport.
+        let curves = visible_edge_curves(
             Vec2::new(500.0, 50.0),
             Vec2::new(600.0, 50.0),
             Vec2::new(700.0, 50.0),
+            &[],
+            0.0,
+            Some(&viewport),
         );
-        let clipped = clip_bezier_to_rect(curve, &rect);
-        assert!(clipped.is_empty(), "a fully-outside curve must be dropped");
+        assert!(curves.is_empty(), "a fully-outside curve must be dropped");
+    }
+
+    #[test]
+    fn visible_edge_curves_masks_label_within_viewport() {
+        // A curve inside the viewport with a label rect in the middle: the
+        // visible pieces must be on both sides of the label, within the viewport.
+        let viewport = Bounds {
+            origin: point(px(-100.0), px(-50.0)),
+            size: size(px(200.0), px(100.0)),
+        };
+        let label = Bounds {
+            origin: point(px(-10.0), px(-5.0)),
+            size: size(px(20.0), px(10.0)),
+        };
+        let curves = visible_edge_curves(
+            Vec2::new(-100.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            &[label],
+            0.0,
+            Some(&viewport),
+        );
+        assert_eq!(curves.len(), 2, "edge must be split around the label");
+        assert!(curves[0].2.x <= -10.0);
+        assert!(curves[1].0.x >= 10.0);
     }
 
     #[test]
