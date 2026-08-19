@@ -12,4 +12,9 @@ bitvec = "1.1"
 glam = "0.33"
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
 gpui = { version = "0.2.2", features = ["test-support"] }
+
+[[bench]]
+name = "paint_bench"
+harness = false

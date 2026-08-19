@@ -276,7 +276,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             }
         })
         .collect();
-    let signed_densities = signed_densities(&midpoints, &normals, DENSITY_RADIUS);
+    let density_grid = DensityGrid::new(&midpoints, DENSITY_RADIUS);
 
     let mut visible_edges: Vec<(usize, EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
     for (index, (id, edge, source_world, target_world)) in candidate_edges.iter().enumerate() {
@@ -313,7 +313,7 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     shared_cluster_center(edge.source, edge.target, node_cluster_center);
                 let cull_ctx = EdgeCurveContext {
                     index,
-                    signed_density: signed_densities[index],
+                    signed_density: 0.0,
                     has_reverse: &has_reverse,
                     parallel: &parallel,
                     zoom: viewport.zoom(),
@@ -338,6 +338,19 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
             viewport.world_to_screen(*target_world),
         ));
     }
+
+    // Compute the signed density only for the visible edges. The grid is built
+    // over every edge's midpoint, so off-screen neighbors still count toward a
+    // visible edge's density, but the pairwise loop runs only for the visible
+    // edges instead of every edge in the graph.
+    let visible_indices: Vec<usize> = visible_edges.iter().map(|(i, _, _, _, _)| *i).collect();
+    let signed_densities = signed_densities_for(
+        &density_grid,
+        &midpoints,
+        &normals,
+        DENSITY_RADIUS,
+        &visible_indices,
+    );
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
         let is_self_loop = (*source - *target).length() < f32::EPSILON;
@@ -565,8 +578,25 @@ impl ObstacleGrid {
 /// side).
 pub(crate) fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
     let grid = DensityGrid::new(midpoints, radius);
+    let all: Vec<usize> = (0..midpoints.len()).collect();
+    signed_densities_for(&grid, midpoints, normals, radius, &all)
+}
+
+/// Compute the signed density for only the edges whose indices are listed.
+///
+/// The grid is built over every edge's midpoint (so off-screen neighbors still
+/// count toward a visible edge's density), but the pairwise loop runs only for
+/// the requested indices. This lets the paint layer compute density for just
+/// the visible edges after culling, instead of every edge in the graph.
+fn signed_densities_for(
+    grid: &DensityGrid,
+    midpoints: &[Vec2],
+    normals: &[Vec2],
+    radius: f32,
+    indices: &[usize],
+) -> Vec<f32> {
     let mut result = vec![0.0f32; midpoints.len()];
-    for i in 0..midpoints.len() {
+    for &i in indices {
         let mut signed = 0.0f32;
         for j in grid.candidates(midpoints[i], radius) {
             if i == j {

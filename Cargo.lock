@@ -3753,6 +3753,7 @@ name = "gpui-graph"
 version = "0.1.0"
 dependencies = [
  "bitvec",
+ "criterion",
  "glam",
  "gpui",
  "slotmap",
