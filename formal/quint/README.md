@@ -92,10 +92,19 @@ the TypeScript simulation passed with 10,000 samples at depth 20 in 18.18 s,
 and the Apalache smoke check passed at depth 4 in 5.33 s. The first model draft
 also exposed and corrected the non-prefix finalization omission described above.
 
-The five focused Rust comparisons were run once: four passed. The PocketIC
-test `single_shard_mutation_token_barrier_status_lifecycle` failed before any
-Quint integration with `Err(NotFound("no-such-key"))` where the test expected
-`InvalidArgument`. Treat this as an existing live-contract/test mismatch, not
-as evidence that the Quint model is invalid or that production behavior is
-correct; it must be triaged separately before using the test as an adoption
-gate.
+The first five focused Rust comparisons exposed one stale PocketIC expectation:
+`single_shard_mutation_token_barrier_status_lifecycle` expected
+`InvalidArgument`, while the current `mutation_status` contract returns
+`Err(NotFound("no-such-key"))`. The test comment and assertion were synchronized
+to the existing Router implementation and unit-test contract; the focused
+PocketIC test then passed in 15.11 s. The five focused Rust comparisons now all
+pass. This was a test-contract correction, not a production behavior change.
+
+## Adoption decision
+
+Decision: `revise`. This projection slice met the bounded fidelity,
+reproducibility, cost, and review gates and produced a useful model-fidelity
+finding. It remains a non-blocking auxiliary specification. Before CI or
+broader adoption, the next slice must model Router `atomic_insert`, including
+exact replay/fingerprint conflicts and the ADR 0049 `CanonicalPending`
+recovery boundary. ADRs remain the normative source of truth.

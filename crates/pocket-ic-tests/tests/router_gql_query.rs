@@ -585,7 +585,7 @@ fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
 /// `AtLeast` read-your-writes barrier for the `Person` label; an artificially lagging watermark
 /// returns retryable `ProjectionLag`; `Eventual` remains non-blocking;
 /// `mutation_status` reports `Completed`; the recovery timer leaves the terminal saga untouched;
-/// and an unknown key returns `InvalidArgument`.
+/// and an unknown key returns `NotFound` with the missing key.
 #[test]
 fn single_shard_mutation_token_barrier_status_lifecycle() {
     use gleaph_graph_kernel::federation::RouterError;
@@ -682,11 +682,12 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
         "recovery timer must not disturb a completed saga"
     );
 
-    // An unknown key is rejected.
+    // An unknown key returns the exact missing-key error.
     let missing = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, "no-such-key");
-    assert!(
-        matches!(missing, Err(RouterError::InvalidArgument(_))),
-        "unknown client_mutation_key returns InvalidArgument, got {missing:?}"
+    assert_eq!(
+        missing,
+        Err(RouterError::NotFound("no-such-key".into())),
+        "unknown client_mutation_key returns NotFound with the key"
     );
 }
 
