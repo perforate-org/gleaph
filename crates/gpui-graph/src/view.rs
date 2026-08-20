@@ -33,13 +33,16 @@ type NodeLabelResolver<N> = Rc<dyn Fn(NodeId, &N) -> Option<String>>;
 type EdgeLabelResolver<E> = Rc<dyn Fn(EdgeId, &E) -> Option<String>>;
 
 /// The state of a particular view into a graph scene (§16).
-pub struct GraphViewState<NK, EK, N, E> {
-    scene: Entity<GraphScene<NK, EK, N, E>>,
+pub struct GraphViewState<NK, EK, N, E, S = std::collections::hash_map::RandomState>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
+    scene: Entity<GraphScene<NK, EK, N, E, S>>,
     viewport: Viewport,
     selection: Selection,
     hover: Hover,
     style: GraphStyle,
-    runtime: crate::runtime::GraphRuntime,
+    runtime: crate::runtime::GraphRuntime<S>,
     node_label: NodeLabelResolver<N>,
     edge_label: EdgeLabelResolver<E>,
     dragging: Option<NodeId>,
@@ -161,22 +164,23 @@ fn take_test_paint_trace() -> Vec<TestPaintPrimitive> {
     TEST_PAINT_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
 }
 
-impl<NK, EK, N, E> GraphViewState<NK, EK, N, E>
+impl<NK, EK, N, E, S> GraphViewState<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
     N: 'static,
     E: 'static,
+    S: std::hash::BuildHasher + Default + Clone + 'static,
 {
     /// Create a view state over the given scene.
-    pub fn new(scene: Entity<GraphScene<NK, EK, N, E>>, _cx: &mut Context<Self>) -> Self {
+    pub fn new(scene: Entity<GraphScene<NK, EK, N, E, S>>, _cx: &mut Context<Self>) -> Self {
         Self {
             scene,
             viewport: Viewport::new(),
             selection: Selection::new(),
             hover: Hover::default(),
             style: GraphStyle::default(),
-            runtime: crate::runtime::GraphRuntime::new(),
+            runtime: crate::runtime::GraphRuntime::default(),
             node_label: Rc::new(|_id, _node| None),
             edge_label: Rc::new(|_id, _edge| None),
             dragging: None,
@@ -187,7 +191,7 @@ where
     }
 
     /// The scene this view observes.
-    pub fn scene(&self) -> &Entity<GraphScene<NK, EK, N, E>> {
+    pub fn scene(&self) -> &Entity<GraphScene<NK, EK, N, E, S>> {
         &self.scene
     }
 
@@ -324,12 +328,13 @@ where
     }
 }
 
-impl<NK, EK, N, E> GraphViewState<NK, EK, N, E>
+impl<NK, EK, N, E, S> GraphViewState<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
     N: std::fmt::Display + 'static,
     E: std::fmt::Display + 'static,
+    S: std::hash::BuildHasher + Default + Clone + 'static,
 {
     /// Create a view state over the given scene with default node and edge labels.
     ///
@@ -337,7 +342,7 @@ where
     /// is its `Display` representation. Callers can still override these per
     /// element with [`Self::set_node_label`] and [`Self::set_edge_label`].
     pub fn new_with_default_labels(
-        scene: Entity<GraphScene<NK, EK, N, E>>,
+        scene: Entity<GraphScene<NK, EK, N, E, S>>,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -346,7 +351,7 @@ where
             selection: Selection::new(),
             hover: Hover::default(),
             style: GraphStyle::default(),
-            runtime: crate::runtime::GraphRuntime::new(),
+            runtime: crate::runtime::GraphRuntime::default(),
             node_label: Rc::new(|_id, node| Some(node.to_string())),
             edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
             dragging: None,
@@ -357,12 +362,13 @@ where
     }
 }
 
-impl<NK, EK, N, E> EventEmitter<GraphEvent> for GraphViewState<NK, EK, N, E>
+impl<NK, EK, N, E, S> EventEmitter<GraphEvent> for GraphViewState<NK, EK, N, E, S>
 where
     NK: 'static,
     EK: 'static,
     N: 'static,
     E: 'static,
+    S: std::hash::BuildHasher + Default + Clone + 'static,
 {
 }
 
@@ -371,20 +377,25 @@ where
 /// `GraphView` is a styled element: it participates in normal GPUI layout and
 /// styling (e.g. `.size_full()`, `.border_1()`) and renders the graph through
 /// GPUI's low-level canvas API.
-pub struct GraphView<NK, EK, N, E> {
+pub struct GraphView<NK, EK, N, E, S = std::collections::hash_map::RandomState>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
     element: Div,
-    _marker: PhantomData<fn(NK, EK, N, E)>,
+    #[allow(clippy::type_complexity)]
+    _marker: PhantomData<fn(NK, EK, N, E, S)>,
 }
 
-impl<NK, EK, N, E> GraphView<NK, EK, N, E>
+impl<NK, EK, N, E, S> GraphView<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
     N: 'static,
     E: 'static,
+    S: std::hash::BuildHasher + Default + Clone + 'static,
 {
     /// Create a graph view over the given view state.
-    pub fn new(view: Entity<GraphViewState<NK, EK, N, E>>) -> Self {
+    pub fn new(view: Entity<GraphViewState<NK, EK, N, E, S>>) -> Self {
         let canvas_coordinates = Rc::new(Cell::new(CanvasCoordinates::default()));
         let coordinates_move = Rc::clone(&canvas_coordinates);
         let coordinates_down = Rc::clone(&canvas_coordinates);
@@ -605,13 +616,19 @@ where
     }
 }
 
-impl<NK, EK, N, E> Styled for GraphView<NK, EK, N, E> {
+impl<NK, EK, N, E, S> Styled for GraphView<NK, EK, N, E, S>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
     fn style(&mut self) -> &mut StyleRefinement {
         self.element.style()
     }
 }
 
-impl<NK, EK, N, E> IntoElement for GraphView<NK, EK, N, E> {
+impl<NK, EK, N, E, S> IntoElement for GraphView<NK, EK, N, E, S>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
     type Element = Div;
 
     fn into_element(self) -> Div {
@@ -1270,12 +1287,13 @@ fn add_polygon_subpath(builder: &mut PathBuilder, poly: &[Vec2]) {
     builder.close();
 }
 
-impl<NK, EK, N, E> GraphViewState<NK, EK, N, E>
+impl<NK, EK, N, E, S> GraphViewState<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash + 'static,
     EK: Eq + std::hash::Hash + 'static,
     N: 'static,
     E: 'static,
+    S: std::hash::BuildHasher + Default + Clone + 'static,
 {
     fn handle_mouse_move(&mut self, pos: Vec2, cx: &mut Context<Self>) {
         if let Some(node) = self.dragging {
@@ -1849,6 +1867,25 @@ mod tests {
             scene
         });
         cx.new(|cx| GraphViewState::new(scene, cx))
+    }
+
+    #[gpui::test]
+    fn view_accepts_scene_with_custom_hasher(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scene: Entity<GraphScene<&str, &str, (), (), rapidhash::fast::RandomState>> = cx
+                .new(|_| {
+                    let mut scene =
+                        GraphScene::with_hasher(rapidhash::fast::RandomState::default());
+                    scene.merge(GraphBatch::new().node("a", ()).node("b", ()));
+                    let a = scene.node_id(&"a").unwrap();
+                    let b = scene.node_id(&"b").unwrap();
+                    scene.set_position(a, Vec2::new(-10.0, -20.0));
+                    scene.set_position(b, Vec2::new(30.0, 40.0));
+                    scene
+                });
+            let view = cx.new(|cx| GraphViewState::new(scene, cx));
+            assert_eq!(view.read(cx).scene().read(cx).graph().node_count(), 2);
+        });
     }
 
     fn test_view_with_edge(cx: &mut TestAppContext) -> Entity<TestView> {
