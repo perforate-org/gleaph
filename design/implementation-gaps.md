@@ -117,6 +117,34 @@ defect from being rediscovered without its prior reasoning.
   persistence, then a focused PocketIC regression. Model this lifecycle only after the production
   reconciliation rule is executable.
 
+### GAP-2026-08-20-004 — Rust application client SDK and shared Router wire contract
+
+- **Status:** Resolved
+- **Severity:** P2 product gap; generated-code quality gap for the Rust client profile
+- **Owner:** `gleaph-codegen` rust client profile, `gleaph-cdk`, and the SDK boundary
+- **Observed behavior:** The Rust application-client codegen profile (`generate_rust`) emitted a
+  provisional `PreparedExecutor` / `PreparedQueries` facade whose transport and response decoding
+  were a runtime scaffold, and it did not mirror the mature `PreparedExt` profile used by
+  `gleaph-cdk`. There was no supported Rust application client; the Router data-plane wire contract
+  lived only in `gleaph-cdk::types`, which depends on `ic-cdk` and is not a valid application-client
+  dependency.
+- **Resolution (ADR 0069, 2026-08-20):** introduced `gleaph-router-wire` (`crates/router-wire`) as a
+  neutral owner of the Router data-plane wire contract (`GqlQueryResult`, `ReadMode`,
+  `MutationToken`, `RouterError`, bulk-load family, row-decode helpers); `gleaph-cdk` re-exports it.
+  Introduced `gleaph-sdk` (`sdk/client/rust`), an `ic-agent` application client mirroring the
+  `GleaphClient<Prepared>` surface with a `GleaphTransport` trait, `IcAgentTransport`, and caller
+  identity injection through the agent identity. Unified the Rust codegen profiles onto a shared
+  renderer (`crates/codegen/src/rust/shared.rs`) parameterized by runtime path; the client profile
+  now emits the same `PreparedExt` boundary as the canister profile, removing `PreparedExecutor` /
+  `PreparedQueries` and the provisional client envelope/structs.
+- **Evidence:** `crates/router-wire`, `sdk/client/rust`, `crates/codegen/src/rust/shared.rs`;
+  updated fixture at `crates/codegen/fixtures/rust-client-basic/src/lib.rs`; codegen tests in
+  `crates/codegen/src/lib.rs`.
+- **Impact:** Resolved: application clients get a typed, canister-parity client with identity
+  injection, and both Rust profiles share one generated `PreparedExt` shape and one wire contract.
+- **Next decision:** None — ADR 0069 accepted; the generated Rust client output changed from the
+  `PreparedExecutor` scaffold to `PreparedExt`, so any scaffold consumer must regenerate.
+
 ### GAP-2026-08-20-006 — Router shard identity has no incarnation or lifecycle fence
 
 - **Status:** Open
