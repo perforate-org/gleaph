@@ -7,9 +7,12 @@
 //! boundary owns the separate conversion between canvas-local and window-space
 //! GPUI coordinates.
 
+use std::hash::BuildHasher;
+
 use glam::Vec2;
 
 use crate::graph::{Edge, EdgeDirection, EdgeId, Graph, NodeId};
+use crate::hash::HashMap;
 use crate::interaction::{Hover, Selection};
 use crate::runtime::{GraphRuntime, SyncedGraphRuntime};
 use crate::style::GraphStyle;
@@ -137,9 +140,19 @@ pub struct PaintFrameInput<'a, N, E> {
 /// Indexed rendering accepts only a scene/runtime synchronization proof. The
 /// graph, positions, and cluster geometry are therefore all resolved from the
 /// same borrowed scene snapshot as the spatial index.
-pub struct IndexedPaintFrameInput<'a, 'scene, NK, EK, N, E> {
+pub struct IndexedPaintFrameInput<
+    'a,
+    'scene,
+    NK,
+    EK,
+    N,
+    E,
+    S = std::collections::hash_map::RandomState,
+> where
+    S: BuildHasher + Default + Clone,
+{
     /// Proof returned by [`crate::scene::GraphScene::sync_runtime`].
-    pub synced: &'a SyncedGraphRuntime<'scene, NK, EK, N, E>,
+    pub synced: &'a SyncedGraphRuntime<'scene, NK, EK, N, E, S>,
     /// Resolves an optional node label string.
     pub node_label: &'a dyn Fn(NodeId, &N) -> Option<String>,
     /// Resolves an optional edge label string.
@@ -163,16 +176,17 @@ pub struct IndexedPaintFrameInput<'a, 'scene, NK, EK, N, E> {
 /// resolves an optional label string for an edge; edges without a label produce
 /// no edge-label primitive.
 pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
-    build_paint_frame_with_runtime(input, None)
+    build_paint_frame_with_runtime::<N, E, std::collections::hash_map::RandomState>(input, None)
 }
 
 /// Build a paint frame using synchronized scene-owned spatial-index state.
-pub fn build_indexed_paint_frame<NK, EK, N, E>(
-    input: IndexedPaintFrameInput<'_, '_, NK, EK, N, E>,
+pub fn build_indexed_paint_frame<NK, EK, N, E, S>(
+    input: IndexedPaintFrameInput<'_, '_, NK, EK, N, E, S>,
 ) -> PaintFrame
 where
     NK: Eq + std::hash::Hash,
     EK: Eq + std::hash::Hash,
+    S: BuildHasher + Default + Clone,
 {
     let IndexedPaintFrameInput {
         synced,
@@ -200,10 +214,13 @@ where
     )
 }
 
-fn build_paint_frame_with_runtime<N, E>(
+fn build_paint_frame_with_runtime<N, E, S>(
     input: PaintFrameInput<'_, N, E>,
-    runtime: Option<&GraphRuntime>,
-) -> PaintFrame {
+    runtime: Option<&GraphRuntime<S>>,
+) -> PaintFrame
+where
+    S: BuildHasher + Default + Clone,
+{
     let PaintFrameInput {
         graph,
         node_position,
@@ -281,19 +298,24 @@ fn build_paint_frame_with_runtime<N, E>(
         obstacles_screen.push(viewport.world_to_screen(world));
     }
     let obstacle_cell = style.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let obstacles_screen_grid = ObstacleGrid::new(&obstacles_screen, obstacle_cell);
+    let obstacles_screen_grid =
+        ObstacleGrid::new_with_hasher(&obstacles_screen, obstacle_cell, S::default());
     // An empty grid used only for culling: the cull test only needs the curve's
     // bounding box, so it skips node avoidance (which is applied later, when
     // the edge is actually drawn). This keeps off-screen edges cheap.
-    let empty_obstacle_grid = ObstacleGrid::new(&[], obstacle_cell);
+    let empty_obstacle_grid = ObstacleGrid::new_with_hasher(&[], obstacle_cell, S::default());
 
     // The zoom-invariant per-edge preprocessing comes from the runtime when
     // supplied (borrowed, no copy); otherwise build it here (linear scan). It
     // holds the candidate edges, parallel groups, midpoints/normals, and the
     // density grid.
-    let prep: std::borrow::Cow<'_, crate::runtime::EdgePrep> = match runtime {
+    let prep: std::borrow::Cow<'_, crate::runtime::EdgePrep<S>> = match runtime {
         Some(rt) => std::borrow::Cow::Borrowed(rt.edges()),
-        None => std::borrow::Cow::Owned(crate::runtime::build_edge_prep(graph, node_position)),
+        None => std::borrow::Cow::Owned(crate::runtime::build_edge_prep(
+            graph,
+            node_position,
+            S::default(),
+        )),
     };
     let has_reverse = &prep.has_reverse;
     let parallel = &prep.parallel;
@@ -568,16 +590,35 @@ const CLUSTER_NORMAL_OFFSET: f32 = 0.3;
 /// A uniform grid over obstacle node positions, so an edge only tests the
 /// nodes near its chord instead of every node in the graph.
 #[doc(hidden)]
-pub struct ObstacleGrid {
+pub struct ObstacleGrid<S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
     cell_size: f32,
-    cells: std::collections::HashMap<(i32, i32), Vec<Vec2>>,
+    cells: HashMap<(i32, i32), Vec<Vec2>, S>,
 }
 
+#[doc(hidden)]
 impl ObstacleGrid {
+    /// Create an empty grid using the default SipHash hasher.
     #[doc(hidden)]
     pub fn new(obstacles: &[Vec2], cell_size: f32) -> Self {
-        let mut cells: std::collections::HashMap<(i32, i32), Vec<Vec2>> =
-            std::collections::HashMap::new();
+        Self::new_with_hasher(
+            obstacles,
+            cell_size,
+            std::collections::hash_map::RandomState::default(),
+        )
+    }
+}
+
+impl<S> ObstacleGrid<S>
+where
+    S: BuildHasher + Default + Clone,
+{
+    #[doc(hidden)]
+    pub fn new_with_hasher(obstacles: &[Vec2], cell_size: f32, hasher: S) -> Self {
+        let mut cells: HashMap<(i32, i32), Vec<Vec2>, S> =
+            HashMap::with_capacity_and_hasher(obstacles.len(), hasher);
         for &o in obstacles {
             let cell = (
                 (o.x / cell_size).floor() as i32,
@@ -635,11 +676,11 @@ impl ObstacleGrid {
 /// side).
 #[doc(hidden)]
 pub fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
-    let grid = crate::runtime::DensityGrid::new(midpoints, radius);
+    let grid: crate::runtime::DensityGrid<std::collections::hash_map::RandomState> =
+        crate::runtime::DensityGrid::new(midpoints, radius);
     let all: Vec<usize> = (0..midpoints.len()).collect();
     signed_densities_for(&grid, midpoints, normals, radius, &all)
 }
-
 /// Compute the signed density for only the edges whose indices are listed.
 ///
 /// The grid is built over every edge's midpoint (so off-screen neighbors still
@@ -647,13 +688,16 @@ pub fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Ve
 /// the requested indices. This lets the paint layer compute density for just
 /// the visible edges after culling, instead of every edge in the graph.
 #[doc(hidden)]
-pub fn signed_densities_for(
-    grid: &crate::runtime::DensityGrid,
+pub fn signed_densities_for<S>(
+    grid: &crate::runtime::DensityGrid<S>,
     midpoints: &[Vec2],
     normals: &[Vec2],
     radius: f32,
     indices: &[usize],
-) -> Vec<f32> {
+) -> Vec<f32>
+where
+    S: BuildHasher + Default + Clone,
+{
     let mut result = vec![0.0f32; midpoints.len()];
     for &i in indices {
         let mut signed = 0.0f32;
@@ -698,12 +742,15 @@ pub fn signed_densities_for(
 /// outward rather than inward. The cluster bow is a fixed fraction of the edge
 /// length, independent of local density.
 #[doc(hidden)]
-pub fn edge_control_point(
+pub fn edge_control_point<S>(
     source: Vec2,
     target: Vec2,
-    ctx: &EdgeCurveContext<'_>,
+    ctx: &EdgeCurveContext<'_, S>,
     cluster: Option<(Vec2, f32)>,
-) -> Vec2 {
+) -> Vec2
+where
+    S: BuildHasher + Default + Clone,
+{
     let dir = target - source;
     let Some(len) = finite_chord_length(source, target) else {
         // No finite non-zero chord can be normalized. Logical self-loops are
@@ -809,15 +856,17 @@ pub fn edge_control_point(
 /// by the remaining clearance. This handles obstacles anywhere along the chord,
 /// not just at its midpoint. The edge's own endpoints are skipped.
 #[doc(hidden)]
-pub fn apply_node_avoidance(
+pub fn apply_node_avoidance<S>(
     control: &mut Vec2,
     source: Vec2,
     target: Vec2,
     midpoint: Vec2,
     unit: Vec2,
     normal: Vec2,
-    ctx: &EdgeCurveContext<'_>,
-) {
+    ctx: &EdgeCurveContext<'_, S>,
+) where
+    S: BuildHasher + Default + Clone,
+{
     let half_len = (target - source).length() * 0.5;
     // Cap the total push so a short edge (e.g. at very low zoom, where edges
     // are only a few pixels on screen) does not bow far beyond its own length.
@@ -875,7 +924,10 @@ pub fn apply_node_avoidance(
 /// Per-edge geometry context shared by the paint layer and hit testing so the
 /// drawn and selectable curves always match.
 #[doc(hidden)]
-pub struct EdgeCurveContext<'a> {
+pub struct EdgeCurveContext<'a, S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
     /// This edge's index among all candidate edges.
     pub index: usize,
     /// Signed local edge density (neighbors on the left minus on the right).
@@ -891,7 +943,7 @@ pub struct EdgeCurveContext<'a> {
     pub parallel: &'a [Option<(usize, usize)>],
     /// A grid over obstacle node positions the edge should bow around, in the
     /// same coordinate space as the edge's endpoints.
-    pub obstacles: &'a ObstacleGrid,
+    pub obstacles: &'a ObstacleGrid<S>,
     /// Node radius, used to size the clearance around obstacle nodes.
     pub node_radius: f32,
 }
@@ -927,15 +979,18 @@ pub fn shared_cluster_center(
 /// A zero-length chord is returned as a point; graph identity decides whether
 /// the edge is a true self-loop and therefore uses viewport-dependent onigiri
 /// geometry.
-pub fn edge_curve_bbox(
+pub fn edge_curve_bbox<S>(
     source: Vec2,
     target: Vec2,
     index: usize,
     has_reverse: &[bool],
     parallel: &[Option<(usize, usize)>],
     cluster: Option<(Vec2, f32)>,
-    obstacles: &ObstacleGrid,
-) -> (Vec2, Vec2) {
+    obstacles: &ObstacleGrid<S>,
+) -> (Vec2, Vec2)
+where
+    S: BuildHasher + Default + Clone,
+{
     // A zero-length chord is only a degenerate non-loop here: callers use the
     // graph edge identity to route true self-loops through self_loop_path. Do
     // not manufacture a loop-like control point from coincident coordinates,
@@ -992,15 +1047,18 @@ pub fn edge_curve_bbox(
 /// segment trimmed to the node boundaries. Both the paint layer and hit testing
 /// use this so the drawn and selectable geometry always match.
 #[doc(hidden)]
-pub fn edge_path<N, E>(
+pub fn edge_path<N, E, S>(
     edge: &Edge<E>,
-    ctx: &EdgeCurveContext<'_>,
+    ctx: &EdgeCurveContext<'_, S>,
     graph: &Graph<N, E>,
     node_position: &dyn Fn(NodeId) -> Option<Vec2>,
     node_cluster_center: &dyn Fn(NodeId) -> Option<(Vec2, f32)>,
     viewport: &Viewport,
     style: &GraphStyle,
-) -> Vec<Bezier> {
+) -> Vec<Bezier>
+where
+    S: BuildHasher + Default + Clone,
+{
     let source =
         viewport.world_to_screen(node_position(edge.source).expect("edge source has a position"));
     let target =

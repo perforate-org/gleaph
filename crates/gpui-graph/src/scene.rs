@@ -5,7 +5,7 @@
 //! not own a particular viewport, so the same scene can be rendered through
 //! multiple independent views (Invariant 9).
 
-use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 use glam::Vec2;
 use slotmap::SecondaryMap;
@@ -45,8 +45,11 @@ impl Default for NodeSceneState {
 pub struct EdgeSceneState {}
 
 /// Shared visualization state for a graph (§9).
-pub struct GraphScene<NK, EK, N = (), E = ()> {
-    keyed: KeyedGraph<NK, EK, N, E>,
+pub struct GraphScene<NK, EK, N = (), E = (), S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
+    keyed: KeyedGraph<NK, EK, N, E, S>,
     node_scene: SecondaryMap<NodeId, NodeSceneState>,
     edge_scene: SecondaryMap<EdgeId, EdgeSceneState>,
     layout_graph: LayoutGraph,
@@ -54,7 +57,7 @@ pub struct GraphScene<NK, EK, N = (), E = ()> {
     /// Maps a node's stable identity to its dense index in `layout_graph` and
     /// `layout_state`, so per-node lookups (e.g. cluster centers) are O(1)
     /// instead of a linear scan of `layout_graph.node_ids`.
-    node_index: HashMap<NodeId, usize>,
+    node_index: std::collections::HashMap<NodeId, usize, S>,
     engine: Box<dyn LayoutEngine>,
     controller: LayoutController,
     placement: Placement,
@@ -65,6 +68,7 @@ pub struct GraphScene<NK, EK, N = (), E = ()> {
     style_revision: u64,
 }
 
+/// A scene using the default SipHash hasher.
 impl<NK, EK, N, E> GraphScene<NK, EK, N, E>
 where
     NK: Eq + std::hash::Hash,
@@ -72,8 +76,21 @@ where
 {
     /// Create an empty scene with a fixed layout.
     pub fn new() -> Self {
+        Self::with_hasher(std::collections::hash_map::RandomState::default())
+    }
+}
+
+impl<NK, EK, N, E, S> GraphScene<NK, EK, N, E, S>
+where
+    NK: Eq + std::hash::Hash,
+    EK: Eq + std::hash::Hash,
+    S: BuildHasher + Default + Clone,
+{
+    /// Create an empty scene with an explicit hasher shared by the key maps,
+    /// the node index, and any derived runtime index.
+    pub fn with_hasher(hasher: S) -> Self {
         Self {
-            keyed: KeyedGraph::new(),
+            keyed: KeyedGraph::with_hasher(hasher.clone()),
             node_scene: SecondaryMap::new(),
             edge_scene: SecondaryMap::new(),
             layout_graph: LayoutGraph {
@@ -83,7 +100,7 @@ where
                 topology_revision: 0,
             },
             layout_state: LayoutState::new(),
-            node_index: HashMap::new(),
+            node_index: std::collections::HashMap::with_hasher(hasher),
             engine: Box::new(crate::layout::FixedLayout),
             controller: LayoutController::new(),
             placement: Placement::default(),
@@ -121,8 +138,8 @@ where
     /// revision is stale.
     pub fn sync_runtime<'a>(
         &'a self,
-        runtime: &'a mut crate::runtime::GraphRuntime,
-    ) -> crate::runtime::SyncedGraphRuntime<'a, NK, EK, N, E> {
+        runtime: &'a mut crate::runtime::GraphRuntime<S>,
+    ) -> crate::runtime::SyncedGraphRuntime<'a, NK, EK, N, E, S> {
         let source = crate::runtime::RuntimeSource::from_scene(self);
         if runtime.is_stale_for(&source) {
             runtime.rebuild_from_source(source);
@@ -263,7 +280,7 @@ where
         let prev_ids: std::collections::HashSet<NodeId> =
             self.layout_graph.node_ids.iter().copied().collect();
         let new_ids: Vec<NodeId> = self.graph().nodes().map(|(id, _)| id).collect();
-        let index_of: HashMap<NodeId, usize> =
+        let index_of: std::collections::HashMap<NodeId, usize, S> =
             new_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
 
         let mut layout_state = LayoutState::new();
@@ -378,13 +395,14 @@ where
     }
 }
 
-impl<NK, EK, N, E> Default for GraphScene<NK, EK, N, E>
+impl<NK, EK, N, E, S> Default for GraphScene<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash,
     EK: Eq + std::hash::Hash,
+    S: BuildHasher + Default + Clone,
 {
     fn default() -> Self {
-        Self::new()
+        Self::with_hasher(S::default())
     }
 }
 
@@ -409,6 +427,28 @@ mod tests {
         let mut runtime = GraphRuntime::new();
         s.sync_runtime(&mut runtime);
         runtime
+    }
+
+    #[test]
+    fn with_hasher_builds_scene_and_runtime_with_chosen_hasher() {
+        let mut s: GraphScene<&str, &str, &str, &str, rapidhash::fast::RandomState> =
+            GraphScene::with_hasher(rapidhash::fast::RandomState::default());
+        let delta = s.merge(GraphBatch::new().node("a", "A").node("b", "B").edge(
+            "ab",
+            "a",
+            "b",
+            EdgeDirection::Directed,
+            "knows",
+        ));
+        assert_eq!(delta.added_nodes.len(), 2);
+        assert_eq!(delta.added_edges.len(), 1);
+        assert!(s.node_id(&"a").is_some());
+        assert!(s.edge_id(&"ab").is_some());
+
+        // The runtime shares the scene's hasher and builds its index.
+        let mut rt = GraphRuntime::<rapidhash::fast::RandomState>::default();
+        let synced = s.sync_runtime(&mut rt);
+        assert_eq!(synced.edges().edge_ids.len(), 1);
     }
 
     #[test]

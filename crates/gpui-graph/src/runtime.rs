@@ -13,9 +13,11 @@
 //! reused across many pan/zoom frames. The paint layer then does only the
 //! per-visible-edge work each frame.
 
+use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use crate::graph::{EdgeId, Graph, NodeId};
+use crate::hash::{HashMap, HashSet};
 use crate::paint::{edge_curve_bbox, finite_chord_length, shared_cluster_center};
 use crate::scene::GraphScene;
 use crate::viewport::WorldBounds;
@@ -133,17 +135,36 @@ fn cell_of(p: glam::Vec2) -> Cell {
 
 /// A uniform grid over edge midpoints used to count nearby edges in O(E).
 #[derive(Debug, Clone, Default)]
-pub struct DensityGrid {
+pub struct DensityGrid<S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
     cell_size: f32,
-    cells: std::collections::HashMap<DensityCell, Vec<usize>>,
+    cells: HashMap<DensityCell, Vec<usize>, S>,
 }
 
+/// A uniform grid over edge midpoints using the default SipHash hasher.
 impl DensityGrid {
     /// Bucket the given midpoints into cells of size `radius`.
     pub fn new(midpoints: &[glam::Vec2], radius: f32) -> Self {
+        Self::new_with_hasher(
+            midpoints,
+            radius,
+            std::collections::hash_map::RandomState::default(),
+        )
+    }
+}
+
+impl<S> DensityGrid<S>
+where
+    S: BuildHasher + Default + Clone,
+{
+    /// Bucket the given midpoints into cells of size `radius` with a custom
+    /// hasher.
+    pub fn new_with_hasher(midpoints: &[glam::Vec2], radius: f32, hasher: S) -> Self {
         let cell_size = radius;
-        let mut cells: std::collections::HashMap<DensityCell, Vec<usize>> =
-            std::collections::HashMap::new();
+        let mut cells: HashMap<DensityCell, Vec<usize>, S> =
+            HashMap::with_capacity_and_hasher(midpoints.len(), hasher);
         for (i, m) in midpoints.iter().enumerate() {
             let cell = (
                 density_cell_coordinate(m.x, cell_size),
@@ -184,8 +205,11 @@ impl DensityGrid {
 /// A source is created only by [`GraphScene::sync_runtime`]. Keeping the scene
 /// itself private here ensures graph data, positions, cluster geometry, and
 /// revision markers all come from one immutable scene snapshot.
-pub(crate) struct RuntimeSource<'a, NK, EK, N, E> {
-    scene: &'a GraphScene<NK, EK, N, E>,
+pub(crate) struct RuntimeSource<'a, NK, EK, N, E, S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
+    scene: &'a GraphScene<NK, EK, N, E, S>,
     source_identity: Arc<()>,
     topology_revision: u64,
     geometry_revision: u64,
@@ -197,12 +221,18 @@ pub(crate) struct RuntimeSource<'a, NK, EK, N, E> {
 /// borrow of the scene prevents topology or geometry mutation for as long as
 /// indexed rendering can use the proof, while the runtime borrow prevents its
 /// derived state from being replaced independently.
-pub struct SyncedGraphRuntime<'a, NK, EK, N, E> {
-    pub(crate) scene: &'a GraphScene<NK, EK, N, E>,
-    pub(crate) runtime: &'a GraphRuntime,
+pub struct SyncedGraphRuntime<'a, NK, EK, N, E, S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
+    pub(crate) scene: &'a GraphScene<NK, EK, N, E, S>,
+    pub(crate) runtime: &'a GraphRuntime<S>,
 }
 
-impl<'a, NK, EK, N, E> SyncedGraphRuntime<'a, NK, EK, N, E> {
+impl<'a, NK, EK, N, E, S> SyncedGraphRuntime<'a, NK, EK, N, E, S>
+where
+    S: BuildHasher + Default + Clone,
+{
     /// Node ids whose positions may fall within `bounds` expanded by `margin`.
     ///
     /// The proof ties this derived query to the immutable scene snapshot that
@@ -220,17 +250,18 @@ impl<'a, NK, EK, N, E> SyncedGraphRuntime<'a, NK, EK, N, E> {
 
     /// Borrow the zoom-invariant edge preparation for this synchronized
     /// snapshot. The returned arrays are valid only while this proof lives.
-    pub fn edges(&self) -> &EdgePrep {
+    pub fn edges(&self) -> &EdgePrep<S> {
         self.runtime.edges()
     }
 }
 
-impl<'a, NK, EK, N, E> RuntimeSource<'a, NK, EK, N, E>
+impl<'a, NK, EK, N, E, S> RuntimeSource<'a, NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash,
     EK: Eq + std::hash::Hash,
+    S: BuildHasher + Default + Clone,
 {
-    pub(crate) fn from_scene(scene: &'a GraphScene<NK, EK, N, E>) -> Self {
+    pub(crate) fn from_scene(scene: &'a GraphScene<NK, EK, N, E, S>) -> Self {
         Self {
             scene,
             source_identity: scene.graph().source_identity(),
@@ -246,7 +277,10 @@ where
 /// geometry revisions (not on zoom or the viewport), so the paint layer can
 /// build a frame from just the visible edges each frame.
 #[derive(Debug, Clone, Default)]
-pub struct EdgePrep {
+pub struct EdgePrep<S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
     /// Edge identity per candidate index.
     pub edge_ids: Vec<EdgeId>,
     /// Source world position per candidate index.
@@ -263,20 +297,32 @@ pub struct EdgePrep {
     /// Unit left normal per candidate index.
     pub normals: Vec<glam::Vec2>,
     /// Grid over every edge's midpoint for local-density queries.
-    pub density_grid: DensityGrid,
+    pub density_grid: DensityGrid<S>,
 }
 
 /// Build the zoom-invariant per-edge preprocessing for a graph.
 ///
 /// `node_position` resolves a node's world-space position. Edges whose endpoints
 /// lack a position are omitted, matching how the paint layer skips them.
-pub(crate) fn build_edge_prep<N, E>(
+pub(crate) fn build_edge_prep<N, E, S>(
     graph: &Graph<N, E>,
     node_position: &dyn Fn(NodeId) -> Option<glam::Vec2>,
-) -> EdgePrep {
-    let mut prep = EdgePrep::default();
-    let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-        std::collections::HashMap::new();
+    hasher: S,
+) -> EdgePrep<S>
+where
+    S: BuildHasher + Default + Clone,
+{
+    let mut prep = EdgePrep {
+        edge_ids: Vec::new(),
+        source: Vec::new(),
+        target: Vec::new(),
+        has_reverse: Vec::new(),
+        parallel: Vec::new(),
+        midpoints: Vec::new(),
+        normals: Vec::new(),
+        density_grid: DensityGrid::default(),
+    };
+    let mut groups: HashMap<(NodeId, NodeId), Vec<usize>, S> = HashMap::with_hasher(hasher.clone());
     for (id, edge) in graph.edges() {
         let (Some(source), Some(target)) = (node_position(edge.source), node_position(edge.target))
         else {
@@ -312,7 +358,8 @@ pub(crate) fn build_edge_prep<N, E>(
             prep.parallel.push(None);
         }
     }
-    prep.density_grid = DensityGrid::new(&prep.midpoints, crate::paint::DENSITY_RADIUS);
+    prep.density_grid =
+        DensityGrid::new_with_hasher(&prep.midpoints, crate::paint::DENSITY_RADIUS, hasher);
     prep
 }
 
@@ -345,7 +392,10 @@ pub(crate) fn build_edge_prep<N, E>(
 /// let _ = runtime.visible_edge_candidates(&bounds, 0.0);
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct GraphRuntime {
+pub struct GraphRuntime<S = std::collections::hash_map::RandomState>
+where
+    S: BuildHasher + Default + Clone,
+{
     /// Identity of the graph whose derived state is held below. `None` means
     /// the runtime has never been bound and is therefore always stale.
     source_identity: Option<Arc<()>>,
@@ -354,24 +404,30 @@ pub struct GraphRuntime {
     /// The geometry revision represented by this runtime.
     geometry_revision: u64,
     /// Node ids bucketed by the grid cell of their position.
-    node_cells: std::collections::HashMap<Cell, Vec<NodeId>>,
+    node_cells: HashMap<Cell, Vec<NodeId>, S>,
     /// Edge candidate indices bucketed by every grid cell their curve bounding
     /// box (source, target, and control point) covers.
-    edge_cells: std::collections::HashMap<Cell, Vec<usize>>,
+    edge_cells: HashMap<Cell, Vec<usize>, S>,
     /// Edge candidate indices whose bounding boxes cover more than the cell
     /// enumeration limit. They are checked on every normal query so oversized
     /// edges are never silently dropped.
     edge_overflow: Vec<usize>,
     /// The zoom-invariant per-edge preprocessing.
-    edges: EdgePrep,
+    edges: EdgePrep<S>,
 }
 
+/// An empty runtime using the default SipHash hasher.
 impl GraphRuntime {
     /// Create an empty runtime.
     pub fn new() -> Self {
         Self::default()
     }
+}
 
+impl<S> GraphRuntime<S>
+where
+    S: BuildHasher + Default + Clone,
+{
     /// The topology revision this runtime was synced to.
     pub fn topology_revision(&self) -> u64 {
         self.topology_revision
@@ -387,7 +443,7 @@ impl GraphRuntime {
     /// pair happens to be zero.
     pub(crate) fn is_stale_for<NK, EK, N, E>(
         &self,
-        source: &RuntimeSource<'_, NK, EK, N, E>,
+        source: &RuntimeSource<'_, NK, EK, N, E, S>,
     ) -> bool {
         self.source_identity
             .as_ref()
@@ -414,7 +470,7 @@ impl GraphRuntime {
     /// new source identity and old derived structures (or vice versa).
     pub(crate) fn rebuild_from_source<NK, EK, N, E>(
         &mut self,
-        source: RuntimeSource<'_, NK, EK, N, E>,
+        source: RuntimeSource<'_, NK, EK, N, E, S>,
     ) where
         NK: Eq + std::hash::Hash,
         EK: Eq + std::hash::Hash,
@@ -422,7 +478,7 @@ impl GraphRuntime {
         *self = Self::build_from_source(&source);
     }
 
-    fn build_from_source<NK, EK, N, E>(source: &RuntimeSource<'_, NK, EK, N, E>) -> Self
+    fn build_from_source<NK, EK, N, E>(source: &RuntimeSource<'_, NK, EK, N, E, S>) -> Self
     where
         NK: Eq + std::hash::Hash,
         EK: Eq + std::hash::Hash,
@@ -435,7 +491,7 @@ impl GraphRuntime {
             geometry_revision: source.geometry_revision,
             ..Self::default()
         };
-        runtime.edges = build_edge_prep(graph, &|id| scene.node_position(id));
+        runtime.edges = build_edge_prep(graph, &|id| scene.node_position(id), S::default());
 
         for (id, _) in graph.nodes() {
             let Some(pos) = scene.node_position(id) else {
@@ -450,7 +506,8 @@ impl GraphRuntime {
         // index remains a superset of the final precise curve cull. An
         // oversized box goes to `edge_overflow` rather than enumerating an
         // unbounded number of cells.
-        let empty_obstacle_grid = crate::paint::ObstacleGrid::new(&[], 1.0);
+        let empty_obstacle_grid =
+            crate::paint::ObstacleGrid::new_with_hasher(&[], 1.0, S::default());
         for (index, (source_position, target_position)) in runtime
             .edges
             .source
@@ -525,7 +582,7 @@ impl GraphRuntime {
     /// [`Self::edges`].
     pub(crate) fn visible_edge_candidates(&self, bounds: &WorldBounds, margin: f32) -> Vec<usize> {
         let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen: HashSet<usize, S> = HashSet::with_hasher(S::default());
         let slack = margin + EDGE_INDEX_SLACK;
         let Some(rect) = CellRect::from_query(bounds, slack) else {
             return (0..self.edges.edge_ids.len()).collect();
@@ -554,7 +611,7 @@ impl GraphRuntime {
     }
 
     /// The zoom-invariant per-edge preprocessing.
-    pub(crate) fn edges(&self) -> &EdgePrep {
+    pub(crate) fn edges(&self) -> &EdgePrep<S> {
         &self.edges
     }
 }

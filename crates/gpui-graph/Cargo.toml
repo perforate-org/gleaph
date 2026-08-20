@@ -14,6 +14,7 @@ glam = "0.33"
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 gpui = { version = "0.2.2", features = ["test-support"] }
+rapidhash.workspace = true
 
 [[bench]]
 name = "paint_bench"

@@ -9,6 +9,7 @@
 //! - graph rendering vs application UI.
 
 pub mod graph;
+pub mod hash;
 pub mod hit_test;
 pub mod interaction;
 pub mod keyed_graph;

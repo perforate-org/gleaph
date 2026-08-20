@@ -406,6 +406,16 @@ pub struct KeyedGraph<NK, EK, N = (), E = ()> {
 
 The exact container types remain implementation details.
 
+The hash function behind the crate's `HashMap`/`HashSet`s is parameterized by
+a `std::hash::BuildHasher` type parameter `S` (defaulting to SipHash
+`std::collections::hash_map::RandomState`). `KeyedGraph`, `GraphScene`, and
+`GraphRuntime` each carry `S`, so the same hasher backs the external-key maps,
+the node index, and the derived spatial grids consistently across one scene
+and its runtime. `new()` stays SipHash-only (mirroring `std`), while
+`with_hasher(S)` lets callers choose a faster non-cryptographic hasher such as
+`rapidhash::fast::RandomState`. Benchmarking (see `benches/paint_bench.rs`)
+measures the hasher's contribution to the per-frame paint cost.
+
 `KeyedGraph` owns the graph and both external-key maps as one consistency
 boundary. Its graph accessor is read-only; there is intentionally no raw
 mutable graph escape. All topology mutations must flow through `merge` or

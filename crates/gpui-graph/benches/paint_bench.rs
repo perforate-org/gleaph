@@ -30,8 +30,11 @@ use gpui_graph::{
 /// A synthetic graph scene with deterministic node positions. Runtime setup
 /// deliberately goes through `GraphScene::sync_runtime`, the same public
 /// synchronization boundary used by production views.
-struct BenchGraph {
-    scene: GraphScene<usize, usize, (), ()>,
+struct BenchGraph<S = std::collections::hash_map::RandomState>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
+    scene: GraphScene<usize, usize, (), (), S>,
 }
 
 /// Layout engine used only to make the benchmark's cluster scenario exercise
@@ -64,50 +67,7 @@ impl BenchGraph {
     /// Build a grid graph with `side * side` nodes and edges to the right and
     /// down neighbors, plus a few long-range edges to create density variation.
     fn grid(side: usize) -> Self {
-        let mut batch = GraphBatch::new();
-        let spacing = 60.0;
-        let mut ids = Vec::new();
-        for y in 0..side {
-            for x in 0..side {
-                let id = y * side + x;
-                batch = batch.node(id, ());
-                ids.push(id);
-            }
-        }
-        let at = |x: usize, y: usize| ids[y * side + x];
-        let mut edge_key = 0;
-        for y in 0..side {
-            for x in 0..side {
-                let id = at(x, y);
-                if x + 1 < side {
-                    batch = batch.edge(edge_key, id, at(x + 1, y), EdgeDirection::Directed, ());
-                    edge_key += 1;
-                }
-                if y + 1 < side {
-                    batch = batch.edge(edge_key, id, at(x, y + 1), EdgeDirection::Directed, ());
-                    edge_key += 1;
-                }
-            }
-        }
-        // A few long-range edges to vary local density.
-        for i in 0..(side / 4) {
-            let a = at(i * 4 % side, i % side);
-            let b = at((i * 7 + 3) % side, (i * 5 + 1) % side);
-            if a != b {
-                batch = batch.edge(edge_key, a, b, EdgeDirection::Directed, ());
-                edge_key += 1;
-            }
-        }
-        let mut scene = GraphScene::new();
-        scene.merge(batch);
-        for y in 0..side {
-            for x in 0..side {
-                let id = at(x, y);
-                let node = scene.node_id(&id).expect("grid node exists");
-                scene.set_position(node, Vec2::new(x as f32 * spacing, y as f32 * spacing));
-            }
-        }
-        Self { scene }
+        Self::grid_with_hasher(side, std::collections::hash_map::RandomState::default())
     }
 
     /// Build a complete graph on `n` nodes placed on a circle, so every edge's
@@ -176,6 +136,60 @@ impl BenchGraph {
         for i in 0..pairs * 2 {
             let node = scene.node_id(&i).expect("parallel graph node exists");
             scene.set_position(node, Vec2::new(i as f32 * 100.0, 0.0));
+        }
+        Self { scene }
+    }
+}
+
+impl<S> BenchGraph<S>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
+    /// Build a grid graph with `side * side` nodes and edges to the right and
+    /// down neighbors, plus a few long-range edges to create density variation.
+    fn grid_with_hasher(side: usize, hasher: S) -> Self {
+        let mut batch = GraphBatch::new();
+        let spacing = 60.0;
+        let mut ids = Vec::new();
+        for y in 0..side {
+            for x in 0..side {
+                let id = y * side + x;
+                batch = batch.node(id, ());
+                ids.push(id);
+            }
+        }
+        let at = |x: usize, y: usize| ids[y * side + x];
+        let mut edge_key = 0;
+        for y in 0..side {
+            for x in 0..side {
+                let id = at(x, y);
+                if x + 1 < side {
+                    batch = batch.edge(edge_key, id, at(x + 1, y), EdgeDirection::Directed, ());
+                    edge_key += 1;
+                }
+                if y + 1 < side {
+                    batch = batch.edge(edge_key, id, at(x, y + 1), EdgeDirection::Directed, ());
+                    edge_key += 1;
+                }
+            }
+        }
+        // A few long-range edges to vary local density.
+        for i in 0..(side / 4) {
+            let a = at(i * 4 % side, i % side);
+            let b = at((i * 7 + 3) % side, (i * 5 + 1) % side);
+            if a != b {
+                batch = batch.edge(edge_key, a, b, EdgeDirection::Directed, ());
+                edge_key += 1;
+            }
+        }
+        let mut scene = GraphScene::with_hasher(hasher);
+        scene.merge(batch);
+        for y in 0..side {
+            for x in 0..side {
+                let id = at(x, y);
+                let node = scene.node_id(&id).expect("grid node exists");
+                scene.set_position(node, Vec2::new(x as f32 * spacing, y as f32 * spacing));
+            }
         }
         Self { scene }
     }
@@ -253,11 +267,13 @@ fn paint_frame(graph: &BenchGraph, viewport: &Viewport, labels: bool) {
 }
 
 /// Build a paint frame using the spatial index, given a prebuilt runtime.
-fn paint_frame_indexed_with(
+fn paint_frame_indexed_with<S>(
     viewport: &Viewport,
     labels: bool,
-    synced: &SyncedGraphRuntime<'_, usize, usize, (), ()>,
-) {
+    synced: &SyncedGraphRuntime<'_, usize, usize, (), (), S>,
+) where
+    S: std::hash::BuildHasher + Default + Clone,
+{
     let style = GraphStyle::default();
     let selection = Selection::new();
     let hover = Hover::default();
@@ -408,5 +424,58 @@ fn bench_paint_indexed(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_paint, bench_paint_indexed);
+/// Compare the indexed paint path under the default SipHash hasher against the
+/// same path under `rapidhash::fast::RandomState`, isolating the hasher's
+/// contribution to the per-frame spatial-grid cost.
+fn bench_paint_hashers(c: &mut Criterion) {
+    let mut group = c.benchmark_group("paint_frame_hasher");
+
+    for side in [20usize, 50usize] {
+        let graph = BenchGraph::grid(side);
+        let rapid_graph = BenchGraph::<rapidhash::fast::RandomState>::grid_with_hasher(
+            side,
+            rapidhash::fast::RandomState::default(),
+        );
+        let overview = overview_viewport(&graph);
+        let deep = deep_zoom_viewport(&graph);
+        let label = format!("{}x{}", side, side);
+
+        // Default SipHash hasher.
+        let mut sip = GraphRuntime::new();
+        let sip_synced = graph.scene.sync_runtime(&mut sip);
+        // rapidhash hasher.
+        let mut rapid = GraphRuntime::<rapidhash::fast::RandomState>::default();
+        let rapid_synced = rapid_graph.scene.sync_runtime(&mut rapid);
+
+        group.bench_with_input(
+            BenchmarkId::new("overview_sip", &label),
+            &(&overview, &sip_synced),
+            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("overview_rapid", &label),
+            &(&overview, &rapid_synced),
+            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("deep_zoom_sip", &label),
+            &(&deep, &sip_synced),
+            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("deep_zoom_rapid", &label),
+            &(&deep, &rapid_synced),
+            |b, (vp, proof)| b.iter(|| paint_frame_indexed_with(vp, false, proof)),
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_paint,
+    bench_paint_indexed,
+    bench_paint_hashers
+);
 criterion_main!(benches);

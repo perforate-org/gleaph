@@ -12,9 +12,10 @@
 //! underlying graph is intentionally exposed only through a shared reference;
 //! a raw mutable escape would allow callers to bypass the key maps.
 
-use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 use crate::graph::{EdgeDirection, EdgeId, Graph, GraphDelta, NodeId};
+use crate::hash::HashMap;
 use crate::patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
 
 /// A graph with external key mapping (§7).
@@ -22,23 +23,28 @@ use crate::patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
 /// `KeyedGraph` owns the graph-to-key correspondence. Use [`Self::merge`] or
 /// [`Self::apply`] for all mutations so node and edge key maps cannot diverge
 /// from graph topology.
+///
+/// The hasher `S` backs both external-key maps; it defaults to SipHash
+/// ([`std::collections::hash_map::RandomState`]).
 #[derive(Debug, Clone)]
-pub struct KeyedGraph<NK, EK, N = (), E = ()> {
+pub struct KeyedGraph<NK, EK, N = (), E = (), S = std::collections::hash_map::RandomState> {
     graph: Graph<N, E>,
-    node_keys: HashMap<NK, NodeId>,
-    edge_keys: HashMap<EK, crate::graph::EdgeId>,
+    node_keys: HashMap<NK, NodeId, S>,
+    edge_keys: HashMap<EK, crate::graph::EdgeId, S>,
 }
 
-impl<NK, EK, N, E> Default for KeyedGraph<NK, EK, N, E>
+impl<NK, EK, N, E, S> Default for KeyedGraph<NK, EK, N, E, S>
 where
     NK: Eq + std::hash::Hash,
     EK: Eq + std::hash::Hash,
+    S: BuildHasher + Default + Clone,
 {
     fn default() -> Self {
-        Self::new()
+        Self::with_hasher(S::default())
     }
 }
 
+/// A keyed graph using the default SipHash hasher.
 impl<NK, EK, N, E> KeyedGraph<NK, EK, N, E>
 where
     NK: Eq + std::hash::Hash,
@@ -46,10 +52,22 @@ where
 {
     /// Create an empty keyed graph.
     pub fn new() -> Self {
+        Self::with_hasher(std::collections::hash_map::RandomState::default())
+    }
+}
+
+impl<NK, EK, N, E, S> KeyedGraph<NK, EK, N, E, S>
+where
+    NK: Eq + std::hash::Hash,
+    EK: Eq + std::hash::Hash,
+    S: BuildHasher + Default + Clone,
+{
+    /// Create an empty keyed graph with an explicit hasher.
+    pub fn with_hasher(hasher: S) -> Self {
         Self {
             graph: Graph::new(),
-            node_keys: HashMap::new(),
-            edge_keys: HashMap::new(),
+            node_keys: HashMap::with_hasher(hasher.clone()),
+            edge_keys: HashMap::with_hasher(hasher),
         }
     }
 
@@ -182,6 +200,24 @@ mod tests {
     use super::*;
     use crate::graph::EdgeDirection;
     use crate::interaction::{Hover, Selection};
+
+    #[test]
+    fn with_hasher_builds_key_maps_with_chosen_hasher() {
+        let mut kg: KeyedGraph<&str, &str, (), (), rapidhash::fast::RandomState> =
+            KeyedGraph::with_hasher(rapidhash::fast::RandomState::default());
+        let delta = kg.merge(GraphBatch::new().node("a", ()).node("b", ()).edge(
+            "ab",
+            "a",
+            "b",
+            EdgeDirection::Directed,
+            (),
+        ));
+        assert_eq!(delta.added_nodes.len(), 2);
+        assert_eq!(delta.added_edges.len(), 1);
+        assert_eq!(kg.node_id(&"a"), Some(kg.node_id(&"a").unwrap()));
+        assert_eq!(kg.graph().node_count(), 2);
+        assert_eq!(kg.graph().edge_count(), 1);
+    }
 
     #[test]
     fn merge_reuses_existing_nodes() {

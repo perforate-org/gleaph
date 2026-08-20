@@ -70,7 +70,8 @@ pub fn hit_test<N, E>(
         .map(|world| viewport.world_to_screen(world))
         .collect();
     let obstacle_cell = style.node_radius * 2.0 + crate::paint::OBSTACLE_RADIUS;
-    let obstacles_grid = crate::paint::ObstacleGrid::new(&obstacles, obstacle_cell);
+    let obstacles_grid: crate::paint::ObstacleGrid<std::collections::hash_map::RandomState> =
+        crate::paint::ObstacleGrid::new(&obstacles, obstacle_cell);
     // Group edges by their (source, target) node pair to detect parallels, so
     // curve control points match the paint layer.
     let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
