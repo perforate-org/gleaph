@@ -280,29 +280,13 @@ where
         }
     }
 
-    // Collect obstacle node screen positions so edges can bow around nodes they
-    // would otherwise pass through. The grid lets each edge test only the nodes
-    // near its chord instead of every node.
-    let mut obstacles_screen: Vec<Vec2> = Vec::new();
-    for id in &node_ids {
-        let Some(world) = node_position(*id) else {
-            continue;
-        };
-        if world.x < visible.min.x - margin
-            || world.x > visible.max.x + margin
-            || world.y < visible.min.y - margin
-            || world.y > visible.max.y + margin
-        {
-            continue;
-        }
-        obstacles_screen.push(viewport.world_to_screen(world));
-    }
-    let obstacle_cell = style.node_radius * 2.0 + OBSTACLE_RADIUS;
-    let obstacles_screen_grid =
-        ObstacleGrid::new_with_hasher(&obstacles_screen, obstacle_cell, S::default());
     // An empty grid used only for culling: the cull test only needs the curve's
     // bounding box, so it skips node avoidance (which is applied later, when
-    // the edge is actually drawn). This keeps off-screen edges cheap.
+    // the edge is actually drawn). This keeps off-screen edges cheap. The same
+    // empty grid also serves as the obstacle context when every visible edge is
+    // a straight-line-LOD edge (which never reads obstacles), so no obstacle
+    // grid is built in the common zoomed-out case.
+    let obstacle_cell = style.node_radius * 2.0 + OBSTACLE_RADIUS;
     let empty_obstacle_grid = ObstacleGrid::new_with_hasher(&[], obstacle_cell, S::default());
 
     // The zoom-invariant per-edge preprocessing comes from the runtime when
@@ -422,6 +406,31 @@ where
         DENSITY_RADIUS,
         &curved_indices,
     );
+
+    // Build the obstacle grid only when at least one visible edge renders
+    // curved, since straight-line-LOD edges never read it. In the zoomed-out
+    // overview (every edge straight) this avoids building a grid over every
+    // visible node's position. When no edge is curved, the shared empty grid is
+    // used as the obstacle context.
+    let obstacles_screen_grid: ObstacleGrid<S> = if curved_indices.is_empty() {
+        empty_obstacle_grid
+    } else {
+        let mut obstacles_screen: Vec<Vec2> = Vec::new();
+        for id in &node_ids {
+            let Some(world) = node_position(*id) else {
+                continue;
+            };
+            if world.x < visible.min.x - margin
+                || world.x > visible.max.x + margin
+                || world.y < visible.min.y - margin
+                || world.y > visible.max.y + margin
+            {
+                continue;
+            }
+            obstacles_screen.push(viewport.world_to_screen(world));
+        }
+        ObstacleGrid::new_with_hasher(&obstacles_screen, obstacle_cell, S::default())
+    };
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
         let is_self_loop = edge.source == edge.target;
@@ -1092,8 +1101,7 @@ where
         // boundaries. Self-loops are handled above and never simplified. The
         // degenerate control point keeps the trimmed path a valid quadratic so
         // hit testing and label masking keep working unchanged.
-        let curve =
-            trim_curve_to_node_boundary(source, (source + target) * 0.5, target, style.node_radius);
+        let curve = straight_line_trim(source, target, style.node_radius);
         if finite_chord_length(curve.0, curve.2).is_some() {
             vec![curve]
         } else {
@@ -1163,6 +1171,67 @@ pub fn trim_curve_to_node_boundary(
     let t_start = boundary_t(source, control, target, source, gap, true);
     let t_end = boundary_t(source, control, target, target, gap, false);
     sub_bezier(source, control, target, t_start, t_end)
+}
+
+/// Trim a straight-line LOD edge from `source` to `target` so its endpoints
+/// stop just outside each node boundary, exactly like
+/// [`trim_curve_to_node_boundary`] with a control point at the chord midpoint.
+///
+/// A straight edge's control point equals the chord midpoint, so the "curve" is
+/// a line and the parameter where it leaves the source boundary and enters the
+/// target boundary can be solved analytically from a line-circle intersection
+/// instead of binary search. This is a pure geometry optimization: the returned
+/// degenerate quadratic is identical (up to float rounding) to the curve path,
+/// so hit testing, label masking, and rendering behave unchanged.
+#[doc(hidden)]
+fn straight_line_trim(source: Vec2, target: Vec2, radius: f32) -> Bezier {
+    let gap = radius + 2.0;
+    let t_start = line_boundary_t(source, target, source, gap, true);
+    let t_end = line_boundary_t(source, target, target, gap, false);
+    sub_bezier(source, (source + target) * 0.5, target, t_start, t_end)
+}
+
+/// Find the parameter `t` at which the straight segment from `p0` to `p2` first
+/// leaves (`leaving == true`) or last enters (`false`) the node boundary circle
+/// centered at `center` with radius `gap`.
+///
+/// The segment point is `P(t) = p0 + (p2 - p0)·t`. `|P(t) - center| = gap`
+/// expands to a quadratic in `t` whose two roots give the entry and exit
+/// parameters along the infinite line. For the source end (`center = p0`) the
+/// segment leaves the circle at the larger root; for the target end
+/// (`center = p2`) it enters at the smaller root. The result is clipped to
+/// `[0, 1]`, matching the bounds the binary search returns.
+fn line_boundary_t(p0: Vec2, p2: Vec2, center: Vec2, gap: f32, leaving: bool) -> f32 {
+    let d = p2 - p0;
+    let len_sq = d.length_squared();
+    // A zero-length chord cannot leave any circle; both endpoints coincide with
+    // the (single) node center, so the trimmed segment is empty. The paint layer
+    // rejects such degenerate paths anyway.
+    if len_sq == 0.0 {
+        return if leaving { 0.0 } else { 1.0 };
+    }
+    // |P(t) - center|^2 = gap^2 => a·t² + b·t + c = 0 with:
+    //   a = d·d
+    //   b = 2·d·(p0 - center)
+    //   c = |p0 - center|² - gap²
+    let oc = p0 - center;
+    let a = len_sq;
+    let b = 2.0 * d.dot(oc);
+    let c = oc.length_squared() - gap * gap;
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        // The chord does not reach `gap` from the center (nodes overlap); the
+        // binary search would converge to the degenerate endpoints.
+        return if leaving { 0.0 } else { 1.0 };
+    }
+    let sqrt_disc = disc.sqrt();
+    let t_lo = (-b - sqrt_disc) / (2.0 * a);
+    let t_hi = (-b + sqrt_disc) / (2.0 * a);
+    if leaving {
+        t_hi.clamp(0.0, 1.0)
+    } else {
+        t_lo.clamp(0.0, 1.0)
+    }
 }
 
 /// Find the parameter `t` where the curve first leaves (or last enters) the
@@ -3383,6 +3452,33 @@ mod tests {
         // lies on the chord; the path is identical to the straight case. This
         // only asserts the curved branch is taken and returns a valid segment.
         assert!(finite_chord_length(path[0].0, path[0].2).is_some());
+    }
+
+    #[test]
+    fn straight_line_trim_matches_binary_search() {
+        // The analytic straight-line trim must agree (within float tolerance)
+        // with the general curve trim when the control point is the chord
+        // midpoint, so the straight-LOD rendering and hit testing stay identical.
+        let radius = 6.0;
+        for (source, target) in [
+            (Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)),
+            (Vec2::new(0.0, 0.0), Vec2::new(-80.0, 60.0)),
+            (Vec2::new(10.0, -5.0), Vec2::new(0.0, 90.0)),
+        ] {
+            let analytic = straight_line_trim(source, target, radius);
+            let control = (source + target) * 0.5;
+            let binary = trim_curve_to_node_boundary(source, control, target, radius);
+            for (got, want) in [
+                (analytic.0, binary.0),
+                (analytic.1, binary.1),
+                (analytic.2, binary.2),
+            ] {
+                assert!(
+                    (got - want).length() < 0.5,
+                    "straight trim diverges: got {got:?}, want {want:?}"
+                );
+            }
+        }
     }
 
     #[test]

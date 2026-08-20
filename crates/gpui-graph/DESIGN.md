@@ -1534,20 +1534,32 @@ The runtime should eventually support:
 - aggregation,
 - zoom-dependent detail.
 
-Viewport culling (§20) is implemented. Edge simplification is implemented as
-straight-line LOD: a non-self-loop edge whose on-screen chord length is at or
-below `GraphStyle::edge_straight_threshold` pixels (default `0.0`, disabled) is
-rendered as a straight segment instead of a density/cluster/obstacle-avoiding
-curve. Because `edge_path` computes the trimmed quadratic with a degenerate
-control point at the chord midpoint, the drawn geometry, hit testing, and label
-masking all keep working unchanged. A straight-LOD edge does not bow, so the
-paint layer also skips its signed local-density computation; only the
-curved-visible subset runs the pairwise density loop, while the density grid is
-still built over every edge's midpoint so straight neighbors continue to count
-toward a curved edge's density (§18.3, §20). Self-loops are never simplified. The
-threshold is configurable rather than fixed so callers can balance curve
-fidelity against paint cost for their graph size and zoom range; benchmark data
-in `benches/paint_bench.rs` (`paint_frame_lod`) guides the choice.
+ Viewport culling (§20) is implemented. Edge simplification is implemented as
+ straight-line LOD: a non-self-loop edge whose on-screen chord length is at or
+ below `GraphStyle::edge_straight_threshold` pixels (default `0.0`, disabled) is
+ rendered as a straight segment instead of a density/cluster/obstacle-avoiding
+ curve. Because `edge_path` computes the trimmed quadratic with a degenerate
+ control point at the chord midpoint, the drawn geometry, hit testing, and label
+ masking all keep working unchanged. A straight-LOD edge does not bow, so the
+ paint layer also skips its signed local-density computation; only the
+ curved-visible subset runs the pairwise density loop, while the density grid is
+ still built over every edge's midpoint so straight neighbors continue to count
+ toward a curved edge's density (§18.3, §20). Self-loops are never simplified. The
+ threshold is configurable rather than fixed so callers can balance curve
+ fidelity against paint cost for their graph size and zoom range; benchmark data
+ in `benches/paint_bench.rs` (`paint_frame_lod`) guides the choice.
+
+ Two micro-optimizations keep the straight-LOD path cheap, because a straight
+ edge is geometrically a line even though it is represented as a degenerate
+ quadratic. `straight_line_trim` trims the segment against each node boundary by
+ solving the line-circle intersection analytically instead of the binary search
+ used for curved edges, so the trim no longer costs 20 Bézier evaluations per
+ boundary. And the per-frame obstacle grid is built only when at least one
+ visible edge renders curved; in the zoomed-out overview where every edge is
+ straight the grid is skipped entirely, so obstacle construction is proportional
+ to the curved-visible set rather than every visible node. Together with the
+ density skip these keep the paint cost proportional to the straight-LOD
+ surface rather than the full per-edge curve work.
 
 ---
 

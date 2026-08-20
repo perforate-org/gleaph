@@ -323,6 +323,31 @@ fn paint_frame_indexed_with<S>(
     std::hint::black_box(frame);
 }
 
+/// Build a paint frame using the spatial index with a caller-supplied style.
+/// Used to isolate the true per-frame cost of straight-line LOD in the indexed
+/// (prep-cached) path, so the prep rebuild is not counted.
+fn paint_frame_indexed_styled<S>(
+    viewport: &Viewport,
+    style: &GraphStyle,
+    synced: &SyncedGraphRuntime<'_, usize, usize, (), (), S>,
+) where
+    S: std::hash::BuildHasher + Default + Clone,
+{
+    let selection = Selection::new();
+    let hover = Hover::default();
+    let input = IndexedPaintFrameInput {
+        synced,
+        node_label: &|_, _| None,
+        edge_label: &|_, _| None,
+        viewport,
+        style,
+        selection: &selection,
+        hover: &hover,
+    };
+    let frame = build_indexed_paint_frame(input);
+    std::hint::black_box(frame);
+}
+
 fn bench_paint(c: &mut Criterion) {
     let mut group = c.benchmark_group("paint_frame");
 
@@ -507,6 +532,8 @@ fn bench_paint_lod(c: &mut Criterion) {
         let label = format!("{}x{}", side, side);
         let curved = GraphStyle::default();
         let straight = GraphStyle::default().with_edge_straight_threshold(24.0);
+        let mut runtime = GraphRuntime::new();
+        let synced = graph.scene.sync_runtime(&mut runtime);
 
         group.bench_with_input(
             BenchmarkId::new("overview_curved", &label),
@@ -517,6 +544,16 @@ fn bench_paint_lod(c: &mut Criterion) {
             BenchmarkId::new("overview_straight", &label),
             &(&graph, &overview, &straight),
             |b, (g, vp, style)| b.iter(|| paint_frame_styled(g, vp, style)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("overview_indexed_curved", &label),
+            &(&overview, &curved, &synced),
+            |b, (vp, style, proof)| b.iter(|| paint_frame_indexed_styled(vp, style, proof)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("overview_indexed_straight", &label),
+            &(&overview, &straight, &synced),
+            |b, (vp, style, proof)| b.iter(|| paint_frame_indexed_styled(vp, style, proof)),
         );
     }
 
