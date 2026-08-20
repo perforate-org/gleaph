@@ -47,6 +47,19 @@ pub struct GraphStyle {
     pub edge_arrow_size: f32,
     /// Arrowhead shape.
     pub edge_arrow_shape: ArrowShape,
+    /// On-screen length in pixels below which a directed, non-self-loop edge's
+    /// arrowhead is omitted.
+    ///
+    /// A very short edge carries no readable direction anyway, and each arrow is
+    /// an independent painted primitive, so dropping these arrowheads removes
+    /// GPU/primitive work in zoomed-out views where most edges are far shorter
+    /// than the arrowhead itself. A value of `0.0` (the default) disables the
+    /// simplification and always draws arrowheads for enabled directed edges.
+    /// Self-loops are never omitted: their arrow is the only indication of
+    /// direction and the loop has no short-chord case. The value should usually
+    /// be at least `edge_arrow_size` so an omitted arrow is actually smaller
+    /// than the edges that keep theirs.
+    pub edge_arrow_min_length: f32,
     /// Text style for node and edge labels.
     pub label_style: TextStyle,
     /// Vertical offset of a node label below the node, in pixels.
@@ -108,6 +121,7 @@ impl Default for GraphStyle {
             edge_arrow_enabled: true,
             edge_arrow_size: 8.0,
             edge_arrow_shape: ArrowShape::Triangle,
+            edge_arrow_min_length: 0.0,
             label_style: TextStyle::default(),
             label_offset: 0.0,
             edge_label_hide_distance: 20.0,
@@ -194,6 +208,14 @@ impl GraphStyle {
     /// Set the arrowhead shape.
     pub fn with_edge_arrow_shape(mut self, shape: ArrowShape) -> Self {
         self.edge_arrow_shape = shape;
+        self
+    }
+
+    /// Set the minimum on-screen edge length below which a directed,
+    /// non-self-loop edge's arrowhead is omitted. See
+    /// [`Self::edge_arrow_min_length`].
+    pub fn with_edge_arrow_min_length(mut self, pixels: f32) -> Self {
+        self.edge_arrow_min_length = pixels;
         self
     }
 

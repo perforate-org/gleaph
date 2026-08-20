@@ -55,6 +55,12 @@ pub struct PaintEdge {
     pub selected: bool,
     /// Whether the edge is hovered.
     pub hovered: bool,
+    /// Whether the directed edge's arrowhead should be omitted under arrow LOD.
+    /// True only for a directed, non-self-loop edge whose on-screen chord is
+    /// below `GraphStyle::edge_arrow_min_length`. See
+    /// [`crate::style::GraphStyle::edge_arrow_min_length`]. Self-loops always
+    /// keep their arrow; the flag is `false` for them and for undirected edges.
+    pub omit_arrow: bool,
 }
 
 /// A label record ready for painting.
@@ -525,6 +531,7 @@ where
             direction: edge.direction,
             selected: selection.contains_edge(*id),
             hovered: hover.edge == Some(*id),
+            omit_arrow: edge_arrow_omitted(*source, *target, edge.source == edge.target, style),
         });
         if let Some((position, offset, text, path, t)) = label {
             frame.edge_labels.push(PaintEdgeLabel {
@@ -1150,6 +1157,27 @@ pub fn straight_edge_applies(source: Vec2, target: Vec2, style: &GraphStyle) -> 
     style.edge_straight_threshold > 0.0
         && finite_chord_length(source, target)
             .is_some_and(|len| len <= style.edge_straight_threshold)
+}
+
+/// Whether a directed, non-self-loop edge should omit its arrowhead under arrow
+/// LOD: when `style.edge_arrow_min_length` is nonzero and the on-screen chord is
+/// at or below it.
+///
+/// A self-loop's arrow is never omitted (`is_self_loop == true` returns `false`)
+/// because it is the only direction cue and the loop has no short-chord case. An
+/// undirected edge's arrow is handled by the caller (`PaintEdge::omit_arrow` is
+/// only consulted for directed edges); this helper is topology-agnostic apart
+/// from the self-loop guard.
+#[doc(hidden)]
+pub fn edge_arrow_omitted(
+    source: Vec2,
+    target: Vec2,
+    is_self_loop: bool,
+    style: &GraphStyle,
+) -> bool {
+    !is_self_loop
+        && style.edge_arrow_min_length > 0.0
+        && finite_chord_length(source, target).is_some_and(|len| len <= style.edge_arrow_min_length)
 }
 
 /// Trim a quadratic Bézier edge `(source, control, target)` along its own path
@@ -3495,6 +3523,48 @@ mod tests {
         // A self-loop keeps its two-segment onigiri path regardless of the
         // straight-line threshold.
         assert_eq!(path.len(), 2, "self-loop onigiri is not simplified");
+    }
+
+    #[test]
+    fn short_edge_arrow_omitted_when_threshold_enabled() {
+        // A 30px on-screen chord below a 50px arrow LOD threshold is omitted.
+        let style = GraphStyle::default().with_edge_arrow_min_length(50.0);
+        assert!(
+            edge_arrow_omitted(Vec2::new(0.0, 0.0), Vec2::new(30.0, 0.0), false, &style),
+            "a short directed edge below the threshold must omit its arrow"
+        );
+    }
+
+    #[test]
+    fn long_edge_arrow_kept_when_threshold_enabled() {
+        // A 100px on-screen chord above a 50px arrow LOD threshold keeps its arrow.
+        let style = GraphStyle::default().with_edge_arrow_min_length(50.0);
+        assert!(
+            !edge_arrow_omitted(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), false, &style),
+            "a long edge above the threshold must keep its arrow"
+        );
+    }
+
+    #[test]
+    fn self_loop_arrow_never_omitted() {
+        // A self-loop keeps its arrow even far below the arrow LOD threshold: the
+        // arrow is the loop's only direction cue.
+        let style = GraphStyle::default().with_edge_arrow_min_length(50.0);
+        assert!(
+            !edge_arrow_omitted(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), true, &style),
+            "a self-loop must never omit its arrow"
+        );
+    }
+
+    #[test]
+    fn arrow_omitted_disabled_by_default() {
+        // The default threshold (0.0) disables arrow LOD: every directed edge
+        // keeps its arrow, preserving prior rendering.
+        let style = GraphStyle::default();
+        assert!(
+            !edge_arrow_omitted(Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), false, &style),
+            "default style must never omit arrows"
+        );
     }
 
     fn ids_edge(g: &Graph<(), ()>) -> EdgeId {

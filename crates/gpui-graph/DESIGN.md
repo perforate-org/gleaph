@@ -1585,6 +1585,23 @@ The runtime should eventually support:
   recommended for visualization renderers: it protects interaction smoothness
   without permanently degrading the final view.
 
+  Arrowheads are a second, independent LOD axis. Each directed edge's arrowhead
+  is a separate painted primitive (an extra `paint_path`/`paint_quad` per frame),
+  so in a zoomed-out overview the arrowheads can dominate the primitive count
+  even when every edge has already been simplified to a straight segment.
+  `GraphStyle::edge_arrow_min_length` (default `0.0`, disabled) omits the
+  arrowhead of a directed, non-self-loop edge whose on-screen chord is at or
+  below the threshold: such an edge carries no readable direction anyway, and its
+  arrowhead is typically larger than the edge itself. The decision is recorded on
+  `PaintEdge::omit_arrow` during frame construction (where the self-loop
+  topology is known) and honored by the paint layer. Self-loops are never
+  omitted, because the arrow is their only direction cue and they have no
+  short-chord case. The threshold should usually be at least `edge_arrow_size` so
+  an omitted arrow is actually smaller than the edges that keep theirs; benchmark
+  data in `benches/paint_bench.rs` and the primitive-counting view test guide the
+  choice.
+
+
 
 ---
 

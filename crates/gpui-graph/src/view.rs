@@ -606,7 +606,9 @@ where
                             };
                             let path = coordinates.edge_path_window(edge);
                             paint_edge(window, &path, &style, color, &label_rects, &viewport_rect);
-                            if edge.direction == EdgeDirection::Directed && style.edge_arrow_enabled
+                            if edge.direction == EdgeDirection::Directed
+                                && style.edge_arrow_enabled
+                                && !edge.omit_arrow
                             {
                                 // The arrow sits at the end of the edge's path,
                                 // pointing along the curve's tangent there. For
@@ -2450,6 +2452,43 @@ mod tests {
                 .any(|primitive| matches!(primitive, TestPaintPrimitive::Edge { .. })),
             "the edge itself should still be painted"
         );
+    }
+
+    #[gpui::test]
+    fn graph_view_omits_arrow_on_short_edge_under_arrow_lod(cx: &mut TestAppContext) {
+        // test_view_with_edge places the nodes 20px apart (x=-10 and x=10), well
+        // below a 50px arrow LOD threshold, so the directed edge's arrowhead is
+        // omitted while the edge line and both nodes still paint.
+        let view = test_view_with_edge(cx);
+        cx.update_entity(&view, |state, _| {
+            state.viewport_mut().set_size(Vec2::new(200.0, 100.0));
+            state.viewport_mut().focus(Vec2::ZERO);
+            state.style_mut().edge_arrow_min_length = 50.0;
+        });
+
+        let cx = cx.add_empty_window();
+        let origin = Vec2::new(80.0, 40.0);
+        clear_test_paint_trace();
+        draw_graph_view(cx, &view, origin, Vec2::new(200.0, 100.0));
+
+        let trace = take_test_paint_trace();
+        assert!(
+            trace
+                .iter()
+                .all(|primitive| !matches!(primitive, TestPaintPrimitive::Arrow { .. })),
+            "a short directed edge below the arrow LOD threshold must omit its arrow"
+        );
+        assert!(
+            trace
+                .iter()
+                .any(|primitive| matches!(primitive, TestPaintPrimitive::Edge { .. })),
+            "the edge line itself should still be painted"
+        );
+        let node_count = trace
+            .iter()
+            .filter(|primitive| matches!(primitive, TestPaintPrimitive::Node { .. }))
+            .count();
+        assert_eq!(node_count, 2, "both nodes should still be painted");
     }
 
     #[test]
