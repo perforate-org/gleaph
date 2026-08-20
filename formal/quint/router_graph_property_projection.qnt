@@ -459,9 +459,10 @@ module routerGraphPropertyProjection {
   // pending in Graph's queue.
   val routerCompletionIndependence = routerCompleted.subseteq(canonical)
 
-  // This is a conceptual model rank derived from durableQueue order. It is
-  // not the live Rust index_pending_min_mutation_id watermark: that production
-  // watermark excludes the first-delivery outbox represented by this queue.
+  // This is a conceptual model rank derived from durableQueue order. It remains
+  // distinct from the live exact Rust index_pending_min_mutation_id floor,
+  // which is a fixed-index projection over tracked first-delivery outbox and
+  // repair-journal source rows.
   val oldestDurableMutationRank = if (durableQueue.length() == 0) {
     2
   } else {

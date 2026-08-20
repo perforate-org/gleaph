@@ -95,6 +95,9 @@ const DERIVED_INDEX_OUTBOX: MemoryId = MemoryId::new(46);
 // --- ADR 0059 canonical export scopes (1 memory) ---
 const CANONICAL_EXPORT_SCOPES: MemoryId = MemoryId::new(51);
 
+// --- Exact ordinary derived-index pending floor (1 memory) ---
+const INDEX_PENDING_FLOOR: MemoryId = MemoryId::new(52);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial label-bucket descriptor capacity for each labeled orientation (grows as needed).
@@ -169,6 +172,7 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (GRAPH_LOCAL_UNIQUE_VALUES, 64),
     (DERIVED_INDEX_OUTBOX, 16),
     (CANONICAL_EXPORT_SCOPES, 8),
+    (INDEX_PENDING_FLOOR, 8),
 ];
 #[cfg(any(
     feature = "canbench_uniform_4",
@@ -200,6 +204,8 @@ pub(crate) type StableGraphLocalUniqueTable = super::local_unique::GraphLocalUni
 pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedIndexOutbox<Memory>;
 /// Frozen Graph-owned canonical export scope per physical posting namespace (ADR 0059).
 pub(crate) type StableCanonicalExportScopes = CanonicalExportScopeStore<Memory>;
+/// Exact owner-tagged floor for ordinary work in MemoryIds 41 and 46.
+pub(crate) type StableIndexPendingFloor = super::index_pending_floor::IndexPendingFloor<Memory>;
 
 #[cfg(feature = "canbench_standard_manager")]
 fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
@@ -398,6 +404,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         // MemoryIds 44-45 are reserved after VERTEX_EMBEDDINGS / VERTEX_EMBEDDING_INCARNATIONS removal.
         ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
         ("canonical_export_scopes", 51, CANONICAL_EXPORT_SCOPES),
+        ("index_pending_floor", 52, INDEX_PENDING_FLOOR),
     ];
 
     let regions: Vec<_> = REGIONS
@@ -511,10 +518,93 @@ pub(crate) fn init_canonical_export_scopes() -> StableCanonicalExportScopes {
     )
 }
 
+pub(crate) fn init_index_pending_floor() -> StableIndexPendingFloor {
+    super::index_pending_floor::IndexPendingFloor::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_PENDING_FLOOR)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::stable_memory_stats;
+    use super::{
+        MEMORY_MANAGER, init_derived_index_outbox, init_index_pending_floor,
+        init_index_repair_journal, init_memory_manager, stable_memory_stats,
+    };
     use crate::facade::stable::layout::GRAPH_STABLE_LAYOUT;
+    use crate::facade::stable::repair_journal;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    fn sentinel_op(label_id: u32, vertex_id: u32) -> repair_journal::RepairPostingOp {
+        repair_journal::RepairPostingOp::Label {
+            remove: false,
+            label_id,
+            vertex_id,
+        }
+    }
+
+    #[test]
+    fn current_layout_regions_remain_separate_across_reopen() {
+        let previous_manager =
+            MEMORY_MANAGER.with(|manager| manager.replace(init_memory_manager()));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let (repair_sequence, outbox_sequence, floor_key) = {
+                let mut repair = init_index_repair_journal();
+                let mut outbox = init_derived_index_outbox();
+                let mut floor = init_index_pending_floor();
+
+                let repair_rows = repair
+                    .prepare_append_all(41_041, [sentinel_op(41, 1)])
+                    .expect("prepare repair sentinel");
+                let repair_sequence = repair_rows[0].0;
+                repair.append_prepared(repair_rows);
+
+                let outbox_rows = outbox
+                    .prepare_append_all(46_046, [sentinel_op(46, 2)])
+                    .expect("prepare outbox sentinel");
+                let outbox_sequence = outbox_rows[0].0;
+                outbox.append_prepared(outbox_rows);
+
+                let floor_key = super::super::index_pending_floor::IndexPendingFloorKey::new(
+                    52_052,
+                    super::super::index_pending_floor::IndexPendingFloorOwner::DerivedIndexOutbox,
+                    52,
+                )
+                .expect("prepare floor sentinel");
+                floor.insert(floor_key);
+
+                assert_eq!(
+                    repair.get(repair_sequence).map(|row| row.mutation_id),
+                    Some(41_041)
+                );
+                assert_eq!(
+                    outbox.get(outbox_sequence).map(|row| row.mutation_id),
+                    Some(46_046)
+                );
+                assert_eq!(floor.min_mutation_id(), Some(52_052));
+
+                (repair_sequence, outbox_sequence, floor_key)
+            };
+
+            let repair = init_index_repair_journal();
+            let outbox = init_derived_index_outbox();
+            let floor = init_index_pending_floor();
+
+            assert_eq!(repair.len(), 1);
+            assert_eq!(outbox.len(), 1);
+            assert_eq!(
+                repair.get(repair_sequence).map(|row| row.mutation_id),
+                Some(41_041)
+            );
+            assert_eq!(
+                outbox.get(outbox_sequence).map(|row| row.mutation_id),
+                Some(46_046)
+            );
+            assert!(floor.contains(&floor_key));
+            assert_eq!(floor.min_mutation_id(), Some(52_052));
+        }));
+        MEMORY_MANAGER.with(|manager| manager.replace(previous_manager));
+        result.expect("current layout stable regions must remain independent");
+    }
 
     #[test]
     fn stable_memory_stats_covers_every_graph_region() {
@@ -590,6 +680,14 @@ mod tests {
                 .filter(|region| region.owner_domain != "reserved")
                 .map(|region| region.memory_id)
                 .max()
+        );
+        assert_eq!(stats.regions.len(), 45);
+        assert_eq!(
+            stats
+                .regions
+                .last()
+                .map(|region| (region.memory_id, region.name.as_str())),
+            Some((52, "index_pending_floor"))
         );
     }
 }

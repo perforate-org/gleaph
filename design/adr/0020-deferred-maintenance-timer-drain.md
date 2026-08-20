@@ -2,7 +2,8 @@
 
 Date: 2026-06-19
 Status: accepted (implemented)
-Last revised: 2026-07-14
+Last revised: 2026-08-20
+Anchor timestamp: 2026-08-20 21:45:47 UTC +0000
 
 ## Context
 
@@ -136,6 +137,12 @@ Interval bounds are derived, not guessed:
 Initial constants (floor ≈ 1 s, relaxed ≈ 5 s) are starting points to tune with
 canbench and observed cycle/latency cost; they live beside the existing budgets
 in `facade/ic_budget.rs`.
+
+Derived-index delivery uses the same timer scheduling boundary. Every tracked ordinary row in the
+first-delivery outbox or repair journal has one exact key in Graph MemoryId 52
+(`INDEX_PENDING_FLOOR`). A successful acknowledgement removes the durable source row and its floor
+key in one synchronous GraphStore transition; quarantine retains both. MemoryId 52 has no timer,
+cursor, or independent recovery path: scheduling continues to depend on the durable owner queues.
 
 ### Inline drain change
 

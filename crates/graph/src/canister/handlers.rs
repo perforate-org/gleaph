@@ -1932,10 +1932,11 @@ pub fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::Effec
     GraphStore::new().ack_unique_effects(effect_ids);
 }
 
-/// Smallest tracked mutation id whose graph-index postings are not yet applied, or
-/// `None` when all tracked index work has drained (ADR 0029 Phase 2 watermark). Router
-/// uses this to resolve a mutation token's index barrier: a read for mutation `M` is
-/// index-satisfied on this shard iff the result is `None` or `M < value`.
+/// Smallest tracked mutation id whose ordinary graph-index postings remain in the durable
+/// first-delivery outbox or failed-flush repair journal, or `None` when both owners have drained
+/// (ADR 0029 Phase 2 watermark). Graph maintains the exact floor in the owner-local stable index;
+/// Router uses it to resolve a mutation token's index barrier, so a read for mutation `M` is
+/// index-satisfied iff the result is `None` or `M < value`.
 pub fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
     GraphStore::new().index_pending_min_mutation_id()
 }

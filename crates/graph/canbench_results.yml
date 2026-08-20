@@ -2446,6 +2446,41 @@ benches:
         instructions: 1112798
         heap_increase: 0
         stable_memory_increase: 0
+  bench_index_pending_floor_query_1:
+    total:
+      calls: 1
+      instructions: 2598
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_index_pending_floor_query_4096:
+    total:
+      calls: 1
+      instructions: 17987
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_index_pending_floor_query_64:
+    total:
+      calls: 1
+      instructions: 9317
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_index_pending_floor_write_outbox_1:
+    total:
+      calls: 1
+      instructions: 2449816
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_index_pending_floor_write_repair_1:
+    total:
+      calls: 1
+      instructions: 1335161
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
   bench_inline_scalar_pack_batch_u16:
     total:
       calls: 1
@@ -2485,15 +2520,15 @@ benches:
   bench_layout_graph_stable_reopen_touch:
     total:
       calls: 1
-      instructions: 400077
+      instructions: 371109
       heap_increase: 0
-      stable_memory_increase: 156
+      stable_memory_increase: 164
     scopes:
       layout_graph_reopen:
         calls: 1
-        instructions: 399068
+        instructions: 370104
         heap_increase: 0
-        stable_memory_increase: 156
+        stable_memory_increase: 164
   bench_ordered_all_batch_mixed_256_width_0:
     total:
       calls: 1

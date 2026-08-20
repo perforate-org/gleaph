@@ -3,7 +3,7 @@
 Date: 2026-06-21
 Status: accepted
 Last revised: 2026-08-20
-Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
+Anchor timestamp: 2026-08-20 21:45:47 UTC +0000
 
 ## Context
 
@@ -16,8 +16,8 @@ Gleaph already uses both sides of this execution model:
 - a graph shard owns canonical vertices, edges, properties, and graph-local mutation outcomes;
 - graph-index owns derived property and label postings;
 - Router owns orchestration, client-key idempotency, and the label-stats projection;
-- graph mutation journals, label-stats delta logs, and index repair journals make retries and
-  asynchronous repair durable.
+- graph mutation journals, label-stats delta logs, and the derived-index outbox/repair owners make
+  retries and asynchronous repair durable.
 
 The implementation therefore has strong local durability and idempotent recovery, but the word
 `transaction` in a GQL program currently spans boundaries with different guarantees:
@@ -25,8 +25,8 @@ The implementation therefore has strong local durability and idempotent recovery
 - one mutation plan on one graph shard is applied inside one atomic message segment;
 - multiple DML plans are separated by asynchronous index flushes;
 - Router dispatches a federated mutation to graph shards sequentially, without cross-shard rollback;
-- a repair-journaled index flush may leave graph-index behind canonical graph state after the
-  mutation has been reported successful;
+- an asynchronous derived-index delivery may leave graph-index behind canonical graph state after
+  the mutation has been reported successful;
 - a read-only federated query has no shared snapshot timestamp across shards.
 
 ADR 0023 established store-ahead/index-repaired convergence. ADR 0024 made a durable canonical
@@ -125,7 +125,8 @@ The consistency mechanism is durable, ordered, idempotent propagation:
 Existing specialized mechanisms remain the starting point:
 
 - `LABEL_STATS_DELTA_LOG` plus `ROUTER_LABEL_STATS_PROJECTION` for label statistics;
-- the graph index repair journal for failed property/label posting flushes;
+- the Graph-owned derived-index outbox for first delivery plus repair journal for failed
+  property/label posting flushes;
 - graph and Router mutation journals for mutation outcome recovery.
 
 This ADR does not require one generic event bus. Shared envelopes or cursor abstractions may be
@@ -263,8 +264,15 @@ claim read-your-writes unless their respective cursor or watermark has reached t
 `prepared_query` stay `Eventual`. The barrier is enforced once before any read shape is
 dispatched (label-count fast path, graph-index seed, and graph-shard scan are gated uniformly).
 For `AtLeast(token)`, each token shard must satisfy its label-stats projection cursor
-(`label_stats_projection_cursor`) and its graph-index watermark (`index_pending_min_mutation_id`,
-index-satisfied iff `None` or `mutation_id < value`); an unmet watermark returns retryable
+(`label_stats_projection_cursor`) and its Graph-owned ordinary graph-index floor
+(`index_pending_min_mutation_id`, index-satisfied iff `None` or `mutation_id < value`). The floor is
+the first key in Graph MemoryId 52 `INDEX_PENDING_FLOOR`, an exact stable ordered projection over
+tracked ordinary `Pending`/`Quarantined` `DerivedIndexOutbox` rows and tracked repair-journal rows.
+Its 17-byte key orders by nonzero mutation id, owner tag, and source sequence, so duplicate source
+rows retain multiplicity and out-of-order drains expose the exact successor. Mutation id `0` and
+`IndexBuildDml` never enter this ordinary floor. GraphStore prevalidates each transition and then
+co-updates owner regions 41/46 with region 52 synchronously; quarantine preserves the key and an
+acknowledged prefix removes only its exact keys. An unmet floor returns retryable
 `RouterError::ProjectionLag` without serving stale state. `Canonical` is reserved on the wire but
 rejected (`InvalidArgument`) until owner-side scan routing and the unsupported-shape catalog land.
 
@@ -473,7 +481,7 @@ The implementation-gap ledger is the status authority for the following open
 observations. These links do not amend this ADR's atomicity, retry, lifecycle,
 or read-consistency decisions.
 
-- [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Open**: `AtLeast` first-delivery outbox convergence.
+- [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Resolved in this patch**: exact MemoryId 52 Graph-owned outbox/repair floor, owner regressions, and the passing stopped-index Graph-upgrade lifecycle regression.
 - [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
 - [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: Router shard incarnation and lifecycle fencing.
 

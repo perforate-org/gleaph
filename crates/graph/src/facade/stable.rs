@@ -12,6 +12,7 @@ pub(crate) mod memory;
 pub(crate) mod canonical_export;
 pub(crate) mod derived_index_outbox;
 pub(crate) mod edge_properties;
+pub(crate) mod index_pending_floor;
 pub(crate) mod label_stats_delta;
 pub(crate) mod local_unique;
 pub(crate) mod metadata;
@@ -70,6 +71,9 @@ thread_local! {
 
     pub(crate) static CANONICAL_EXPORT_SCOPES: RefCell<memory::StableCanonicalExportScopes> =
         RefCell::new(memory::init_canonical_export_scopes());
+
+    pub(crate) static INDEX_PENDING_FLOOR: RefCell<memory::StableIndexPendingFloor> =
+        RefCell::new(memory::init_index_pending_floor());
 }
 
 /// Forces the stable graph to initialize now. Called from `post_upgrade` so a

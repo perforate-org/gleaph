@@ -268,7 +268,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–51), 52 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–52), 53 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -709,6 +709,14 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "canonical export",
             "PhysicalIndexId → immutable Graph-owned canonical export scope and inline decode projection (ADR 0059)",
             RebuildPath::None,
+        ),
+        region(
+            "INDEX_PENDING_FLOOR",
+            52,
+            StableMemoryClass::Derived,
+            "federated index delivery",
+            "Exact owner-tagged floor over tracked ordinary repair-journal and derived-index-outbox rows",
+            RebuildPath::SyncCoUpdate,
         ),
     ],
 };
@@ -1705,8 +1713,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 52);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(51));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 53);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(52));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1734,6 +1742,14 @@ mod tests {
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[51].symbol,
             "CANONICAL_EXPORT_SCOPES"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[52].symbol,
+            "INDEX_PENDING_FLOOR"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[52].rebuild,
+            RebuildPath::SyncCoUpdate
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,

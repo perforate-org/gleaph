@@ -1912,8 +1912,9 @@ where
             }
         }
 
-        // Graph-index watermark: the shard's repair journal must have drained past the
-        // token's `mutation_id`. Index-satisfied iff `None` or `mutation_id < min_pending`.
+        // Graph-index watermark: the exact Graph-owned ordinary-work floor must have drained past
+        // the token's `mutation_id`. Index-satisfied iff `None` or
+        // `mutation_id < min_pending`.
         let entry = store.resolve_shard(graph_id, shard.shard_id)?;
         let min_pending = index_lookup(entry.graph_canister)
             .await

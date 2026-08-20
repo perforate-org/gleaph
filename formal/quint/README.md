@@ -18,8 +18,10 @@ Router completion is independent of Property Index convergence. The model
 intentionally does not claim that its FIFO is the live
 `index_pending_min_mutation_id` watermark: `oldestDurableMutationRank` is a
 conceptual rank derived from the queue. In production, the first-delivery
-outbox and the failed-flush repair journal are distinct durable mechanisms; the
-model abstracts durable work without conflating those owners.
+outbox and failed-flush repair journal remain distinct durable owners, while
+Graph now maintains one exact fixed-index ordinary floor over both without exposing either owner
+to Router. This slice changes no Quint state, action, derived value,
+invariant, or test semantics.
 
 The model omits an idle-pending restart because it is an unobservable safety
 stutter. Maintenance re-arm behavior and fairness/liveness are also excluded.
@@ -28,7 +30,7 @@ posting/transport phases—are corrected in the current model.
 
 ## Candidate and traceability index
 
-Review anchor: 2026-08-20 12:07:15 UTC +0000.
+Review anchor: 2026-08-20 21:45:47 UTC +0000.
 
 ADRs and active design documents own intended behavior; production Rust and
 PocketIC tests own executable evidence; this README owns formal-candidate
@@ -52,7 +54,7 @@ slice and must not duplicate those sources of truth.
 | --- | --- | --- |
 | Router–Graph–Property Index durable projection | **Modeled / experimental** | The tables below map the bounded two-mutation model to ADRs 0023/0024/0029, Graph outbox/repair owners, and twelve scenarios. | Preserve revise: no current Quint verify result and focused Rust/PocketIC comparisons remain not run. |
 | Router atomic_insert response loss while CanonicalPending | **Quint candidate + design/implementation prerequisite** | ADR 0029 §2 and ADR 0049 §1558–1579 require exact journal reconciliation; ordered recovery branches in crates/router/src/gql.rs record an explicit-retry diagnostic instead. | GAP-2026-08-20-003: add a Graph-receipt/Router-receipt fault seam and focused PocketIC regression before the Draft Plan 0260 lifecycle model. Plan 0260 is not implementation evidence. |
-| ReadMode::AtLeast versus first-delivery outbox work | **Design/implementation prerequisite; later Quint candidate** | DerivedIndexOutbox and RepairJournal are distinct; index_pending_min_mutation_id reads only RepairJournal and the Router barrier calls only that watermark. | GAP-2026-08-20-001: choose one authoritative per-mutation barrier or explicit API, then make an outbox-only pending read fail closed. |
+| ReadMode::AtLeast versus first-delivery outbox work | **Covered** | DerivedIndexOutbox and RepairJournal remain distinct owners; Graph MemoryId 52 stores one fixed key per qualifying source row and exposes their exact ordinary floor. Exact Graph owner tests plus the passing stopped-index/Graph-upgrade PocketIC lifecycle protect the contract. | No production prerequisite remains. Preserve `durableQueue` as a conceptual FIFO abstraction; keep this pilot `revise` until its independent formal gates are rerun. |
 | Router direct vector-ingest partial suffix | **Design/implementation prerequisite; Rust/PocketIC first** | DeferredForRepair promises durable automatic repair, but Router maps an unpersisted Vector suffix to it after Graph stamp_embedding creates no journal or outbox work. | GAP-2026-08-20-002: assign a durable suffix owner or change the public retry contract, then test partial progress plus upgrade/retry. |
 | Router shard identity across unregister/re-register | **Design/implementation prerequisite; later Quint candidate** | GlobalVertexId has only ShardId plus local id while the live catalog can reuse a numeric shard id. | GAP-2026-08-20-006: select never-reuse, incarnation, or equivalent principal-pinning semantics before stale-delivery tests. |
 | Property DROP INDEX retirement | **Rust-test-first + design/implementation prerequisite** | Catalog deletion precedes remote purge; purge progress is call-local; PhysicalIndexId namespaces can diverge for one logical property. | GAP-2026-08-20-005: define durable per-PhysicalIndexId retirement and first add same-property/two-index and lost-response regressions. |
@@ -120,8 +122,8 @@ name and is not presented as live behavior.
 | `responseCausality` | ADR 0023 D5: rejection does not acknowledge; applied response follows index write | `drain_once` and `posting_batch`; test `drain_stops_at_failure_and_retains_remaining` |
 | `exactAckPrefix` | ADR 0023 D5: remove only the acknowledged prefix, retain suffix | `drain_once`; test `drain_retries_unacknowledged_suffix_after_partial_batch_progress` |
 | `routerCompletionIndependence` | ADR 0024 “Consistency vocabulary (ADR 0029)” | `recover_mutation_record`; tests `router_recovery_timer_converges_projection_pending_saga_autonomously` and `single_shard_mutation_token_barrier_status_lifecycle` |
-| `oldestDurableMutationRank` | **Model-only** queue-derived rank | Explicitly not `crates/graph/src/facade/store/repair_journal.rs::GraphStore::index_pending_min_mutation_id`; that live watermark is covered by `min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked` |
-| `conceptualOldestDurableMutationRank` | **Model-only** bounded rank guard; no claim about the live watermark | Same deliberate gap and exact watermark test as above |
+| `oldestDurableMutationRank` | **Model-only** queue-derived rank | Explicitly distinct from `crates/graph/src/facade/store/index_pending_floor.rs::GraphStore::index_pending_min_mutation_id`; production reads the exact MemoryId 52 fixed-index floor. The conceptual rank remains FIFO and is not that live floor. |
+| `conceptualOldestDurableMutationRank` | **Model-only** bounded rank guard; no claim about the live floor | Same deliberate distinction; production evidence is the exact Graph owner-floor tests and the passing stopped-index/Graph-upgrade PocketIC lifecycle. |
 | `protocolSafety` | ADRs 0023, 0024, and 0029 combined; aggregate only | Composition of the invariant rows above; no single live invariant or single Rust test |
 
 ### Deterministic scenarios
@@ -228,7 +230,7 @@ The focused Rust comparisons to rerun when this model changes are:
 
 ```sh
 cargo test -p gleaph-graph --lib index::repair_journal::tests::drain_retries_unacknowledged_suffix_after_partial_batch_progress -- --exact
-cargo test -p gleaph-graph --lib index::repair_journal::tests::min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked -- --exact
+cargo test -p gleaph-graph --lib facade::store::index_pending_floor::tests::quarantine_and_partial_ack_preserve_exact_multiplicity -- --exact
 cargo test -p gleaph-graph --lib index::inv_oracle::postings_converge_to_store_projection_after_failure_and_compaction -- --exact
 cargo test -p gleaph-router --lib facade::stable::label_stats::tests::lifecycle_phase_never_completes_with_outstanding_work -- --exact
 cargo test -p gleaph-pocket-ic-tests --test router_gql_query single_shard_mutation_token_barrier_status_lifecycle -- --exact
@@ -244,11 +246,10 @@ surface, and no Rust/PocketIC pass is claimed here.
 
 Decision: **`revise`**. The pilot remains experimental and non-blocking. The
 corrected model has a useful executable boundary, and its post-repair
-typecheck, exact anchored tests, and bounded simulation pass. The decision
-remains `revise` because a current `quint verify` result is not available, the
-smaller Router `atomic_insert` slice remains, and a later investigation is
-needed to determine whether the `AtLeast` barrier's repair-only watermark is
-sufficient while first-delivery outbox work is pending. Do not add a CI gate or
+typecheck, exact anchored tests, and bounded simulation pass. The production prerequisite for the
+AtLeast floor is implemented as the exact MemoryId 52 fixed index and covered by Graph owner tests;
+the stopped-index PocketIC lifecycle passes across Graph upgrade and later drain. The independent
+formal gates and the smaller Router `atomic_insert` slice remain incomplete. Do not add a CI gate or
 broaden the protocol model until those prerequisites are complete.
 
 Validation evidence anchor from the OS: `2026-08-19 21:19:37 UTC +0000`.

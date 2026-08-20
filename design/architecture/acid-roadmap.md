@@ -1,8 +1,8 @@
 # Gleaph ACID and Consistency Roadmap
 
-Last updated: 2026-07-02 UTC
+Last updated: 2026-08-20 UTC
 Status: Phases 0-4 done (Phase 3 `Canonical` removed by ADR 0056; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
-Anchor timestamp: 2026-07-02 09:56:23 UTC +0000
+Anchor timestamp: 2026-08-20 21:45:47 UTC +0000
 
 ## Purpose
 
@@ -22,7 +22,7 @@ The governing decision is
 
 ## Verified baseline
 
-Verified against the repository at `2026-06-21 05:36:08 UTC +0000`.
+Verified against the repository at `2026-08-20 21:45:47 UTC +0000`.
 
 | ACID property | Implemented scope                                                                | Gap                                                                                          |
 | ------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -87,7 +87,7 @@ The target read modes are:
 | Label-stats projection payload                 | `LABEL_STATS_DELTA_LOG`                                                 |
 | Router label counts                            | Router projection maps, derived through `ROUTER_LABEL_STATS_PROJECTION` |
 | Property and label postings                    | graph-index, derived from graph state                                   |
-| Failed posting propagation intent              | Graph index repair journal                                              |
+| Failed posting propagation intent              | Graph derived-index outbox and repair journal                           |
 | Client request identity and federated progress | Router client mutation journal                                          |
 
 ## Phase 0: Contract and terminology
@@ -135,8 +135,10 @@ Exit criteria:
   (principle 5), `stable-memory-inventory.md` (region 39 `GRAPH_MUTATION_JOURNAL`), and the
   ADR 0015 addendum all separate shard-local canonical completion from projection freshness.
 - **Met.** `Completed` has one owner and one meaning at each boundary: graph-journal
-  `MutationJournalState::Completed` is shard-local replayable; Router
-  `MutationLifecyclePhase::Completed` is the cross-canister terminal state.
+  `MutationJournalState::Completed` is shard-local and replayable; Router
+  `MutationLifecyclePhase::Completed` is the terminal state for the Router saga's tracked
+  canonical and label-stats projection work. Graph-index freshness remains an independent
+  watermark, exposed by `index_pending_min_mutation_id` and enforced by the `AtLeast` barrier.
 
 ## Phase 1: Protect the local atomic boundary
 
@@ -227,16 +229,18 @@ Deliverables:
 - **Done.** Associate failed index repair batches with the originating `mutation_id`. The
   durable repair journal value type is now
   `gleaph_graph::facade::stable::repair_journal::RepairJournalEntry { mutation_id, op }`
-  (stable region 41, backward-incompatible repack — see
-  [stable-memory-inventory.md](../storage/stable-memory-inventory.md)). `flush_pending`
+  (stable region 41; see [stable-memory-inventory.md](../storage/stable-memory-inventory.md)).
+  `flush_pending`
   (vertex / edge / label) threads the federated `mutation_id` to the append site;
   `mutation_id == 0` is the reserved _untracked_ sentinel (e.g. maintenance-timer flushes).
 - **Done.** Expose whether graph-index work required by a mutation is pending or applied.
-  Graph query `index_pending_min_mutation_id() -> Option<MutationId>` returns the smallest
-  tracked unapplied mutation id (the mutation-linked index watermark); `None` means all
-  tracked index work drained. A read for mutation `M` is index-satisfied on the shard iff the
-  result is `None` or `M < value`. Derived single-source-of-truth from the repair journal, not
-  a separate stored cursor.
+  Graph query `index_pending_min_mutation_id() -> Option<MutationId>` returns the numeric minimum
+  of tracked ordinary work in the first-delivery `DerivedIndexOutbox` and failed-delivery
+  `RepairJournal`; `None` means both owners have no tracked work. Graph MemoryId 52 stores one
+  fixed key per qualifying source row, ordered by mutation id, owner, and source sequence. Mutation
+  id `0` and `IndexBuildDml` are excluded. A read for mutation `M` is index-satisfied on the shard
+  iff the result is `None` or `M < value`. The GraphStore boundary synchronously co-updates this
+  exact derived floor with owner regions 41 and 46.
 - **Done.** Preserve the existing label-stats `emitted_delta_last_seq` barrier. Unchanged; the
   mutation token carries each shard's `emitted_delta_last_seq` as its label-stats watermark.
 - **Done.** Introduce a mutation token carrying the per-shard watermarks needed for
@@ -250,16 +254,22 @@ Tests:
 
 - **Done.** Deferred index flush links the repair batch to its `mutation_id` and pins the
   watermark (`deferred_flush_links_repair_batch_to_mutation_id`, graph `index::pending`).
-- **Done.** Repair replay advances the mutation-linked watermark exactly once and ignores the
-  untracked sentinel (`min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked`,
-  graph `index::repair_journal`).
+- **Done.** Exact owner co-updates preserve the mutation-linked floor across ordinary outbox and
+  repair rows, ignore the untracked sentinel and build envelopes, retain quarantined work, remove
+  only acknowledged prefixes, and preserve duplicate multiplicity. The five Plan 0263 exact Graph
+  tests cover fixed-key ordering, current-layout reopen, inclusion/exclusion, quarantine/partial
+  acknowledgement, and prevalidation rollback.
 - **Done.** End-to-end token issuance + watermark exposure under PocketIC
-  (`single_shard_mutation_token_barrier_status_lifecycle`).
+  (`single_shard_mutation_token_barrier_status_lifecycle`). The stopped-index, outbox-only
+  first-delivery lifecycle source regression is added as
+  `first_delivery_outbox_survives_graph_upgrade_and_atleast_fails_closed_until_drain`; its focused
+  runtime gate passes while graph-index remains stopped across the Graph upgrade.
 - **Done.** Token candid round-trip (`mutation_token_candid_roundtrip`,
   `gql_query_result_carries_phase_and_token`, graph-kernel `plan_exec`).
 - **Deferred to Phase 3.** Duplicate/out-of-order delivery gap handling and upgrade/reopen
-  watermark persistence are exercised at the barrier-enforcement layer; the underlying repair
-  journal already persists across upgrade via stable region 41 (ADR 0023 D5 tests).
+  watermark persistence are exercised at the barrier-enforcement layer; both durable Graph
+  delivery owners persist across upgrade (stable regions 41 and 46; ADR 0023 D5 tests and the
+  stopped-index lifecycle regression).
 
 Benchmarks:
 
@@ -274,8 +284,8 @@ Exit criteria:
 - **Met.** Given a mutation token, Router can determine whether all required projections caught
   up: label-stats via each shard's `label_stats_seq` against the projection cursor, graph-index
   via `index_pending_min_mutation_id` against the token's `mutation_id`.
-- **Met.** Projection completion is durable (stable region 41) and idempotent (drain
-  re-application is idempotent; watermark derived from the journal contents).
+- **Met.** Projection completion is durable (owner regions 41/46 plus exact derived floor region
+  52) and idempotent (drain re-application is idempotent and owner/floor removal is co-updated).
 
 ## Phase 3: Read consistency API
 
@@ -303,8 +313,8 @@ required, current }` **without serving stale state**; the caller retries after t
   shape is dispatched, so the Router label-count fast path, graph-index seed, and graph-shard scan
   are all gated uniformly (no per-path gap). For `AtLeast(token)`, each token shard must satisfy
   both its label-stats projection cursor (`label_stats_projection_cursor`, resolved locally) and
-  its graph-index watermark (`index_pending_min_mutation_id`, queried per shard: index-satisfied
-  iff `None` or `mutation_id < value`).
+  its graph-index watermark (`index_pending_min_mutation_id`, queried per shard: the exact
+  MemoryId 52 outbox/repair floor is index-satisfied iff `None` or `mutation_id < value`).
 
 Deferred:
 
@@ -318,7 +328,9 @@ Tests:
 - **Done.** A successful idempotent DML followed by `AtLeast(token)` is served read-your-writes,
   while a token whose watermark is forced past the projection cursor returns retryable
   `ProjectionLag`; `Eventual` is non-blocking
-  (`single_shard_mutation_token_barrier_status_lifecycle`, PocketIC).
+  (`single_shard_mutation_token_barrier_status_lifecycle`, PocketIC). The stopped-index lifecycle
+  separately specifies the outbox-only `ProjectionLag` before Graph upgrade/drain and the same
+  token's success after both durable owners drain; its focused runtime validation passes.
 - **Done.** Barrier decision logic host unit tests: `Eventual` no-op, `Canonical` rejected,
   label-stats lag short-circuit returns `ProjectionLag` with zero index calls, empty token
   satisfied, non-empty satisfied token admitted, graph-index lag returns exact

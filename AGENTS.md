@@ -21,6 +21,13 @@ Consult `.agents/skills/INDEX.md` before major changes.
 
 Preserve encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
+## Pre-production Simplicity
+
+Gleaph is pre-production: keep one canonical current layout and contract, require fresh state or
+reinstall when that layout changes, and delete superseded paths. Do not add backward-compatibility
+branches, migrations, legacy decoders, rebuild cursors, fallbacks, or obsolete pre-launch commentary
+unless the user explicitly requires compatibility with deployed production data.
+
 Prefer concrete boundary language such as data ownership, invariant enforcement, API surface, dependency direction, execution flow, and source of truth. Avoid vague umbrella terms when a more testable boundary can be named.
 
 Before introducing a new module, abstraction, data structure, dependency, or boundary split, check whether an existing concept already owns the data, invariant, API surface, or execution flow.

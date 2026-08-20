@@ -32,22 +32,6 @@ pub struct DerivedIndexOutboxEntry {
     pub op: DerivedIndexOutboxOp,
 }
 
-impl Storable for DerivedIndexOutboxEntry {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode legacy DerivedIndexOutboxEntry"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode legacy DerivedIndexOutboxEntry")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode legacy DerivedIndexOutboxEntry")
-    }
-}
-
 /// Bounded reason why one outbox row cannot ever be admitted by its target.
 ///
 /// This is deliberately payload-free: MemoryId 46 never persists an unbounded target diagnostic.
@@ -81,15 +65,13 @@ impl Storable for DerivedIndexOutboxState {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap_or_else(|_| {
-            // MemoryId 46 originally stored this exact bare entry. It remains readable as pending;
-            // there is no speculative fallback for any earlier value shape.
-            Self::Pending(
-                Decode!(bytes.as_ref(), DerivedIndexOutboxEntry)
-                    .expect("decode DerivedIndexOutboxState or legacy DerivedIndexOutboxEntry"),
-            )
-        })
+        Decode!(bytes.as_ref(), Self).expect("decode DerivedIndexOutboxState")
     }
+}
+
+pub(crate) struct DerivedIndexOutboxVectorTransition {
+    pub(crate) removed: Vec<(u64, DerivedIndexOutboxEntry)>,
+    quarantined: Option<(u64, DerivedIndexOutboxEntry, DerivedIndexQuarantineReason)>,
 }
 
 /// Stable FIFO keyed by a monotonic sequence.  The sequence is the durable cursor identity;
@@ -105,50 +87,180 @@ impl<M: Memory> DerivedIndexOutbox<M> {
         }
     }
 
-    fn next_seq(&self) -> u64 {
-        self.map.last_key_value().map_or(0, |(seq, _)| {
+    fn next_seq(&self) -> Result<u64, &'static str> {
+        self.map.last_key_value().map_or(Ok(0), |(seq, _)| {
             seq.checked_add(1)
-                .expect("derived-index outbox sequence overflow")
+                .ok_or("derived-index outbox sequence overflow")
         })
     }
 
-    /// Appends one DML's derived-index operations in their existing order.
-    pub fn append_all(&mut self, mutation_id: u64, ops: impl IntoIterator<Item = RepairPostingOp>) {
-        let mut next = self.next_seq();
-        for op in ops {
-            self.map.insert(
-                next,
-                DerivedIndexOutboxState::Pending(DerivedIndexOutboxEntry {
-                    mutation_id,
-                    op: DerivedIndexOutboxOp::Ordinary(op),
-                }),
-            );
-            next = next
-                .checked_add(1)
-                .expect("derived-index outbox sequence overflow");
+    fn prepare_entries(
+        &self,
+        entries: impl IntoIterator<Item = DerivedIndexOutboxEntry>,
+    ) -> Result<Vec<(u64, DerivedIndexOutboxEntry)>, &'static str> {
+        let entries: Vec<_> = entries.into_iter().collect();
+        if entries.is_empty() {
+            return Ok(Vec::new());
         }
+        let first = self.next_seq()?;
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(offset, entry)| {
+                let offset =
+                    u64::try_from(offset).map_err(|_| "derived-index outbox batch overflow")?;
+                let sequence = first
+                    .checked_add(offset)
+                    .ok_or("derived-index outbox sequence overflow")?;
+                let state = DerivedIndexOutboxState::Pending(entry.clone());
+                let _ = state.to_bytes();
+                Ok((sequence, entry))
+            })
+            .collect()
     }
 
-    /// Appends exact Building/Sealing envelopes without making them representable in the
-    /// failure-only repair journal.
+    pub fn prepare_append_all(
+        &self,
+        mutation_id: u64,
+        ops: impl IntoIterator<Item = RepairPostingOp>,
+    ) -> Result<Vec<(u64, DerivedIndexOutboxEntry)>, &'static str> {
+        self.prepare_entries(ops.into_iter().map(|op| DerivedIndexOutboxEntry {
+            mutation_id,
+            op: DerivedIndexOutboxOp::Ordinary(op),
+        }))
+    }
+
+    pub fn prepare_append_build_dml(
+        &self,
+        mutation_id: u64,
+        requests: impl IntoIterator<Item = IndexBuildDmlRequest>,
+    ) -> Result<Vec<(u64, DerivedIndexOutboxEntry)>, &'static str> {
+        self.prepare_entries(requests.into_iter().map(|request| DerivedIndexOutboxEntry {
+            mutation_id,
+            op: DerivedIndexOutboxOp::IndexBuildDml { request },
+        }))
+    }
+
+    pub fn append_prepared(
+        &mut self,
+        rows: Vec<(u64, DerivedIndexOutboxEntry)>,
+    ) -> Vec<(u64, DerivedIndexOutboxEntry)> {
+        for (sequence, entry) in &rows {
+            assert!(
+                self.map
+                    .insert(*sequence, DerivedIndexOutboxState::Pending(entry.clone()),)
+                    .is_none(),
+                "duplicate derived-index outbox sequence"
+            );
+        }
+        rows
+    }
+
+    #[cfg(test)]
+    pub fn append_all(&mut self, mutation_id: u64, ops: impl IntoIterator<Item = RepairPostingOp>) {
+        let rows = self
+            .prepare_append_all(mutation_id, ops)
+            .expect("prepare derived-index outbox append");
+        self.append_prepared(rows);
+    }
+
+    #[cfg(test)]
     pub fn append_build_dml(
         &mut self,
         mutation_id: u64,
         requests: impl IntoIterator<Item = IndexBuildDmlRequest>,
     ) {
-        let mut next = self.next_seq();
-        for request in requests {
-            self.map.insert(
-                next,
-                DerivedIndexOutboxState::Pending(DerivedIndexOutboxEntry {
-                    mutation_id,
-                    op: DerivedIndexOutboxOp::IndexBuildDml { request },
-                }),
-            );
-            next = next
-                .checked_add(1)
-                .expect("derived-index outbox sequence overflow");
+        let rows = self
+            .prepare_append_build_dml(mutation_id, requests)
+            .expect("prepare derived-index build outbox append");
+        self.append_prepared(rows);
+    }
+
+    pub fn get(&self, sequence: u64) -> Option<DerivedIndexOutboxEntry> {
+        self.map.get(&sequence).map(|state| match state {
+            DerivedIndexOutboxState::Pending(entry)
+            | DerivedIndexOutboxState::Quarantined { entry, .. } => entry,
+        })
+    }
+
+    pub fn plan_vector_outcome(
+        &self,
+        submitted: &[(u64, DerivedIndexOutboxEntry)],
+        outcome: VectorSyncBatchOutcome,
+    ) -> Result<DerivedIndexOutboxVectorTransition, &'static str> {
+        outcome.validate(submitted.len())?;
+        if submitted.is_empty()
+            || submitted.iter().any(|(_, entry)| {
+                !matches!(
+                    &entry.op,
+                    DerivedIndexOutboxOp::Ordinary(RepairPostingOp::VectorEmbedding { .. })
+                )
+            })
+        {
+            return Err("vector outcome requires a nonempty vector outbox prefix");
         }
+        if self.peek(submitted.len()) != submitted {
+            return Err("submitted vector entries are not the current pending outbox prefix");
+        }
+        let (applied, failed) = match outcome {
+            VectorSyncBatchOutcome::Progress { applied } => (applied as usize, None),
+            VectorSyncBatchOutcome::Terminal {
+                applied,
+                failed_index,
+                error,
+            } => (applied as usize, Some((failed_index as usize, error))),
+        };
+        let removed = submitted[..applied].to_vec();
+        let quarantined = failed.map(|(failed_index, error)| {
+            let (sequence, entry) = &submitted[failed_index];
+            let reason = match error {
+                VectorSyncTerminalError::IndexDefinitionTablePressure => {
+                    DerivedIndexQuarantineReason::IndexDefinitionTablePressure
+                }
+                VectorSyncTerminalError::SubjectTablePressure => {
+                    DerivedIndexQuarantineReason::SubjectTablePressure
+                }
+            };
+            (*sequence, entry.clone(), reason)
+        });
+        Ok(DerivedIndexOutboxVectorTransition {
+            removed,
+            quarantined,
+        })
+    }
+
+    pub fn apply_vector_transition(
+        &mut self,
+        transition: DerivedIndexOutboxVectorTransition,
+    ) -> Vec<(u64, DerivedIndexOutboxEntry)> {
+        for (sequence, entry) in &transition.removed {
+            assert_eq!(self.remove(*sequence), (*sequence, entry.clone()));
+        }
+        if let Some((sequence, entry, reason)) = transition.quarantined {
+            assert_eq!(
+                self.map.insert(
+                    sequence,
+                    DerivedIndexOutboxState::Quarantined {
+                        entry: entry.clone(),
+                        reason,
+                    },
+                ),
+                Some(DerivedIndexOutboxState::Pending(entry)),
+                "vector quarantine must replace the exact pending source row"
+            );
+        }
+        transition.removed
+    }
+
+    #[cfg(test)]
+    pub fn apply_vector_outcome(
+        &mut self,
+        submitted: &[(u64, DerivedIndexOutboxEntry)],
+        outcome: VectorSyncBatchOutcome,
+    ) -> Result<(), &'static str> {
+        let transition = self.plan_vector_outcome(submitted, outcome)?;
+        self.apply_vector_transition(transition);
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -177,71 +289,31 @@ impl<M: Memory> DerivedIndexOutbox<M> {
             .collect()
     }
 
-    /// Applies one prevalidated vector delivery result as a single owner-level state transition.
-    /// Every durable identity is checked before the first write.
-    pub fn apply_vector_outcome(
-        &mut self,
-        submitted: &[(u64, DerivedIndexOutboxEntry)],
-        outcome: VectorSyncBatchOutcome,
-    ) -> Result<(), &'static str> {
-        outcome.validate(submitted.len())?;
-        if submitted.is_empty()
-            || submitted.iter().any(|(_, entry)| {
-                !matches!(
-                    &entry.op,
-                    DerivedIndexOutboxOp::Ordinary(RepairPostingOp::VectorEmbedding { .. })
-                )
-            })
-        {
-            return Err("vector outcome requires a nonempty vector outbox prefix");
-        }
-        if self.peek(submitted.len()) != submitted {
-            return Err("submitted vector entries are not the current pending outbox prefix");
-        }
-        let (applied, failed) = match outcome {
-            VectorSyncBatchOutcome::Progress { applied } => (applied as usize, None),
-            VectorSyncBatchOutcome::Terminal {
-                applied,
-                failed_index,
-                error,
-            } => (applied as usize, Some((failed_index as usize, error))),
-        };
-
-        for (seq, _) in &submitted[..applied] {
-            self.map.remove(seq);
-        }
-        if let Some((failed_index, error)) = failed {
-            let (seq, entry) = &submitted[failed_index];
-            let reason = match error {
-                VectorSyncTerminalError::IndexDefinitionTablePressure => {
-                    DerivedIndexQuarantineReason::IndexDefinitionTablePressure
-                }
-                VectorSyncTerminalError::SubjectTablePressure => {
-                    DerivedIndexQuarantineReason::SubjectTablePressure
-                }
-            };
-            self.map.insert(
-                *seq,
-                DerivedIndexOutboxState::Quarantined {
-                    entry: entry.clone(),
-                    reason,
-                },
-            );
-        }
-        Ok(())
-    }
-
     /// Acknowledges one entry.  The maintenance owner must call this only for an accepted entry.
-    pub fn remove(&mut self, seq: u64) {
-        self.map.remove(&seq);
+    pub fn remove(&mut self, sequence: u64) -> (u64, DerivedIndexOutboxEntry) {
+        let state = self
+            .map
+            .remove(&sequence)
+            .expect("remove existing derived-index outbox source row");
+        let entry = match state {
+            DerivedIndexOutboxState::Pending(entry)
+            | DerivedIndexOutboxState::Quarantined { entry, .. } => entry,
+        };
+        (sequence, entry)
     }
 
     #[cfg(test)]
-    pub fn clear(&mut self) {
-        let sequences: Vec<_> = self.map.iter().map(|row| *row.key()).collect();
-        for seq in sequences {
-            self.map.remove(&seq);
-        }
+    pub fn sequences(&self) -> Vec<u64> {
+        self.map.iter().map(|row| *row.key()).collect()
+    }
+
+    #[cfg(test)]
+    pub fn insert_test_entry(&mut self, sequence: u64, entry: DerivedIndexOutboxEntry) {
+        assert!(
+            self.map
+                .insert(sequence, DerivedIndexOutboxState::Pending(entry))
+                .is_none()
+        );
     }
 }
 
@@ -317,21 +389,6 @@ mod tests {
             [1, 2]
         );
         assert_eq!(entries[1].1.mutation_id, 2);
-    }
-
-    #[test]
-    fn legacy_bare_entry_reopens_as_pending() {
-        let legacy = DerivedIndexOutboxEntry {
-            mutation_id: 11,
-            op: DerivedIndexOutboxOp::Ordinary(entry(3)),
-        };
-        let memory = VectorMemory::default();
-        let mut old_map = StableBTreeMap::<u64, DerivedIndexOutboxEntry, _>::init(memory.clone());
-        old_map.insert(0, legacy.clone());
-        drop(old_map);
-
-        let reopened = DerivedIndexOutbox::init(memory);
-        assert_eq!(reopened.peek(10), vec![(0, legacy)]);
     }
 
     #[test]

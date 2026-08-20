@@ -911,8 +911,8 @@ pub enum MutationLifecyclePhase {
 /// Issued with an idempotent DML result. It names the mutation and the per-shard
 /// projection watermarks a later read must reach to observe this mutation's effects.
 /// It is deliberately **not** a global snapshot timestamp: graph-index freshness is
-/// keyed by the monotonic `mutation_id` (a shard's index work for `mutation_id` is
-/// applied once its repair watermark passes it), and label-stats freshness by each
+/// keyed by the monotonic `mutation_id` (a shard's ordinary index work for `mutation_id` is
+/// applied once its combined outbox/repair floor passes it), and label-stats freshness by each
 /// shard's delta [`ShardEventSeq`]. Phase 2 *issues* the token; Phase 3 enforces it via
 /// [`ReadMode::AtLeast`].
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]

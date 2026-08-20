@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 /// The social-demo seeding orchestrator needs one observable "the index caught up" signal
 /// before dispatching dependent edge waves, whose `MATCH` anchors resolve through
 /// graph-index property postings. The existing [`crate::plan_exec::MutationId`] watermark
-/// (`index_pending_min_mutation_id`) covers only the repair journal (failed-flush
-/// re-application); the durable first-delivery outbox is a separate backlog that can also
-/// pin convergence, so this snapshot reports both queues and a derived `converged` flag.
+/// (`index_pending_min_mutation_id`) reads the exact Graph-owned ordinary-work floor maintained
+/// with the first-delivery outbox and failed-flush repair journal. This separate snapshot still
+/// reports both raw queues and a derived `converged` flag for seeding/backfill orchestration.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct IndexSyncStatus {
     /// Derived-index ops still in the durable first-delivery outbox (never yet delivered).

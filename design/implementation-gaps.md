@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-20
-Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
+Anchor timestamp: 2026-08-20 19:49:32 UTC +0000
 
 ## Status
 
@@ -49,26 +49,36 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-001 — AtLeast graph-index barrier ignores pending first-delivery outbox work
 
-- **Status:** Open
+- **Status:** Resolved (commit pending; fix is in this patch)
 - **Severity:** P0 read consistency
 - **Owner:** Router ReadMode::AtLeast barrier and the Graph-owned durable derived-index work boundary
-- **Observed behavior:** GraphStore::index_pending_min_mutation_id reads only the failure-only
-  RepairJournal, while DerivedIndexOutbox is a separate durable FIFO whose entries retain their
-  originating mutation_id. Router's AtLeast barrier consults only index_pending_min_mutation_id.
-  The existing Graph unit test index_sync_status_reflects_outbox_and_repair_journal proves that
-  outbox-only pending work is not converged even when the repair journal is empty.
+- **Observed behavior (before fix):** GraphStore::index_pending_min_mutation_id read only the
+  failure-only RepairJournal, while DerivedIndexOutbox was a separate durable FIFO whose entries
+  retain their originating mutation_id. Router's AtLeast barrier therefore could consult only the
+  repair owner.
 - **Expected or needed behavior:** An index-backed AtLeast(M) read must fail closed until every
   derived posting at or below M has reached its target, including first-delivery and failed-flush
   work.
-- **Evidence:** crates/graph/src/facade/stable/derived_index_outbox.rs;
-  crates/graph/src/facade/store/repair_journal.rs; crates/router/src/gql.rs
-  (enforce_read_consistency_with_lookup); and
-  crates/graph/src/index/repair_journal.rs::index_sync_status_reflects_outbox_and_repair_journal.
-  ADR 0029 §5 defines the AtLeast projection barrier.
+- **Resolution:** Graph MemoryId 52 now owns one fixed key for every qualifying source row in
+  DerivedIndexOutbox and RepairJournal. GraphStore prevalidates and synchronously co-updates the
+  source row and its exact floor key; zero-id and `IndexBuildDml` rows are excluded, quarantine
+  preserves its key, and acknowledgements remove only exact applied rows. Router's existing barrier
+  and wire shape are unchanged.
+- **Evidence:** `fixed_keys_order_by_mutation_owner_and_sequence`,
+  `fresh_and_reopen_preserve_exact_floor`,
+  `co_updates_outbox_and_repair_without_zero_or_build_rows`,
+  `quarantine_and_partial_ack_preserve_exact_multiplicity`,
+  `prevalidation_failure_leaves_owners_and_floor_unchanged`, and PocketIC
+  `first_delivery_outbox_survives_graph_upgrade_and_atleast_fails_closed_until_drain`.
+  ADR 0029 §5 remains the AtLeast projection-barrier authority.
+- **Validation status:** The five exact Graph owner tests, layout/stats tests, focused floor and
+  reopen canbenches, Graph check/clippy, and stopped-index PocketIC lifecycle pass. Final unfiltered
+  Graph benchmark persistence and final plan/scope gates are recorded in Plan 0263.
 - **Impact:** A token can be treated as graph-index satisfied while its first delivery remains
   durable but unapplied, allowing an index-backed read to miss canonical state.
-- **Next decision:** Choose one canonical per-mutation convergence floor covering both queues or
-  expose an explicit Graph API; add an outbox-only pending regression before any Quint model.
+- **Next decision:** Keep the separate Vector Index acknowledgement/watermark/GC contract and
+  index-build generation visibility contract in their later slices; do not infer either from this
+  ordinary Graph-owned floor.
 
 ### GAP-2026-08-20-002 — Router direct vector ingestion reports DeferredForRepair without a durable suffix owner
 

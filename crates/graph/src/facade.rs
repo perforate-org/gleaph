@@ -87,4 +87,5 @@ pub fn bench_stable_reopen_touch() {
     std::hint::black_box(memory::init_label_stats_delta_seq());
     std::hint::black_box(memory::init_label_stats_delta_log());
     std::hint::black_box(memory::init_graph_mutation_journal());
+    std::hint::black_box(memory::init_index_pending_floor());
 }

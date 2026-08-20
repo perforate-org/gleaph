@@ -2,8 +2,8 @@
 
 Date: 2026-06-20
 Status: implemented
-Last revised: 2026-06-21
-Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
+Last revised: 2026-08-20
+Anchor timestamp: 2026-08-20 21:45:47 UTC +0000
 
 ## Context
 
@@ -28,7 +28,8 @@ ADR 0023 later made index flush failures recoverable: when a posting op fails,
 `flush_pending` compensates the partial batch, **persists the whole batch to the durable
 repair journal**, and arms the maintenance timer so the index converges to the store
 asynchronously. The store mutation and the label-stats deltas are already durable at that
-point.
+point. First-delivery DML intent is owned by the durable `DerivedIndexOutbox`; the repair
+journal is the second durable owner for failed delivery and compensation.
 
 ## Problem
 
@@ -69,9 +70,10 @@ Facts (verified in code, not assumptions):
 
 ## Existing Architecture Assessment
 
-The two recovery systems are mutually inconsistent. ADR 0023's repair journal already
-owns eventual index convergence; the store mutation and deltas are durable. Therefore a
-flush that is durably journaled for repair is **not** a failure of the mutation — only of
+The two durable delivery owners are complementary rather than competing. Graph's
+`DerivedIndexOutbox` owns first-delivery intent and ADR 0023's repair journal owns failed-delivery
+recovery; the store mutation and deltas are durable. Therefore a flush that is durably journaled
+for repair is **not** a failure of the mutation — only of
 the *synchronous* index update. ADR 0015's `Incomplete` state predates the repair journal
 and conflates "synchronous flush did not succeed" with "mutation did not apply". No new
 subsystem is needed: the fix is to stop coupling mutation-journal completion to the
@@ -88,7 +90,7 @@ synchronous flush return value, since flush durability is already owned elsewher
 ## Decision
 
 Adopt **B**: decouple mutation-journal completion from the synchronous index flush,
-because flush durability is owned by ADR 0023's repair journal.
+because Graph's durable outbox/repair owners retain delivery intent while the index converges.
 
 ### Flush signal
 
@@ -125,8 +127,8 @@ When a post-mutation flush returns `IndexFlushDeferred` (and no hard error occur
 
 | Invariant | Owner | Enforcement point |
 |-----------|-------|-------------------|
-| A mutation whose writes and deltas are durable, with no unexecuted DML remaining, is recorded `Completed` even if the synchronous index flush was deferred to the repair journal | Graph | `run_wire_plans_inner` flush handling |
-| Index convergence after a deferred flush | Graph (repair journal) | `flush_pending` journal append + maintenance timer (ADR 0023) |
+| A mutation whose writes and deltas are durable, with no unexecuted DML remaining, is recorded `Completed` even if index delivery is deferred to either durable owner | Graph | `run_wire_plans_inner` flush handling |
+| Index convergence after a deferred flush | Graph (derived-index outbox + repair journal) | outbox/repair append + maintenance timer (ADR 0023) |
 | A bundle with unexecuted DML after a deferred flush is never recorded `Completed` | Graph | `run_wire_plans_inner` remaining-DML check |
 
 ## Consequences
@@ -161,18 +163,11 @@ unchanged. The new `PlanQueryError::IndexFlushDeferred` variant is internal to
 ## Consistency vocabulary (ADR 0029)
 
 This ADR's graph mutation-journal `Completed` state means that the shard-local canonical
-outcome is durable and replayable. It does not mean graph-index has converged. Under
-[ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md), a deferred
-flush leaves the distributed mutation `ProjectionPending` until the required index
-watermark is reached; Router owns the final cross-canister `Completed` transition.
-
-As of ADR 0029 Phase 2 (implemented), the required index watermark is observable: the
-deferred batch in the repair journal (ADR 0023 D5, region 41) carries its originating
-`mutation_id`, and the graph query `index_pending_min_mutation_id` reports the smallest
-tracked unapplied mutation. Because the Router saga's `projection_advanced` tracks label
-stats only, a mutation can reach the Router-saga `Completed` while its graph-index postings
-are still pending in the repair journal; the mutation-linked index watermark exposes that gap
-independently of the saga phase.
+outcome is durable and replayable. It does not mean graph-index has converged. [ADR
+0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) defines the Router saga
+phase semantics and the `AtLeast` barrier separately: `index_pending_min_mutation_id` exposes
+graph-index freshness, so a Router saga may complete its tracked canonical and label-stats
+projection work while graph-index delivery remains pending and an `AtLeast` read still waits.
 
 ## Design Documentation Impact
 

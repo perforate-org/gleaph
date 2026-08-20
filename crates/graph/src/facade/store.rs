@@ -30,6 +30,7 @@ mod error;
 mod handle;
 pub(crate) mod helpers;
 mod index_build_admission;
+mod index_pending_floor;
 mod label_stats_delta;
 mod labels;
 mod local_indexes;

@@ -17,17 +17,19 @@
 use candid::{Decode, Encode};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::GqlWireRows;
-use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, RouterError};
 use gleaph_graph_kernel::index::PostingHit;
 use gleaph_graph_kernel::path::GraphPathVertexId;
-use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
 use gleaph_pocket_ic_tests::{
-    FederationEnv, create_edge_property_index, create_vertex_property_index,
+    FederationEnv, SOURCE_SHARD, create_edge_property_index, create_vertex_property_index,
     drain_maintenance_via_timer, drop_vertex_property_index,
-    e2e_delete_directed_edge_with_property, e2e_enqueue_forward_compaction,
-    e2e_insert_directed_edge_with_property, e2e_insert_vertex, e2e_maintenance_queue_len,
-    e2e_reverse_resolved_edge_property, ensure_edge_label, ensure_property, gql_mutate_as_admin,
-    gql_mutate_result_as_admin, gql_query_as_admin, install_single_shard_federation, wasm_bytes,
+    e2e_delete_directed_edge_with_property, e2e_derived_index_outbox_len,
+    e2e_enqueue_forward_compaction, e2e_insert_directed_edge_with_property, e2e_insert_vertex,
+    e2e_maintenance_queue_len, e2e_repair_journal_len, e2e_reverse_resolved_edge_property,
+    ensure_edge_label, ensure_property, gql_mutate_as_admin, gql_mutate_result_as_admin,
+    gql_query_as_admin, gql_query_as_admin_with_read_mode, graph_index_pending_min_mutation_id,
+    install_single_shard_federation, wasm_bytes,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -396,11 +398,10 @@ fn timer_compaction_after_upgrade_rekeys_edge_postings_consistently() {
     );
 }
 
-/// A failed graph-index batch is persisted to the Graph repair journal. The journal must survive
-/// a Graph upgrade and replay after the index becomes available again; retrying the canonical
-/// mutation must not be required to restore the derived posting.
+/// First-delivery outbox work must survive a Graph upgrade and keep an AtLeast read fail-closed
+/// until the graph-index target is restarted and the durable outbox drains.
 #[test]
-fn repair_journal_replays_index_batch_after_graph_upgrade() {
+fn first_delivery_outbox_survives_graph_upgrade_and_atleast_fails_closed_until_drain() {
     let env = install_single_shard_federation();
     create_vertex_property_index(
         &env,
@@ -422,26 +423,93 @@ fn repair_journal_replays_index_batch_after_graph_upgrade() {
         outcome.row_count, 0,
         "the canonical insert commits while its index flush is deferred"
     );
+    let token = outcome
+        .token
+        .expect("deferred indexed mutation must issue a token");
+    assert_ne!(token.mutation_id, 0, "token carries a real mutation id");
+    assert!(
+        e2e_derived_index_outbox_len(&env, env.graph_source) > 0,
+        "stopped graph-index preserves first-delivery work in the Graph outbox"
+    );
+    assert_eq!(
+        e2e_repair_journal_len(&env, env.graph_source),
+        0,
+        "first-delivery deferral must not copy work into the repair journal"
+    );
+    assert_eq!(
+        graph_index_pending_min_mutation_id(&env, env.graph_source),
+        Some(token.mutation_id)
+    );
+    let lag = gql_query_as_admin_with_read_mode(
+        &env,
+        "MATCH (n:Person {age: 99}) RETURN n",
+        ReadMode::AtLeast(token.clone()),
+    )
+    .expect_err("AtLeast must fail while the first-delivery outbox is durable");
+    assert_eq!(
+        lag,
+        RouterError::ProjectionLag {
+            shard_id: SOURCE_SHARD.raw(),
+            watermark: "graph_index".into(),
+            required: token.mutation_id,
+            current: token.mutation_id,
+        }
+    );
 
-    env.pic
-        .start_canister(env.index, None)
-        .expect("restart graph-index for repair replay");
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
         .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
-        .expect("upgrade graph shard with durable repair journal");
-    // `drain_maintenance_via_timer` intentionally watches only the stable compaction queue. This
-    // case has a repair journal but no compaction item, so advance the re-armed repair timer here.
-    for _ in 0..12 {
-        env.pic.advance_time(std::time::Duration::from_secs(2));
-        for _ in 0..12 {
-            env.pic.tick();
-        }
-    }
+        .expect("upgrade graph shard with durable outbox");
 
-    let result = gql_query_as_admin(&env, "MATCH (n:Person {age: 99}) RETURN n");
+    assert!(
+        e2e_derived_index_outbox_len(&env, env.graph_source) > 0,
+        "Graph upgrade preserves first-delivery work while graph-index remains stopped"
+    );
+    assert_eq!(
+        e2e_repair_journal_len(&env, env.graph_source),
+        0,
+        "Graph upgrade must not move first-delivery work into the repair journal"
+    );
+    assert_eq!(
+        graph_index_pending_min_mutation_id(&env, env.graph_source),
+        Some(token.mutation_id)
+    );
+    let lag_after_upgrade = gql_query_as_admin_with_read_mode(
+        &env,
+        "MATCH (n:Person {age: 99}) RETURN n",
+        ReadMode::AtLeast(token.clone()),
+    )
+    .expect_err("AtLeast must remain fail-closed after Graph upgrade");
+    assert_eq!(
+        lag_after_upgrade,
+        RouterError::ProjectionLag {
+            shard_id: SOURCE_SHARD.raw(),
+            watermark: "graph_index".into(),
+            required: token.mutation_id,
+            current: token.mutation_id,
+        }
+    );
+
+    env.pic
+        .start_canister(env.index, None)
+        .expect("restart graph-index for durable outbox replay");
+    drain_maintenance_via_timer(&env, env.graph_source);
+
+    assert_eq!(e2e_derived_index_outbox_len(&env, env.graph_source), 0);
+    assert_eq!(e2e_repair_journal_len(&env, env.graph_source), 0);
+    assert_eq!(
+        graph_index_pending_min_mutation_id(&env, env.graph_source),
+        None
+    );
+
+    let result = gql_query_as_admin_with_read_mode(
+        &env,
+        "MATCH (n:Person {age: 99}) RETURN n",
+        ReadMode::AtLeast(token),
+    )
+    .expect("same AtLeast token succeeds after durable outbox drain");
     assert_eq!(
         result.row_count, 1,
-        "repair journal replay after Graph upgrade must restore the index posting"
+        "durable outbox drain after Graph upgrade must restore the index posting"
     );
 }

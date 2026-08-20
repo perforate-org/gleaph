@@ -210,10 +210,10 @@ pub async fn ack_label_stats_deltas_through(
     call_graph(graph, "ack_label_stats_deltas_through", through_seq).await
 }
 
-/// Smallest tracked unapplied `mutation_id` whose graph-index postings are still in the
-/// shard's repair journal (ADR 0029 Phase 2/3). `None` means all tracked index work
-/// drained: a read for mutation `M` is index-satisfied on this shard iff this is `None`
-/// or `M < value`.
+/// Smallest tracked unapplied `mutation_id` whose ordinary graph-index postings remain in either
+/// durable delivery owner (ADR 0029 Phase 2/3). Graph maintains this exact owner-local floor in
+/// stable memory. A read for mutation `M` is index-satisfied on this shard iff this is `None` or
+/// `M < value`.
 #[cfg(target_family = "wasm")]
 pub async fn index_pending_min_mutation_id(graph: Principal) -> Result<Option<MutationId>, String> {
     use ic_cdk::call::Call;

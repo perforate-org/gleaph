@@ -6,6 +6,7 @@ mod batch_placement;
 #[cfg(feature = "canbench_large")]
 mod capacity;
 mod index_export;
+mod index_pending_floor;
 #[cfg(feature = "canbench_large")]
 mod large;
 mod ordered_batch;
