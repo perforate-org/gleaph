@@ -11,10 +11,10 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use glam::Vec2;
 use gpui_graph::graph::{EdgeDirection, Graph, NodeId};
 use gpui_graph::paint::{
-    DENSITY_RADIUS, DensityGrid, EdgeCurveContext, ObstacleGrid, apply_node_avoidance,
-    edge_control_point, edge_path, signed_densities, signed_densities_for,
-    trim_curve_to_node_boundary,
+    DENSITY_RADIUS, EdgeCurveContext, ObstacleGrid, apply_node_avoidance, edge_control_point,
+    edge_path, signed_densities, signed_densities_for, trim_curve_to_node_boundary,
 };
+use gpui_graph::runtime::DensityGrid;
 use gpui_graph::style::GraphStyle;
 use gpui_graph::viewport::Viewport;
 
@@ -65,10 +65,10 @@ impl GridGraph {
             midpoints.push((s + t) * 0.5);
             let dir = t - s;
             let len = dir.length();
-            normals.push(if len < f32::EPSILON {
-                Vec2::new(0.0, -1.0)
-            } else {
+            normals.push(if len.is_finite() && len > 0.0 {
                 Vec2::new(-dir.y, dir.x) / len
+            } else {
+                Vec2::new(0.0, -1.0)
             });
         }
         (midpoints, normals)
@@ -108,10 +108,10 @@ impl CompleteGraph {
             midpoints.push((s + t) * 0.5);
             let dir = t - s;
             let len = dir.length();
-            normals.push(if len < f32::EPSILON {
-                Vec2::new(0.0, -1.0)
-            } else {
+            normals.push(if len.is_finite() && len > 0.0 {
                 Vec2::new(-dir.y, dir.x) / len
+            } else {
+                Vec2::new(0.0, -1.0)
             });
         }
         (midpoints, normals)
@@ -168,7 +168,6 @@ fn bench_control_point(c: &mut Criterion) {
             signed_density: densities[0],
             has_reverse: &has_reverse,
             parallel: &parallel,
-            zoom: 1.0,
             obstacles: &obstacle_grid,
             node_radius: 6.0,
         };
@@ -187,7 +186,6 @@ fn bench_control_point(c: &mut Criterion) {
             signed_density: densities[0],
             has_reverse: &has_reverse,
             parallel: &parallel,
-            zoom: 1.0,
             obstacles: &empty_grid,
             node_radius: 6.0,
         };
@@ -216,7 +214,6 @@ fn bench_node_avoidance(c: &mut Criterion) {
             signed_density: 0.0,
             has_reverse: &has_reverse,
             parallel: &parallel,
-            zoom: 1.0,
             obstacles: &obstacle_grid,
             node_radius: 6.0,
         };
@@ -287,7 +284,6 @@ fn bench_edge_path(c: &mut Criterion) {
             signed_density: densities[0],
             has_reverse: &has_reverse,
             parallel: &parallel,
-            zoom: 1.0,
             obstacles: &obstacle_grid,
             node_radius: 6.0,
         };

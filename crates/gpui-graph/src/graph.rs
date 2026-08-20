@@ -8,6 +8,8 @@
 //! followed by slot reuse must never cause a stale reference to silently point
 //! at a different entity (Invariant 3).
 
+use std::sync::Arc;
+
 use slotmap::{DenseSlotMap, new_key_type};
 
 new_key_type! {
@@ -106,10 +108,23 @@ impl GraphDelta {
 ///
 /// The graph is normally a client-side working subgraph rather than the
 /// complete database graph (§6.5).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Graph<N = (), E = ()> {
     nodes: DenseSlotMap<NodeId, Node<N>>,
     edges: DenseSlotMap<EdgeId, Edge<E>>,
+    /// Identity of this logical graph source. It is deliberately not shared
+    /// by `Clone`: a cloned graph may diverge independently from its source.
+    source_identity: Arc<()>,
+}
+
+impl<N: Clone, E: Clone> Clone for Graph<N, E> {
+    fn clone(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            edges: self.edges.clone(),
+            source_identity: Arc::new(()),
+        }
+    }
 }
 
 impl<N, E> Default for Graph<N, E> {
@@ -124,7 +139,13 @@ impl<N, E> Graph<N, E> {
         Self {
             nodes: DenseSlotMap::with_key(),
             edges: DenseSlotMap::with_key(),
+            source_identity: Arc::new(()),
         }
+    }
+
+    /// Return the private identity token used by derived graph state.
+    pub(crate) fn source_identity(&self) -> Arc<()> {
+        Arc::clone(&self.source_identity)
     }
 
     /// Number of nodes in the graph.

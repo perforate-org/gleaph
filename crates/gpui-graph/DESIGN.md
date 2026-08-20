@@ -4,7 +4,7 @@ Status: Partially Implemented (v0.1 core)
 Scope: GPUI-native interactive property graph visualization
 Primary targets: Native GPUI and GPUI Web/WASM
 
-> **Implementation status (2026-08-16 UTC):** The v0.1 core described below is
+> **Implementation status (2026-08-20 UTC):** The v0.1 core described below is
 > implemented in `src/` and covered by unit tests: the logical graph model
 > (`graph.rs`), keyed external identity (`keyed_graph.rs`), batches/patches and
 > deltas (`patch.rs`), the shared scene (`scene.rs`), the layout architecture
@@ -1159,6 +1159,15 @@ This separates graph and scene state from rendering mechanics.
 
 The frame may contain already transformed geometry or compact records optimized for painting.
 
+The public builders keep source ownership explicit. `build_paint_frame` accepts
+the standalone `PaintFrameInput` and is the linear path for callers that provide
+their own graph and scene resolvers. `build_indexed_paint_frame` accepts an
+`IndexedPaintFrameInput` containing the `SyncedGraphRuntime` proof returned by
+`GraphScene::sync_runtime`; it resolves the graph, positions, and cluster
+geometry from that same borrowed scene snapshot before using the runtime's
+queries. `GraphViewState` uses the indexed builder, while tests and other
+callers can use the linear builder without constructing runtime state.
+
 ## 18.3 Edge curves
 
 Edges render as quadratic Bézier curves that bow toward the side with lower
@@ -1170,10 +1179,13 @@ quadratic Bézier control point:
 - every non-loop edge bows toward the side with fewer neighbor edges; a lone
   edge with no neighbors is straight,
 - parallel edges are fanned perpendicular to the edge direction by a spacing
-  that scales with the edge's apparent length (world length times zoom): a
-  shorter apparent distance yields a narrower spacing, a longer apparent
-  distance a wider spacing. The power is sub-linear, so the sagitta grows more
-  slowly than the chord and curvature still drops as the node distance grows,
+  that scales with the edge's world length: a shorter edge yields a narrower
+  spacing, a longer edge a wider spacing. The power is sub-linear, so the
+  sagitta grows more slowly than the chord and curvature still drops as the
+  node distance grows. The world-space fan is zoom-invariant (it depends only
+  on world length, not on the viewport zoom); the non-clustered drawn edge uses
+  the coordinate-scale correction so the spatial index, cull test, and drawn
+  path agree at every zoom level,
 - a self-loop renders as an onigiri (rounded triangle) path.
 
 Self-loops count toward the local density of nearby edges (their midpoint is the
@@ -1193,6 +1205,34 @@ control point bows perpendicular to the edge by a fraction of the edge length
 proportional to the signed density difference (clamped), so the on-screen curve
 shape is stable under zoom. When the signed density is zero (no neighbors, or
 balanced left/right), the bow is zero and the edge is straight.
+
+The rendering visibility pre-filter is conservative with respect to this
+runtime-resolved density: its world-space bbox evaluates both signed-density
+directions at the `BOW_MAX` cap and includes the bounded obstacle displacement.
+After the exact density and obstacle path are built, an edge whose endpoints are
+both outside the viewport is emitted only when the axis-aligned bounds/control
+hull of a segment in that actual screen-space path intersects the viewport.
+This conservative test prevents false negatives but may retain a harmless
+offscreen candidate for later clipping. An exactly zero-length edge between
+distinct nodes is not a self-loop; only the graph identity
+`edge.source == edge.target` selects the onigiri path.
+
+The shared chord guard rejects only an exact zero or non-finite coordinate-space
+length before normalization. It deliberately does not use `f32::EPSILON`: a
+finite world chord smaller than that threshold can become a drawable screen
+chord after a deep-zoom transform. The world bbox, runtime preprocessing, and
+screen path therefore retain the same finite near-degenerate edge while still
+avoiding divide-by-zero or non-finite geometry.
+
+The scale conversion is explicit. `parallel_spacing(len, coordinate_scale)`
+normalizes a length in the current coordinate space to world length and scales
+the resulting spacing back into that space. The runtime/index and cull
+pre-filter use world coordinates (`coordinate_scale = 1`); the non-clustered
+screen-space path applies the viewport-zoom correction before trimming, and hit
+testing reuses the same `edge_path` conversion. This prevents screen-length
+fan drift at high zoom while keeping the indexed and linear visibility paths
+consistent. Cluster routing additionally applies its cluster-space bow and
+reverse-edge offset.
 
 Every edge is stored on `PaintEdge.path` as a list of quadratic Bézier segments
 already trimmed to the node boundaries, so the endpoints emerge from the node
@@ -1340,6 +1380,89 @@ The runtime is derived state.
 
 It must be reconstructible from authoritative graph and scene state.
 
+`GraphRuntime` is an owned replacement cache, not a public query authority. Its
+raw node/edge lookup methods and edge-preparation accessor are crate-private.
+`GraphScene::sync_runtime` returns the public `SyncedGraphRuntime` proof, whose
+borrowed query/preparation methods can be used only while the immutable scene
+snapshot and the synchronized runtime remain paired. Callers without that proof
+use the linear paint builder; a foreign or stale runtime cannot be supplied to
+the indexed builder.
+
+The spatial index is implemented as a uniform grid over node positions and
+non-loop edge bounding boxes. Node positions are bucketed into the cell
+containing them; each non-loop edge's conservative source-target/control-point
+bounding box is inserted into every cell it covers. The bound includes both
+directions of the capped density bow, the parallel/cluster geometry, and the
+owner's bounded obstacle displacement. A distinct-node edge whose endpoints
+exactly coincide is indexed as a point; a finite non-zero chord, including one
+smaller than `f32::EPSILON` in world space, retains its full curve bound. Graph
+identity, not coordinates, selects self-loop geometry. Self-loops are
+deliberately not assigned a fixed
+world-space bounding box: the onigiri path is defined in screen coordinates
+from viewport zoom and fixed-pixel style values. Every self-loop therefore goes
+into `edge_overflow`, and every bounded edge query includes it before the
+precise cull evaluates the screen-space path and converts its bounds back to
+world space.
+
+The paint layer queries the index for nodes and edge candidates near the visible
+region instead of scanning the whole graph every frame. The index is rebuilt
+only when the scene's source identity or topology/geometry revision changes
+(§31); pan/zoom reuse it. It is a coarse pre-filter: the paint layer still
+runs its precise point-in-bounds and conservative curve-bound tests on returned
+candidates, then computes final density and obstacle avoidance. When both
+endpoints are outside, the axis-aligned bounds/control hull of each quadratic
+segment in the final screen-space path is checked against the viewport before
+the edge is emitted. This conservative post-candidate predicate prevents false
+negatives but may retain a harmless offscreen candidate for later clipping. The
+edge query expands the visible region by a fixed world-space slack for
+cell-boundary and query-padding tolerance; coverage of bounded curve geometry
+is provided by the conservative per-edge bbox itself.
+
+The grid uses 64 world units per cell. A query or one edge bounding box is
+enumerated only when its checked rectangle covers at most 4096 cells. A non-loop
+edge whose box exceeds that bound, and every self-loop, is kept in
+`edge_overflow` and included in every bounded edge query. A non-finite or
+over-large query falls back to all indexed nodes or all edge-preparation
+indices, respectively, so malformed or very large regions cannot cause
+unbounded cell enumeration. Density-grid query ranges clamp each axis before
+iteration, so saturated i32 boundary cells are visited once and cannot
+double-count a neighbor in signed density.
+
+The world-space parallel fan is zoom-invariant: its spacing depends only on the
+edge's world length, not on the viewport zoom. For non-clustered paths, the
+screen conversion applies the coordinate-scale correction described in §18.3,
+so an edge whose control point is fanned far outside its source-target box is
+not dropped by the index at high zoom. Cluster routing additionally applies its
+screen-scaled cluster bow and reverse-edge offset.
+
+The runtime also owns the zoom-invariant per-edge preprocessing (`EdgePrep`):
+the candidate-edge list, parallel groups (`has_reverse`, `parallel`), edge
+midpoints/normals, and the local-density grid. These depend only on the
+topology and geometry revisions, so they are rebuilt once per change and reused
+across many pan/zoom frames. The paint layer then does only the per-visible-edge
+work each frame: it borrows the prep, queries the index for the visible
+candidate indices, and runs the precise cull and geometry tests on just those
+edges. Without a runtime, the paint layer falls back to building the prep and
+scanning every edge in the same frame.
+
+`GraphScene::sync_runtime` is the public and sole coherent synchronization
+boundary. It creates the crate-private `RuntimeSource`, which borrows the same
+`GraphScene` snapshot used to resolve graph data, node positions, cluster
+centers, and topology/geometry revisions. If that source is stale by source
+identity or revision, the runtime builds a complete replacement from it and
+installs the replacement atomically; no individual cached node or edge can mark
+a runtime current. The method then returns `SyncedGraphRuntime`, which borrows
+both the immutable scene and the synchronized runtime for one paint operation.
+`build_indexed_paint_frame` accepts only that proof, so it cannot combine a
+foreign runtime with a scene snapshot. `GraphScene` therefore remains the
+single source of truth, while `build_paint_frame` remains the explicit linear
+fallback.
+
+`Graph` carries a private source-identity token that is not shared by `Clone`.
+`sync_runtime` compares that identity even when topology and geometry revisions
+happen to match, rebuilding a runtime for a foreign graph source before it can
+produce the indexed proof.
+
 ---
 
 # 21. Hit Testing
@@ -1356,11 +1479,15 @@ precise geometry test
 actual hit
 ```
 
-Node hit testing may be simple geometry.
+The spatial index described in §20 is the rendering visibility pre-filter. It is
+not a hit-test acceleration contract. Node hit testing may be simple geometry.
 
 Edge hit testing may require distance-to-segment or curve calculations.
 
-The exact spatial index is deliberately not fixed in the v0.1 design.
+The hit-test acceleration structure is deliberately not fixed in the v0.1
+design. The unresolved indexing question here concerns hit-test acceleration
+and its maintenance during active force layout only; it does not defer or
+change the rendering visibility index described in §20.
 
 During active force layout, all node positions may change continuously, making maintenance of a static spatial index potentially more expensive than a linear scan for small or medium graphs.
 
@@ -1614,10 +1741,7 @@ Long-lived visualization state.
 Conceptually:
 
 ```rust
-let scene = cx.new(|cx| {
-    GraphScene::new(graph)
-        .layout(ForceAtlas2::default())
-});
+let scene = GraphScene::new().with_layout(Box::new(ForceAtlas2::default()));
 ```
 
 Typical imperative operations:
@@ -1629,7 +1753,7 @@ scene.update(cx, |scene, cx| {
 });
 ```
 
-Possible future operations:
+Imperative operations include:
 
 ```rust
 scene.set_layout(...);
@@ -1802,6 +1926,42 @@ topology unchanged
 data unchanged
 geometry changed
 ```
+
+`GraphScene` is the canonical owner of node positions and layout-derived
+cluster centers. `bump_geometry_revision()` is the single revision-update
+owner for changes to either representation. A real `set_position` change bumps
+the revision; a missing node or an assignment of its existing position is a
+no-op and does not churn the revision. `step_layout` bumps after an executed
+layout-engine step, conservatively even when copied node positions happen to be
+unchanged, because layout-derived cluster centers may have changed. It does not
+bump when the controller returns early because the layout is already settled.
+Public `rebuild_layout` and `set_layout` calls bump conservatively after
+rebuilding because either node positions or cluster centers may have changed.
+`with_layout` delegates to `set_layout`; when called on a populated scene it
+preserves the canonical node positions, clears the previous engine's derived
+cluster centers before rebuilding the replacement engine, bumps the geometry
+revision, and reheats the layout controller. A topology-changing `merge` or
+`apply` path calls `rebuild_layout`, which follows the same geometry invalidation
+boundary.
+`GraphScene::sync_runtime` compares its borrowed source's topology and geometry
+revisions with the runtime before painting, so every public geometry mutation
+path makes the derived spatial index stale before it can be reused. A
+`step_layout` call that actually executes the layout engine bumps the geometry
+revision conservatively, even if copied node positions are unchanged; only a
+controller early return for an already-settled run avoids a bump.
+
+Regression coverage is explicit: `scene.rs` covers a real ForceAtlas2 step and
+the exact `ab` candidate after positions move,
+`set_position_only_invalidates_runtime_for_a_real_change`, public layout
+rebuilds, populated `with_layout` replacement, the controller-early-return
+no-churn case, SCC-to-Fixed cluster center clearing, and the exact `1->9`
+visible-endpoint candidate. `runtime.rs` covers same-revision foreign-source
+rejection, graph-clone identity, atomic replacement, the 4096-cell boundary,
+non-loop edge overflow, self-loop overflow, and huge-query fallback.
+`paint.rs` covers indexed-vs-linear visible sets at overview/deep zoom,
+high-zoom parallel fan visibility, the separate linear builder fallback, and
+the non-unit-zoom self-loop cull coordinate path, plus the finite
+near-degenerate parallel-chord bbox/path boundary at zoom `1e6`.
 
 ### Node property update
 
@@ -1999,9 +2159,12 @@ The following should remain intentionally open until implementation and profilin
 
 ## Runtime
 
-- spatial index implementation,
+- ~~spatial index implementation~~ (implemented: uniform grid over node
+  positions and non-loop edge bounding boxes, with overflow handling, §20),
 - spatial index activation threshold,
 - geometry-cache policy,
+- hit-test acceleration structure and policy (§21; separate from the rendering
+  visibility index),
 - paint-record representation.
 
 ## Layout

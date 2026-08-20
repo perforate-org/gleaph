@@ -93,12 +93,11 @@ pub fn hit_test<N, E>(
         edge_ids.push(id);
         midpoints.push((source_world + target_world) * 0.5);
         let dir = target_world - source_world;
-        let len = dir.length();
-        normals.push(if len < f32::EPSILON {
-            Vec2::new(0.0, -1.0)
-        } else {
-            Vec2::new(-dir.y, dir.x) / len
-        });
+        normals.push(
+            crate::paint::finite_chord_length(source_world, target_world)
+                .map(|len| Vec2::new(-dir.y, dir.x) / len)
+                .unwrap_or(Vec2::new(0.0, -1.0)),
+        );
     }
     let signed_densities =
         crate::paint::signed_densities(&midpoints, &normals, crate::paint::DENSITY_RADIUS);
@@ -134,7 +133,6 @@ pub fn hit_test<N, E>(
                 signed_density: signed_densities[index],
                 has_reverse: &has_reverse,
                 parallel: &parallel,
-                zoom: viewport.zoom(),
                 obstacles: &obstacles_grid,
                 node_radius: style.node_radius,
             },
@@ -295,9 +293,9 @@ mod tests {
         // The fanned curve bows toward its control point. With two parallel
         // edges between the same node pair, their midpoints coincide, so the
         // perpendicular density is zero and only the fan offset applies. The
-        // trimmed curve's sagitta (midpoint bow) is half the control offset,
-        // so the midpoint sits at world (50, 8.3); hit there.
-        let screen = vp.world_to_screen(Vec2::new(50.0, 8.3));
+        // With world-normalized fan spacing, the trimmed curve's midpoint sits
+        // near world (50, 14.4); hit there.
+        let screen = vp.world_to_screen(Vec2::new(50.0, 14.4));
         let result = hit_test(&g, &positions, &no_clusters(), &vp, &style, screen);
         assert!(
             result.edge.is_some(),

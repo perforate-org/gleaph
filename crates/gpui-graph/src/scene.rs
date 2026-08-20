@@ -97,7 +97,7 @@ where
 
     /// Set the layout engine (builder form).
     pub fn with_layout(mut self, engine: Box<dyn LayoutEngine>) -> Self {
-        self.engine = engine;
+        self.set_layout(engine);
         self
     }
 
@@ -110,6 +110,27 @@ where
     /// The underlying logical graph.
     pub fn graph(&self) -> &Graph<N, E> {
         self.keyed.graph()
+    }
+
+    /// Synchronize derived runtime state from this scene's immutable snapshot.
+    ///
+    /// The scene owns the graph, revisions, node positions, and cluster
+    /// geometry, so callers cannot accidentally combine data from different
+    /// sources when rebuilding a runtime. The replacement is built off to the
+    /// side and installed atomically only when the source identity or either
+    /// revision is stale.
+    pub fn sync_runtime<'a>(
+        &'a self,
+        runtime: &'a mut crate::runtime::GraphRuntime,
+    ) -> crate::runtime::SyncedGraphRuntime<'a, NK, EK, N, E> {
+        let source = crate::runtime::RuntimeSource::from_scene(self);
+        if runtime.is_stale_for(&source) {
+            runtime.rebuild_from_source(source);
+        }
+        crate::runtime::SyncedGraphRuntime {
+            scene: self,
+            runtime,
+        }
     }
 
     /// Resolve an external node key to an internal node identity.
@@ -184,19 +205,26 @@ where
 
     /// Set a node's world-space position directly.
     pub fn set_position(&mut self, node: NodeId, position: Vec2) {
+        let Some(current) = self.node_scene.get(node).map(|scene| scene.position) else {
+            return;
+        };
+        if current == position {
+            return;
+        }
         if let Some(scene) = self.node_scene.get_mut(node) {
             scene.position = position;
         }
         if let Some(i) = self.node_index.get(&node) {
             self.layout_state.positions[*i] = position;
         }
+        self.bump_geometry_revision();
     }
 
     /// Replace the layout engine, rebuilding its internal state.
     pub fn set_layout(&mut self, engine: Box<dyn LayoutEngine>) {
         self.engine = engine;
-        self.engine
-            .rebuild(&self.layout_graph, &mut self.layout_state);
+        self.rebuild_layout_engine();
+        self.bump_geometry_revision();
         self.controller.reheat();
     }
 
@@ -221,6 +249,7 @@ where
                 scene.position = self.layout_state.positions[i];
             }
         }
+        self.bump_geometry_revision();
         if progress == LayoutProgress::Settled {
             self.controller.notify_converged();
         }
@@ -278,9 +307,21 @@ where
         };
         self.layout_state = layout_state;
         self.node_index = index_of;
+        self.rebuild_layout_engine();
+        self.bump_geometry_revision();
+        self.controller.notify_topology_changed();
+    }
+
+    /// Rebuild the active engine from the current projection and state.
+    ///
+    /// Cluster centers are derived output owned by the active engine. Clear
+    /// them before every rebuild so an engine that does not provide clusters
+    /// cannot inherit geometry from a previous engine, while canonical node
+    /// positions remain untouched.
+    fn rebuild_layout_engine(&mut self) {
+        self.layout_state.cluster_centers.fill(None);
         self.engine
             .rebuild(&self.layout_graph, &mut self.layout_state);
-        self.controller.notify_topology_changed();
     }
 
     /// Topology revision (§31).
@@ -351,12 +392,23 @@ where
 mod tests {
     use super::*;
     use crate::graph::EdgeDirection;
-    use crate::layout::{FixedLayout, ForceAtlas2};
+    use crate::layout::{FixedLayout, ForceAtlas2, SccLayoutEngine};
+    use crate::runtime::GraphRuntime;
 
     type Scene = GraphScene<&'static str, &'static str, &'static str, &'static str>;
 
     fn scene() -> Scene {
         GraphScene::new().with_layout(Box::new(FixedLayout))
+    }
+
+    fn synced_runtime<NK, EK, N, E>(s: &GraphScene<NK, EK, N, E>) -> GraphRuntime
+    where
+        NK: Eq + std::hash::Hash,
+        EK: Eq + std::hash::Hash,
+    {
+        let mut runtime = GraphRuntime::new();
+        s.sync_runtime(&mut runtime);
+        runtime
     }
 
     #[test]
@@ -810,5 +862,344 @@ mod tests {
         // The layout moved the nodes; the scene must reflect the new positions.
         assert_ne!(s.node_position(a).unwrap(), Vec2::new(-100.0, 0.0));
         assert_ne!(s.node_position(b).unwrap(), Vec2::new(100.0, 0.0));
+    }
+
+    #[test]
+    fn force_atlas_step_invalidates_synced_runtime() {
+        let mut s = GraphScene::new().with_layout(Box::new(ForceAtlas2::default()));
+        s.merge(GraphBatch::new().node("a", ()).node("b", ()).edge(
+            "ab",
+            "a",
+            "b",
+            EdgeDirection::Undirected,
+            (),
+        ));
+        let a = s.node_id(&"a").unwrap();
+        let b = s.node_id(&"b").unwrap();
+        s.set_position(a, Vec2::new(-100.0, 0.0));
+        s.set_position(b, Vec2::new(100.0, 0.0));
+        let mut runtime = synced_runtime(&s);
+        let initial_source = runtime
+            .edges()
+            .edge_ids
+            .iter()
+            .position(|&id| id == s.edge_id(&"ab").unwrap())
+            .map(|index| runtime.edges().source[index])
+            .unwrap();
+        let initial_target = runtime
+            .edges()
+            .edge_ids
+            .iter()
+            .position(|&id| id == s.edge_id(&"ab").unwrap())
+            .map(|index| runtime.edges().target[index])
+            .unwrap();
+        let geometry_before = s.geometry_revision();
+
+        let progress = s.step_layout(LayoutBudget { max_iterations: 1 });
+
+        assert!(matches!(
+            progress,
+            LayoutProgress::Running { .. } | LayoutProgress::Settled
+        ));
+        assert_eq!(s.geometry_revision(), geometry_before + 1);
+        assert_ne!(runtime.geometry_revision(), s.geometry_revision());
+
+        // Follow the same stale -> rebuild-and-sync path as GraphViewState's
+        // prepare_canvas before inspecting the derived runtime.
+        s.sync_runtime(&mut runtime);
+        assert_eq!(runtime.geometry_revision(), s.geometry_revision());
+
+        let expected_edge = s.edge_id(&"ab").unwrap();
+        let edge_index = runtime
+            .edges()
+            .edge_ids
+            .iter()
+            .position(|&id| id == expected_edge)
+            .expect("ForceAtlas edge must be in runtime edge prep");
+        let moved_source = s.node_position(a).unwrap();
+        let moved_target = s.node_position(b).unwrap();
+        assert_ne!(moved_source, initial_source);
+        assert_ne!(moved_target, initial_target);
+        assert_eq!(runtime.edges().source[edge_index], moved_source);
+        assert_eq!(runtime.edges().target[edge_index], moved_target);
+
+        let bounds = crate::viewport::WorldBounds {
+            min: moved_source.min(moved_target),
+            max: moved_source.max(moved_target),
+        };
+        let candidate_ids = runtime
+            .visible_edge_candidates(&bounds, 0.0)
+            .into_iter()
+            .map(|index| runtime.edges().edge_ids[index])
+            .collect::<Vec<_>>();
+        assert_eq!(candidate_ids, vec![expected_edge]);
+    }
+
+    #[test]
+    fn set_position_only_invalidates_runtime_for_a_real_change() {
+        let mut s = scene();
+        s.merge(GraphBatch::new().node("a", "A"));
+        let a = s.node_id(&"a").unwrap();
+        let original = s.node_position(a).unwrap();
+        let runtime = synced_runtime(&s);
+        let geometry_before = s.geometry_revision();
+
+        s.set_position(a, original);
+        s.set_position(NodeId::default(), Vec2::new(42.0, 24.0));
+        assert_eq!(s.geometry_revision(), geometry_before);
+        assert_eq!(runtime.geometry_revision(), s.geometry_revision());
+
+        s.set_position(a, original + Vec2::new(1.0, 0.0));
+        assert_eq!(s.geometry_revision(), geometry_before + 1);
+        assert_ne!(runtime.geometry_revision(), s.geometry_revision());
+    }
+
+    #[test]
+    fn public_layout_rebuilds_invalidate_runtime_geometry_revision() {
+        let mut s = scene();
+        s.merge(GraphBatch::new().node("a", "A").node("b", "B"));
+        let mut runtime = synced_runtime(&s);
+
+        let before_rebuild = s.geometry_revision();
+        s.rebuild_layout();
+        assert_eq!(s.geometry_revision(), before_rebuild + 1);
+        assert_ne!(runtime.geometry_revision(), s.geometry_revision());
+
+        s.sync_runtime(&mut runtime);
+        let before_set_layout = s.geometry_revision();
+        s.set_layout(Box::new(SccLayoutEngine));
+        assert_eq!(s.geometry_revision(), before_set_layout + 1);
+        assert_ne!(runtime.geometry_revision(), s.geometry_revision());
+    }
+
+    #[test]
+    fn settled_layout_step_does_not_churn_geometry_revision() {
+        let mut s = scene();
+        s.merge(GraphBatch::new().node("a", "A"));
+        s.step_layout(LayoutBudget::default());
+        let geometry_after_step = s.geometry_revision();
+
+        assert_eq!(
+            s.step_layout(LayoutBudget::default()),
+            LayoutProgress::Settled
+        );
+        assert_eq!(s.geometry_revision(), geometry_after_step);
+    }
+
+    #[test]
+    fn scc_layout_edges_with_both_endpoints_visible_remain_candidates_at_high_zoom() {
+        // Reproduces the reported bug in examples/matrices_and_graphs.rs: an edge
+        // whose two endpoints are both on-screen (e.g. n2 -> n10) disappears when
+        // zooming in. The spatial index must keep such an edge as a candidate
+        // even at high zoom, so the precise cull test (which keeps any edge with
+        // an on-screen endpoint) can retain it.
+        // The example's 13-node reducible digraph, in Frobenius order.
+        let matrix: [&[u8]; 13] = [
+            &[0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            &[0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+            &[1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],
+            &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+        ];
+
+        let mut batch = GraphBatch::new();
+        for i in 0..13 {
+            batch = batch.node(i.to_string(), ());
+        }
+        for (i, row) in matrix.iter().enumerate() {
+            for (j, &entry) in row.iter().enumerate() {
+                if entry == 1 {
+                    batch = batch.edge(
+                        format!("{i}->{j}"),
+                        i.to_string(),
+                        j.to_string(),
+                        EdgeDirection::Directed,
+                        (),
+                    );
+                }
+            }
+        }
+
+        let mut s = GraphScene::new().with_layout(Box::new(SccLayoutEngine));
+        s.merge(batch);
+        s.step_layout(LayoutBudget::default());
+
+        // Build the runtime index from the settled scene, exactly as the view
+        // does in prepaint.
+        let mut rt = GraphRuntime::new();
+        s.sync_runtime(&mut rt);
+
+        // The edge n2 -> n10 (0-based: 1 -> 9) is a cross-block edge. At a high
+        // zoom centered on the two endpoints, both are on-screen, so the precise
+        // cull test keeps the edge. The index must return it as a candidate.
+        let n2 = s.node_id(&"1".to_string()).unwrap();
+        let n10 = s.node_id(&"9".to_string()).unwrap();
+        let expected_edge = s.edge_id(&"1->9".to_string()).unwrap();
+        let p2 = s.node_position(n2).unwrap();
+        let p10 = s.node_position(n10).unwrap();
+        let min = p2.min(p10);
+        let max = p2.max(p10);
+        let bounds = crate::viewport::WorldBounds { min, max };
+        let candidates = rt.visible_edge_candidates(&bounds, 0.0);
+        let expected_edge_index = rt
+            .edges()
+            .edge_ids
+            .iter()
+            .position(|&id| id == expected_edge)
+            .unwrap();
+        assert!(
+            candidates.contains(&expected_edge_index),
+            "edge n2->n10 must remain a candidate when both endpoints are on-screen \
+             (p2={p2:?}, p10={p10:?})"
+        );
+    }
+
+    #[test]
+    fn switching_from_scc_to_fixed_clears_cluster_geometry_before_runtime_sync() {
+        const NODE_KEYS: [&str; 20] = [
+            "n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9", "n10", "n11", "n12", "n13",
+            "n14", "n15", "n16", "n17", "n18", "n19",
+        ];
+        const EDGE_KEYS: [&str; 20] = [
+            "e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", "e11", "e12", "e13",
+            "e14", "e15", "e16", "e17", "e18", "e19",
+        ];
+
+        let mut batch = GraphBatch::new();
+        for key in NODE_KEYS {
+            batch = batch.node(key, ());
+        }
+        for i in 0..NODE_KEYS.len() {
+            batch = batch.edge(
+                EDGE_KEYS[i],
+                NODE_KEYS[i],
+                NODE_KEYS[(i + 1) % NODE_KEYS.len()],
+                EdgeDirection::Directed,
+                (),
+            );
+        }
+
+        let mut s = GraphScene::new().with_layout(Box::new(SccLayoutEngine));
+        s.merge(batch);
+        let source_id = s.node_id(&NODE_KEYS[0]).unwrap();
+        let target_id = s.node_id(&NODE_KEYS[1]).unwrap();
+        let edge_id = s.edge_id(&EDGE_KEYS[0]).unwrap();
+        let old_source = s.node_position(source_id).unwrap();
+        let old_target = s.node_position(target_id).unwrap();
+        let old_cluster = s
+            .node_cluster_center(source_id)
+            .expect("SCC rebuild must record a cluster center");
+        assert_eq!(s.node_cluster_center(target_id), Some(old_cluster));
+
+        // Locate a point on the old SCC-bowed curve far enough outside the
+        // straight source-target box that the runtime candidate query can
+        // distinguish stale cluster geometry from an unclustered edge.
+        let no_obstacles = crate::paint::ObstacleGrid::new(&[], 1.0);
+        let no_reverse = [false];
+        let no_parallel = [None];
+        let old_control = crate::paint::edge_control_point(
+            old_source,
+            old_target,
+            &crate::paint::EdgeCurveContext {
+                index: 0,
+                signed_density: 0.0,
+                has_reverse: &no_reverse,
+                parallel: &no_parallel,
+                obstacles: &no_obstacles,
+                node_radius: 0.0,
+            },
+            Some(old_cluster),
+        );
+
+        let mut runtime = synced_runtime(&s);
+        assert_eq!(runtime.geometry_revision(), s.geometry_revision());
+
+        s.set_layout(Box::new(FixedLayout));
+        assert_eq!(s.node_position(source_id), Some(old_source));
+        assert_eq!(s.node_position(target_id), Some(old_target));
+        assert!(s.node_cluster_center(source_id).is_none());
+        assert!(s.node_cluster_center(target_id).is_none());
+        assert_ne!(runtime.geometry_revision(), s.geometry_revision());
+
+        // Follow the same stale -> rebuild-and-sync path as GraphViewState.
+        s.sync_runtime(&mut runtime);
+        assert_eq!(runtime.geometry_revision(), s.geometry_revision());
+
+        let edge_index = runtime
+            .edges()
+            .edge_ids
+            .iter()
+            .position(|&id| id == edge_id)
+            .expect("fixed-layout edge must be in runtime edge prep");
+        assert_eq!(runtime.edges().source[edge_index], old_source);
+        assert_eq!(runtime.edges().target[edge_index], old_target);
+
+        let bounds = crate::viewport::WorldBounds {
+            min: old_control - Vec2::splat(1.0),
+            max: old_control + Vec2::splat(1.0),
+        };
+        let candidate_ids = runtime
+            .visible_edge_candidates(&bounds, 0.0)
+            .into_iter()
+            .map(|index| runtime.edges().edge_ids[index])
+            .collect::<Vec<_>>();
+        assert!(
+            candidate_ids.is_empty(),
+            "fixed layout must not index the old SCC curve (old_control={old_control:?}, \
+             candidates={candidate_ids:?})"
+        );
+    }
+
+    #[test]
+    fn populated_with_layout_uses_the_same_rebuild_boundary_for_fixed_and_force() {
+        fn populated_scc() -> Scene {
+            let mut scene = GraphScene::new().with_layout(Box::new(SccLayoutEngine));
+            scene.merge(
+                GraphBatch::new()
+                    .node("a", "A")
+                    .node("b", "B")
+                    .edge("ab", "a", "b", EdgeDirection::Directed, "AB")
+                    .edge("ba", "b", "a", EdgeDirection::Directed, "BA"),
+            );
+            scene
+        }
+
+        let replacements: [Box<dyn LayoutEngine>; 2] =
+            [Box::new(FixedLayout), Box::new(ForceAtlas2::default())];
+        for replacement in replacements {
+            let mut scene = populated_scc();
+            let a = scene.node_id(&"a").unwrap();
+            let b = scene.node_id(&"b").unwrap();
+            let positions_before = [
+                scene.node_position(a).unwrap(),
+                scene.node_position(b).unwrap(),
+            ];
+            assert!(scene.node_cluster_center(a).is_some());
+            assert!(scene.node_cluster_center(b).is_some());
+            let mut runtime = synced_runtime(&scene);
+            let revision_before = scene.geometry_revision();
+
+            scene = scene.with_layout(replacement);
+
+            assert_eq!(scene.geometry_revision(), revision_before + 1);
+            assert_eq!(scene.layout_state(), LayoutRunState::Running);
+            assert_eq!(scene.node_position(a), Some(positions_before[0]));
+            assert_eq!(scene.node_position(b), Some(positions_before[1]));
+            assert!(scene.node_cluster_center(a).is_none());
+            assert!(scene.node_cluster_center(b).is_none());
+            assert_ne!(runtime.geometry_revision(), scene.geometry_revision());
+            {
+                let _synced = scene.sync_runtime(&mut runtime);
+            }
+            assert_eq!(runtime.geometry_revision(), scene.geometry_revision());
+        }
     }
 }

@@ -11,6 +11,7 @@ use glam::Vec2;
 
 use crate::graph::{Edge, EdgeDirection, EdgeId, Graph, NodeId};
 use crate::interaction::{Hover, Selection};
+use crate::runtime::{GraphRuntime, SyncedGraphRuntime};
 use crate::style::GraphStyle;
 use crate::viewport::Viewport;
 
@@ -131,6 +132,28 @@ pub struct PaintFrameInput<'a, N, E> {
     pub hover: &'a Hover,
 }
 
+/// Inputs to [`build_indexed_paint_frame`].
+///
+/// Indexed rendering accepts only a scene/runtime synchronization proof. The
+/// graph, positions, and cluster geometry are therefore all resolved from the
+/// same borrowed scene snapshot as the spatial index.
+pub struct IndexedPaintFrameInput<'a, 'scene, NK, EK, N, E> {
+    /// Proof returned by [`crate::scene::GraphScene::sync_runtime`].
+    pub synced: &'a SyncedGraphRuntime<'scene, NK, EK, N, E>,
+    /// Resolves an optional node label string.
+    pub node_label: &'a dyn Fn(NodeId, &N) -> Option<String>,
+    /// Resolves an optional edge label string.
+    pub edge_label: &'a dyn Fn(EdgeId, &E) -> Option<String>,
+    /// The viewport.
+    pub viewport: &'a Viewport,
+    /// The graph style.
+    pub style: &'a GraphStyle,
+    /// The current selection.
+    pub selection: &'a Selection,
+    /// The current hover target.
+    pub hover: &'a Hover,
+}
+
 /// Build a paint frame from graph, scene positions, viewport, style, and
 /// interaction state, applying viewport culling (§22).
 ///
@@ -140,6 +163,47 @@ pub struct PaintFrameInput<'a, N, E> {
 /// resolves an optional label string for an edge; edges without a label produce
 /// no edge-label primitive.
 pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
+    build_paint_frame_with_runtime(input, None)
+}
+
+/// Build a paint frame using synchronized scene-owned spatial-index state.
+pub fn build_indexed_paint_frame<NK, EK, N, E>(
+    input: IndexedPaintFrameInput<'_, '_, NK, EK, N, E>,
+) -> PaintFrame
+where
+    NK: Eq + std::hash::Hash,
+    EK: Eq + std::hash::Hash,
+{
+    let IndexedPaintFrameInput {
+        synced,
+        node_label,
+        edge_label,
+        viewport,
+        style,
+        selection,
+        hover,
+    } = input;
+    let scene = synced.scene;
+    build_paint_frame_with_runtime(
+        PaintFrameInput {
+            graph: scene.graph(),
+            node_position: &|id| scene.node_position(id),
+            node_cluster_center: &|id| scene.node_cluster_center(id),
+            node_label,
+            edge_label,
+            viewport,
+            style,
+            selection,
+            hover,
+        },
+        Some(synced.runtime),
+    )
+}
+
+fn build_paint_frame_with_runtime<N, E>(
+    input: PaintFrameInput<'_, N, E>,
+    runtime: Option<&GraphRuntime>,
+) -> PaintFrame {
     let PaintFrameInput {
         graph,
         node_position,
@@ -161,8 +225,16 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         return frame;
     }
 
-    for (id, node) in graph.nodes() {
-        let Some(world) = node_position(id) else {
+    // Iterate the visible node ids: from the spatial index when supplied,
+    // otherwise a linear scan of the whole graph. The index returns a superset
+    // of the nodes inside the visible bounds (a node in a boundary cell may lie
+    // just outside), so the precise point-in-bounds test below still runs.
+    let node_ids: Vec<NodeId> = match runtime {
+        Some(rt) => rt.visible_nodes(&visible, margin),
+        None => graph.nodes().map(|(id, _)| id).collect(),
+    };
+    for id in &node_ids {
+        let Some(world) = node_position(*id) else {
             continue;
         };
         // Cull nodes outside the visible world bounds (with margin).
@@ -173,14 +245,17 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         {
             continue;
         }
+        let Some(node) = graph.node(*id) else {
+            continue;
+        };
         frame.nodes.push(PaintNode {
-            id,
+            id: *id,
             position: viewport.world_to_screen(world),
             radius: style.node_radius,
-            selected: selection.contains_node(id),
-            hovered: hover.node == Some(id),
+            selected: selection.contains_node(*id),
+            hovered: hover.node == Some(*id),
         });
-        if let Some(text) = node_label(id, &node.data) {
+        if let Some(text) = node_label(*id, &node.data) {
             frame.labels.push(PaintLabel {
                 position: viewport.world_to_screen(world),
                 text,
@@ -192,8 +267,8 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     // would otherwise pass through. The grid lets each edge test only the nodes
     // near its chord instead of every node.
     let mut obstacles_screen: Vec<Vec2> = Vec::new();
-    for (id, _) in graph.nodes() {
-        let Some(world) = node_position(id) else {
+    for id in &node_ids {
+        let Some(world) = node_position(*id) else {
             continue;
         };
         if world.x < visible.min.x - margin
@@ -212,90 +287,53 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     // the edge is actually drawn). This keeps off-screen edges cheap.
     let empty_obstacle_grid = ObstacleGrid::new(&[], obstacle_cell);
 
-    // Collect candidate edges, then assign curve control points so parallel
-    // edges and self-loops are separated visually.
-    let mut candidate_edges: Vec<(EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
-    for (id, edge) in graph.edges() {
-        let Some(source_world) = node_position(edge.source) else {
-            continue;
-        };
-        let Some(target_world) = node_position(edge.target) else {
-            continue;
-        };
-        candidate_edges.push((id, edge, source_world, target_world));
-    }
-
-    // Group edges by their (source, target) node pair to detect parallels.
-    let mut groups: std::collections::HashMap<(NodeId, NodeId), Vec<usize>> =
-        std::collections::HashMap::new();
-    for (index, (_, edge, _, _)) in candidate_edges.iter().enumerate() {
-        groups
-            .entry((edge.source, edge.target))
-            .or_default()
-            .push(index);
-    }
-    // Precompute whether each edge has a reverse edge (target -> source), so
-    // cluster edges can separate the two directions of a 2-node SCC in O(1)
-    // instead of scanning every group.
-    let has_reverse: Vec<bool> = candidate_edges
-        .iter()
-        .map(|(_, edge, _, _)| groups.contains_key(&(edge.target, edge.source)))
-        .collect();
-    // Precompute each edge's position within its parallel group and the group's
-    // size, so the parallel fan is O(1) instead of scanning every group.
-    let parallel: Vec<Option<(usize, usize)>> = candidate_edges
-        .iter()
-        .enumerate()
-        .map(|(index, (_, edge, _, _))| {
-            let group = &groups[&(edge.source, edge.target)];
-            if group.len() > 1 {
-                let position = group.iter().position(|&i| i == index).unwrap_or(0);
-                Some((position, group.len()))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Compute each edge's world-space midpoint and normal, then the signed local
-    // edge density (neighbors on the left minus on the right). Density is
-    // computed in world space so the neighbor set is zoom-invariant.
-    let midpoints: Vec<Vec2> = candidate_edges
-        .iter()
-        .map(|(_, _, s, t)| (*s + *t) * 0.5)
-        .collect();
-    let normals: Vec<Vec2> = candidate_edges
-        .iter()
-        .map(|(_, _, s, t)| {
-            let dir = *t - *s;
-            let len = dir.length();
-            if len < f32::EPSILON {
-                Vec2::new(0.0, -1.0)
-            } else {
-                Vec2::new(-dir.y, dir.x) / len
-            }
-        })
-        .collect();
-    let density_grid = DensityGrid::new(&midpoints, DENSITY_RADIUS);
+    // The zoom-invariant per-edge preprocessing comes from the runtime when
+    // supplied (borrowed, no copy); otherwise build it here (linear scan). It
+    // holds the candidate edges, parallel groups, midpoints/normals, and the
+    // density grid.
+    let prep: std::borrow::Cow<'_, crate::runtime::EdgePrep> = match runtime {
+        Some(rt) => std::borrow::Cow::Borrowed(rt.edges()),
+        None => std::borrow::Cow::Owned(crate::runtime::build_edge_prep(graph, node_position)),
+    };
+    let has_reverse = &prep.has_reverse;
+    let parallel = &prep.parallel;
+    let midpoints = &prep.midpoints;
+    let normals = &prep.normals;
+    let density_grid = &prep.density_grid;
 
     let mut visible_edges: Vec<(usize, EdgeId, &Edge<E>, Vec2, Vec2)> = Vec::new();
-    for (index, (id, edge, source_world, target_world)) in candidate_edges.iter().enumerate() {
+    // When a spatial index is supplied, iterate only the candidate indices it
+    // reports as near the visible region (a superset, so no visible edge is
+    // missed). Without an index, every edge is a candidate.
+    let candidate_indices: Vec<usize> = match runtime {
+        Some(rt) => rt.visible_edge_candidates(&visible, margin),
+        None => (0..prep.edge_ids.len()).collect(),
+    };
+    for &index in &candidate_indices {
+        let id = prep.edge_ids[index];
+        let edge = graph.edge(id).expect("edge exists");
+        let source_world = prep.source[index];
+        let target_world = prep.target[index];
         // Cull edges whose curve's bounding box is entirely outside the visible
         // bounds. A curved edge may pass through the view even when both
         // endpoints are outside it, so the control point is included in the
         // bounds test.
-        let source_visible = point_in_bounds(*source_world, &visible, margin);
-        let target_visible = point_in_bounds(*target_world, &visible, margin);
+        let source_visible = point_in_bounds(source_world, &visible, margin);
+        let target_visible = point_in_bounds(target_world, &visible, margin);
         if !source_visible && !target_visible {
             // Both endpoints are outside; keep the edge only if its curve
             // (including the control point) still crosses the visible bounds.
-            let is_self_loop = (*source_world - *target_world).length() < f32::EPSILON;
+            // Self-loop status is a graph-topology fact, not a consequence of
+            // two distinct nodes currently sharing a position.
+            let is_self_loop = edge.source == edge.target;
             let curve_visible = if is_self_loop {
                 // A self-loop's onigiri path may extend well beyond the node,
-                // so test the path's bounding box.
+                // so test the path's bounding box. The path is in screen
+                // coordinates; convert its bounds back before comparing with
+                // the world-space visible bounds.
                 let path = self_loop_path(
                     edge.source,
-                    *source_world,
+                    viewport.world_to_screen(source_world),
                     graph,
                     node_position,
                     viewport,
@@ -307,23 +345,24 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                     min = min.min(*p0).min(*p1).min(*p2);
                     max = max.max(*p0).max(*p1).max(*p2);
                 }
-                bounds_intersect(&visible, margin, min, max)
+                bounds_intersect(
+                    &visible,
+                    margin,
+                    viewport.screen_to_world(min),
+                    viewport.screen_to_world(max),
+                )
             } else {
                 let cluster_center =
                     shared_cluster_center(edge.source, edge.target, node_cluster_center);
-                let cull_ctx = EdgeCurveContext {
+                let (min, max) = edge_curve_bbox(
+                    source_world,
+                    target_world,
                     index,
-                    signed_density: 0.0,
-                    has_reverse: &has_reverse,
-                    parallel: &parallel,
-                    zoom: viewport.zoom(),
-                    obstacles: &empty_obstacle_grid,
-                    node_radius: style.node_radius,
-                };
-                let control_world =
-                    edge_control_point(*source_world, *target_world, &cull_ctx, cluster_center);
-                let min = (*source_world).min(*target_world).min(control_world);
-                let max = (*source_world).max(*target_world).max(control_world);
+                    has_reverse,
+                    parallel,
+                    cluster_center,
+                    &empty_obstacle_grid,
+                );
                 bounds_intersect(&visible, margin, min, max)
             };
             if !curve_visible {
@@ -332,10 +371,10 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         }
         visible_edges.push((
             index,
-            *id,
+            id,
             edge,
-            viewport.world_to_screen(*source_world),
-            viewport.world_to_screen(*target_world),
+            viewport.world_to_screen(source_world),
+            viewport.world_to_screen(target_world),
         ));
     }
 
@@ -345,23 +384,22 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
     // edges instead of every edge in the graph.
     let visible_indices: Vec<usize> = visible_edges.iter().map(|(i, _, _, _, _)| *i).collect();
     let signed_densities = signed_densities_for(
-        &density_grid,
-        &midpoints,
-        &normals,
+        density_grid,
+        midpoints,
+        normals,
         DENSITY_RADIUS,
         &visible_indices,
     );
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
-        let is_self_loop = (*source - *target).length() < f32::EPSILON;
+        let is_self_loop = edge.source == edge.target;
         let path = edge_path(
             edge,
             &EdgeCurveContext {
                 index: *candidate_index,
                 signed_density: signed_densities[*candidate_index],
-                has_reverse: &has_reverse,
-                parallel: &parallel,
-                zoom: viewport.zoom(),
+                has_reverse,
+                parallel,
                 obstacles: &obstacles_screen_grid,
                 node_radius: style.node_radius,
             },
@@ -375,6 +413,31 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
         // empty, so no non-finite geometry reaches the paint layer.
         if path.is_empty() {
             continue;
+        }
+        // The candidate/index cull is intentionally conservative because the
+        // exact density and obstacle context is known only now. For edges with
+        // both endpoints outside the viewport, apply the actual rendered path
+        // as the post-candidate predicate so a conservative max-bow bbox cannot
+        // turn an off-screen edge into a painted primitive.
+        let screen_bounds = crate::viewport::WorldBounds {
+            min: Vec2::ZERO,
+            max: viewport.size(),
+        };
+        let screen_margin = margin * viewport.zoom();
+        let source_visible = point_in_bounds(*source, &screen_bounds, screen_margin);
+        let target_visible = point_in_bounds(*target, &screen_bounds, screen_margin);
+        if !source_visible && !target_visible {
+            let path_visible = path.iter().any(|(p0, p1, p2)| {
+                bounds_intersect(
+                    &screen_bounds,
+                    screen_margin,
+                    p0.min(*p1).min(*p2),
+                    p0.max(*p1).max(*p2),
+                )
+            });
+            if !path_visible {
+                continue;
+            }
         }
         let apex = if is_self_loop {
             path.first().map(|(_, _, p2)| *p2)
@@ -401,11 +464,10 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
                 let (p0, p1, p2) = path[0];
                 let position = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
                 let tangent = *target - *source;
-                let len = tangent.length();
                 // Normalize the normal so its y component is always upward.
                 // This keeps labels on the same side of the edge regardless of
                 // whether the edge points left or right.
-                let normal = if len > f32::EPSILON {
+                let normal = if let Some(len) = finite_chord_length(*source, *target) {
                     let n = Vec2::new(-tangent.y, tangent.x) / len;
                     if n.y < 0.0 { -n } else { n }
                 } else {
@@ -441,26 +503,53 @@ pub fn build_paint_frame<N, E>(input: PaintFrameInput<'_, N, E>) -> PaintFrame {
 /// local density. Computed in world space so the neighbor set is zoom-invariant.
 #[doc(hidden)]
 pub const DENSITY_RADIUS: f32 = 40.0;
-/// Base world-space spacing between parallel edges, at the reference apparent
-/// length. The actual spacing scales with the edge's apparent length (world
-/// length times zoom): a shorter apparent distance yields a narrower spacing, a
-/// longer apparent distance a wider spacing, so parallel edges keep a consistent
-/// on-screen separation. The power is sub-linear so the sagitta grows more
-/// slowly than the chord and curvature still drops as the node distance grows.
+/// Base world-space spacing between parallel edges, at the reference edge
+/// length. The actual spacing scales with the edge's world length: a shorter
+/// edge yields a narrower spacing, a longer edge a wider spacing, so parallel
+/// edges keep a consistent on-screen separation. The power is sub-linear so the
+/// sagitta grows more slowly than the chord and curvature still drops as the
+/// node distance grows. The spacing is zoom-invariant (it depends only on world
+/// length, not on the viewport zoom) so the spatial index, the cull test, and
+/// the drawn edge all agree at every zoom level.
 const PARALLEL_SPACING: f32 = 60.0;
-/// Reference apparent length (world length * zoom) at which the spacing is the
-/// base value.
+/// Reference edge length (world units) at which the spacing is the base value.
 const PARALLEL_SPACING_REF_APPARENT: f32 = 100.0;
-/// Power relating apparent length to spacing. 0 keeps spacing constant; 1 makes
-/// spacing proportional to apparent length.
+/// Power relating edge length to spacing. 0 keeps spacing constant; 1 makes
+/// spacing proportional to edge length.
 const PARALLEL_SPACING_POWER: f32 = 0.10;
+
+/// Parallel-edge spacing in the current coordinate space. `coordinate_scale`
+/// converts current-coordinate length to world length, then scales the spacing
+/// back into the current coordinate space.
+fn parallel_spacing(len: f32, coordinate_scale: f32) -> f32 {
+    let world_len = len / coordinate_scale;
+    coordinate_scale
+        * PARALLEL_SPACING
+        * (world_len / PARALLEL_SPACING_REF_APPARENT).powf(PARALLEL_SPACING_POWER)
+}
+
 /// Bow per unit of signed density difference, as a fraction of edge length.
 const BOW_DENSITY: f32 = 0.20;
 /// Upper bound on the bow as a fraction of edge length.
 const BOW_MAX: f32 = 0.90;
+/// Signed density value that reaches the `BOW_MAX` magnitude cap.
+const MAX_SIGNED_DENSITY: f32 = BOW_MAX / BOW_DENSITY;
 /// Extra clearance around an obstacle node, in world units, that an edge's
 /// control point is pushed away from.
 pub(crate) const OBSTACLE_RADIUS: f32 = 30.0;
+
+/// Return a usable length for a coordinate-space chord.
+///
+/// A fixed epsilon is not a valid degeneracy rule here: a finite world-space
+/// chord can be smaller than `f32::EPSILON` and become drawable after the
+/// viewport transform. Only an exact zero or a non-finite length is rejected,
+/// which keeps every normalization site finite without conflating coordinate
+/// scale with graph topology.
+pub(crate) fn finite_chord_length(source: Vec2, target: Vec2) -> Option<f32> {
+    let dir = target - source;
+    let len = dir.length();
+    (dir.is_finite() && len.is_finite() && len > 0.0).then_some(len)
+}
 /// Multiplier applied to a cluster edge's chord distance to push the control
 /// point outside the circle for outer edges, so they follow the circular arc.
 /// For adjacent nodes (chord at `radius·cos(45°)`) a gain of ~1.0 places the
@@ -475,49 +564,6 @@ const CLUSTER_BASE: f32 = 0.05;
 /// parallel fan) so the two directions of a 2-node SCC separate and stay
 /// separated as nodes move, with no angle threshold.
 const CLUSTER_NORMAL_OFFSET: f32 = 0.3;
-
-/// A uniform grid over edge midpoints used to count nearby edges in O(E).
-#[doc(hidden)]
-pub struct DensityGrid {
-    cell_size: f32,
-    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
-}
-
-impl DensityGrid {
-    #[doc(hidden)]
-    pub fn new(midpoints: &[Vec2], radius: f32) -> Self {
-        let cell_size = radius;
-        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, m) in midpoints.iter().enumerate() {
-            let cell = (
-                (m.x / cell_size).floor() as i32,
-                (m.y / cell_size).floor() as i32,
-            );
-            cells.entry(cell).or_default().push(i);
-        }
-        Self { cell_size, cells }
-    }
-
-    /// Indices of edges whose midpoint may lie within `radius` of `midpoint`.
-    #[doc(hidden)]
-    pub fn candidates(&self, midpoint: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
-        let cell = (
-            (midpoint.x / self.cell_size).floor() as i32,
-            (midpoint.y / self.cell_size).floor() as i32,
-        );
-        let span = (radius / self.cell_size).ceil() as i32;
-        (-span..=span).flat_map(move |dx| {
-            (-span..=span).flat_map(move |dy| {
-                self.cells
-                    .get(&(cell.0 + dx, cell.1 + dy))
-                    .into_iter()
-                    .flatten()
-                    .copied()
-            })
-        })
-    }
-}
 
 /// A uniform grid over obstacle node positions, so an edge only tests the
 /// nodes near its chord instead of every node in the graph.
@@ -589,7 +635,7 @@ impl ObstacleGrid {
 /// side).
 #[doc(hidden)]
 pub fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Vec<f32> {
-    let grid = DensityGrid::new(midpoints, radius);
+    let grid = crate::runtime::DensityGrid::new(midpoints, radius);
     let all: Vec<usize> = (0..midpoints.len()).collect();
     signed_densities_for(&grid, midpoints, normals, radius, &all)
 }
@@ -602,7 +648,7 @@ pub fn signed_densities(midpoints: &[Vec2], normals: &[Vec2], radius: f32) -> Ve
 /// the visible edges after culling, instead of every edge in the graph.
 #[doc(hidden)]
 pub fn signed_densities_for(
-    grid: &DensityGrid,
+    grid: &crate::runtime::DensityGrid,
     midpoints: &[Vec2],
     normals: &[Vec2],
     radius: f32,
@@ -616,8 +662,10 @@ pub fn signed_densities_for(
                 continue;
             }
             let delta = midpoints[j] - midpoints[i];
-            let dist = delta.length();
-            if dist > radius || dist < f32::EPSILON {
+            let Some(dist) = finite_chord_length(midpoints[i], midpoints[j]) else {
+                continue;
+            };
+            if dist > radius {
                 continue;
             }
             // Proximity weight: a neighbor at distance 0 contributes 1, at the
@@ -657,25 +705,30 @@ pub fn edge_control_point(
     cluster: Option<(Vec2, f32)>,
 ) -> Vec2 {
     let dir = target - source;
-    let len = dir.length();
-    if len < f32::EPSILON {
-        // Self-loop: control point above the node to create a loop.
-        // The height is tuned to be approx 1.5x node radius.
-        return source + Vec2::new(0.0, -80.0);
-    }
+    let Some(len) = finite_chord_length(source, target) else {
+        // No finite non-zero chord can be normalized. Logical self-loops are
+        // routed through `self_loop_path` by `edge_path`; a coordinate-only
+        // coincidence remains a point for this non-loop helper.
+        return if source.is_finite() {
+            source
+        } else {
+            Vec2::ZERO
+        };
+    };
     let unit = dir / len;
     let normal = Vec2::new(-unit.y, unit.x);
     let midpoint = (source + target) * 0.5;
     // Parallel fan: separate multiple edges between the same node pair.
     let mut offset = 0.0f32;
     if let Some((position, group_len)) = ctx.parallel[ctx.index] {
-        // The spacing scales with the edge's apparent length (world length times
-        // zoom): shorter apparent distance -> narrower spacing, longer -> wider.
-        // The power is sub-linear so the sagitta grows more slowly than the
-        // chord and curvature still drops for longer edges.
-        let apparent = len * ctx.zoom;
-        let spacing = PARALLEL_SPACING
-            * (apparent / PARALLEL_SPACING_REF_APPARENT).powf(PARALLEL_SPACING_POWER);
+        // The spacing scales with the edge's world length: a shorter edge yields
+        // a narrower spacing, a longer edge a wider spacing. The power is
+        // sub-linear so the sagitta grows more slowly than the chord and
+        // curvature still drops for longer edges. The spacing is deliberately
+        // zoom-invariant (it depends only on world length, not on the viewport
+        // zoom) so the spatial index, the cull test, and the drawn edge all
+        // agree at every zoom level.
+        let spacing = parallel_spacing(len, 1.0);
         offset = (position as f32 - (group_len as f32 - 1.0) * 0.5) * spacing;
     }
     // Cluster bow: when both endpoints share a cluster center, bow the edge so
@@ -836,8 +889,6 @@ pub struct EdgeCurveContext<'a> {
     /// Parallel to `groups`, so the parallel fan is O(1) instead of scanning
     /// every group.
     pub parallel: &'a [Option<(usize, usize)>],
-    /// Current zoom (pixels per world unit), used to vary parallel spacing.
-    pub zoom: f32,
     /// A grid over obstacle node positions the edge should bow around, in the
     /// same coordinate space as the edge's endpoints.
     pub obstacles: &'a ObstacleGrid,
@@ -852,7 +903,7 @@ pub struct EdgeCurveContext<'a> {
 /// same cluster center, so edges within a cluster bow outward from it while
 /// edges between clusters (which have different or no centers) keep their
 /// normal behavior.
-fn shared_cluster_center(
+pub fn shared_cluster_center(
     source: NodeId,
     target: NodeId,
     node_cluster_center: &dyn Fn(NodeId) -> Option<(Vec2, f32)>,
@@ -864,6 +915,74 @@ fn shared_cluster_center(
     } else {
         None
     }
+}
+
+/// The world-space bounding box of an edge's curve, covering the source, the
+/// target, and the control point.
+///
+/// The returned box covers both capped density-bow directions, the parallel
+/// fan/cluster geometry, and the bounded obstacle displacement. The spatial
+/// index and the pre-density cull use this conservative owner-local bound so
+/// they cannot drop a later exact curve whose endpoints are off-screen.
+/// A zero-length chord is returned as a point; graph identity decides whether
+/// the edge is a true self-loop and therefore uses viewport-dependent onigiri
+/// geometry.
+pub fn edge_curve_bbox(
+    source: Vec2,
+    target: Vec2,
+    index: usize,
+    has_reverse: &[bool],
+    parallel: &[Option<(usize, usize)>],
+    cluster: Option<(Vec2, f32)>,
+    obstacles: &ObstacleGrid,
+) -> (Vec2, Vec2) {
+    // A zero-length chord is only a degenerate non-loop here: callers use the
+    // graph edge identity to route true self-loops through self_loop_path. Do
+    // not manufacture a loop-like control point from coincident coordinates,
+    // because that would make the persistent non-loop index claim coverage for
+    // geometry the edge does not paint.
+    if finite_chord_length(source, target).is_none() {
+        return (source.min(target), source.max(target));
+    }
+
+    // The persistent index is built before the visible subset's exact density
+    // and obstacle context is known. Bound both density directions at the
+    // owning geometry boundary instead of indexing only the zero-density
+    // control point. MAX_SIGNED_DENSITY reaches the BOW_MAX cap enforced by
+    // edge_control_point after it multiplies by BOW_DENSITY.
+    let controls = [
+        EdgeCurveContext {
+            index,
+            signed_density: -MAX_SIGNED_DENSITY,
+            has_reverse,
+            parallel,
+            obstacles,
+            node_radius: 0.0,
+        },
+        EdgeCurveContext {
+            index,
+            signed_density: MAX_SIGNED_DENSITY,
+            has_reverse,
+            parallel,
+            obstacles,
+            node_radius: 0.0,
+        },
+    ]
+    .map(|ctx| edge_control_point(source, target, &ctx, cluster));
+    let mut min = source.min(target);
+    let mut max = source.max(target);
+    for control in controls {
+        min = min.min(control);
+        max = max.max(control);
+    }
+
+    // Obstacle avoidance is bounded by half the chord length in
+    // apply_node_avoidance. Expand the world-space box by that bound so the
+    // cull and the revision-scoped index remain supersets of the final path,
+    // while still keeping the bound proportional to this edge.
+    let obstacle_push = (target - source).length() * 0.5;
+    let expansion = Vec2::splat(obstacle_push);
+    (min - expansion, max + expansion)
 }
 
 /// Build the trimmed quadratic Bézier path for an edge, in screen/canvas-local
@@ -886,20 +1005,40 @@ pub fn edge_path<N, E>(
         viewport.world_to_screen(node_position(edge.source).expect("edge source has a position"));
     let target =
         viewport.world_to_screen(node_position(edge.target).expect("edge target has a position"));
-    if (source - target).length() < f32::EPSILON {
+    if !source.is_finite() || !target.is_finite() {
+        return Vec::new();
+    }
+    if edge.source == edge.target {
         self_loop_path(edge.source, source, graph, node_position, viewport, style)
+    } else if finite_chord_length(source, target).is_none() {
+        // Distinct nodes may temporarily occupy the same position. They are
+        // not a self-loop, and there is no drawable non-loop segment until
+        // their positions diverge.
+        Vec::new()
     } else {
-        // The cluster center is in world coordinates; convert it to screen
-        // space so the bow direction matches the screen-space edge geometry.
+        // The control point and the node centers share screen coordinates here;
+        // only the parallel fan uses a world-length normalization below.
         let cluster_center = shared_cluster_center(edge.source, edge.target, node_cluster_center)
             .map(|(center, radius)| (viewport.world_to_screen(center), radius * viewport.zoom()));
-        let control = edge_control_point(source, target, ctx, cluster_center);
+        let mut control = edge_control_point(source, target, ctx, cluster_center);
+        if cluster_center.is_none()
+            && let Some((position, group_len)) = ctx.parallel[ctx.index]
+            && let Some(len) = finite_chord_length(source, target)
+        {
+            let actual_spacing = parallel_spacing(len, 1.0);
+            let desired_spacing = parallel_spacing(len, viewport.zoom());
+            let unit = (target - source) / len;
+            let normal = Vec2::new(-unit.y, unit.x);
+            let offset = (position as f32 - (group_len as f32 - 1.0) * 0.5)
+                * (desired_spacing - actual_spacing);
+            control += normal * offset;
+        }
         let curve = trim_curve_to_node_boundary(source, control, target, style.node_radius);
         // When the nodes overlap, the trimmed curve is degenerate (its start
         // parameter is not before its end), collapsing to a point. Return an
         // empty path so the edge is skipped rather than producing a zero-length
         // segment whose arrow would normalize to NaN.
-        if (curve.2 - curve.0).length() > f32::EPSILON {
+        if finite_chord_length(curve.0, curve.2).is_some() {
             vec![curve]
         } else {
             Vec::new()
@@ -1049,14 +1188,14 @@ pub(crate) fn self_loop_path<N, E>(
             };
             let other_screen = viewport.world_to_screen(other_world);
             let delta = other_screen - node_pos;
-            if delta.length_squared() > f32::EPSILON {
+            if finite_chord_length(node_pos, other_screen).is_some() {
                 sum += delta.normalize();
                 count += 1;
             }
         }
         if count > 0 {
             let avg = sum / count as f32;
-            if avg.length_squared() > f32::EPSILON {
+            if avg.is_finite() && avg.length_squared() > 0.0 {
                 dir = -avg.normalize();
             }
         }
@@ -1103,6 +1242,9 @@ fn bounds_intersect(
 mod tests {
     use super::*;
     use crate::graph::{EdgeDirection, Graph};
+    use crate::layout::FixedLayout;
+    use crate::patch::GraphBatch;
+    use crate::scene::GraphScene;
     use crate::viewport::WorldBounds;
 
     fn graph() -> Graph<(), ()> {
@@ -1132,7 +1274,6 @@ mod tests {
     fn ctx<'a>(
         index: usize,
         signed_density: f32,
-        zoom: f32,
         obstacles: &[Vec2],
         parallel: &'a [Option<(usize, usize)>],
     ) -> EdgeCurveContext<'a> {
@@ -1142,7 +1283,6 @@ mod tests {
             signed_density,
             has_reverse: &[false],
             parallel,
-            zoom,
             obstacles: grid,
             node_radius: 6.0,
         }
@@ -1189,6 +1329,7 @@ mod tests {
             selection: &selection,
             hover: &hover,
         });
+
         // Only the in-viewport node is painted; the out-of-viewport node is culled.
         assert_eq!(frame.nodes.len(), 1);
         assert_eq!(frame.nodes[0].id, a);
@@ -1241,6 +1382,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         // The parallel edges curve through the viewport, so they are kept.
         assert_eq!(frame.edges.len(), 2);
     }
@@ -1287,7 +1429,219 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edges.len(), 1);
+    }
+
+    #[test]
+    fn keeps_self_loop_that_enters_screen_at_non_unit_zoom() {
+        // The node is outside the visible world bounds and the node margin,
+        // while the self-loop's screen-space path reaches into the viewport.
+        // The cull path must compare geometry in the same coordinate space as
+        // the bounds; passing the world node position to self_loop_path makes
+        // the pre-fix cull reject this edge.
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        scene.merge(GraphBatch::new().node("node".to_owned(), ()).edge(
+            "loop".to_owned(),
+            "node".to_owned(),
+            "node".to_owned(),
+            EdgeDirection::Directed,
+            (),
+        ));
+        let node = scene.node_id(&"node".to_owned()).unwrap();
+        let loop_id = scene.edge_id(&"loop".to_owned()).unwrap();
+        scene.set_position(node, Vec2::new(0.0, 2_230.0));
+        let graph = scene.graph();
+        let positions = |id: NodeId| scene.node_position(id);
+        let no_cluster = no_clusters();
+        let style = GraphStyle::default();
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(100.0, 100.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-2_000.0, -2_000.0),
+                max: Vec2::new(2_000.0, 2_000.0),
+            },
+            0.0,
+        );
+        assert!((viewport.zoom() - 0.025).abs() < 1e-6);
+        let visible_world = viewport.visible_world_bounds();
+        assert!(
+            positions(node).unwrap().y > visible_world.max.y + style.node_radius * 2.0 + 200.0,
+            "the loop node must be beyond the ordinary query slack"
+        );
+
+        let screen_bounds = WorldBounds {
+            min: Vec2::ZERO,
+            max: viewport.size(),
+        };
+        let path = self_loop_path(
+            node,
+            viewport.world_to_screen(positions(node).unwrap()),
+            graph,
+            &positions,
+            &viewport,
+            &style,
+        );
+        let (path_min, path_max) = path.iter().fold(
+            (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+            |(min, max), (p0, p1, p2)| {
+                (
+                    min.min(*p0).min(*p1).min(*p2),
+                    max.max(*p0).max(*p1).max(*p2),
+                )
+            },
+        );
+        assert!(
+            path.iter().any(|(p0, p1, p2)| {
+                point_in_bounds(*p0, &screen_bounds, 0.0)
+                    || point_in_bounds(*p1, &screen_bounds, 0.0)
+                    || point_in_bounds(*p2, &screen_bounds, 0.0)
+            }),
+            "a self-loop path point must be inside the viewport"
+        );
+        assert!(
+            bounds_intersect(&screen_bounds, 0.0, path_min, path_max),
+            "the actual screen-space self-loop path must enter the viewport"
+        );
+
+        let linear = build_paint_frame(PaintFrameInput {
+            graph,
+            node_position: &positions,
+            node_cluster_center: &no_cluster,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let candidate_ids = synced
+            .visible_edge_candidates(&visible_world, style.node_radius * 2.0)
+            .into_iter()
+            .map(|index| synced.edges().edge_ids[index])
+            .collect::<Vec<_>>();
+        assert_eq!(candidate_ids, vec![loop_id]);
+        let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        let expected = vec![loop_id];
+        let linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        let indexed_ids = indexed.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        assert_eq!(linear_ids, expected);
+        assert_eq!(indexed_ids, expected);
+        assert_eq!(indexed_ids, linear_ids);
+    }
+
+    #[test]
+    fn resync_after_position_mutation_paints_exact_edge_without_stale_runtime() {
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        scene.merge(
+            GraphBatch::new()
+                .node("source".to_owned(), ())
+                .node("target".to_owned(), ())
+                .edge(
+                    "edge".to_owned(),
+                    "source".to_owned(),
+                    "target".to_owned(),
+                    EdgeDirection::Directed,
+                    (),
+                ),
+        );
+        let source = scene.node_id(&"source".to_owned()).unwrap();
+        let target = scene.node_id(&"target".to_owned()).unwrap();
+        let expected = scene.edge_id(&"edge".to_owned()).unwrap();
+        scene.set_position(source, Vec2::new(0.0, 0.0));
+        scene.set_position(target, Vec2::new(100.0, 0.0));
+
+        let mut runtime = GraphRuntime::new();
+        {
+            let _synced = scene.sync_runtime(&mut runtime);
+        }
+        scene.set_position(source, Vec2::new(1_000.0, 1_000.0));
+        scene.set_position(target, Vec2::new(1_100.0, 1_000.0));
+
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(200.0, 200.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(1_000.0, 1_000.0),
+                max: Vec2::new(1_100.0, 1_000.0 + 100.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default();
+        let selection = Selection::new();
+        let hover = Hover::default();
+        let synced = scene.sync_runtime(&mut runtime);
+        let frame = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
+        assert_eq!(
+            frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
+            vec![expected]
+        );
+    }
+
+    #[test]
+    fn resync_after_topology_mutation_paints_exact_new_edge_without_stale_indices() {
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        scene.merge(GraphBatch::new().node("a".to_owned(), ()));
+        let a = scene.node_id(&"a".to_owned()).unwrap();
+        scene.set_position(a, Vec2::new(0.0, 0.0));
+        let mut runtime = GraphRuntime::new();
+        {
+            let _synced = scene.sync_runtime(&mut runtime);
+        }
+
+        scene.merge(GraphBatch::new().node("b".to_owned(), ()).edge(
+            "ab".to_owned(),
+            "a".to_owned(),
+            "b".to_owned(),
+            EdgeDirection::Directed,
+            (),
+        ));
+        let b = scene.node_id(&"b".to_owned()).unwrap();
+        let expected = scene.edge_id(&"ab".to_owned()).unwrap();
+        scene.set_position(b, Vec2::new(100.0, 0.0));
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(200.0, 200.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(110.0, 10.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default();
+        let synced = scene.sync_runtime(&mut runtime);
+        let frame = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert_eq!(
+            frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
+            vec![expected]
+        );
     }
 
     #[test]
@@ -1306,6 +1660,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert!(frame.is_empty());
     }
 
@@ -1333,6 +1688,7 @@ mod tests {
             selection: &selection,
             hover: &hover,
         });
+
         let painted = frame.nodes.iter().find(|n| n.id == node).unwrap();
         assert!(painted.selected);
         assert!(painted.hovered);
@@ -1403,6 +1759,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.labels.len(), 2);
         assert_eq!(frame.labels[0].text, "alice");
         assert_eq!(frame.labels[1].text, "bob");
@@ -1437,6 +1794,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edge_labels.len(), 1);
         assert_eq!(frame.edge_labels[0].text, "knows");
         let pos = frame.edge_labels[0].position;
@@ -1476,6 +1834,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edges.len(), 1);
         assert_eq!(frame.edges[0].path.len(), 1, "single edge is one segment");
         // A lone edge with no neighbors has zero density, so it is straight: its
@@ -1520,6 +1879,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert!(
             frame.edges.is_empty(),
             "degenerate edge must be skipped, got {} edges",
@@ -1557,6 +1917,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edges.len(), 3);
         // Each parallel edge is a single curved segment; the control points
         // (p1 of each segment) should be distinct and fanned vertically.
@@ -1597,6 +1958,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edges.len(), 1);
         let edge = &frame.edges[0];
         let path = &edge.path;
@@ -1634,6 +1996,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edge_labels.len(), 1);
         let label = &frame.edge_labels[0];
         assert!(
@@ -1668,6 +2031,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         let path = &frame.edges[0].path;
         let base = path[0].2;
         // With no other edges the onigiri points straight up: base directly
@@ -1708,6 +2072,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         // The self-loop is the edge with source == target (path has 2 segments).
         let self_edge = frame
             .edges
@@ -1748,6 +2113,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         let path = &frame.edges[0].path;
         let start = path[0].0;
         let end = path[1].2;
@@ -1804,6 +2170,7 @@ mod tests {
                 selection: &Selection::new(),
                 hover: &Hover::default(),
             });
+
             let path = &frame.edges[0].path;
             let base = path[0].2;
             (frame.edges[0].source.y - base.y).abs()
@@ -1877,6 +2244,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         // Find the horizontal edge a->b by its endpoints.
         let horizontal = frame
             .edges
@@ -1900,9 +2268,8 @@ mod tests {
         // bows right.
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
-        let lone = edge_control_point(source, target, &ctx(0, 0.0, 1.0, &[], &[None]), None);
-        let with_neighbor =
-            edge_control_point(source, target, &ctx(0, 1.0, 1.0, &[], &[None]), None);
+        let lone = edge_control_point(source, target, &ctx(0, 0.0, &[], &[None]), None);
+        let with_neighbor = edge_control_point(source, target, &ctx(0, 1.0, &[], &[None]), None);
         // A neighbor on the left (signed_density +1) pushes the bow right
         // (negative y, since normal +y is the left side of direction +x).
         assert!(
@@ -1915,17 +2282,17 @@ mod tests {
     fn edge_bow_is_stable_under_zoom() {
         // The bow is a fraction of the edge length, so the curve shape is the
         // same at any zoom. Compare the control point's offset from the straight
-        // midpoint, normalized by the edge length, at two zooms.
-        let bow_ratio = |source: Vec2, target: Vec2, zoom: f32| {
-            let control =
-                edge_control_point(source, target, &ctx(0, 0.0, zoom, &[], &[None]), None);
+        // midpoint, normalized by the edge length, for two edge lengths (the
+        // same world edge at two zooms maps to two different world lengths).
+        let bow_ratio = |source: Vec2, target: Vec2| {
+            let control = edge_control_point(source, target, &ctx(0, 0.0, &[], &[None]), None);
             let mid = (source + target) * 0.5;
             (control - mid).length() / (target - source).length()
         };
         // Zoom 1: world a(0,0) b(100,0) maps to screen (0,0) and (100,0).
-        let r1 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
+        let r1 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
         // Zoom 2: the same world edge maps to screen (0,0) and (200,0).
-        let r2 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), 1.0);
+        let r2 = bow_ratio(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
         assert!(
             (r1 - r2).abs() < 1e-3,
             "bow ratio should be zoom-invariant (r1={r1}, r2={r2})"
@@ -1938,12 +2305,8 @@ mod tests {
         // < 1), so the sagitta grows more slowly than the chord and curvature
         // drops as the node distance grows.
         let sagitta = |source: Vec2, target: Vec2| {
-            let control = edge_control_point(
-                source,
-                target,
-                &ctx(0, 0.0, 1.0, &[], &[Some((0, 2))]),
-                None,
-            );
+            let control =
+                edge_control_point(source, target, &ctx(0, 0.0, &[], &[Some((0, 2))]), None);
             let mid = (source + target) * 0.5;
             (control - mid).length()
         };
@@ -1976,7 +2339,7 @@ mod tests {
         let control = edge_control_point(
             source,
             target,
-            &ctx(0, 0.0, 1.0, &[], &[None]),
+            &ctx(0, 0.0, &[], &[None]),
             Some((center, radius)),
         );
         let mid = (source + target) * 0.5;
@@ -1987,7 +2350,7 @@ mod tests {
             "cluster edge should bow outward (control={control:?}, mid={mid:?})"
         );
         // Without a cluster center the same edge is straight (density 0).
-        let straight = edge_control_point(source, target, &ctx(0, 0.0, 1.0, &[], &[None]), None);
+        let straight = edge_control_point(source, target, &ctx(0, 0.0, &[], &[None]), None);
         assert!(
             (straight - mid).length() < 1e-3,
             "unclustered edge should be straight"
@@ -2001,12 +2364,7 @@ mod tests {
         let source = Vec2::new(0.0, 0.0);
         let target = Vec2::new(100.0, 0.0);
         let obstacle = Vec2::new(50.0, 0.0);
-        let control = edge_control_point(
-            source,
-            target,
-            &ctx(0, 0.0, 1.0, &[obstacle], &[None]),
-            None,
-        );
+        let control = edge_control_point(source, target, &ctx(0, 0.0, &[obstacle], &[None]), None);
         // The control point must be pushed off the chord (y != 0) away from the
         // obstacle, which sits on the chord.
         assert!(
@@ -2016,34 +2374,35 @@ mod tests {
     }
 
     #[test]
-    fn parallel_spacing_varies_with_zoom_and_length() {
-        // The spacing scales with the edge's apparent length (world length times
-        // zoom): a longer apparent distance yields a wider spacing.
-        let control = |source: Vec2, target: Vec2, zoom: f32| {
-            edge_control_point(
-                source,
-                target,
-                &ctx(0, 0.0, zoom, &[], &[Some((0, 2))]),
-                None,
-            )
+    fn parallel_spacing_varies_with_length_but_not_zoom() {
+        // The spacing scales with the edge's world length: a longer edge yields
+        // a wider spacing. It is deliberately zoom-invariant (independent of the
+        // viewport zoom) so the spatial index, the cull test, and the drawn edge
+        // all agree at every zoom level.
+        let control = |source: Vec2, target: Vec2| {
+            edge_control_point(source, target, &ctx(0, 0.0, &[], &[Some((0, 2))]), None)
         };
-        // Base length and zoom.
-        let base = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 1.0);
-        // Higher zoom widens the spacing (larger apparent length).
-        let high_zoom = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), 2.0);
-        assert!(
-            high_zoom.y.abs() > base.y.abs(),
-            "higher zoom should widen the spacing (base={}, high={})",
-            base.y,
-            high_zoom.y
-        );
-        // Longer edge widens the spacing (larger apparent length).
-        let long = control(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), 1.0);
+        // Base length.
+        let base = control(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+        // Longer edge widens the spacing (larger world length).
+        let long = control(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
         assert!(
             long.y.abs() > base.y.abs(),
             "longer edge should widen the spacing (base={}, long={})",
             base.y,
             long.y
+        );
+        // The helper receives coordinates in the current space. Scaling both
+        // the coordinates and the coordinate scale must therefore scale the
+        // spacing by exactly the same factor while preserving its world-space
+        // value.
+        let world_len = 100.0;
+        let zoom = 2.0;
+        let world_spacing = parallel_spacing(world_len, 1.0);
+        let zoomed_spacing = parallel_spacing(world_len * zoom, zoom);
+        assert!(
+            (zoomed_spacing / zoom - world_spacing).abs() < 1e-4,
+            "spacing should preserve world value under coordinate scaling (world={world_spacing}, zoomed={zoomed_spacing})"
         );
     }
 
@@ -2086,6 +2445,7 @@ mod tests {
             selection: &Selection::new(),
             hover: &Hover::default(),
         });
+
         assert_eq!(frame.edges.len(), 2);
         // The self-loop is the two-segment onigiri; the a->b edge is the single
         // curved segment.
@@ -2199,5 +2559,655 @@ mod tests {
         );
         // The sign flips smoothly through zero.
         assert!(left[0] > 0.0 && right[0] < 0.0);
+    }
+
+    #[test]
+    fn density_bowed_edge_survives_linear_and_indexed_cull() {
+        // The long edge is far above the view at both endpoints. Six nearby
+        // parallel midpoints on its left produce a capped density bow whose
+        // control point reaches well below the zero-density endpoint box.
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        let mut batch = GraphBatch::new()
+            .node("source".to_owned(), ())
+            .node("target".to_owned(), ())
+            .node("near-source".to_owned(), ())
+            .node("near-target".to_owned(), ())
+            .edge(
+                "density-edge".to_owned(),
+                "source".to_owned(),
+                "target".to_owned(),
+                EdgeDirection::Directed,
+                (),
+            );
+        for index in 0..6 {
+            batch = batch.edge(
+                format!("near-{index}"),
+                "near-source".to_owned(),
+                "near-target".to_owned(),
+                EdgeDirection::Directed,
+                (),
+            );
+        }
+        scene.merge(batch);
+
+        let source = scene.node_id(&"source".to_owned()).unwrap();
+        let target = scene.node_id(&"target".to_owned()).unwrap();
+        let near_source = scene.node_id(&"near-source".to_owned()).unwrap();
+        let near_target = scene.node_id(&"near-target".to_owned()).unwrap();
+        scene.set_position(source, Vec2::new(-1_000.0, 1_000.0));
+        scene.set_position(target, Vec2::new(1_000.0, 1_000.0));
+        scene.set_position(near_source, Vec2::new(-10.0, 1_010.0));
+        scene.set_position(near_target, Vec2::new(10.0, 1_010.0));
+
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(200.0, 200.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-100.0, 0.0),
+                max: Vec2::new(100.0, 200.0),
+            },
+            0.0,
+        );
+        let visible = viewport.visible_world_bounds();
+        assert!(!point_in_bounds(
+            scene.node_position(source).unwrap(),
+            &visible,
+            0.0
+        ));
+        assert!(!point_in_bounds(
+            scene.node_position(target).unwrap(),
+            &visible,
+            0.0
+        ));
+
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let prep = synced.edges();
+        let edge_id = scene.edge_id(&"density-edge".to_owned()).unwrap();
+        let edge_index = prep
+            .edge_ids
+            .iter()
+            .position(|id| *id == edge_id)
+            .expect("density edge is preprocessed");
+        let densities = signed_densities_for(
+            &prep.density_grid,
+            &prep.midpoints,
+            &prep.normals,
+            DENSITY_RADIUS,
+            &[edge_index],
+        );
+        assert!(
+            densities[edge_index] > 4.0,
+            "fixture must create a strong one-sided density: {}",
+            densities[edge_index]
+        );
+
+        let empty_obstacles = ObstacleGrid::new(&[], 1.0);
+        let actual_control = edge_control_point(
+            prep.source[edge_index],
+            prep.target[edge_index],
+            &EdgeCurveContext {
+                index: edge_index,
+                signed_density: densities[edge_index],
+                has_reverse: &prep.has_reverse,
+                parallel: &prep.parallel,
+                obstacles: &empty_obstacles,
+                node_radius: 0.0,
+            },
+            None,
+        );
+        assert!(
+            actual_control.y < -700.0,
+            "density bow must leave the zero-density endpoint box: {actual_control:?}"
+        );
+        let zero_control = edge_control_point(
+            prep.source[edge_index],
+            prep.target[edge_index],
+            &EdgeCurveContext {
+                index: edge_index,
+                signed_density: 0.0,
+                has_reverse: &prep.has_reverse,
+                parallel: &prep.parallel,
+                obstacles: &empty_obstacles,
+                node_radius: 0.0,
+            },
+            None,
+        );
+        assert!(
+            !bounds_intersect(
+                &visible,
+                crate::runtime::EDGE_INDEX_SLACK,
+                prep.source[edge_index]
+                    .min(prep.target[edge_index])
+                    .min(zero_control),
+                prep.source[edge_index]
+                    .max(prep.target[edge_index])
+                    .max(zero_control),
+            ),
+            "the old zero-density bbox must miss the view even after index slack"
+        );
+
+        let candidates = synced.visible_edge_candidates(&visible, 0.0);
+        assert!(
+            candidates.contains(&edge_index),
+            "conservative indexed bbox must retain the density-bowed edge"
+        );
+
+        let graph = scene.graph();
+        let positions = |id: NodeId| scene.node_position(id);
+        let style = GraphStyle::default();
+        let selection = Selection::new();
+        let hover = Hover::default();
+        let linear = build_paint_frame(PaintFrameInput {
+            graph,
+            node_position: &positions,
+            node_cluster_center: &|id| scene.node_cluster_center(id),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
+        let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
+        let linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        let indexed_ids = indexed.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        assert_eq!(linear_ids, vec![edge_id]);
+        assert_eq!(indexed_ids, vec![edge_id]);
+        let screen_bounds = WorldBounds {
+            min: Vec2::ZERO,
+            max: viewport.size(),
+        };
+        assert!(
+            linear.edges[0].path.iter().any(|(p0, p1, p2)| {
+                let midpoint = bezier_point(*p0, *p1, *p2, 0.5);
+                point_in_bounds(midpoint, &screen_bounds, 0.0)
+            }),
+            "an actual midpoint on the painted density-bowed path must enter the viewport"
+        );
+    }
+
+    #[test]
+    fn spatial_index_matches_linear_scan_visible_set() {
+        // Build a graph with nodes spread across a wide area and a long edge
+        // crossing the view. The spatial index must return the same visible node
+        // and edge id sets as the linear scan, for both an overview and a
+        // deep-zoom viewport.
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        let mut batch = GraphBatch::new();
+        for i in 0..8 {
+            batch = batch.node(i.to_string(), ());
+        }
+        for i in 0..7 {
+            batch = batch.edge(
+                format!("e{i}"),
+                i.to_string(),
+                (i + 1).to_string(),
+                EdgeDirection::Directed,
+                (),
+            );
+        }
+        // A long edge from the first to the last node, crossing the whole graph.
+        batch = batch.edge(
+            "long".to_owned(),
+            "0".to_owned(),
+            "7".to_owned(),
+            EdgeDirection::Directed,
+            (),
+        );
+        scene.merge(batch);
+        let ids = (0..8)
+            .map(|i| scene.node_id(&i.to_string()).unwrap())
+            .collect::<Vec<_>>();
+        for (i, &id) in ids.iter().enumerate() {
+            scene.set_position(id, Vec2::new(i as f32 * 200.0, (i % 2) as f32 * 200.0));
+        }
+        let graph = scene.graph();
+
+        let pos = |id: NodeId| scene.node_position(id);
+        let style = GraphStyle::default();
+        let selection = Selection::new();
+        let hover = Hover::default();
+
+        let run_linear = |vp: &Viewport| {
+            let frame = build_paint_frame(PaintFrameInput {
+                graph,
+                node_position: &pos,
+                node_cluster_center: &no_clusters(),
+                node_label: &no_labels(),
+                edge_label: &no_edge_labels(),
+                viewport: vp,
+                style: &style,
+                selection: &selection,
+                hover: &hover,
+            });
+            let mut nodes: Vec<NodeId> = frame.nodes.iter().map(|n| n.id).collect();
+            nodes.sort();
+            let mut edges: Vec<EdgeId> = frame.edges.iter().map(|e| e.id).collect();
+            edges.sort();
+            (nodes, edges)
+        };
+
+        // Overview viewport: everything visible.
+        let mut overview = Viewport::new();
+        overview.set_size(Vec2::new(1600.0, 1000.0));
+        overview.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(0.0, 0.0),
+                max: Vec2::new(1400.0, 200.0),
+            },
+            0.0,
+        );
+
+        // Deep-zoom viewport near the origin: only the first few nodes and the
+        // long edge crossing the view are visible.
+        let mut deep = Viewport::new();
+        deep.set_size(Vec2::new(400.0, 400.0));
+        deep.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-50.0, -50.0),
+                max: Vec2::new(250.0, 250.0),
+            },
+            0.0,
+        );
+
+        for vp in [&overview, &deep] {
+            let mut rt = GraphRuntime::new();
+            let scan = run_linear(vp);
+            let synced = scene.sync_runtime(&mut rt);
+            let frame = build_indexed_paint_frame(IndexedPaintFrameInput {
+                synced: &synced,
+                node_label: &no_labels(),
+                edge_label: &no_edge_labels(),
+                viewport: vp,
+                style: &style,
+                selection: &selection,
+                hover: &hover,
+            });
+            let mut nodes = frame.nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+            nodes.sort();
+            let mut edges = frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+            edges.sort();
+            let indexed = (nodes, edges);
+            assert_eq!(indexed, scan, "indexed visible set must match linear scan");
+        }
+    }
+
+    #[test]
+    fn high_zoom_parallel_fan_index_matches_linear_screen_visibility() {
+        // Both endpoints are outside the view. At high zoom, the first parallel
+        // edge's world-space fan reaches into the view after the world-to-screen
+        // transform, while the old screen-length fan would remain outside.
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        scene.merge(
+            GraphBatch::new()
+                .node("source".to_owned(), ())
+                .node("target".to_owned(), ())
+                .edge(
+                    "target".to_owned(),
+                    "source".to_owned(),
+                    "target".to_owned(),
+                    EdgeDirection::Directed,
+                    (),
+                )
+                .edge(
+                    "other".to_owned(),
+                    "source".to_owned(),
+                    "target".to_owned(),
+                    EdgeDirection::Directed,
+                    (),
+                ),
+        );
+        let source = scene.node_id(&"source".to_owned()).unwrap();
+        let target = scene.node_id(&"target".to_owned()).unwrap();
+        let target_edge = scene.edge_id(&"target".to_owned()).unwrap();
+        let other_edge = scene.edge_id(&"other".to_owned()).unwrap();
+        scene.set_position(source, Vec2::new(-100.0, 47.5));
+        scene.set_position(target, Vec2::new(100.0, 47.5));
+        let graph = scene.graph();
+        let positions = |id: NodeId| scene.node_position(id);
+        let style = GraphStyle::default();
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(100.0, 100.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-25.0, -25.0),
+                max: Vec2::new(25.0, 25.0),
+            },
+            0.0,
+        );
+        assert!((viewport.zoom() - 2.0).abs() < 1e-6);
+        let visible = viewport.visible_world_bounds();
+        assert!(!point_in_bounds(positions(source).unwrap(), &visible, 0.0));
+        assert!(!point_in_bounds(positions(target).unwrap(), &visible, 0.0));
+
+        let no_cluster = |id: NodeId| scene.node_cluster_center(id);
+        let no_label = no_labels();
+        let no_edge_label = no_edge_labels();
+        let selection = Selection::new();
+        let hover = Hover::default();
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let prep = synced.edges();
+        let target_index = prep
+            .edge_ids
+            .iter()
+            .position(|id| *id == target_edge)
+            .expect("target edge is in the runtime prep");
+        let candidates = synced.visible_edge_candidates(&visible, style.node_radius * 2.0);
+        assert!(
+            candidates.contains(&target_index),
+            "indexed candidate set must include the fanned target edge"
+        );
+
+        // The world-space fan offset is half of the spacing for the first edge.
+        // With world length 200, spacing is about 64.3, so its control point is
+        // at y ~= 15.3, inside the world viewport. The transformed control point
+        // is therefore inside the screen viewport as well.
+        let world_control = edge_control_point(
+            positions(source).unwrap(),
+            positions(target).unwrap(),
+            &EdgeCurveContext {
+                index: target_index,
+                signed_density: 0.0,
+                has_reverse: &prep.has_reverse,
+                parallel: &prep.parallel,
+                obstacles: &ObstacleGrid::new(&[], style.node_radius * 2.0 + OBSTACLE_RADIUS),
+                node_radius: style.node_radius,
+            },
+            None,
+        );
+        let intended_screen_control = viewport.world_to_screen(world_control);
+        assert!(
+            intended_screen_control.x >= 0.0
+                && intended_screen_control.x <= viewport.size().x
+                && intended_screen_control.y >= 0.0
+                && intended_screen_control.y <= viewport.size().y,
+            "world-space fan should transform into the viewport (world={world_control:?}, screen={intended_screen_control:?})"
+        );
+
+        let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_label,
+            edge_label: &no_edge_label,
+            viewport: &viewport,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        })
+        .edges
+        .into_iter()
+        .map(|edge| edge.id)
+        .collect::<Vec<_>>();
+        assert_eq!(indexed, vec![target_edge]);
+
+        // The linear visibility oracle follows the actual screen-space path,
+        // rather than the world-space cull box used by the indexed query.
+        let empty_obstacles = ObstacleGrid::new(&[], style.node_radius * 2.0 + OBSTACLE_RADIUS);
+        let screen_bounds = WorldBounds {
+            min: Vec2::ZERO,
+            max: viewport.size(),
+        };
+        let linear = prep
+            .edge_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(index, id)| {
+                let edge = graph.edge(*id)?;
+                let path = edge_path(
+                    edge,
+                    &EdgeCurveContext {
+                        index,
+                        signed_density: 0.0,
+                        has_reverse: &prep.has_reverse,
+                        parallel: &prep.parallel,
+                        obstacles: &empty_obstacles,
+                        node_radius: style.node_radius,
+                    },
+                    graph,
+                    &positions,
+                    &no_cluster,
+                    &viewport,
+                    &style,
+                );
+                let intersects = path.iter().any(|(p0, p1, p2)| {
+                    bounds_intersect(
+                        &screen_bounds,
+                        0.0,
+                        p0.min(*p1).min(*p2),
+                        p0.max(*p1).max(*p2),
+                    )
+                });
+                intersects.then_some(*id)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(linear, vec![target_edge]);
+        assert_eq!(
+            indexed, linear,
+            "indexed visible edge set must match linear screen visibility"
+        );
+
+        // Before the fix, parallel spacing was based on the current screen
+        // length. At zoom 2 that fan offset is only about 34.5 pixels, leaving
+        // the old control point at y ~= 110.5, outside the 100-pixel viewport.
+        let source_screen = viewport.world_to_screen(positions(source).unwrap());
+        let target_screen = viewport.world_to_screen(positions(target).unwrap());
+        let screen_dir = target_screen - source_screen;
+        let screen_normal = Vec2::new(-screen_dir.y, screen_dir.x).normalize();
+        let legacy_control = (source_screen + target_screen) * 0.5
+            + screen_normal * (-0.5 * parallel_spacing(screen_dir.length(), 1.0));
+        let legacy_curve = trim_curve_to_node_boundary(
+            source_screen,
+            legacy_control,
+            target_screen,
+            style.node_radius,
+        );
+        assert!(
+            !bounds_intersect(
+                &screen_bounds,
+                0.0,
+                legacy_curve.0.min(legacy_curve.1).min(legacy_curve.2),
+                legacy_curve.0.max(legacy_curve.1).max(legacy_curve.2),
+            ),
+            "pre-fix screen-length fan should miss the viewport (control={legacy_control:?})"
+        );
+        assert_ne!(target_edge, other_edge);
+    }
+
+    #[test]
+    fn near_degenerate_parallel_edge_bbox_matches_screen_path() {
+        // A finite world chord below f32::EPSILON becomes a visible screen
+        // chord at deep zoom. The outer edge of this 200-edge fan therefore
+        // exercises the world bbox and the transformed draw path at different
+        // coordinate scales without using topology self-loop semantics.
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        let mut batch = GraphBatch::new()
+            .node("source".to_owned(), ())
+            .node("target".to_owned(), ());
+        for index in 0..200 {
+            batch = batch.edge(
+                format!("fan-{index}"),
+                "source".to_owned(),
+                "target".to_owned(),
+                EdgeDirection::Directed,
+                (),
+            );
+        }
+        scene.merge(batch);
+
+        let source = scene.node_id(&"source".to_owned()).unwrap();
+        let target = scene.node_id(&"target".to_owned()).unwrap();
+        let target_edge = scene.edge_id(&"fan-199".to_owned()).unwrap();
+        scene.set_position(source, Vec2::new(0.0, 0.0));
+        scene.set_position(target, Vec2::new(1.0e-8, 0.0));
+
+        let graph = scene.graph();
+        let positions = |id: NodeId| scene.node_position(id);
+        let no_cluster = |id: NodeId| scene.node_cluster_center(id);
+        let style = GraphStyle::default().with_node_radius(0.0);
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let prep = synced.edges();
+        let target_index = prep
+            .edge_ids
+            .iter()
+            .position(|id| *id == target_edge)
+            .expect("outer fan edge is preprocessed");
+        let source_world = prep.source[target_index];
+        let target_world = prep.target[target_index];
+        assert!((target_world - source_world).length() < f32::EPSILON);
+        assert!(finite_chord_length(source_world, target_world).is_some());
+        assert_ne!(
+            source, target,
+            "the fixture must use distinct node identities"
+        );
+
+        let empty_obstacles = ObstacleGrid::new(&[], OBSTACLE_RADIUS);
+        let world_control = edge_control_point(
+            source_world,
+            target_world,
+            &EdgeCurveContext {
+                index: target_index,
+                signed_density: 0.0,
+                has_reverse: &prep.has_reverse,
+                parallel: &prep.parallel,
+                obstacles: &empty_obstacles,
+                node_radius: 0.0,
+            },
+            None,
+        );
+        assert!(
+            world_control.y > 500.0,
+            "outer fan control must retain its finite near-degenerate offset: {world_control:?}"
+        );
+
+        // Center the deep-zoom viewport on the quadratic midpoint. The old
+        // point bbox plus index slack remains hundreds of world units away,
+        // while the actual curve midpoint is inside the screen.
+        let view_center = Vec2::new(
+            (source_world.x + target_world.x) * 0.5,
+            world_control.y * 0.5,
+        );
+        let half_extent = Vec2::splat(0.00005);
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::splat(100.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: -half_extent,
+                max: half_extent,
+            },
+            0.0,
+        );
+        viewport.focus(view_center);
+        assert!((viewport.zoom() - 1.0e6).abs() < 1.0);
+        let visible = viewport.visible_world_bounds();
+        assert!(!point_in_bounds(source_world, &visible, 0.0));
+        assert!(!point_in_bounds(target_world, &visible, 0.0));
+        assert!(
+            !bounds_intersect(
+                &visible,
+                crate::runtime::EDGE_INDEX_SLACK,
+                source_world.min(target_world),
+                source_world.max(target_world),
+            ),
+            "the old point bbox plus index slack must miss the deep-zoom view"
+        );
+
+        let candidates = synced.visible_edge_candidates(&visible, 0.0);
+        assert!(
+            candidates.contains(&target_index),
+            "the finite near-degenerate curve bbox must retain the target candidate"
+        );
+
+        let target_record = graph.edge(target_edge).expect("target edge exists");
+        let screen_path = edge_path(
+            target_record,
+            &EdgeCurveContext {
+                index: target_index,
+                signed_density: 0.0,
+                has_reverse: &prep.has_reverse,
+                parallel: &prep.parallel,
+                obstacles: &empty_obstacles,
+                node_radius: style.node_radius,
+            },
+            graph,
+            &positions,
+            &no_cluster,
+            &viewport,
+            &style,
+        );
+        let screen_bounds = WorldBounds {
+            min: Vec2::ZERO,
+            max: viewport.size(),
+        };
+        let enters_screen = screen_path.iter().any(|(p0, p1, p2)| {
+            if p0.y > screen_bounds.max.y || p1.y < screen_bounds.min.y {
+                return false;
+            }
+            let mut lo = 0.0;
+            let mut hi = 0.5;
+            for _ in 0..32 {
+                let t = (lo + hi) * 0.5;
+                if bezier_point(*p0, *p1, *p2, t).y < screen_bounds.min.y {
+                    lo = t;
+                } else {
+                    hi = t;
+                }
+            }
+            point_in_bounds(
+                bezier_point(*p0, *p1, *p2, (lo + hi) * 0.5),
+                &screen_bounds,
+                0.0,
+            )
+        });
+        assert!(
+            enters_screen,
+            "the actual transformed curve must enter the viewport: control={world_control:?}, center={view_center:?}, path={screen_path:?}"
+        );
+
+        let selection = Selection::new();
+        let hover = Hover::default();
+        let linear = build_paint_frame(PaintFrameInput {
+            graph,
+            node_position: &positions,
+            node_cluster_center: &no_cluster,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
+        let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &viewport,
+            style: &style,
+            selection: &selection,
+            hover: &hover,
+        });
+        let mut linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        let mut indexed_ids = indexed.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        linear_ids.sort();
+        indexed_ids.sort();
+        assert!(
+            linear_ids.contains(&target_edge),
+            "linear rendering must preserve the exact outer fan edge ID"
+        );
+        assert!(
+            indexed_ids.contains(&target_edge),
+            "indexed rendering must preserve the exact outer fan edge ID"
+        );
+        assert_eq!(indexed_ids, linear_ids);
     }
 }

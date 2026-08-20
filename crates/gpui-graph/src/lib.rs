@@ -31,11 +31,11 @@ pub use layout::{
     SccLayoutEngine,
 };
 pub use paint::{
-    PaintEdge, PaintEdgeLabel, PaintFrame, PaintFrameInput, PaintLabel, PaintNode,
-    build_paint_frame,
+    IndexedPaintFrameInput, PaintEdge, PaintEdgeLabel, PaintFrame, PaintFrameInput, PaintLabel,
+    PaintNode, build_indexed_paint_frame, build_paint_frame,
 };
 pub use patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
-pub use runtime::GraphRuntime;
+pub use runtime::{GraphRuntime, SyncedGraphRuntime};
 pub use scene::{EdgeSceneState, GraphScene, NodeSceneState};
 pub use style::{ArrowShape, GraphStyle};
 pub use view::{GraphView, GraphViewState};

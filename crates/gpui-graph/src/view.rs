@@ -39,6 +39,7 @@ pub struct GraphViewState<NK, EK, N, E> {
     selection: Selection,
     hover: Hover,
     style: GraphStyle,
+    runtime: crate::runtime::GraphRuntime,
     node_label: NodeLabelResolver<N>,
     edge_label: EdgeLabelResolver<E>,
     dragging: Option<NodeId>,
@@ -175,6 +176,7 @@ where
             selection: Selection::new(),
             hover: Hover::default(),
             style: GraphStyle::default(),
+            runtime: crate::runtime::GraphRuntime::new(),
             node_label: Rc::new(|_id, _node| None),
             edge_label: Rc::new(|_id, _edge| None),
             dragging: None,
@@ -344,6 +346,7 @@ where
             selection: Selection::new(),
             hover: Hover::default(),
             style: GraphStyle::default(),
+            runtime: crate::runtime::GraphRuntime::new(),
             node_label: Rc::new(|_id, node| Some(node.to_string())),
             edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
             dragging: None,
@@ -439,21 +442,22 @@ where
                             Vec2::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
                         view_prepaint.update(cx, |vs, cx| {
                             vs.prepare_canvas(size, cx);
-                        });
-                        let vs = view_prepaint.read(cx);
-                        let scene = vs.scene.read(cx);
-                        let node_label = vs.node_label.clone();
-                        let edge_label = vs.edge_label.clone();
-                        crate::paint::build_paint_frame(crate::paint::PaintFrameInput {
-                            graph: scene.graph(),
-                            node_position: &|id| scene.node_position(id),
-                            node_cluster_center: &|id| scene.node_cluster_center(id),
-                            node_label: &|id, node| node_label(id, node),
-                            edge_label: &|id, edge| edge_label(id, edge),
-                            viewport: &vs.viewport,
-                            style: &vs.style,
-                            selection: &vs.selection,
-                            hover: &vs.hover,
+                            let scene_entity = vs.scene.clone();
+                            let scene = scene_entity.read(cx);
+                            let synced = scene.sync_runtime(&mut vs.runtime);
+                            let node_label = vs.node_label.clone();
+                            let edge_label = vs.edge_label.clone();
+                            crate::paint::build_indexed_paint_frame(
+                                crate::paint::IndexedPaintFrameInput {
+                                    synced: &synced,
+                                    node_label: &|id, node| node_label(id, node),
+                                    edge_label: &|id, edge| edge_label(id, edge),
+                                    viewport: &vs.viewport,
+                                    style: &vs.style,
+                                    selection: &vs.selection,
+                                    hover: &vs.hover,
+                                },
+                            )
                         })
                     },
                     move |_bounds, mut frame: crate::paint::PaintFrame, window, cx| {
