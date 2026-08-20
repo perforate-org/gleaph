@@ -1490,6 +1490,12 @@ where
             });
         } else {
             self.cancel_initial_auto_fit();
+            // Pan starts here: elevate the interaction LOD immediately so the
+            // very first frame after mouse_down (before any mouse_move) already
+            // renders the graph at the low-detail threshold. Without this the
+            // first pan frame would run the idle high-detail threshold and feel
+            // sluggish to start moving.
+            self.begin_interaction(cx);
             self.panning = true;
         }
         self.last_mouse = pos;
