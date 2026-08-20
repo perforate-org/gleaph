@@ -117,7 +117,6 @@ impl Example {
             };
             style.edge_straight_threshold = 24.0;
             style.edge_straight_threshold_while_interacting = 10_000.0;
-            style.edge_settle_time_ms = 250.0;
             // In the zoomed-out overview every edge is far shorter than its
             // arrowhead, so omitting arrowheads for edges below 24px removes
             // ~4900 arrow primitives with no readable direction lost.
