@@ -55,7 +55,7 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | `RETURN p` | OK → `Value::Path` (singleton) or `Value::List` of paths (`SHORTEST k GROUP`) |
 | `CARDINALITY(p)` | OK on `PathGroup` |
 | `CARDINALITY(e)`, `CARDINALITY(u)` | OK |
-| `e[-1].distance`, `u[0]`, `v[-1]` | OK only with the `cypher` feature (Cypher list index). Off by default: the canister build (`gleaph-graph`, and the `gleaph-gql`-parsing `gleaph-router`) ships without `cypher`, so these are rejected at parse time there. |
+| `e[-1].distance`, `u[0]`, `v[-1]` | OK only with the `cypher` feature (Cypher list index). Part of the Gleaph canister default build (`gleaph-graph`, and the `gleaph-gql`-parsing `gleaph-router` both enable `cypher`), so these parse and execute in the canister deployment. The general-purpose `gleaph-gql`/`gleaph-gql-planner` crates keep `cypher` optional for portable consumers. |
 | `e.distance` on a var-length group | Returns a `List` of per-hop values at execution; `GLEAPH.WEIGHT(e)` has been removed (ADR 0051 Phase B). |
 | `LET x = SUM(e.distance)` | Not yet supported for group edge property access; use element indexing (`e[-1].distance`) or aggregate after unnesting. |
 | `RETURN SUM(e.distance)` (implicit `PlanOp::Aggregate`) | Not yet supported for group edge property access. |

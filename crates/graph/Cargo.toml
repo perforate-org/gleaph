@@ -14,7 +14,12 @@ type_complexity = "allow"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["gql-parse", "plan-wire"]
+# `cypher` is part of the default canister build: the Gleaph router parses incoming GQL with
+# cypher, so Cypher-dialect constructs (list index/slice, STARTS/ENDS WITH, CONTAINS,
+# NODES/EDGES/LABELS, VALUE/EXISTS subqueries, ...) reach the graph shard and must execute here.
+# The general-purpose `gleaph-gql`/`gleaph-gql-planner` crates keep cypher optional; enabling it
+# here is a Gleaph canister-side choice only.
+default = ["gql-parse", "plan-wire", "cypher"]
 gql-parse = []
 plan-wire = ["gleaph-gql-planner/plan-wire"]
 canbench = ["dep:canbench-rs", "dep:serde_json", "dep:sha2"]
@@ -32,10 +37,9 @@ canbench_large = ["canbench"]
 canbench_lara = ["canbench", "ic-stable-lara/canbench-scopes"]
 sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
 # Cypher-dialect GQL extensions (list index/slice, STARTS/ENDS WITH, CONTAINS,
-# NODES/EDGES/LABELS, VALUE/EXISTS subqueries, ...). Disabled in the default
-# canister build: the router parses incoming GQL without cypher, so these
-# constructs never reach the graph shard. Kept behind a feature so the executor
-# support can be re-enabled without rewriting it.
+# NODES/EDGES/LABELS, VALUE/EXISTS subqueries, ...). Part of the default canister build so
+# the executor runs Cypher constructs that the router's cypher-enabled parse passes through.
+# Kept as a named feature so it can be toggled independently of `gql-parse`/`plan-wire`.
 cypher = [
     "gleaph-gql/cypher",
     "gleaph-gql-planner/cypher",

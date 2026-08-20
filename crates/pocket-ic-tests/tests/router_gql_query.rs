@@ -1556,3 +1556,43 @@ fn federated_edge_index_lifecycle() {
         "expected federated edge dispatch without index anchor to fail, got: {err:?}"
     );
 }
+
+/// Cypher dialect E2E through the router: `labels(n)`, `label(n)`, and `type(e)` reach the graph
+/// shard's executor (enabled by default since cypher is part of the canister build).
+#[test]
+fn single_shard_cypher_label_and_type_projections() {
+    let env = install_single_shard_federation();
+
+    gql_mutate_as_admin(
+        &env,
+        "INSERT (:Person {name: 'alice'})-[:KNOWS]->(:Person {name: 'bob'})",
+        "single_shard_cypher_label_and_type_projections_insert",
+    );
+
+    let labels = gql_query_as_admin(
+        &env,
+        "MATCH (n:Person) WHERE n.name = 'alice' RETURN labels(n) AS labels",
+    );
+    assert_eq!(labels.row_count, 1);
+    let labels_row = decode_single_value_row(&labels);
+    assert_eq!(
+        labels_row.get("labels"),
+        Some(&Value::List(vec![Value::Text("Person".to_string())]))
+    );
+
+    let single = gql_query_as_admin(
+        &env,
+        "MATCH (n:Person) WHERE n.name = 'alice' RETURN label(n) AS label",
+    );
+    assert_eq!(single.row_count, 1);
+    let single_row = decode_single_value_row(&single);
+    assert_eq!(
+        single_row.get("label"),
+        Some(&Value::Text("Person".to_string()))
+    );
+
+    let typ = gql_query_as_admin(&env, "MATCH (a)-[e:KNOWS]->(b) RETURN type(e) AS typ");
+    assert_eq!(typ.row_count, 1);
+    let typ_row = decode_single_value_row(&typ);
+    assert_eq!(typ_row.get("typ"), Some(&Value::Text("KNOWS".to_string())));
+}

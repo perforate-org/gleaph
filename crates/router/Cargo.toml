@@ -44,7 +44,17 @@ thiserror.workspace = true
 canbench-rs = { workspace = true, optional = true }
 
 [features]
-default = []
+# Cypher-dialect GQL extensions (list index/slice, STARTS/ENDS WITH, CONTAINS, NODES/EDGES/LABELS,
+# VALUE/EXISTS subqueries, ...). Part of the default canister build so the router parses and plans
+# Cypher constructs for the graph shard, whose executor also enables cypher by default. The
+# general-purpose `gleaph-gql`/`gleaph-gql-planner` crates keep cypher optional; enabling it here is
+# a Gleaph canister-side choice only.
+default = ["cypher"]
+cypher = [
+    "gleaph-gql/cypher",
+    "gleaph-gql-planner/cypher",
+    "gleaph-gql-integration/cypher",
+]
 canbench = ["dep:canbench-rs"]
 pocket-ic-e2e = []
 batch-instr-log = []

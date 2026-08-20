@@ -363,7 +363,9 @@ impl QueryExprEvaluator<'_> {
             ),
             ExprKind::ElementId(expr) => self.eval_element_id(row, expr),
             #[cfg(feature = "cypher")]
-            ExprKind::Labels(expr) | ExprKind::Label(expr) => self.eval_labels(row, expr),
+            ExprKind::Labels(expr) => self.eval_labels(row, expr),
+            #[cfg(feature = "cypher")]
+            ExprKind::Label(expr) => self.eval_single_label(row, expr),
             ExprKind::Parameter(name) => self
                 .parameters
                 .get(crate::plan::query::param_map_key(name))
@@ -935,13 +937,16 @@ impl QueryExprEvaluator<'_> {
         }
     }
 
-    /// Evaluate the GQL `labels()`/`label()` runtime functions (dedicated [`ExprKind`] variants).
+    /// Resolve the GQL label list of a vertex variable binding.
+    ///
+    /// Returns `(Value::List, ...)` of label values for `labels()`, or `Value::Null` for a null
+    /// binding. Errors for non-vertex bindings.
     #[cfg(feature = "cypher")]
-    fn eval_labels(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
+    fn vertex_label_values(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         let ExprKind::Variable(var_name) = &expr.kind else {
             return Err(PlanQueryError::InvalidExpressionValue {
                 expression: format!(
-                    "labels() argument must be a single variable, got {:?}",
+                    "label function argument must be a single variable, got {:?}",
                     expr.kind
                 ),
             });
@@ -966,7 +971,35 @@ impl QueryExprEvaluator<'_> {
             }
             PlanBinding::Value(Value::Null) => Ok(Value::Null),
             other => Err(PlanQueryError::InvalidExpressionValue {
-                expression: format!("labels({var_name}) for {other:?}"),
+                expression: format!("label function({var_name}) for {other:?}"),
+            }),
+        }
+    }
+
+    /// Evaluate the GQL `labels()` runtime function (a dedicated [`ExprKind::Labels`] variant).
+    #[cfg(feature = "cypher")]
+    fn eval_labels(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
+        self.vertex_label_values(row, expr)
+    }
+
+    /// Evaluate the GQL `label()` runtime function — the single-label variant.
+    ///
+    /// Returns the single vertex label as `Value::Text`, `Value::Null` for a null binding, or an
+    /// `InvalidExpressionValue` error when the vertex has zero or multiple labels.
+    #[cfg(feature = "cypher")]
+    fn eval_single_label(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
+        match self.vertex_label_values(row, expr)? {
+            Value::Null => Ok(Value::Null),
+            Value::List(items) => match items.as_slice() {
+                [Value::Text(single)] => Ok(Value::Text(single.clone())),
+                _ => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "label() requires a vertex with exactly one label, got {items:?}"
+                    ),
+                }),
+            },
+            other => Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("label() for unexpected value {other:?}"),
             }),
         }
     }
@@ -4090,6 +4123,56 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["Employee".to_string(), "Person".to_string()]);
+    }
+
+    #[test]
+    #[cfg(feature = "cypher")]
+    fn label_returns_single_text_label() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["Person"], [("name", Value::Text("a".into()))])
+            .expect("insert vertex");
+        let plan = plan_gql("MATCH (n) WHERE n.name = 'a' RETURN label(n) AS label");
+
+        let result = store
+            .execute_plan_query(
+                &plan,
+                &params(),
+                GqlExecutionContext {
+                    resolved_labels: Some(ResolvedLabelTable {
+                        vertex: vec![ResolvedVertexLabel {
+                            name: "Person".to_string(),
+                            id: crate::test_labels::vertex_label_id_for_name("Person"),
+                        }],
+                        edge: Vec::new(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .expect("label query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("label"),
+            Some(&Value::Text("Person".to_string()))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "cypher")]
+    fn label_rejects_multi_label_vertex() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["Person", "Employee"],
+                [("name", Value::Text("a".into()))],
+            )
+            .expect("insert vertex");
+        let plan = plan_gql("MATCH (n) WHERE n.name = 'a' RETURN label(n) AS label");
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("label on multi-label vertex must fail");
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
 
     #[test]
