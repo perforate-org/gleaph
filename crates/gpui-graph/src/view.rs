@@ -1436,7 +1436,7 @@ where
         } else {
             let scene = self.scene.read(cx);
             let synced = scene.sync_runtime(&mut self.runtime);
-            let hit = hit_test::hit_test_indexed(&synced, &self.viewport, &self.style, pos);
+            let hit = hit_test::hit_test(&synced, &self.viewport, &self.style, pos);
             self.hover = Hover {
                 node: hit.node,
                 edge: hit.edge,
@@ -1449,7 +1449,7 @@ where
     fn handle_mouse_down(&mut self, pos: Vec2, click_count: usize, cx: &mut Context<Self>) {
         let scene = self.scene.read(cx);
         let synced = scene.sync_runtime(&mut self.runtime);
-        let hit = hit_test::hit_test_indexed(&synced, &self.viewport, &self.style, pos);
+        let hit = hit_test::hit_test(&synced, &self.viewport, &self.style, pos);
 
         if let Some(node) = hit.node {
             if click_count >= 2 {
