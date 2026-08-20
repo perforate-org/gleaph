@@ -122,6 +122,12 @@ impl Example {
             // arrowhead, so omitting arrowheads for edges below 24px removes
             // ~4900 arrow primitives with no readable direction lost.
             style.edge_arrow_min_length = 24.0;
+            // The 2500 nodes render at a fixed 12px diameter; drawing them as
+            // fill-only dots (no sub-pixel stroke ring) is visually identical at
+            // this density and cheaper per quad.
+            style.node_simplify_threshold = style.node_radius * 2.0;
+            // Only trim truly sub-pixel edges; the overview's ~16px edges stay.
+            style.edge_min_length = 2.0;
             cx.notify();
         });
 

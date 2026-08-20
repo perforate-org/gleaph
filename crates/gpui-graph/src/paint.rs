@@ -34,6 +34,10 @@ pub struct PaintNode {
     pub selected: bool,
     /// Whether the node is hovered.
     pub hovered: bool,
+    /// Whether the node renders simplified (fill only, no stroke) under node
+    /// LOD. True when the node's on-screen diameter is below
+    /// `GraphStyle::node_simplify_threshold`.
+    pub simplified: bool,
 }
 
 /// An edge record ready for painting.
@@ -271,12 +275,18 @@ where
         let Some(node) = graph.node(*id) else {
             continue;
         };
+        // Node LOD: a node whose on-screen diameter is at or below
+        // `node_simplify_threshold` renders fill-only (no stroke). The diameter
+        // is `2 * node_radius` in screen pixels.
+        let simplified = style.node_simplify_threshold > 0.0
+            && style.node_radius * 2.0 <= style.node_simplify_threshold;
         frame.nodes.push(PaintNode {
             id: *id,
             position: viewport.world_to_screen(world),
             radius: style.node_radius,
             selected: selection.contains_node(*id),
             hovered: hover.node == Some(*id),
+            simplified,
         });
         if let Some(text) = node_label(*id, &node.data) {
             frame.labels.push(PaintLabel {
@@ -1098,6 +1108,15 @@ where
         // Distinct nodes may temporarily occupy the same position. They are
         // not a self-loop, and there is no drawable non-loop segment until
         // their positions diverge.
+        Vec::new()
+    } else if style.edge_min_length > 0.0
+        && finite_chord_length(source, target).is_some_and(|len| len <= style.edge_min_length)
+    {
+        // Edge-omission LOD: a non-self-loop edge this short on screen is a
+        // sub-pixel dot between two tiny nodes, so omit it entirely (no stroke,
+        // no arrow). Returning an empty path keeps the drawn geometry, hit
+        // testing, and label masking in agreement, and the paint layer already
+        // skips empty paths.
         Vec::new()
     } else if straight_edge_applies(source, target, style) {
         // Level-of-detail simplification: when the on-screen chord is short
@@ -3526,6 +3545,103 @@ mod tests {
     }
 
     #[test]
+    fn short_edge_omitted_when_min_length_enabled() {
+        let g = graph();
+        let ids: Vec<NodeId> = g.nodes().map(|(id, _)| id).collect();
+        let a = ids[0];
+        let b = ids[1];
+        // Chord ~5px on screen, below a 10px edge-omission threshold.
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(5.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let style = GraphStyle::default().with_edge_min_length(10.0);
+        let edge = g.edge(ids_edge(&g)).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        assert!(
+            path.is_empty(),
+            "an edge at or below the omission threshold must produce no path"
+        );
+    }
+
+    #[test]
+    fn longer_edge_kept_when_min_length_enabled() {
+        let g = graph();
+        let ids: Vec<NodeId> = g.nodes().map(|(id, _)| id).collect();
+        let a = ids[0];
+        let b = ids[1];
+        // Chord ~30px on screen, above a 10px edge-omission threshold.
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(30.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let style = GraphStyle::default().with_edge_min_length(10.0);
+        let edge = g.edge(ids_edge(&g)).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        assert_eq!(
+            path.len(),
+            1,
+            "an edge above the omission threshold must still render"
+        );
+    }
+
+    #[test]
+    fn self_loop_kept_when_min_length_enabled() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a { Some(Vec2::ZERO) } else { None }
+        };
+        let style = GraphStyle::default().with_edge_min_length(500.0);
+        let edge = g.edge(g.edges().next().unwrap().0).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        assert_eq!(
+            path.len(),
+            2,
+            "a self-loop must never be omitted by edge-omission LOD"
+        );
+    }
+
+    #[test]
+    fn edge_omission_disabled_by_default() {
+        let g = graph();
+        let ids: Vec<NodeId> = g.nodes().map(|(id, _)| id).collect();
+        let a = ids[0];
+        let b = ids[1];
+        // Default threshold (0.0) disables edge omission: even a degenerate
+        // ~0.1px edge still produces a straight path (its chord is non-degenerate
+        // only at the node radius, which trims it; the trim may empty a sub-pixel
+        // edge, so use a small-but-renderable length).
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(10.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let style = GraphStyle::default();
+        let edge = g.edge(ids_edge(&g)).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        assert!(
+            !path.is_empty(),
+            "default style must not omit edges via edge_min_length"
+        );
+    }
+
+    #[test]
     fn short_edge_arrow_omitted_when_threshold_enabled() {
         // A 30px on-screen chord below a 50px arrow LOD threshold is omitted.
         let style = GraphStyle::default().with_edge_arrow_min_length(50.0);
@@ -3569,5 +3685,102 @@ mod tests {
 
     fn ids_edge(g: &Graph<(), ()>) -> EdgeId {
         g.edges().next().unwrap().0
+    }
+
+    #[test]
+    fn node_simplified_when_diameter_below_threshold() {
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        scene.merge(
+            GraphBatch::new()
+                .node("a".to_owned(), ())
+                .node("b".to_owned(), ())
+                .edge(
+                    "ab".to_owned(),
+                    "a".to_owned(),
+                    "b".to_owned(),
+                    EdgeDirection::Directed,
+                    (),
+                ),
+        );
+        let a = scene.node_id(&"a".to_owned()).unwrap();
+        let b = scene.node_id(&"b".to_owned()).unwrap();
+        scene.set_position(a, Vec2::new(0.0, 0.0));
+        scene.set_position(b, Vec2::new(100.0, 0.0));
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(400.0, 400.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::splat(-200.0),
+                max: Vec2::splat(200.0),
+            },
+            0.0,
+        );
+        // node_radius is 6.0, so the diameter is 12.0; a threshold of 12.0 marks
+        // every node simplified.
+        let style = GraphStyle::default().with_node_simplify_threshold(12.0);
+        let mut rt = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut rt);
+        let frame = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert!(!frame.nodes.is_empty(), "sample scene has visible nodes");
+        assert!(
+            frame.nodes.iter().all(|n| n.simplified),
+            "nodes at or below the simplify diameter must be marked simplified"
+        );
+    }
+
+    #[test]
+    fn node_not_simplified_when_threshold_disabled() {
+        let mut scene = GraphScene::new().with_layout(Box::new(FixedLayout));
+        scene.merge(
+            GraphBatch::new()
+                .node("a".to_owned(), ())
+                .node("b".to_owned(), ())
+                .edge(
+                    "ab".to_owned(),
+                    "a".to_owned(),
+                    "b".to_owned(),
+                    EdgeDirection::Directed,
+                    (),
+                ),
+        );
+        let a = scene.node_id(&"a".to_owned()).unwrap();
+        let b = scene.node_id(&"b".to_owned()).unwrap();
+        scene.set_position(a, Vec2::new(0.0, 0.0));
+        scene.set_position(b, Vec2::new(100.0, 0.0));
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(400.0, 400.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::splat(-200.0),
+                max: Vec2::splat(200.0),
+            },
+            0.0,
+        );
+        // Default threshold (0.0) disables node simplification.
+        let style = GraphStyle::default();
+        let mut rt = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut rt);
+        let frame = build_indexed_paint_frame(IndexedPaintFrameInput {
+            synced: &synced,
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+        });
+        assert!(!frame.nodes.is_empty(), "sample scene has visible nodes");
+        assert!(
+            frame.nodes.iter().all(|n| !n.simplified),
+            "default style must never simplify nodes"
+        );
     }
 }

@@ -1601,6 +1601,19 @@ The runtime should eventually support:
   data in `benches/paint_bench.rs` and the primitive-counting view test guide the
   choice.
 
+  Node simplification and edge omission round out the zoomed-out LOD axis.
+  `GraphStyle::node_simplify_threshold` (default `0.0`, disabled) renders a node
+  whose on-screen diameter is at or below the threshold as a fill-only dot
+  (no stroke), so the quad does no sub-pixel ring work at high density.
+  `GraphStyle::edge_min_length` (default `0.0`, disabled) omits a non-self-loop
+  edge whose on-screen chord is at or below the threshold entirely — no stroke,
+  no arrow, no primitive. Because it is decided inside `edge_path`, the drawn
+  geometry, hit testing, and label masking stay in agreement, and the paint layer
+  already skips empty paths. Self-loops are never omitted. This is the deepest
+  tier of a natural zoom-out cascade: straighten (`edge_straight_threshold`) →
+  drop arrows (`edge_arrow_min_length`) → omit the edge (`edge_min_length`) →
+  simplify nodes (`node_simplify_threshold`).
+
 
 
 ---

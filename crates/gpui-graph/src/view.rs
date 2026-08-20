@@ -656,12 +656,25 @@ where
                             } else {
                                 style.node_fill
                             };
+                            // Node LOD: a simplified node renders as a filled dot
+                            // with no stroke, so the quad does no sub-pixel ring
+                            // work.
+                            let stroke_width = if node.simplified {
+                                0.0
+                            } else {
+                                style.node_stroke_width
+                            };
+                            let stroke_color = if node.simplified {
+                                color
+                            } else {
+                                style.node_stroke_color
+                            };
                             window.paint_quad(quad(
                                 bounds,
                                 px(node.radius),
                                 color,
-                                px(style.node_stroke_width),
-                                style.node_stroke_color,
+                                px(stroke_width),
+                                stroke_color,
                                 Default::default(),
                             ));
                             #[cfg(test)]
@@ -3027,6 +3040,7 @@ mod tests {
             radius: 6.0,
             selected: false,
             hovered: false,
+            simplified: false,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
             position: Vec2::new(10.0, 0.0),

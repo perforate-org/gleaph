@@ -23,6 +23,16 @@ pub enum ArrowShape {
 pub struct GraphStyle {
     /// Node radius in pixels.
     pub node_radius: f32,
+    /// On-screen diameter in pixels below which a node renders simplified (fill
+    /// only, no stroke).
+    ///
+    /// At small on-screen size a node's stroke is a sub-pixel ring that costs a
+    /// quad primitive's stroke work for no visible outline, so dropping it keeps
+    /// the node readable as a filled dot while reducing paint cost. A value of
+    /// `0.0` (the default) disables the simplification and always draws the
+    /// stroke. The threshold is a diameter, so a node whose visible diameter is
+    /// at or below it renders fill-only.
+    pub node_simplify_threshold: f32,
     /// Node fill color.
     pub node_fill: Hsla,
     /// Node stroke width in pixels.
@@ -60,6 +70,19 @@ pub struct GraphStyle {
     /// be at least `edge_arrow_size` so an omitted arrow is actually smaller
     /// than the edges that keep theirs.
     pub edge_arrow_min_length: f32,
+    /// On-screen length in pixels below which a non-self-loop edge is omitted
+    /// entirely, producing no edge or arrow primitive at all.
+    ///
+    /// An edge this short is visually a sub-pixel dot between two (already tiny)
+    /// nodes, so painting it wastes a stroke primitive (and any arrowhead) with
+    /// no readable geometry. A value of `0.0` (the default) disables the
+    /// simplification and always paints eligible edges. Self-loops are never
+    /// omitted. This is a distinct axis from [`Self::edge_straight_threshold`]
+    /// (straighten but keep painting) and [`Self::edge_arrow_min_length`]
+    /// (keep the edge but drop its arrow); it should usually be set below both
+    /// so the view passes through straighten-then-arrow-then-omit as it zooms
+    /// out.
+    pub edge_min_length: f32,
     /// Text style for node and edge labels.
     pub label_style: TextStyle,
     /// Vertical offset of a node label below the node, in pixels.
@@ -109,6 +132,7 @@ impl Default for GraphStyle {
     fn default() -> Self {
         Self {
             node_radius: 6.0,
+            node_simplify_threshold: 0.0,
             node_fill: hsla(0.6, 0.5, 0.6, 1.0),
             node_stroke_width: 1.0,
             node_stroke_color: hsla(0.0, 0.0, 0.1, 1.0),
@@ -122,6 +146,7 @@ impl Default for GraphStyle {
             edge_arrow_size: 8.0,
             edge_arrow_shape: ArrowShape::Triangle,
             edge_arrow_min_length: 0.0,
+            edge_min_length: 0.0,
             label_style: TextStyle::default(),
             label_offset: 0.0,
             edge_label_hide_distance: 20.0,
@@ -136,6 +161,13 @@ impl GraphStyle {
     /// Set the node radius.
     pub fn with_node_radius(mut self, radius: f32) -> Self {
         self.node_radius = radius;
+        self
+    }
+
+    /// Set the on-screen diameter below which a node renders simplified (fill
+    /// only). See [`Self::node_simplify_threshold`].
+    pub fn with_node_simplify_threshold(mut self, diameter: f32) -> Self {
+        self.node_simplify_threshold = diameter;
         self
     }
 
@@ -216,6 +248,13 @@ impl GraphStyle {
     /// [`Self::edge_arrow_min_length`].
     pub fn with_edge_arrow_min_length(mut self, pixels: f32) -> Self {
         self.edge_arrow_min_length = pixels;
+        self
+    }
+
+    /// Set the on-screen length below which a non-self-loop edge is omitted
+    /// entirely. See [`Self::edge_min_length`].
+    pub fn with_edge_min_length(mut self, pixels: f32) -> Self {
+        self.edge_min_length = pixels;
         self
     }
 
