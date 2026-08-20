@@ -1540,7 +1540,11 @@ below `GraphStyle::edge_straight_threshold` pixels (default `0.0`, disabled) is
 rendered as a straight segment instead of a density/cluster/obstacle-avoiding
 curve. Because `edge_path` computes the trimmed quadratic with a degenerate
 control point at the chord midpoint, the drawn geometry, hit testing, and label
-masking all keep working unchanged. Self-loops are never simplified. The
+masking all keep working unchanged. A straight-LOD edge does not bow, so the
+paint layer also skips its signed local-density computation; only the
+curved-visible subset runs the pairwise density loop, while the density grid is
+still built over every edge's midpoint so straight neighbors continue to count
+toward a curved edge's density (§18.3, §20). Self-loops are never simplified. The
 threshold is configurable rather than fixed so callers can balance curve
 fidelity against paint cost for their graph size and zoom range; benchmark data
 in `benches/paint_bench.rs` (`paint_frame_lod`) guides the choice.

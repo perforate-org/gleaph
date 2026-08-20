@@ -400,17 +400,27 @@ where
         ));
     }
 
-    // Compute the signed density only for the visible edges. The grid is built
-    // over every edge's midpoint, so off-screen neighbors still count toward a
-    // visible edge's density, but the pairwise loop runs only for the visible
-    // edges instead of every edge in the graph.
-    let visible_indices: Vec<usize> = visible_edges.iter().map(|(i, _, _, _, _)| *i).collect();
+    // Compute the signed density only for the visible edges that will render
+    // curved. Straight-line-LOD edges (below the screen-length threshold) skip
+    // the control-point bow entirely, so they do not need a density value; this
+    // keeps the pairwise density loop proportional to the curved-visible set
+    // instead of every visible edge. The grid is built over every edge's
+    // midpoint, so off-screen neighbors still count toward a visible edge's
+    // density, but the pairwise loop runs only for the requested indices.
+    let curved_indices: Vec<usize> = visible_edges
+        .iter()
+        .filter_map(|(index, _, edge, source, target)| {
+            let is_self_loop = edge.source == edge.target;
+            let is_straight = !is_self_loop && straight_edge_applies(*source, *target, style);
+            (!is_straight).then_some(*index)
+        })
+        .collect();
     let signed_densities = signed_densities_for(
         density_grid,
         midpoints,
         normals,
         DENSITY_RADIUS,
-        &visible_indices,
+        &curved_indices,
     );
 
     for (candidate_index, id, edge, source, target) in visible_edges.iter() {
@@ -1073,10 +1083,7 @@ where
         // not a self-loop, and there is no drawable non-loop segment until
         // their positions diverge.
         Vec::new()
-    } else if style.edge_straight_threshold > 0.0
-        && finite_chord_length(source, target)
-            .is_some_and(|len| len <= style.edge_straight_threshold)
-    {
+    } else if straight_edge_applies(source, target, style) {
         // Level-of-detail simplification: when the on-screen chord is short
         // enough that curvature and obstacle bow are visually indistinguishable
         // from a straight line, skip the density/cluster/obstacle control-point
@@ -1121,6 +1128,20 @@ where
             Vec::new()
         }
     }
+}
+
+/// Whether a non-self-loop edge between `source` and `target` (screen/canvas-local
+/// positions) should be rendered as a straight line under straight-line LOD.
+///
+/// This mirrors the branch decision in [`edge_path`] so the paint layer can skip
+/// density computation for edges that will not bow. The threshold is a screen
+/// length; `0.0` disables the simplification. Self-loops are the caller's
+/// responsibility and are never routed through here.
+#[doc(hidden)]
+pub fn straight_edge_applies(source: Vec2, target: Vec2, style: &GraphStyle) -> bool {
+    style.edge_straight_threshold > 0.0
+        && finite_chord_length(source, target)
+            .is_some_and(|len| len <= style.edge_straight_threshold)
 }
 
 /// Trim a quadratic Bézier edge `(source, control, target)` along its own path
