@@ -1508,24 +1508,30 @@ not a hit-test acceleration contract. Node hit testing may be simple geometry.
 
 Edge hit testing may require distance-to-segment or curve calculations.
 
-The hit-test acceleration structure is deliberately not fixed in the v0.1
-design. The unresolved indexing question here concerns hit-test acceleration
-and its maintenance during active force layout only; it does not defer or
-change the rendering visibility index described in §20.
+ v0.1 implements both policy branches with one code path. `hit_test` is the
+ direct-scan reference (every node and edge tested); `hit_test_indexed` is the
+ spatial-accelerated path used by `GraphViewState` for mouse hover and click. It
+ queries the §20 runtime's uniform-grid spatial index
+ ([`GraphRuntime::visible_nodes`] / `visible_edge_candidates`) for a small
+ candidate set around the pointer, then runs the same precise geometry test only
+ on those candidates. Both build the identical edge curve context from the
+ scene, so the selectable geometry matches the drawn geometry exactly, and the
+ linear and indexed results agree (asserted by a parity test).
 
-During active force layout, all node positions may change continuously, making maintenance of a static spatial index potentially more expensive than a linear scan for small or medium graphs.
+ The indexed path reuses the runtime's zoom-invariant [`EdgePrep`] — parallel
+ groups, midpoints/normals, and the density grid — so the per-event density pass
+ runs only for the visible candidates instead of rebuilding every edge's
+ geometry on each mouse move. The maintenance cost that motivated the "selected
+ empirically" note (§20) is unchanged: the spatial index is still derived from
+ the same topology and geometry revisions, so its rebuild cost is amortized
+ across pan/zoom rather than paid per hit test.
 
-The implementation should therefore be selected empirically.
+ During active force layout, all node positions may change continuously, making maintenance of a static spatial index potentially more expensive than a linear scan for small or medium graphs.
 
-Possible policy:
+ The direct-scan `hit_test` remains available for callers that do not hold a
+ synchronized runtime (e.g. small or highly dynamic graphs, or where a linear
+ scan is cheaper than indexing).
 
-```text
-small or highly dynamic graph
-    → direct scan
-
-large settled graph
-    → spatial acceleration
-```
 
 ---
 
