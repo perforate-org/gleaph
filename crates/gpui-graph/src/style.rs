@@ -55,6 +55,15 @@ pub struct GraphStyle {
     /// drifted too close to a node center. This prevents a label from sitting
     /// on top of a node after sliding along its edge.
     pub edge_label_hide_distance: f32,
+    /// On-screen length in pixels below which a non-self-loop edge is rendered
+    /// as a straight line instead of a density/cluster/obstacle-avoiding curve.
+    ///
+    /// When an edge is this short on screen its curvature and obstacle bow are
+    /// visually indistinguishable from a straight line, so level-of-detail
+    /// simplification drops the per-edge curve computation entirely. A value of
+    /// `0.0` (the default) disables the simplification and always renders
+    /// curves. Self-loops are never simplified.
+    pub edge_straight_threshold: f32,
 }
 
 impl Default for GraphStyle {
@@ -76,6 +85,7 @@ impl Default for GraphStyle {
             label_style: TextStyle::default(),
             label_offset: 0.0,
             edge_label_hide_distance: 20.0,
+            edge_straight_threshold: 0.0,
         }
     }
 }
@@ -175,6 +185,13 @@ impl GraphStyle {
     /// drifted too close to a node center.
     pub fn with_edge_label_hide_distance(mut self, distance: f32) -> Self {
         self.edge_label_hide_distance = distance;
+        self
+    }
+
+    /// Set the on-screen length below which a non-self-loop edge is rendered as
+    /// a straight line instead of a curve. `0.0` disables the simplification.
+    pub fn with_edge_straight_threshold(mut self, pixels: f32) -> Self {
+        self.edge_straight_threshold = pixels;
         self
     }
 }

@@ -1260,6 +1260,12 @@ A self-loop uses the node as the apex (tip) of a rounded triangle: a wide,
 rounded base sits away from the node. The loop points away from the node's
 other incident edges, defaulting to up when the node has no other edges.
 
+When `GraphStyle::edge_straight_threshold` is nonzero, a non-self-loop edge
+whose on-screen chord length is at or below that value skips the density,
+cluster, and obstacle control-point computation entirely and renders as a
+straight segment (a degenerate quadratic with its control point at the chord
+midpoint), trimmed to the node boundaries (§22).
+
 ## 18.4 Label masking
 
 Edges are cut where they pass behind a label so the label stays readable over
@@ -1528,9 +1534,16 @@ The runtime should eventually support:
 - aggregation,
 - zoom-dependent detail.
 
-v0.1 requires viewport culling infrastructure but does not need an elaborate LOD policy.
-
-Thresholds must be benchmark-driven rather than fixed prematurely.
+Viewport culling (§20) is implemented. Edge simplification is implemented as
+straight-line LOD: a non-self-loop edge whose on-screen chord length is at or
+below `GraphStyle::edge_straight_threshold` pixels (default `0.0`, disabled) is
+rendered as a straight segment instead of a density/cluster/obstacle-avoiding
+curve. Because `edge_path` computes the trimmed quadratic with a degenerate
+control point at the chord midpoint, the drawn geometry, hit testing, and label
+masking all keep working unchanged. Self-loops are never simplified. The
+threshold is configurable rather than fixed so callers can balance curve
+fidelity against paint cost for their graph size and zoom range; benchmark data
+in `benches/paint_bench.rs` (`paint_frame_lod`) guides the choice.
 
 ---
 

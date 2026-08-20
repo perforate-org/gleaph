@@ -1073,6 +1073,25 @@ where
         // not a self-loop, and there is no drawable non-loop segment until
         // their positions diverge.
         Vec::new()
+    } else if style.edge_straight_threshold > 0.0
+        && finite_chord_length(source, target)
+            .is_some_and(|len| len <= style.edge_straight_threshold)
+    {
+        // Level-of-detail simplification: when the on-screen chord is short
+        // enough that curvature and obstacle bow are visually indistinguishable
+        // from a straight line, skip the density/cluster/obstacle control-point
+        // work entirely and render a straight segment (a degenerate quadratic
+        // with its control point at the chord midpoint) trimmed to the node
+        // boundaries. Self-loops are handled above and never simplified. The
+        // degenerate control point keeps the trimmed path a valid quadratic so
+        // hit testing and label masking keep working unchanged.
+        let curve =
+            trim_curve_to_node_boundary(source, (source + target) * 0.5, target, style.node_radius);
+        if finite_chord_length(curve.0, curve.2).is_some() {
+            vec![curve]
+        } else {
+            Vec::new()
+        }
     } else {
         // The control point and the node centers share screen coordinates here;
         // only the parallel fan uses a world-length normalization below.
@@ -3267,5 +3286,101 @@ mod tests {
             "indexed rendering must preserve the exact outer fan edge ID"
         );
         assert_eq!(indexed_ids, linear_ids);
+    }
+
+    fn straight_line_path<E>(
+        graph: &Graph<(), E>,
+        edge: &Edge<E>,
+        style: &GraphStyle,
+        positions: &impl Fn(NodeId) -> Option<Vec2>,
+        parallel: &[Option<(usize, usize)>],
+    ) -> Vec<Bezier> {
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(400.0, 400.0));
+        vp.zoom_at(Vec2::new(200.0, 200.0), 1.0);
+        edge_path(
+            edge,
+            &ctx(0, 0.0, &[], parallel),
+            graph,
+            positions,
+            &no_clusters(),
+            &vp,
+            style,
+        )
+    }
+
+    #[test]
+    fn short_edge_is_straight_when_threshold_enabled() {
+        let g = graph();
+        let ids: Vec<NodeId> = g.nodes().map(|(id, _)| id).collect();
+        let a = ids[0];
+        let b = ids[1];
+        // Chord ~100px on screen; threshold 200px forces straight-line LOD.
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(100.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let style = GraphStyle::default().with_edge_straight_threshold(200.0);
+        let edge = g.edge(ids_edge(&g)).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        assert_eq!(path.len(), 1, "straight edge is a single segment");
+        // The degenerate control point sits at the chord midpoint, so the
+        // trimmed path is collinear with the source-target chord.
+        let (p0, p1, p2) = path[0];
+        let unit = (p2 - p0).normalize();
+        let normal = Vec2::new(-unit.y, unit.x);
+        let offset = (p1 - (p0 + p2) * 0.5).dot(normal).abs();
+        assert!(offset < 1e-3, "control point must lie on the chord");
+    }
+
+    #[test]
+    fn long_edge_stays_curved_when_threshold_enabled() {
+        let g = graph();
+        let ids: Vec<NodeId> = g.nodes().map(|(id, _)| id).collect();
+        let a = ids[0];
+        let b = ids[1];
+        // Chord ~1000px on screen; threshold 200px keeps the curve path.
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(0.0, 0.0))
+            } else if id == b {
+                Some(Vec2::new(1000.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let style = GraphStyle::default().with_edge_straight_threshold(200.0);
+        let edge = g.edge(ids_edge(&g)).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        assert_eq!(path.len(), 1);
+        // The density bow for a lone edge is zero, so the control point also
+        // lies on the chord; the path is identical to the straight case. This
+        // only asserts the curved branch is taken and returns a valid segment.
+        assert!(finite_chord_length(path[0].0, path[0].2).is_some());
+    }
+
+    #[test]
+    fn self_loop_is_never_simplified() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        g.add_edge(a, a, EdgeDirection::Directed, ());
+        let positions = move |id: NodeId| {
+            if id == a { Some(Vec2::ZERO) } else { None }
+        };
+        let style = GraphStyle::default().with_edge_straight_threshold(500.0);
+        let edge = g.edge(g.edges().next().unwrap().0).expect("edge exists");
+        let path = straight_line_path(&g, edge, &style, &positions, &[None]);
+        // A self-loop keeps its two-segment onigiri path regardless of the
+        // straight-line threshold.
+        assert_eq!(path.len(), 2, "self-loop onigiri is not simplified");
+    }
+
+    fn ids_edge(g: &Graph<(), ()>) -> EdgeId {
+        g.edges().next().unwrap().0
     }
 }

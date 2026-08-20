@@ -266,6 +266,27 @@ fn paint_frame(graph: &BenchGraph, viewport: &Viewport, labels: bool) {
     std::hint::black_box(frame);
 }
 
+/// Build a paint frame from a viewport and a style, sharing the label and
+/// interaction setup. `straight_threshold` enables straight-line LOD
+/// simplification for edges below that on-screen length.
+fn paint_frame_styled(graph: &BenchGraph, viewport: &Viewport, style: &GraphStyle) {
+    let selection = Selection::new();
+    let hover = Hover::default();
+    let input = PaintFrameInput {
+        graph: graph.scene.graph(),
+        node_position: &|id| graph.scene.node_position(id),
+        node_cluster_center: &|id| graph.scene.node_cluster_center(id),
+        node_label: &|_, _| None,
+        edge_label: &|_, _| None,
+        viewport,
+        style,
+        selection: &selection,
+        hover: &hover,
+    };
+    let frame = build_paint_frame(input);
+    std::hint::black_box(frame);
+}
+
 /// Build a paint frame using the spatial index, given a prebuilt runtime.
 fn paint_frame_indexed_with<S>(
     viewport: &Viewport,
@@ -472,10 +493,41 @@ fn bench_paint_hashers(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compare the overview paint path with and without straight-line LOD
+/// simplification. Zoomed out, every edge is visible and most are far shorter
+/// than the 24px on-screen threshold, so the curve/obstacle/trim work is the
+/// dominant cost; straight-line simplification should cut the per-edge work
+/// substantially.
+fn bench_paint_lod(c: &mut Criterion) {
+    let mut group = c.benchmark_group("paint_frame_lod");
+
+    for side in [20usize, 50usize] {
+        let graph = BenchGraph::grid(side);
+        let overview = overview_viewport(&graph);
+        let label = format!("{}x{}", side, side);
+        let curved = GraphStyle::default();
+        let straight = GraphStyle::default().with_edge_straight_threshold(24.0);
+
+        group.bench_with_input(
+            BenchmarkId::new("overview_curved", &label),
+            &(&graph, &overview, &curved),
+            |b, (g, vp, style)| b.iter(|| paint_frame_styled(g, vp, style)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("overview_straight", &label),
+            &(&graph, &overview, &straight),
+            |b, (g, vp, style)| b.iter(|| paint_frame_styled(g, vp, style)),
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_paint,
     bench_paint_indexed,
-    bench_paint_hashers
+    bench_paint_hashers,
+    bench_paint_lod
 );
 criterion_main!(benches);

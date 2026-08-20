@@ -102,7 +102,9 @@ impl Example {
         //    the scene argument. No labels, matching the benchmark overview.
         let view = cx.new(|cx| GraphViewState::new(scene, cx));
 
-        // 4. Style the graph for a high-contrast dark theme.
+        // 4. Style the graph for a high-contrast dark theme. Edges shorter than
+        //    24px on screen are simplified to straight lines (level-of-detail),
+        //    which is what a fully-zoomed-out overview of this dense grid hits.
         view.update(cx, |view, cx| {
             let style = view.style_mut();
             style.label_style = TextStyle {
@@ -110,6 +112,7 @@ impl Example {
                 font_size: rems(0.6).into(),
                 ..TextStyle::default()
             };
+            style.edge_straight_threshold = 24.0;
             cx.notify();
         });
 
