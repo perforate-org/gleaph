@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-08-16
-Anchor timestamp: 2026-08-16 05:00:23 UTC +0000
+Last updated: 2026-08-20
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 ## Status
 
@@ -353,6 +353,14 @@ the postings are no longer referenced (`is_property_registered` for a shared ver
 `edge_index_uses_property_label` for a per-`(property, label)` edge scope), fanning the resume loop
 out to every index canister backing the graph's live shards (`graph_index_lookup_targets`). The
 purge is stateless (no new stable region).
+
+## Implementation-gap traceability (non-normative)
+
+The implementation-gap ledger is the status authority for the following open
+observations. These links do not amend the property-index contract above.
+
+- [GAP-2026-08-20-005](../implementation-gaps.md#gap-2026-08-20-005--property-drop-index-has-no-durable-per-physicalindexid-retirement-lifecycle) — **Open**: per-`PhysicalIndexId` DROP retirement durability.
+- [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: shard incarnation and unregister lifecycle fencing.
 
 ## Derived-state lag
 

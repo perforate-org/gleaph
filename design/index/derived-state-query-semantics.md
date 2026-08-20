@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
-Last updated: 2026-08-03
-Anchor timestamp: 2026-08-03 08:24:24 UTC +0000
+Last updated: 2026-08-20
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 ## Status
 
@@ -208,6 +208,15 @@ count completeness is required.
 | DML fails with `label stats projection gap`                        | Missing seq in graph delta log                                                                  | Fix graph log continuity before advancing cursor                                                                    |
 | Expand equality wrong                                              | graph-index edge posting lag or unregistered property                                           | `backfill_edge_property_postings`; verify index registry                                                            |
 | Reverse expand wrong                                               | Edge alias drift                                                                                | `check_edge_aliases`; `rebuild_edge_aliases`                                                                        |
+
+## Implementation-gap traceability (non-normative)
+
+The implementation-gap ledger is the status authority for the following open
+observations. These links do not amend the query contracts above.
+
+- [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Open**: `ReadMode::AtLeast` and first-delivery outbox convergence.
+- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-reports-deferredforrepair-without-a-durable-suffix-owner) — **Open**: Router direct vector-ingest suffix durability.
+- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
 
 ## Related documents
 

@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-08-16
-Anchor timestamp: 2026-08-16 00:23:25 UTC +0000
+Last updated: 2026-08-20
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 ## Status
 
@@ -497,6 +497,13 @@ it stored canonical embedding bytes on graph shards (`VERTEX_EMBEDDINGS`, Memory
 MemoryId 45), fenced by `(incarnation, version)`, relayed bytes through the graph on ingest, and
 sharded the vector canister by single-target-per-graph. None of its stable layout survives; the
 canister's stable regions are rebuilt under the new layout.
+
+## Implementation-gap traceability (non-normative)
+
+The implementation-gap ledger is the status authority for this open
+observation. This link does not amend the planned vector boundary above.
+
+- [GAP-2026-08-20-002](../implementation-gaps.md#gap-2026-08-20-002--router-direct-vector-ingestion-reports-deferredforrepair-without-a-durable-suffix-owner) — **Open**: Router direct vector-ingest suffix durability.
 
 ## Open items
 

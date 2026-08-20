@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-11
-Anchor timestamp: 2026-08-11 22:32:30 UTC +0000
+Last updated: 2026-08-20
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 ## Status
 
@@ -46,6 +46,117 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-08-20-001 — AtLeast graph-index barrier ignores pending first-delivery outbox work
+
+- **Status:** Open
+- **Severity:** P0 read consistency
+- **Owner:** Router ReadMode::AtLeast barrier and the Graph-owned durable derived-index work boundary
+- **Observed behavior:** GraphStore::index_pending_min_mutation_id reads only the failure-only
+  RepairJournal, while DerivedIndexOutbox is a separate durable FIFO whose entries retain their
+  originating mutation_id. Router's AtLeast barrier consults only index_pending_min_mutation_id.
+  The existing Graph unit test index_sync_status_reflects_outbox_and_repair_journal proves that
+  outbox-only pending work is not converged even when the repair journal is empty.
+- **Expected or needed behavior:** An index-backed AtLeast(M) read must fail closed until every
+  derived posting at or below M has reached its target, including first-delivery and failed-flush
+  work.
+- **Evidence:** crates/graph/src/facade/stable/derived_index_outbox.rs;
+  crates/graph/src/facade/store/repair_journal.rs; crates/router/src/gql.rs
+  (enforce_read_consistency_with_lookup); and
+  crates/graph/src/index/repair_journal.rs::index_sync_status_reflects_outbox_and_repair_journal.
+  ADR 0029 §5 defines the AtLeast projection barrier.
+- **Impact:** A token can be treated as graph-index satisfied while its first delivery remains
+  durable but unapplied, allowing an index-backed read to miss canonical state.
+- **Next decision:** Choose one canonical per-mutation convergence floor covering both queues or
+  expose an explicit Graph API; add an outbox-only pending regression before any Quint model.
+
+### GAP-2026-08-20-002 — Router direct vector ingestion reports DeferredForRepair without a durable suffix owner
+
+- **Status:** Open
+- **Severity:** P0 durable derived-state contract
+- **Owner:** Router direct vector-ingestion API and its durable replay boundary
+- **Observed behavior:** VertexEmbeddingProjectionOutcome::DeferredForRepair promises that the full
+  idempotent batch was durably journaled and will converge automatically. The direct Router path
+  calls Graph stamp_embedding, which creates no mutation-journal or outbox work, then maps every
+  Vector batch suffix after progress.applied to DeferredForRepair. The suffix bytes and retry
+  identity remain only in the Router call's heap vector.
+- **Expected or needed behavior:** Every DeferredForRepair result must have a durable owner that
+  can replay the exact suffix after return, trap, or upgrade, or the public API must expose an
+  explicit caller-owned retry outcome instead.
+- **Evidence:** crates/graph-kernel/src/vector_index.rs
+  (VertexEmbeddingProjectionOutcome); crates/router/src/api/control.rs
+  (ingest_vertex_embeddings); crates/graph/src/canister/handlers.rs::stamp_embedding; and
+  crates/vector-canister/src/canister.rs::vector_sync_batch.
+- **Impact:** A partial Vector batch can promise automatic convergence while no durable component
+  retains the deferred payload.
+- **Next decision:** Decide whether Router, Graph, or an explicit client retry contract owns the
+  suffix. Add deterministic partial-progress plus upgrade/retry coverage before a payload-bearing
+  Quint model.
+
+### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
+
+- **Status:** Open
+- **Severity:** P1 Router exact-replay recovery
+- **Owner:** Router ordered atomic_insert lifecycle and exact Graph journal reconciliation
+- **Observed behavior:** ADR 0049 requires a same-key retry after a Graph success / Router callback
+  loss to query the exact Graph journal and either record its completed receipt or resend the exact
+  stored request. Live ordered edge, vertex, and mixed recovery leave CanonicalPending with an
+  explicit-retry diagnostic, and an existing same-key request returns its Router record without
+  reconciliation.
+- **Expected or needed behavior:** If the exact Graph journal contains a completed receipt, retry
+  must advance the Router record without canonical redispatch; an absent entry may remain
+  CanonicalPending for an explicit exact retry.
+- **Evidence:** ADR 0029 §2; ADR 0049 §1558–1579; crates/router/src/gql.rs
+  (recover_ordered_edge_batch_record, recover_ordered_vertex_batch_record,
+  recover_ordered_mixed_batch_record, and ordered request reservation paths); and
+  crates/pocket-ic-tests/tests/adr0057_atomic_insert.rs. The existing response-loss fault runs
+  after the Router receipt is durable, so it does not cover the Graph-receipt/Router-receipt gap.
+- **Impact:** A committed canonical effect can remain non-terminal despite the exact durable Graph
+  receipt needed to reconcile it.
+- **Next decision:** Add a fault seam between Graph receipt persistence and Router receipt
+  persistence, then a focused PocketIC regression. Model this lifecycle only after the production
+  reconciliation rule is executable.
+
+### GAP-2026-08-20-006 — Router shard identity has no incarnation or lifecycle fence
+
+- **Status:** Open
+- **Severity:** P0 identity safety
+- **Owner:** Router graph catalog lifecycle, ShardId allocation, and Graph/Router wire identity
+- **Observed behavior:** A numeric ShardId may be reused after its live catalog entry is removed,
+  while GlobalVertexId carries only that numeric shard id and the local vertex id. Delayed postings,
+  vector operations, or encoded vertex ids therefore have no durable incarnation value that
+  distinguishes an old shard from a new shard assigned the same number.
+- **Expected or needed behavior:** A delayed operation or identifier from a retired shard
+  incarnation must never be interpreted as canonical state for a later incarnation.
+- **Evidence:** crates/router/src/facade/stable/graph_catalog.rs (live-catalog shard allocation);
+  crates/router/src/facade/store/registry.rs (unregister/re-register coverage); and
+  crates/graph-kernel/src/federation.rs (GlobalVertexId).
+- **Impact:** Reuse can alias delayed durable work or public identifiers across distinct shard
+  lifecycles.
+- **Next decision:** Choose a never-reuse high-water rule, an explicit wire incarnation, or an
+  equivalent principal-pinning contract before stale-delivery regressions or a multi-owner Quint
+  model.
+
+### GAP-2026-08-20-005 — Property DROP INDEX has no durable per-PhysicalIndexId retirement lifecycle
+
+- **Status:** Open
+- **Severity:** P1 derived-index cleanup
+- **Owner:** Router index catalog and graph-index posting purge lifecycle
+- **Observed behavior:** Router removes the catalog row before remote purge and keeps purge progress
+  only in the active call. A retry after response loss cannot recover the removed catalog identity.
+  Multiple physical namespaces can exist for one logical property, while the remaining-reference
+  decision can skip or target only one namespace.
+- **Expected or needed behavior:** Every unreferenced PhysicalIndexId must have a durable,
+  resumable purge identity and cursor until graph-index confirms cleanup; a shared logical property
+  must not leak a distinct physical namespace after its final reference is removed.
+- **Evidence:** crates/router/src/index_catalog.rs (catalog deletion, remaining-reference check,
+  and remote purge); crates/router/src/index_sync.rs (call-local purge cursor);
+  crates/router/src/facade/stable/indexed_catalog.rs (physical-index identity); and
+  crates/graph-index/src/facade/store/posting_purge.rs.
+- **Impact:** A stopped target, response loss, or multi-index sequence can leave orphan postings
+  that no public retry can identify and retire.
+- **Next decision:** Define a durable Router-owned retirement record keyed by PhysicalIndexId; add
+  deterministic same-property/two-index and purge-response-loss regressions before a Quint model.
 
 ### GAP-2026-08-11-004 — Current V1 metadata boundary leaves too little extension space
 
@@ -791,18 +902,28 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
   rows and derives planner membership only from Active rows. Graph owns exact canonical export
   scopes, graph-index owns resumable build state, the production Router cross-canister driver
   composes register/advance/seal/cleanup with unit coverage, and the CLI exact-replays one immutable
-  artifact. Focused PocketIC E2E and upgrade validation are not yet complete, so the public
-  migration path remains retryably fail-closed until that proof passes.
+  artifact. However, Building/Sealing admission covers property transitions but not label
+  gain/loss for a vertex that already carries an indexed property: the mutation neither emits the
+  exact build envelope during Building nor rejects before the canonical label change during
+  Sealing. Focused PocketIC E2E and upgrade validation are not yet complete, so the public
+  migration path remains retryably fail-closed until both this omission and that proof pass.
 - **Expected or needed behavior:** A newly declared index must remain pending until sidecar and
   INLINE backfill has completed for every attached shard, or the query planner must explicitly treat
-  it as incomplete and fail closed. Rebuild/drop must use the same lifecycle rule.
+  it as incomplete and fail closed. During Building, every label membership transition that changes
+  eligibility for an already-indexed property must durably emit the exact per-physical-index build
+  operation. During Sealing, that transition must reject before canonical state changes.
+  Rebuild/drop must use the same lifecycle rule.
 - **Evidence:** `crates/router/src/facade/store/backfill.rs`, `crates/router/src/planner_stats.rs`,
   and `design/index/property-index.md`'s router-owned active catalog description.
 - **Impact:** A query can observe an index that is structurally present but incomplete, producing
   false negatives rather than merely falling back to a slower plan.
-- **Next decision:** Validate the catalog-epoch seal and per-shard watermark convergence in PocketIC
-  (including upgrade reopen) and keep the migration endpoint fail-closed until that proof passes.
-  The real Router driver over the landed Graph and graph-index controls is implemented. [ADR 0059](adr/0059-create-index-migration-backfill.md)
+- **Confirmed omission evidence:** Graph label mutation uses ordinary label-pending maintenance,
+  while the index-build admission/fence path is property-transition-specific. ADR 0059 requires
+  touched-first exact BuildDml admission and pre-mutation Sealing rejection.
+- **Next decision:** Add deterministic Graph-owner label-gain/loss and Sealing-pre-reject
+  regressions, then validate the catalog-epoch seal and per-shard watermark convergence in PocketIC
+  (including upgrade reopen). Keep the migration endpoint fail-closed until that proof passes. The
+  real Router driver over the landed Graph and graph-index controls is implemented. [ADR 0059](adr/0059-create-index-migration-backfill.md)
   remains the source of truth.
 
 ### GAP-2026-07-29-007 — Edge uniqueness and index-canister sharding remain design work

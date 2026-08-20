@@ -2,14 +2,15 @@
 
 Date: 2026-06-17  
 Status: accepted  
-Last revised: 2026-08-14
+Last revised: 2026-08-20
 
-Anchor timestamp: 2026-08-14 09:04:32 UTC +0000
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-08-20 | Added a non-normative implementation-gap traceability note; active contracts unchanged. |
 | 2026-08-14 | Shard detach sessions now carry an owner-issued durable generation; reattach is excluded until the bounded purge reaches EOF. |
 | 2026-06-17 | **Accepted** — S0–S5 implemented; post-accept doc sync (0005/0006/0010, capacity-planning, federation-target). |
 | 2026-06-17 | Repack: `ROUTER_GRAPH_RUNTIME_CONFIG` → MemoryId **5** (after registry); `INDEX_OWNERSHIP_CONFIG` → MemoryId **3** (before postings). |
@@ -457,6 +458,16 @@ and the detach/attach/detach ABA gap that could otherwise delete or miss newly i
    `element_id_encoding_key` during graph re-registration.
 4. **Single-graph deployments:** existing `ShardId(0)` remains `ShardId(0)` under the sole `GraphId` — behavioral change only when a **second graph** is added.
 5. Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md), [glossary.md](../glossary.md), [0005](0005-vertex-identity.md), [0010](0010-index-sharding-extensibility.md) on acceptance. **Done** (2026-06-17).
+
+---
+
+## Implementation-gap traceability (non-normative)
+
+The implementation-gap ledger is the status authority for this open
+observation. This link does not amend the graph-local `ShardId` or detach
+lifecycle contracts above.
+
+- [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: Router shard incarnation and lifecycle fencing.
 
 ---
 

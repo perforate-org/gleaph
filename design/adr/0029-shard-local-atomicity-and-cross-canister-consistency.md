@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-08-02
-Anchor timestamp: 2026-08-02 14:44:33 UTC +0000
+Last revised: 2026-08-20
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 ## Context
 
@@ -466,6 +466,16 @@ is idempotent, progress is observable, and a recovery path exists.
 
 The phased implementation and acceptance gates are defined in
 [ACID and consistency roadmap](../architecture/acid-roadmap.md).
+
+## Implementation-gap traceability (non-normative)
+
+The implementation-gap ledger is the status authority for the following open
+observations. These links do not amend this ADR's atomicity, retry, lifecycle,
+or read-consistency decisions.
+
+- [GAP-2026-08-20-001](../implementation-gaps.md#gap-2026-08-20-001--atleast-graph-index-barrier-ignores-pending-first-delivery-outbox-work) — **Open**: `AtLeast` first-delivery outbox convergence.
+- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
+- [GAP-2026-08-20-006](../implementation-gaps.md#gap-2026-08-20-006--router-shard-identity-has-no-incarnation-or-lifecycle-fence) — **Open**: Router shard incarnation and lifecycle fencing.
 
 ## Related decisions
 

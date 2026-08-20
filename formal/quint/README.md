@@ -26,6 +26,44 @@ stutter. Maintenance re-arm behavior and fairness/liveness are also excluded.
 The earlier model-fidelity defects—non-prefix finalization and collapsed
 posting/transport phases—are corrected in the current model.
 
+## Candidate and traceability index
+
+Review anchor: 2026-08-20 12:07:15 UTC +0000.
+
+ADRs and active design documents own intended behavior; production Rust and
+PocketIC tests own executable evidence; this README owns formal-candidate
+classification and traceability; and the implementation-gap ledger owns only
+verified production defects or missing capabilities. A plan owns one proposed
+slice and must not duplicate those sources of truth.
+
+| Classification | Meaning and required next evidence |
+| --- | --- |
+| **Modeled / experimental** | A bounded Quint artifact exists; its bounds, unrun checks, and abstractions remain part of its result. |
+| **Quint candidate** | Multi-owner state, fault ordering, or replay merits a finite state-machine review after the production contract is settled. |
+| **Rust-test-first** | A focused owner-local Rust or PocketIC regression can discriminate the behavior before a model adds useful evidence. |
+| **Design/implementation prerequisite** | A required invariant or durable owner is absent or mismatched; resolve it and add a regression before treating a model as adoption evidence. |
+| **Intentional / current** | Existing design deliberately chooses the current behavior; it is not a new formal or ledger item. |
+| **Covered** | Direct tests already protect the behavior; it is not a new formal or ledger item. |
+| **Planned / Deferred** | A future capability remains deliberately outside the current production and formal scope. |
+| **Model-only / excluded** | A bounded-model abstraction or excluded transition makes no production or ledger claim. |
+| **Quint-only investigate** | A model may later test the interaction, but static evidence does not yet prove a production defect. |
+
+| Boundary | Classification | Exact live traceability | Required next evidence |
+| --- | --- | --- |
+| Router–Graph–Property Index durable projection | **Modeled / experimental** | The tables below map the bounded two-mutation model to ADRs 0023/0024/0029, Graph outbox/repair owners, and twelve scenarios. | Preserve revise: no current Quint verify result and focused Rust/PocketIC comparisons remain not run. |
+| Router atomic_insert response loss while CanonicalPending | **Quint candidate + design/implementation prerequisite** | ADR 0029 §2 and ADR 0049 §1558–1579 require exact journal reconciliation; ordered recovery branches in crates/router/src/gql.rs record an explicit-retry diagnostic instead. | GAP-2026-08-20-003: add a Graph-receipt/Router-receipt fault seam and focused PocketIC regression before the Draft Plan 0260 lifecycle model. Plan 0260 is not implementation evidence. |
+| ReadMode::AtLeast versus first-delivery outbox work | **Design/implementation prerequisite; later Quint candidate** | DerivedIndexOutbox and RepairJournal are distinct; index_pending_min_mutation_id reads only RepairJournal and the Router barrier calls only that watermark. | GAP-2026-08-20-001: choose one authoritative per-mutation barrier or explicit API, then make an outbox-only pending read fail closed. |
+| Router direct vector-ingest partial suffix | **Design/implementation prerequisite; Rust/PocketIC first** | DeferredForRepair promises durable automatic repair, but Router maps an unpersisted Vector suffix to it after Graph stamp_embedding creates no journal or outbox work. | GAP-2026-08-20-002: assign a durable suffix owner or change the public retry contract, then test partial progress plus upgrade/retry. |
+| Router shard identity across unregister/re-register | **Design/implementation prerequisite; later Quint candidate** | GlobalVertexId has only ShardId plus local id while the live catalog can reuse a numeric shard id. | GAP-2026-08-20-006: select never-reuse, incarnation, or equivalent principal-pinning semantics before stale-delivery tests. |
+| Property DROP INDEX retirement | **Rust-test-first + design/implementation prerequisite** | Catalog deletion precedes remote purge; purge progress is call-local; PhysicalIndexId namespaces can diverge for one logical property. | GAP-2026-08-20-005: define durable per-PhysicalIndexId retirement and first add same-property/two-index and lost-response regressions. |
+| Index-build label membership and Sealing admission | **Rust-test-first** | Property-transition admission exists, but label gain/loss does not emit exact BuildDml or reject before the canonical label change. | GAP-2026-07-29-006: add focused Graph-owner regressions before migration-lifecycle PocketIC validation. |
+| Vector max-watermark GC and stale replay | **Quint-only investigate** | Ordinary max/GC unit coverage does not establish the cross-caller acknowledgement/delivery assumption that prevents delayed stale replay. | No ledger entry; first define the acknowledgement or delivery-order contract. |
+| Vector caller watermark delivery while idle | **Planned / Deferred** | Per-caller delivery while idle remains a future delivery contract, not a verified production defect in this inventory. | No ledger entry or Quint model; keep the deferred delivery work separate. |
+| Ordinary CREATE INDEX | **Intentional / current** | Ordinary non-migration CREATE INDEX is immediately Active by the current DDL contract. | No new gap or Quint slice absent an ADR change or contradicting regression. |
+| bulk_load exact retry | **Intentional / current** | Exact append replay is intentionally client-driven by the durable bulk-load lifecycle. | No new gap or Quint slice absent an ADR change or contradicting regression. |
+| duplicate index-build pull | **Covered** | Direct exact-replay and conflict coverage protects duplicate build pulls. | No new gap or Quint slice absent an ADR change or contradicting regression. |
+| idle-pending restart | **Model-only / excluded** | The bounded model omits idle-pending restart as an unobservable safety stutter. | No production or ledger claim; keep the transition excluded until a concrete observable behavior is selected. |
+
 ## Traceability
 
 The following tables are exhaustive for the model's declared `var`, `action`,

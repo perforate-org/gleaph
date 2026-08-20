@@ -2,8 +2,8 @@
 
 Date: 2026-07-23
 Status: Implemented
-Last revised: 2026-08-09
-Anchor timestamp: 2026-08-09 02:46:41 UTC +0000
+Last revised: 2026-08-20
+Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
 
 The 2026-08-02 public-surface correction replaces the specialized Router updates
 with the `atomic_insert(AtomicInsertRequest)` mutation and the
@@ -2769,6 +2769,14 @@ and split invariant ownership. Rejected.
 - Router/Graph wire, SDK, stable-memory inventory, inline-property, and
   LARA/facade documents are updated with implementation slices, not in advance
   as though the planned API were active.
+
+## Implementation-gap traceability (non-normative)
+
+The implementation-gap ledger is the status authority for this open
+observation. This link does not amend the ordered atomic-insert contract or its
+retry semantics.
+
+- [GAP-2026-08-20-003](../implementation-gaps.md#gap-2026-08-20-003--canonicalpending-retry-does-not-reconcile-a-completed-graph-receipt) — **Open**: `CanonicalPending` exact-replay reconciliation.
 
 ## Related
 
