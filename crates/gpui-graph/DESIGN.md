@@ -1288,6 +1288,14 @@ of the centerline. The rounded mask is inflated by that half-width (a rounded
 rect grown by a disk), so no edge ink paints over the label. The arrowhead's
 mask is inflated the same way.
 
+The per-edge masking work runs only when it is needed: when there are no labels
+and every control point of the curve lies inside the viewport, the whole curve
+is visible (a quadratic Bézier stays inside the convex hull of its control
+points), so `visible_edge_curves` returns the untouched single segment without
+splitting. This is the common case for a zoomed-in or overview view where edges
+fit inside the window, and it keeps the per-edge cost to a few comparisons
+instead of four `bezier_roots` solves plus interval merging.
+
 A directed edge's arrowhead is masked the same way. The arrow is drawn as a
 single fill path that also carries the part of each overlapping label (the
 label's rounded outline, clipped to the arrowhead) as an extra sub-contour; the

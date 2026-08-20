@@ -698,6 +698,20 @@ fn visible_edge_curves(
     edge_width: f32,
     viewport_rect: Option<&Bounds<gpui::Pixels>>,
 ) -> Vec<Bezier> {
+    // A quadratic Bézier lies entirely inside the convex hull of its control
+    // points. When every control point is inside the viewport and there are no
+    // label masks, the whole curve is visible and needs no splitting: this is
+    // the common zoomed-in case (and the overview, where every straight-LOD edge
+    // fits comfortably), so it avoids the per-edge viewport_intersections and
+    // label masking entirely.
+    if label_rects.is_empty()
+        && let Some(rect) = viewport_rect
+        && inside_rect(p0, rect)
+        && inside_rect(p1, rect)
+        && inside_rect(p2, rect)
+    {
+        return vec![(p0, p1, p2)];
+    }
     // The t-intervals inside the viewport (kept) and inside any label (masked).
     let keep = match viewport_rect {
         Some(rect) => viewport_intervals(p0, p1, p2, rect),
@@ -745,6 +759,13 @@ fn visible_edge_curves(
         }
     }
     visible
+}
+
+/// Whether `p` lies strictly inside the axis-aligned `rect` (inclusive).
+fn inside_rect(p: Vec2, rect: &Bounds<gpui::Pixels>) -> bool {
+    let min = Vec2::new(f32::from(rect.origin.x), f32::from(rect.origin.y));
+    let max = min + Vec2::new(f32::from(rect.size.width), f32::from(rect.size.height));
+    p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y
 }
 
 /// The t-intervals of a quadratic Bézier that lie inside the axis-aligned
@@ -2796,6 +2817,27 @@ mod tests {
             "a label 50px away must survive a 5px hide distance"
         );
         assert_eq!(frame.edge_labels[0].text, "far");
+    }
+
+    #[test]
+    fn visible_edge_curves_returns_whole_curve_when_inside_viewport() {
+        // When every control point lies inside the viewport and there are no
+        // labels, the convex-hull fast path must return the untouched curve
+        // (no splitting), so the common in-viewport case skips per-edge interval
+        // and masking work.
+        let viewport = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(200.0), px(100.0)),
+        };
+        let (p0, p1, p2) = (
+            Vec2::new(20.0, 20.0),
+            Vec2::new(100.0, 80.0),
+            Vec2::new(180.0, 20.0),
+        );
+        let curves = visible_edge_curves(p0, p1, p2, &[], 2.0, Some(&viewport));
+        assert_eq!(curves.len(), 1, "fully-inside curve is a single segment");
+        let (q0, q1, q2) = curves[0];
+        assert_eq!((q0, q1, q2), (p0, p1, p2), "curve is returned untouched");
     }
 
     #[test]
