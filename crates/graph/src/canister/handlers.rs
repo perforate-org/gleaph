@@ -641,7 +641,8 @@ async fn execute_ordered_vertex_batch_impl(
             Ok((labels, properties))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let ids = insert_vertices_with(&store, vertices).map_err(|error| error.to_string())?;
+    let ids = insert_vertices_with(&store, vertices, args.mutation_id)
+        .map_err(|error| error.to_string())?;
     let mut hot_forward_vertices: Vec<_> = ids.iter().copied().map(u32::from).collect();
     hot_forward_vertices.sort_unstable();
     let allocated_vertex_ids: Vec<_> = ids.iter().copied().map(u32::from).collect();
@@ -750,9 +751,10 @@ async fn execute_ordered_vertex_batch_resumable(
     let mut ids: Vec<u32> = Vec::with_capacity(decoded.len());
     let committed = resumable_prefix_len(request.items.len(), instruction_source, |index| {
         let allocated =
-            insert_vertices_with(&store, vec![decoded[index].clone()]).unwrap_or_else(|error| {
-                panic!("resumable ordered vertex insert failed after preflight: {error}")
-            });
+            insert_vertices_with(&store, vec![decoded[index].clone()], args.mutation_id)
+                .unwrap_or_else(|error| {
+                    panic!("resumable ordered vertex insert failed after preflight: {error}")
+                });
         ids.push(u32::from(allocated[0]));
     });
     let logical_item_count = u32::try_from(committed)
@@ -901,9 +903,10 @@ pub async fn execute_ordered_mixed_batch(
     }
 
     let _catalog = crate::index::catalog_context::enter(args.indexed_property_catalog.clone());
-    let allocated_vertex_ids = insert_vertices_with(&store, vertices).unwrap_or_else(|error| {
-        panic!("ordered mixed vertex phase failed after preflight: {error}")
-    });
+    let allocated_vertex_ids = insert_vertices_with(&store, vertices, args.mutation_id)
+        .unwrap_or_else(|error| {
+            panic!("ordered mixed vertex phase failed after preflight: {error}")
+        });
     let allocated_local_ids: Vec<u32> = allocated_vertex_ids
         .iter()
         .copied()
@@ -1955,6 +1958,40 @@ pub fn index_sync_status() -> gleaph_graph_kernel::federation::IndexSyncStatus {
 async fn e2e_router_catalog_guard(
     store: &GraphStore,
 ) -> Result<crate::index::catalog_context::CatalogGuard, String> {
+    let catalog = fetch_e2e_router_catalog(store).await?;
+    Ok(crate::index::catalog_context::enter(catalog))
+}
+
+/// Install the Router catalog for legacy direct vertex-property fixtures.
+///
+/// These helpers intentionally create an unlabeled vertex and retain their existing wire shape.
+/// Projecting only the ephemeral vertex memberships to the explicit `label_id: 0` wildcard keeps
+/// their physical namespace, epoch, and maintenance phase from being replaced locally.
+#[cfg(feature = "pocket-ic-e2e")]
+async fn e2e_legacy_unlabeled_vertex_catalog_guard(
+    store: &GraphStore,
+) -> Result<crate::index::catalog_context::CatalogGuard, String> {
+    let catalog = fetch_e2e_router_catalog(store).await?;
+    let catalog = gleaph_graph_kernel::index::IndexedPropertyCatalog {
+        vertex_indexes: catalog
+            .vertex_indexes
+            .into_iter()
+            .map(
+                |membership| gleaph_graph_kernel::index::IndexedVertexMembership {
+                    label_id: 0,
+                    ..membership
+                },
+            )
+            .collect(),
+        ..catalog
+    };
+    Ok(crate::index::catalog_context::enter(catalog))
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+async fn fetch_e2e_router_catalog(
+    store: &GraphStore,
+) -> Result<gleaph_graph_kernel::index::IndexedPropertyCatalog, String> {
     let routing = store
         .federation_routing()
         .ok_or_else(|| "federation not configured".to_string())?;
@@ -1967,7 +2004,7 @@ async fn e2e_router_catalog_guard(
     )
     .await
     .map_err(|err| err.to_string())?;
-    Ok(crate::index::catalog_context::enter(catalog))
+    Ok(catalog)
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
@@ -1996,7 +2033,7 @@ pub async fn e2e_insert_vertex_with_property(
     use gleaph_graph_kernel::entry::PropertyId;
 
     let store = GraphStore::new();
-    let _catalog = e2e_router_catalog_guard(&store).await?;
+    let _catalog = e2e_legacy_unlabeled_vertex_catalog_guard(&store).await?;
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
@@ -2030,7 +2067,7 @@ pub async fn e2e_insert_vertex_with_two_properties(
     use gleaph_graph_kernel::entry::PropertyId;
 
     let store = GraphStore::new();
-    let _catalog = e2e_router_catalog_guard(&store).await?;
+    let _catalog = e2e_legacy_unlabeled_vertex_catalog_guard(&store).await?;
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
@@ -2130,7 +2167,7 @@ pub async fn e2e_insert_vertex_with_label_and_property(
             catalog_epoch: 1,
             phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
             property_id: args.property_id,
-            label_id: 0,
+            label_id: args.label_id,
         }],
         ..Default::default()
     });
@@ -2182,7 +2219,7 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
                 catalog_epoch: 1,
                 phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
                 property_id: args.property_a,
-                label_id: 0,
+                label_id: args.label_id,
             },
             gleaph_graph_kernel::index::IndexedVertexMembership {
                 physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(102)
@@ -2190,7 +2227,7 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
                 catalog_epoch: 1,
                 phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
                 property_id: args.property_b,
-                label_id: 0,
+                label_id: args.label_id,
             },
         ],
         ..Default::default()
@@ -2237,18 +2274,27 @@ pub async fn e2e_set_vertex_property(
 
     let store = GraphStore::new();
     let vertex_id = VertexId::from(args.local_vertex_id);
-    let _ = store
+    let vertex = store
         .vertex(vertex_id)
         .ok_or_else(|| "vertex must exist".to_string())?;
+    let labels = store.vertex_labels(vertex_id, vertex);
     let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
-        vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
-            physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(101)
-                .expect("e2e physical id"),
-            catalog_epoch: 1,
-            phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-            property_id: args.property_id,
-            label_id: 0,
-        }],
+        vertex_indexes: labels
+            .into_iter()
+            .enumerate()
+            .map(
+                |(offset, label)| gleaph_graph_kernel::index::IndexedVertexMembership {
+                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(
+                        101 + offset as u64,
+                    )
+                    .expect("e2e physical id"),
+                    catalog_epoch: 1,
+                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                    property_id: args.property_id,
+                    label_id: label.raw(),
+                },
+            )
+            .collect(),
         ..Default::default()
     });
     store
@@ -2968,7 +3014,12 @@ mod tests {
     #[test]
     fn ordered_vertex_batch_queues_postings_for_cataloged_properties() {
         attach_test_federation(TEST_SHARD_ID);
+        crate::index::pending::clear_pending();
         let property_id = PropertyId::from_raw(79);
+        let target_physical_index_id =
+            gleaph_graph_kernel::index::PhysicalIndexId::new(900_079).expect("target physical id");
+        let decoy_physical_index_id =
+            gleaph_graph_kernel::index::PhysicalIndexId::new(900_078).expect("decoy physical id");
         let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(79),
             target_shard_id: TEST_SHARD_ID,
@@ -2994,29 +3045,74 @@ mod tests {
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog {
-                vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
-                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_079)
-                        .expect("test physical id"),
-                    catalog_epoch: 1,
-                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                    property_id: property_id.raw(),
-                    label_id: 79,
-                }],
+                vertex_indexes: vec![
+                    gleaph_graph_kernel::index::IndexedVertexMembership {
+                        physical_index_id: target_physical_index_id,
+                        catalog_epoch: 1,
+                        phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                        property_id: property_id.raw(),
+                        label_id: 79,
+                    },
+                    gleaph_graph_kernel::index::IndexedVertexMembership {
+                        physical_index_id: decoy_physical_index_id,
+                        catalog_epoch: 1,
+                        phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Sealing,
+                        property_id: property_id.raw(),
+                        label_id: 178,
+                    },
+                ],
                 edge_indexes: Vec::new(),
             },
             request,
         });
-        pollster::block_on(execute_ordered_vertex_batch(args.clone())).expect("vertex batch");
+        let result =
+            pollster::block_on(execute_ordered_vertex_batch(args.clone())).expect("vertex batch");
+        let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
+            &result
+        else {
+            panic!("expected completed vertex receipt");
+        };
+        assert_eq!(receipt.allocated_vertex_ids.len(), 1);
         let pending = crate::index::pending::take_pending();
-        assert!(
-            pending.iter().any(|op| matches!(
-                op,
-                crate::index::pending::PendingPostingOp::Insert {
-                    property_id: 79,
-                    ..
-                }
-            )),
-            "cataloged vertex property must queue a posting op: {pending:?}"
+        assert_eq!(
+            pending.len(),
+            1,
+            "ordered vertex batch must emit one posting total"
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|op| matches!(
+                    op,
+                    crate::index::pending::PendingPostingOp::Insert {
+                        physical_index_id,
+                        property_id: 79,
+                        vertex_id,
+                        ..
+                    } if *physical_index_id == target_physical_index_id
+                        && *vertex_id == receipt.allocated_vertex_ids[0]
+                ))
+                .count(),
+            1,
+            "the canonical label's target namespace must receive exactly one posting: {pending:?}"
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|op| matches!(
+                    op,
+                    crate::index::pending::PendingPostingOp::Insert {
+                        physical_index_id,
+                        ..
+                    }
+                    | crate::index::pending::PendingPostingOp::Remove {
+                        physical_index_id,
+                        ..
+                    } if *physical_index_id == decoy_physical_index_id
+                ))
+                .count(),
+            0,
+            "the same-property different-label Sealing decoy must receive no posting: {pending:?}"
         );
         // Replay returns the stored journal result without re-executing, so it must not re-queue.
         pollster::block_on(execute_ordered_vertex_batch(args)).expect("vertex batch replay");
@@ -3290,8 +3386,19 @@ mod tests {
     #[test]
     fn ordered_mixed_batch_queues_vertex_and_edge_postings_for_cataloged_scopes() {
         attach_test_federation(TEST_SHARD_ID);
+        crate::index::pending::clear_pending();
+        crate::index::edge_pending::clear_pending();
         let vertex_property = PropertyId::from_raw(90);
         let edge_property = PropertyId::from_raw(91);
+        let target_vertex_physical_index_id =
+            gleaph_graph_kernel::index::PhysicalIndexId::new(900_090)
+                .expect("target vertex physical id");
+        let decoy_vertex_physical_index_id =
+            gleaph_graph_kernel::index::PhysicalIndexId::new(900_089)
+                .expect("decoy vertex physical id");
+        let target_edge_physical_index_id =
+            gleaph_graph_kernel::index::PhysicalIndexId::new(900_091)
+                .expect("target edge physical id");
         let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(81),
             target_shard_id: TEST_SHARD_ID,
@@ -3336,17 +3443,24 @@ mod tests {
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog {
-                vertex_indexes: vec![gleaph_graph_kernel::index::IndexedVertexMembership {
-                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_090)
-                        .expect("test physical id"),
-                    catalog_epoch: 1,
-                    phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
-                    property_id: vertex_property.raw(),
-                    label_id: 90,
-                }],
+                vertex_indexes: vec![
+                    gleaph_graph_kernel::index::IndexedVertexMembership {
+                        physical_index_id: target_vertex_physical_index_id,
+                        catalog_epoch: 1,
+                        phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
+                        property_id: vertex_property.raw(),
+                        label_id: 90,
+                    },
+                    gleaph_graph_kernel::index::IndexedVertexMembership {
+                        physical_index_id: decoy_vertex_physical_index_id,
+                        catalog_epoch: 1,
+                        phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Sealing,
+                        property_id: vertex_property.raw(),
+                        label_id: 189,
+                    },
+                ],
                 edge_indexes: vec![gleaph_graph_kernel::index::IndexedEdgeMembership {
-                    physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId::new(900_091)
-                        .expect("test physical id"),
+                    physical_index_id: target_edge_physical_index_id,
                     catalog_epoch: 1,
                     phase: gleaph_graph_kernel::index::IndexMaintenancePhase::Active,
                     label_id: 90,
@@ -3357,30 +3471,129 @@ mod tests {
             },
             request,
         });
-        pollster::block_on(execute_ordered_mixed_batch(args.clone())).expect("mixed batch");
+        let result =
+            pollster::block_on(execute_ordered_mixed_batch(args.clone())).expect("mixed batch");
+        let GraphOrderedMixedBatchResult::V1(
+            gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(receipt),
+        ) = &result
+        else {
+            panic!("expected completed mixed receipt");
+        };
+        assert_eq!(receipt.allocated_vertex_ids.len(), 2);
         let vertex_pending = crate::index::pending::take_pending();
         let edge_pending = crate::index::edge_pending::take_pending();
-        assert!(
-            vertex_pending.iter().any(|op| matches!(
-                op,
-                crate::index::pending::PendingPostingOp::Insert {
-                    property_id: 90,
-                    ..
-                }
-            )),
-            "cataloged mixed vertex property must queue a posting op: {vertex_pending:?}"
+        assert_eq!(
+            vertex_pending.len(),
+            1,
+            "ordered mixed batch must emit one vertex posting total"
         );
-        assert!(
-            edge_pending.iter().any(|op| matches!(
-                op,
-                crate::index::edge_pending::PendingEdgePostingOp::Insert {
-                    label_id,
-                    property_id: 91,
-                    ..
-                } if *label_id & gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX == 90
-            )),
-            "cataloged mixed edge property must queue a posting op: {edge_pending:?}"
+        assert_eq!(
+            edge_pending.len(),
+            1,
+            "ordered mixed batch must emit one edge posting total"
         );
+        assert_eq!(
+            vertex_pending
+                .iter()
+                .filter(|op| matches!(
+                    op,
+                    crate::index::pending::PendingPostingOp::Insert {
+                        physical_index_id,
+                        property_id: 90,
+                        vertex_id,
+                        ..
+                    } if *physical_index_id == target_vertex_physical_index_id
+                        && *vertex_id == receipt.allocated_vertex_ids[0]
+                ))
+                .count(),
+            1,
+            "the first canonical-label vertex must receive one target posting: {vertex_pending:?}"
+        );
+        assert_eq!(
+            vertex_pending
+                .iter()
+                .filter(|op| matches!(
+                    op,
+                    crate::index::pending::PendingPostingOp::Insert {
+                        physical_index_id,
+                        ..
+                    }
+                    | crate::index::pending::PendingPostingOp::Remove {
+                        physical_index_id,
+                        ..
+                    } if *physical_index_id == target_vertex_physical_index_id
+                ))
+                .count(),
+            1,
+            "the target vertex namespace must receive exactly one posting: {vertex_pending:?}"
+        );
+        assert_eq!(
+            vertex_pending
+                .iter()
+                .filter(|op| matches!(
+                    op,
+                    crate::index::pending::PendingPostingOp::Insert {
+                        physical_index_id,
+                        ..
+                    }
+                    | crate::index::pending::PendingPostingOp::Remove {
+                        physical_index_id,
+                        ..
+                    } if *physical_index_id == decoy_vertex_physical_index_id
+                ))
+                .count(),
+            0,
+            "the same-property different-label Sealing decoy must receive no posting: {vertex_pending:?}"
+        );
+        assert_eq!(
+            edge_pending.len(),
+            1,
+            "mixed edge posting count: {edge_pending:?}"
+        );
+        let expected_edge_label_id = gleaph_graph_kernel::entry::EdgeLabelId::from_raw(90)
+            .pack(gleaph_graph_kernel::entry::EdgeDirectedness::Directed)
+            .raw();
+        let source_vertex_id = VertexId::from(receipt.allocated_vertex_ids[0]);
+        let target_vertex_id = VertexId::from(receipt.allocated_vertex_ids[1]);
+        let edge = GraphStore::new()
+            .directed_out_edges(source_vertex_id)
+            .expect("committed mixed edge")
+            .into_iter()
+            .find(|edge| {
+                edge.neighbor_vid() == target_vertex_id && edge.label_id == expected_edge_label_id
+            })
+            .expect("cataloged mixed edge");
+        let expected_owner_vertex_id = u32::try_from(u64::from(source_vertex_id))
+            .expect("source vertex id fits edge posting owner");
+        let expected_payload_bytes = gleaph_gql::value_to_index_key_bytes(&Value::Int64(5))
+            .expect("encode edge index key")
+            .expect("edge index key present");
+        let [
+            crate::index::edge_pending::PendingEdgePostingOp::Insert {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                property_id,
+                payload_bytes,
+                label_id,
+                owner_vertex_id,
+                slot_index,
+            },
+        ] = edge_pending.as_slice()
+        else {
+            panic!("expected one cataloged mixed edge insertion: {edge_pending:?}");
+        };
+        assert_eq!(*physical_index_id, target_edge_physical_index_id);
+        assert_eq!(*catalog_epoch, 1);
+        assert_eq!(
+            *phase,
+            gleaph_graph_kernel::index::IndexMaintenancePhase::Active
+        );
+        assert_eq!(*property_id, edge_property.raw());
+        assert_eq!(*payload_bytes, expected_payload_bytes);
+        assert_eq!(*label_id, expected_edge_label_id);
+        assert_eq!(*owner_vertex_id, expected_owner_vertex_id);
+        assert_eq!(*slot_index, edge.edge_slot_index.raw());
         // Replay returns the stored journal result without re-executing, so it must not re-queue.
         pollster::block_on(execute_ordered_mixed_batch(args)).expect("mixed batch replay");
         assert!(

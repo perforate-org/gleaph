@@ -63,8 +63,16 @@ pub(crate) fn dispatch_property_index_ops_for_physical(
 /// Resolves the exact Router-allocated namespaces maintained for one property transition.
 fn memberships_for_change(change: PropertyValueChange<'_>) -> Vec<IndexMembershipRef> {
     match change.entity {
-        PropertyEntity::Vertex(_) => {
-            crate::index::catalog_context::vertex_index_memberships(change.property_id)
+        PropertyEntity::Vertex(vertex_id) => {
+            let store = GraphStore::new();
+            let labels = store
+                .vertex(vertex_id)
+                .map(|vertex| store.vertex_labels(vertex_id, vertex))
+                .unwrap_or_default();
+            crate::index::catalog_context::vertex_index_memberships_for_labels(
+                &labels,
+                change.property_id,
+            )
         }
         PropertyEntity::Edge { label_id, .. } => {
             crate::index::catalog_context::edge_index_memberships(label_id, change.property_id)
@@ -143,9 +151,17 @@ pub(crate) fn index_build_subject_for_change(
 pub(crate) fn dispatch_vertex_property_index_ops_bulk<'a>(
     changes: &[(VertexId, PropertyId, Option<&'a Value>, &'a Value)],
 ) {
+    let store = GraphStore::new();
     let mut pending = Vec::new();
     for (vertex_id, property_id, previous, value) in changes {
-        for membership in crate::index::catalog_context::vertex_index_memberships(*property_id) {
+        let labels = store
+            .vertex(*vertex_id)
+            .map(|vertex| store.vertex_labels(*vertex_id, vertex))
+            .unwrap_or_default();
+        for membership in crate::index::catalog_context::vertex_index_memberships_for_labels(
+            &labels,
+            *property_id,
+        ) {
             if !membership.phase.is_active() {
                 continue;
             }

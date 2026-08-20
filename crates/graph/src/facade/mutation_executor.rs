@@ -141,8 +141,7 @@ pub async fn insert_vertex_with_async(
     let vertex = store
         .vertex(vertex_id)
         .expect("newly inserted vertex must be readable");
-    let vertex = store.set_vertex_labels(vertex_id, vertex, labels)?;
-    store.set_vertex(vertex_id, vertex)?;
+    store.set_vertex_labels_with_mutation_id(vertex_id, vertex, labels, mutation_id)?;
 
     for (property_id, value) in properties {
         store.assert_local_vertex_writable(vertex_id)?;
@@ -192,6 +191,7 @@ pub fn validate_vertex_insert_items(
 pub fn insert_vertices_with(
     store: &GraphStore,
     vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
+    mutation_id: MutationId,
 ) -> Result<Vec<VertexId>, GraphStoreError> {
     validate_vertex_insert_items(&vertices)?;
 
@@ -248,25 +248,20 @@ pub fn insert_vertices_with(
             );
         }
     });
-    let label_assignments: Vec<_> = ids
-        .iter()
-        .copied()
-        .zip(vertices.iter())
-        .map(|(vertex_id, (labels, _))| {
-            let vertex = store
-                .vertex(vertex_id)
-                .expect("newly inserted bulk vertex must be readable");
-            (vertex_id, vertex, labels.clone())
-        })
-        .collect();
-    let labeled_rows = trap_after_bulk_vertex_write_began(
-        store.commit_set_vertex_labels_bulk(&label_assignments),
-        "label assignment",
-    );
-    trap_after_bulk_vertex_write_began(
-        store.set_vertex_rows_bulk(&labeled_rows),
-        "labeled row persistence",
-    );
+    for (vertex_id, (labels, _)) in ids.iter().copied().zip(vertices.iter()) {
+        let vertex = store
+            .vertex(vertex_id)
+            .expect("newly inserted bulk vertex must be readable");
+        trap_after_bulk_vertex_write_began(
+            store.set_vertex_labels_with_mutation_id(
+                vertex_id,
+                vertex,
+                labels.iter().copied(),
+                mutation_id,
+            ),
+            "label assignment",
+        );
+    }
     let properties: Vec<_> = ids
         .iter()
         .copied()
@@ -278,7 +273,7 @@ pub fn insert_vertices_with(
         })
         .collect();
     trap_after_bulk_vertex_write_began(
-        store.commit_vertex_property_writes_bulk(&properties, 0),
+        store.commit_vertex_property_writes_bulk(&properties, mutation_id),
         "property persistence",
     );
 

@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-08-20
-Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
+Anchor timestamp: 2026-08-20 14:53:06 UTC +0000
 
 ## Status
 
@@ -56,9 +56,13 @@ call.
 **ADR 0059 — Partially implemented:** migration-driven `CREATE INDEX`
 selector/checksum, Graph export, graph-index pull, `PhysicalIndexId` namespace, touched-first
 outbox, seal, Active-only planner lifecycle, and the production Router cross-canister driver are
-implemented there. Focused PocketIC E2E and upgrade validation remain pending; ordinary catalog
-registration and operator backfill therefore remain separate. ADR 0059 is the normative source for
-that protocol.
+implemented there. Graph label gain/loss transitions now use the exact `(label_id, property_id)`
+membership supplied by the ephemeral Router catalog: the Graph coordinator admits all affected
+Building namespaces before canonical label mutation, dispatches Active namespaces through the
+ordinary posting queue, and rejects Sealing before mutation. The focused Graph regressions cover
+the gain/loss, public mutation-id-0 wrapper, and delete single-emission boundaries. Focused PocketIC E2E and upgrade validation
+remain pending; ordinary catalog registration and operator backfill therefore remain separate. ADR
+0059 is the normative source for that protocol.
 
 **ADR 0012 — Implemented:** edge `FOR` patterns carry Gleaph GQL `EdgeDirection` (bracket form only; slash rejected); graph-index edge keys use LARA `wire_label_id`; planner applies storage-class subset rule via `is_edge_property_indexed_for`. Leading `EdgeIndexScan` supports `PointingRight`, `PointingLeft`, and `Undirected`. PocketIC e2e covers `AnyDirection`, `PointingRight`, and `Undirected` indexes (including federated undirected anchor and subset negative: undirected-only index does not seed directed wire postings). See [0012-edge-index-direction-in-ddl.md](../adr/0012-edge-index-direction-in-ddl.md).
 
@@ -315,6 +319,14 @@ These existing operator-driven backfill endpoints are not an activation gate and
 single vertex/sidecar/`INLINE` export contract. The migration lifecycle, generation fence, short
 seal, and Active-only planner publication are implemented in [ADR 0059](../adr/0059-create-index-migration-backfill.md)
 for migration-driven index creation; PocketIC E2E and upgrade validation remain pending.
+
+**Label-transition admission:** A label gain or loss can change eligibility for an already-present
+vertex property. `facade/store/labels.rs` owns this transition: it reads canonical labels and
+property values once, applies one exact label-plus-property membership filter, preflights every
+affected namespace, commits Building `BuildDml` before the canonical label sidecar, and dispatches
+only Active property work. A Sealing membership rejects before canonical or derived state changes;
+the label posting itself remains on `label_pending`. This is a Graph-local admission contract, not
+a claim that the migration's cross-canister or upgrade proof has run.
 
 **Durable repair journal (ADR 0023 D5):** the happy-path flush stays volatile and persists nothing.
 When a flush fails, the batch is compensated and persisted to the stable `INDEX_REPAIR_JOURNAL`

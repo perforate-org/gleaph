@@ -112,6 +112,13 @@ concrete client supports it and retaining the per-posting fallback for native/le
 Router orchestrates per-shard cursors via
 `admin_label_backfill_step` / `admin_list_label_backfill_status` (Admin-only).
 
+For label gain/loss, Graph also evaluates exact `(label_id, property_id)` property-index
+memberships when the vertex already has an indexed property. The Graph coordinator admits all
+affected Building namespaces before changing the canonical label sidecar, emits Active property
+posting work only for the exact target namespaces, and rejects a Sealing namespace before mutation.
+The label posting remains owned by `label_pending`; the migration's PocketIC E2E and upgrade/reopen
+proof remain pending under [ADR 0059](../adr/0059-create-index-migration-backfill.md).
+
 **Label stats projection:** Graph shards persist unacked `LabelStatsDelta` events in
 `LABEL_STATS_DELTA_LOG` (seq in `LABEL_STATS_DELTA_SEQ`). Router aggregates land in
 `ROUTER_VERTEX_LABEL_STATS`, `ROUTER_EDGE_LABEL_STATS`, and per-shard live maps;

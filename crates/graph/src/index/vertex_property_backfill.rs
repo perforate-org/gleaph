@@ -34,17 +34,24 @@ pub async fn backfill_vertex_property_postings(
         if vertex.is_tombstone() {
             continue;
         }
+        let labels = store.vertex_labels(vertex_id, vertex);
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for (property_id, value) in store.vertex_properties(vertex_id) {
-            let physical_index_ids =
-                crate::index::catalog_context::active_vertex_physical_index_ids(property_id);
-            if physical_index_ids.is_empty() {
+            let memberships = crate::index::catalog_context::vertex_index_memberships_for_labels(
+                &labels,
+                property_id,
+            );
+            if memberships.is_empty() {
                 continue;
             }
             let Some(payload_bytes) = sortable_index_key(&value) else {
                 continue;
             };
-            for physical_index_id in physical_index_ids {
+            for membership in memberships {
+                if !membership.phase.is_active() {
+                    continue;
+                }
+                let physical_index_id = membership.physical_index_id;
                 if index.supports_posting_batch() {
                     batch.push(IndexPostingMutation::VertexProperty {
                         physical_index_id,
@@ -91,7 +98,7 @@ mod tests {
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_gql::Value;
-    use gleaph_graph_kernel::entry::PropertyId;
+    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{
         IndexIntersectionRequest, IndexMaintenancePhase, IndexPostingBatchProgress,
@@ -101,7 +108,7 @@ mod tests {
     use std::sync::Mutex;
 
     struct RecordingIndex {
-        inserts: Mutex<Vec<(u32, u32, Vec<u8>, u32)>>,
+        inserts: Mutex<Vec<(u32, PhysicalIndexId, u32, Vec<u8>, u32)>>,
         batches: Mutex<Vec<Vec<IndexPostingMutation>>>,
         batch_mode: bool,
         batch_limit: Option<usize>,
@@ -213,15 +220,18 @@ mod tests {
         async fn posting_insert_at(
             &self,
             shard_id: ShardId,
-            _physical_index_id: PhysicalIndexId,
+            physical_index_id: PhysicalIndexId,
             property_id: u32,
             value: Vec<u8>,
             vertex_id: u32,
         ) -> Result<(), crate::plan::PlanQueryError> {
-            self.inserts
-                .lock()
-                .unwrap()
-                .push((shard_id.raw(), property_id, value, vertex_id));
+            self.inserts.lock().unwrap().push((
+                shard_id.raw(),
+                physical_index_id,
+                property_id,
+                value,
+                vertex_id,
+            ));
             Ok(())
         }
 
@@ -273,15 +283,42 @@ mod tests {
         let store = federated_store();
         let index = RecordingIndex::new();
         let vid = store.insert_vertex().expect("vertex");
+        let label = VertexLabelId::from_raw(1);
+        let vertex = store.vertex(vid).expect("vertex row");
+        store
+            .set_vertex_labels(vid, vertex, [label])
+            .expect("label");
+        crate::index::label_pending::clear_pending();
         let name = crate::test_labels::property_id_for_name("backfill_name");
         let score = crate::test_labels::property_id_for_name("backfill_score");
-        let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[name]);
+        let target_physical = PhysicalIndexId::new(1_001).expect("target physical id");
+        let decoy_physical = PhysicalIndexId::new(1_002).expect("decoy physical id");
         store
             .set_vertex_property(vid, name, Value::Int64(42))
             .expect("name");
         store
             .set_vertex_property(vid, score, Value::Int64(99))
             .expect("score");
+        crate::index::pending::clear_pending();
+        let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                IndexedVertexMembership {
+                    physical_index_id: target_physical,
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: name.raw(),
+                    label_id: 1,
+                },
+                IndexedVertexMembership {
+                    physical_index_id: decoy_physical,
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: name.raw(),
+                    label_id: 2,
+                },
+            ],
+            ..Default::default()
+        });
 
         let result = pollster::block_on(backfill_vertex_property_postings(
             &store,
@@ -300,10 +337,15 @@ mod tests {
             1,
             "only registered properties are backfilled"
         );
-        assert!(inserts.iter().all(|(shard, _, _, _)| *shard == 0));
-        assert!(inserts.iter().any(|(_, property_id, _, vertex_id)| {
-            *property_id == name.raw() && *vertex_id == u32::from(vid)
-        }));
+        assert_eq!(inserts[0].0, 0);
+        assert_eq!(inserts[0].1, target_physical);
+        assert_eq!(inserts[0].2, name.raw());
+        assert_eq!(inserts[0].4, u32::from(vid));
+        assert!(
+            inserts
+                .iter()
+                .all(|(_, physical_index_id, _, _, _)| *physical_index_id != decoy_physical)
+        );
     }
 
     #[test]
@@ -335,8 +377,15 @@ mod tests {
         let store = federated_store();
         let index = RecordingIndex::new();
         let vid = store.insert_vertex().expect("vertex");
+        let label = VertexLabelId::from_raw(1);
+        let vertex = store.vertex(vid).expect("vertex row");
+        store
+            .set_vertex_labels(vid, vertex, [label])
+            .expect("label");
+        crate::index::label_pending::clear_pending();
         let property = PropertyId::from_raw(6);
         let physical = PhysicalIndexId::new(903).expect("test physical id");
+        let decoy_physical = PhysicalIndexId::new(904).expect("decoy physical id");
         // The index-build fence admits Building memberships into the Memory46 outbox, so the
         // namespace must carry a registered Building scope (exact catalog epoch) for the write.
         crate::index::canonical_export::register_scope(
@@ -354,13 +403,22 @@ mod tests {
         )
         .expect("register building scope");
         let _catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
-            vertex_indexes: vec![IndexedVertexMembership {
-                physical_index_id: physical,
-                catalog_epoch: 22,
-                phase: IndexMaintenancePhase::Building,
-                property_id: property.raw(),
-                label_id: 0,
-            }],
+            vertex_indexes: vec![
+                IndexedVertexMembership {
+                    physical_index_id: physical,
+                    catalog_epoch: 22,
+                    phase: IndexMaintenancePhase::Building,
+                    property_id: property.raw(),
+                    label_id: 1,
+                },
+                IndexedVertexMembership {
+                    physical_index_id: decoy_physical,
+                    catalog_epoch: 22,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property.raw(),
+                    label_id: 2,
+                },
+            ],
             ..Default::default()
         });
         store

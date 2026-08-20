@@ -4151,7 +4151,9 @@ mod wave_4_regression_tests {
             .into_iter()
             .find(|label| *label == crate::test_labels::vertex_label_id_for_name("Post"))
             .expect("Post label");
-        store.remove_vertex_label(a_id, a_vertex, post_label_id);
+        store
+            .remove_vertex_label(a_id, a_vertex, post_label_id)
+            .expect("fixture label removal");
 
         let mut p = BTreeMap::new();
         p.insert("a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));

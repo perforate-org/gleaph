@@ -902,11 +902,18 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
   rows and derives planner membership only from Active rows. Graph owns exact canonical export
   scopes, graph-index owns resumable build state, the production Router cross-canister driver
   composes register/advance/seal/cleanup with unit coverage, and the CLI exact-replays one immutable
-  artifact. However, Building/Sealing admission covers property transitions but not label
-  gain/loss for a vertex that already carries an indexed property: the mutation neither emits the
-  exact build envelope during Building nor rejects before the canonical label change during
-  Sealing. Focused PocketIC E2E and upgrade validation are not yet complete, so the public
-  migration path remains retryably fail-closed until both this omission and that proof pass.
+  artifact. Graph label gain/loss admission is now implemented in the Graph coordinator: exact
+  `(label_id, property_id)` memberships are selected from the canonical label set, all affected
+  namespaces are preflighted before mutation, Building emits the exact build envelope, and Sealing
+  rejects before the canonical label change. The boundary is covered by
+  `building_label_gain_emits_exact_property_insert`,
+  `building_label_loss_emits_exact_property_remove_once`,
+  `sealing_label_gain_rejects_before_any_mutation`,
+  `sealing_label_loss_rejects_before_any_mutation`,
+  `public_mutation_id_zero_label_wrappers_preserve_index_build_admission`, and
+  `delete_internal_label_clear_does_not_emit_second_property_removal`. Focused PocketIC E2E and
+  upgrade validation are not yet complete, so the public migration path remains retryably
+  fail-closed until that cross-canister proof passes.
 - **Expected or needed behavior:** A newly declared index must remain pending until sidecar and
   INLINE backfill has completed for every attached shard, or the query planner must explicitly treat
   it as incomplete and fail closed. During Building, every label membership transition that changes
@@ -914,17 +921,19 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
   operation. During Sealing, that transition must reject before canonical state changes.
   Rebuild/drop must use the same lifecycle rule.
 - **Evidence:** `crates/router/src/facade/store/backfill.rs`, `crates/router/src/planner_stats.rs`,
-  and `design/index/property-index.md`'s router-owned active catalog description.
+  `crates/graph/src/facade/store/labels.rs`, `crates/graph/src/index/catalog_context.rs`, and
+  `design/index/property-index.md`'s router-owned active catalog description.
 - **Impact:** A query can observe an index that is structurally present but incomplete, producing
   false negatives rather than merely falling back to a slower plan.
-- **Confirmed omission evidence:** Graph label mutation uses ordinary label-pending maintenance,
-  while the index-build admission/fence path is property-transition-specific. ADR 0059 requires
-  touched-first exact BuildDml admission and pre-mutation Sealing rejection.
-- **Next decision:** Add deterministic Graph-owner label-gain/loss and Sealing-pre-reject
-  regressions, then validate the catalog-epoch seal and per-shard watermark convergence in PocketIC
-  (including upgrade reopen). Keep the migration endpoint fail-closed until that proof passes. The
-  real Router driver over the landed Graph and graph-index controls is implemented. [ADR 0059](adr/0059-create-index-migration-backfill.md)
-  remains the source of truth.
+- **Confirmed implementation boundary:** Graph label mutation uses the ordinary label-pending path
+  for label postings and the same index-build admission/fence owner as property transitions for
+  exact label-scoped property eligibility. ADR 0059's touched-first BuildDml admission and
+  pre-mutation Sealing rejection are covered by the six Graph regressions named above.
+- **Next decision:** Validate the catalog-epoch seal and per-shard watermark convergence in
+  PocketIC (including upgrade reopen). Keep the migration endpoint fail-closed until that
+  cross-canister proof passes. The real Router driver over the landed Graph and graph-index controls
+  is implemented. [ADR 0059](adr/0059-create-index-migration-backfill.md) remains the source of
+  truth.
 
 ### GAP-2026-07-29-007 — Edge uniqueness and index-canister sharding remain design work
 

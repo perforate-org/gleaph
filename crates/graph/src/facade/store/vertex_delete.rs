@@ -216,6 +216,13 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<Vec<(IndexBuildSubject, Vec<PlannedBuildEnvelope>)>, GraphStoreError> {
+        let vertex = self.vertex(vertex_id).ok_or_else(|| {
+            GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
+                vid: vertex_id,
+                len: self.vertex_count(),
+            })
+        })?;
+        let labels = self.vertex_labels(vertex_id, vertex);
         let props: Vec<PropertyId> = super::super::stable::VERTEX_PROPERTIES.with_borrow(|store| {
             store
                 .properties_for(vertex_id)
@@ -230,7 +237,10 @@ impl GraphStore {
             let Some(value) = value else {
                 continue;
             };
-            let memberships = crate::index::catalog_context::vertex_index_memberships(property_id);
+            let memberships = crate::index::catalog_context::vertex_index_memberships_for_labels(
+                &labels,
+                property_id,
+            );
             let transitions = memberships
                 .into_iter()
                 .map(|membership| FencedTransition {
@@ -957,5 +967,251 @@ mod tests {
             remaining.is_none(),
             "self-loop sidecar must be cleared once"
         );
+    }
+
+    #[test]
+    fn delete_internal_label_clear_does_not_emit_second_property_removal() {
+        use crate::index::{catalog_context, label_pending, pending};
+        use gleaph_graph_kernel::canonical_export::{CanonicalExportScope, CanonicalExportTarget};
+        use gleaph_graph_kernel::entry::{GraphId, IndexNameId, VertexLabelId};
+        use gleaph_graph_kernel::index::{
+            IndexBuildSubject, IndexMaintenancePhase, IndexedPropertyCatalog,
+            IndexedVertexMembership, PhysicalIndexId,
+        };
+
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+            }))
+            .expect("routing");
+        pending::clear_pending();
+        label_pending::clear_pending();
+        store.derived_index_outbox_clear();
+
+        let target_label = VertexLabelId::from_raw(11);
+        let decoy_label = VertexLabelId::from_raw(12);
+        let property = PropertyId::from_raw(9_100_001);
+        let target_physical = PhysicalIndexId::new(9_100_011).unwrap();
+        let active_physical = PhysicalIndexId::new(9_100_013).unwrap();
+        let decoy_physical = PhysicalIndexId::new(9_100_012).unwrap();
+        let target_scope = CanonicalExportScope {
+            graph_id: GraphId::from_raw(991),
+            index_name_id: IndexNameId::from_raw(991),
+            catalog_epoch: 1,
+            target: CanonicalExportTarget::Vertex {
+                label_id: target_label.raw(),
+                property_id: property,
+            },
+            inline: None,
+        };
+        let decoy_scope = CanonicalExportScope {
+            graph_id: GraphId::from_raw(991),
+            index_name_id: IndexNameId::from_raw(992),
+            catalog_epoch: 1,
+            target: CanonicalExportTarget::Vertex {
+                label_id: decoy_label.raw(),
+                property_id: property,
+            },
+            inline: None,
+        };
+        crate::index::canonical_export::register_scope(target_physical, target_scope.clone())
+            .expect("target scope");
+        crate::index::canonical_export::register_scope(decoy_physical, decoy_scope.clone())
+            .expect("decoy scope");
+        crate::index::canonical_export::seal_scope(decoy_physical, decoy_scope.clone(), 2)
+            .expect("decoy seal");
+
+        let fixture = |label: VertexLabelId| {
+            let vertex_id = store.insert_vertex().expect("vertex");
+            let vertex = store.vertex(vertex_id).expect("vertex row");
+            store
+                .set_vertex_labels(vertex_id, vertex, [label])
+                .expect("label");
+            store
+                .set_vertex_property(vertex_id, property, Value::Int64(42))
+                .expect("property");
+            vertex_id
+        };
+        let loss_vertex = fixture(target_label);
+        let clear_probe = fixture(target_label);
+        let delete_vertex = fixture(target_label);
+        pending::clear_pending();
+        label_pending::clear_pending();
+        store.derived_index_outbox_clear();
+
+        let _catalog = catalog_context::enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![
+                IndexedVertexMembership {
+                    physical_index_id: target_physical,
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Building,
+                    property_id: property.raw(),
+                    label_id: target_label.raw(),
+                },
+                IndexedVertexMembership {
+                    physical_index_id: active_physical,
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Active,
+                    property_id: property.raw(),
+                    label_id: target_label.raw(),
+                },
+                IndexedVertexMembership {
+                    physical_index_id: decoy_physical,
+                    catalog_epoch: 1,
+                    phase: IndexMaintenancePhase::Sealing,
+                    property_id: property.raw(),
+                    label_id: decoy_label.raw(),
+                },
+            ],
+            ..Default::default()
+        });
+
+        store
+            .remove_vertex_label_with_mutation_id(
+                loss_vertex,
+                store.vertex(loss_vertex).expect("loss row"),
+                target_label,
+                91_101,
+            )
+            .expect("label loss");
+        let loss_entries = store.derived_index_outbox_peek(usize::MAX);
+        assert_eq!(loss_entries.len(), 1);
+        let (loss_sequence, loss_entry) = &loss_entries[0];
+        assert_eq!(*loss_sequence, 0);
+        assert_eq!(loss_entry.mutation_id, 91_101);
+        let crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp::IndexBuildDml {
+            request: loss_request,
+        } = &loss_entry.op
+        else {
+            panic!("label loss must emit a build DML envelope");
+        };
+        assert_eq!(loss_request.physical_index_id, target_physical);
+        assert_eq!(loss_request.catalog_epoch, 1);
+        assert_eq!(loss_request.shard_sequence, 1);
+        assert_eq!(
+            loss_request.subject,
+            IndexBuildSubject::Vertex {
+                shard_id: 0,
+                vertex_id: u32::from(loss_vertex),
+            }
+        );
+        let expected_payload = gleaph_gql::value_to_index_key_bytes(&Value::Int64(42))
+            .expect("sortable value")
+            .expect("encoded value");
+        assert_eq!(loss_request.removals, vec![expected_payload.clone()]);
+        assert!(loss_request.insertions.is_empty());
+        let loss_pending = pending::take_pending();
+        assert_eq!(loss_pending.len(), 1);
+        assert!(matches!(
+            loss_pending.as_slice(),
+            [pending::PendingPostingOp::Remove {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                property_id,
+                payload_bytes,
+                vertex_id,
+            }] if *physical_index_id == active_physical
+                && *catalog_epoch == 1
+                && phase.is_active()
+                && *property_id == property.raw()
+                && *payload_bytes == expected_payload
+                && *vertex_id == u32::from(loss_vertex)
+        ));
+        let loss_labels = label_pending::take_pending();
+        assert!(matches!(
+            loss_labels.as_slice(),
+            [label_pending::PendingLabelOp::Remove { label_id, vertex_id }]
+                if *label_id == u32::from(target_label.raw())
+                    && *vertex_id == u32::from(loss_vertex)
+        ));
+        crate::index::canonical_export::ack_build_dml(target_physical, 1, 1)
+            .expect("ack label loss");
+        store.derived_index_outbox_clear();
+
+        let before_clear = store.derived_index_outbox_peek(usize::MAX);
+        assert!(before_clear.is_empty());
+        store
+            .commit_clear_vertex_labels(clear_probe, store.vertex(clear_probe).expect("clear row"))
+            .expect("delete-only label clear");
+        assert!(
+            store.derived_index_outbox_peek(usize::MAX).is_empty(),
+            "internal clear must not emit a property removal"
+        );
+        assert!(pending::take_pending().is_empty());
+        let clear_labels = label_pending::take_pending();
+        assert!(matches!(
+            clear_labels.as_slice(),
+            [label_pending::PendingLabelOp::Remove { label_id, vertex_id }]
+                if *label_id == u32::from(target_label.raw())
+                    && *vertex_id == u32::from(clear_probe)
+        ));
+
+        store
+            .delete_vertex_with_mutation_id(delete_vertex, 91_102)
+            .expect("delete vertex");
+        let delete_entries = store.derived_index_outbox_peek(usize::MAX);
+        assert_eq!(delete_entries.len(), 1);
+        let (delete_sequence, delete_entry) = &delete_entries[0];
+        assert_eq!(*delete_sequence, 0);
+        assert_eq!(delete_entry.mutation_id, 91_102);
+        let crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp::IndexBuildDml {
+            request: delete_request,
+        } = &delete_entry.op
+        else {
+            panic!("delete must emit a build DML envelope");
+        };
+        assert_eq!(delete_request.physical_index_id, target_physical);
+        assert_eq!(delete_request.catalog_epoch, 1);
+        assert_eq!(delete_request.shard_sequence, 2);
+        assert_eq!(
+            delete_request.subject,
+            IndexBuildSubject::Vertex {
+                shard_id: 0,
+                vertex_id: u32::from(delete_vertex),
+            }
+        );
+        assert_eq!(delete_request.removals, vec![expected_payload.clone()]);
+        assert!(delete_request.insertions.is_empty());
+        let delete_pending = pending::take_pending();
+        assert_eq!(delete_pending.len(), 1);
+        assert!(matches!(
+            delete_pending.as_slice(),
+            [pending::PendingPostingOp::Remove {
+                physical_index_id,
+                catalog_epoch,
+                phase,
+                property_id,
+                payload_bytes,
+                vertex_id,
+            }] if *physical_index_id == active_physical
+                && *catalog_epoch == 1
+                && phase.is_active()
+                && *property_id == property.raw()
+                && *payload_bytes == expected_payload
+                && *vertex_id == u32::from(delete_vertex)
+        ));
+        let delete_labels = label_pending::take_pending();
+        assert!(matches!(
+            delete_labels.as_slice(),
+            [label_pending::PendingLabelOp::Remove { label_id, vertex_id }]
+                if *label_id == u32::from(target_label.raw())
+                    && *vertex_id == u32::from(delete_vertex)
+        ));
+        crate::index::canonical_export::ack_build_dml(target_physical, 1, 2).expect("ack delete");
+        crate::index::canonical_export::abort_scope(target_physical, target_scope.clone())
+            .expect("abort target");
+        crate::index::canonical_export::remove_scope(target_physical, &target_scope)
+            .expect("remove target");
+        crate::index::canonical_export::abort_scope(decoy_physical, decoy_scope.clone())
+            .expect("abort decoy");
+        crate::index::canonical_export::remove_scope(decoy_physical, &decoy_scope)
+            .expect("remove decoy");
+        store.derived_index_outbox_clear();
+        store.set_federation_routing(None).expect("clear routing");
     }
 }

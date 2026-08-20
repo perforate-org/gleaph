@@ -1255,7 +1255,9 @@ mod tests {
     use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::canonical_export::CanonicalExportScope;
-    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+    use gleaph_graph_kernel::entry::{
+        EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, VertexLabelId,
+    };
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::EdgeIndexDirection;
     use gleaph_graph_kernel::index::{
@@ -1806,13 +1808,14 @@ mod tests {
         catalog_epoch: u64,
         phase: IndexMaintenancePhase,
         property: PropertyId,
+        label: VertexLabelId,
     ) -> IndexedVertexMembership {
         IndexedVertexMembership {
             physical_index_id: physical,
             catalog_epoch,
             phase,
             property_id: property.raw(),
-            label_id: 0,
+            label_id: label.raw(),
         }
     }
 
@@ -1889,6 +1892,13 @@ mod tests {
     fn sealing_rejects_affected_vertex_property_write_before_any_canonical_mutation() {
         let store = GraphStore::new();
         let vertex = store.insert_vertex().expect("vertex");
+        store
+            .add_vertex_label(
+                vertex,
+                store.vertex(vertex).expect("vertex row"),
+                VertexLabelId::from_raw(1),
+            )
+            .expect("target label");
         let property = PropertyId::from_raw(9_000_010);
         let physical = PhysicalIndexId::new(900_021).unwrap();
         let target = CanonicalExportTarget::Vertex {
@@ -1904,6 +1914,7 @@ mod tests {
                 1,
                 IndexMaintenancePhase::Sealing,
                 property,
+                VertexLabelId::from_raw(1),
             )],
             ..Default::default()
         });
@@ -1938,6 +1949,13 @@ mod tests {
     fn sealing_accepts_unrelated_vertex_property_write() {
         let store = GraphStore::new();
         let vertex = store.insert_vertex().expect("vertex");
+        store
+            .add_vertex_label(
+                vertex,
+                store.vertex(vertex).expect("vertex row"),
+                VertexLabelId::from_raw(1),
+            )
+            .expect("target label");
         let indexed = PropertyId::from_raw(9_000_011);
         let unrelated = PropertyId::from_raw(9_000_012);
         let physical = PhysicalIndexId::new(900_022).unwrap();
@@ -1954,6 +1972,7 @@ mod tests {
                 1,
                 IndexMaintenancePhase::Sealing,
                 indexed,
+                VertexLabelId::from_raw(1),
             )],
             ..Default::default()
         });
@@ -2043,6 +2062,13 @@ mod tests {
         let store = GraphStore::new();
         configure_test_routing(&store);
         let vertex = store.insert_vertex().expect("vertex");
+        store
+            .add_vertex_label(
+                vertex,
+                store.vertex(vertex).expect("vertex row"),
+                VertexLabelId::from_raw(1),
+            )
+            .expect("target label");
         let property = PropertyId::from_raw(9_000_013);
         let physical = PhysicalIndexId::new(900_023).unwrap();
         let target = CanonicalExportTarget::Vertex {
@@ -2057,6 +2083,7 @@ mod tests {
                 1,
                 IndexMaintenancePhase::Building,
                 property,
+                VertexLabelId::from_raw(1),
             )],
             ..Default::default()
         });
@@ -2193,6 +2220,13 @@ mod tests {
         physical: PhysicalIndexId,
     ) -> CanonicalExportScope {
         let vertex = store.insert_vertex().expect("vertex");
+        store
+            .add_vertex_label(
+                vertex,
+                store.vertex(vertex).expect("vertex row"),
+                VertexLabelId::from_raw(1),
+            )
+            .expect("target label");
         let property = PropertyId::from_raw(9_000_014);
         let target = CanonicalExportTarget::Vertex {
             label_id: 1,
@@ -2206,6 +2240,7 @@ mod tests {
                 1,
                 IndexMaintenancePhase::Building,
                 property,
+                VertexLabelId::from_raw(1),
             )],
             ..Default::default()
         });

@@ -2,8 +2,10 @@ use super::error::PlanMutationError;
 use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
 use super::gleaph_finalize;
 use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
+#[cfg(test)]
+use crate::facade::GraphStoreError;
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::facade::{EdgeHandle, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::validate_and_decode_inline_struct;
 use crate::property::{ensure_persistable, ensure_property_id};
@@ -684,12 +686,12 @@ fn execute_set_item(
                     }
                 })?;
                 let had_label = store.vertex_has_label(*vertex_id, vertex, label_id);
-                let vertex = store
-                    .add_vertex_label(*vertex_id, vertex, label_id)
-                    .map_err(GraphStoreError::from)?;
-                store
-                    .set_vertex(*vertex_id, vertex)
-                    .map_err(GraphStoreError::from)?;
+                store.add_vertex_label_with_mutation_id(
+                    *vertex_id,
+                    vertex,
+                    label_id,
+                    mutation_id,
+                )?;
                 if !had_label {
                     bindings.add_vertex_label_delta(label_id, 1);
                 }
@@ -896,10 +898,12 @@ fn execute_remove_item(
                         &mut bindings.released_local_unique_values,
                     );
                 }
-                let vertex = store.remove_vertex_label(vertex_id, vertex, label_id);
-                store
-                    .set_vertex(vertex_id, vertex)
-                    .map_err(GraphStoreError::from)?;
+                store.remove_vertex_label_with_mutation_id(
+                    vertex_id,
+                    vertex,
+                    label_id,
+                    mutation_id,
+                )?;
                 if had_label {
                     bindings.add_vertex_label_delta(label_id, -1);
                     // ADR 0064 §DML-driven removes: dispatch a vector remove for each index the vertex

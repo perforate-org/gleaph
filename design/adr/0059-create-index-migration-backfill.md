@@ -2,13 +2,16 @@
 
 Date: 2026-08-03
 Status: accepted
-Last revised: 2026-08-06
-Anchor timestamp: 2026-08-06 11:37:25 UTC +0000
+Last revised: 2026-08-20
+Anchor timestamp: 2026-08-20 14:53:06 UTC +0000
 Implementation status: Partially implemented. The versioned artifact/wire, Router durable
 lifecycle and migration ledger, Active-only planner gate, Graph canonical export scope,
 graph-index build worker/state, and the production Router cross-canister driver with seal/drain
-composition are implemented. PocketIC E2E validation is not yet run and pre-release
-artifacts/ledgers are not yet regenerated.
+composition are implemented. Graph label gain/loss admission now uses the same exact
+label-scoped Building/Sealing fence as property DML, with six focused Graph regressions (including
+the public mutation-id-0 wrapper boundary). Focused
+PocketIC E2E and upgrade validation are not yet run and pre-release artifacts/ledgers are not yet
+regenerated.
 
 ## Context
 
@@ -158,6 +161,19 @@ The durable lifecycle is:
    re-driving the same exact seal envelope treats an already-`Active` scope under the same frozen
    identity and lifecycle epoch as an exact replay, so the drive converges without re-scanning and
    `Active` remains deliberately non-abortable and non-removable.
+
+### Graph label-transition admission
+
+Graph remains the canonical owner of vertex labels and properties. For a label gain or loss, the
+Graph label coordinator resolves every affected property from the vertex's canonical label set and
+selects only the exact `(label_id, property_id)` namespaces supplied by the Router catalog. It
+preflights the complete transition before any label, row, pending-queue, or outbox write. A
+`Building` namespace receives one exact touched-first `BuildDml` envelope under the caller's
+mutation identity; an `Active` namespace receives the ordinary property posting; a `Sealing`
+namespace rejects the label mutation before canonical state changes. Label postings remain owned by
+the ordinary label-pending path. This boundary is covered by the Graph gain/loss and delete
+single-emission regressions; cross-canister lifecycle and upgrade/reopen proof remain the pending
+pre-release gate.
 
 ### Catalog epoch and stale-request fence
 

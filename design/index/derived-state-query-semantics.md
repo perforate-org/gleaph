@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
 Last updated: 2026-08-20
-Anchor timestamp: 2026-08-20 12:07:15 UTC +0000
+Anchor timestamp: 2026-08-20 14:53:06 UTC +0000
 
 ## Status
 
@@ -17,13 +17,17 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 ## Migration-driven index activation
 
 [ADR 0059](../adr/0059-create-index-migration-backfill.md) is the normative source for
-migration-driven `CREATE INDEX` backfill and is **implemented** (durable Router lifecycle, Graph
-canonical export scopes, graph-index build worker/state, pre-canonical seal fence, and the
-production Router cross-canister driver with seal/drain composition). Focused PocketIC E2E and
-upgrade validation remain pending. Its online pull, `PhysicalIndexId`, touched-first outbox, seal,
-and Active-only planner rules therefore do change this document's activation semantics for
-migration-created indexes: only an `Active` generation is planner-visible, while operator-driven
-backfill still does not prove activation or historical completeness.
+migration-driven `CREATE INDEX` backfill and is **partially implemented** (durable Router lifecycle,
+Graph canonical export scopes, graph-index build worker/state, pre-canonical seal fence, Graph
+label-transition admission, and the production Router cross-canister driver with seal/drain
+composition). Focused PocketIC E2E and upgrade validation remain pending. Its online pull,
+`PhysicalIndexId`, touched-first outbox, seal, and Active-only planner rules therefore change this
+document's activation semantics for migration-created indexes: only an `Active` generation is
+planner-visible, while operator-driven backfill still does not prove activation or historical
+completeness. A Graph label gain/loss selects exact `(label_id, property_id)` namespaces, emits
+Building work before the canonical label change, dispatches Active work through the ordinary queue,
+and rejects Sealing before mutation; the cross-canister convergence and upgrade/reopen proof is
+still the release gate.
 
 ## Principles
 

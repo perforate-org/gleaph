@@ -11,7 +11,7 @@
 use crate::facade::catalog_edge_label_from_wire;
 #[cfg(test)]
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::index::{
     EdgeIndexDirection, IndexMaintenancePhase, IndexedPropertyCatalog, PhysicalIndexId,
 };
@@ -91,24 +91,103 @@ pub(crate) fn has_non_active_membership() -> bool {
 /// label-scoped definitions). Graph emits one namespace-scoped operation per catalog membership;
 /// it never selects or invents a local replacement namespace.
 pub(crate) fn vertex_physical_index_ids(property_id: PropertyId) -> Vec<PhysicalIndexId> {
-    vertex_index_memberships(property_id)
+    vertex_index_memberships_for_property(property_id)
         .into_iter()
         .map(|membership| membership.physical_index_id)
         .collect()
 }
 
-pub(crate) fn vertex_index_memberships(property_id: PropertyId) -> Vec<IndexMembershipRef> {
+fn project_vertex_membership(
+    membership: &gleaph_graph_kernel::index::IndexedVertexMembership,
+) -> IndexMembershipRef {
+    IndexMembershipRef {
+        physical_index_id: membership.physical_index_id,
+        catalog_epoch: membership.catalog_epoch,
+        phase: membership.phase,
+    }
+}
+
+/// Return the exact Router namespace for one `(label, property)` pair.
+pub(crate) fn vertex_index_memberships(
+    label_id: VertexLabelId,
+    property_id: PropertyId,
+) -> Vec<IndexMembershipRef> {
+    with_catalog(
+        |catalog| {
+            catalog
+                .vertex_indexes
+                .iter()
+                .filter(|membership| {
+                    membership.label_id == label_id.raw()
+                        && membership.property_id == property_id.raw()
+                })
+                .map(project_vertex_membership)
+                .collect()
+        },
+        Vec::new(),
+    )
+}
+
+/// Return the union of exact namespaces applicable to a canonical vertex label set.
+pub(crate) fn vertex_index_memberships_for_labels(
+    labels: &[VertexLabelId],
+    property_id: PropertyId,
+) -> Vec<IndexMembershipRef> {
+    with_catalog(
+        |catalog| {
+            let mut memberships = Vec::new();
+            for membership in catalog.vertex_indexes.iter().filter(|membership| {
+                membership.property_id == property_id.raw()
+                    && (membership.label_id == 0
+                        || labels
+                            .iter()
+                            .any(|label| label.raw() == membership.label_id))
+            }) {
+                let projected = project_vertex_membership(membership);
+                if !memberships.contains(&projected) {
+                    memberships.push(projected);
+                }
+            }
+            memberships
+        },
+        Vec::new(),
+    )
+}
+
+/// Return every `(property, namespace)` pair scoped to one vertex label.
+pub(crate) fn vertex_index_memberships_for_label(
+    label_id: VertexLabelId,
+) -> Vec<(PropertyId, IndexMembershipRef)> {
+    with_catalog(
+        |catalog| {
+            catalog
+                .vertex_indexes
+                .iter()
+                .filter(|membership| membership.label_id == label_id.raw())
+                .map(|membership| {
+                    (
+                        PropertyId::from_raw(membership.property_id),
+                        project_vertex_membership(membership),
+                    )
+                })
+                .collect()
+        },
+        Vec::new(),
+    )
+}
+
+/// Return all namespaces for a property when no vertex-label discriminator is available.
+/// Mutation and delete paths must use one of the exact label-aware selectors instead.
+pub(crate) fn vertex_index_memberships_for_property(
+    property_id: PropertyId,
+) -> Vec<IndexMembershipRef> {
     with_catalog(
         |catalog| {
             catalog
                 .vertex_indexes
                 .iter()
                 .filter(|membership| membership.property_id == property_id.raw())
-                .map(|membership| IndexMembershipRef {
-                    physical_index_id: membership.physical_index_id,
-                    catalog_epoch: membership.catalog_epoch,
-                    phase: membership.phase,
-                })
+                .map(project_vertex_membership)
                 .collect()
         },
         Vec::new(),
@@ -122,7 +201,7 @@ pub(crate) fn vertex_index_memberships(property_id: PropertyId) -> Vec<IndexMemb
 /// explicit and fail closed when the router catalog does not identify exactly one
 /// namespace.
 pub(crate) fn active_vertex_physical_index_ids(property_id: PropertyId) -> Vec<PhysicalIndexId> {
-    vertex_index_memberships(property_id)
+    vertex_index_memberships_for_property(property_id)
         .into_iter()
         .filter(|membership| membership.phase.is_active())
         .map(|membership| membership.physical_index_id)
@@ -381,7 +460,7 @@ mod tests {
     use crate::property::{PropertyValueChange, dispatch_property_index_ops};
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::{
-        EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
+        EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, VertexLabelId,
     };
     use gleaph_graph_kernel::index::IndexedEdgeMembership;
 
@@ -680,6 +759,12 @@ mod tests {
             .expect("configure index routing");
         crate::index::pending::clear_pending();
         let property_id = PropertyId::from_raw(78);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let vertex = store.vertex(vertex_id).expect("vertex row");
+        store
+            .set_vertex_labels(vertex_id, vertex, [VertexLabelId::from_raw(1)])
+            .expect("target label");
+        crate::index::pending::clear_pending();
         let _guard = enter(IndexedPropertyCatalog {
             vertex_indexes: vec![
                 gleaph_graph_kernel::index::IndexedVertexMembership {
@@ -687,27 +772,27 @@ mod tests {
                     catalog_epoch: 10,
                     phase: IndexMaintenancePhase::Active,
                     property_id: property_id.raw(),
-                    label_id: 0,
+                    label_id: 1,
                 },
                 gleaph_graph_kernel::index::IndexedVertexMembership {
                     physical_index_id: PhysicalIndexId::new(712).expect("test physical id"),
                     catalog_epoch: 11,
-                    phase: IndexMaintenancePhase::Active,
+                    phase: IndexMaintenancePhase::Sealing,
                     property_id: property_id.raw(),
-                    label_id: 0,
+                    label_id: 2,
                 },
             ],
             ..Default::default()
         });
         let value = Value::Int64(42);
         dispatch_property_index_ops(PropertyValueChange::vertex(
-            ic_stable_lara::VertexId::from(3u32),
+            vertex_id,
             property_id,
             None,
             Some(&value),
         ));
         let pending = crate::index::pending::take_pending();
-        assert_eq!(pending.len(), 2);
+        assert_eq!(pending.len(), 1);
         assert!(pending.iter().any(|op| matches!(
             op,
             crate::index::pending::PendingPostingOp::Insert {
@@ -719,17 +804,19 @@ mod tests {
                 && *catalog_epoch == 10
                 && *phase == IndexMaintenancePhase::Active
         )));
-        assert!(pending.iter().any(|op| matches!(
-            op,
-            crate::index::pending::PendingPostingOp::Insert {
-                physical_index_id,
-                catalog_epoch,
-                phase,
-                ..
-            } if *physical_index_id == PhysicalIndexId::new(712).unwrap()
-                && *catalog_epoch == 11
-                && *phase == IndexMaintenancePhase::Active
-        )));
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|op| matches!(
+                    op,
+                    crate::index::pending::PendingPostingOp::Insert {
+                        physical_index_id,
+                        ..
+                    } if *physical_index_id == PhysicalIndexId::new(712).unwrap()
+                ))
+                .count(),
+            0
+        );
         store.set_federation_routing(None).expect("clear routing");
     }
 }

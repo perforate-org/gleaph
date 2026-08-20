@@ -87,10 +87,9 @@ fn insert_bench_vertex_named(store: &GraphStore, labels: &[&str]) -> VertexId {
         .push_unplaced_vertex_row(Vertex::default())
         .expect("vertex row");
     let vertex = store.vertex(vertex_id).expect("new vertex");
-    let vertex = store
+    store
         .set_vertex_labels(vertex_id, vertex, label_ids)
         .expect("set labels");
-    store.set_vertex(vertex_id, vertex).expect("write vertex");
     vertex_id
 }
 
@@ -2453,7 +2452,7 @@ fn bench_graph_vertex_insert_scalar_16() -> canbench_rs::BenchResult {
     })
 }
 
-/// Full vertex mutation comparison: one row batch plus bulk label/property sidecar writes.
+/// Full vertex mutation comparison: one row batch plus coordinator-owned label/property writes.
 #[bench(raw)]
 fn bench_graph_vertex_insert_bulk_16() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
@@ -2466,7 +2465,7 @@ fn bench_graph_vertex_insert_bulk_16() -> canbench_rs::BenchResult {
             .map(|_| (vec![label], vec![(property, Value::Int64(1))]))
             .collect();
         black_box(
-            crate::facade::mutation_executor::insert_vertices_with(&store, vertices)
+            crate::facade::mutation_executor::insert_vertices_with(&store, vertices, 0)
                 .expect("bulk vertex insert"),
         );
     })

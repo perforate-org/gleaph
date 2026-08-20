@@ -88,6 +88,7 @@ fn bulk_vertex_insert_applies_request_order_without_exposing_allocation_layout()
     let ids = crate::facade::mutation_executor::insert_vertices_with(
         &store,
         vec![(Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        0,
     )
     .expect("bulk vertex insert");
 
@@ -108,6 +109,7 @@ fn bulk_vertex_insert_co_writes_labels_and_properties_through_canonical_stores()
             (vec![label], vec![(property, Value::Text("a".into()))]),
             (vec![label], vec![(property, Value::Text("b".into()))]),
         ],
+        0,
     )
     .expect("bulk vertex labels and properties");
 
@@ -128,6 +130,7 @@ fn bulk_vertex_insert_preflights_before_allocating_rows() {
     let err = crate::facade::mutation_executor::insert_vertices_with(
         &store,
         vec![(Vec::new(), vec![(PropertyId::from_raw(0), Value::Int64(1))])],
+        0,
     )
     .expect_err("reserved property id must fail before row allocation");
     assert!(matches!(err, GraphStoreError::PropertyValue(_)));
@@ -148,6 +151,7 @@ fn bulk_vertex_insert_rejects_duplicate_properties_before_allocating_rows() {
                 (property_id, Value::Int64(2)),
             ],
         )],
+        0,
     )
     .expect_err("duplicate property ids must fail closed");
     assert!(matches!(
@@ -167,6 +171,7 @@ fn bulk_vertex_insert_post_write_failure_panics_instead_of_returning_error() {
         crate::facade::mutation_executor::insert_vertices_with(
             &store,
             vec![(Vec::new(), Vec::new())],
+            0,
         )
     }));
 
