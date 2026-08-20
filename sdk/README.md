@@ -8,12 +8,13 @@
 sdk/
 ├── README.md
 ├── client/
-│   └── js/          # @gleaph/sdk — browser/Node client SDK
+│   ├── js/          # @gleaph/sdk — browser/Node client SDK
+│   └── rust/        # gleaph-sdk — ic-agent-based application-client SDK
 └── canister/
     └── rust/        # gleaph-cdk — ic-cdk-based helpers for canister internals
 ```
 
-`sdk/admin/{js,rust}` is planned but not implemented yet. It will hold management surfaces such as prepared-registration, graph administration, and vector-index lifecycle. Those surfaces are intentionally kept out of `@gleaph/sdk` and `gleaph-cdk`.
+`sdk/admin/{js,rust}` is planned but not implemented yet. It will hold management surfaces such as prepared-registration, graph administration, and vector-index lifecycle. Those surfaces are intentionally kept out of `@gleaph/sdk`, `gleaph-sdk`, and `gleaph-cdk`.
 
 ## `@gleaph/sdk`
 
@@ -42,12 +43,38 @@ Rust canister SDK seeded with helpers used by application canisters that delegat
 
 Admin/management operations are not included; they belong in `sdk/admin/rust` when that slice lands.
 
+## `gleaph-sdk`
+
+Location: `sdk/client/rust`. See [`client/rust/README.md`](client/rust/README.md) for usage.
+
+Rust application-client SDK. The counterpart to `gleaph-cdk` for code that calls the Gleaph Router
+from outside a canister, using `ic-agent` for transport. It mirrors the canister SDK's typed
+surface:
+
+- `GleaphClient<Prepared>` (default `NoPrepared`, `with_prepared::<Prepared>()`), dynamic GQL,
+  prepared operations, bulk-load, `prepare`, `drop_prepared`, and `list_prepared`;
+- a `GleaphTransport` trait plus a concrete `IcAgentTransport` built from `GleaphClientOptions`;
+- caller identity injection through the `ic_agent::Identity` bound to the agent;
+- `CallError` in the same `Reject` / `Decode` / `Router` shape as `gleaph-cdk`.
+
+Both `gleaph-sdk` and `gleaph-cdk` depend on the shared `gleaph-router-wire` crate
+(`crates/router-wire`), which owns the Router data-plane wire contract: `GqlQueryResult`,
+`ReadMode`, `MutationToken`, `RouterError`, and the bulk-load command family. This avoids two
+sources of truth for the Router wire contract.
+
+Generated prepared-operation bindings (from `gleaph-codegen`, `--target rust`) compose with
+`gleaph-sdk` through the same `PreparedExt` trait as the canister profile, so application clients
+and canisters share one generated shape.
+
 ## Status
 
 - Client SDK moved to `sdk/client/js` and workspace references updated.
 - `gleaph-cdk` crate created at `sdk/canister/rust` and adopted by `gleaph-codegen` output and the
   `examples/rust-canister-app` example (the social-demo gateway, its former consumer, was removed in
   2026-08-06 with the SDK-direct frontend).
+- `gleaph-sdk` crate created at `sdk/client/rust` (2026-08-20, ADR 0069) with the shared
+  `gleaph-router-wire` contract crate; the Rust codegen client profile was unified with the canister
+  profile onto `PreparedExt`.
 - Admin SDK boundary documented above but not implemented.
 
 ## Build-from-source expectation

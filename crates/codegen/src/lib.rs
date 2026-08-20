@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn generates_rust_facade_with_explicit_operation_kind() {
+    fn generates_rust_client_uses_prepared_ext_boundary() {
         let mut value = manifest();
         value.operations[0].parameters.clear();
         value.operations[0].allowed_sorts.push(SortKey {
@@ -385,12 +385,11 @@ mod tests {
         let output = generate_rust(&value).unwrap();
         assert!(output.contains("pub struct FindUsersParams"));
         assert!(output.contains("pub struct FindUsersRow"));
-        assert!(output.contains(".execute_query::<FindUsersRow>"));
-        assert!(output.contains(
-            "pub async fn find_users(\n        &self,\n        sort: Option<Vec<PreparedSortSpec>>,"
-        ));
-        assert!(!output.contains("&self, ,"));
-        assert!(output.contains("pub trait PreparedExecutor"));
+        assert!(output.contains("pub trait PreparedExt"));
+        assert!(output.contains("impl PreparedExt for gleaph_sdk::GleaphClient<Prepared>"));
+        assert!(output.contains(".prepared_query(\"find-users\""));
+        assert!(!output.contains("PreparedExecutor"));
+        assert!(!output.contains("PreparedQueries"));
         assert!(!output.contains("ic-agent"));
     }
 
@@ -748,7 +747,7 @@ mod tests {
 
         let rust = generate_rust(&value).unwrap();
         assert!(rust.contains("pub small: i8"));
-        assert!(rust.contains("pub wide_float: Vec<u8>"));
+        assert!(rust.contains("pub wide_float: f128"));
         assert!(rust.contains("pub user_name: u32"));
     }
 
@@ -830,12 +829,12 @@ mod tests {
         assert!(javascript.contains("toApiValue(params[\"metadata\"][\"path\"], \"Path\")"));
 
         let rust = generate_rust(&value).unwrap();
-        assert!(rust.contains("pub local_time: u64"));
-        assert!(rust.contains("pub when: PreparedZonedDateTime"));
-        assert!(rust.contains("pub metadata: BTreeMap<String, serde_json::Value>"));
-        assert!(rust.contains("pub local: PreparedDateTime"));
-        assert!(rust.contains("pub duration: PreparedDuration"));
-        assert!(rust.contains("pub zoned_time: PreparedZonedTime"));
+        assert!(rust.contains("pub local_time: gleaph_sdk::GqlLocalTime"));
+        assert!(rust.contains("pub when: gleaph_sdk::GqlZonedDateTime"));
+        assert!(rust.contains("pub metadata: gleaph_sdk::GqlRecord"));
+        assert!(rust.contains("pub local: gleaph_sdk::GqlLocalDateTime"));
+        assert!(rust.contains("pub duration: gleaph_sdk::GqlDuration"));
+        assert!(rust.contains("pub zoned_time: gleaph_sdk::GqlZonedTime"));
         assert!(!rust.contains("\n+"));
     }
 

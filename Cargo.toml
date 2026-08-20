@@ -37,8 +37,10 @@ members = [
     "crates/prepared-api",
     "crates/provision",
     "crates/router",
+    "crates/router-wire",
     "examples/rust-canister-app",
     "sdk/canister/rust",
+    "sdk/client/rust",
 ]
 resolver = "2"
 
@@ -74,6 +76,8 @@ gleaph-migration-api = { path = "crates/migration-api" }
 gleaph-prepared-runtime = { path = "crates/prepared-runtime" }
 gleaph-vector-canister = { path = "crates/vector-canister" }
 gleaph-router = { path = "crates/router" }
+gleaph-router-wire = { path = "crates/router-wire" }
+gleaph-sdk = { path = "sdk/client/rust" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-vector-page-store = { path = "crates/ic-stable-vector-page-store" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }

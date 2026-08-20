@@ -3148,6 +3148,7 @@ dependencies = [
  "gleaph-gql-params",
  "gleaph-gql-value",
  "gleaph-prepared-api",
+ "gleaph-router-wire",
  "half 2.7.1",
  "ic-cdk",
  "ic_principal",
@@ -3549,6 +3550,40 @@ dependencies = [
  "rapidhash",
  "serde",
  "sha2 0.11.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gleaph-router-wire"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ethnum",
+ "f256",
+ "gleaph-gql-ic-wire",
+ "gleaph-gql-params",
+ "gleaph-gql-value",
+ "half 2.7.1",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "gleaph-sdk"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "gleaph-gql-ic-wire",
+ "gleaph-gql-params",
+ "gleaph-gql-value",
+ "gleaph-prepared-api",
+ "gleaph-router-wire",
+ "ic-agent",
+ "ic_principal",
+ "pollster 1.0.1",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

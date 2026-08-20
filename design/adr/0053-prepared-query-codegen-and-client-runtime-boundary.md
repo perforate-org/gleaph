@@ -65,7 +65,7 @@ The existing SDK/CDK boundaries can absorb the runtime concerns:
 
 - `@gleaph/sdk` owns JS/TS transport and dynamic GQL execution;
 - `gleaph-cdk` owns Rust canister inter-canister calls; and
-- a future non-CDK Rust client SDK can own Rust application-client transport.
+- `gleaph-sdk` (ADR 0069) owns Rust application-client transport.
 
 The new concept required by this ADR is therefore the code-generation contract and its generated
 adapter boundary, not another execution engine.
@@ -119,7 +119,7 @@ The intended runtime relationships are:
 
 ```text
 TypeScript / JavaScript generated code -> @gleaph/sdk
-Rust application-client generated code -> future non-CDK Rust SDK
+Rust application-client generated code -> gleaph-sdk (ADR 0069)
 Rust canister generated code -> gleaph-cdk
 Motoko canister generated code -> supported Motoko runtime helper
 ```
@@ -227,8 +227,8 @@ Positive consequences:
 - The same manifest can produce client and canister bindings.
 - Dynamic GQL and generated prepared operations can coexist in one client.
 - Router stable plan storage remains encapsulated.
-- A future non-CDK Rust SDK has a clear integration point without being conflated with
-  `gleaph-cdk`.
+- The non-CDK Rust SDK (`gleaph-sdk`, ADR 0069) has a clear integration point without being
+  conflated with `gleaph-cdk`.
 
 Accepted costs and risks:
 
@@ -267,8 +267,11 @@ The following points are intentionally not resolved by this proposed ADR:
 4. **SDK naming migration:** Resolved. The JS SDK renamed `GraphClient`/`createIcGraphClient` to
    `GleaphClient`/`createGleaphClient` (with `createGleaphClientFromTransport` for the
    transport-backed factory), aligning with the Rust CDK's `GleaphClient`.
-5. **Rust SDK:** What package owns the non-CDK Rust client, and does it share a transport trait with
-   generated code or expose a concrete `ic-agent` implementation first?
+5. **Rust SDK:** **Resolved by [ADR 0069](0069-rust-client-sdk-and-shared-router-wire.md):** the
+   non-CDK Rust client is `gleaph-sdk` at `sdk/client/rust`, which exposes a `GleaphTransport`
+   trait plus a concrete `ic-agent` `IcAgentTransport` and a `GleaphClient<Prepared>` surface that
+   mirrors `gleaph-cdk`. It depends on the shared `gleaph-router-wire` contract crate (never on
+   `ic-cdk`), and caller identity is injected through the agent identity.
 6. **Generated composition:** Resolved. The JS/TS primary composition is the generated
    `createPreparedGleaphClient(options)` factory (with `createPreparedGleaphClientFromTransport`
    and the lower-level `withPreparedQueries(client)` compose helper), which returns a
@@ -283,11 +286,12 @@ The following points are intentionally not resolved by this proposed ADR:
 These decisions are required before changing the Router public API or declaring the manifest ABI
 accepted. They do not block recording the boundary and scope decisions in this proposed ADR.
 
-Acceptance status: decisions 1, 2, 4, and 6 are resolved (1 and 2 by
-[ADR 0061](0061-prepared-cli-registration-and-batch-catalog-api.md)); decision 3 is governed by
+Acceptance status: decisions 1, 2, 4, 5, and 6 are resolved (1 and 2 by
+[ADR 0061](0061-prepared-cli-registration-and-batch-catalog-api.md); decision 5 by
+[ADR 0069](0069-rust-client-sdk-and-shared-router-wire.md)); decision 3 is governed by
 [ADR 0055](0055-exact-scalar-types-at-router-api-boundary.md) and materialized by the implemented
-Router result-schema completion. Decisions 5 (non-CDK Rust client ownership) and 7 (released
-runtime/manifest compatibility policy) remain post-release follow-ups and do not block this
+Router result-schema completion. Decision 7 (released runtime/manifest compatibility policy)
+remains a post-release follow-up and does not block this
 acceptance: the implemented codegen/runtime boundary and the version-1 development manifest
 contract are accepted as-is.
 
@@ -340,7 +344,10 @@ as a release-stable contract.
 - TypeScript and JavaScript output profiles exposed by `generate_typescript` and
   `generate_javascript`;
 - a Rust application-client profile exposed by `generate_rust`, emitting operation-specific
-  parameter/result declarations and a `PreparedExecutor` facade; and
+  parameter/result declarations, a `Prepared` marker type, and a `PreparedExt` trait implemented
+  for `gleaph_sdk::GleaphClient<Prepared>` that wraps the Router's `prepared_query` (reads) and
+  `prepared_mutate` (idempotent updates with an explicit `client_mutation_key`); the profile is the
+  `gleaph_sdk` binding of the shared Rust renderer (see ADR 0069) and mirrors the canister profile; and
 - a Rust canister profile exposed by `generate_rust_canister`, emitting operation-specific
   parameter/result declarations, a `Prepared` marker type, and a `PreparedExt` trait implemented
   for `gleaph_cdk::GleaphClient<Prepared>` that wraps the Router's `prepared_query` (reads) and
@@ -377,8 +384,13 @@ authorization, and common errors remain SDK-owned. The shared manifest shape is 
 implementation scaffold, not yet the accepted Router endpoint ABI. Consistency options and
 idempotent updates fail closed in this profile until the corresponding runtime methods are part
 of the stable SDK boundary. The Rust profile similarly delegates transport, response decoding,
-and error handling to a generated `PreparedExecutor` implementation; its `serde_json` parameter
-map is a provisional runtime boundary and is not the Router wire ABI.
+and error handling to the `gleaph-sdk` runtime through a shared `PreparedExt` implementation;
+its generated parameter and row types mirror the canister profile (see ADR 0069). The generated
+`*Params` structs are `Clone + Debug` only and convert to logical GQL parameters via
+`into_gql_params`; generated `*Row` structs derive serde, with exotic row fields bound through the
+`gleaph-sdk` row-binding wrappers. The provisional `PreparedExecutor` / `PreparedQueries` scaffold
+and its serde-json parameter map were replaced by this shared `PreparedExt` boundary and are not
+the Router wire ABI.
 
 The Rust canister profile binds generated operations directly to the `gleaph-cdk` client; the
 Motoko canister profile remains a runtime boundary scaffold: a future Motoko CDK adapter must

@@ -2,152 +2,81 @@
 
 #![allow(dead_code)]
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use gleaph_sdk::GqlParams;
+use gleaph_sdk::GqlValue;
 use std::future::Future;
-use std::pin::Pin;
 
 pub const GLEAPH_GRAPH_ID: &str = "fixture-graph";
 
-/// Sort specification accepted by a generated prepared query.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PreparedSortSpec {
-    /// Stable sort-key identifier.
-    pub key: String,
-    /// Sort direction.
-    pub direction: String,
-}
-
-/// Response envelope decoded by a runtime executor.
+/// Result returned by a prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PreparedResponse<Row> {
-    /// Query execution metadata.
-    pub explain: serde_json::Value,
-    /// Planner summary.
-    pub plan_summary: serde_json::Value,
-    /// Execution result containing typed rows.
-    pub execution: PreparedExecution<Row>,
-}
-
-/// Typed execution result inside a prepared response.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PreparedExecution<Row> {
-    /// Rows returned by the operation.
+    /// Number of rows returned by the Router.
+    pub row_count: u64,
+    /// Typed rows decoded from the Router response.
     pub rows: Vec<Row>,
-    /// Non-fatal execution warnings.
-    pub warnings: Vec<String>,
-    /// Runtime-specific execution summary.
-    pub summary: serde_json::Value,
-}
-
-/// Runtime boundary implemented by the selected Rust SDK or canister adapter.
-pub trait PreparedExecutor {
-    /// Error returned by the runtime boundary.
-    type Error;
-
-    /// Execute a read-only prepared operation.
-    fn execute_query<'a, Row>(
-        &'a self,
-        name: &'static str,
-        params: BTreeMap<String, serde_json::Value>,
-        sort: Option<Vec<PreparedSortSpec>>,
-    ) -> Pin<Box<dyn Future<Output = Result<PreparedResponse<Row>, Self::Error>> + 'a>>
-    where
-        Row: DeserializeOwned + 'a;
-
-    /// Execute a mutating prepared operation.
-    fn execute_update<'a, Row>(
-        &'a self,
-        name: &'static str,
-        params: BTreeMap<String, serde_json::Value>,
-    ) -> Pin<Box<dyn Future<Output = Result<PreparedResponse<Row>, Self::Error>> + 'a>>
-    where
-        Row: DeserializeOwned + 'a;
-}
-
-/// Date-time representation used by generated Rust declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PreparedDateTime {
-    /// Unix seconds.
-    pub seconds: i64,
-    /// Nanoseconds within the second.
-    pub nanos: u32,
-}
-
-/// Zoned date-time representation used by generated Rust declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PreparedZonedDateTime {
-    /// Unix seconds.
-    pub seconds: i64,
-    /// Nanoseconds within the second.
-    pub nanos: u32,
-    /// UTC offset in seconds.
-    pub offset_seconds: i32,
-}
-
-/// Zoned time representation used by generated Rust declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PreparedZonedTime {
-    /// Nanoseconds since midnight.
-    pub nanos: u64,
-    /// UTC offset in seconds.
-    pub offset_seconds: i32,
-}
-
-/// Duration representation used by generated Rust declarations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PreparedDuration {
-    /// Calendar months.
-    pub months: i32,
-    /// Nanoseconds.
-    pub nanos: i64,
 }
 
 /// Find users by their search term.
-/// Parameters for the `find-users` prepared operation.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// Parameters for the prepared operation find-users.
+#[derive(Clone, Debug)]
 pub struct FindUsersParams {
     /// Text to search for.
-    /// Wire parameter `term`.
-    #[serde(rename = "term")]
+    /// Wire parameter term.
     pub term: String,
 }
 
-/// One result row from the `find-users` prepared operation.
+impl FindUsersParams {
+    /// Convert typed parameters to ordered logical GQL parameters.
+    pub fn into_gql_params(self) -> Result<GqlParams, gleaph_sdk::CallError> {
+        Ok(vec![("term".to_string(), GqlValue::Text(self.term))])
+    }
+}
+
+/// One result row from the prepared operation find-users.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FindUsersRow {
-    /// Wire column `user_name`.
+    /// Wire column user_name.
     #[serde(rename = "user_name")]
     pub user_name: String,
 }
 
-/// Typed facade over a [`PreparedExecutor`].
-pub struct PreparedQueries<'a, E: PreparedExecutor> {
-    executor: &'a E,
-}
+/// Marker enabling generated prepared operations on `gleaph_sdk::GleaphClient<Prepared>`.
+pub struct Prepared;
 
-impl<'a, E: PreparedExecutor> PreparedQueries<'a, E> {
-    /// Bind generated operations to a runtime executor.
-    pub fn new(executor: &'a E) -> Self {
-        Self { executor }
-    }
-
-    /// Find users by their search term.
-    /// Execute the `find-users` prepared operation.
-    pub async fn find_users(
+/// Prepared operations generated from the manifest, available on
+/// `gleaph_sdk::GleaphClient<Prepared>`.
+///
+/// Import this trait to call prepared operations on a client created with
+/// `gleaph_sdk::GleaphClient::with_prepared::<Prepared>`.
+pub trait PreparedExt {
+    /// Execute the prepared operation find-users.
+    fn find_users(
         &self,
         params: FindUsersParams,
-    ) -> Result<PreparedResponse<FindUsersRow>, E::Error> {
-        let params = serde_json::to_value(params)
-            .expect("generated parameter struct must serialize")
-            .as_object()
-            .expect("generated parameter struct must serialize to an object")
-            .clone()
-            .into_iter()
-            .collect();
-        self.executor
-            .execute_query::<FindUsersRow>("find-users", params, None)
-            .await
+    ) -> impl Future<Output = Result<PreparedResponse<FindUsersRow>, gleaph_sdk::CallError>> + Send;
+}
+
+impl PreparedExt for gleaph_sdk::GleaphClient<Prepared> {
+    async fn find_users(
+        &self,
+        params: FindUsersParams,
+    ) -> Result<PreparedResponse<FindUsersRow>, gleaph_sdk::CallError> {
+        let params = params.into_gql_params()?;
+        let params = gleaph_sdk::encode_gql_params(params).map_err(|error| {
+            gleaph_sdk::CallError::Decode {
+                message: format!("failed to encode GQL params: {error:?}"),
+            }
+        })?;
+        let result = self
+            .prepared_query("find-users", params, None, gleaph_sdk::ReadMode::Eventual)
+            .await?;
+        Ok(PreparedResponse {
+            row_count: result.row_count,
+            rows: result
+                .decode_serde_rows::<FindUsersRow>()?
+                .unwrap_or_default(),
+        })
     }
 }

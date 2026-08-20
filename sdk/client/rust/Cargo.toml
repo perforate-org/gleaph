@@ -1,9 +1,9 @@
 [package]
-name = "gleaph-cdk"
+name = "gleaph-sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Gleaph canister SDK helpers for inter-canister calls to the Gleaph Router"
+description = "Gleaph Rust client SDK for application clients calling the Gleaph Router via ic-agent"
 
 [dependencies]
 candid.workspace = true
@@ -17,16 +17,12 @@ gleaph-gql-params = { workspace = true, features = [
 gleaph-gql-value.workspace = true
 gleaph-prepared-api.workspace = true
 gleaph-router-wire.workspace = true
-ic-cdk.workspace = true
+ic-agent.workspace = true
 ic_principal = { version = "0.1", features = ["serde"] }
+pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
-ethnum.workspace = true
-f256.workspace = true
-half.workspace = true
-rust_decimal.workspace = true
+thiserror.workspace = true
 
 [features]
 default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]

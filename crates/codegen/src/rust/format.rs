@@ -20,17 +20,12 @@ pub enum RustFormatMode {
 /// The renderers own syntax-aware decisions; this module owns the shared thresholds and
 /// whitespace policy so Rust client and canister profiles do not drift.
 pub const MAX_WIDTH: usize = 100;
-pub const FN_CALL_WIDTH: usize = 60;
 pub const CHAIN_WIDTH: usize = 60;
 pub const ARRAY_WIDTH: usize = 60;
 
 /// Return whether a generated construct exceeds a built-in Rustfmt-style width threshold.
 pub(crate) fn exceeds_width(value: &str, width: usize) -> bool {
     value.chars().count() > width
-}
-
-pub(crate) fn exceeds_default_width(value: &str) -> bool {
-    exceeds_width(value, MAX_WIDTH)
 }
 
 impl RustFormatMode {

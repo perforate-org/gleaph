@@ -6,8 +6,6 @@
 //! crate adds the Router-bound client ([`GleaphClient`]), the wire types it needs, and the
 //! typed-binding helpers used by `gleaph-codegen` output.
 
-#![cfg_attr(feature = "nightly-f128", feature(f128))]
-
 use candid::{CandidType, Deserialize, Principal};
 use std::marker::PhantomData;
 

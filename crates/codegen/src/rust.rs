@@ -3,3 +3,4 @@
 pub(crate) mod canister;
 pub(crate) mod client;
 pub(crate) mod format;
+pub(crate) mod shared;
