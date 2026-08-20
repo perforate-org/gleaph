@@ -2026,6 +2026,98 @@ mod tests {
         );
     }
 
+    /// Draw `view` into a fresh window at `canvas_size` and then fit it to all
+    /// nodes, returning the visual context for follow-up input.
+    ///
+    /// Fitting must run *after* the canvas has a real size. Calling
+    /// [`GraphViewState::fit_all`] while the viewport size is still `(0,0)`
+    /// computes `zoom = 0`, which `Viewport::fit_bounds` clamps to `0.0001` and
+    /// collapses the whole graph to a single pixel (every edge degenerates to an
+    /// empty path and disappears). The real view relies on the one-time initial
+    /// auto-fit that runs during prepaint with a nonzero canvas size; this helper
+    /// reproduces that ordering for tests that need an explicit fit.
+    fn draw_and_fit_view<'a, N: 'static, E: 'static>(
+        cx: &'a mut TestAppContext,
+        view: &Entity<GraphViewState<&'static str, &'static str, N, E>>,
+        canvas_size: Vec2,
+    ) -> &'a mut VisualTestContext {
+        let cx = cx.add_empty_window();
+        draw_graph_view(cx, view, Vec2::ZERO, canvas_size);
+        cx.update_entity(view, |state, cx| state.fit_all(cx));
+        cx
+    }
+
+    #[gpui::test]
+    fn profile_large_grid(cx: &mut TestAppContext) {
+        let scene: Entity<GraphScene<&'static str, &'static str, (), ()>> = cx.new(|_| {
+            let side = 50;
+            let mut batch = GraphBatch::new();
+            let mut ids = Vec::new();
+            for y in 0..side {
+                for x in 0..side {
+                    let id = format!("{}x{}", x, y).leak() as &'static str;
+                    batch = batch.node(id, ());
+                    ids.push(id);
+                }
+            }
+            let at = |x: usize, y: usize| ids[y * side + x];
+            let mut ek = 0usize;
+            for y in 0..side {
+                for x in 0..side {
+                    let id = at(x, y);
+                    if x + 1 < side {
+                        let key = format!("e{}", ek).leak() as &'static str;
+                        batch = batch.edge(key, id, at(x + 1, y), EdgeDirection::Directed, ());
+                        ek += 1;
+                    }
+                    if y + 1 < side {
+                        let key = format!("e{}", ek).leak() as &'static str;
+                        batch = batch.edge(key, id, at(x, y + 1), EdgeDirection::Directed, ());
+                        ek += 1;
+                    }
+                }
+            }
+            let mut scene = GraphScene::new();
+            scene.merge(batch);
+            for y in 0..side {
+                for x in 0..side {
+                    let node = scene.node_id(&ids[y * side + x]).unwrap();
+                    scene.set_position(node, Vec2::new(x as f32 * 60.0, y as f32 * 60.0));
+                }
+            }
+            scene
+        });
+        let view = cx.new(|cx| GraphViewState::new(scene, cx));
+        cx.update_entity(&view, |state, _| {
+            let style = state.style_mut();
+            style.edge_straight_threshold = 24.0;
+            style.edge_straight_threshold_while_interacting = 10_000.0;
+            style.edge_settle_time_ms = 250.0;
+        });
+        // Fit must happen after the canvas has a real size, or `fit_bounds`
+        // collapses the whole graph to one pixel (zoom 0 -> 0.0001 clamp) and
+        // every edge degenerates to an empty path. `draw_and_fit_view` enforces
+        // that ordering for every caller.
+        clear_test_paint_trace();
+        draw_and_fit_view(cx, &view, Vec2::new(900.0, 700.0));
+        let trace = take_test_paint_trace();
+        let mut nodes = 0;
+        let mut edges = 0;
+        let mut arrows = 0;
+        for p in &trace {
+            match p {
+                TestPaintPrimitive::Node { .. } => nodes += 1,
+                TestPaintPrimitive::Edge { .. } => edges += 1,
+                TestPaintPrimitive::Arrow { .. } => arrows += 1,
+                _ => {}
+            }
+        }
+        eprintln!(
+            "PROF primitives: nodes={nodes} edges={edges} arrows={arrows} total={}",
+            trace.len()
+        );
+    }
+
     fn assert_no_auto_fit_after(
         cx: &mut TestAppContext,
         override_view: impl FnOnce(&mut TestView, &mut Context<TestView>),
