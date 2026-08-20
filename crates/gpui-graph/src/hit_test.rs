@@ -147,7 +147,6 @@ pub fn hit_test<N, E>(
             .iter()
             .map(|(p0, p1, p2)| distance_to_quadratic_bezier(screen_point, *p0, *p1, *p2))
             .fold(f32::INFINITY, f32::min);
-        eprintln!("DBG {id:?} path={path:?} screen={screen_point:?} dist={dist}");
         let threshold = (style.edge_width * 0.5 + 2.0).max(3.0);
         if dist <= threshold && best_edge.is_none_or(|(_, d)| dist < d) {
             best_edge = Some((*id, dist));
