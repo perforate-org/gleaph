@@ -6,7 +6,7 @@ use jiff::Unit;
 
 use crate::edge_inline_property_scalar_codec::decode_edge_inline_property_scalar;
 use gleaph_gql::Value;
-use gleaph_gql::ast::{CmpOp, DurationQualifier, Expr, ExprKind, TruthValue};
+use gleaph_gql::ast::{CmpOp, DurationQualifier, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex};
@@ -362,6 +362,8 @@ impl QueryExprEvaluator<'_> {
                     })?,
             ),
             ExprKind::ElementId(expr) => self.eval_element_id(row, expr),
+            #[cfg(feature = "cypher")]
+            ExprKind::Labels(expr) | ExprKind::Label(expr) => self.eval_labels(row, expr),
             ExprKind::Parameter(name) => self
                 .parameters
                 .get(crate::plan::query::param_map_key(name))
@@ -650,13 +652,18 @@ impl QueryExprEvaluator<'_> {
                 name,
                 args,
                 distinct,
-            } => match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
-                Ok(Some(value)) => Ok(value),
-                Ok(None) => Err(PlanQueryError::UnsupportedExpression {
-                    expression: format!("{:?}", expr.kind),
-                }),
-                Err(e) => Err(e.into()),
-            },
+            } => {
+                if let Some(value) = self.eval_element_label_function(row, name, args, *distinct)? {
+                    return Ok(value);
+                }
+                match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
+                    Ok(Some(value)) => Ok(value),
+                    Ok(None) => Err(PlanQueryError::UnsupportedExpression {
+                        expression: format!("{:?}", expr.kind),
+                    }),
+                    Err(e) => Err(e.into()),
+                }
+            }
             ExprKind::CurrentTimestamp => Ok(current_datetime_value()),
             ExprKind::CurrentLocalTimestamp => Ok(current_local_datetime_value()),
             ExprKind::CurrentDate => Ok(current_date_value()),
@@ -926,6 +933,119 @@ impl QueryExprEvaluator<'_> {
                 expression: format!("ELEMENT_ID({:?})", expr.kind),
             })
         }
+    }
+
+    /// Evaluate the GQL `labels()`/`label()` runtime functions (dedicated [`ExprKind`] variants).
+    #[cfg(feature = "cypher")]
+    fn eval_labels(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
+        let ExprKind::Variable(var_name) = &expr.kind else {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!(
+                    "labels() argument must be a single variable, got {:?}",
+                    expr.kind
+                ),
+            });
+        };
+        let binding = row
+            .get(var_name.as_str())
+            .ok_or_else(|| PlanQueryError::MissingBinding {
+                variable: var_name.clone(),
+            })?;
+        match binding {
+            PlanBinding::Vertex(vertex_id) => {
+                let vertex = self.store.vertex(*vertex_id).ok_or_else(|| {
+                    PlanQueryError::MissingBinding {
+                        variable: format!("vertex {vertex_id:?}"),
+                    }
+                })?;
+                Ok(Value::List(self.store.vertex_label_gql_list(
+                    *vertex_id,
+                    vertex,
+                    self.resolved_labels,
+                )))
+            }
+            PlanBinding::Value(Value::Null) => Ok(Value::Null),
+            other => Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("labels({var_name}) for {other:?}"),
+            }),
+        }
+    }
+
+    /// Evaluate the GQL `type()` runtime function (a [`ExprKind::FunctionCall`]).
+    ///
+    /// Returns `Ok(None)` when the call is not `type()` (caller should fall through to
+    /// [`try_eval_runtime_function_call`]).
+    fn eval_element_label_function(
+        &self,
+        row: &PlanRow,
+        name: &ObjectName,
+        args: &[Expr],
+        distinct: bool,
+    ) -> Result<Option<Value>, PlanQueryError> {
+        let Some(fname) = name.parts.last() else {
+            return Ok(None);
+        };
+        if !fname.as_str().eq_ignore_ascii_case("type") {
+            return Ok(None);
+        }
+        if distinct {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: "type() does not support DISTINCT".to_owned(),
+            });
+        }
+        if args.len() != 1 {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("type() expects exactly one argument, got {}", args.len()),
+            });
+        }
+        let ExprKind::Variable(var_name) = &args[0].kind else {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!(
+                    "type() argument must be a single variable, got {:?}",
+                    args[0].kind
+                ),
+            });
+        };
+        let binding = row
+            .get(var_name.as_str())
+            .ok_or_else(|| PlanQueryError::MissingBinding {
+                variable: var_name.clone(),
+            })?;
+        let value = match binding {
+            PlanBinding::Edge(edge) => self.edge_label_name(edge)?,
+            PlanBinding::Value(Value::Null) => Value::Null,
+            other => {
+                return Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!("type({var_name}) for {other:?}"),
+                });
+            }
+        };
+        Ok(Some(value))
+    }
+
+    /// Resolve the GQL label name of a single edge binding (or `Value::Null` for an unlabeled edge).
+    fn edge_label_name(&self, binding: &EdgeBinding) -> Result<Value, PlanQueryError> {
+        let (_edge, bucket_label) = self
+            .store
+            .find_outgoing_edge_with_bucket_label(binding.handle)?
+            .ok_or_else(|| PlanQueryError::MissingBinding {
+                variable: format!("edge {:?}", binding.handle),
+            })?;
+        let storage = LaraLabelId::from_raw(bucket_label.raw());
+        let catalog_id = EdgeLabelId::from_raw(storage.label_index());
+        Ok(if catalog_id.raw() == 0 {
+            Value::Null
+        } else {
+            self.resolved_labels
+                .and_then(|labels| {
+                    labels
+                        .edge
+                        .iter()
+                        .find(|entry| entry.id == catalog_id)
+                        .map(|entry| Value::Text(entry.name.clone()))
+                })
+                .unwrap_or_else(|| Value::Uint64(u64::from(catalog_id.raw())))
+        })
     }
 }
 
@@ -1349,6 +1469,7 @@ mod tests {
     };
     use gleaph_graph_kernel::plan_exec::{
         ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedInlineStructField, ResolvedLabelTable,
+        ResolvedVertexLabel,
     };
     use half::f16;
 
@@ -3922,5 +4043,136 @@ mod tests {
                 "encoding {encoding:?} should fail with width mismatch: {err:?}"
             );
         }
+    }
+
+    #[test]
+    #[cfg(feature = "cypher")]
+    fn labels_returns_vertex_label_list() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["Person", "Employee"], [("name", Value::Text("a".into()))])
+            .expect("insert vertex");
+        let plan = plan_gql("MATCH (n) WHERE n.name = 'a' RETURN labels(n) AS labels");
+
+        let result = store
+            .execute_plan_query(
+                &plan,
+                &params(),
+                GqlExecutionContext {
+                    resolved_labels: Some(ResolvedLabelTable {
+                        vertex: vec![
+                            ResolvedVertexLabel {
+                                name: "Person".to_string(),
+                                id: crate::test_labels::vertex_label_id_for_name("Person"),
+                            },
+                            ResolvedVertexLabel {
+                                name: "Employee".to_string(),
+                                id: crate::test_labels::vertex_label_id_for_name("Employee"),
+                            },
+                        ],
+                        edge: Vec::new(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .expect("labels query");
+
+        assert_eq!(result.rows.len(), 1);
+        let Value::List(items) = result.rows[0].get("labels").expect("labels column") else {
+            panic!("expected list");
+        };
+        let mut names: Vec<String> = items
+            .iter()
+            .map(|v| match v {
+                Value::Text(t) => t.clone(),
+                other => panic!("expected text label, got {other:?}"),
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["Employee".to_string(), "Person".to_string()]);
+    }
+
+    #[test]
+    #[cfg(feature = "cypher")]
+    fn labels_rejects_edge_argument() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["Src"], Vec::<(&str, Value)>::new())
+            .expect("src");
+        let b = store
+            .insert_vertex_named(["Dst"], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_named(a, b, Some("Knows"), Vec::<(&str, Value)>::new())
+            .expect("edge");
+        let plan = plan_gql("MATCH (a:Src)-[e]->(b:Dst) RETURN labels(e) AS labels");
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("labels on edge must fail");
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
+    fn type_returns_edge_label_name() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["Src"], Vec::<(&str, Value)>::new())
+            .expect("src");
+        let b = store
+            .insert_vertex_named(["Dst"], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_named(a, b, Some("Knows"), Vec::<(&str, Value)>::new())
+            .expect("edge");
+        let plan = plan_gql("MATCH (a:Src)-[e]->(b:Dst) RETURN type(e) AS typ");
+
+        let result = store
+            .execute_plan_query(
+                &plan,
+                &params(),
+                GqlExecutionContext {
+                    resolved_labels: Some(ResolvedLabelTable {
+                        vertex: vec![
+                            ResolvedVertexLabel {
+                                name: "Src".to_string(),
+                                id: crate::test_labels::vertex_label_id_for_name("Src"),
+                            },
+                            ResolvedVertexLabel {
+                                name: "Dst".to_string(),
+                                id: crate::test_labels::vertex_label_id_for_name("Dst"),
+                            },
+                        ],
+                        edge: vec![ResolvedEdgeLabel::new(
+                            "Knows",
+                            crate::test_labels::edge_label_id_for_name("Knows"),
+                            EdgeInlinePropertyProfile {
+                                byte_width: 0,
+                                encoding: EdgeInlinePropertyEncoding::RawBytes,
+                            },
+                        )],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .expect("type query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("typ"),
+            Some(&Value::Text("Knows".to_string()))
+        );
+    }
+
+    #[test]
+    fn type_rejects_vertex_argument() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["Person"], Vec::<(&str, Value)>::new())
+            .expect("vertex");
+        let plan = plan_gql("MATCH (n:Person) RETURN type(n) AS typ");
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("type on vertex must fail");
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
 }
