@@ -105,6 +105,9 @@ impl Example {
         // 4. Style the graph for a high-contrast dark theme. Edges shorter than
         //    24px on screen are simplified to straight lines (level-of-detail),
         //    which is what a fully-zoomed-out overview of this dense grid hits.
+        //    While the user pans or zooms, the interaction-time threshold collapses
+        //    every edge to a straight segment so the camera stays smooth, settling
+        //    back to the idle 24px threshold shortly after the gesture stops.
         view.update(cx, |view, cx| {
             let style = view.style_mut();
             style.label_style = TextStyle {
@@ -113,6 +116,8 @@ impl Example {
                 ..TextStyle::default()
             };
             style.edge_straight_threshold = 24.0;
+            style.edge_straight_threshold_while_interacting = 10_000.0;
+            style.edge_settle_time_ms = 250.0;
             cx.notify();
         });
 

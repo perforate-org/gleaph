@@ -64,6 +64,32 @@ pub struct GraphStyle {
     /// `0.0` (the default) disables the simplification and always renders
     /// curves. Self-loops are never simplified.
     pub edge_straight_threshold: f32,
+    /// On-screen length in pixels below which a non-self-loop edge is rendered
+    /// as a straight line **while the user is interacting** (panning or
+    /// zooming) and for a short settling period after the interaction ends.
+    ///
+    /// Interaction-time LOD keeps pan/zoom smooth on large graphs: while the
+    /// camera is moving, per-edge curve computation is visually unnecessary and
+    /// dominates the frame, so raising the straight threshold collapses every
+    /// visible edge to a cheap straight segment. After the interaction stops,
+    /// the frame continues to use this threshold for [`Self::edge_settle_time_ms`]
+    /// so detail does not pop back the instant the camera stops; only once the
+    /// settle elapses does the view return to [`Self::edge_straight_threshold`].
+    ///
+    /// A value of `0.0` (the default) disables interaction-time LOD entirely and
+    /// the `edge_straight_threshold` is always used. When nonzero it should be
+    /// larger than `edge_straight_threshold` to force more edges straight while
+    /// moving. Self-loops are never simplified.
+    pub edge_straight_threshold_while_interacting: f32,
+    /// Duration, in milliseconds, that the straight-line threshold stays at
+    /// [`Self::edge_straight_threshold_while_interacting`] after the last pan or
+    /// zoom event, before settling back to [`Self::edge_straight_threshold`].
+    ///
+    /// This settling period adds hysteresis around the end of an interaction so
+    /// detail does not pop back the moment the camera stops; a short settle lets
+    /// the zoomed view stabilize in low detail before re-computing curves. It is
+    /// ignored when `edge_straight_threshold_while_interacting` is `0.0`.
+    pub edge_settle_time_ms: f32,
 }
 
 impl Default for GraphStyle {
@@ -86,6 +112,8 @@ impl Default for GraphStyle {
             label_offset: 0.0,
             edge_label_hide_distance: 20.0,
             edge_straight_threshold: 0.0,
+            edge_straight_threshold_while_interacting: 0.0,
+            edge_settle_time_ms: 0.0,
         }
     }
 }
@@ -192,6 +220,21 @@ impl GraphStyle {
     /// a straight line instead of a curve. `0.0` disables the simplification.
     pub fn with_edge_straight_threshold(mut self, pixels: f32) -> Self {
         self.edge_straight_threshold = pixels;
+        self
+    }
+
+    /// Set the straight-line threshold used while the user is interacting
+    /// (panning/zooming) and for the settle period after it stops. `0.0` disables
+    /// interaction-time LOD. See [`Self::edge_straight_threshold_while_interacting`].
+    pub fn with_edge_straight_threshold_while_interacting(mut self, pixels: f32) -> Self {
+        self.edge_straight_threshold_while_interacting = pixels;
+        self
+    }
+
+    /// Set the settle period, in milliseconds, during which the interaction-time
+    /// straight threshold stays active after the last pan/zoom event.
+    pub fn with_edge_settle_time(mut self, milliseconds: f32) -> Self {
+        self.edge_settle_time_ms = milliseconds;
         self
     }
 }

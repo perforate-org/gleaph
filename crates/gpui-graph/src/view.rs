@@ -48,6 +48,16 @@ where
     dragging: Option<NodeId>,
     panning: bool,
     last_mouse: Vec2,
+    /// When interaction-time LOD is enabled, the time of the last pan or zoom
+    /// event. Used to keep the straight-line threshold elevated while the camera
+    /// is moving and for a short settle period afterward, so per-edge curve work
+    /// is skipped during interaction and detail settles back without popping.
+    /// `None` when interaction-time LOD is disabled or currently settled.
+    interaction_active_since: Option<std::time::Instant>,
+    /// A handle to the scheduled settle task that re-evaluates the straight-line
+    /// threshold after the interaction settle period elapses. Dropping it
+    /// cancels the pending settle. `None` when no settle is scheduled.
+    interaction_settle_task: Option<gpui::Task<()>>,
     initial_auto_fit: InitialAutoFitState,
 }
 
@@ -186,6 +196,8 @@ where
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
+            interaction_active_since: None,
+            interaction_settle_task: None,
             initial_auto_fit: InitialAutoFitState::default(),
         }
     }
@@ -232,6 +244,34 @@ where
     /// The graph style, mutably.
     pub fn style_mut(&mut self) -> &mut GraphStyle {
         &mut self.style
+    }
+
+    /// The style to use when painting this frame, applying interaction-time LOD.
+    ///
+    /// When interaction-time LOD is enabled ([`GraphStyle::edge_straight_threshold_while_interacting`])
+    /// and an interaction is active or within its settle window, the returned
+    /// style uses the elevated straight-line threshold so the current frame skips
+    /// per-edge curve work. Otherwise the idle [`Self::style`] is returned. The
+    /// threshold is the only field that differs, so painting, hit testing, and
+    /// label logic stay consistent with the style the caller configured.
+    pub(crate) fn paint_style(&self) -> GraphStyle {
+        let mut style = self.style.clone();
+        if let Some(threshold) = self.interaction_straight_threshold() {
+            style.edge_straight_threshold = threshold;
+        }
+        style
+    }
+
+    /// The straight-line threshold to use right now, accounting for interaction
+    /// LOD: `Some(elevated)` while an interaction is active or within its settle
+    /// window, `None` to use the idle [`Self::style`] threshold.
+    fn interaction_straight_threshold(&self) -> Option<f32> {
+        if self.interaction_active_since.is_none()
+            || self.style.edge_straight_threshold_while_interacting <= 0.0
+        {
+            return None;
+        }
+        Some(self.style.edge_straight_threshold_while_interacting)
     }
 
     /// Set the node label resolver.
@@ -303,8 +343,49 @@ where
         self.initial_auto_fit.cancel();
     }
 
+    /// Record the start of a pan or zoom interaction and schedule the settle.
+    ///
+    /// When interaction-time LOD is enabled, this elevates the straight-line
+    /// threshold so the current frame renders every eligible edge as a cheap
+    /// straight segment, and schedules a settle task to re-evaluate the threshold
+    /// after [`GraphStyle::edge_settle_time_ms`] so detail does not pop back the
+    /// instant the camera stops. Repeated events cancel and reschedule the settle,
+    /// so the low-detail threshold persists while the camera keeps moving.
+    fn begin_interaction(&mut self, cx: &mut Context<Self>) {
+        let style = &self.style;
+        if style.edge_straight_threshold_while_interacting <= 0.0
+            && style.edge_settle_time_ms <= 0.0
+        {
+            return;
+        }
+        let settle_ms = style.edge_settle_time_ms;
+        let settle_duration = std::time::Duration::from_millis(settle_ms.max(0.0) as u64);
+        let task = cx.spawn(
+            move |view: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                // Clone the async app so the settle future owns it across the
+                // await, satisfying the 'static bound on the spawned task.
+                let cx = cx.clone();
+                async move {
+                    cx.background_executor().timer(settle_duration).await;
+                    // If the view is still alive, clear the interaction state and repaint
+                    // so the straight-line threshold settles back to the idle value. The
+                    // weak handle avoids holding the entity hostage across the await.
+                    view.update(&mut cx.clone(), |view, cx| {
+                        view.interaction_active_since = None;
+                        view.interaction_settle_task = None;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            },
+        );
+        self.interaction_settle_task = Some(task);
+        self.interaction_active_since = Some(cx.background_executor().now());
+    }
+
     fn handle_zoom(&mut self, pos: Vec2, factor: f32, cx: &mut Context<Self>) {
         self.cancel_initial_auto_fit();
+        self.begin_interaction(cx);
         self.viewport.zoom_at(pos, factor);
         cx.emit(GraphEvent::ViewportChanged);
         cx.notify();
@@ -357,6 +438,8 @@ where
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
+            interaction_active_since: None,
+            interaction_settle_task: None,
             initial_auto_fit: InitialAutoFitState::default(),
         }
     }
@@ -453,6 +536,7 @@ where
                             Vec2::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
                         view_prepaint.update(cx, |vs, cx| {
                             vs.prepare_canvas(size, cx);
+                            let paint_style = vs.paint_style();
                             let scene_entity = vs.scene.clone();
                             let scene = scene_entity.read(cx);
                             let synced = scene.sync_runtime(&mut vs.runtime);
@@ -464,7 +548,7 @@ where
                                     node_label: &|id, node| node_label(id, node),
                                     edge_label: &|id, edge| edge_label(id, edge),
                                     viewport: &vs.viewport,
-                                    style: &vs.style,
+                                    style: &paint_style,
                                     selection: &vs.selection,
                                     hover: &vs.hover,
                                 },
@@ -1330,6 +1414,7 @@ where
             });
         } else if self.panning {
             self.cancel_initial_auto_fit();
+            self.begin_interaction(cx);
             let delta = pos - self.last_mouse;
             self.viewport.pan(delta);
             cx.emit(GraphEvent::ViewportChanged);
@@ -2102,6 +2187,40 @@ mod tests {
                 before_redraw
             );
         });
+    }
+
+    #[gpui::test]
+    fn interaction_lod_elevates_threshold_while_active(cx: &mut TestAppContext) {
+        let view = test_view(cx);
+        cx.update_entity(&view, |state, _| {
+            state.style_mut().edge_straight_threshold = 24.0;
+            state.style_mut().edge_straight_threshold_while_interacting = 10_000.0;
+            state.style_mut().edge_settle_time_ms = 300.0;
+        });
+        // Idle: the paint style matches the configured threshold.
+        let idle = cx.update_entity(&view, |state, _| {
+            (
+                state.interaction_active_since.is_none(),
+                state.paint_style(),
+            )
+        });
+        assert!(idle.0, "no interaction active at rest");
+        assert_eq!(idle.1.edge_straight_threshold, 24.0);
+        assert_eq!(idle.1.edge_straight_threshold_while_interacting, 10_000.0);
+
+        // After a zoom, the paint style uses the elevated interaction threshold.
+        let (active, elevated) = cx.update_entity(&view, |state, cx| {
+            state.handle_zoom(Vec2::new(100.0, 60.0), 1.1, cx);
+            (
+                state.interaction_active_since.is_some(),
+                state.paint_style(),
+            )
+        });
+        assert!(active, "zoom marks the view as interacting");
+        assert_eq!(
+            elevated.edge_straight_threshold, 10_000.0,
+            "interaction threshold is used while active"
+        );
     }
 
     #[gpui::test]

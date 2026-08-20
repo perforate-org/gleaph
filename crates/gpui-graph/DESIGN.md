@@ -1557,17 +1557,34 @@ The runtime should eventually support:
  fidelity against paint cost for their graph size and zoom range; benchmark data
  in `benches/paint_bench.rs` (`paint_frame_lod`) guides the choice.
 
- Two micro-optimizations keep the straight-LOD path cheap, because a straight
- edge is geometrically a line even though it is represented as a degenerate
- quadratic. `straight_line_trim` trims the segment against each node boundary by
- solving the line-circle intersection analytically instead of the binary search
- used for curved edges, so the trim no longer costs 20 Bézier evaluations per
- boundary. And the per-frame obstacle grid is built only when at least one
- visible edge renders curved; in the zoomed-out overview where every edge is
- straight the grid is skipped entirely, so obstacle construction is proportional
- to the curved-visible set rather than every visible node. Together with the
- density skip these keep the paint cost proportional to the straight-LOD
- surface rather than the full per-edge curve work.
+  Two micro-optimizations keep the straight-LOD path cheap, because a straight
+  edge is geometrically a line even though it is represented as a degenerate
+  quadratic. `straight_line_trim` trims the segment against each node boundary by
+  solving the line-circle intersection analytically instead of the binary search
+  used for curved edges, so the trim no longer costs 20 Bézier evaluations per
+  boundary. And the per-frame obstacle grid is built only when at least one
+  visible edge renders curved; in the zoomed-out overview where every edge is
+  straight the grid is skipped entirely, so obstacle construction is proportional
+  to the curved-visible set rather than every visible node. Together with the
+  density skip these keep the paint cost proportional to the straight-LOD
+  surface rather than the full per-edge curve work.
+
+  Zooming in raises the on-screen chord length, so a straight-LOD edge crosses the
+  threshold and reverts to a curve. To keep pan and zoom smooth on large graphs,
+  `GraphStyle::edge_straight_threshold_while_interacting` (default `0.0`,
+  disabled) elevates the straight-line threshold while the camera is moving and
+  for a short settling period after it stops (`GraphStyle::edge_settle_time_ms`).
+  `GraphViewState` records the last pan/zoom event time; while an interaction is
+  active, `paint_style` substitutes the elevated threshold so every eligible edge
+  renders as a cheap straight segment. A spawned settle task fires once
+  `edge_settle_time_ms` elapses after the last event and repaints with the idle
+  threshold, so detail settles back smoothly instead of popping the instant the
+  camera stops. Repeated events cancel and reschedule the settle, keeping the
+  low-detail threshold in effect for the whole gesture. This is the "low detail
+  while moving, high detail when the camera stops" interaction LOD pattern
+  recommended for visualization renderers: it protects interaction smoothness
+  without permanently degrading the final view.
+
 
 ---
 
