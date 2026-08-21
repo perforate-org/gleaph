@@ -975,6 +975,9 @@ pub fn apply<T: MigrationTransport>(
             let resolved_graph_matches_profile = if artifact
                 .profile
                 .contains(&SchemaMigrationStatementProfile::CreateIndex)
+                || artifact
+                    .profile
+                    .contains(&SchemaMigrationStatementProfile::CreateVectorIndex)
             {
                 record.resolved_graph.is_some()
             } else {
@@ -1388,6 +1391,10 @@ fn read_text_file_with_identity(
 }
 
 fn validate_gql(gql: &str) -> Result<Vec<SchemaMigrationStatementProfile>, MigrationError> {
+    if let Some(vector_ddl) = gleaph_index_ddl::try_parse_vector(gql) {
+        vector_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
+        return Ok(vec![SchemaMigrationStatementProfile::CreateVectorIndex]);
+    }
     if let Some(index_ddl) = gleaph_index_ddl::try_parse(gql) {
         let statements = index_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
         let mut profiles = Vec::with_capacity(statements.len());
@@ -1521,9 +1528,11 @@ fn graph_selector_for_manifest(
     manifest: &MigrationManifest,
     profiles: &[SchemaMigrationStatementProfile],
 ) -> Result<SchemaMigrationGraphSelector, MigrationError> {
-    if profiles.contains(&SchemaMigrationStatementProfile::CreateIndex) {
-        // CREATE INDEX is always the only statement in its migration, so a manifest graph
-        // selector applies to the whole payload.
+    if profiles.contains(&SchemaMigrationStatementProfile::CreateIndex)
+        || profiles.contains(&SchemaMigrationStatementProfile::CreateVectorIndex)
+    {
+        // CREATE INDEX and CREATE VECTOR INDEX are always the only statement in their migration,
+        // so a manifest graph selector applies to the whole payload.
         match manifest.graph.as_deref() {
             None => Ok(SchemaMigrationGraphSelector::Default),
             Some("") => Err(MigrationError::Manifest(
@@ -1882,6 +1891,10 @@ mod tests {
                     SchemaMigrationStatementProfile::CreateIndex,
                     SchemaMigrationStatementProfile::CreateIndex,
                 ],
+            ),
+            (
+                "CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding OPTIONS { dimensions: 768, metric: \"cosine\", encoding: \"i8\", algorithm: \"ivf_flat\" }\n",
+                vec![SchemaMigrationStatementProfile::CreateVectorIndex],
             ),
         ];
         for (statement, expected) in accepted {

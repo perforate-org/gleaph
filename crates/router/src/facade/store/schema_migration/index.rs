@@ -300,7 +300,7 @@ fn validate_checksum(
     Ok(())
 }
 
-fn validate_new_chain(
+pub(super) fn validate_new_chain(
     args: &gleaph_migration_api::ApplySchemaMigrationArgsV1,
 ) -> Result<(), RouterError> {
     let chain = super::inspect_canonical_chain(None, 0)?;

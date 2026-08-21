@@ -153,6 +153,9 @@ pub enum SchemaMigrationStatementProfile {
     CreateTypedGraph,
     /// Gleaph `CREATE INDEX` migration, which requires a separate Router backfill lifecycle.
     CreateIndex,
+    /// Gleaph `CREATE VECTOR INDEX` migration, which provisions and registers a vector index
+    /// against a resolved graph (a synchronous one-shot catalog write plus optional provisioning).
+    CreateVectorIndex,
 }
 
 /// Compact terminal reason for a migration-driven index build.

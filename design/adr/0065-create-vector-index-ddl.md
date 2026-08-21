@@ -1,8 +1,8 @@
 # 0065. `CREATE VECTOR INDEX` as Router-owned semantic DDL
 
 Date: 2026-08-11
-Status: proposed contract (v1 parser, Router registration, and logical-index-name resolution landed; focused PocketIC ingress E2E passed; provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` deferred)
-Last revised: 2026-08-11
+Status: proposed contract (v1 parser, Router registration, logical-index-name resolution, and migration-path provisioning landed; focused PocketIC ingress E2E passed; activated ANN success and `DROP VECTOR INDEX` deferred)
+Last revised: 2026-08-21
 Anchor timestamp: 2026-08-11 12:16:53 UTC +0000
 
 ## Context
@@ -27,8 +27,9 @@ The v1 vendor parser, Router registration path, versioned definition record and 
 logical-name resolution for GQL/direct search have landed. The parser's 22 tests, check, clippy,
 format, and diff checks pass, and the focused PocketIC ingress test
 `gql_create_vector_index_nested_options_is_idempotent_and_fail_closed` passed (1 passed, 0 failed,
-6 filtered). Remote provisioning, backfill, activated ANN success, and `DROP VECTOR INDEX` remain
-deferred. The statement is owned by
+6 filtered). Migration-path provisioning (ADR 0071) now routes a `CREATE VECTOR INDEX` migration
+through the same `create_vector_index` provisioning/registration logic; activated ANN success and
+`DROP VECTOR INDEX` remain deferred. The statement is owned by
 `crates/index-ddl` and intercepted by Router before generic GQL parsing; generic `gleaph-gql` and
 `gleaph-gql-planner` remain provider-neutral.
 
