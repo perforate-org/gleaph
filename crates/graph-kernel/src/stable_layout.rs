@@ -1471,7 +1471,7 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             9,
             StableMemoryClass::Derived,
             "partition heads",
-            "(index_id, index_version, partition_id) → head { first_page, mutable_page, \
+            "(index_id, index_version, partition_id) → head { mutable_page, \
              page_count, live_len, next_page_id }: durable page allocator per partition/version",
             RebuildPath::Named("admin_start_vector_rebuild"),
         ),
@@ -1481,10 +1481,10 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             StableMemoryClass::Derived,
             "vector page directory",
             "(index_id, index_version, partition_id, page_id) → VectorPageMeta { slab_offset, \
-             capacity, row_count, live_count, row_stride, tombstone_count, meta_stride, run_capacity }: \
-             page directory for the ADR 0064 §7 two-table slab page store (companion to VECTOR_ROW_SLAB \
-             id 13). Fresh layout cutover (format version 1, breaking): no migration or compatibility \
-             reader",
+             row_count, live_count }: page directory for the ADR 0064 §7 two-table slab page store \
+             (companion to VECTOR_ROW_SLAB id 13); page geometry is owned by VECTOR_INDEX_DEFS and \
+             tombstoned rows are derived as row_count − live_count. Fresh layout cutover (format \
+             version 1, breaking): no migration or compatibility reader",
             RebuildPath::Named("admin_start_vector_rebuild"),
         ),
         region(

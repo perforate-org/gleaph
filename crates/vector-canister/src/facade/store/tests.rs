@@ -2328,7 +2328,6 @@ fn stale_centroids_fall_back_to_exact_scan() {
             INDEX_ID,
             IvfCentroidMeta {
                 centroid_ready: true,
-                centroid_epoch: 1,
                 trained_index_version: 999,
             },
         )
@@ -4929,11 +4928,12 @@ mod i8_tests {
         assert_eq!(def.pad_stride_bytes, 16);
         // `slots_per_page` is derived from `meta 8`; the page must fit at least one row.
         assert!(def.slots_per_page >= 1);
-        // The I8 page meta reopens with `meta_stride 8` (encoding-agnostic open validation).
+        // The I8 page reopens under `meta_stride 8`: open cross-checks the on-slab header against
+        // the def above (the only geometry owner), and the seeded row is present.
         let page_meta = PAGE_STORE
             .with_borrow(|s| s.page_meta_for_test(I8_INDEX, 1, 0, 0))
             .expect("i8 page meta");
-        assert_eq!(page_meta.meta_stride, 8);
+        assert_eq!(page_meta.row_count, 1);
     }
 
     #[test]

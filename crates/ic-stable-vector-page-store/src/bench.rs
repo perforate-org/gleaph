@@ -10,18 +10,13 @@ use std::hint::black_box;
 use canbench_rs::bench;
 
 use crate::header::PageHeader;
-use crate::kernel::{
-    bits01_and_popcount, dot_f32, l2_squared_f32, l2_squared_f32_early_exit, popcount_bytes,
-    signs_xor_popcount,
-};
+use crate::kernel::{dot_f32, l2_squared_f32, l2_squared_f32_early_exit};
 use crate::layout::PageLayout;
 
 /// Design-target dimensions.
 const D: usize = 1536;
 /// F32 pad stride at `d = 1536`: `ceil(1536 / 4) * 16`.
 const D1536_PAD_STRIDE: u32 = 6144;
-/// Binary row bytes at `d = 1536`: `ceil(1536 / 8)`.
-const D1536_BINARY_BYTES: usize = 192;
 
 /// xorshift64 — deterministic pseudo-random fill (content is irrelevant, only cost matters).
 fn next_rand(state: &mut u64) -> u64 {
@@ -54,11 +49,6 @@ fn query_f32(dims: usize) -> Vec<f32> {
         .collect()
 }
 
-fn binary_bytes(len: usize) -> Vec<u8> {
-    let mut state = 0x0F0F_0F0F_0F0F_0F0F;
-    (0..len).map(|_| next_rand(&mut state) as u8).collect()
-}
-
 /// Full sub-square L2 on one `d = 1536` row (the default formulation).
 #[bench(raw)]
 fn bench_l2_full_d1536() -> canbench_rs::BenchResult {
@@ -87,18 +77,6 @@ fn bench_dot_d1536() -> canbench_rs::BenchResult {
     let v = black_box(f32_row_bytes(D));
     canbench_rs::bench_fn(|| {
         black_box(dot_f32(&v, &q));
-    })
-}
-
-/// Binary popcount primitives at `d = 1536` (192 row bytes).
-#[bench(raw)]
-fn bench_binary_popcount_d1536() -> canbench_rs::BenchResult {
-    let q = black_box(binary_bytes(D1536_BINARY_BYTES));
-    let v = black_box(binary_bytes(D1536_BINARY_BYTES));
-    canbench_rs::bench_fn(|| {
-        black_box(bits01_and_popcount(&q, &v));
-        black_box(signs_xor_popcount(&q, &v));
-        black_box(popcount_bytes(&q));
     })
 }
 

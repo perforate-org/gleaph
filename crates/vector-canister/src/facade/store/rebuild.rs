@@ -28,7 +28,7 @@ use super::{
     MAX_REBUILD_TRAINING_ITERATIONS, VectorCanisterStore,
 };
 use crate::facade::stable::definition_store;
-use crate::facade::stable::page_store::PageScratch;
+use crate::facade::stable::page_store::{PageScratch, live_def_resolver};
 use crate::facade::stable::subject_store::{self, SubjectScanPage};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE,
@@ -1186,7 +1186,8 @@ impl VectorCanisterStore {
         index_id: Option<u32>,
     ) -> Result<VectorSlabStats, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id)))
+        let mut def_of = live_def_resolver();
+        Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id, &mut def_of)))
     }
 
     /// IC-safe, cursor/budgeted variant of [`admin_vector_slab_stats`](Self::admin_vector_slab_stats)
@@ -1201,7 +1202,8 @@ impl VectorCanisterStore {
         index_id: Option<u32>,
     ) -> Result<VectorSlabStatsStep, VectorCanisterError> {
         self.assert_router_caller(caller)?;
-        PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id))
+        let mut def_of = live_def_resolver();
+        PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id, &mut def_of))
     }
 
     /// Bounded page-meta tombstone-health step for the active index version (ADR 0031 Slice 9).
@@ -1266,12 +1268,10 @@ impl VectorCanisterStore {
         // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
         super::centroid_cache::invalidate(index_id);
         IVF_CENTROID_META.with_borrow_mut(|meta| {
-            let epoch = meta.get(&index_id).map(|m| m.centroid_epoch).unwrap_or(0);
             meta.insert(
                 index_id,
                 IvfCentroidMeta {
                     centroid_ready: true,
-                    centroid_epoch: epoch + 1,
                     trained_index_version: target_index_version,
                 },
             );

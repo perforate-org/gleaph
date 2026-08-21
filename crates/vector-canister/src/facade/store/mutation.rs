@@ -670,8 +670,9 @@ impl VectorCanisterStore {
         })
     }
 
-    /// Marks a slot tombstoned via the slab page store, which owns the `VectorPageMeta` live/
-    /// tombstone counts and the `VECTOR_PARTITION_HEADS.live_len` decrement. Idempotent.
+    /// Marks a slot tombstoned via the slab page store, which owns the `VectorPageMeta` live
+    /// count (tombstoned rows are `row_count − live_count`) and the
+    /// `VECTOR_PARTITION_HEADS.live_len` decrement. Idempotent.
     pub(super) fn tombstone_slot(&self, index_id: u32, slot: SlotRef) {
         PAGE_STORE.with_borrow_mut(|store| {
             store.tombstone_row(index_id, slot);

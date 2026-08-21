@@ -116,7 +116,6 @@ impl VectorCanisterStore {
                 index_id,
                 IvfCentroidMeta {
                     centroid_ready: true,
-                    centroid_epoch: 1,
                     trained_index_version: active,
                 },
             )

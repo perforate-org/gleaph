@@ -313,7 +313,6 @@ impl StableMapValue for VectorIndexDef {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct IvfCentroidMeta {
     pub centroid_ready: bool,
-    pub centroid_epoch: u64,
     /// Index version the centroids were trained against (staleness check only; defs win).
     pub trained_index_version: u64,
 }
@@ -352,22 +351,6 @@ pub struct SlotRef {
     pub partition_id: u32,
     pub page_id: u32,
     pub slot: u32,
-}
-
-impl Storable for SlotRef {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode SlotRef"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode SlotRef")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), SlotRef).expect("decode SlotRef")
-    }
 }
 
 /// Fixed-size encoding of the subject-map row for the clustered-hash-map subject store.
@@ -570,9 +553,11 @@ impl Storable for ShardWatermarks {
 }
 
 /// Per-partition head: page chain bounds + durable `page_id` allocator (`VECTOR_PARTITION_HEADS`).
+///
+/// `live_len`/`page_count` serve the documented O(`nlist`) partition-health check without full
+/// scans.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct PartitionHead {
-    pub first_page: u64,
     pub mutable_page: u64,
     pub page_count: u64,
     pub live_len: u64,
@@ -582,17 +567,16 @@ pub struct PartitionHead {
 
 impl Storable for PartitionHead {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 40,
+        max_size: 32,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut out = [0u8; 40];
-        out[0..8].copy_from_slice(&self.first_page.to_le_bytes());
-        out[8..16].copy_from_slice(&self.mutable_page.to_le_bytes());
-        out[16..24].copy_from_slice(&self.page_count.to_le_bytes());
-        out[24..32].copy_from_slice(&self.live_len.to_le_bytes());
-        out[32..40].copy_from_slice(&self.next_page_id.to_le_bytes());
+        let mut out = [0u8; 32];
+        out[0..8].copy_from_slice(&self.mutable_page.to_le_bytes());
+        out[8..16].copy_from_slice(&self.page_count.to_le_bytes());
+        out[16..24].copy_from_slice(&self.live_len.to_le_bytes());
+        out[24..32].copy_from_slice(&self.next_page_id.to_le_bytes());
         Cow::Owned(out.to_vec())
     }
 
@@ -602,13 +586,12 @@ impl Storable for PartitionHead {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let b = bytes.as_ref();
-        assert_eq!(b.len(), 40, "PartitionHead expects exactly 40 bytes");
+        assert_eq!(b.len(), 32, "PartitionHead expects exactly 32 bytes");
         Self {
-            first_page: u64::from_le_bytes(b[0..8].try_into().expect("first_page")),
-            mutable_page: u64::from_le_bytes(b[8..16].try_into().expect("mutable_page")),
-            page_count: u64::from_le_bytes(b[16..24].try_into().expect("page_count")),
-            live_len: u64::from_le_bytes(b[24..32].try_into().expect("live_len")),
-            next_page_id: u64::from_le_bytes(b[32..40].try_into().expect("next_page_id")),
+            mutable_page: u64::from_le_bytes(b[0..8].try_into().expect("mutable_page")),
+            page_count: u64::from_le_bytes(b[8..16].try_into().expect("page_count")),
+            live_len: u64::from_le_bytes(b[16..24].try_into().expect("live_len")),
+            next_page_id: u64::from_le_bytes(b[24..32].try_into().expect("next_page_id")),
         }
     }
 }

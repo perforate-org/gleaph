@@ -1,8 +1,7 @@
 //! Distance kernels over stored byte spans.
 //!
 //! Stored rows are little-endian byte spans; the f32 kernels interpret the first
-//! `query.len() * 4` bytes as `f32` values. Binary kernels operate on bit-packed bytes
-//! (`dims` bits → `ceil(dims / 8)` bytes).
+//! `query.len() * 4` bytes as `f32` values.
 //!
 //! Kernels are SIMD-accelerated on wasm32/wasm64 with `simd128` and fall back to scalar
 //! otherwise. The 16-byte row alignment contract (`PageHeader::row_stride` multiple of 16,
@@ -625,78 +624,6 @@ pub fn dot_and_norm2_f32(bytes: &[u8], query: &[f32]) -> (f32, f32) {
     }
 }
 
-/// Number of set bits in `bytes` (compiles to `i64.popcnt` on wasm).
-pub fn popcount_bytes(bytes: &[u8]) -> u32 {
-    let (chunks, tail) = bytes.as_chunks::<8>();
-    let mut count = chunks
-        .iter()
-        .map(|c| u64::from_le_bytes(*c).count_ones())
-        .sum::<u32>();
-    for b in tail {
-        count += b.count_ones();
-    }
-    count
-}
-
-/// `n11 = Σ popcnt(q ∧ v)` for the Bits01 convention (bit 1 = 0/1 entries).
-pub fn bits01_and_popcount(q: &[u8], v: &[u8]) -> u32 {
-    let len = q.len().min(v.len());
-    let mut count = 0;
-    let (qchunks, qtail) = q[..len].as_chunks::<8>();
-    let (vchunks, vtail) = v[..len].as_chunks::<8>();
-    count += qchunks
-        .iter()
-        .zip(vchunks.iter())
-        .map(|(qc, vc)| (u64::from_le_bytes(*qc) & u64::from_le_bytes(*vc)).count_ones())
-        .sum::<u32>();
-    count += qtail
-        .iter()
-        .zip(vtail.iter())
-        .map(|(qb, vb)| (qb & vb).count_ones())
-        .sum::<u32>();
-    count
-}
-
-/// `H = Σ popcnt(q ⊕ v)` for the Signs convention (bit 1 = −1, bit 0 = +1); cosine ≡ Hamming
-/// order, so no square root is needed.
-pub fn signs_xor_popcount(q: &[u8], v: &[u8]) -> u32 {
-    let len = q.len().min(v.len());
-    let mut count = 0;
-    let (qchunks, qtail) = q[..len].as_chunks::<8>();
-    let (vchunks, vtail) = v[..len].as_chunks::<8>();
-    count += qchunks
-        .iter()
-        .zip(vchunks.iter())
-        .map(|(qc, vc)| (u64::from_le_bytes(*qc) ^ u64::from_le_bytes(*vc)).count_ones())
-        .sum::<u32>();
-    count += qtail
-        .iter()
-        .zip(vtail.iter())
-        .map(|(qb, vb)| (qb ^ vb).count_ones())
-        .sum::<u32>();
-    count
-}
-
-/// Bits01 cosine score `n11 · rq · rv`, where `rv = 1/√popcnt(v)` is derived from the row.
-///
-/// Returns `None` for a zero-popcount row (the cosine is undefined); the caller skips such rows
-/// during search. `rq` is the precomputed query factor `1/√popcnt(q)`.
-pub fn bits01_score(q: &[u8], v: &[u8], rq: f32) -> Option<f32> {
-    let n11 = bits01_and_popcount(q, v);
-    let v_count = popcount_bytes(v);
-    if v_count == 0 {
-        return None;
-    }
-    let rv = 1.0 / (v_count as f32).sqrt();
-    Some(n11 as f32 * rq * rv)
-}
-
-/// Signs cosine score `1 − 2H/d` (`dims` = number of bits; cosine ≡ Hamming order).
-pub fn signs_score(q: &[u8], v: &[u8], dims: u32) -> f32 {
-    let h = signs_xor_popcount(q, v);
-    1.0 - 2.0 * h as f32 / dims as f32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,58 +909,5 @@ mod tests {
         let q: Vec<f32> = vec![1.0, 2.0];
         let v: Vec<f32> = vec![3.0, 4.0];
         assert_eq!(dot_and_norm2_f32(&f32_row(&v), &q), (11.0, 25.0));
-    }
-
-    #[test]
-    fn popcount_bytes_matches_naive() {
-        // 0xFF → 8; 0x0F → 4; 0x03 → 2.
-        let bytes = [0xFFu8, 0x0F, 0x03, 0x00];
-        assert_eq!(popcount_bytes(&bytes), 14);
-        // Longer input exercises the u64 chunk path plus tail.
-        let long: Vec<u8> = (0..17).map(|i| if i % 2 == 0 { 0xFF } else { 0 }).collect();
-        assert_eq!(popcount_bytes(&long), 9 * 8);
-    }
-
-    #[test]
-    fn bits01_and_popcount_counts_set_bits_of_intersection() {
-        let q = [0b1010_1010u8, 0b1111_0000];
-        let v = [0b1100_1100u8, 0b0000_1111];
-        // AND = 0b1000_1000, 0b0000_0000 → 2 set bits.
-        assert_eq!(bits01_and_popcount(&q, &v), 2);
-    }
-
-    #[test]
-    fn signs_xor_popcount_counts_hamming_distance() {
-        let q = [0b0000_0000u8, 0b0000_0000];
-        let v = [0b1111_0000u8, 0b0000_1111];
-        // XOR = 0b1111_0000, 0b0000_1111 → 8 set bits.
-        assert_eq!(signs_xor_popcount(&q, &v), 8);
-    }
-
-    #[test]
-    fn bits01_score_matches_definition() {
-        // q = 0b11 (2 bits), v = 0b11 (2 bits): n11 = 2, rq = 1/√2, rv = 1/√2 → 2 · 1/2 = 1.
-        let q = [0b0000_0011u8];
-        let v = [0b0000_0011u8];
-        let rq = 1.0 / (2.0f32).sqrt();
-        let score = bits01_score(&q, &v, rq).expect("nonzero row");
-        assert!((score - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn bits01_score_rejects_zero_row() {
-        let q = [0xFFu8];
-        let v = [0x00u8];
-        assert!(bits01_score(&q, &v, 1.0).is_none());
-    }
-
-    #[test]
-    fn signs_score_matches_definition() {
-        // q = 0, v = 0b1111_0000 (dims 8): H = 4 → 1 − 2·4/8 = 0.
-        let q = [0x00u8];
-        let v = [0b1111_0000u8];
-        assert_eq!(signs_score(&q, &v, 8), 0.0);
-        // Identical vectors: H = 0 → 1.
-        assert_eq!(signs_score(&q, &q, 8), 1.0);
     }
 }

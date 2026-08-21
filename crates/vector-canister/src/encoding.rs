@@ -8,15 +8,6 @@
 use gleaph_graph_kernel::vector_index::VectorEncoding;
 use serde::{Deserialize, Serialize};
 
-/// Binary bit convention for a `Binary` encoding. `None` for non-binary encodings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum BinaryConvention {
-    /// Bit 1 = 0/1 entry; cosine `n11 · rq · rv`.
-    Bits01,
-    /// Bit 1 = −1, bit 0 = +1; cosine ≡ Hamming order (`1 − 2H/d`).
-    Signs,
-}
-
 /// Byte-level scoring kernel selected by the encoding (the metric/formulation is orthogonal and
 /// chosen at search time).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -25,8 +16,6 @@ pub enum ScoringKernel {
     F32Dot,
     /// Stored bytes are `f16`/`bf16`/`i8`/`u8`; upcast to `f32` once per page read.
     UpcastF32Dot,
-    /// Stored bytes are packed bits; score via popcount.
-    BinaryPopcnt,
 }
 
 /// Fail-closed encoding record error.
@@ -46,8 +35,6 @@ pub enum EncodingError {
     PadStrideMismatch(u32),
     /// `aux_bytes` is not one of 0 | 4 | 8.
     InvalidAuxBytes(u32),
-    /// A binary convention is set for a non-binary encoding, or absent for a binary encoding.
-    BinaryConventionMismatch,
     /// The kernel is inconsistent with the encoding.
     KernelMismatch,
     /// The derived width overflows `u32`.
@@ -68,17 +55,15 @@ pub struct EncodingRecord {
     pub pad_stride_bytes: u32,
     /// Row-meta aux width: 0 | 4 | 8 (encoding/metric-dependent; see the design's `RowAux`).
     pub aux_bytes: u32,
-    /// Bit convention for a `Binary` encoding; `None` otherwise.
-    pub binary_convention: Option<BinaryConvention>,
     /// Byte-level scoring kernel for the encoding.
     pub kernel: ScoringKernel,
 }
 
 impl EncodingRecord {
     /// Builds the record from the index definition inputs, deriving every width and the aux
-    /// default for `encoding` (the design's `RowAux` defaults: F32 0, I8 mandatory 4-byte scale,
-    /// binary 0 — none depend on the metric; the metric-dependent pruning aux is opt-in and not
-    /// part of the definition-time record).
+    /// default for `encoding` (the design's `RowAux` defaults: F32 0, I8 mandatory 4-byte scale —
+    /// none depend on the metric; the metric-dependent pruning aux is opt-in and not part of the
+    /// definition-time record).
     pub fn from_parts(encoding: VectorEncoding, dims: u16) -> Result<Self, EncodingError> {
         if dims == 0 {
             return Err(EncodingError::ZeroDims);
@@ -90,12 +75,12 @@ impl EncodingRecord {
         // SIMD scratch stride: the stored stride aligned up to a 16-byte boundary. Valid
         // `(component_bytes, dims)` widths cannot overflow here (`4 × u16::MAX << u32::MAX`).
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
-        let (aux_bytes, binary_convention, kernel) = match encoding {
+        let (aux_bytes, kernel) = match encoding {
             // F32: default formulations need no per-row aux (sub-square + early exit for L2;
             // normalized-dot only for cosine). I8 carries a mandatory 4-byte per-row quantization
-            // scale and an upcast/fused scoring kernel. Binary uses 0 aux and a popcount kernel.
-            VectorEncoding::F32 => (0, None, ScoringKernel::F32Dot),
-            VectorEncoding::I8 => (4, None, ScoringKernel::UpcastF32Dot),
+            // scale and an upcast/fused scoring kernel.
+            VectorEncoding::F32 => (0, ScoringKernel::F32Dot),
+            VectorEncoding::I8 => (4, ScoringKernel::UpcastF32Dot),
         };
         let record = Self {
             encoding,
@@ -103,7 +88,6 @@ impl EncodingRecord {
             stride_bytes,
             pad_stride_bytes,
             aux_bytes,
-            binary_convention,
             kernel,
         };
         record.validate()?;
@@ -132,12 +116,6 @@ impl EncodingRecord {
         }
         if !matches!(self.aux_bytes, 0 | 4 | 8) {
             return Err(EncodingError::InvalidAuxBytes(self.aux_bytes));
-        }
-        match (self.encoding, self.binary_convention) {
-            (VectorEncoding::F32, None) => {}
-            (VectorEncoding::F32, Some(_)) => return Err(EncodingError::BinaryConventionMismatch),
-            (VectorEncoding::I8, None) => {}
-            (VectorEncoding::I8, Some(_)) => return Err(EncodingError::BinaryConventionMismatch),
         }
         match (self.encoding, self.kernel) {
             (VectorEncoding::F32, ScoringKernel::F32Dot) => {}
@@ -174,7 +152,6 @@ mod tests {
         assert_eq!(record.aux_bytes, 0);
         assert_eq!(record.meta_stride(), 4);
         assert_eq!(record.kernel, ScoringKernel::F32Dot);
-        assert_eq!(record.binary_convention, None);
     }
 
     #[test]
@@ -186,7 +163,6 @@ mod tests {
         assert_eq!(record.aux_bytes, 4);
         assert_eq!(record.meta_stride(), 8);
         assert_eq!(record.kernel, ScoringKernel::UpcastF32Dot);
-        assert_eq!(record.binary_convention, None);
     }
 
     #[test]
@@ -252,19 +228,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_binary_convention_on_f32() {
-        let mut record = EncodingRecord::from_parts(VectorEncoding::F32, 4).expect("valid");
-        record.binary_convention = Some(BinaryConvention::Bits01);
-        assert_eq!(
-            record.validate(),
-            Err(EncodingError::BinaryConventionMismatch)
-        );
-    }
-
-    #[test]
     fn validate_rejects_wrong_kernel() {
         let mut record = EncodingRecord::from_parts(VectorEncoding::F32, 4).expect("valid");
-        record.kernel = ScoringKernel::BinaryPopcnt;
+        record.kernel = ScoringKernel::UpcastF32Dot;
         assert_eq!(record.validate(), Err(EncodingError::KernelMismatch));
     }
 }

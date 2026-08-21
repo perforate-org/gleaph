@@ -101,7 +101,6 @@ fn successful_reset_clears_coupled_state_and_preserves_independent_lifecycle_sta
             INDEX_ID,
             IvfCentroidMeta {
                 centroid_ready: true,
-                centroid_epoch: 3,
                 trained_index_version: 0,
             },
         );

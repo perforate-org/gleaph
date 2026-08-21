@@ -23,7 +23,7 @@ mod canister;
 mod encoding;
 mod guards;
 
-pub use encoding::{BinaryConvention, EncodingError, EncodingRecord, ScoringKernel};
+pub use encoding::{EncodingError, EncodingRecord, ScoringKernel};
 pub use facade::VectorCanisterStore;
 pub use init::VectorCanisterInitArgs;
 pub use state::VectorCanisterError;

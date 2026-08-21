@@ -6,8 +6,7 @@
 //! - the run table that shares a shard across contiguous rows;
 //! - the packed 30-bit [`VertexPayload`] row identity with a tombstone bit (mirroring the graph's
 //!   `VertexRef`); and
-//! - the distance kernels (sub-square L2 with early exit, dot, binary popcount) over stored byte
-//!   spans.
+//! - the distance kernels (sub-square L2 with early exit, dot) over stored byte spans.
 //!
 //! **Boundary.** This crate must not know subject-map clocks, partitions, centroids, labels,
 //! rebuild, or search semantics: strides and aux widths arrive as parameters, and header
