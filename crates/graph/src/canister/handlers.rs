@@ -357,6 +357,11 @@ async fn execute_ordered_edge_batch_impl(
         return execute_ordered_edge_batch_resumable(args, instruction_source).await;
     }
 
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::begin_ordered_dispatch() {
+        return Err("pocket-ic-e2e rejected a second ordered dispatch".into());
+    }
+
     let logical_item_count = u32::try_from(request.items.len())
         .map_err(|_| "ordered Graph request item count exceeds u32".to_string())?;
     let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
@@ -471,7 +476,12 @@ async fn execute_ordered_edge_batch_impl(
     flush_ordered_batch_postings(args.mutation_id)
         .await
         .map_err(|error| error.to_string())?;
-    result
+    let result = result?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::inject_ordered_response_loss() {
+        return Err("pocket-ic-e2e ordered response loss after commit".into());
+    }
+    Ok(result)
 }
 
 /// Flush the ordered batch's volatile property-index postings to the index canister (ADR 0060
@@ -594,6 +604,11 @@ async fn execute_ordered_vertex_batch_impl(
         return execute_ordered_vertex_batch_resumable(args, instruction_source).await;
     }
 
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::begin_ordered_dispatch() {
+        return Err("pocket-ic-e2e rejected a second ordered dispatch".into());
+    }
+
     let logical_item_count = u32::try_from(request.items.len())
         .map_err(|_| "ordered vertex Graph request item count exceeds u32".to_string())?;
     let identity = GraphMutationRequestIdentityV1::OrderedVertexBatch {
@@ -658,6 +673,10 @@ async fn execute_ordered_vertex_batch_impl(
     flush_ordered_batch_postings(args.mutation_id)
         .await
         .map_err(|error| error.to_string())?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::inject_ordered_response_loss() {
+        return Err("pocket-ic-e2e ordered response loss after commit".into());
+    }
     Ok(GraphOrderedVertexBatchResult::V1(
         GraphOrderedVertexBatchResultV1::Completed(
             gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
@@ -807,6 +826,11 @@ pub async fn execute_ordered_mixed_batch(
         .map_err(|error| format!("ordered mixed Graph request validation: {error}"))?;
     if args.execution_mode == OrderedBatchExecutionModeV1::Resumable {
         return Err("ordered mixed Graph batch does not support resumable execution".into());
+    }
+
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::begin_ordered_dispatch() {
+        return Err("pocket-ic-e2e rejected a second ordered dispatch".into());
     }
     let OrderedMixedBatchGraphRequest::V1(request) = &args.request;
     ensure_ordered_batch_instruction_budget(request.operations.len(), "ordered mixed batch")?;
@@ -971,6 +995,10 @@ pub async fn execute_ordered_mixed_batch(
     flush_ordered_batch_postings(args.mutation_id)
         .await
         .map_err(|error| error.to_string())?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::inject_ordered_response_loss() {
+        return Err("pocket-ic-e2e ordered response loss after commit".into());
+    }
     Ok(result)
 }
 
@@ -2663,6 +2691,23 @@ pub fn e2e_arm_unique_ack_fault(code: u8) -> Result<(), String> {
         .ok_or_else(|| format!("unknown graph fault code {code}"))?;
     crate::test_fault::arm(fault);
     Ok(())
+}
+
+/// Arm (or clear, with `0`) the one-shot ordered response-loss seam (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_arm_ordered_response_loss(code: u8) -> Result<(), String> {
+    match code {
+        0 => crate::test_fault::clear_ordered_response_loss(),
+        1 => crate::test_fault::arm_ordered_response_loss(),
+        _ => return Err(format!("unknown ordered response-loss code {code}")),
+    }
+    Ok(())
+}
+
+/// Return the ordered dispatch count and one-shot reject-next marker (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_ordered_dispatch_state() -> Result<(u64, bool), String> {
+    Ok(crate::test_fault::ordered_dispatch_state())
 }
 
 /// Count of currently pinned (un-acked) unique effects in the outbox (PocketIC E2E only). Lets a

@@ -518,6 +518,18 @@ fn e2e_arm_unique_ack_fault(code: u8) -> Result<(), String> {
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+fn e2e_arm_ordered_response_loss(code: u8) -> Result<(), String> {
+    canister::handlers::e2e_arm_ordered_response_loss(code)
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
+fn e2e_ordered_dispatch_state() -> Result<(u64, bool), String> {
+    canister::handlers::e2e_ordered_dispatch_state()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 #[query(guard = "guard_control_plane_admin")]
 fn e2e_unique_outbox_len() -> Result<u64, String> {
     canister::handlers::e2e_unique_outbox_len()

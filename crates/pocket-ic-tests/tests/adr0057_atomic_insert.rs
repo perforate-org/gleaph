@@ -1,20 +1,22 @@
 //! PocketIC: ADR 0049/0057 atomic-insert admission, receipts, and exact-key replay.
 
+use candid::Encode;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::federation::{
     ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, RouterError, encode_global_vertex_id,
 };
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, arm_router_fault, atomic_insert_as_admin, atomic_insert_status_as_admin,
-    e2e_insert_vertex, e2e_reverse_resolved_edge_property, ensure_edge_label, ensure_property,
-    ensure_vertex_label, evict_graph_mutation_journal,
+    FederationEnv, arm_graph_ordered_response_loss, arm_router_fault, atomic_insert_as_admin,
+    atomic_insert_status_as_admin, e2e_insert_vertex, e2e_reverse_resolved_edge_property,
+    ensure_edge_label, ensure_property, ensure_vertex_label, evict_graph_mutation_journal,
     federation_graph_element_id_encoding_key_bytes, gql_mutate_as_admin, gql_query_as_admin,
-    install_single_shard_federation, run_router_recovery_timer,
+    graph_ordered_dispatch_state, install_single_shard_federation, run_router_recovery_timer,
+    wasm_bytes,
 };
 use gleaph_router::types::{
     AtomicInsertEdgeV1, AtomicInsertEndpointV1, AtomicInsertOperationV1, AtomicInsertPropertyV1,
-    AtomicInsertRequest, AtomicInsertRequestV1, AtomicInsertVertexV1,
+    AtomicInsertRequest, AtomicInsertRequestV1, AtomicInsertResponse, AtomicInsertVertexV1,
 };
 
 fn ordered_vertex_request(key: &str) -> AtomicInsertRequest {
@@ -94,6 +96,101 @@ fn ordered_edge_request(key: &str, source: Vec<u8>, target: Vec<u8>) -> AtomicIn
     })
 }
 
+fn ordered_existing_edge_request(env: &FederationEnv, key: &str) -> AtomicInsertRequest {
+    let source = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
+    let target = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
+    let encoding_key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
+    ordered_edge_request(
+        key,
+        encode_global_vertex_id(&encoding_key, source).0.to_vec(),
+        encode_global_vertex_id(&encoding_key, target).0.to_vec(),
+    )
+}
+
+fn observe_graph_response_loss(
+    env: &FederationEnv,
+    key: &str,
+    request: &AtomicInsertRequest,
+) -> u64 {
+    arm_graph_ordered_response_loss(env, env.graph_source, 1);
+    assert_eq!(
+        graph_ordered_dispatch_state(env, env.graph_source),
+        (0, false),
+        "arming must reset the ordered dispatch observables"
+    );
+
+    let error = atomic_insert_as_admin(env, request.clone()).unwrap_err();
+    assert!(matches!(
+        error,
+        RouterError::Internal(message)
+            if message.contains("pocket-ic-e2e ordered response loss after commit")
+    ));
+    let pending = atomic_insert_status_as_admin(env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("response-loss mutation status");
+    assert_eq!(
+        pending.status.phase,
+        MutationLifecyclePhase::CanonicalPending
+    );
+    assert_eq!(pending.status.target_shard, None);
+    assert_eq!(
+        pending.status.next_action,
+        "retry the idempotent mutation to resume the remaining canonical shard writes"
+    );
+    assert_eq!(pending.status.last_error, None);
+    assert!(pending.receipt.is_none());
+    assert_eq!(
+        graph_ordered_dispatch_state(env, env.graph_source),
+        (1, true),
+        "the committed call must arm the second-dispatch detector"
+    );
+    pending.status.mutation_id
+}
+
+fn assert_atomic_receipt(
+    response: &AtomicInsertResponse,
+    mutation_id: u64,
+    expected: (MutationLifecyclePhase, u64, u64, u64, usize),
+) {
+    let (phase, operation_count, vertex_count, edge_count, allocated_vertex_count) = expected;
+    assert_eq!(response.status.mutation_id, mutation_id);
+    assert_eq!(response.status.phase, phase);
+    assert_eq!(response.status.last_error, None);
+    match phase {
+        MutationLifecyclePhase::Completed => {
+            assert_eq!(response.status.target_shard, None);
+            assert_eq!(response.status.next_action, "none");
+        }
+        MutationLifecyclePhase::CanonicalCommitted => {
+            assert_eq!(response.status.target_shard, None);
+            assert_eq!(
+                response.status.next_action,
+                "none; projection recovery is automatic (poll mutation_status or use AtLeast reads)"
+            );
+        }
+        other => panic!("unexpected asserted atomic-insert phase: {other:?}"),
+    }
+    let receipt = response.receipt.as_ref().expect("exact ordered receipt");
+    assert_eq!(receipt.logical_operation_count, operation_count);
+    assert_eq!(receipt.logical_vertex_count, vertex_count);
+    assert_eq!(receipt.logical_edge_count, edge_count);
+    assert_eq!(receipt.allocated_vertex_ids.len(), allocated_vertex_count);
+    assert!(
+        receipt
+            .allocated_vertex_ids
+            .iter()
+            .all(|id| id.len() == ENCODED_VERTEX_ID_BYTES)
+    );
+}
+
+fn clear_graph_response_loss(env: &FederationEnv) {
+    arm_graph_ordered_response_loss(env, env.graph_source, 0);
+    assert_eq!(
+        graph_ordered_dispatch_state(env, env.graph_source),
+        (0, false),
+        "clearing must reset the ordered dispatch observables"
+    );
+}
+
 fn query_scores(env: &FederationEnv, query: &str) -> Vec<i128> {
     let result = gql_query_as_admin(env, query);
     let rows =
@@ -110,6 +207,99 @@ fn query_scores(env: &FederationEnv, query: &str) -> Vec<i128> {
         "score value missing in {query}: rows={rows:?}"
     );
     values.into_iter().map(Option::unwrap).collect()
+}
+
+#[test]
+fn atomic_insert_canonical_pending_reconciliation_same_key_retry_does_not_redispatch_completed_journal()
+ {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+
+    let edge_key = "adr0049-canonical-pending-edge-retry";
+    let edge_request = ordered_existing_edge_request(&env, edge_key);
+    let edge_mutation_id = observe_graph_response_loss(&env, edge_key, &edge_request);
+    let edge_retry =
+        atomic_insert_as_admin(&env, edge_request).expect("edge same-key reconciliation");
+    assert_atomic_receipt(
+        &edge_retry,
+        edge_mutation_id,
+        (MutationLifecyclePhase::CanonicalCommitted, 1, 0, 1, 0),
+    );
+    assert_eq!(
+        graph_ordered_dispatch_state(&env, env.graph_source),
+        (1, true)
+    );
+    clear_graph_response_loss(&env);
+
+    let vertex_key = "adr0049-canonical-pending-vertex-retry";
+    let vertex_request = ordered_vertex_request(vertex_key);
+    let vertex_mutation_id = observe_graph_response_loss(&env, vertex_key, &vertex_request);
+    let vertex_retry =
+        atomic_insert_as_admin(&env, vertex_request).expect("vertex same-key reconciliation");
+    assert_atomic_receipt(
+        &vertex_retry,
+        vertex_mutation_id,
+        (MutationLifecyclePhase::CanonicalCommitted, 2, 2, 0, 2),
+    );
+    assert_eq!(
+        graph_ordered_dispatch_state(&env, env.graph_source),
+        (1, true)
+    );
+    clear_graph_response_loss(&env);
+
+    let mixed_key = "adr0049-canonical-pending-mixed-retry";
+    let mixed_request = ordered_mixed_request(&env, mixed_key);
+    let mixed_mutation_id = observe_graph_response_loss(&env, mixed_key, &mixed_request);
+    let mixed_retry =
+        atomic_insert_as_admin(&env, mixed_request).expect("mixed same-key reconciliation");
+    assert_atomic_receipt(
+        &mixed_retry,
+        mixed_mutation_id,
+        (MutationLifecyclePhase::CanonicalCommitted, 2, 1, 1, 1),
+    );
+    assert_eq!(
+        graph_ordered_dispatch_state(&env, env.graph_source),
+        (1, true)
+    );
+    clear_graph_response_loss(&env);
+}
+
+#[test]
+fn atomic_insert_canonical_pending_reconciliation_timer_after_router_upgrade_does_not_redispatch_completed_journal()
+ {
+    let env = install_single_shard_federation();
+    let key = "adr0049-canonical-pending-timer-router-upgrade";
+    let request = ordered_existing_edge_request(&env, key);
+    let mutation_id = observe_graph_response_loss(&env, key, &request);
+
+    env.pic
+        .upgrade_canister(
+            env.router,
+            wasm_bytes("ROUTER_WASM"),
+            Encode!(&()).expect("encode router upgrade args"),
+            None,
+        )
+        .expect("upgrade router canister");
+    assert_eq!(
+        graph_ordered_dispatch_state(&env, env.graph_source),
+        (1, true),
+        "Router-only upgrade must preserve the Graph heap seam"
+    );
+
+    run_router_recovery_timer(&env);
+    let completed = atomic_insert_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("timer-reconciled atomic insert status");
+    assert_atomic_receipt(
+        &completed,
+        mutation_id,
+        (MutationLifecyclePhase::Completed, 1, 0, 1, 0),
+    );
+    assert_eq!(
+        graph_ordered_dispatch_state(&env, env.graph_source),
+        (1, true),
+        "timer recovery must adopt the exact journal receipt without ordered dispatch"
+    );
+    clear_graph_response_loss(&env);
 }
 
 #[test]

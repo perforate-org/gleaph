@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-08-20
-Anchor timestamp: 2026-08-20 19:49:32 UTC +0000
+Last updated: 2026-08-21
+Anchor timestamp: 2026-08-21 02:41:52 UTC +0000
 
 ## Status
 
@@ -105,27 +105,53 @@ defect from being rediscovered without its prior reasoning.
 
 ### GAP-2026-08-20-003 — CanonicalPending retry does not reconcile a completed Graph receipt
 
-- **Status:** Open
+- **Status:** Resolved (commit pending; fix is in this patch)
 - **Severity:** P1 Router exact-replay recovery
 - **Owner:** Router ordered atomic_insert lifecycle and exact Graph journal reconciliation
-- **Observed behavior:** ADR 0049 requires a same-key retry after a Graph success / Router callback
-  loss to query the exact Graph journal and either record its completed receipt or resend the exact
-  stored request. Live ordered edge, vertex, and mixed recovery leave CanonicalPending with an
-  explicit-retry diagnostic, and an existing same-key request returns its Router record without
-  reconciliation.
+- **Observed behavior (before fix):** ADR 0049 requires a same-key retry after a Graph success /
+  Router callback loss to query the exact Graph journal and either record its completed receipt or
+  resend the exact stored request. Ordered edge, vertex, and mixed recovery left CanonicalPending
+  with an explicit-retry diagnostic, and an existing same-key request returned its Router record
+  without reconciliation.
 - **Expected or needed behavior:** If the exact Graph journal contains a completed receipt, retry
-  must advance the Router record without canonical redispatch; an absent entry may remain
-  CanonicalPending for an explicit exact retry.
-- **Evidence:** ADR 0029 §2; ADR 0049 §1558–1579; crates/router/src/gql.rs
-  (recover_ordered_edge_batch_record, recover_ordered_vertex_batch_record,
-  recover_ordered_mixed_batch_record, and ordered request reservation paths); and
-  crates/pocket-ic-tests/tests/adr0057_atomic_insert.rs. The existing response-loss fault runs
-  after the Router receipt is durable, so it does not cover the Graph-receipt/Router-receipt gap.
-- **Impact:** A committed canonical effect can remain non-terminal despite the exact durable Graph
-  receipt needed to reconcile it.
-- **Next decision:** Add a fault seam between Graph receipt persistence and Router receipt
-  persistence, then a focused PocketIC regression. Model this lifecycle only after the production
-  reconciliation rule is executable.
+  must advance the Router record without canonical redispatch. Only an explicit exact retry may
+  redispatch an unambiguously absent stored target; background recovery must remain query-only and
+  fail closed.
+- **Resolution:** Existing ordered CanonicalPending admission now reaches Router's private
+  trigger-aware reconciliation boundary before fresh routing or catalog resolution. It reads the
+  persisted Graph target and accepts only exact active, completed journal evidence to record the
+  matching receipt without an ordered execution. Explicit same-key retry may redispatch only after
+  an unambiguous Absent result and only with that immutable stored request. Background recovery is
+  query-only: it may adopt exact completed evidence, while Absent, invalid, retired,
+  not-applicable, non-completed, and identity/version/fingerprint/count/allocation mismatches keep
+  CanonicalPending with only the bounded diagnostic change and no ordered execution.
+- **Evidence:** Router tests
+  canonical_pending_reconciliation_uses_stored_target_before_fresh_resolution,
+  canonical_pending_reconciliation_adopts_exact_completed_receipts_without_dispatch,
+  canonical_pending_reconciliation_rejects_nonexact_evidence_without_dispatch, and
+  canonical_pending_reconciliation_handles_absent_by_trigger; PocketIC tests
+  atomic_insert_canonical_pending_reconciliation_same_key_retry_does_not_redispatch_completed_journal
+  and
+  atomic_insert_canonical_pending_reconciliation_timer_after_router_upgrade_does_not_redispatch_completed_journal.
+  The final focused Router filter reported 4 passed / 792 filtered. The focused PocketIC filter
+  reported 2 passed / 13 filtered after the test-only target_shard expectation correction. Router
+  library clippy, Graph pocket-ic-e2e clippy, and the PocketIC target clippy passed.
+- **Supplemental runtime evidence:** After the latest Router reservation fix, the full
+  adr0057_atomic_insert target ran once and reported 14 passed / 1 failed. Both reconciliation
+  tests passed. This target is not counted as a pass: the unrelated
+  atomic_insert_rejects_missing_catalog_name_before_reservation test failed because PocketIC HTTP
+  adapter startup timed out and reqwest reported IncompleteMessage.
+- **Close-gate status:** Global `cargo fmt --all -- --check` passed. The final Plan 0266 validator
+  passed. The final exact 7-path scope review passed with the staged-empty/unrelated manifest
+  matched. Both scoped Plan tests passed. The full `adr0057_atomic_insert` target remains
+  incomplete at 14 passed / 1 failed because the unrelated
+  `atomic_insert_rejects_missing_catalog_name_before_reservation` test hit a PocketIC HTTP
+  adapter startup timeout (`IncompleteMessage`). No benchmark was run because this slice does not
+  change a performance-sensitive algorithm. No commit exists yet.
+- **Impact (before fix):** A committed canonical effect could remain non-terminal despite the
+  exact durable Graph receipt needed to reconcile it.
+- **Next decision:** None for this recovery contract. Plan 0260 remains a later, non-blocking
+  formalization slice.
 
 ### GAP-2026-08-20-004 — Rust application client SDK and shared Router wire contract
 

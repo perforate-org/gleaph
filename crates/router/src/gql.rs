@@ -20,10 +20,13 @@ use gleaph_graph_kernel::index::{
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
-    GraphMutationJournalEntryWire, GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1,
-    MutationId, MutationJournalState, MutationToken, MutationTokenShard, ReadMode,
-    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, ShardEventSeq,
-    UniqueClaimDispatch,
+    GraphMutationJournalEntryWire, GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1,
+    GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1,
+    GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult, GraphOrderedMixedBatchResultV1,
+    GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult,
+    GraphOrderedVertexBatchResultV1, MutationId, MutationJournalState, MutationToken,
+    MutationTokenShard, ReadMode, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire,
+    ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
@@ -134,9 +137,9 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_stats::RouterMutationShardV1;
 use crate::facade::stable::label_stats::{
     ClientMutationKey, OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
-    OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1, RouterMutationRequestIdentityV1,
-    RouterOrderedEdgeBatchTargetV1, RouterOrderedMixedBatchTargetV1,
-    RouterOrderedVertexBatchTargetV1,
+    OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1, RouterMutationRecord,
+    RouterMutationRequestIdentityV1, RouterOrderedEdgeBatchTargetV1,
+    RouterOrderedMixedBatchTargetV1, RouterOrderedVertexBatchTargetV1,
 };
 use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::uniqueness::{
@@ -177,6 +180,144 @@ fn mutation_key_for(caller: Principal, graph_id: GraphId, client_key: &str) -> C
 pub(crate) type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
 
 pub(crate) const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
+
+#[cfg(test)]
+struct OrderedReconciliationTestDispatches {
+    edge: Option<Result<GraphOrderedEdgeBatchResult, String>>,
+    vertex: Option<Result<GraphOrderedVertexBatchResult, String>>,
+    mixed: Option<Result<GraphOrderedMixedBatchResult, String>>,
+    edge_args: Option<gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs>,
+    vertex_args: Option<gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgs>,
+    mixed_args: Option<gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs>,
+    calls: u32,
+}
+
+#[cfg(test)]
+impl OrderedReconciliationTestDispatches {
+    fn new() -> Self {
+        Self {
+            edge: None,
+            vertex: None,
+            mixed: None,
+            edge_args: None,
+            vertex_args: None,
+            mixed_args: None,
+            calls: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static ORDERED_RECONCILIATION_TEST_DISPATCHES:
+        RefCell<OrderedReconciliationTestDispatches> =
+        RefCell::new(OrderedReconciliationTestDispatches::new());
+    static ORDERED_TEST_CALLER: RefCell<Option<Principal>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn ordered_insert_caller() -> Principal {
+    ORDERED_TEST_CALLER.with(|caller| caller.borrow().unwrap_or_else(msg_caller))
+}
+
+#[cfg(not(test))]
+fn ordered_insert_caller() -> Principal {
+    msg_caller()
+}
+
+#[cfg(test)]
+fn set_ordered_test_caller(caller: Option<Principal>) {
+    ORDERED_TEST_CALLER.with(|current| *current.borrow_mut() = caller);
+}
+
+#[cfg(test)]
+fn reset_test_reconciliation_dispatches() {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| {
+        *state.borrow_mut() = OrderedReconciliationTestDispatches::new();
+    });
+}
+
+#[cfg(test)]
+fn set_test_edge_dispatch(result: Result<GraphOrderedEdgeBatchResult, String>) {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow_mut().edge = Some(result));
+}
+
+#[cfg(test)]
+fn set_test_vertex_dispatch(result: Result<GraphOrderedVertexBatchResult, String>) {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow_mut().vertex = Some(result));
+}
+
+#[cfg(test)]
+fn set_test_mixed_dispatch(result: Result<GraphOrderedMixedBatchResult, String>) {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow_mut().mixed = Some(result));
+}
+
+#[cfg(test)]
+fn test_reconciliation_dispatch_calls() -> u32 {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow().calls)
+}
+
+#[cfg(test)]
+fn test_edge_dispatch_args() -> Option<gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs> {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow().edge_args.clone())
+}
+
+#[cfg(test)]
+fn test_vertex_dispatch_args() -> Option<gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgs>
+{
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow().vertex_args.clone())
+}
+
+#[cfg(test)]
+fn test_mixed_dispatch_args() -> Option<gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs>
+{
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| state.borrow().mixed_args.clone())
+}
+
+#[cfg(test)]
+fn take_test_edge_dispatch(
+    args: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs,
+) -> Option<Result<GraphOrderedEdgeBatchResult, String>> {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| {
+        let mut state = state.borrow_mut();
+        let result = state.edge.take();
+        if result.is_some() {
+            state.calls += 1;
+            state.edge_args = Some(args);
+        }
+        result
+    })
+}
+
+#[cfg(test)]
+fn take_test_vertex_dispatch(
+    args: gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgs,
+) -> Option<Result<GraphOrderedVertexBatchResult, String>> {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| {
+        let mut state = state.borrow_mut();
+        let result = state.vertex.take();
+        if result.is_some() {
+            state.calls += 1;
+            state.vertex_args = Some(args);
+        }
+        result
+    })
+}
+
+#[cfg(test)]
+fn take_test_mixed_dispatch(
+    args: gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs,
+) -> Option<Result<GraphOrderedMixedBatchResult, String>> {
+    ORDERED_RECONCILIATION_TEST_DISPATCHES.with(|state| {
+        let mut state = state.borrow_mut();
+        let result = state.mixed.take();
+        if result.is_some() {
+            state.calls += 1;
+            state.mixed_args = Some(args);
+        }
+        result
+    })
+}
 
 /// Cached plan/plan-blob for a concrete `(caller, graph, query)` shape.
 #[derive(Clone)]
@@ -1037,6 +1178,671 @@ pub(crate) async fn atomic_insert_public(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalPendingReconciliationTrigger {
+    ExplicitSameKeyRetry,
+    BackgroundRecovery,
+}
+
+fn record_canonical_pending_reconciliation_diagnostic(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    family: &str,
+    reason: impl Into<String>,
+) -> Result<(), RouterError> {
+    store.record_router_mutation_last_error(
+        key,
+        format!(
+            "ordered {family} canonical pending reconciliation: {}",
+            reason.into()
+        ),
+    )
+}
+
+fn exact_edge_receipt_from_journal(
+    entry: &GraphMutationJournalEntryWire,
+    mutation_id: MutationId,
+    target: &RouterOrderedEdgeBatchTargetV1,
+) -> Result<GraphOrderedEdgeBatchReceiptV1, String> {
+    entry.validate().map_err(|error| error.to_string())?;
+    let expected_count =
+        u32::try_from(target.request.items.len()).map_err(|_| "edge item count exceeds u32")?;
+    let GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version,
+        graph_request_fingerprint,
+        logical_item_count,
+    } = entry.request_identity()
+    else {
+        return Err("journal identity is not OrderedEdgeBatch".into());
+    };
+    if *canonical_encoding_version != 1
+        || *graph_request_fingerprint != target.graph_request_fingerprint
+        || *logical_item_count != expected_count
+    {
+        return Err("journal identity does not match the stored edge target".into());
+    }
+    if entry.mutation_id() != mutation_id
+        || entry.state() != MutationJournalState::Completed
+        || entry.retirement() != GraphMutationRetirementWireV1::Active
+    {
+        return Err("journal is not the exact active completed edge receipt".into());
+    }
+    if entry.allocated_vertex_ids().is_some() {
+        return Err("edge journal unexpectedly carries allocated vertex ids".into());
+    }
+    let receipt = GraphOrderedEdgeBatchReceiptV1 {
+        logical_edge_count: entry.row_count(),
+        emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+        emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+        hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+    };
+    receipt.validate().map_err(|error| error.to_string())?;
+    if receipt.logical_edge_count != u64::from(expected_count) {
+        return Err("edge receipt count does not match the stored target".into());
+    }
+    Ok(receipt)
+}
+
+fn exact_vertex_receipt_from_journal(
+    entry: &GraphMutationJournalEntryWire,
+    mutation_id: MutationId,
+    target: &RouterOrderedVertexBatchTargetV1,
+) -> Result<GraphOrderedVertexBatchReceiptV1, String> {
+    entry.validate().map_err(|error| error.to_string())?;
+    let expected_count =
+        u32::try_from(target.request.items.len()).map_err(|_| "vertex item count exceeds u32")?;
+    let GraphMutationRequestIdentityV1::OrderedVertexBatch {
+        canonical_encoding_version,
+        graph_request_fingerprint,
+        logical_item_count,
+    } = entry.request_identity()
+    else {
+        return Err("journal identity is not OrderedVertexBatch".into());
+    };
+    if *canonical_encoding_version != 1
+        || *graph_request_fingerprint != target.graph_request_fingerprint
+        || *logical_item_count != expected_count
+    {
+        return Err("journal identity does not match the stored vertex target".into());
+    }
+    if entry.mutation_id() != mutation_id
+        || entry.state() != MutationJournalState::Completed
+        || entry.retirement() != GraphMutationRetirementWireV1::Active
+    {
+        return Err("journal is not the exact active completed vertex receipt".into());
+    }
+    let receipt = GraphOrderedVertexBatchReceiptV1 {
+        logical_vertex_count: entry.row_count(),
+        emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+        emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+        hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        allocated_vertex_ids: entry
+            .allocated_vertex_ids()
+            .ok_or("vertex journal is missing allocated vertex ids")?
+            .to_vec(),
+    };
+    receipt.validate().map_err(|error| error.to_string())?;
+    if receipt.logical_vertex_count != u64::from(expected_count)
+        || receipt.allocated_vertex_ids.len() != expected_count as usize
+    {
+        return Err("vertex receipt counts do not match the stored target".into());
+    }
+    Ok(receipt)
+}
+
+fn mixed_target_counts(
+    target: &RouterOrderedMixedBatchTargetV1,
+) -> Result<(u32, u32, u32), String> {
+    let operation_count = u32::try_from(target.request.operations.len())
+        .map_err(|_| "mixed operation count exceeds u32")?;
+    let vertex_count = target
+        .request
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation,
+                gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Vertex(_)
+            )
+        })
+        .count();
+    let vertex_count = u32::try_from(vertex_count).map_err(|_| "mixed vertex count exceeds u32")?;
+    let edge_count = operation_count
+        .checked_sub(vertex_count)
+        .ok_or("mixed edge count underflow")?;
+    Ok((operation_count, vertex_count, edge_count))
+}
+
+fn exact_mixed_receipt_from_journal(
+    entry: &GraphMutationJournalEntryWire,
+    mutation_id: MutationId,
+    target: &RouterOrderedMixedBatchTargetV1,
+) -> Result<GraphOrderedMixedBatchReceiptV1, String> {
+    entry.validate().map_err(|error| error.to_string())?;
+    let (expected_operations, expected_vertices, expected_edges) = mixed_target_counts(target)?;
+    let GraphMutationRequestIdentityV1::OrderedMixedBatch {
+        canonical_encoding_version,
+        graph_request_fingerprint,
+        logical_operation_count,
+        logical_vertex_count,
+        logical_edge_count,
+    } = entry.request_identity()
+    else {
+        return Err("journal identity is not OrderedMixedBatch".into());
+    };
+    if *canonical_encoding_version != 1
+        || *graph_request_fingerprint != target.graph_request_fingerprint
+        || *logical_operation_count != expected_operations
+        || *logical_vertex_count != expected_vertices
+        || *logical_edge_count != expected_edges
+    {
+        return Err("journal identity does not match the stored mixed target".into());
+    }
+    if entry.mutation_id() != mutation_id
+        || entry.state() != MutationJournalState::Completed
+        || entry.retirement() != GraphMutationRetirementWireV1::Active
+    {
+        return Err("journal is not the exact active completed mixed receipt".into());
+    }
+    let receipt = GraphOrderedMixedBatchReceiptV1 {
+        logical_operation_count: entry.row_count(),
+        logical_vertex_count: u64::from(expected_vertices),
+        logical_edge_count: u64::from(expected_edges),
+        emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+        emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+        hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        allocated_vertex_ids: entry
+            .allocated_vertex_ids()
+            .ok_or("mixed journal is missing allocated vertex ids")?
+            .to_vec(),
+    };
+    receipt.validate().map_err(|error| error.to_string())?;
+    if receipt.logical_operation_count != u64::from(expected_operations)
+        || receipt.allocated_vertex_ids.len() != expected_vertices as usize
+    {
+        return Err("mixed receipt counts do not match the stored target".into());
+    }
+    Ok(receipt)
+}
+
+fn exact_edge_receipt_from_result(
+    result: GraphOrderedEdgeBatchResult,
+    expected_count: u32,
+) -> Result<GraphOrderedEdgeBatchReceiptV1, String> {
+    let GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) = result
+    else {
+        return Err("ordered edge redispatch did not return a completed receipt".into());
+    };
+    receipt.validate().map_err(|error| error.to_string())?;
+    if receipt.logical_edge_count != u64::from(expected_count) {
+        return Err("ordered edge redispatch receipt count mismatch".into());
+    }
+    Ok(receipt)
+}
+
+fn exact_vertex_receipt_from_result(
+    result: GraphOrderedVertexBatchResult,
+    expected_count: u32,
+) -> Result<GraphOrderedVertexBatchReceiptV1, String> {
+    let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
+        result
+    else {
+        return Err("ordered vertex redispatch did not return a completed receipt".into());
+    };
+    receipt.validate().map_err(|error| error.to_string())?;
+    if receipt.logical_vertex_count != u64::from(expected_count)
+        || receipt.allocated_vertex_ids.len() != expected_count as usize
+    {
+        return Err("ordered vertex redispatch receipt count mismatch".into());
+    }
+    Ok(receipt)
+}
+
+fn exact_mixed_receipt_from_result(
+    result: GraphOrderedMixedBatchResult,
+    expected_operations: u32,
+    expected_vertices: u32,
+    expected_edges: u32,
+) -> Result<GraphOrderedMixedBatchReceiptV1, String> {
+    let GraphOrderedMixedBatchResult::V1(GraphOrderedMixedBatchResultV1::Completed(receipt)) =
+        result
+    else {
+        return Err("ordered mixed redispatch did not return a completed receipt".into());
+    };
+    receipt.validate().map_err(|error| error.to_string())?;
+    if receipt.logical_operation_count != u64::from(expected_operations)
+        || receipt.logical_vertex_count != u64::from(expected_vertices)
+        || receipt.logical_edge_count != u64::from(expected_edges)
+        || receipt.allocated_vertex_ids.len() != expected_vertices as usize
+    {
+        return Err("ordered mixed redispatch receipt count mismatch".into());
+    }
+    Ok(receipt)
+}
+
+async fn dispatch_ordered_edge_for_reconciliation(
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs,
+) -> Result<GraphOrderedEdgeBatchResult, String> {
+    #[cfg(test)]
+    if let Some(result) = take_test_edge_dispatch(args.clone()) {
+        return result;
+    }
+    execute_ordered_edge_batch_on_graph(graph, args).await
+}
+
+async fn dispatch_ordered_vertex_for_reconciliation(
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgs,
+) -> Result<GraphOrderedVertexBatchResult, String> {
+    #[cfg(test)]
+    if let Some(result) = take_test_vertex_dispatch(args.clone()) {
+        return result;
+    }
+    execute_ordered_vertex_batch_on_graph(graph, args).await
+}
+
+async fn dispatch_ordered_mixed_for_reconciliation(
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs,
+) -> Result<GraphOrderedMixedBatchResult, String> {
+    #[cfg(test)]
+    if let Some(result) = take_test_mixed_dispatch(args.clone()) {
+        return result;
+    }
+    execute_ordered_mixed_batch_on_graph(graph, args).await
+}
+
+async fn reconcile_ordered_edge_canonical_pending(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    replay: &crate::facade::stable::label_stats::RouterOrderedEdgeBatchReplayV1,
+    mutation_id: MutationId,
+    trigger: CanonicalPendingReconciliationTrigger,
+    preflight: Option<&PreflightContext>,
+) -> Result<(), RouterError> {
+    let target = &replay.target;
+    let graph = target.request.target_graph_canister;
+    let shard_id = target.request.target_shard_id;
+    let entry = match fetch_journal_entry(preflight, graph, mutation_id, shard_id).await {
+        Ok(entry) => entry,
+        Err(error) => {
+            return record_canonical_pending_reconciliation_diagnostic(
+                store,
+                key,
+                "edge",
+                error.to_string(),
+            );
+        }
+    };
+    if let Some(entry) = entry {
+        return match exact_edge_receipt_from_journal(&entry, mutation_id, target) {
+            Ok(receipt) => store.record_ordered_edge_batch_canonical_committed(
+                key,
+                mutation_id,
+                target.graph_request_fingerprint,
+                receipt,
+            ),
+            Err(reason) => {
+                record_canonical_pending_reconciliation_diagnostic(store, key, "edge", reason)
+            }
+        };
+    }
+    if trigger == CanonicalPendingReconciliationTrigger::BackgroundRecovery {
+        return record_canonical_pending_reconciliation_diagnostic(
+            store,
+            key,
+            "edge",
+            "stored Graph journal entry is absent",
+        );
+    }
+    let expected_count = u32::try_from(target.request.items.len())
+        .map_err(|_| RouterError::InvalidArgument("edge item count exceeds u32".into()))?;
+    let graph_request =
+        gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(target.request.clone());
+    let indexed_property_catalog =
+        crate::facade::stable::indexed_catalog::ordered_edge_batch_catalog(&target.request);
+    let result = match dispatch_ordered_edge_for_reconciliation(
+        graph,
+        gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgsV1 {
+                mutation_id,
+                graph_request_fingerprint: target.graph_request_fingerprint,
+                execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
+                indexed_property_catalog,
+                request: graph_request,
+            },
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return record_canonical_pending_reconciliation_diagnostic(store, key, "edge", error);
+        }
+    };
+    match exact_edge_receipt_from_result(result, expected_count) {
+        Ok(receipt) => store.record_ordered_edge_batch_canonical_committed(
+            key,
+            mutation_id,
+            target.graph_request_fingerprint,
+            receipt,
+        ),
+        Err(reason) => {
+            record_canonical_pending_reconciliation_diagnostic(store, key, "edge", reason)
+        }
+    }
+}
+
+async fn reconcile_ordered_vertex_canonical_pending(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    replay: &crate::facade::stable::label_stats::RouterOrderedVertexBatchReplayV1,
+    mutation_id: MutationId,
+    trigger: CanonicalPendingReconciliationTrigger,
+    preflight: Option<&PreflightContext>,
+) -> Result<(), RouterError> {
+    let target = &replay.target;
+    let graph = target.request.target_graph_canister;
+    let shard_id = target.request.target_shard_id;
+    let entry = match fetch_journal_entry(preflight, graph, mutation_id, shard_id).await {
+        Ok(entry) => entry,
+        Err(error) => {
+            return record_canonical_pending_reconciliation_diagnostic(
+                store,
+                key,
+                "vertex",
+                error.to_string(),
+            );
+        }
+    };
+    if let Some(entry) = entry {
+        return match exact_vertex_receipt_from_journal(&entry, mutation_id, target) {
+            Ok(receipt) => store.record_ordered_vertex_batch_canonical_committed(
+                key,
+                mutation_id,
+                target.graph_request_fingerprint,
+                receipt,
+            ),
+            Err(reason) => {
+                record_canonical_pending_reconciliation_diagnostic(store, key, "vertex", reason)
+            }
+        };
+    }
+    if trigger == CanonicalPendingReconciliationTrigger::BackgroundRecovery {
+        return record_canonical_pending_reconciliation_diagnostic(
+            store,
+            key,
+            "vertex",
+            "stored Graph journal entry is absent",
+        );
+    }
+    let expected_count = u32::try_from(target.request.items.len())
+        .map_err(|_| RouterError::InvalidArgument("vertex item count exceeds u32".into()))?;
+    let graph_request =
+        gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest::V1(target.request.clone());
+    let indexed_property_catalog =
+        crate::facade::stable::indexed_catalog::ordered_vertex_batch_catalog(&target.request);
+    let result = match dispatch_ordered_vertex_for_reconciliation(
+        graph,
+        gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphArgsV1 {
+                mutation_id,
+                graph_request_fingerprint: target.graph_request_fingerprint,
+                execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
+                indexed_property_catalog,
+                request: graph_request,
+            },
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return record_canonical_pending_reconciliation_diagnostic(store, key, "vertex", error);
+        }
+    };
+    match exact_vertex_receipt_from_result(result, expected_count) {
+        Ok(receipt) => store.record_ordered_vertex_batch_canonical_committed(
+            key,
+            mutation_id,
+            target.graph_request_fingerprint,
+            receipt,
+        ),
+        Err(reason) => {
+            record_canonical_pending_reconciliation_diagnostic(store, key, "vertex", reason)
+        }
+    }
+}
+
+async fn reconcile_ordered_mixed_canonical_pending(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    replay: &crate::facade::stable::label_stats::RouterOrderedMixedBatchReplayV1,
+    mutation_id: MutationId,
+    trigger: CanonicalPendingReconciliationTrigger,
+    preflight: Option<&PreflightContext>,
+) -> Result<(), RouterError> {
+    let target = &replay.target;
+    let graph = target.request.target_graph_canister;
+    let shard_id = target.request.target_shard_id;
+    let entry = match fetch_journal_entry(preflight, graph, mutation_id, shard_id).await {
+        Ok(entry) => entry,
+        Err(error) => {
+            return record_canonical_pending_reconciliation_diagnostic(
+                store,
+                key,
+                "mixed",
+                error.to_string(),
+            );
+        }
+    };
+    if let Some(entry) = entry {
+        return match exact_mixed_receipt_from_journal(&entry, mutation_id, target) {
+            Ok(receipt) => store.record_ordered_mixed_batch_canonical_committed(
+                key,
+                mutation_id,
+                target.graph_request_fingerprint,
+                receipt,
+            ),
+            Err(reason) => {
+                record_canonical_pending_reconciliation_diagnostic(store, key, "mixed", reason)
+            }
+        };
+    }
+    if trigger == CanonicalPendingReconciliationTrigger::BackgroundRecovery {
+        return record_canonical_pending_reconciliation_diagnostic(
+            store,
+            key,
+            "mixed",
+            "stored Graph journal entry is absent",
+        );
+    }
+    let (expected_operations, expected_vertices, expected_edges) =
+        mixed_target_counts(target).map_err(RouterError::InvalidArgument)?;
+    let graph_request =
+        gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1(target.request.clone());
+    let indexed_property_catalog =
+        crate::facade::stable::indexed_catalog::ordered_mixed_batch_catalog(&target.request);
+    let result = match dispatch_ordered_mixed_for_reconciliation(
+        graph,
+        gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgsV1 {
+                mutation_id,
+                graph_request_fingerprint: target.graph_request_fingerprint,
+                execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
+                indexed_property_catalog,
+                request: graph_request,
+            },
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return record_canonical_pending_reconciliation_diagnostic(store, key, "mixed", error);
+        }
+    };
+    match exact_mixed_receipt_from_result(
+        result,
+        expected_operations,
+        expected_vertices,
+        expected_edges,
+    ) {
+        Ok(receipt) => store.record_ordered_mixed_batch_canonical_committed(
+            key,
+            mutation_id,
+            target.graph_request_fingerprint,
+            receipt,
+        ),
+        Err(reason) => {
+            record_canonical_pending_reconciliation_diagnostic(store, key, "mixed", reason)
+        }
+    }
+}
+
+async fn reconcile_ordered_canonical_pending(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    record: &crate::facade::stable::label_stats::RouterMutationRecord,
+    trigger: CanonicalPendingReconciliationTrigger,
+    preflight: Option<&PreflightContext>,
+) -> Result<(), RouterError> {
+    let mutation_id = record.as_v1().mutation_id;
+    match record.payload() {
+        RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
+            reconcile_ordered_edge_canonical_pending(
+                store,
+                key,
+                replay,
+                mutation_id,
+                trigger,
+                preflight,
+            )
+            .await
+        }
+        RouterMutationPayloadV1::OrderedVertexBatch(replay) => {
+            reconcile_ordered_vertex_canonical_pending(
+                store,
+                key,
+                replay,
+                mutation_id,
+                trigger,
+                preflight,
+            )
+            .await
+        }
+        RouterMutationPayloadV1::OrderedMixedBatch(replay) => {
+            reconcile_ordered_mixed_canonical_pending(
+                store,
+                key,
+                replay,
+                mutation_id,
+                trigger,
+                preflight,
+            )
+            .await
+        }
+        _ => Ok(()),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OrderedAtomicInsertFamily {
+    Edge,
+    Vertex,
+    Mixed,
+}
+
+impl OrderedAtomicInsertFamily {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Vertex => "vertex",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    fn accepts(self, payload: &RouterMutationPayloadV1) -> bool {
+        match self {
+            Self::Edge => matches!(
+                payload,
+                RouterMutationPayloadV1::OrderedEdgeBatch(_)
+                    | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
+            ),
+            Self::Vertex => matches!(
+                payload,
+                RouterMutationPayloadV1::OrderedVertexBatch(_)
+                    | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
+            ),
+            Self::Mixed => matches!(
+                payload,
+                RouterMutationPayloadV1::OrderedMixedBatch(_)
+                    | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. }
+            ),
+        }
+    }
+
+    fn is_canonical_pending(self, payload: &RouterMutationPayloadV1) -> bool {
+        match (self, payload) {
+            (Self::Edge, RouterMutationPayloadV1::OrderedEdgeBatch(replay)) => matches!(
+                replay.target.progress,
+                OrderedEdgeBatchTargetProgressV1::CanonicalPending
+            ),
+            (Self::Vertex, RouterMutationPayloadV1::OrderedVertexBatch(replay)) => matches!(
+                replay.target.progress,
+                OrderedVertexBatchTargetProgressV1::CanonicalPending
+            ),
+            (Self::Mixed, RouterMutationPayloadV1::OrderedMixedBatch(replay)) => matches!(
+                replay.target.progress,
+                OrderedMixedBatchTargetProgressV1::CanonicalPending
+            ),
+            _ => false,
+        }
+    }
+}
+
+fn is_ordered_atomic_insert_record(record: &RouterMutationRecord) -> bool {
+    [
+        OrderedAtomicInsertFamily::Edge,
+        OrderedAtomicInsertFamily::Vertex,
+        OrderedAtomicInsertFamily::Mixed,
+    ]
+    .into_iter()
+    .any(|family| family.accepts(record.payload()))
+}
+
+async fn respond_from_existing_ordered_atomic_insert(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    record: RouterMutationRecord,
+    family: OrderedAtomicInsertFamily,
+) -> Result<crate::types::AtomicInsertResponse, RouterError> {
+    if !family.accepts(record.payload()) {
+        return Err(RouterError::Conflict(
+            "client_mutation_key belongs to a different mutation kind".into(),
+        ));
+    }
+    if family.is_canonical_pending(record.payload()) {
+        reconcile_ordered_canonical_pending(
+            store,
+            key,
+            &record,
+            CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+            None,
+        )
+        .await?;
+    }
+    let record = store.router_mutation_record(key).ok_or_else(|| {
+        RouterError::Internal(format!(
+            "ordered {} mutation record disappeared after retry",
+            family.name()
+        ))
+    })?;
+    let encoding_key = store.graph_element_id_encoding_key(key.graph_id)?;
+    Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
+}
+
 /// Admit and execute one classified ordered edge atomic insert (ADR 0049).
 ///
 /// V1 requires one existing catalog vocabulary. Router derives the target Graph shard from the
@@ -1045,7 +1851,7 @@ async fn execute_ordered_edge_batch_classified(
     request: crate::types::OrderedEdgeBatchRequest,
     public_fingerprint: [u8; 32],
 ) -> Result<crate::types::AtomicInsertResponse, RouterError> {
-    let caller = msg_caller();
+    let caller = ordered_insert_caller();
     let public_item_count = match &request {
         crate::types::OrderedEdgeBatchRequest::V1(request) => request.items.len() as u32,
     };
@@ -1062,6 +1868,25 @@ async fn execute_ordered_edge_batch_classified(
         logical_graph_name.as_deref(),
     )?;
     let mutation_key = mutation_key_for(caller, graph_id, &client_key);
+    if let Some(record) = store
+        .router_mutation_record(&mutation_key)
+        .filter(is_ordered_atomic_insert_record)
+    {
+        let reservation = store.reserve_mutation_id_for_client_key(
+            caller,
+            graph_id,
+            &client_key,
+            public_fingerprint.to_vec(),
+        )?;
+        debug_assert!(!reservation.routing_owner);
+        return respond_from_existing_ordered_atomic_insert(
+            &store,
+            &mutation_key,
+            record,
+            OrderedAtomicInsertFamily::Edge,
+        )
+        .await;
+    }
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let endpoints = request
         .decode_same_shard_endpoints(&encoding_key)
@@ -1120,23 +1945,15 @@ async fn execute_ordered_edge_batch_classified(
     )?;
     if !reservation.routing_owner {
         let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
-            RouterError::Internal("ordered mutation reservation disappeared".into())
+            RouterError::Internal("ordered edge mutation reservation disappeared".into())
         })?;
-        if !matches!(
-            record.payload(),
-            RouterMutationPayloadV1::OrderedEdgeBatch(_)
-                | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
-        ) {
-            return Err(RouterError::Conflict(
-                "client_mutation_key belongs to a different mutation kind".into(),
-            ));
-        }
-        return Ok(
-            crate::types::AtomicInsertResponse::from_record_with_encoding_key(
-                &record,
-                &encoding_key,
-            ),
-        );
+        return respond_from_existing_ordered_atomic_insert(
+            &store,
+            &mutation_key,
+            record,
+            OrderedAtomicInsertFamily::Edge,
+        )
+        .await;
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1292,7 +2109,7 @@ async fn execute_ordered_vertex_batch_classified(
     request: crate::types::OrderedVertexBatchRequest,
     public_fingerprint: [u8; 32],
 ) -> Result<crate::types::AtomicInsertResponse, RouterError> {
-    let caller = msg_caller();
+    let caller = ordered_insert_caller();
     let (client_key, graph_name, label_names, property_names) = match &request {
         crate::types::OrderedVertexBatchRequest::V1(request) => (
             request.client_mutation_key.clone(),
@@ -1320,7 +2137,25 @@ async fn execute_ordered_vertex_batch_classified(
     let graph_id =
         crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let mutation_key = mutation_key_for(caller, graph_id, &client_key);
-    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+    if let Some(record) = store
+        .router_mutation_record(&mutation_key)
+        .filter(is_ordered_atomic_insert_record)
+    {
+        let reservation = store.reserve_mutation_id_for_client_key(
+            caller,
+            graph_id,
+            &client_key,
+            public_fingerprint.to_vec(),
+        )?;
+        debug_assert!(!reservation.routing_owner);
+        return respond_from_existing_ordered_atomic_insert(
+            &store,
+            &mutation_key,
+            record,
+            OrderedAtomicInsertFamily::Vertex,
+        )
+        .await;
+    }
     let target =
         crate::federation::latest_shard_routing(&store.list_live_shards_for_graph_id(graph_id)?)?
             .into_iter()
@@ -1355,21 +2190,13 @@ async fn execute_ordered_vertex_batch_classified(
         let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
             RouterError::Internal("ordered vertex mutation reservation disappeared".into())
         })?;
-        if !matches!(
-            record.payload(),
-            RouterMutationPayloadV1::OrderedVertexBatch(_)
-                | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
-        ) {
-            return Err(RouterError::Conflict(
-                "client_mutation_key belongs to a different mutation kind".into(),
-            ));
-        }
-        return Ok(
-            crate::types::AtomicInsertResponse::from_record_with_encoding_key(
-                &record,
-                &encoding_key,
-            ),
-        );
+        return respond_from_existing_ordered_atomic_insert(
+            &store,
+            &mutation_key,
+            record,
+            OrderedAtomicInsertFamily::Vertex,
+        )
+        .await;
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1513,6 +2340,7 @@ async fn execute_ordered_vertex_batch_classified(
     let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
         RouterError::Internal("ordered vertex mutation record disappeared".into())
     })?;
+    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     Ok(crate::types::AtomicInsertResponse::from_record_with_encoding_key(&record, &encoding_key))
 }
 
@@ -1523,7 +2351,7 @@ async fn execute_ordered_mixed_batch_classified(
     request: crate::types::OrderedMixedBatchRequest,
     public_fingerprint: [u8; 32],
 ) -> Result<crate::types::AtomicInsertResponse, RouterError> {
-    let caller = msg_caller();
+    let caller = ordered_insert_caller();
     let (
         client_key,
         graph_name,
@@ -1592,6 +2420,25 @@ async fn execute_ordered_mixed_batch_classified(
     let graph_id =
         crate::graph_context::resolve_graph_id_or_default(&store, caller, graph_name.as_deref())?;
     let mutation_key = mutation_key_for(caller, graph_id, &client_key);
+    if let Some(record) = store
+        .router_mutation_record(&mutation_key)
+        .filter(is_ordered_atomic_insert_record)
+    {
+        let reservation = store.reserve_mutation_id_for_client_key(
+            caller,
+            graph_id,
+            &client_key,
+            public_fingerprint.to_vec(),
+        )?;
+        debug_assert!(!reservation.routing_owner);
+        return respond_from_existing_ordered_atomic_insert(
+            &store,
+            &mutation_key,
+            record,
+            OrderedAtomicInsertFamily::Mixed,
+        )
+        .await;
+    }
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
     let target_shard_id = match request
         .existing_endpoint_shard(&encoding_key)
@@ -1640,21 +2487,13 @@ async fn execute_ordered_mixed_batch_classified(
         let record = store.router_mutation_record(&mutation_key).ok_or_else(|| {
             RouterError::Internal("ordered mixed mutation reservation disappeared".into())
         })?;
-        if !matches!(
-            record.payload(),
-            RouterMutationPayloadV1::OrderedMixedBatch(_)
-                | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. }
-        ) {
-            return Err(RouterError::Conflict(
-                "client_mutation_key belongs to a different mutation kind".into(),
-            ));
-        }
-        return Ok(
-            crate::types::AtomicInsertResponse::from_record_with_encoding_key(
-                &record,
-                &encoding_key,
-            ),
-        );
+        return respond_from_existing_ordered_atomic_insert(
+            &store,
+            &mutation_key,
+            record,
+            OrderedAtomicInsertFamily::Mixed,
+        )
+        .await;
     }
     let mutation_id = reservation.mutation_id;
     let target = RouterOrderedMixedBatchTargetV1 {
@@ -4314,11 +5153,10 @@ async fn recover_mutation_outcome(
 ///
 /// For each unfinished shard: if the graph mutation journal shows the canonical write
 /// committed, advance that shard's label-stats projection and record it
-/// completed+projected; once every shard is projected the record finalizes (terminal). If a
-/// shard's canonical write has not committed (`CanonicalPending`), a diagnostic is recorded
-/// and the shard is left for explicit, retry-driven recovery — re-dispatching canonical DML
-/// from a background driver is out of scope precisely because it is the one operation that
-/// risks double-apply.
+/// completed+projected; once every shard is projected the record finalizes (terminal). For a
+/// `CanonicalPending` record, the driver may adopt an exact completed Graph journal receipt but
+/// records a diagnostic and stays pending for absent or non-exact evidence. It never re-dispatches
+/// canonical DML because that is the one operation that risks double-apply.
 ///
 /// Idempotent and bounded: safe to call concurrently with a client retry (both paths use
 /// cursor-guarded projection advancement and idempotent record mutators).
@@ -4335,23 +5173,43 @@ async fn recover_ordered_edge_batch_record(
         OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1,
     };
 
-    let replay = match record.payload() {
+    let mut replay = match record.payload() {
         RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay.clone(),
         _ => return Ok(()),
     };
+    if matches!(
+        replay.target.progress,
+        OrderedEdgeBatchTargetProgressV1::CanonicalPending
+    ) {
+        reconcile_ordered_canonical_pending(
+            store,
+            key,
+            record,
+            CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+            None,
+        )
+        .await?;
+        let current = store
+            .router_mutation_record(key)
+            .ok_or_else(|| RouterError::Internal("ordered recovery record disappeared".into()))?;
+        replay = match current.payload() {
+            RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay.clone(),
+            _ => return Ok(()),
+        };
+        if matches!(
+            replay.target.progress,
+            OrderedEdgeBatchTargetProgressV1::CanonicalPending
+        ) {
+            return Ok(());
+        }
+    }
     let target = &replay.target;
     let graph = target.request.target_graph_canister;
     let shard_id = target.request.target_shard_id;
     let mutation_id = record.as_v1().mutation_id;
     let fingerprint = target.graph_request_fingerprint;
     let receipt = match &target.progress {
-        OrderedEdgeBatchTargetProgressV1::CanonicalPending => {
-            store.record_router_mutation_last_error(
-                key,
-                "ordered canonical write pending; explicit retry is required".into(),
-            )?;
-            return Ok(());
-        }
+        OrderedEdgeBatchTargetProgressV1::CanonicalPending => return Ok(()),
         OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
         | OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
         | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
@@ -4425,8 +5283,8 @@ async fn recover_ordered_edge_batch_record(
 
 #[cfg(target_family = "wasm")]
 /// Projection/retirement recovery for a durable ordered mixed batch. The mixed Graph receipt is
-/// already sufficient to resume after a lost Router callback; canonical-pending remains explicit
-/// retry-only and is never redispatched by this driver.
+/// already sufficient to resume after a lost Router callback. Canonical-pending recovery adopts
+/// exact completed journal evidence but never redispatches canonical DML from this driver.
 async fn recover_ordered_mixed_batch_record(
     store: &RouterStore,
     key: &crate::facade::stable::label_stats::ClientMutationKey,
@@ -4439,23 +5297,43 @@ async fn recover_ordered_mixed_batch_record(
         OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1,
     };
 
-    let replay = match record.payload() {
+    let mut replay = match record.payload() {
         RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay.clone(),
         _ => return Ok(()),
     };
+    if matches!(
+        replay.target.progress,
+        OrderedMixedBatchTargetProgressV1::CanonicalPending
+    ) {
+        reconcile_ordered_canonical_pending(
+            store,
+            key,
+            record,
+            CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+            None,
+        )
+        .await?;
+        let current = store
+            .router_mutation_record(key)
+            .ok_or_else(|| RouterError::Internal("ordered recovery record disappeared".into()))?;
+        replay = match current.payload() {
+            RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay.clone(),
+            _ => return Ok(()),
+        };
+        if matches!(
+            replay.target.progress,
+            OrderedMixedBatchTargetProgressV1::CanonicalPending
+        ) {
+            return Ok(());
+        }
+    }
     let target = &replay.target;
     let graph = target.request.target_graph_canister;
     let shard_id = target.request.target_shard_id;
     let mutation_id = record.as_v1().mutation_id;
     let fingerprint = target.graph_request_fingerprint;
     let receipt = match &target.progress {
-        OrderedMixedBatchTargetProgressV1::CanonicalPending => {
-            store.record_router_mutation_last_error(
-                key,
-                "ordered mixed canonical write pending; explicit retry is required".into(),
-            )?;
-            return Ok(());
-        }
+        OrderedMixedBatchTargetProgressV1::CanonicalPending => return Ok(()),
         OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
         | OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
         | OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
@@ -4528,9 +5406,10 @@ async fn recover_ordered_mixed_batch_record(
 }
 
 #[cfg(target_family = "wasm")]
-/// Projection/retirement recovery for a durable ordered vertex batch. Canonical-pending records
-/// remain explicit-retry-only; once Graph has committed, the stored vertex receipt is sufficient to
-/// resume projection and fingerprint-bound retirement without reconstructing public input.
+/// Projection/retirement recovery for a durable ordered vertex batch. Canonical-pending recovery
+/// adopts exact completed journal evidence without canonical redispatch; once Graph has committed,
+/// the stored vertex receipt resumes projection and fingerprint-bound retirement without
+/// reconstructing public input.
 async fn recover_ordered_vertex_batch_record(
     store: &RouterStore,
     key: &crate::facade::stable::label_stats::ClientMutationKey,
@@ -4543,23 +5422,43 @@ async fn recover_ordered_vertex_batch_record(
         OrderedVertexMutationRetirementArgs, OrderedVertexMutationRetirementArgsV1,
     };
 
-    let replay = match record.payload() {
+    let mut replay = match record.payload() {
         RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay.clone(),
         _ => return Ok(()),
     };
+    if matches!(
+        replay.target.progress,
+        OrderedVertexBatchTargetProgressV1::CanonicalPending
+    ) {
+        reconcile_ordered_canonical_pending(
+            store,
+            key,
+            record,
+            CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+            None,
+        )
+        .await?;
+        let current = store
+            .router_mutation_record(key)
+            .ok_or_else(|| RouterError::Internal("ordered recovery record disappeared".into()))?;
+        replay = match current.payload() {
+            RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay.clone(),
+            _ => return Ok(()),
+        };
+        if matches!(
+            replay.target.progress,
+            OrderedVertexBatchTargetProgressV1::CanonicalPending
+        ) {
+            return Ok(());
+        }
+    }
     let target = &replay.target;
     let graph = target.request.target_graph_canister;
     let shard_id = target.request.target_shard_id;
     let mutation_id = record.as_v1().mutation_id;
     let fingerprint = target.graph_request_fingerprint;
     let receipt = match &target.progress {
-        OrderedVertexBatchTargetProgressV1::CanonicalPending => {
-            store.record_router_mutation_last_error(
-                key,
-                "ordered vertex canonical write pending; explicit retry is required".into(),
-            )?;
-            return Ok(());
-        }
+        OrderedVertexBatchTargetProgressV1::CanonicalPending => return Ok(()),
         OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
         | OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
         | OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
@@ -4724,9 +5623,9 @@ pub(crate) async fn recover_mutation_record(
 
 #[cfg(test)]
 mod tests {
-    use super::mutation_key_for;
+    use super::{CanonicalPendingReconciliationTrigger, PreflightContext, mutation_key_for};
     use std::cell::{Cell, RefCell};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::future::Future;
     use std::pin::Pin;
     use std::rc::Rc;
@@ -4746,8 +5645,23 @@ mod tests {
         PostingHit, ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
-        LabelStatsDeltaEventWire, MutationToken, MutationTokenShard, ReadMode, SeedBindingsWire,
+        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire,
+        GraphMutationRequestIdentityV1, GraphMutationRetirementWireV1,
+        GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult, GraphOrderedEdgeBatchResultV1,
+        GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult,
+        GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1,
+        GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1, LabelStatsDelta,
+        LabelStatsDeltaEventWire, MutationId, MutationJournalState, MutationToken,
+        MutationTokenShard, OrderedBatchExecutionModeV1, OrderedEdgeBatchGraphArgs,
+        OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest,
+        OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphArgsV1,
+        OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1,
+        OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1,
+        OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1,
+        OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1, ReadMode,
+        SeedBindingsWire, ordered_edge_batch_graph_request_fingerprint,
+        ordered_mixed_batch_graph_request_fingerprint,
+        ordered_vertex_batch_graph_request_fingerprint,
     };
 
     #[test]
@@ -4878,6 +5792,12 @@ mod tests {
     }
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;
+    use crate::facade::stable::label_stats::{
+        ClientMutationKey, OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
+        OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1, RouterMutationRecord,
+        RouterMutationRequestIdentityV1, RouterOrderedEdgeBatchTargetV1,
+        RouterOrderedMixedBatchTargetV1, RouterOrderedVertexBatchTargetV1,
+    };
     use crate::facade::store::RouterStore;
     use crate::federation::{
         collect_label_intersection_hits_for_shards, resolve_seed_routings_multi,
@@ -4893,7 +5813,9 @@ mod tests {
     use crate::seed::{IndexAnchor, SeedProbe, seeds_for_local_shard};
     use crate::state::RouterError;
     use crate::types::{
-        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+        AdminRegisterShardArgs, AtomicInsertEdgeV1, AtomicInsertEndpointV1,
+        AtomicInsertOperationV1, AtomicInsertRequest, AtomicInsertRequestV1, AtomicInsertVertexV1,
+        GraphRegistryEntry, GraphStatus, ProvisioningState,
     };
     use gleaph_graph_kernel::entry::GraphId;
     use gleaph_graph_kernel::federation::ShardId;
@@ -5035,6 +5957,1586 @@ mod tests {
 
     fn store_with_one_shard() -> RouterStore {
         store_with_shards_spec(&[(ShardId::new(0), 1u8)])
+    }
+
+    fn ordered_test_caller() -> Principal {
+        Principal::from_slice(&[1; 29])
+    }
+
+    fn ordered_test_graph() -> Principal {
+        graph_principal(1)
+    }
+
+    fn edge_target() -> RouterOrderedEdgeBatchTargetV1 {
+        let request = OrderedEdgeBatchGraphRequestV1 {
+            graph_id: tenant_main_graph_id(),
+            target_shard_id: ShardId::new(0),
+            target_graph_canister: ordered_test_graph(),
+            resolved_labels: Default::default(),
+            resolved_properties: Default::default(),
+            items: vec![OrderedEdgeBatchGraphItemV1 {
+                source_local_vertex_id: 10,
+                target_local_vertex_id: 11,
+                directed: true,
+                catalog_edge_label_id: None,
+                inline_property_bytes: Vec::new(),
+                resolved_initial_edge_properties: Vec::new(),
+            }],
+        };
+        let graph_request = OrderedEdgeBatchGraphRequest::V1(request.clone());
+        let graph_request_fingerprint =
+            ordered_edge_batch_graph_request_fingerprint(&graph_request)
+                .expect("edge Graph request fingerprint");
+        RouterOrderedEdgeBatchTargetV1 {
+            graph_request_fingerprint,
+            request,
+            progress: OrderedEdgeBatchTargetProgressV1::CanonicalPending,
+            projection_watermark: None,
+        }
+    }
+
+    fn vertex_target() -> RouterOrderedVertexBatchTargetV1 {
+        let request = OrderedVertexBatchGraphRequestV1 {
+            graph_id: tenant_main_graph_id(),
+            target_shard_id: ShardId::new(0),
+            target_graph_canister: ordered_test_graph(),
+            resolved_labels: Default::default(),
+            resolved_properties: Default::default(),
+            items: vec![OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: Vec::new(),
+                resolved_initial_properties: Vec::new(),
+            }],
+        };
+        let graph_request = OrderedVertexBatchGraphRequest::V1(request.clone());
+        let graph_request_fingerprint =
+            ordered_vertex_batch_graph_request_fingerprint(&graph_request)
+                .expect("vertex Graph request fingerprint");
+        RouterOrderedVertexBatchTargetV1 {
+            graph_request_fingerprint,
+            request,
+            progress: OrderedVertexBatchTargetProgressV1::CanonicalPending,
+            projection_watermark: None,
+        }
+    }
+
+    fn mixed_target() -> RouterOrderedMixedBatchTargetV1 {
+        let request = OrderedMixedBatchGraphRequestV1 {
+            graph_id: tenant_main_graph_id(),
+            target_shard_id: ShardId::new(0),
+            target_graph_canister: ordered_test_graph(),
+            resolved_labels: Default::default(),
+            resolved_properties: Default::default(),
+            operations: vec![
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: Vec::new(),
+                }),
+                OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                    source: OrderedMixedGraphEndpointV1::Existing(10),
+                    target: OrderedMixedGraphEndpointV1::Existing(11),
+                    directed: true,
+                    catalog_edge_label_id: None,
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                }),
+            ],
+        };
+        let graph_request = OrderedMixedBatchGraphRequest::V1(request.clone());
+        let graph_request_fingerprint =
+            ordered_mixed_batch_graph_request_fingerprint(&graph_request)
+                .expect("mixed Graph request fingerprint");
+        RouterOrderedMixedBatchTargetV1 {
+            graph_request_fingerprint,
+            request,
+            progress: OrderedMixedBatchTargetProgressV1::CanonicalPending,
+            projection_watermark: None,
+        }
+    }
+
+    fn edge_receipt() -> GraphOrderedEdgeBatchReceiptV1 {
+        GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: 1,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: Vec::new(),
+        }
+    }
+
+    fn vertex_receipt() -> GraphOrderedVertexBatchReceiptV1 {
+        GraphOrderedVertexBatchReceiptV1 {
+            logical_vertex_count: 1,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: Vec::new(),
+            allocated_vertex_ids: vec![7],
+        }
+    }
+
+    fn mixed_receipt() -> GraphOrderedMixedBatchReceiptV1 {
+        GraphOrderedMixedBatchReceiptV1 {
+            logical_operation_count: 2,
+            logical_vertex_count: 1,
+            logical_edge_count: 1,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: Vec::new(),
+            allocated_vertex_ids: vec![7],
+        }
+    }
+
+    fn seed_edge_pending(
+        store: &RouterStore,
+        client_key: &str,
+        public_fingerprint: [u8; 32],
+        target: RouterOrderedEdgeBatchTargetV1,
+    ) -> (ClientMutationKey, MutationId) {
+        let caller = ordered_test_caller();
+        let graph_id = tenant_main_graph_id();
+        let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
+        let reservation = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                graph_id,
+                client_key,
+                public_fingerprint.to_vec(),
+            )
+            .expect("edge mutation reservation");
+        store
+            .transition_to_ordered_edge_batch(
+                &key,
+                reservation.mutation_id,
+                RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                    public_fingerprint,
+                    public_item_count: target.request.items.len() as u32,
+                },
+                Default::default(),
+                Default::default(),
+                target,
+            )
+            .expect("edge pending transition");
+        (key, reservation.mutation_id)
+    }
+
+    fn seed_vertex_pending(
+        store: &RouterStore,
+        client_key: &str,
+        public_fingerprint: [u8; 32],
+        target: RouterOrderedVertexBatchTargetV1,
+    ) -> (ClientMutationKey, MutationId) {
+        let caller = ordered_test_caller();
+        let graph_id = tenant_main_graph_id();
+        let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
+        let reservation = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                graph_id,
+                client_key,
+                public_fingerprint.to_vec(),
+            )
+            .expect("vertex mutation reservation");
+        store
+            .transition_to_ordered_vertex_batch(
+                &key,
+                reservation.mutation_id,
+                RouterMutationRequestIdentityV1::OrderedVertexBatch {
+                    public_fingerprint,
+                    public_item_count: target.request.items.len() as u32,
+                },
+                Default::default(),
+                Default::default(),
+                target,
+            )
+            .expect("vertex pending transition");
+        (key, reservation.mutation_id)
+    }
+
+    fn seed_mixed_pending(
+        store: &RouterStore,
+        client_key: &str,
+        public_fingerprint: [u8; 32],
+        target: RouterOrderedMixedBatchTargetV1,
+    ) -> (ClientMutationKey, MutationId) {
+        let caller = ordered_test_caller();
+        let graph_id = tenant_main_graph_id();
+        let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
+        let reservation = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                graph_id,
+                client_key,
+                public_fingerprint.to_vec(),
+            )
+            .expect("mixed mutation reservation");
+        store
+            .transition_to_ordered_mixed_batch(
+                &key,
+                reservation.mutation_id,
+                RouterMutationRequestIdentityV1::OrderedMixedBatch {
+                    public_fingerprint,
+                    public_operation_count: target.request.operations.len() as u32,
+                    public_vertex_count: 1,
+                    public_edge_count: 1,
+                },
+                Default::default(),
+                Default::default(),
+                target,
+            )
+            .expect("mixed pending transition");
+        (key, reservation.mutation_id)
+    }
+
+    fn preflight_with_journal(
+        graph: Principal,
+        mutation_id: MutationId,
+        entry: Option<GraphMutationJournalEntryWire>,
+    ) -> PreflightContext {
+        let mut journal_entries = HashMap::new();
+        journal_entries.insert((graph, mutation_id), entry);
+        PreflightContext {
+            anchor_hits: Rc::new(RefCell::new(HashMap::new())),
+            journal_entries: Rc::new(RefCell::new(journal_entries)),
+            pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())),
+            plan_cache: Rc::new(RefCell::new(HashMap::new())),
+            resolved_labels: Rc::new(RefCell::new(HashMap::new())),
+            resolved_properties: Rc::new(RefCell::new(HashMap::new())),
+            graph_catalog: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    fn completed_journal(
+        mutation_id: MutationId,
+        identity: GraphMutationRequestIdentityV1,
+        row_count: u64,
+        allocated_vertex_ids: Option<Vec<u32>>,
+    ) -> GraphMutationJournalEntryWire {
+        let mut entry = GraphMutationJournalEntryWire::new(
+            mutation_id,
+            MutationJournalState::Completed,
+            row_count,
+            None,
+            None,
+            Vec::new(),
+        );
+        entry.set_request_identity(identity);
+        entry.set_retirement(GraphMutationRetirementWireV1::Active);
+        entry.set_allocated_vertex_ids(allocated_vertex_ids);
+        entry.validate().expect("valid ordered journal fixture");
+        entry
+    }
+
+    fn ordered_public_request(family: OrderedTestFamily, client_key: &str) -> AtomicInsertRequest {
+        let existing_endpoint = || {
+            AtomicInsertEndpointV1::Existing(vec![
+                0;
+                gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+            ])
+        };
+        let operations = match family {
+            OrderedTestFamily::Edge => vec![AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                source: existing_endpoint(),
+                target: existing_endpoint(),
+                directed: true,
+                edge_label_name: None,
+                inline_property: None,
+                initial_edge_properties: Vec::new(),
+            })],
+            OrderedTestFamily::Vertex => {
+                vec![AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
+                    vertex_labels: Vec::new(),
+                    initial_properties: Vec::new(),
+                })]
+            }
+            OrderedTestFamily::Mixed => vec![
+                AtomicInsertOperationV1::Vertex(AtomicInsertVertexV1 {
+                    vertex_labels: Vec::new(),
+                    initial_properties: Vec::new(),
+                }),
+                AtomicInsertOperationV1::Edge(AtomicInsertEdgeV1 {
+                    source: existing_endpoint(),
+                    target: existing_endpoint(),
+                    directed: true,
+                    edge_label_name: None,
+                    inline_property: None,
+                    initial_edge_properties: Vec::new(),
+                }),
+            ],
+        };
+        AtomicInsertRequest::V1(AtomicInsertRequestV1 {
+            client_mutation_key: client_key.to_owned(),
+            graph_name: Some("tenant.main".into()),
+            operations,
+        })
+    }
+
+    fn assert_pending_diagnostic(
+        before: &RouterMutationRecord,
+        after: &RouterMutationRecord,
+        case: &str,
+    ) {
+        let mut expected = before.as_v1().clone();
+        expected.last_error = after.as_v1().last_error.clone();
+        assert_eq!(
+            &expected,
+            after.as_v1(),
+            "{case}: only the bounded diagnostic may change"
+        );
+        assert_eq!(
+            before.as_v1().payload,
+            after.as_v1().payload,
+            "{case}: rejected evidence must leave the immutable target and progress unchanged"
+        );
+        assert_eq!(
+            before.as_v1().request_identity,
+            after.as_v1().request_identity,
+            "{case}: rejected evidence must leave public identity unchanged"
+        );
+        let diagnostic = after
+            .as_v1()
+            .last_error
+            .as_deref()
+            .expect("{case}: reconciliation must record a diagnostic");
+        assert!(
+            diagnostic.starts_with("ordered "),
+            "{case}: unexpected reconciliation diagnostic: {diagnostic}"
+        );
+        assert!(
+            diagnostic.len()
+                <= crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES,
+            "{case}: diagnostic exceeded its bounded storage contract"
+        );
+        assert!(
+            matches!(
+                after.payload(),
+                RouterMutationPayloadV1::OrderedEdgeBatch(replay)
+                    if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::CanonicalPending)
+            ) || matches!(
+                after.payload(),
+                RouterMutationPayloadV1::OrderedVertexBatch(replay)
+                    if matches!(replay.target.progress, OrderedVertexBatchTargetProgressV1::CanonicalPending)
+            ) || matches!(
+                after.payload(),
+                RouterMutationPayloadV1::OrderedMixedBatch(replay)
+                    if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalPending)
+            )
+        );
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum OrderedTestFamily {
+        Edge,
+        Vertex,
+        Mixed,
+    }
+
+    const ORDERED_TEST_FAMILIES: [OrderedTestFamily; 3] = [
+        OrderedTestFamily::Edge,
+        OrderedTestFamily::Vertex,
+        OrderedTestFamily::Mixed,
+    ];
+
+    fn stored_edge_dispatch_args(
+        mutation_id: MutationId,
+        target: &RouterOrderedEdgeBatchTargetV1,
+    ) -> OrderedEdgeBatchGraphArgs {
+        OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: target.graph_request_fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog:
+                crate::facade::stable::indexed_catalog::ordered_edge_batch_catalog(&target.request),
+            request: OrderedEdgeBatchGraphRequest::V1(target.request.clone()),
+        })
+    }
+
+    fn stored_vertex_dispatch_args(
+        mutation_id: MutationId,
+        target: &RouterOrderedVertexBatchTargetV1,
+    ) -> OrderedVertexBatchGraphArgs {
+        OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: target.graph_request_fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog:
+                crate::facade::stable::indexed_catalog::ordered_vertex_batch_catalog(
+                    &target.request,
+                ),
+            request: OrderedVertexBatchGraphRequest::V1(target.request.clone()),
+        })
+    }
+
+    fn stored_mixed_dispatch_args(
+        mutation_id: MutationId,
+        target: &RouterOrderedMixedBatchTargetV1,
+    ) -> OrderedMixedBatchGraphArgs {
+        OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: target.graph_request_fingerprint,
+            execution_mode: OrderedBatchExecutionModeV1::Atomic,
+            indexed_property_catalog:
+                crate::facade::stable::indexed_catalog::ordered_mixed_batch_catalog(&target.request),
+            request: OrderedMixedBatchGraphRequest::V1(target.request.clone()),
+        })
+    }
+
+    #[test]
+    fn canonical_pending_reconciliation_uses_stored_target_before_fresh_resolution() {
+        super::reset_test_reconciliation_dispatches();
+        super::set_ordered_test_caller(Some(ordered_test_caller()));
+
+        let store = store_with_shards_spec(&[]);
+        assert!(
+            store
+                .list_live_shards_for_graph_id(tenant_main_graph_id())
+                .expect("current live routing")
+                .is_empty(),
+            "fresh routing must be observably unavailable in this stored-target fixture"
+        );
+        for family in ORDERED_TEST_FAMILIES {
+            let client_key = format!("stored-target-first-{family:?}");
+            let request = ordered_public_request(family, &client_key);
+            let public_fingerprint = request
+                .public_fingerprint()
+                .expect("public request fingerprint");
+            let (key, expected_payload) = match family {
+                OrderedTestFamily::Edge => {
+                    let mut target = edge_target();
+                    target.request.target_shard_id = ShardId::new(77);
+                    target.request.target_graph_canister = graph_principal(9);
+                    target.graph_request_fingerprint =
+                        ordered_edge_batch_graph_request_fingerprint(
+                            &OrderedEdgeBatchGraphRequest::V1(target.request.clone()),
+                        )
+                        .expect("stored edge Graph request fingerprint");
+                    let (key, _) =
+                        seed_edge_pending(&store, &client_key, public_fingerprint, target);
+                    let payload = store
+                        .router_mutation_record(&key)
+                        .expect("stored edge record")
+                        .as_v1()
+                        .payload
+                        .clone();
+                    (key, payload)
+                }
+                OrderedTestFamily::Vertex => {
+                    let mut target = vertex_target();
+                    target.request.target_shard_id = ShardId::new(77);
+                    target.request.target_graph_canister = graph_principal(9);
+                    target.graph_request_fingerprint =
+                        ordered_vertex_batch_graph_request_fingerprint(
+                            &OrderedVertexBatchGraphRequest::V1(target.request.clone()),
+                        )
+                        .expect("stored vertex Graph request fingerprint");
+                    let (key, _) =
+                        seed_vertex_pending(&store, &client_key, public_fingerprint, target);
+                    let payload = store
+                        .router_mutation_record(&key)
+                        .expect("stored vertex record")
+                        .as_v1()
+                        .payload
+                        .clone();
+                    (key, payload)
+                }
+                OrderedTestFamily::Mixed => {
+                    let mut target = mixed_target();
+                    target.request.target_shard_id = ShardId::new(77);
+                    target.request.target_graph_canister = graph_principal(9);
+                    target.graph_request_fingerprint =
+                        ordered_mixed_batch_graph_request_fingerprint(
+                            &OrderedMixedBatchGraphRequest::V1(target.request.clone()),
+                        )
+                        .expect("stored mixed Graph request fingerprint");
+                    let (key, _) =
+                        seed_mixed_pending(&store, &client_key, public_fingerprint, target);
+                    let payload = store
+                        .router_mutation_record(&key)
+                        .expect("stored mixed record")
+                        .as_v1()
+                        .payload
+                        .clone();
+                    (key, payload)
+                }
+            };
+
+            let response = futures::executor::block_on(super::atomic_insert_public(request))
+                .expect("same-key pending retry");
+            let after = store
+                .router_mutation_record(&key)
+                .expect("stored pending record after retry");
+
+            assert_eq!(super::test_reconciliation_dispatch_calls(), 0);
+            assert!(response.receipt.is_none());
+            assert_eq!(after.as_v1().payload, expected_payload);
+            assert!(
+                after
+                    .as_v1()
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("get_mutation_journal_entry unavailable")),
+                "{family:?}: stored-target journal query error must remain diagnostic"
+            );
+        }
+
+        for family in ORDERED_TEST_FAMILIES {
+            let client_key = format!("fresh-admission-reject-{family:?}");
+            let (store, request, expected_error) = match family {
+                OrderedTestFamily::Edge => {
+                    let store = store_with_one_shard();
+                    let encoding_key = store
+                        .graph_element_id_encoding_key(tenant_main_graph_id())
+                        .expect("edge endpoint encoding key");
+                    let mut request = ordered_public_request(family, &client_key);
+                    let AtomicInsertRequest::V1(request_v1) = &mut request;
+                    let AtomicInsertOperationV1::Edge(edge) = &mut request_v1.operations[0] else {
+                        unreachable!()
+                    };
+                    edge.source = AtomicInsertEndpointV1::Existing(
+                        gleaph_graph_kernel::federation::encode_global_vertex_id(
+                            &encoding_key,
+                            gleaph_graph_kernel::federation::GlobalVertexId::new(
+                                ShardId::new(0),
+                                10,
+                            ),
+                        )
+                        .0
+                        .to_vec(),
+                    );
+                    edge.target = AtomicInsertEndpointV1::Existing(
+                        gleaph_graph_kernel::federation::encode_global_vertex_id(
+                            &encoding_key,
+                            gleaph_graph_kernel::federation::GlobalVertexId::new(
+                                ShardId::new(1),
+                                11,
+                            ),
+                        )
+                        .0
+                        .to_vec(),
+                    );
+                    (
+                        store,
+                        request,
+                        RouterError::InvalidArgument(
+                            "ordered edge item 0 endpoints resolve to different shards".into(),
+                        ),
+                    )
+                }
+                OrderedTestFamily::Vertex => (
+                    store_with_shards_spec(&[]),
+                    ordered_public_request(family, &client_key),
+                    RouterError::ShardNotRegistered,
+                ),
+                OrderedTestFamily::Mixed => {
+                    let store = store_with_one_shard();
+                    let mut request = ordered_public_request(family, &client_key);
+                    let AtomicInsertRequest::V1(request_v1) = &mut request;
+                    let AtomicInsertOperationV1::Edge(edge) = &mut request_v1.operations[1] else {
+                        unreachable!()
+                    };
+                    edge.source = AtomicInsertEndpointV1::NewVertexOrdinal(0);
+                    edge.target = AtomicInsertEndpointV1::NewVertexOrdinal(0);
+                    edge.edge_label_name = Some("missing-edge-label".into());
+                    (
+                        store,
+                        request,
+                        RouterError::NotFound("missing-edge-label".into()),
+                    )
+                }
+            };
+            let mutation_key =
+                mutation_key_for(ordered_test_caller(), tenant_main_graph_id(), &client_key);
+
+            let error = futures::executor::block_on(super::atomic_insert_public(request))
+                .expect_err("fresh admission must reject before reservation");
+
+            assert_eq!(error, expected_error, "{family:?}: exact public error");
+            assert!(
+                store.router_mutation_record(&mutation_key).is_none(),
+                "{family:?}: rejection must leave no client-key record, routing reservation, or diagnostic"
+            );
+        }
+
+        super::set_ordered_test_caller(None);
+    }
+
+    #[test]
+    fn canonical_pending_reconciliation_adopts_exact_completed_receipts_without_dispatch() {
+        let store = store_with_one_shard();
+        super::reset_test_reconciliation_dispatches();
+
+        for family in ORDERED_TEST_FAMILIES {
+            match family {
+                OrderedTestFamily::Edge => {
+                    let target = edge_target();
+                    let receipt = edge_receipt();
+                    let (key, mutation_id) =
+                        seed_edge_pending(&store, "exact-edge", [1; 32], target.clone());
+                    let entry = completed_journal(
+                        mutation_id,
+                        GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                            canonical_encoding_version: 1,
+                            graph_request_fingerprint: target.graph_request_fingerprint,
+                            logical_item_count: 1,
+                        },
+                        1,
+                        None,
+                    );
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        mutation_id,
+                        Some(entry),
+                    );
+                    let before = store.router_mutation_record(&key).expect("edge pending");
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+                        Some(&preflight),
+                    ))
+                    .expect("exact edge reconciliation");
+                    let after = store.router_mutation_record(&key).expect("edge committed");
+                    assert_ne!(before.as_v1().payload, after.as_v1().payload);
+                    assert_eq!(after.as_v1().last_error, None);
+                    assert!(matches!(
+                        after.payload(),
+                        RouterMutationPayloadV1::OrderedEdgeBatch(replay)
+                            if replay.target.request == target.request
+                                && replay.target.graph_request_fingerprint
+                                    == target.graph_request_fingerprint
+                                && replay.target.progress
+                                    == OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    ));
+                }
+                OrderedTestFamily::Vertex => {
+                    let target = vertex_target();
+                    let receipt = vertex_receipt();
+                    let (key, mutation_id) =
+                        seed_vertex_pending(&store, "exact-vertex", [2; 32], target.clone());
+                    let entry = completed_journal(
+                        mutation_id,
+                        GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                            canonical_encoding_version: 1,
+                            graph_request_fingerprint: target.graph_request_fingerprint,
+                            logical_item_count: 1,
+                        },
+                        1,
+                        Some(receipt.allocated_vertex_ids.clone()),
+                    );
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        mutation_id,
+                        Some(entry),
+                    );
+                    let before = store.router_mutation_record(&key).expect("vertex pending");
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+                        Some(&preflight),
+                    ))
+                    .expect("exact vertex reconciliation");
+                    let after = store
+                        .router_mutation_record(&key)
+                        .expect("vertex committed");
+                    assert_ne!(before.as_v1().payload, after.as_v1().payload);
+                    assert_eq!(after.as_v1().last_error, None);
+                    assert!(matches!(
+                        after.payload(),
+                        RouterMutationPayloadV1::OrderedVertexBatch(replay)
+                            if replay.target.request == target.request
+                                && replay.target.graph_request_fingerprint
+                                    == target.graph_request_fingerprint
+                                && replay.target.progress
+                                    == OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    ));
+                }
+                OrderedTestFamily::Mixed => {
+                    let target = mixed_target();
+                    let receipt = mixed_receipt();
+                    let (key, mutation_id) =
+                        seed_mixed_pending(&store, "exact-mixed", [3; 32], target.clone());
+                    let entry = completed_journal(
+                        mutation_id,
+                        GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                            canonical_encoding_version: 1,
+                            graph_request_fingerprint: target.graph_request_fingerprint,
+                            logical_operation_count: 2,
+                            logical_vertex_count: 1,
+                            logical_edge_count: 1,
+                        },
+                        2,
+                        Some(receipt.allocated_vertex_ids.clone()),
+                    );
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        mutation_id,
+                        Some(entry),
+                    );
+                    let before = store.router_mutation_record(&key).expect("mixed pending");
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+                        Some(&preflight),
+                    ))
+                    .expect("exact mixed reconciliation");
+                    let after = store.router_mutation_record(&key).expect("mixed committed");
+                    assert_ne!(before.as_v1().payload, after.as_v1().payload);
+                    assert_eq!(after.as_v1().last_error, None);
+                    assert!(matches!(
+                        after.payload(),
+                        RouterMutationPayloadV1::OrderedMixedBatch(replay)
+                            if replay.target.request == target.request
+                                && replay.target.graph_request_fingerprint
+                                    == target.graph_request_fingerprint
+                                && replay.target.progress
+                                    == OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    ));
+                }
+            }
+            assert_eq!(
+                super::test_reconciliation_dispatch_calls(),
+                0,
+                "{family:?}: exact completed journal evidence must be a local transition"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_pending_reconciliation_rejects_nonexact_evidence_without_dispatch() {
+        let store = store_with_one_shard();
+        super::reset_test_reconciliation_dispatches();
+
+        for family in ORDERED_TEST_FAMILIES {
+            let (key, mutation_id, graph, mut cases) = match family {
+                OrderedTestFamily::Edge => {
+                    let target = edge_target();
+                    let fingerprint = target.graph_request_fingerprint;
+                    let (key, mutation_id) =
+                        seed_edge_pending(&store, "reject-edge", [11; 32], target.clone());
+                    let exact_identity = || GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                        canonical_encoding_version: 1,
+                        graph_request_fingerprint: fingerprint,
+                        logical_item_count: 1,
+                    };
+                    let mut invalid = completed_journal(mutation_id, exact_identity(), 1, None);
+                    invalid.set_next_index(Some(1));
+                    let mut retired = completed_journal(mutation_id, exact_identity(), 1, None);
+                    retired.set_retirement(GraphMutationRetirementWireV1::Retired);
+                    let mut not_applicable =
+                        completed_journal(mutation_id, exact_identity(), 1, None);
+                    not_applicable.set_retirement(GraphMutationRetirementWireV1::NotApplicable);
+                    let mut incomplete = completed_journal(mutation_id, exact_identity(), 1, None);
+                    incomplete.set_state(MutationJournalState::Incomplete);
+                    let mut wrong_row = completed_journal(mutation_id, exact_identity(), 1, None);
+                    wrong_row.set_row_count(2);
+                    let mut wrong_appendix =
+                        completed_journal(mutation_id, exact_identity(), 1, None);
+                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7]));
+                    let cases = vec![
+                        ("invalid-wire", invalid),
+                        ("retired", retired),
+                        ("not-applicable", not_applicable),
+                        ("non-completed", incomplete),
+                        (
+                            "wrong-identity-variant",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 1,
+                                },
+                                1,
+                                Some(vec![7]),
+                            ),
+                        ),
+                        (
+                            "wrong-canonical-version",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                                    canonical_encoding_version: 2,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 1,
+                                },
+                                1,
+                                None,
+                            ),
+                        ),
+                        (
+                            "wrong-fingerprint",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: [99; 32],
+                                    logical_item_count: 1,
+                                },
+                                1,
+                                None,
+                            ),
+                        ),
+                        (
+                            "wrong-item-count",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 2,
+                                },
+                                2,
+                                None,
+                            ),
+                        ),
+                        ("wrong-row-count", wrong_row),
+                        ("wrong-allocation-appendix", wrong_appendix),
+                        (
+                            "wrong-mutation-id",
+                            completed_journal(mutation_id + 1, exact_identity(), 1, None),
+                        ),
+                    ];
+                    (
+                        key,
+                        mutation_id,
+                        target.request.target_graph_canister,
+                        cases,
+                    )
+                }
+                OrderedTestFamily::Vertex => {
+                    let target = vertex_target();
+                    let fingerprint = target.graph_request_fingerprint;
+                    let (key, mutation_id) =
+                        seed_vertex_pending(&store, "reject-vertex", [12; 32], target.clone());
+                    let exact_identity = || GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                        canonical_encoding_version: 1,
+                        graph_request_fingerprint: fingerprint,
+                        logical_item_count: 1,
+                    };
+                    let mut invalid =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    invalid.set_next_index(Some(1));
+                    let mut retired =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    retired.set_retirement(GraphMutationRetirementWireV1::Retired);
+                    let mut not_applicable =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    not_applicable.set_retirement(GraphMutationRetirementWireV1::NotApplicable);
+                    let mut incomplete =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    incomplete.set_state(MutationJournalState::Incomplete);
+                    let mut wrong_row =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    wrong_row.set_row_count(2);
+                    let mut missing_appendix =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    missing_appendix.set_allocated_vertex_ids(None);
+                    let mut wrong_appendix =
+                        completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
+                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7, 8]));
+                    let cases = vec![
+                        ("invalid-wire", invalid),
+                        ("retired", retired),
+                        ("not-applicable", not_applicable),
+                        ("non-completed", incomplete),
+                        (
+                            "wrong-identity-variant",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 1,
+                                },
+                                1,
+                                None,
+                            ),
+                        ),
+                        (
+                            "wrong-canonical-version",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                                    canonical_encoding_version: 2,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 1,
+                                },
+                                1,
+                                Some(vec![7]),
+                            ),
+                        ),
+                        (
+                            "wrong-fingerprint",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: [99; 32],
+                                    logical_item_count: 1,
+                                },
+                                1,
+                                Some(vec![7]),
+                            ),
+                        ),
+                        (
+                            "wrong-item-count",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 2,
+                                },
+                                2,
+                                Some(vec![7, 8]),
+                            ),
+                        ),
+                        ("wrong-row-count", wrong_row),
+                        ("missing-allocation-appendix", missing_appendix),
+                        ("wrong-allocation-appendix", wrong_appendix),
+                        (
+                            "wrong-mutation-id",
+                            completed_journal(mutation_id + 1, exact_identity(), 1, Some(vec![7])),
+                        ),
+                    ];
+                    (
+                        key,
+                        mutation_id,
+                        target.request.target_graph_canister,
+                        cases,
+                    )
+                }
+                OrderedTestFamily::Mixed => {
+                    let target = mixed_target();
+                    let fingerprint = target.graph_request_fingerprint;
+                    let (key, mutation_id) =
+                        seed_mixed_pending(&store, "reject-mixed", [13; 32], target.clone());
+                    let exact_identity = || GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                        canonical_encoding_version: 1,
+                        graph_request_fingerprint: fingerprint,
+                        logical_operation_count: 2,
+                        logical_vertex_count: 1,
+                        logical_edge_count: 1,
+                    };
+                    let mut invalid =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    invalid.set_next_index(Some(1));
+                    let mut retired =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    retired.set_retirement(GraphMutationRetirementWireV1::Retired);
+                    let mut not_applicable =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    not_applicable.set_retirement(GraphMutationRetirementWireV1::NotApplicable);
+                    let mut incomplete =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    incomplete.set_state(MutationJournalState::Incomplete);
+                    let mut wrong_row =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    wrong_row.set_row_count(3);
+                    let mut missing_appendix =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    missing_appendix.set_allocated_vertex_ids(None);
+                    let mut wrong_appendix =
+                        completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
+                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7, 8]));
+                    let cases = vec![
+                        ("invalid-wire", invalid),
+                        ("retired", retired),
+                        ("not-applicable", not_applicable),
+                        ("non-completed", incomplete),
+                        (
+                            "wrong-identity-variant",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_item_count: 2,
+                                },
+                                2,
+                                None,
+                            ),
+                        ),
+                        (
+                            "wrong-canonical-version",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                                    canonical_encoding_version: 2,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_operation_count: 2,
+                                    logical_vertex_count: 1,
+                                    logical_edge_count: 1,
+                                },
+                                2,
+                                Some(vec![7]),
+                            ),
+                        ),
+                        (
+                            "wrong-fingerprint",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: [99; 32],
+                                    logical_operation_count: 2,
+                                    logical_vertex_count: 1,
+                                    logical_edge_count: 1,
+                                },
+                                2,
+                                Some(vec![7]),
+                            ),
+                        ),
+                        (
+                            "wrong-operation-count",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_operation_count: 3,
+                                    logical_vertex_count: 1,
+                                    logical_edge_count: 2,
+                                },
+                                3,
+                                Some(vec![7]),
+                            ),
+                        ),
+                        (
+                            "wrong-vertex-count",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_operation_count: 2,
+                                    logical_vertex_count: 0,
+                                    logical_edge_count: 2,
+                                },
+                                2,
+                                Some(Vec::new()),
+                            ),
+                        ),
+                        (
+                            "wrong-edge-count",
+                            completed_journal(
+                                mutation_id,
+                                GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                                    canonical_encoding_version: 1,
+                                    graph_request_fingerprint: fingerprint,
+                                    logical_operation_count: 2,
+                                    logical_vertex_count: 2,
+                                    logical_edge_count: 0,
+                                },
+                                2,
+                                Some(vec![7, 8]),
+                            ),
+                        ),
+                        ("wrong-row-count", wrong_row),
+                        ("missing-allocation-appendix", missing_appendix),
+                        ("wrong-allocation-appendix", wrong_appendix),
+                        (
+                            "wrong-mutation-id",
+                            completed_journal(mutation_id + 1, exact_identity(), 2, Some(vec![7])),
+                        ),
+                    ];
+                    (
+                        key,
+                        mutation_id,
+                        target.request.target_graph_canister,
+                        cases,
+                    )
+                }
+            };
+
+            for (case, entry) in cases.drain(..) {
+                let label = format!("{family:?}/{case}");
+                let before = store.router_mutation_record(&key).expect("pending record");
+                let preflight = preflight_with_journal(graph, mutation_id, Some(entry));
+                futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                    &store,
+                    &key,
+                    &before,
+                    CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                    Some(&preflight),
+                ))
+                .expect("nonexact evidence remains a diagnostic outcome");
+                let after = store
+                    .router_mutation_record(&key)
+                    .expect("pending record after case");
+                assert_pending_diagnostic(&before, &after, &label);
+                assert_eq!(
+                    super::test_reconciliation_dispatch_calls(),
+                    0,
+                    "{label}: nonexact evidence must never dispatch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_pending_reconciliation_handles_absent_by_trigger() {
+        let store = store_with_one_shard();
+
+        for family in ORDERED_TEST_FAMILIES {
+            super::reset_test_reconciliation_dispatches();
+            for trigger in [
+                CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+            ] {
+                let client_key = format!("journal-query-error-{family:?}-{trigger:?}");
+                let (key, target_graph) = match family {
+                    OrderedTestFamily::Edge => {
+                        let target = edge_target();
+                        let target_graph = target.request.target_graph_canister;
+                        let (key, _) = seed_edge_pending(&store, &client_key, [31; 32], target);
+                        (key, target_graph)
+                    }
+                    OrderedTestFamily::Vertex => {
+                        let target = vertex_target();
+                        let target_graph = target.request.target_graph_canister;
+                        let (key, _) = seed_vertex_pending(&store, &client_key, [32; 32], target);
+                        (key, target_graph)
+                    }
+                    OrderedTestFamily::Mixed => {
+                        let target = mixed_target();
+                        let target_graph = target.request.target_graph_canister;
+                        let (key, _) = seed_mixed_pending(&store, &client_key, [33; 32], target);
+                        (key, target_graph)
+                    }
+                };
+                let before = store
+                    .router_mutation_record(&key)
+                    .expect("query-error pending record");
+                futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                    &store, &key, &before, trigger, None,
+                ))
+                .expect("ambiguous journal query error remains diagnostic");
+                let after = store
+                    .router_mutation_record(&key)
+                    .expect("query-error pending record after reconciliation");
+                assert_pending_diagnostic(
+                    &before,
+                    &after,
+                    &format!("{family:?}/{trigger:?}/journal-query-error/{target_graph}"),
+                );
+                let diagnostic = after
+                    .as_v1()
+                    .last_error
+                    .as_deref()
+                    .expect("query error diagnostic");
+                assert!(diagnostic.contains("get_mutation_journal_entry unavailable"));
+                assert!(!diagnostic.contains("journal entry is absent"));
+                assert_eq!(
+                    super::test_reconciliation_dispatch_calls(),
+                    0,
+                    "{family:?}/{trigger:?}: ambiguous query failure must never redispatch"
+                );
+            }
+
+            match family {
+                OrderedTestFamily::Edge => {
+                    let target = edge_target();
+                    let (timer_key, timer_mutation_id) =
+                        seed_edge_pending(&store, "absent-timer-edge", [21; 32], target.clone());
+                    let before = store
+                        .router_mutation_record(&timer_key)
+                        .expect("timer edge");
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        timer_mutation_id,
+                        None,
+                    );
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &timer_key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+                        Some(&preflight),
+                    ))
+                    .expect("timer edge absence");
+                    let after = store
+                        .router_mutation_record(&timer_key)
+                        .expect("timer edge after");
+                    assert_pending_diagnostic(&before, &after, "edge timer absent");
+                    assert_eq!(super::test_reconciliation_dispatch_calls(), 0);
+
+                    let (retry_key, retry_mutation_id) =
+                        seed_edge_pending(&store, "absent-retry-edge", [22; 32], target.clone());
+                    let receipt = edge_receipt();
+                    super::set_test_edge_dispatch(Ok(GraphOrderedEdgeBatchResult::V1(
+                        GraphOrderedEdgeBatchResultV1::Completed(receipt.clone()),
+                    )));
+                    let before = store
+                        .router_mutation_record(&retry_key)
+                        .expect("retry edge");
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        retry_mutation_id,
+                        None,
+                    );
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &retry_key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                        Some(&preflight),
+                    ))
+                    .expect("retry edge absence");
+                    assert_eq!(super::test_reconciliation_dispatch_calls(), 1);
+                    assert_eq!(
+                        super::test_edge_dispatch_args(),
+                        Some(stored_edge_dispatch_args(retry_mutation_id, &target))
+                    );
+                    let after = store
+                        .router_mutation_record(&retry_key)
+                        .expect("retry edge after");
+                    assert!(matches!(
+                        after.payload(),
+                        RouterMutationPayloadV1::OrderedEdgeBatch(replay)
+                            if replay.target.progress
+                                == OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    ));
+
+                    for case in ["noncompleted-wrong-fingerprint", "wrong-count"] {
+                        super::reset_test_reconciliation_dispatches();
+                        let client_key = format!("absent-retry-edge-{case}");
+                        let (key, mutation_id) =
+                            seed_edge_pending(&store, &client_key, [41; 32], target.clone());
+                        let result = match case {
+                            "noncompleted-wrong-fingerprint" => GraphOrderedEdgeBatchResult::V1(
+                                GraphOrderedEdgeBatchResultV1::MutationRetired {
+                                    mutation_id: mutation_id + 1,
+                                    graph_request_fingerprint: [99; 32],
+                                },
+                            ),
+                            "wrong-count" => {
+                                let mut receipt = edge_receipt();
+                                receipt.logical_edge_count = 2;
+                                GraphOrderedEdgeBatchResult::V1(
+                                    GraphOrderedEdgeBatchResultV1::Completed(receipt),
+                                )
+                            }
+                            _ => unreachable!(),
+                        };
+                        super::set_test_edge_dispatch(Ok(result));
+                        let before = store
+                            .router_mutation_record(&key)
+                            .expect("wrong edge result pending record");
+                        let preflight = preflight_with_journal(
+                            target.request.target_graph_canister,
+                            mutation_id,
+                            None,
+                        );
+                        futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                            &store,
+                            &key,
+                            &before,
+                            CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                            Some(&preflight),
+                        ))
+                        .expect("wrong edge redispatch result remains diagnostic");
+                        let after = store
+                            .router_mutation_record(&key)
+                            .expect("wrong edge result pending record after redispatch");
+                        assert_pending_diagnostic(
+                            &before,
+                            &after,
+                            &format!("edge redispatch/{case}"),
+                        );
+                        assert_eq!(super::test_reconciliation_dispatch_calls(), 1);
+                        assert_eq!(
+                            super::test_edge_dispatch_args(),
+                            Some(stored_edge_dispatch_args(mutation_id, &target))
+                        );
+                    }
+                }
+                OrderedTestFamily::Vertex => {
+                    let target = vertex_target();
+                    let (timer_key, timer_mutation_id) = seed_vertex_pending(
+                        &store,
+                        "absent-timer-vertex",
+                        [23; 32],
+                        target.clone(),
+                    );
+                    let before = store
+                        .router_mutation_record(&timer_key)
+                        .expect("timer vertex");
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        timer_mutation_id,
+                        None,
+                    );
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &timer_key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+                        Some(&preflight),
+                    ))
+                    .expect("timer vertex absence");
+                    let after = store
+                        .router_mutation_record(&timer_key)
+                        .expect("timer vertex after");
+                    assert_pending_diagnostic(&before, &after, "vertex timer absent");
+                    assert_eq!(super::test_reconciliation_dispatch_calls(), 0);
+
+                    let (retry_key, retry_mutation_id) = seed_vertex_pending(
+                        &store,
+                        "absent-retry-vertex",
+                        [24; 32],
+                        target.clone(),
+                    );
+                    let receipt = vertex_receipt();
+                    super::set_test_vertex_dispatch(Ok(GraphOrderedVertexBatchResult::V1(
+                        GraphOrderedVertexBatchResultV1::Completed(receipt.clone()),
+                    )));
+                    let before = store
+                        .router_mutation_record(&retry_key)
+                        .expect("retry vertex");
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        retry_mutation_id,
+                        None,
+                    );
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &retry_key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                        Some(&preflight),
+                    ))
+                    .expect("retry vertex absence");
+                    assert_eq!(super::test_reconciliation_dispatch_calls(), 1);
+                    assert_eq!(
+                        super::test_vertex_dispatch_args(),
+                        Some(stored_vertex_dispatch_args(retry_mutation_id, &target))
+                    );
+                    let after = store
+                        .router_mutation_record(&retry_key)
+                        .expect("retry vertex after");
+                    assert!(matches!(
+                        after.payload(),
+                        RouterMutationPayloadV1::OrderedVertexBatch(replay)
+                            if replay.target.progress
+                                == OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    ));
+
+                    for case in [
+                        "noncompleted-wrong-fingerprint",
+                        "wrong-count",
+                        "wrong-allocation",
+                    ] {
+                        super::reset_test_reconciliation_dispatches();
+                        let client_key = format!("absent-retry-vertex-{case}");
+                        let (key, mutation_id) =
+                            seed_vertex_pending(&store, &client_key, [42; 32], target.clone());
+                        let result = match case {
+                            "noncompleted-wrong-fingerprint" => GraphOrderedVertexBatchResult::V1(
+                                GraphOrderedVertexBatchResultV1::MutationRetired {
+                                    mutation_id: mutation_id + 1,
+                                    graph_request_fingerprint: [98; 32],
+                                },
+                            ),
+                            "wrong-count" => GraphOrderedVertexBatchResult::V1(
+                                GraphOrderedVertexBatchResultV1::Completed(
+                                    GraphOrderedVertexBatchReceiptV1 {
+                                        logical_vertex_count: 2,
+                                        emitted_delta_first_seq: None,
+                                        emitted_delta_last_seq: None,
+                                        hot_forward_vertices: Vec::new(),
+                                        allocated_vertex_ids: vec![7, 8],
+                                    },
+                                ),
+                            ),
+                            "wrong-allocation" => GraphOrderedVertexBatchResult::V1(
+                                GraphOrderedVertexBatchResultV1::Completed(
+                                    GraphOrderedVertexBatchReceiptV1 {
+                                        logical_vertex_count: 1,
+                                        emitted_delta_first_seq: None,
+                                        emitted_delta_last_seq: None,
+                                        hot_forward_vertices: Vec::new(),
+                                        allocated_vertex_ids: Vec::new(),
+                                    },
+                                ),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        super::set_test_vertex_dispatch(Ok(result));
+                        let before = store
+                            .router_mutation_record(&key)
+                            .expect("wrong vertex result pending record");
+                        let preflight = preflight_with_journal(
+                            target.request.target_graph_canister,
+                            mutation_id,
+                            None,
+                        );
+                        futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                            &store,
+                            &key,
+                            &before,
+                            CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                            Some(&preflight),
+                        ))
+                        .expect("wrong vertex redispatch result remains diagnostic");
+                        let after = store
+                            .router_mutation_record(&key)
+                            .expect("wrong vertex result pending record after redispatch");
+                        assert_pending_diagnostic(
+                            &before,
+                            &after,
+                            &format!("vertex redispatch/{case}"),
+                        );
+                        assert_eq!(super::test_reconciliation_dispatch_calls(), 1);
+                        assert_eq!(
+                            super::test_vertex_dispatch_args(),
+                            Some(stored_vertex_dispatch_args(mutation_id, &target))
+                        );
+                    }
+                }
+                OrderedTestFamily::Mixed => {
+                    let target = mixed_target();
+                    let (timer_key, timer_mutation_id) =
+                        seed_mixed_pending(&store, "absent-timer-mixed", [25; 32], target.clone());
+                    let before = store
+                        .router_mutation_record(&timer_key)
+                        .expect("timer mixed");
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        timer_mutation_id,
+                        None,
+                    );
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &timer_key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::BackgroundRecovery,
+                        Some(&preflight),
+                    ))
+                    .expect("timer mixed absence");
+                    let after = store
+                        .router_mutation_record(&timer_key)
+                        .expect("timer mixed after");
+                    assert_pending_diagnostic(&before, &after, "mixed timer absent");
+                    assert_eq!(super::test_reconciliation_dispatch_calls(), 0);
+
+                    let (retry_key, retry_mutation_id) =
+                        seed_mixed_pending(&store, "absent-retry-mixed", [26; 32], target.clone());
+                    let receipt = mixed_receipt();
+                    super::set_test_mixed_dispatch(Ok(GraphOrderedMixedBatchResult::V1(
+                        GraphOrderedMixedBatchResultV1::Completed(receipt.clone()),
+                    )));
+                    let before = store
+                        .router_mutation_record(&retry_key)
+                        .expect("retry mixed");
+                    let preflight = preflight_with_journal(
+                        target.request.target_graph_canister,
+                        retry_mutation_id,
+                        None,
+                    );
+                    futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                        &store,
+                        &retry_key,
+                        &before,
+                        CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                        Some(&preflight),
+                    ))
+                    .expect("retry mixed absence");
+                    assert_eq!(super::test_reconciliation_dispatch_calls(), 1);
+                    assert_eq!(
+                        super::test_mixed_dispatch_args(),
+                        Some(stored_mixed_dispatch_args(retry_mutation_id, &target))
+                    );
+                    let after = store
+                        .router_mutation_record(&retry_key)
+                        .expect("retry mixed after");
+                    assert!(matches!(
+                        after.payload(),
+                        RouterMutationPayloadV1::OrderedMixedBatch(replay)
+                            if replay.target.progress
+                                == OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    ));
+
+                    for case in [
+                        "noncompleted-wrong-fingerprint",
+                        "wrong-counts",
+                        "wrong-allocation",
+                    ] {
+                        super::reset_test_reconciliation_dispatches();
+                        let client_key = format!("absent-retry-mixed-{case}");
+                        let (key, mutation_id) =
+                            seed_mixed_pending(&store, &client_key, [43; 32], target.clone());
+                        let result = match case {
+                            "noncompleted-wrong-fingerprint" => GraphOrderedMixedBatchResult::V1(
+                                GraphOrderedMixedBatchResultV1::MutationRetired {
+                                    mutation_id: mutation_id + 1,
+                                    graph_request_fingerprint: [97; 32],
+                                },
+                            ),
+                            "wrong-counts" => GraphOrderedMixedBatchResult::V1(
+                                GraphOrderedMixedBatchResultV1::Completed(
+                                    GraphOrderedMixedBatchReceiptV1 {
+                                        logical_operation_count: 3,
+                                        logical_vertex_count: 1,
+                                        logical_edge_count: 2,
+                                        emitted_delta_first_seq: None,
+                                        emitted_delta_last_seq: None,
+                                        hot_forward_vertices: Vec::new(),
+                                        allocated_vertex_ids: vec![7],
+                                    },
+                                ),
+                            ),
+                            "wrong-allocation" => GraphOrderedMixedBatchResult::V1(
+                                GraphOrderedMixedBatchResultV1::Completed(
+                                    GraphOrderedMixedBatchReceiptV1 {
+                                        logical_operation_count: 2,
+                                        logical_vertex_count: 1,
+                                        logical_edge_count: 1,
+                                        emitted_delta_first_seq: None,
+                                        emitted_delta_last_seq: None,
+                                        hot_forward_vertices: Vec::new(),
+                                        allocated_vertex_ids: Vec::new(),
+                                    },
+                                ),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        super::set_test_mixed_dispatch(Ok(result));
+                        let before = store
+                            .router_mutation_record(&key)
+                            .expect("wrong mixed result pending record");
+                        let preflight = preflight_with_journal(
+                            target.request.target_graph_canister,
+                            mutation_id,
+                            None,
+                        );
+                        futures::executor::block_on(super::reconcile_ordered_canonical_pending(
+                            &store,
+                            &key,
+                            &before,
+                            CanonicalPendingReconciliationTrigger::ExplicitSameKeyRetry,
+                            Some(&preflight),
+                        ))
+                        .expect("wrong mixed redispatch result remains diagnostic");
+                        let after = store
+                            .router_mutation_record(&key)
+                            .expect("wrong mixed result pending record after redispatch");
+                        assert_pending_diagnostic(
+                            &before,
+                            &after,
+                            &format!("mixed redispatch/{case}"),
+                        );
+                        assert_eq!(super::test_reconciliation_dispatch_calls(), 1);
+                        assert_eq!(
+                            super::test_mixed_dispatch_args(),
+                            Some(stored_mixed_dispatch_args(mutation_id, &target))
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn parse_block(query: &str) -> gleaph_gql::ast::StatementBlock {

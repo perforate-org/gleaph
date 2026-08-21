@@ -2237,6 +2237,17 @@ pub fn arm_graph_unique_ack_fault(env: &FederationEnv, shard: Principal, code: u
     let _: () = update_as_router(env, shard, "e2e_arm_unique_ack_fault", code);
 }
 
+/// Arm (or clear, with `0`) the graph shard's one-shot ordered post-commit response-loss fault.
+/// Arming and clearing both reset the ordered dispatch counter and reject-next marker.
+pub fn arm_graph_ordered_response_loss(env: &FederationEnv, shard: Principal, code: u8) {
+    let _: () = update_as_router(env, shard, "e2e_arm_ordered_response_loss", code);
+}
+
+/// Return the ordered dispatch counter and reject-next marker from the Graph E2E seam.
+pub fn graph_ordered_dispatch_state(env: &FederationEnv, shard: Principal) -> (u64, bool) {
+    query_as_router(env, shard, "e2e_ordered_dispatch_state", ())
+}
+
 /// Count of currently pinned (un-acked) unique effects in a graph shard's outbox (PocketIC E2E).
 pub fn graph_unique_outbox_len(env: &FederationEnv, shard: Principal) -> u64 {
     query_as_router(env, shard, "e2e_unique_outbox_len", ())
