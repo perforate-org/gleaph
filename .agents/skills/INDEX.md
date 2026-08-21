@@ -12,11 +12,6 @@ Supervise Gleaph work from current-state inspection and bounded planning through
 implementation, independent final approval, safe commits, pane resets, and continuous improvement
 of the smallest owning workflow skill.
 
-## herdr-workflow
-
-Coordinate Gleaph planning, implementation, iterative review, validation, final approval, commits,
-pane resets, and skill forward-testing across sibling herdr panes.
-
 ## architecture-integrity
 
 Review encapsulation, separation of concerns, invariants, consistency, fitness for purpose, SSOT, DRY, and module boundaries.
