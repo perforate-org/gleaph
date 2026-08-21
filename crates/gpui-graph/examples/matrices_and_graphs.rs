@@ -50,8 +50,8 @@
 use std::collections::HashMap;
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rems, size, white,
 };
 use gpui_graph::{GraphBatch, GraphScene, GraphView, GraphViewState, SccLayoutEngine};
 
@@ -157,7 +157,7 @@ fn strongly_connected_components(adj: &HashMap<usize, Vec<usize>>) -> Vec<Vec<us
 /// DAG, so reversing puts sources first. This reordering is the relabeling
 /// behind the Frobenius normal form.
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1100.), px(760.)), cx);
         cx.open_window(
             WindowOptions {

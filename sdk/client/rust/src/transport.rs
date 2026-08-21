@@ -5,11 +5,25 @@ use candid::{CandidType, Decode, Principal};
 use std::future::Future;
 use std::pin::Pin;
 
+/// A boxed future returned by a transport method.
+///
+/// On native targets the future must be `Send` so the client can be shared
+/// across threads. On wasm ic-agent's wasm-bindgen backend is single-threaded
+/// (`Rc`-based) and is neither `Send` nor `Sync`, so the `Send` bound is
+/// dropped there.
+#[cfg(not(target_family = "wasm"))]
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// A boxed future returned by a transport method (wasm variant, without the
+/// `Send` bound because ic-agent's wasm-bindgen backend is single-threaded).
+#[cfg(target_family = "wasm")]
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
 /// A transport to the Gleaph Router.
 ///
 /// A transport owns the call encoding/decoding and error policy, while `GleaphClient` owns the
 /// typed, prepared-aware surface. Application code can provide a custom transport (e.g. for
 /// testing or a different HTTP stack) and wrap it with `GleaphClient::new`.
+#[cfg(not(target_family = "wasm"))]
 pub trait GleaphTransport: Send + Sync {
     /// Execute a dynamic GQL query with explicit read consistency.
     fn gql_query<'a>(
@@ -17,7 +31,7 @@ pub trait GleaphTransport: Send + Sync {
         query: String,
         params: Vec<u8>,
         read_mode: types::ReadMode,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
 
     /// Execute an idempotent dynamic GQL mutation.
     fn gql_mutate<'a>(
@@ -25,7 +39,7 @@ pub trait GleaphTransport: Send + Sync {
         query: String,
         params: Vec<u8>,
         client_mutation_key: String,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
 
     /// Execute a named prepared query.
     fn prepared_query<'a>(
@@ -34,7 +48,7 @@ pub trait GleaphTransport: Send + Sync {
         params: Vec<u8>,
         sort: Option<Vec<types::PreparedSortSpec>>,
         read_mode: types::ReadMode,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
 
     /// Execute an idempotent named prepared mutation.
     fn prepared_mutate<'a>(
@@ -42,13 +56,13 @@ pub trait GleaphTransport: Send + Sync {
         name: String,
         params: Vec<u8>,
         client_mutation_key: String,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
 
     /// Execute one durable Router bulk-load command.
     fn bulk_load<'a>(
         &'a self,
         command: types::BulkLoadCommand,
-    ) -> Pin<Box<dyn Future<Output = Result<types::BulkLoadResponse, crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<types::BulkLoadResponse, crate::CallError>>;
 
     /// Read one bounded page of durable Router bulk-load status.
     fn bulk_load_status<'a>(
@@ -57,27 +71,97 @@ pub trait GleaphTransport: Send + Sync {
         client_bulk_key: String,
         receipt_cursor: Option<u32>,
         max_receipts: u32,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<types::BulkLoadStatusPage, crate::CallError>> + Send + 'a>,
-    >;
+    ) -> BoxFuture<'a, Result<types::BulkLoadStatusPage, crate::CallError>>;
 
     /// Register or replace named prepared operations in one atomic batch.
     fn prepare<'a>(
         &'a self,
         operations: Vec<types::PreparedRegistration>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<(), crate::CallError>>;
 
     /// Remove one named prepared operation.
-    fn drop_prepared<'a>(
-        &'a self,
-        name: String,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::CallError>> + Send + 'a>>;
+    fn drop_prepared<'a>(&'a self, name: String) -> BoxFuture<'a, Result<(), crate::CallError>>;
 
     /// The full prepared-operation manifest for one graph.
     fn list_prepared<'a>(
         &'a self,
         graph_name: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Result<types::PreparedManifest, crate::CallError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<types::PreparedManifest, crate::CallError>>;
+
+    /// The caller principal of the underlying identity, when known.
+    fn caller(&self) -> Result<Principal, String> {
+        Err("this transport does not expose a caller principal".to_string())
+    }
+}
+/// A transport to the Gleaph Router (wasm variant).
+///
+/// Identical to the native [`GleaphTransport`] except the `Send + Sync`
+/// supertrait and the `Send` future bound are dropped, because ic-agent's
+/// wasm-bindgen backend is single-threaded.
+#[cfg(target_family = "wasm")]
+pub trait GleaphTransport {
+    /// Execute a dynamic GQL query with explicit read consistency.
+    fn gql_query<'a>(
+        &'a self,
+        query: String,
+        params: Vec<u8>,
+        read_mode: types::ReadMode,
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
+
+    /// Execute an idempotent dynamic GQL mutation.
+    fn gql_mutate<'a>(
+        &'a self,
+        query: String,
+        params: Vec<u8>,
+        client_mutation_key: String,
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
+
+    /// Execute a named prepared query.
+    fn prepared_query<'a>(
+        &'a self,
+        name: String,
+        params: Vec<u8>,
+        sort: Option<Vec<types::PreparedSortSpec>>,
+        read_mode: types::ReadMode,
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
+
+    /// Execute an idempotent named prepared mutation.
+    fn prepared_mutate<'a>(
+        &'a self,
+        name: String,
+        params: Vec<u8>,
+        client_mutation_key: String,
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>>;
+
+    /// Execute one durable Router bulk-load command.
+    fn bulk_load<'a>(
+        &'a self,
+        command: types::BulkLoadCommand,
+    ) -> BoxFuture<'a, Result<types::BulkLoadResponse, crate::CallError>>;
+
+    /// Read one bounded page of durable Router bulk-load status.
+    fn bulk_load_status<'a>(
+        &'a self,
+        graph_name: Option<String>,
+        client_bulk_key: String,
+        receipt_cursor: Option<u32>,
+        max_receipts: u32,
+    ) -> BoxFuture<'a, Result<types::BulkLoadStatusPage, crate::CallError>>;
+
+    /// Register or replace named prepared operations in one atomic batch.
+    fn prepare<'a>(
+        &'a self,
+        operations: Vec<types::PreparedRegistration>,
+    ) -> BoxFuture<'a, Result<(), crate::CallError>>;
+
+    /// Remove one named prepared operation.
+    fn drop_prepared<'a>(&'a self, name: String) -> BoxFuture<'a, Result<(), crate::CallError>>;
+
+    /// The full prepared-operation manifest for one graph.
+    fn list_prepared<'a>(
+        &'a self,
+        graph_name: Option<String>,
+    ) -> BoxFuture<'a, Result<types::PreparedManifest, crate::CallError>>;
 
     /// The caller principal of the underlying identity, when known.
     fn caller(&self) -> Result<Principal, String> {
@@ -156,8 +240,7 @@ impl IcAgentTransport {
         &'a self,
         method: &'a str,
         args: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>> {
         Box::pin(async move {
             let response = self
                 .agent
@@ -177,8 +260,7 @@ impl IcAgentTransport {
         &'a self,
         method: &'a str,
         args: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>> {
         Box::pin(async move {
             let response = self
                 .agent
@@ -213,8 +295,7 @@ impl GleaphTransport for IcAgentTransport {
         query: String,
         params: Vec<u8>,
         read_mode: types::ReadMode,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>> {
         let args = candid::utils::encode_args((query, params, read_mode))
             .expect("Candid encode gql_query arguments");
         self.query("gql_query", args)
@@ -225,8 +306,7 @@ impl GleaphTransport for IcAgentTransport {
         query: String,
         params: Vec<u8>,
         client_mutation_key: String,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>> {
         let args = candid::utils::encode_args((query, params, client_mutation_key))
             .expect("Candid encode gql_mutate arguments");
         self.update("gql_mutate", args)
@@ -238,8 +318,7 @@ impl GleaphTransport for IcAgentTransport {
         params: Vec<u8>,
         sort: Option<Vec<types::PreparedSortSpec>>,
         read_mode: types::ReadMode,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>> {
         let args = candid::utils::encode_args((name, params, sort, read_mode))
             .expect("Candid encode prepared_query arguments");
         self.query("prepared_query", args)
@@ -250,8 +329,7 @@ impl GleaphTransport for IcAgentTransport {
         name: String,
         params: Vec<u8>,
         client_mutation_key: String,
-    ) -> Pin<Box<dyn Future<Output = Result<types::GqlQueryResult, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::GqlQueryResult, crate::CallError>> {
         let args = candid::utils::encode_args((name, params, client_mutation_key))
             .expect("Candid encode prepared_mutate arguments");
         self.update("prepared_mutate", args)
@@ -260,8 +338,7 @@ impl GleaphTransport for IcAgentTransport {
     fn bulk_load<'a>(
         &'a self,
         command: types::BulkLoadCommand,
-    ) -> Pin<Box<dyn Future<Output = Result<types::BulkLoadResponse, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::BulkLoadResponse, crate::CallError>> {
         Box::pin(async move {
             let args =
                 candid::utils::encode_args((command,)).expect("Candid encode bulk_load arguments");
@@ -285,9 +362,7 @@ impl GleaphTransport for IcAgentTransport {
         client_bulk_key: String,
         receipt_cursor: Option<u32>,
         max_receipts: u32,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<types::BulkLoadStatusPage, crate::CallError>> + Send + 'a>,
-    > {
+    ) -> BoxFuture<'a, Result<types::BulkLoadStatusPage, crate::CallError>> {
         Box::pin(async move {
             let args = candid::utils::encode_args((
                 graph_name,
@@ -313,7 +388,7 @@ impl GleaphTransport for IcAgentTransport {
     fn prepare<'a>(
         &'a self,
         operations: Vec<types::PreparedRegistration>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::CallError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<(), crate::CallError>> {
         Box::pin(async move {
             let args =
                 candid::utils::encode_args((operations,)).expect("Candid encode prepare arguments");
@@ -331,10 +406,7 @@ impl GleaphTransport for IcAgentTransport {
         })
     }
 
-    fn drop_prepared<'a>(
-        &'a self,
-        name: String,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::CallError>> + Send + 'a>> {
+    fn drop_prepared<'a>(&'a self, name: String) -> BoxFuture<'a, Result<(), crate::CallError>> {
         Box::pin(async move {
             let args =
                 candid::utils::encode_args((name,)).expect("Candid encode drop_prepared arguments");
@@ -355,8 +427,7 @@ impl GleaphTransport for IcAgentTransport {
     fn list_prepared<'a>(
         &'a self,
         graph_name: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Result<types::PreparedManifest, crate::CallError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<types::PreparedManifest, crate::CallError>> {
         Box::pin(async move {
             let args = candid::utils::encode_args((graph_name,))
                 .expect("Candid encode list_prepared arguments");

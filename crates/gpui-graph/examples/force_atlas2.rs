@@ -12,8 +12,8 @@
 //! pulled in, and the whole graph is drawn toward the origin by gravity.
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rems, size, white,
 };
 use gpui_graph::{
     EdgeDirection, ForceAtlas2, GraphBatch, GraphScene, GraphView, GraphViewState, LayoutBudget,
@@ -21,7 +21,7 @@ use gpui_graph::{
 };
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(800.), px(600.)), cx);
         cx.open_window(
             WindowOptions {

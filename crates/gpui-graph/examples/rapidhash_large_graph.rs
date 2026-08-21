@@ -16,8 +16,8 @@
 
 use glam::Vec2;
 use gpui::{
-    App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rems, size, white,
 };
 use gpui_graph::{EdgeDirection, FixedLayout, GraphBatch, GraphScene, GraphView, GraphViewState};
 
@@ -30,7 +30,7 @@ type Hasher = rapidhash::fast::RandomState;
 type ViewState = GraphViewState<usize, usize, (), (), Hasher>;
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
         cx.open_window(
             WindowOptions {

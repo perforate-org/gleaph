@@ -5,13 +5,13 @@
 //! a composable `GraphView` rendered inside ordinary GPUI layout.
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rems, size, white,
 };
 use gpui_graph::{EdgeDirection, FixedLayout, GraphBatch, GraphScene, GraphView, GraphViewState};
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(800.), px(600.)), cx);
         cx.open_window(
             WindowOptions {

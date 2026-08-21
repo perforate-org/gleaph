@@ -71,6 +71,15 @@ gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
 gpui-graph = { path = "crates/gpui-graph" }
 gleaph-theme = { path = "crates/gleaph-theme" }
+# GPUI pinned to the Zed revision that gpui-component's git main depends on,
+# which splits the renderer/platform backends so the demo/social WASM embed
+# can compile for wasm32 (gpui_platform for desktop, gpui_web for wasm).
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+gpui-platform = { package = "gpui_platform", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5", features = ["font-kit"] }
+gpui-web = { package = "gpui_web", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+gpui-macros = { package = "gpui_macros", git = "https://github.com/zed-industries/zed", rev = "e0931d5a9dbf4f781b336fdf448739e74a2ac0b5" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui-base = { git = "https://github.com/longbridge/gpui-component" }
 gleaph-index-ddl = { path = "crates/index-ddl" }
 gleaph-instruction-budget = { path = "crates/instruction-budget", default-features = false }
 gleaph-message-sizing = { path = "crates/message-sizing" }
@@ -129,6 +138,7 @@ tar = "0.4"
 toml = "1.1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+web-time = "1.1"
 
 # Dev/test compile-time tuning: keep line-level backtraces while reducing
 # debug-info object size and linker work. Release/bench/canister profiles are

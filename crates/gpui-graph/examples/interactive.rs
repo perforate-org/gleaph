@@ -34,8 +34,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rems, size, white,
 };
 use gpui_graph::{
     EdgeDirection, EdgeId, ForceAtlas2, GraphBatch, GraphEvent, GraphPatch, GraphScene, GraphView,
@@ -103,7 +103,7 @@ type Scene = GraphScene<&'static str, &'static str, Person, &'static str>;
 type View = GraphViewState<&'static str, &'static str, Person, &'static str>;
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1000.), px(680.)), cx);
         cx.open_window(
             WindowOptions {

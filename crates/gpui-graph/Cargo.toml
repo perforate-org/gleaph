@@ -6,14 +6,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gpui = "0.2.2"
+gpui.workspace = true
 slotmap = "1.1"
 bitvec = "1.1"
 glam = "0.33"
+web-time.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-gpui = { version = "0.2.2", features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
+gpui-platform.workspace = true
 rapidhash.workspace = true
 
 [[bench]]

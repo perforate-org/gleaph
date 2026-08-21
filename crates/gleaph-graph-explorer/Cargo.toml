@@ -8,9 +8,9 @@ license.workspace = true
 [dependencies]
 gleaph-sdk.workspace = true
 gpui-graph.workspace = true
-gpui = "0.2.2"
+gpui.workspace = true
 glam = "0.33"
 
 [dev-dependencies]
-gpui = { version = "0.2.2", features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
 rapidhash.workspace = true

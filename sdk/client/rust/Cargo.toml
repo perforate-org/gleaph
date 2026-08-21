@@ -26,6 +26,10 @@ thiserror.workspace = true
 
 [features]
 default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]
+# Enables ic-agent's wasm-bindgen backend so the SDK can run in a browser
+# (wasm32-unknown-unknown). getrandom's `wasm_js` feature is enabled
+# automatically by ic-agent's target-specific dependencies on wasm.
+wasm-bindgen = ["ic-agent/wasm-bindgen"]
 i256 = [
     "gleaph-gql-value/i256",
     "gleaph-gql-ic-wire/i256",

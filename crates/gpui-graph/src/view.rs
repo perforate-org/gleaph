@@ -61,7 +61,7 @@ where
     /// is moving and for a short settle period afterward, so per-edge curve work
     /// is skipped during interaction and detail settles back without popping.
     /// `None` when interaction-time LOD is disabled or currently settled.
-    interaction_active_since: Option<std::time::Instant>,
+    interaction_active_since: Option<web_time::Instant>,
     /// A handle to the scheduled settle task that re-evaluates the straight-line
     /// threshold after the interaction settle period elapses. Dropping it
     /// cancels the pending settle. `None` when no settle is scheduled.
