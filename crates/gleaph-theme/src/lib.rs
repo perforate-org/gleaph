@@ -2,8 +2,8 @@
 // Source: design-tokens/primitive.json, semantic-light.json, semantic-dark.json
 // Do not edit manually — regenerate with: node scripts/generate-gpui-theme.js
 
-use gpui::hsla;
 use gpui::TextStyle;
+use gpui::hsla;
 use gpui_graph::GraphStyle;
 
 /// Gleaph application theme (light / dark variants).
@@ -115,9 +115,7 @@ impl Theme {
                 space_4: 16.0,
                 space_6: 24.0,
             },
-            radius: RadiusScale {
-                md: 4.0,
-            },
+            radius: RadiusScale { md: 4.0 },
         }
     }
 
@@ -160,9 +158,7 @@ impl Theme {
                 space_4: 16.0,
                 space_6: 24.0,
             },
-            radius: RadiusScale {
-                md: 4.0,
-            },
+            radius: RadiusScale { md: 4.0 },
         }
     }
 

@@ -43,6 +43,12 @@ pub struct GraphStyle {
     pub node_fill_selected: Hsla,
     /// Node fill color when hovered.
     pub node_fill_hovered: Hsla,
+    /// Node fill color under an `OverlayCategory::Emphasized` or `Accent` query
+    /// overlay. Kept distinct from selection so query emphasis and selection
+    /// compose without overwriting each other (§10).
+    pub node_fill_overlay: Hsla,
+    /// Node fill color under an `OverlayCategory::Dimmed` overlay.
+    pub node_fill_muted: Hsla,
     /// Edge width in pixels.
     pub edge_width: f32,
     /// Edge color.
@@ -51,6 +57,11 @@ pub struct GraphStyle {
     pub edge_color_selected: Hsla,
     /// Edge color when hovered.
     pub edge_color_hovered: Hsla,
+    /// Edge color under an `OverlayCategory::Emphasized` or `Accent` query
+    /// overlay.
+    pub edge_color_overlay: Hsla,
+    /// Edge color under an `OverlayCategory::Dimmed` overlay.
+    pub edge_color_muted: Hsla,
     /// Whether directed edges render an arrowhead.
     pub edge_arrow_enabled: bool,
     /// Arrowhead size in pixels (length along the edge).
@@ -138,10 +149,14 @@ impl Default for GraphStyle {
             node_stroke_color: hsla(0.0, 0.0, 0.1, 1.0),
             node_fill_selected: hsla(0.08, 0.7, 0.55, 1.0),
             node_fill_hovered: hsla(0.6, 0.5, 0.7, 1.0),
+            node_fill_overlay: hsla(0.08, 0.7, 0.55, 1.0),
+            node_fill_muted: hsla(0.6, 0.1, 0.6, 0.35),
             edge_width: 1.5,
             edge_color: hsla(0.0, 0.0, 0.5, 1.0),
             edge_color_selected: hsla(0.08, 0.7, 0.55, 1.0),
             edge_color_hovered: hsla(0.0, 0.0, 0.7, 1.0),
+            edge_color_overlay: hsla(0.08, 0.7, 0.55, 1.0),
+            edge_color_muted: hsla(0.0, 0.0, 0.5, 0.25),
             edge_arrow_enabled: true,
             edge_arrow_size: 8.0,
             edge_arrow_shape: ArrowShape::Triangle,
@@ -189,6 +204,18 @@ impl GraphStyle {
         self
     }
 
+    /// Set the node fill color under an emphasized or accent overlay.
+    pub fn with_node_fill_overlay(mut self, fill: Hsla) -> Self {
+        self.node_fill_overlay = fill;
+        self
+    }
+
+    /// Set the node fill color under a dimmed overlay.
+    pub fn with_node_fill_muted(mut self, fill: Hsla) -> Self {
+        self.node_fill_muted = fill;
+        self
+    }
+
     /// Set the node stroke width.
     pub fn with_node_stroke_width(mut self, width: f32) -> Self {
         self.node_stroke_width = width;
@@ -222,6 +249,18 @@ impl GraphStyle {
     /// Set the edge color when selected.
     pub fn with_edge_color_selected(mut self, color: Hsla) -> Self {
         self.edge_color_selected = color;
+        self
+    }
+
+    /// Set the edge color under an emphasized or accent overlay.
+    pub fn with_edge_color_overlay(mut self, color: Hsla) -> Self {
+        self.edge_color_overlay = color;
+        self
+    }
+
+    /// Set the edge color under a dimmed overlay.
+    pub fn with_edge_color_muted(mut self, color: Hsla) -> Self {
+        self.edge_color_muted = color;
         self
     }
 

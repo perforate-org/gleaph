@@ -32,6 +32,12 @@ type NodeLabelResolver<N> = Rc<dyn Fn(NodeId, &N) -> Option<String>>;
 /// A resolver that returns the label text for an edge, or `None` for no label.
 type EdgeLabelResolver<E> = Rc<dyn Fn(EdgeId, &E) -> Option<String>>;
 
+/// A resolver that returns a node's query-overlay category.
+type NodeOverlayResolver = Rc<crate::paint::NodeOverlay>;
+
+/// A resolver that returns an edge's query-overlay category.
+type EdgeOverlayResolver = Rc<crate::paint::EdgeOverlay>;
+
 /// The state of a particular view into a graph scene (§16).
 pub struct GraphViewState<NK, EK, N, E, S = std::collections::hash_map::RandomState>
 where
@@ -45,6 +51,8 @@ where
     runtime: crate::runtime::GraphRuntime<S>,
     node_label: NodeLabelResolver<N>,
     edge_label: EdgeLabelResolver<E>,
+    node_overlay: NodeOverlayResolver,
+    edge_overlay: EdgeOverlayResolver,
     dragging: Option<NodeId>,
     panning: bool,
     last_mouse: Vec2,
@@ -193,6 +201,8 @@ where
             runtime: crate::runtime::GraphRuntime::default(),
             node_label: Rc::new(|_id, _node| None),
             edge_label: Rc::new(|_id, _edge| None),
+            node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
+            edge_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
@@ -290,6 +300,30 @@ where
     /// overrides any default edge label resolution.
     pub fn set_edge_label(&mut self, resolver: impl Fn(EdgeId, &E) -> Option<String> + 'static) {
         self.edge_label = Rc::new(resolver);
+    }
+
+    /// Set the node overlay resolver.
+    ///
+    /// The resolver returns the query-overlay category for a node, or
+    /// [`OverlayCategory::None`](crate::paint::OverlayCategory::None) to keep the
+    /// base style. This is independent of selection and hover; a result node the
+    /// user also selects renders both states simultaneously.
+    pub fn set_node_overlay(
+        &mut self,
+        resolver: impl Fn(NodeId) -> crate::paint::OverlayCategory + 'static,
+    ) {
+        self.node_overlay = Rc::new(resolver);
+    }
+
+    /// Set the edge overlay resolver.
+    ///
+    /// The resolver returns the query-overlay category for an edge, or `None` to
+    /// keep the base style. This is independent of selection and hover.
+    pub fn set_edge_overlay(
+        &mut self,
+        resolver: impl Fn(EdgeId) -> crate::paint::OverlayCategory + 'static,
+    ) {
+        self.edge_overlay = Rc::new(resolver);
     }
 
     /// Fit the viewport to the bounds of all nodes in the scene.
@@ -435,6 +469,8 @@ where
             runtime: crate::runtime::GraphRuntime::default(),
             node_label: Rc::new(|_id, node| Some(node.to_string())),
             edge_label: Rc::new(|_id, edge| Some(edge.to_string())),
+            node_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
+            edge_overlay: Rc::new(|_id| crate::paint::OverlayCategory::None),
             dragging: None,
             panning: false,
             last_mouse: Vec2::ZERO,
@@ -542,6 +578,8 @@ where
                             let synced = scene.sync_runtime(&mut vs.runtime);
                             let node_label = vs.node_label.clone();
                             let edge_label = vs.edge_label.clone();
+                            let node_overlay = vs.node_overlay.clone();
+                            let edge_overlay = vs.edge_overlay.clone();
                             crate::paint::build_indexed_paint_frame(
                                 crate::paint::IndexedPaintFrameInput {
                                     synced: &synced,
@@ -551,6 +589,8 @@ where
                                     style: &paint_style,
                                     selection: &vs.selection,
                                     hover: &vs.hover,
+                                    node_overlay: Some(&move |id| node_overlay(id)),
+                                    edge_overlay: Some(&move |id| edge_overlay(id)),
                                 },
                             )
                         })
@@ -597,12 +637,23 @@ where
                         }));
                         // Edges first, then nodes (§18.1).
                         for edge in &frame.edges {
+                            // A selected/hovered edge keeps its interaction
+                            // color on top of any query overlay so selection
+                            // and hover stay legible; otherwise the overlay
+                            // category selects the color.
                             let color = if edge.selected {
                                 style.edge_color_selected
                             } else if edge.hovered {
                                 style.edge_color_hovered
                             } else {
-                                style.edge_color
+                                match edge.overlay {
+                                    crate::paint::OverlayCategory::None => style.edge_color,
+                                    crate::paint::OverlayCategory::Dimmed => style.edge_color_muted,
+                                    crate::paint::OverlayCategory::Emphasized
+                                    | crate::paint::OverlayCategory::Accent => {
+                                        style.edge_color_overlay
+                                    }
+                                }
                             };
                             let path = coordinates.edge_path_window(edge);
                             paint_edge(window, &path, &style, color, &label_rects, &viewport_rect);
@@ -654,7 +705,14 @@ where
                             } else if node.hovered {
                                 style.node_fill_hovered
                             } else {
-                                style.node_fill
+                                match node.overlay {
+                                    crate::paint::OverlayCategory::None => style.node_fill,
+                                    crate::paint::OverlayCategory::Dimmed => style.node_fill_muted,
+                                    crate::paint::OverlayCategory::Emphasized
+                                    | crate::paint::OverlayCategory::Accent => {
+                                        style.node_fill_overlay
+                                    }
+                                }
                             };
                             // Node LOD: a simplified node renders as a filled dot
                             // with no stroke, so the quad does no sub-pixel ring
@@ -3034,6 +3092,7 @@ mod tests {
             radius: 6.0,
             selected: false,
             hovered: false,
+            overlay: crate::paint::OverlayCategory::None,
             simplified: false,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {

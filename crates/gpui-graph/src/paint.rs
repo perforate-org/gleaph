@@ -21,6 +21,34 @@ use crate::viewport::Viewport;
 /// A quadratic Bézier curve `(p0, p1, p2)`.
 pub type Bezier = (Vec2, Vec2, Vec2);
 
+/// A per-element query-overlay category, independent of selection and hover.
+///
+/// A query result is expressed as an overlay over the persistent graph scene
+/// rather than a replacement graph. `None` keeps the base style; `Dimmed`
+/// renders the element subdued; `Emphasized`/`Accent` render it prominent.
+/// This is orthogonal to the element's `selected`/`hovered` state so a result
+/// the user also selects can be shown as both simultaneously (§10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OverlayCategory {
+    /// No query overlay applies; the base style is used.
+    None,
+    /// The element is unrelated context and is rendered subdued.
+    Dimmed,
+    /// The element participates in the active query result and is emphasized.
+    Emphasized,
+    /// The element is the principal returned result and is rendered most
+    /// prominently.
+    Accent,
+}
+
+/// A per-node overlay category lookup. `None` is equivalent to
+/// [`OverlayCategory::None`] and keeps the base style.
+pub type NodeOverlay = dyn Fn(NodeId) -> OverlayCategory;
+
+/// A per-edge overlay category lookup. `None` is equivalent to
+/// [`OverlayCategory::None`] and keeps the base style.
+pub type EdgeOverlay = dyn Fn(EdgeId) -> OverlayCategory;
+
 /// A node record ready for painting.
 #[derive(Debug, Clone, Copy)]
 pub struct PaintNode {
@@ -34,6 +62,8 @@ pub struct PaintNode {
     pub selected: bool,
     /// Whether the node is hovered.
     pub hovered: bool,
+    /// Query-overlay category for the node, independent of `selected`/`hovered`.
+    pub overlay: OverlayCategory,
     /// Whether the node renders simplified (fill only, no stroke) under node
     /// LOD. True when the node's on-screen diameter is below
     /// `GraphStyle::node_simplify_threshold`.
@@ -59,6 +89,8 @@ pub struct PaintEdge {
     pub selected: bool,
     /// Whether the edge is hovered.
     pub hovered: bool,
+    /// Query-overlay category for the edge, independent of `selected`/`hovered`.
+    pub overlay: OverlayCategory,
     /// Whether the directed edge's arrowhead should be omitted under arrow LOD.
     /// True only for a directed, non-self-loop edge whose on-screen chord is
     /// below `GraphStyle::edge_arrow_min_length`. See
@@ -143,6 +175,12 @@ pub struct PaintFrameInput<'a, N, E> {
     pub selection: &'a Selection,
     /// The current hover target.
     pub hover: &'a Hover,
+    /// Optional per-node query-overlay category. When `None`, every node keeps
+    /// its base style (equivalent to an all-`None` overlay).
+    pub node_overlay: Option<&'a NodeOverlay>,
+    /// Optional per-edge query-overlay category. When `None`, every edge keeps
+    /// its base style (equivalent to an all-`None` overlay).
+    pub edge_overlay: Option<&'a EdgeOverlay>,
 }
 
 /// Inputs to [`build_indexed_paint_frame`].
@@ -175,6 +213,12 @@ pub struct IndexedPaintFrameInput<
     pub selection: &'a Selection,
     /// The current hover target.
     pub hover: &'a Hover,
+    /// Optional per-node query-overlay category. When `None`, every node keeps
+    /// the base style (equivalent to an all-`None` overlay).
+    pub node_overlay: Option<&'a NodeOverlay>,
+    /// Optional per-edge query-overlay category. When `None`, every edge keeps
+    /// the base style (equivalent to an all-`None` overlay).
+    pub edge_overlay: Option<&'a EdgeOverlay>,
 }
 
 /// Build a paint frame from graph, scene positions, viewport, style, and
@@ -206,6 +250,8 @@ where
         style,
         selection,
         hover,
+        node_overlay,
+        edge_overlay,
     } = input;
     let scene = synced.scene;
     build_paint_frame_with_runtime(
@@ -219,6 +265,8 @@ where
             style,
             selection,
             hover,
+            node_overlay,
+            edge_overlay,
         },
         Some(synced.runtime),
     )
@@ -241,7 +289,11 @@ where
         style,
         selection,
         hover,
+        node_overlay,
+        edge_overlay,
     } = input;
+    let node_overlay = node_overlay.unwrap_or(&|_| OverlayCategory::None);
+    let edge_overlay = edge_overlay.unwrap_or(&|_| OverlayCategory::None);
     let visible = viewport.visible_world_bounds();
     let margin = style.node_radius * 2.0;
 
@@ -286,6 +338,7 @@ where
             radius: style.node_radius,
             selected: selection.contains_node(*id),
             hovered: hover.node == Some(*id),
+            overlay: node_overlay(*id),
             simplified,
         });
         if let Some(text) = node_label(*id, &node.data) {
@@ -541,6 +594,7 @@ where
             direction: edge.direction,
             selected: selection.contains_edge(*id),
             hovered: hover.edge == Some(*id),
+            overlay: edge_overlay(*id),
             omit_arrow: edge_arrow_omitted(*source, *target, edge.source == edge.target, style),
         });
         if let Some((position, offset, text, path, t)) = label {
@@ -1542,6 +1596,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         // Only the in-viewport node is painted; the out-of-viewport node is culled.
@@ -1595,6 +1651,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         // The parallel edges curve through the viewport, so they are kept.
@@ -1642,6 +1700,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edges.len(), 1);
@@ -1729,6 +1789,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
         let mut runtime = GraphRuntime::new();
         let synced = scene.sync_runtime(&mut runtime);
@@ -1746,6 +1808,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
         let expected = vec![loop_id];
         let linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
@@ -1804,6 +1868,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         assert_eq!(
             frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
@@ -1851,6 +1917,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
         assert_eq!(
             frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
@@ -1873,6 +1941,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert!(frame.is_empty());
@@ -1901,11 +1971,90 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         let painted = frame.nodes.iter().find(|n| n.id == node).unwrap();
         assert!(painted.selected);
         assert!(painted.hovered);
+    }
+
+    #[test]
+    fn overlay_is_independent_of_selection_and_hover() {
+        let mut g: Graph<(), ()> = Graph::new();
+        let accent = g.add_node(());
+        let dimmed = g.add_node(());
+        let plain = g.add_node(());
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let style = GraphStyle::default();
+
+        // `accent` is both selected and overlaid Accent; `dimmed` is overlaid
+        // Dimmed; `plain` has no overlay. The overlay categories must be
+        // readable independently of selection state.
+        let mut selection = Selection::new();
+        selection.nodes.push(accent);
+        let node_overlay = move |id: NodeId| {
+            if id == accent {
+                OverlayCategory::Accent
+            } else if id == dimmed {
+                OverlayCategory::Dimmed
+            } else {
+                OverlayCategory::None
+            }
+        };
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions(),
+            node_cluster_center: &no_clusters(),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &selection,
+            hover: &Hover::default(),
+            node_overlay: Some(&node_overlay),
+            edge_overlay: None,
+        });
+
+        let painted_accent = frame.nodes.iter().find(|n| n.id == accent).unwrap();
+        assert_eq!(painted_accent.overlay, OverlayCategory::Accent);
+        assert!(painted_accent.selected, "selected and overlay must coexist");
+        let painted_dimmed = frame.nodes.iter().find(|n| n.id == dimmed).unwrap();
+        assert_eq!(painted_dimmed.overlay, OverlayCategory::Dimmed);
+        assert!(!painted_dimmed.selected);
+        let painted_plain = frame.nodes.iter().find(|n| n.id == plain).unwrap();
+        assert_eq!(painted_plain.overlay, OverlayCategory::None);
+        assert!(!painted_plain.selected);
+    }
+
+    #[test]
+    fn absent_overlay_resolver_keeps_base_style() {
+        let g = graph();
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(100.0, 100.0));
+        let style = GraphStyle::default();
+        // No overlay resolver: every node keeps the base (None) category.
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions(),
+            node_cluster_center: &no_clusters(),
+            node_label: &no_labels(),
+            edge_label: &no_edge_labels(),
+            viewport: &vp,
+            style: &style,
+            selection: &Selection::new(),
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+        for node in &frame.nodes {
+            assert_eq!(node.overlay, OverlayCategory::None);
+        }
+        for edge in &frame.edges {
+            assert_eq!(edge.overlay, OverlayCategory::None);
+        }
     }
 
     #[test]
@@ -1935,6 +2084,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         let source_node = frame.nodes.iter().find(|node| node.id == source).unwrap();
@@ -1972,6 +2123,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.labels.len(), 2);
@@ -2007,6 +2160,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edge_labels.len(), 1);
@@ -2047,6 +2202,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edges.len(), 1);
@@ -2092,6 +2249,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert!(
@@ -2130,6 +2289,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edges.len(), 3);
@@ -2171,6 +2332,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edges.len(), 1);
@@ -2209,6 +2372,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edge_labels.len(), 1);
@@ -2244,6 +2409,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         let path = &frame.edges[0].path;
@@ -2285,6 +2452,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         // The self-loop is the edge with source == target (path has 2 segments).
@@ -2326,6 +2495,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         let path = &frame.edges[0].path;
@@ -2383,6 +2554,8 @@ mod tests {
                 style: &style,
                 selection: &Selection::new(),
                 hover: &Hover::default(),
+                node_overlay: None,
+                edge_overlay: None,
             });
 
             let path = &frame.edges[0].path;
@@ -2457,6 +2630,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         // Find the horizontal edge a->b by its endpoints.
@@ -2658,6 +2833,8 @@ mod tests {
             style: &GraphStyle::default(),
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
 
         assert_eq!(frame.edges.len(), 2);
@@ -2922,6 +3099,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
             synced: &synced,
@@ -2931,6 +3110,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         let linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
         let indexed_ids = indexed.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
@@ -3002,6 +3183,8 @@ mod tests {
                 style: &style,
                 selection: &selection,
                 hover: &hover,
+                node_overlay: None,
+                edge_overlay: None,
             });
             let mut nodes: Vec<NodeId> = frame.nodes.iter().map(|n| n.id).collect();
             nodes.sort();
@@ -3045,6 +3228,8 @@ mod tests {
                 style: &style,
                 selection: &selection,
                 hover: &hover,
+                node_overlay: None,
+                edge_overlay: None,
             });
             let mut nodes = frame.nodes.iter().map(|node| node.id).collect::<Vec<_>>();
             nodes.sort();
@@ -3156,6 +3341,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         })
         .edges
         .into_iter()
@@ -3400,6 +3587,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         let indexed = build_indexed_paint_frame(IndexedPaintFrameInput {
             synced: &synced,
@@ -3409,6 +3598,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         let mut linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
         let mut indexed_ids = indexed.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
@@ -3728,6 +3919,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
         assert!(!frame.nodes.is_empty(), "sample scene has visible nodes");
         assert!(
@@ -3776,6 +3969,8 @@ mod tests {
             style: &style,
             selection: &Selection::new(),
             hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
         });
         assert!(!frame.nodes.is_empty(), "sample scene has visible nodes");
         assert!(

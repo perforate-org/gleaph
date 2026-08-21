@@ -261,6 +261,8 @@ fn paint_frame(graph: &BenchGraph, viewport: &Viewport, labels: bool) {
         style: &style,
         selection: &selection,
         hover: &hover,
+        node_overlay: None,
+        edge_overlay: None,
     };
     let frame = build_paint_frame(input);
     std::hint::black_box(frame);
@@ -282,6 +284,8 @@ fn paint_frame_styled(graph: &BenchGraph, viewport: &Viewport, style: &GraphStyl
         style,
         selection: &selection,
         hover: &hover,
+        node_overlay: None,
+        edge_overlay: None,
     };
     let frame = build_paint_frame(input);
     std::hint::black_box(frame);
@@ -318,6 +322,8 @@ fn paint_frame_indexed_with<S>(
         style: &style,
         selection: &selection,
         hover: &hover,
+        node_overlay: None,
+        edge_overlay: None,
     };
     let frame = build_indexed_paint_frame(input);
     std::hint::black_box(frame);
@@ -343,6 +349,8 @@ fn paint_frame_indexed_styled<S>(
         style,
         selection: &selection,
         hover: &hover,
+        node_overlay: None,
+        edge_overlay: None,
     };
     let frame = build_indexed_paint_frame(input);
     std::hint::black_box(frame);

@@ -1,0 +1,16 @@
+[package]
+name = "gleaph-graph-explorer"
+description = "A GPUI graph explorer that loads a Gleaph graph via the Rust SDK and visualizes prepared-query results as overlays"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gleaph-sdk.workspace = true
+gpui-graph.workspace = true
+gpui = "0.2.2"
+glam = "0.33"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }
+rapidhash.workspace = true

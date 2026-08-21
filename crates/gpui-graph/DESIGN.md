@@ -1779,16 +1779,39 @@ Examples:
 - selected state,
 - hovered state.
 
+## 26.3 Query overlays
+
+A query result is expressed as a **per-element overlay** over the persistent graph
+scene, not as a replacement graph. This is what lets an application run one query
+after another against the same loaded scene and stable layout without rebuilding
+topology or relayout.
+
+Each node and edge carries an [`OverlayCategory`]:
+`None` (base style), `Dimmed` (subdued context), `Emphasized` (participates in the
+active result), or `Accent` (the principal returned result).
+
 Conceptually:
 
-```rust
+```text
 GraphView::new(view)
-    .node_style(...)
-    .edge_style(...)
-    .label_style(...)
+    .node_overlay(category_resolver)
+    .edge_overlay(category_resolver)
 ```
 
-The exact style API should remain small in v0.1 and evolve from real use cases.
+The overlay is **independent of selection and hover**. A result node the user also
+selects renders as both states simultaneously: interaction colors
+(`node_fill_selected`, `node_fill_hovered`, `edge_color_selected`,
+`edge_color_hovered`) take precedence over the overlay color for the selected or
+hovered element, and the overlay colors apply otherwise. The four dedicated
+`GraphStyle` fields are `node_fill_overlay`, `node_fill_muted`,
+`edge_color_overlay`, and `edge_color_muted`.
+
+An overlay change is a style-only invalidation: it does not bump the topology or
+geometry revision, does not relayout, and does not rebuild the scene. The scene
+stays the authoritative persistent graph; the overlay lives in the view's paint
+pipeline (`set_node_overlay` / `set_edge_overlay`).
+
+---
 
 Directed edges render an arrowhead at the target end. The arrowhead is
 configurable through `GraphStyle`:

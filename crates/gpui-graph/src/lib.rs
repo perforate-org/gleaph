@@ -32,8 +32,9 @@ pub use layout::{
     SccLayoutEngine,
 };
 pub use paint::{
-    IndexedPaintFrameInput, PaintEdge, PaintEdgeLabel, PaintFrame, PaintFrameInput, PaintLabel,
-    PaintNode, build_indexed_paint_frame, build_paint_frame,
+    EdgeOverlay, IndexedPaintFrameInput, NodeOverlay, OverlayCategory, PaintEdge, PaintEdgeLabel,
+    PaintFrame, PaintFrameInput, PaintLabel, PaintNode, build_indexed_paint_frame,
+    build_paint_frame,
 };
 pub use patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
 pub use runtime::{GraphRuntime, SyncedGraphRuntime};

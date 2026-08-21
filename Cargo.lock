@@ -3398,6 +3398,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-graph-explorer"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "gleaph-sdk",
+ "gpui",
+ "gpui-graph",
+ "rapidhash",
+]
+
+[[package]]
 name = "gleaph-graph-index"
 version = "0.1.0"
 dependencies = [

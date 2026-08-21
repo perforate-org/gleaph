@@ -1101,6 +1101,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         let frame = crate::paint::build_indexed_paint_frame(crate::paint::IndexedPaintFrameInput {
             synced: &synced,
@@ -1110,6 +1112,8 @@ mod tests {
             style: &style,
             selection: &selection,
             hover: &hover,
+            node_overlay: None,
+            edge_overlay: None,
         });
         let linear_ids = linear.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
         let indexed_ids = frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();

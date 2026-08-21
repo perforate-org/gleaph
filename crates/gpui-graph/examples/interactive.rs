@@ -20,18 +20,26 @@
 //! - **double-click a node** to collapse it (and its incident edges) out,
 //! - drag to move a node, pan on empty space, scroll to zoom.
 //!
+//! Selecting a node drives a query-style **highlight** via the overlay API:
+//! the selected node renders `Accent`, its neighbors `Emphasized`, and the
+//! rest of the graph `Dimmed`. Edges incident to the selection are
+//! `Emphasized` and the rest `Dimmed`. The overlay is independent of selection
+//! and hover (§10), so a result node the user also hovers stays readable.
+//!
 //! The overlay panel reports the current selection and graph size so the
 //! dynamic topology is visible in text as well as pixels.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::{
     App, Application, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rems, size, white,
 };
 use gpui_graph::{
-    EdgeDirection, ForceAtlas2, GraphBatch, GraphEvent, GraphPatch, GraphScene, GraphView,
-    GraphViewState, LayoutBudget, LayoutProgress, NodePatch,
+    EdgeDirection, EdgeId, ForceAtlas2, GraphBatch, GraphEvent, GraphPatch, GraphScene, GraphView,
+    GraphViewState, LayoutBudget, LayoutProgress, NodeId, NodePatch, OverlayCategory,
 };
 
 /// Application data for a node (§6.3). The external key is stored with the
@@ -117,6 +125,10 @@ struct Example {
     selected: Option<(&'static str, &'static str)>,
     /// Keys of nodes that have been collapsed, so clicking them re-expands.
     collapsed: HashMap<&'static str, ()>,
+    /// Shared overlay map consulted by the view's overlay resolver on paint.
+    overlay: Rc<RefCell<HashMap<NodeId, OverlayCategory>>>,
+    /// Shared edge overlay map consulted by the view's edge overlay resolver.
+    edge_overlay: Rc<RefCell<HashMap<EdgeId, OverlayCategory>>>,
     /// Keeps the view-event subscription alive for the example's lifetime.
     _subscription: gpui::Subscription,
 }
@@ -126,10 +138,37 @@ impl Example {
         let scene: Entity<Scene> =
             cx.new(|_cx| GraphScene::new().with_layout(Box::new(ForceAtlas2::default())));
 
+        // Shared overlay map so the `'static` overlay resolver can re-read the
+        // current highlight without borrowing the example. Whenever the
+        // selection changes, the example rebuilds this map: the selected node
+        // is `Accent`, its catalog neighbors `Emphasized`, and the rest
+        // `Dimmed` — a query-style highlight that stays independent of the
+        // selection and hover state (§10).
+        let overlay: Rc<RefCell<HashMap<NodeId, OverlayCategory>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let edge_overlay: Rc<RefCell<HashMap<EdgeId, OverlayCategory>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+
         let view: Entity<View> = cx.new(|cx| {
             let mut view = GraphViewState::new(scene.clone(), cx);
             view.set_node_label(|_id, person| Some(person.name.to_string()));
             view.set_edge_label(|_id, rel| Some(rel.to_string()));
+            let overlay_for_resolver = overlay.clone();
+            view.set_node_overlay(move |id| {
+                overlay_for_resolver
+                    .borrow()
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(OverlayCategory::None)
+            });
+            let edge_overlay_for_resolver = edge_overlay.clone();
+            view.set_edge_overlay(move |id| {
+                edge_overlay_for_resolver
+                    .borrow()
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(OverlayCategory::None)
+            });
             view
         });
 
@@ -161,6 +200,8 @@ impl Example {
             settled: false,
             selected: None,
             collapsed: HashMap::new(),
+            overlay,
+            edge_overlay,
             // Keep the subscription alive for the lifetime of the example.
             _subscription: sub,
         };
@@ -216,7 +257,41 @@ impl Example {
         });
         if self.selected.map(|(name, _)| name == key).unwrap_or(false) {
             self.selected = None;
+            self.rebuild_overlay(cx);
         }
+    }
+
+    /// Rebuild the shared overlay map from the current selection. With no
+    /// selection every node keeps its base style; otherwise the selected node
+    /// is `Accent`, its catalog neighbors `Emphasized`, and the rest `Dimmed`.
+    fn rebuild_overlay(&mut self, cx: &mut Context<Self>) {
+        let mut overlay = HashMap::new();
+        let mut edge_overlay = HashMap::new();
+        if let Some((key, _)) = self.selected {
+            let graph = self.scene.read(cx).graph();
+            for (id, _) in graph.nodes() {
+                let node_key = graph.node(id).map(|n| n.data.key);
+                let category = match node_key {
+                    Some(k) if k == key => OverlayCategory::Accent,
+                    Some(k) if neighbors(k).contains(&key) => OverlayCategory::Emphasized,
+                    _ => OverlayCategory::Dimmed,
+                };
+                overlay.insert(id, category);
+            }
+            for (id, edge) in graph.edges() {
+                let src_key = graph.node(edge.source).map(|n| n.data.key);
+                let tgt_key = graph.node(edge.target).map(|n| n.data.key);
+                let incident = src_key == Some(key) || tgt_key == Some(key);
+                let category = if incident {
+                    OverlayCategory::Emphasized
+                } else {
+                    OverlayCategory::Dimmed
+                };
+                edge_overlay.insert(id, category);
+            }
+        }
+        *self.overlay.borrow_mut() = overlay;
+        *self.edge_overlay.borrow_mut() = edge_overlay;
     }
 
     fn handle_event(&mut self, event: &GraphEvent, cx: &mut Context<Self>) {
@@ -241,6 +316,7 @@ impl Example {
                         .node(*id)
                         .map(|n| (n.data.name, n.data.role))
                 });
+                self.rebuild_overlay(cx);
                 cx.notify();
             }
             _ => {}
