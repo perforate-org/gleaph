@@ -10,7 +10,9 @@
 //! Distinct concepts that are never conflated in code or wire:
 //!
 //! - `mutation_id` (graph per-shard sequence, Router-allocated): the single ordering fence for ingest
-//!   and DML-driven removes (ADR 0064 §5). The vector canister orders sync ops by `stamp <= clock`.
+//!   and DML-driven removes (ADR 0064 §5). Older stamps are ignored; same-stamp upserts are
+//!   idempotent only when their canonical payload matches, while a different payload is rejected;
+//!   a remove writes a tombstone clock even when the subject was absent.
 //! - `index_version` (vector canister): physical index generation; page/partition head keys.
 //! - `generation` (vector canister): slot/entity handle incarnation for append-and-tombstone.
 
@@ -251,11 +253,13 @@ impl VectorSubject {
 /// Graph shard → vector canister: one derived embedding mutation.
 ///
 /// `bytes` is REQUIRED for an upsert (`remove = false`) and EMPTY for a remove (`remove = true`);
-/// idempotence is decided by the single `mutation_id` stamp against the retained subject clock and
-/// never reads `bytes`. `encoding`/`dims` on a remove op are ignored by the canister.
+/// an exact-stamp upsert is idempotent only when its canonical payload matches the retained live
+/// payload; a different payload is rejected with [`VectorCanisterError::MutationStampConflict`].
+/// `encoding`/`dims` on a remove op are ignored by the canister.
 ///
 /// Contract (ADR 0064 §5): `mutation_id` is the graph's per-shard mutation sequence (Router-allocated);
-/// `stamp <= clock` is a no-op; a remove on a missing row is a no-op.
+/// an older stamp is a no-op; a same-stamp upsert with the same canonical payload is a no-op and a
+/// different payload is rejected; a remove on a missing row writes a deleted subject clock.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VectorEmbeddingSyncOp {
     pub index_id: u32,
@@ -269,20 +273,10 @@ pub struct VectorEmbeddingSyncOp {
     pub dims: u16,
     /// Metric of the target index definition.
     pub metric: VectorMetric,
-    /// REQUIRED for upsert; EMPTY for remove — never read for idempotence.
+    /// REQUIRED for upsert; EMPTY for remove. Same-stamp payload bytes are compared for
+    /// idempotency versus conflict.
     pub bytes: Vec<u8>,
     pub remove: bool,
-}
-
-/// A bounded progress result from one vector-index synchronization call.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct VectorSyncBatchProgress {
-    /// Number of operations accepted from the beginning of the request.
-    pub applied: u32,
-    /// First operation not accepted by this call, if any.
-    pub next_index: Option<u32>,
-    /// True when the vector canister stopped at its own instruction budget.
-    pub instruction_budget_exhausted: bool,
 }
 
 /// Terminal admission result for a vector index-definition table that cannot accept another row.
@@ -301,8 +295,7 @@ pub enum VectorSyncTerminalError {
 
 /// Vector's definition store could not be opened or safely served.
 ///
-/// This marker represents the availability boundary only. Existing vector endpoints do not yet
-/// transport it; they continue to use their legacy error/progress contracts.
+/// This marker represents the availability boundary of the typed synchronization endpoint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct IndexDefinitionStoreUnavailable;
 
@@ -429,8 +422,9 @@ pub struct VertexEmbeddingIngestionArgs {
 pub enum VertexEmbeddingProjectionOutcome {
     /// The derived vector canister accepted the upsert in this message.
     Applied,
-    /// The derived vector canister was unreachable or not yet attached; the full idempotent batch
-    /// was durably journaled for repair and will converge automatically.
+    /// The derived vector operation was not acknowledged in this attempt (for example, the
+    /// canister was unreachable, unavailable, or returned a terminal admission result). The exact
+    /// operation remains durably owned by the Router repair outbox and will be retried automatically.
     DeferredForRepair,
 }
 
@@ -1746,20 +1740,6 @@ mod tests {
             vertex_id: 9,
         };
         assert_eq!(subject.shard_id(), ShardId::new(4));
-    }
-
-    #[test]
-    fn vector_sync_batch_progress_candid_roundtrip() {
-        let progress = VectorSyncBatchProgress {
-            applied: 3,
-            next_index: Some(3),
-            instruction_budget_exhausted: true,
-        };
-        let bytes = Encode!(&progress).expect("encode progress");
-        assert_eq!(
-            Decode!(&bytes, VectorSyncBatchProgress).expect("decode progress"),
-            progress
-        );
     }
 
     #[test]

@@ -1,15 +1,19 @@
 # 0064. Vector canister redesign: ownership, layout, fencing, and ingest
 
 Date: 2026-08-07
-Status: accepted (design contract; implementation pending)
-Last revised: 2026-08-07
+Status: Partially Implemented (design contract; Router direct-ingestion durability slice implemented)
+Last revised: 2026-08-21
 
 > **Summary.** Replaces the ADR 0031/0032/0033 vector-index design (Slices 1–10, **completely
 > discarded**) with a fresh ownership model and layout: the vector canister owns the only durable copy
-> of embedding bytes (the graph holds zero embedding state), ordering uses the graph's per-shard
-> `mutation_id`, presence is determined by label sets on index definitions, ingest is stamp-separated
+> of embedding bytes (the graph holds zero embedding state), ordering uses Router-issued nonzero
+> `mutation_id` stamps comparable with Graph DML removes, presence is determined by label sets on
+> index definitions, ingest is stamp-separated
 > so bytes cross the subnet once, and the physical page store is a new two-table format (layout version
-> 1, a breaking change). The physical layer is split into a domain-free crate
+> 1, a breaking change). The current Router direct-ingestion path collects the successful Graph
+> stamps, synchronously revalidates the live lifecycle and immutable definition, and persists each
+> stamped operation to a Router-owned durable suffix before its first Vector await; the physical layer is split
+> into a domain-free crate
 > `ic-stable-vector-page-store`. The active design contract is `design/index/vector-index.md`.
 
 ## Context
@@ -96,41 +100,97 @@ SPANN's representative-point replacement.
 injected `IndexedEmbeddingCatalog` carries each spec's label set plus a derived `label → [index_id]`
 projection. The graph determines notification locally from its canonical label state (**upper
 bound**); the vector canister's subject map is the **exact** authority. The graph may over-notify;
-remove-on-missing-row is a safe no-op. Ingest validates label membership. Label loss removes the
-embedding (IC deviation from Memgraph's move-back, documented).
+remove-on-missing-row writes a deleted subject clock without creating a live row. Ingest validates
+label membership. Label loss removes the embedding (IC deviation from Memgraph's move-back,
+documented).
 
-### 5. Mutation-ordering fence and watermark GC
+### 5. Mutation-ordering fence and conservative tombstone retention
 
-- Every op carries the graph's per-shard `mutation_id` (ingest stamps consume the same sequence as
-  DML mutations). The vector canister keeps a per-`(index_id, subject)` clock: `stamp <= clock` is a
-  no-op; a remove on a missing row is a no-op.
-- The stamp call consumes a `mutation_id` without an accompanying DML mutation; the implementation
-  must verify this against the graph's existing `mutation_id` consumers (idempotency records, the
-  mutation journal, outbox/derived-index watermarks) so a phantom stamp cannot disturb ordering or
-  idempotence bookkeeping.
+- Every op carries a nonzero stamp allocated by the Router's durable mutation counter. The vector
+  canister keeps a per-`(index_id, subject)` clock: an older stamp is a no-op; a same-stamp upsert
+  is idempotent only when its canonical payload matches and rejects a different payload; a remove
+  on a missing row writes a deleted subject clock. The stamp remains comparable with Graph DML
+  stamps where those operations emit vector removes.
+- `stamp_embedding` validates the Graph vertex/labels/dimensions/encoding and returns the supplied
+  stamp without an accompanying DML mutation, canonical write, mutation-journal entry,
+  derived-index outbox row, or watermark advance. The Router owns the direct-ingest durable suffix
+  so this validation-only stamp cannot be mistaken for a completed Vector projection.
 - The subject map is the only store that would otherwise grow monotonically (deleted clocks).
-  Per-shard watermarks (`graph_watermark`, `router_watermark`) piggyback on existing calls; a deleted
-  entry with `stamp <= min(both)` is GC'd. Watermarks are delivered-and-acked marks maintained even
-  when a delivery path is idle, so a quiet graph or Router never blocks GC. The subject map stays at
-  `≈ N + recently deleted`.
+  The attached Graph shard advances `graph_watermark` only for its contiguous applied prefix.
+  Router direct-ingestion delivery does not advance `router_watermark`: the current path has no
+  contiguous Router-owned acknowledgement frontier, so the production Router watermark remains
+  zero. Tombstone deletion is conservatively paused in production (`min(graph_watermark,
+  router_watermark) == 0`) pending a future contiguous frontier contract; a deleted entry is not
+  treated as removable merely because a Router call returned. No current subject-map growth bound
+  is claimed while that frontier is absent.
 
 ### 6. Stamp-separated ingest
 
 ```text
-Router ── metadata + stamp request ──▶ Graph  (validate existence/labels/dims; consume mutation_id)
-Router ── bytes + stamp ────────────▶ Vector (validate bytes; persist)
+Router ── metadata + Router-issued stamp ─▶ Graph  (validate existence/labels/dims; return stamp)
+Graph  ── VertexEmbeddingStamp {mutation_id} ────────────────────────────────────▶ Router
+Router ── Pending {mutation_id, exact target, exact op} ──────────────────────────▶ stable outbox
+Router ── exact pending prefix ────────────────────────────────────────────────────▶ Vector
 ```
 
 Bytes cross the subnet **once**, never through the graph; the graph holds no bytes even transiently.
-Two calls is the minimum (the fence requires comparable ingest/DML stamps). The graph's vector
-surface is `stamp_embedding` plus DML-driven removes (vertex delete, label loss), re-derivable from
-graph state.
+`stamp_embedding` is validation-only in this path: it checks vertex/label/dimension/encoding validity
+and returns the Router-issued stamp without a Graph journal, derived-index outbox, or watermark write.
+After **all successful Graph stamps for the request** are collected, the Router synchronously
+revalidates every operation against the current live shard row, exact attached target, and current
+immutable definition, then appends the exact `(mutation_id, vector target, VectorEmbeddingSyncOp)`
+rows to `ROUTER_VECTOR_INGEST_OUTBOX` (MemoryId 53) in one owner operation **before the first
+Vector `vector_sync_batch_outcome` await**. No await can interleave this lifecycle revalidation and
+append. This stable outbox is the durable owner of every suffix that may be returned as
+`DeferredForRepair`; it pins the target and operation bytes rather than re-resolving them from
+mutable catalog state. Two calls is the minimum (the fence requires comparable ingest/DML stamps).
+The graph's vector surface is `stamp_embedding` plus DML-driven removes (vertex delete, label loss),
+re-derivable from graph state.
+
+The outbox is bounded to `MAX_VECTOR_INGEST_OUTBOX_ROWS = 1024` rows. Each encoded row is
+prevalidated against `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` (2 MiB); capacity, duplicate
+identity, and row-encoding failures are checked before the first stable insertion. The persisted
+value uses `StorableBound::Unbounded`, because this transport/admission ceiling must not determine
+the `StableBTreeMap` node page size; `VectorIngestOutboxState::encode_checked` remains the single
+write-boundary size check. Every persisted row is `Pending`; terminal outcomes leave the failed row
+and suffix in that same durable state.
+
+Only the typed `vector_sync_batch_outcome` endpoint is supported for batch synchronization. Its
+response is an exact-prefix acknowledgement. `Progress { applied }` removes only the first `applied`
+submitted rows; the unacknowledged suffix remains `Pending`. `Terminal { applied,
+failed_index: applied, error }` removes that prefix, while the failed row and every later row remain
+`Pending` in the durable suffix. The Router reports that retained terminal/suffix work as
+`DeferredForRepair`; it returns no separate outer error. A
+transport/unavailable or malformed response leaves every submitted row pending. The typed Vector
+driver processes internal chunks of at most **32 rows**; the Router independently fits each complete
+Candid request below the 2 MiB ceiling. This is an at-least-once retry/convergence contract without
+a finite-time convergence guarantee or client-level exactly-once semantics.
+Vector's per-subject stamp makes replay idempotent when a successful Vector write is followed by
+response loss.
+
+Pending rows are retried by the Router's bounded recovery timer in groups keyed by their persisted
+Vector target. The direct-ingestion scan examines at most 16 rows per tick and retains the exact
+target and operation bytes; it never re-resolves a target from mutable catalog state. Appending a
+row calls `recovery::arm_if_needed()`. If an append occurs while a recovery pass is awaiting a
+remote call, the arm request is latched and the tick re-arms the floor delay even when that pass
+reported no work, preventing a lost wake. Router `init` and `post_upgrade` re-arm the same recovery
+lane because timers do not survive an upgrade. Each Vector batch measures the complete Candid
+request and adaptively fits a prefix below the 2 MiB hard ceiling, targeting the ceiling minus the
+fixed 500 KiB envelope headroom. Focused Router unit tests cover reopen, exact-prefix transitions,
+lost-wake re-arming, immutable target retention, and adaptive sizing. The targeted PocketIC lifecycle
+gate passed with one test and four filtered:
+`cargo test -p gleaph-pocket-ic-tests --test adr0031_vertex_embedding_ingestion unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes -- --nocapture`
+(1 passed, 0 failed, 4 filtered, 17.95s). It manually drives the Graph and Router timer/recovery
+seams and covers Router upgrade, Vector reopen/rebind, exact GQL search, and idempotent replay. This
+targeted evidence does not prove autonomous wall-clock timer firing or deferred watermark/tombstone
+GC completion.
 
 ### 7. Fresh physical layout (two-table pages; run table; packed payload; version 1, breaking)
 
 Layout lineage restarts at version 1: slab/page headers use a 3-byte magic (`VSL`/`VPG`) plus a
 binary `u8` version byte `1`; the discarded ASCII magic (`VSL1`/`VPG1`) is rejected fail-closed.
-Dev stable data is wiped; no compatibility reader or migration.
+Dev stable data is wiped; the current cutover requires a fresh reinstall only, with no compatibility
+reader, migration, or backward-compatible endpoint.
 
 ```text
 [PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
@@ -182,9 +242,9 @@ canister-local; the run table's shard sharing becomes most effective. **B. Parti
 training, cross-canister rebuild, and a routing story (SPFresh/LIRE boundary-only reassignment makes
 the subject→canister routing index mostly static). Prepared now: Router resolution returns a target
 list with a global deterministic top-k merge contract; `VectorIndexOwnershipConfig` gains
-`index_group_size`/`group_index` (Option); a row-copy migration primitive
-(`export_vector_rows`/`import_vector_rows`) is the only split path (the graph holds no bytes, so
-graph backfill cannot migrate a vector canister).
+`index_group_size`/`group_index` (Option). No row-copy migration endpoint is implemented or
+supported by this cutover: the current vector layout and target assignment require a fresh reinstall,
+and any future split needs a separate ADR.
 
 ### 12. Crate boundary: `ic-stable-vector-page-store`
 
@@ -203,8 +263,8 @@ constraints — naming is revisited after the implementation proves distinctive 
 
 - Graph canister embedding bytes: zero (persistent and transient); ingest subnet bytes halved.
 - One durable byte copy; self-rebuild; no graph backfill path.
-- Deterministic, bounded, mutable ordering via `mutation_id`; subject map growth bounded by watermark
-  GC.
+- Deterministic, mutable ordering via `mutation_id`; subject-map tombstone deletion remains paused
+  until a contiguous Router watermark frontier exists, so no current growth bound is claimed.
 - Label-scoped definitions match industry practice and give cheap graph-side presence determination.
 - Fresh layout is a clean break (version 1) with fail-closed rejection of old data.
 - Multi-encoding (f16/int8/binary) gives the storage levers needed at `d = 1536`.
@@ -237,11 +297,17 @@ constraints — naming is revisited after the implementation proves distinctive 
 1. **[planned]** Rename the role to vector canister (mechanical slice).
 2. **[planned]** Create `ic-stable-vector-page-store` with the two-table page format, run table,
    `VertexPayload`, header validation, and distance kernels; unit tests + canbench in isolation.
-3. **[planned]** Rework the vector canister: subject map clock (`mutation_id`), watermark GC,
-   EncodingRecord, ε₂ search, sub-square + early exit; drop graph embedding regions.
-4. **[planned]** Rework the graph: `stamp_embedding`, label-diff removes, remove embedding regions; verify stamp consumption against the existing `mutation_id` consumers (idempotency records, mutation journal, outbox/derived-index watermarks).
-5. **[planned]** Rework the Router: label sets, target-list resolution, global merge contract,
-   row-copy migration endpoints.
+3. **[partial]** Rework the vector canister: the subject map clock and typed outcome path are
+   implemented; the attached Graph may advance `graph_watermark`, while Router watermark remains
+   zero and tombstone deletion stays paused. The physical layout and search/encoding roadmap remain
+   planned; graph embedding regions are removed.
+4. **[partial]** Rework the graph: `stamp_embedding`, label-diff removes, remove embedding regions;
+   the direct-ingest stamp is validation-only and does not update the existing DML mutation
+   consumers.
+5. **[partial]** Rework the Router: label sets, target-list resolution, global merge contract,
+   immutable definition/shard target assignment, and the durable direct-ingestion suffix are
+   implemented. The current cutover has no row-copy migration or compatibility endpoint; a future
+   split requires a separate ADR and fresh installation.
 6. **[planned]** Measure (canbench): scoring formulations, page scan cost at `d = 1536`, per-level
    `nlist` envelope; decide hierarchy deployment (`levels = 2`) and raw candidate region.
 
@@ -251,7 +317,8 @@ constraints — naming is revisited after the implementation proves distinctive 
 - `design/adr/0031`, `0032`, `0033` — marked superseded by this ADR.
 - `design/adr/README.md` — link this ADR.
 - `design/storage/stable-memory-inventory.md`, `design/adr/0007-stable-memory-layout.md`, and
-  `gleaph_graph_kernel::stable_layout` — updated when the new layout is implemented.
+  `gleaph_graph_kernel::stable_layout` — updated for the Router direct-ingestion outbox at
+  MemoryId 53; the remaining redesign layout work is still ahead of implementation.
 
 ## Supersedes
 
