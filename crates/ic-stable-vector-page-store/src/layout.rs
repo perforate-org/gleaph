@@ -169,7 +169,7 @@ mod tests {
     use super::*;
     use crate::header::PageHeader;
 
-    /// `d = 1536` F32: pad stride = ceil(1536 / 4) * 16 = 6144.
+    /// `d = 1536` F32: pad stride = align16(4 × 1536) = 6144.
     const D1536_STRIDE: u32 = 6144;
 
     fn header(capacity: u32, meta_stride: u32, run_capacity: u32) -> PageHeader {

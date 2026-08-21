@@ -2,7 +2,7 @@
 
 Date: 2026-08-07
 Status: Partially Implemented (design contract; Router direct-ingestion durability slice implemented)
-Last revised: 2026-08-21
+Last revised: 2026-08-21 (EncodingRecord pad-stride widths: `align16(component_bytes × dims)`)
 
 > **Summary.** Replaces the ADR 0031/0032/0033 vector-index design (Slices 1–10, **completely
 > discarded**) with a fresh ownership model and layout: the vector canister owns the only durable copy
@@ -213,7 +213,9 @@ reader, migration, or backward-compatible endpoint.
 
 `EncodingRecord { encoding, dims, stride_bytes, pad_stride_bytes, aux_bytes, binary_convention,
 kernel }` is a first-class concept (the LARA `label → width` generalization, owned by the vector
-canister). One index = one encoding = one stride. Scoring materializes once per page read into the
+canister). One index = one encoding = one stride. Widths derive from `(encoding, dims)`:
+`stride_bytes = component_bytes × dims` and `pad_stride_bytes = align16(stride_bytes)`, the 16-byte
+SIMD row alignment the page store stores as `row_stride`. Scoring materializes once per page read into the
 f32 scratch (except binary, scored via `i64.popcnt`). Binary cosine: `Bits01` → `n11·rq·rv`; `Signs`
 → `1 − 2H/d` (cosine ≡ Hamming order). Aux defaults: `F32` 0 bytes (sub-square + early exit, or
 normalized dot), `I8` 4 bytes (scale, mandatory), binary 0 bytes; row-level pruning is an opt-in

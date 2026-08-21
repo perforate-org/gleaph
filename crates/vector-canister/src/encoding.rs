@@ -41,7 +41,8 @@ pub enum EncodingError {
         /// Recorded stride.
         actual: u32,
     },
-    /// The SIMD scratch stride is not a multiple of 16 or does not match `ceil(dims / 4) × 16`.
+    /// The SIMD scratch stride is not a multiple of 16 or does not match
+    /// `align16(component_bytes × dims)`.
     PadStrideMismatch(u32),
     /// `aux_bytes` is not one of 0 | 4 | 8.
     InvalidAuxBytes(u32),
@@ -62,8 +63,8 @@ pub struct EncodingRecord {
     pub dims: u16,
     /// Stored stride, minimal per encoding (`component_bytes × dims`).
     pub stride_bytes: u32,
-    /// Scoring scratch stride `ceil(dims / 4) × 16` (16-byte aligned for SIMD; the page store's
-    /// `row_stride`).
+    /// Scoring scratch stride `align16(component_bytes × dims)` (16-byte aligned for SIMD; the
+    /// page store's `row_stride`).
     pub pad_stride_bytes: u32,
     /// Row-meta aux width: 0 | 4 | 8 (encoding/metric-dependent; see the design's `RowAux`).
     pub aux_bytes: u32,
@@ -86,7 +87,9 @@ impl EncodingRecord {
             .component_bytes()
             .checked_mul(u32::from(dims))
             .ok_or(EncodingError::WidthOverflow)?;
-        let pad_stride_bytes = u32::from(dims).div_ceil(4) * 16;
+        // SIMD scratch stride: the stored stride aligned up to a 16-byte boundary. Valid
+        // `(component_bytes, dims)` widths cannot overflow here (`4 × u16::MAX << u32::MAX`).
+        let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
         let (aux_bytes, binary_convention, kernel) = match encoding {
             // F32: default formulations need no per-row aux (sub-square + early exit for L2;
             // normalized-dot only for cosine). I8 carries a mandatory 4-byte per-row quantization
@@ -123,7 +126,7 @@ impl EncodingRecord {
                 actual: self.stride_bytes,
             });
         }
-        let expected_pad = u32::from(self.dims).div_ceil(4) * 16;
+        let expected_pad = expected_stride.div_ceil(16) * 16;
         if self.pad_stride_bytes != expected_pad || !self.pad_stride_bytes.is_multiple_of(16) {
             return Err(EncodingError::PadStrideMismatch(self.pad_stride_bytes));
         }
@@ -164,7 +167,7 @@ mod tests {
 
     #[test]
     fn d1536_f32_widths() {
-        // d = 1536: stride 4·1536 = 6144; pad = ceil(1536/4)·16 = 384·16 = 6144; meta 4.
+        // d = 1536: stride = pad = align16(4·1536) = 6144; meta 4.
         let record = EncodingRecord::from_parts(VectorEncoding::F32, 1536).expect("valid");
         assert_eq!(record.stride_bytes, 6144);
         assert_eq!(record.pad_stride_bytes, 6144);
@@ -176,10 +179,10 @@ mod tests {
 
     #[test]
     fn d1536_i8_widths() {
-        // d = 1536: stride 1·1536 = 1536; pad = ceil(1536/4)·16 = 6144; meta = 4 + 4 (scale) = 8.
+        // d = 1536: stride = pad = align16(1·1536) = 1536; meta = 4 + 4 (scale) = 8.
         let record = EncodingRecord::from_parts(VectorEncoding::I8, 1536).expect("valid");
         assert_eq!(record.stride_bytes, 1536);
-        assert_eq!(record.pad_stride_bytes, 6144);
+        assert_eq!(record.pad_stride_bytes, 1536);
         assert_eq!(record.aux_bytes, 4);
         assert_eq!(record.meta_stride(), 8);
         assert_eq!(record.kernel, ScoringKernel::UpcastF32Dot);
@@ -187,8 +190,27 @@ mod tests {
     }
 
     #[test]
+    fn d17_i8_widths_pad_to_16_byte_boundary() {
+        // d = 17: stride 17; pad = align16(17) = 32 (a non-multiple-of-16 dims still yields a
+        // 16-byte-aligned row).
+        let record = EncodingRecord::from_parts(VectorEncoding::I8, 17).expect("valid");
+        assert_eq!(record.stride_bytes, 17);
+        assert_eq!(record.pad_stride_bytes, 32);
+        assert!(record.pad_stride_bytes.is_multiple_of(16));
+    }
+
+    #[test]
+    fn d4_f32_widths() {
+        // d = 4: stride = pad = align16(4·4) = 16; meta 4.
+        let record = EncodingRecord::from_parts(VectorEncoding::F32, 4).expect("valid");
+        assert_eq!(record.stride_bytes, 16);
+        assert_eq!(record.pad_stride_bytes, 16);
+        assert_eq!(record.meta_stride(), 4);
+    }
+
+    #[test]
     fn non_multiple_of_four_dims_pad_up() {
-        // d = 17: stride 68; pad = ceil(17/4)·16 = 5·16 = 80.
+        // d = 17: stride align16 target = 4·17 = 68; pad = align16(68) = 80.
         let record = EncodingRecord::from_parts(VectorEncoding::F32, 17).expect("valid");
         assert_eq!(record.stride_bytes, 68);
         assert_eq!(record.pad_stride_bytes, 80);
@@ -217,6 +239,9 @@ mod tests {
         record.stride_bytes = 16;
         record.pad_stride_bytes = 63;
         assert_eq!(record.validate(), Err(EncodingError::PadStrideMismatch(63)));
+        // An aligned pad wider than `align16(stride)` is still rejected.
+        record.pad_stride_bytes = 32;
+        assert_eq!(record.validate(), Err(EncodingError::PadStrideMismatch(32)));
     }
 
     #[test]

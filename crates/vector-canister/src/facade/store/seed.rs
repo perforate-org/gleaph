@@ -14,6 +14,7 @@
 
 use super::search::encode_f32;
 use super::{DEFAULT_MAX_PAGE_BYTES, INITIAL_INDEX_VERSION, VectorCanisterStore};
+use crate::encoding::EncodingRecord;
 use crate::facade::stable::definition_store;
 use crate::facade::stable::subject_store;
 use crate::facade::stable::{IVF_CENTROID_META, IVF_CENTROIDS};
@@ -81,11 +82,12 @@ impl VectorCanisterStore {
     ) {
         assert!(!centroids.is_empty(), "seed requires at least one centroid");
         let nlist = centroids.len() as u32;
-        let stride_bytes = encoding.stride_bytes(dims);
-        assert!(stride_bytes > 0, "zero stride");
-        // Seeded fixtures are F32 on a single shard: pad stride = ceil(dims/4)*16, meta 4, one run.
-        let pad_stride_bytes = u32::from(dims).div_ceil(4) * 16;
-        let meta_stride_bytes = 4u32;
+        // Every width comes from the encoding record (the single width source of truth, ADR 0064
+        // §8); seeded pages use one run on a single shard.
+        let record = EncodingRecord::from_parts(encoding, dims).expect("seed encoding valid");
+        let stride_bytes = record.stride_bytes;
+        let pad_stride_bytes = record.pad_stride_bytes;
+        let meta_stride_bytes = record.meta_stride();
         let run_capacity = 1u32;
         let slots_per_page = PageLayout::max_capacity_for(
             DEFAULT_MAX_PAGE_BYTES as usize,

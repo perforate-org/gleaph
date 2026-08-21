@@ -767,6 +767,31 @@ mod tests {
     }
 
     #[test]
+    fn i8_kernel_scores_exact_over_zero_padded_on_slab_row() {
+        // On-slab I8 row shape for d = 17: a 17-byte payload zero-padded to the 32-byte aligned row
+        // stride. A partial final block (one full 16-byte block plus one scalar tail byte) scores
+        // exactly over the payload; the zero-filled pad lanes never contribute.
+        let values: Vec<f32> = (0..17).map(|i| i as f32 - 8.0).collect();
+        let q: Vec<f32> = (0..17).map(|i| 1.5 - 0.25 * i as f32).collect();
+        let (payload, scale) = i8_row(&values);
+        assert_eq!(payload.len(), 17);
+        let mut padded = payload.clone();
+        padded.resize(32, 0);
+        let dec: Vec<f32> = payload
+            .iter()
+            .map(|b| (*b as i8 as f32) * scale / 127.0)
+            .collect();
+        let expected_l2: f32 = q.iter().zip(&dec).map(|(q, v)| (q - v) * (q - v)).sum();
+        let expected_dot: f32 = q.iter().zip(&dec).map(|(q, v)| q * v).sum();
+        assert_eq!(l2_squared_i8_f32(&padded, scale, &q), expected_l2);
+        assert_eq!(dot_i8_f32(&padded, scale, &q), expected_dot);
+        assert_eq!(
+            l2_squared_i8_f32_early_exit(&padded, scale, &q, f32::INFINITY),
+            Some(expected_l2)
+        );
+    }
+
+    #[test]
     fn l2_squared_matches_naive() {
         let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let v: Vec<f32> = vec![2.0, 0.0, 3.0, 1.0, -1.0];

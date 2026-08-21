@@ -942,8 +942,8 @@ impl VectorCanisterStore {
                     .expect("live entry has a slot");
                 let stored = self.read_slot_bytes(op.index_id, slot).unwrap_or_default();
                 let expected = prepare_for_metric(&def, &op.bytes)?.0;
-                // Compare only the meaningful stored payload (`stride_bytes`); the page row carries
-                // trailing pad, so the stored slice is wider than `expected` for I8.
+                // Compare only the meaningful stored payload (`stride_bytes`); trailing alignment
+                // pad is not part of it.
                 let same = stored.get(..def.stride_bytes as usize) == Some(expected.as_slice());
                 if same {
                     // Pure idempotent no-op: nothing changes. During `Cleaning` this intentionally

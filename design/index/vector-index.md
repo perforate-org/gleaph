@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-08-21
-Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
+Anchor timestamp: 2026-08-21 20:33:04 UTC +0000
 
 ## Status
 
@@ -343,7 +343,7 @@ pub struct EncodingRecord {
     pub encoding: VectorEncoding,          // F32 | F16 | Bf16 | I8 | U8 | Binary
     pub dims: u16,
     pub stride_bytes: u32,                 // stored stride, minimal per encoding
-    pub pad_stride_bytes: u32,             // scoring scratch stride = ceil(dims/4)*16
+    pub pad_stride_bytes: u32,             // scoring scratch stride = align16(component_bytes × dims)
     pub aux_bytes: u32,                    // 0 | 4 | 8
     pub binary_convention: Option<BinaryConvention>,  // Bits01 | Signs
     pub kernel: ScoringKernel,             // F32Dot | UpcastF32Dot | BinaryPopcnt
@@ -479,7 +479,8 @@ regression is `rebuild_building_link_failure_tombstones_unlinked_suffix_and_retr
 
 ## Growth model
 
-Symbols: `N` = live subjects per index, `G` = cumulative ever-ingested, `s` = stored stride,
+Symbols: `N` = live subjects per index, `G` = cumulative ever-ingested, `s` = aligned stored row
+stride (`align16(component_bytes × dims)`),
 `m` = row metadata (4B vertex + aux 0–8B + page amortization), `r` = rebuild tombstone trigger,
 `η` = B-tree overhead.
 

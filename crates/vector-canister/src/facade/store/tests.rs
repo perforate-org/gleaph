@@ -4937,6 +4937,35 @@ mod i8_tests {
     }
 
     #[test]
+    fn i8_d1536_rows_are_quarter_width_and_page_capacity_rises_fourfold() {
+        const D1536_F32: u32 = 8;
+        const D1536_I8: u32 = 9;
+        let store = fresh_store();
+        store
+            .create_index_for_test(D1536_F32, VectorEncoding::F32, 1536, 64 * 1024)
+            .expect("f32 d1536 index");
+        store
+            .create_index_for_test(D1536_I8, VectorEncoding::I8, 1536, 64 * 1024)
+            .expect("i8 d1536 index");
+        let f32_def = definition_store::get(D1536_F32)
+            .expect("definition store available")
+            .expect("f32 def");
+        let i8_def = definition_store::get(D1536_I8)
+            .expect("definition store available")
+            .expect("i8 def");
+        // I8 rows occupy a quarter of the F32 row width at d = 1536 (row stride 1536 vs 6144).
+        assert_eq!(f32_def.stride_bytes, 6144);
+        assert_eq!(f32_def.pad_stride_bytes, 6144);
+        assert_eq!(i8_def.stride_bytes, 1536);
+        assert_eq!(i8_def.pad_stride_bytes, 1536);
+        assert_eq!(i8_def.meta_stride_bytes, 8);
+        // The same 64 KiB page budget therefore holds roughly four times as many rows
+        // (42 vs 10 under the checked layout solver).
+        assert_eq!(f32_def.slots_per_page, 10);
+        assert_eq!(i8_def.slots_per_page, 42);
+    }
+
+    #[test]
     fn i8_zero_l2_vector_is_accepted_and_nearest() {
         let store = fresh_store();
         i8_upsert(
