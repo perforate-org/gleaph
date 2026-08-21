@@ -9,7 +9,6 @@ use thiserror::Error;
 
 pub mod auth;
 pub mod config;
-pub mod deploy;
 pub mod identity;
 pub mod load;
 pub mod migration;
@@ -67,8 +66,6 @@ enum TopLevelCommand {
     /// Register prepared queries from local .gql files.
     #[command(subcommand)]
     Prepared(PreparedCommand),
-    /// Provision the user's Router and graph on the target environment.
-    Deploy(DeployArgs),
     /// Resolve the caller's principal and store the active session.
     Login(LoginArgs),
     /// Register an Account for the caller's principal.
@@ -112,6 +109,9 @@ struct NetworkStartArgs {
     /// Start the network in the background; the command exits once it is running.
     #[arg(short = 'd', long)]
     background: bool,
+    /// Do not auto-register the caller's Personal account after deploying the platform.
+    #[arg(long)]
+    no_auto_register: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -165,31 +165,6 @@ struct SignupArgs {
     /// Fetch the network root key before querying a custom endpoint.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     fetch_root_key: Option<bool>,
-}
-
-#[derive(Debug, clap::Args)]
-struct DeployArgs {
-    /// Network name (ic/local) or an HTTP(S) endpoint URL.
-    #[arg(short = 'n', long, value_name = "NETWORK")]
-    network: Option<String>,
-    /// PEM file containing a Secp256k1 identity.
-    #[arg(long, value_name = "PATH")]
-    identity: Option<PathBuf>,
-    /// Fetch the network root key before querying a custom endpoint.
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    fetch_root_key: Option<bool>,
-    /// Path to the Router canister wasm.
-    #[arg(long, value_name = "PATH")]
-    router_wasm: PathBuf,
-    /// Path to the graph-index canister wasm.
-    #[arg(long, value_name = "PATH")]
-    graph_index_wasm: PathBuf,
-    /// Path to the graph-shard canister wasm.
-    #[arg(long, value_name = "PATH")]
-    graph_shard_wasm: PathBuf,
-    /// Logical graph name to provision; the migrations bind a schema to this graph.
-    #[arg(long, value_name = "NAME", default_value = "default")]
-    graph: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -350,7 +325,6 @@ fn dispatch(
             Ok(())
         }
         TopLevelCommand::Prepared(command) => execute_prepared(command, env, loaded),
-        TopLevelCommand::Deploy(args) => execute_deploy(args, env, loaded),
         TopLevelCommand::Login(args) => execute_login(args, loaded),
         TopLevelCommand::Signup(args) => execute_signup(args, env, loaded),
         TopLevelCommand::Identity(command) => execute_identity(command),
@@ -384,6 +358,22 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
                 println!("Network started on port {port}");
             }
             println!("platform mapping: {:?}", result.mapping);
+
+            // Auto-register the caller's Personal account unless --no-auto-register. A fresh
+            // developer can then run data-plane/DDL commands without a separate `signup`.
+            if !args.no_auto_register
+                && let Some(account) = result.mapping.get("account")
+            {
+                match auto_register_account(loaded, &args.network, account) {
+                    Ok(Some(principal)) => {
+                        println!("registered account for {principal}");
+                    }
+                    Ok(None) => println!("account already registered"),
+                    Err(e) => {
+                        return Err(CliError::Message(format!("auto-register account: {e}")));
+                    }
+                }
+            }
 
             // For a Gleaph-owned network, keep the launcher child alive so the network persists.
             // In background mode the child is detached and the command returns; otherwise it
@@ -424,6 +414,56 @@ fn execute_network(command: NetworkCommand, loaded: Option<&LoadedConfig>) -> Re
             }
             Ok(())
         }
+    }
+}
+
+/// Auto-register the caller's Personal account under the freshly deployed Account canister.
+///
+/// Resolves the session's signing source (like `signup`), connects to the Account canister, and
+/// calls `create_account`. Returns `Ok(Some(principal))` on a fresh registration and
+/// `Ok(None)` when the account already exists (an idempotent no-op).
+fn auto_register_account(
+    loaded: &LoadedConfig,
+    network: &str,
+    account: &str,
+) -> Result<Option<String>, CliError> {
+    let identity = {
+        let session = auth::load_session();
+        let has_icp_yaml = loaded.path.parent().is_some_and(identity::has_icp_yaml);
+        session
+            .as_ref()
+            .map(|s| identity::session_pem(s, has_icp_yaml))
+            .transpose()
+            .map_err(CliError::Message)?
+    };
+    let Some(pem) = identity else {
+        return Err(CliError::Message(
+            "no identity; run `gleaph login` or pass --identity <PEM> to auto-register an account"
+                .into(),
+        ));
+    };
+    let transport = remote::RemoteTransport::connect(account, network, Some(&pem), true)
+        .map_err(CliError::Message)?;
+    let account_principal = candid::Principal::from_text(account)
+        .map_err(|e| CliError::Message(format!("invalid account canister id: {e}")))?;
+    // `create_account` returns Result<Account, AccountError>; a Personal account for an
+    // existing principal fails with AlreadyExists, which we treat as an idempotent no-op.
+    let result: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        transport
+            .update_on(
+                &account_principal,
+                "create_account",
+                &("default".to_owned()),
+            )
+            .map_err(|e| CliError::Message(format!("create_account: {e}")))?;
+    match result {
+        Ok(_) => {
+            let p = auth::resolve_principal(Some(&pem), loaded.path.parent())
+                .map_err(CliError::Message)?;
+            Ok(Some(p))
+        }
+        Err(gleaph_account::types::AccountError::AlreadyExists) => Ok(None),
+        Err(e) => Err(CliError::Message(format!("create_account: {e:?}"))),
     }
 }
 
@@ -536,28 +576,6 @@ fn execute_signup(
     Ok(())
 }
 
-/// `gleaph deploy`: register the caller's Account and write the platform mapping.
-fn execute_deploy(
-    args: DeployArgs,
-    env: &ConfigEnv,
-    loaded: Option<&LoadedConfig>,
-) -> Result<(), CliError> {
-    let network =
-        config::effective_network(args.network.as_deref(), env, loaded.map(|l| &l.config));
-    deploy::deploy(
-        &network,
-        args.identity.as_deref(),
-        args.fetch_root_key.unwrap_or(false),
-        env,
-        loaded,
-        &args.router_wasm,
-        &args.graph_index_wasm,
-        &args.graph_shard_wasm,
-        &args.graph,
-    )
-    .map_err(CliError::Message)
-}
-
 /// One connection set with the canister required (for `migration`, `prepared`, and `load`).
 struct ResolvedRemote {
     canister: String,
@@ -620,7 +638,7 @@ fn resolve_router_from_account(
     let mapping = config::read_mapping(loaded, &environment)?;
     let account_canister = mapping.get("account").ok_or_else(|| {
         CliError::Message(
-            "no account canister in .gleaph/data/mappings; run `gleaph deploy` first".into(),
+            "no account canister in .gleaph/data/mappings; run `gleaph network start` first".into(),
         )
     })?;
     let account_principal = candid::Principal::from_text(account_canister)
@@ -632,11 +650,97 @@ fn resolve_router_from_account(
         options.fetch_root_key,
     )
     .map_err(CliError::Message)?;
-    let router = remote::resolve_router_id(&transport, &account_principal, router_name)
-        .map_err(CliError::Message)?;
+
+    // Lazy Router issuance (ADR 0068): if the Router is not yet issued, auto-issue it on demand.
+    let router = match remote::resolve_router_id(&transport, &account_principal, router_name)
+        .map_err(CliError::Message)?
+    {
+        Some(router) => router,
+        None => {
+            let provision_canister = mapping.get("provision").ok_or_else(|| {
+                CliError::Message(
+                    "no provision canister in .gleaph/data/mappings; run `gleaph network start` first"
+                        .into(),
+                )
+            })?;
+            issue_router_lazy(
+                &transport,
+                &account_principal,
+                router_name,
+                provision_canister,
+            )?
+        }
+    };
     let router_text = router.to_text();
     config::write_router_cache(loaded, &environment, &router_text);
     Ok(router_text)
+}
+
+/// Auto-issue the first Router on demand (ADR 0068 lazy issuance): drive the Account bootstrap
+/// handover (`authorize_router_issuance`) through the Provision canister, then register the
+/// returned Router canister under the caller's account and return its id.
+fn issue_router_lazy(
+    transport: &remote::RemoteTransport,
+    account_principal: &candid::Principal,
+    router_name: &str,
+    provision_canister: &str,
+) -> Result<candid::Principal, CliError> {
+    // `authorize_router_issuance` takes (account_id, router_id, provision_canister).
+    let result: Result<
+        gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse,
+        gleaph_account::types::AccountError,
+    > = transport
+        .update_args_on(
+            account_principal,
+            "authorize_router_issuance",
+            (
+                &account_principal.to_text(),
+                &router_name.to_owned(),
+                &candid::Principal::from_text(provision_canister)
+                    .map_err(|e| CliError::Message(format!("invalid provision canister: {e}")))?,
+            ),
+        )
+        .map_err(|e| CliError::Message(format!("authorize_router_issuance: {e}")))?;
+    let response =
+        result.map_err(|e| CliError::Message(format!("authorize_router_issuance: {e:?}")))?;
+    // The first-Router issuance returns the created Router canister in `created_resources`.
+    let router_canister = match response {
+        gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Accepted {
+            created_resources,
+            ..
+        }
+        | gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Replay {
+            created_resources,
+            ..
+        } => created_resources
+            .into_iter()
+            .find(|r| {
+                matches!(
+                    r.logical_resource,
+                    gleaph_graph_kernel::provisioning::LogicalResource::Router
+                )
+            })
+            .map(|r| r.canister_id)
+            .ok_or_else(|| {
+                CliError::Message("router issuance did not return a Router canister".into())
+            })?,
+    };
+
+    // Register the issued Router under the caller's account so `resolve_router` succeeds later.
+    let entry = gleaph_account::types::RouterEntry {
+        router_id: router_name.to_owned(),
+        router_canister,
+    };
+    let reg: Result<(), gleaph_account::types::AccountError> = transport
+        .update_on(
+            account_principal,
+            "register_router",
+            &(account_principal.to_text(), entry),
+        )
+        .map_err(|e| CliError::Message(format!("register_router: {e}")))?;
+    reg.map_err(|e| CliError::Message(format!("register_router: {e:?}")))?;
+    println!("auto-issued Router {router_canister} ({router_name})");
+    Ok(router_canister)
 }
 
 /// Merge `gleaph.toml` and `GLEAPH_*` defaults into the parsed codegen args. The manifest source

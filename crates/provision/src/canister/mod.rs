@@ -350,6 +350,7 @@ async fn deploy_job_resources(
     for (index, resource) in req.requested_resources.iter().enumerate() {
         // CanisterKind from the logical resource.
         let kind = match resource.logical_resource {
+            LogicalResource::Router => CanisterKind::Router,
             LogicalResource::GraphShard(_) => CanisterKind::Graph,
             LogicalResource::PropertyIndex(_) => CanisterKind::PropertyIndex,
             LogicalResource::VectorIndex(_) => CanisterKind::VectorCanister,

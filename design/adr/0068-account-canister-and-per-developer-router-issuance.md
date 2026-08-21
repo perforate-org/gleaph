@@ -2,8 +2,8 @@
 
 Date: 2026-08-14
 Status: proposed
-Last revised: 2026-08-14 15:08:32 UTC +0000
-Anchor timestamp: 2026-08-14 15:08:32 UTC +0000
+Last revised: 2026-08-21 16:47:02 UTC +0000
+Anchor timestamp: 2026-08-21 16:47:02 UTC +0000
 
 ## Context
 
@@ -118,8 +118,9 @@ Account owns only identity/registration, the account↔Router mapping, and issua
 | `resolve_my_accounts()`   | caller (self)         | caller principal → its accounts                |
 | `authorize_router_issuance(id, router_id)` | owner/admin | first-Router bootstrap only |
 
-`resolve_router` on a Router that is not yet issued returns "not issued"; the CLI then prompts the
-user to run `gleaph deploy`.
+`resolve_router` on a Router that is not yet issued returns "not issued"; the CLI then
+**auto-issues** the Router on demand (see [Lazy Router issuance](#lazy-router-issuance)) instead of
+requiring a separate deploy step.
 
 **Creation limits.** A Personal account is unique per principal (a direct consequence of
 `account_id == principal`); this is an invariant, not a policy knob. Org creation is **not
@@ -140,6 +141,51 @@ CLI (principal) ──▶ Account: resolve_my_accounts()
 CLI ──▶ resolve_router(id, router_id) → Router canister id
 ```
 
+### Lazy Router issuance
+
+Router issuance is **on demand, driven by the first operation that needs a Router**. There is no
+`gleaph deploy` step and no explicit "issue Router" command: any command that must reach a Router
+(`migration apply`, `load`, `prepared`, `codegen`, or GQL) triggers issuance automatically the first
+time a Router is needed, then caches the result.
+
+```text
+CLI needs a Router for operation O
+  cache (`.gleaph/cache/account/<env>.router.json`) hit?      → use cached id
+  else Account.resolve_router(id, router_id) resolves?        → cache + use id
+  else (not issued) → auto-issue:
+    CLI ──▶ Account.authorize_router_issuance(id, "default", provision)
+    Account ──▶ Provision: accept_envelope (LogicalResource::Router)
+    Provision ──▶ Account: issuance result → Router canister id
+    CLI ──▶ Account.register_router(id, "default", canister)   → cache + use id
+CLI proceeds with O against the Router
+```
+
+The issued Router is installed with `RouterInitArgs { provision_canister: Some(provision), .. }`,
+so it participates in the ADR 0035 deployment-binding handover and can later issue graph
+shard/index/vector canisters itself. The Router init args already carry `provision_canister`, so the
+Router never falls back to a dev-mode manual-install path.
+
+#### Provisioner / Account / Router / CLI division of labor
+
+| Component | Owns | Never does |
+| --------- | ---- | ---------- |
+| Provisioner | artifact catalog + create/install state machine; the **only** issuer | does not decide *whether* a Router should exist |
+| Account | identity, account↔Router mapping, first-Router issuance **authorization** (bootstrap trust subject) | never installs/creates a canister |
+| CLI | Router-id resolution + cache; on-demand issuance trigger; `network`/`signup` | no management-canister installs |
+| Router | post-issuance deployment binding (ADR 0035 ack), graph topology, subsequent shard/index/vector issuance to Provisioner | not involved in its own issuance |
+
+The Account requests a **`LogicalResource::Router`** (not a graph shard) when it drives the first
+issuance. `authorize_router_issuance` is the bootstrap handover for the first Router only; once the
+Router exists, ADR 0035's normal issuer (the Router principal) governs all further issuance, exactly
+as in the [Bootstrap trust handover](#bootstrap-trust-handover) section.
+
+#### `network` auto-registration
+
+`gleaph network start` deploys Account and Provision and, by default, **auto-registers** the
+caller's Personal account (one `create_account` for the caller principal) so a fresh developer can
+run `migration`/`code` without a separate `signup`. A `--no-auto-register` flag disables this for
+platform-only provisioning. Auto-registration only creates the account; it never issues a Router.
+
 ## Ownership and invariants
 
 | Invariant | Enforcer |
@@ -150,6 +196,8 @@ CLI ──▶ resolve_router(id, router_id) → Router canister id
 | Router structure is 1:N; the initial single Router is not hard-coded as "one". | `routers: Map<router_id, RouterEntry>` |
 | The caller's principal is the center of access control; `account` is not committed in `gleaph.toml`. | CLI resolution + Account RBAC |
 | Account is the issuance authority only during the bootstrap handover; the Router owns the deployment binding afterward. | trust handover + ADR 0035 ack model |
+| Router issuance is on demand (lazy), triggered by the first operation needing a Router; there is no `gleaph deploy`. | CLI lazy-resolution + cache + Account `authorize_router_issuance` |
+| The first-Router issuance requests a `LogicalResource::Router`, not a graph shard. | Account `authorize_router_issuance` request construction |
 
 ## Alternatives considered
 
@@ -172,19 +220,32 @@ CLI ──▶ resolve_router(id, router_id) → Router canister id
   first-issuance result to Account (see ADR 0035 amendment).
 - The CLI resolves the account from the caller principal at runtime; `gleaph.toml` carries no
   account identifier.
+- Router issuance is lazy: the first operation that needs a Router triggers it, and `gleaph deploy`
+  is removed from the CLI surface. A fresh developer runs `gleaph network start` (which
+  auto-registers the account by default), then any data-plane/DDL command.
 - Governance (SNS) control is reserved as a future third account kind; service-scope admin is a
   separate concern.
 
 ## Implementation status
 
-**Partially implemented.** The Account canister and the dev-mode CLI path exist. The dev-mode
-`gleaph deploy` installs the Router, graph-index, and graph-shard canisters directly via the
-management canister (mirroring `scripts/deploy-demo-local.sh`), registers the graph + shard through
-Router `register_graph`, and registers the issued Router under the caller's Account so
-`Account.resolve_router` succeeds. The **Provision artifact-catalog issuance path** (`LogicalResource::Router`
-via `accept_envelope`), which ADR 0035's amendment describes for the first-Router bootstrap
-handover, remains **proposed / not implemented**; the CLI dev-mode path does not drive it. The
-design contract is fixed in
+**Lazy-issuance design adopted and core protocol implemented (2026-08-21); the end-to-end
+provisioned Router path remains to be validated in a PocketIC runtime.** The Account canister and
+the account↔Router mapping exist. The following are implemented:
+
+- `LogicalResource::Router` (variant + fixed 5-byte stable encoding tag `3`) in `gleaph-graph-kernel`.
+- `LogicalResource::Router` → `CanisterKind::Router` mapping in the Provisioner (the kind and its
+  manifest already existed); hand-written `provision.did` updated.
+- Account's `authorize_router_issuance` requests a `LogicalResource::Router`, not a `GraphShard(0)`,
+  with the correct `RouterInitArgs` install args.
+- `gleaph deploy` removed from the CLI surface; Router resolution auto-issues on demand in
+  `resolve_router_from_account` (cache → `Account.resolve_router` → `authorize_router_issuance` →
+  `register_router` → cache).
+- `gleaph network start` auto-registers the caller's Personal account unless `--no-auto-register`.
+
+The **end-to-end** provisioned Router issuance (a live Release/artifact install through
+`accept_envelope` producing a running Router, then the bootstrap `complete_bootstrap` handover) is
+**not yet exercised in a PocketIC runtime** and remains the primary validation gap. The design
+contract is fixed in
 [`design/architecture/account-and-provisioning.md`](../architecture/account-and-provisioning.md).
 
 ## Cross-links

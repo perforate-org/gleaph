@@ -3597,6 +3597,7 @@ dependencies = [
  "candid",
  "clap",
  "flate2",
+ "gleaph-account",
  "gleaph-bulk-load-api",
  "gleaph-codegen",
  "gleaph-gql",

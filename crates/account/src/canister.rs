@@ -6,7 +6,6 @@
 use crate::stable::store::AccountStore;
 use crate::types::{Account, AccountError, Role, RouterEntry, generate_org_account_id};
 use candid::Principal;
-use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::provisioning::LogicalResource;
 
 /// Create a Personal account owned by `caller`. Rejects anonymous and an existing same-id account.
@@ -191,7 +190,7 @@ async fn send_issuance_request(
     let install_args = vec![Encode!(&router_init).expect("encode RouterInitArgs")];
     let graph_name = "default".to_owned();
     let requested_resources = vec![ProvisionableResource {
-        logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
+        logical_resource: LogicalResource::Router,
     }];
     let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
         &graph_name,
@@ -200,10 +199,7 @@ async fn send_issuance_request(
     let request = ProvisionRequest {
         deployment_id: deployment_id.clone(),
         request_id,
-        intent_key: ProvisioningIntentKey::new(
-            &deployment_id,
-            LogicalResource::GraphShard(ShardId::new(0)),
-        ),
+        intent_key: ProvisioningIntentKey::new(&deployment_id, LogicalResource::Router),
         reserved_graph_id: None,
         graph_name,
         requested_resources,

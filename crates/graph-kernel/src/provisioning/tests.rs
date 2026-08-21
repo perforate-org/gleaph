@@ -24,6 +24,13 @@ fn logical_resource_bytes_roundtrip() {
         LogicalResource::from_bytes(vec![2, 9, 0, 0, 0].into()),
         vector
     );
+
+    let router = LogicalResource::Router;
+    assert_eq!(router.into_bytes(), vec![3, 0, 0, 0, 0]);
+    assert_eq!(
+        LogicalResource::from_bytes(vec![3, 0, 0, 0, 0].into()),
+        router
+    );
 }
 
 #[test]

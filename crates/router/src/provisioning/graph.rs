@@ -336,6 +336,11 @@ fn build_install_args(args: &types::ProvisionGraphArgs) -> Vec<Vec<u8>> {
                 };
                 Encode!(&init).expect("encode VectorCanisterInitArgs")
             }
+            // A Router is a singleton issued once per deployment by the Account during the
+            // bootstrap handover; an already-issued Router never requests another Router.
+            LogicalResource::Router => {
+                unreachable!("Router cannot issue a Router resource")
+            }
         })
         .collect()
 }

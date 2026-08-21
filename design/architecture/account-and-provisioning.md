@@ -7,14 +7,13 @@ per-developer Router issuance and CLI resolution.
 
 ## Status
 
-**Partially implemented.** The Account canister exists, and the dev-mode `gleaph deploy` path is
-implemented: it installs the Router / graph-index / graph-shard canisters directly via the
-management canister, registers the graph + shard through Router `register_graph`, and registers the
-Router under the caller's Account. The **Provision artifact-catalog issuance** described below
-(`LogicalResource::Router` via `accept_envelope`) remains **planned**, not implemented; the design
-decisions are fixed in [ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md),
-which is the **single source of truth** for the account model. This document is an overview only; do
-not restate the ADR's contracts here.
+**Partially implemented.** The Account canister exists. The **Provision artifact-catalog issuance**
+described below (`LogicalResource::Router` via `accept_envelope`) is **planned**, not implemented.
+Per the **lazy Router issuance** design (amended in
+[ADR 0068](../adr/0068-account-canister-and-per-developer-router-issuance.md), the single source of
+truth), Router issuance is triggered **on demand** by the first operation that needs a Router, and
+`gleaph deploy` is removed from the CLI surface. This document is an overview only; do not restate
+the ADR's contracts here.
 
 ## Non-goals
 
@@ -47,22 +46,25 @@ User canisters are issued by **Provision** from the artifact catalog
 ([ADR 0036](../adr/0036-versioned-wasm-artifact-catalog.md)). The user does not build wasm, manage
 subnets, or run `icp deploy`.
 
-### `gleaph deploy` (user workflow)
+### Lazy Router issuance (replaces `gleaph deploy`)
 
-`gleaph deploy` (dev mode) defaults to the **`local`** environment:
+Router issuance is **on demand**, driven by the first operation that needs a Router. There is no
+`gleaph deploy` step; a fresh developer workflow is:
 
-1. Ensure a local IC network is running (delegated to icp-cli when an `icp.yaml` is present; the
-   `local` name otherwise points at `http://localhost:8000`).
-2. Ensure the platform canisters (Account / Provision) exist; `gleaph network start` deploys them.
-3. **Dev-mode (implemented):** install the caller's Router + graph-index + graph-shard canisters
-   directly via the management canister, register the graph + shard through Router `register_graph`,
-   and register the Router under the caller's Account.
-4. Write `.gleaph/data/mappings/<env>.ids.json` (account/provision) and the per-environment Router
-   cache (`.gleaph/cache/account/<env>.router.json`).
-5. Set up the initial graph / schema as needed (migrations).
+1. Ensure a local IC network is running and the platform canisters (Account / Provision) exist;
+   `gleaph network start` deploys them and by default **auto-registers** the caller's Personal
+   account (a flag disables auto-registration).
+2. Any command that needs a Router (`migration apply`, `load`, `prepared`, `codegen`, GQL) resolves
+   the Router id: cache → `Account.resolve_router` → auto-issue via
+   `Account.authorize_router_issuance` → Provisioner `accept_envelope` with
+   `LogicalResource::Router` → `Account.register_router` → cache.
+3. The issued Router carries `provision_canister: Some(provision)`, so graph/shard/index/vector
+   provisioning (ADR 0070 / ADR 0071) flows through Provision, not a manual management-canister
+   install.
 
-The **Provision artifact-catalog issuance** path (step 3 via `LogicalResource::Router` and
-`accept_envelope`) remains proposed and is not the CLI dev-mode path.
+The **Provision artifact-catalog issuance** path (`LogicalResource::Router` and `accept_envelope`)
+is the lazy issuance mechanism; the CLI no longer installs canisters directly via the management
+canister.
 
 ### Network resolution (delegation to icp-cli)
 
@@ -72,8 +74,8 @@ The **Provision artifact-catalog issuance** path (step 3 via `LogicalResource::R
   default; `icp network status --json` provides the authoritative `api_url` / `gateway_url`.
 - Gleaph does **not** parse `icp.yaml`'s schema (no version-following fragility).
 - `icp.yaml` `environments:` are not adopted; a Gleaph environment is owned by `gleaph.toml`.
-- When there is no `icp.yaml`, `gleaph deploy` starts an **icp-cli managed local network** behind
-  the scenes.
+- When there is no `icp.yaml`, `gleaph network start` starts an **icp-cli managed local network**
+  behind the scenes.
 
 ## CLI configuration
 
@@ -111,8 +113,9 @@ members, Routers). The principal is derived from the bare domain `gleaph.com` (n
 - **`gleaph signup`** — registration. Runs the login principal resolution, then calls
   `Account.create_account` to create a Personal account for that principal. One-time; creates
   state.
-- **`gleaph deploy`** — requires an already-registered account (no self-registration); calls
-  `Account.authorize_router_issuance` to issue the first Router.
+- **Router issuance is lazy** — requires an already-registered account (auto-created by
+  `gleaph network start` by default, or by `signup`); the first operation needing a Router calls
+  `Account.authorize_router_issuance` to issue it.
 
 The web UI and `gleaph login` share the same II app principal, so they access the same Account.
 A local PEM identity is a different principal and maps to a different Account (or is added to an

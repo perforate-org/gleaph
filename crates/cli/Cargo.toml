@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 candid.workspace = true
 clap.workspace = true
+gleaph-account.workspace = true
 gleaph-bulk-load-api.workspace = true
 gleaph-codegen.workspace = true
 gleaph-gql = { workspace = true, features = ["gleaph", "serde"] }

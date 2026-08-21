@@ -15,31 +15,36 @@ pub const DEFAULT_LOCAL_URL: &str = "http://localhost:8000";
 ///
 /// `account_canister` is the platform-fixed Account canister id (from `.gleaph/data/mappings/`).
 /// `router_id` is the logical Router name within the account. The caller's identity (already on
-/// the transport) is used by Account to authorize the resolution.
+/// the transport) is used by Account to authorize the resolution. Returns `Ok(None)` when the
+/// Router is not yet issued (Account `NotFound`), so the caller can trigger lazy issuance.
 pub fn resolve_router_id(
     transport: &RemoteTransport,
     account_canister: &candid::Principal,
     router_id: &str,
-) -> Result<candid::Principal, String> {
+) -> Result<Option<candid::Principal>, String> {
     let accounts: Vec<String> = transport
         .query_plain(account_canister, "resolve_my_accounts", &())
         .map_err(|e| format!("resolve_my_accounts: {e}"))?;
     let account_id = select_account(&accounts)?;
-    let result: Result<candid::Principal, String> = transport
+    let result: Result<candid::Principal, gleaph_account::types::AccountError> = transport
         .query_on(
             account_canister,
             "resolve_router",
             &(account_id, router_id.to_owned()),
         )
         .map_err(|e| format!("resolve_router: {e}"))?;
-    result.map_err(|e| format!("resolve_router: {e}"))
+    match result {
+        Ok(p) => Ok(Some(p)),
+        Err(gleaph_account::types::AccountError::NotFound) => Ok(None),
+        Err(e) => Err(format!("resolve_router: {e:?}")),
+    }
 }
 
-/// Pick the account id to use from the caller's account list. Errors when there is none or more
+/// Select the account id to use from the caller's account list. Errors when there is none or more
 /// than one (a `--account` disambiguation flag is a later slice).
 fn select_account(accounts: &[String]) -> Result<String, String> {
     match accounts {
-        [] => Err("no account registered for this identity; run `gleaph deploy` first".into()),
+        [] => Err("no account registered for this identity; run `gleaph network start` (auto-registers) or `gleaph signup` first".into()),
         [single] => Ok(single.clone()),
         _ => Err(format!(
             "multiple accounts ({}) registered; pass --account to disambiguate",
@@ -257,6 +262,23 @@ impl RemoteTransport {
             )
             .map_err(|error| format!("update {method}: {error}"))?;
         decode_result(&response, method)
+    }
+
+    /// Update one method on an arbitrary canister whose arguments are multiple separate Candid
+    /// values (one per tuple element). See [`Self::query_args`].
+    pub fn update_args_on<T, E>(
+        &self,
+        canister: &candid::Principal,
+        method: &str,
+        args: impl candid::utils::ArgumentEncoder,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: CandidType + for<'de> serde::Deserialize<'de>,
+        E: CandidType + for<'de> serde::Deserialize<'de>,
+    {
+        let encoded =
+            candid::encode_args(args).map_err(|error| format!("encode {method} args: {error}"))?;
+        self.update_raw_on(canister, method, encoded)
     }
 }
 

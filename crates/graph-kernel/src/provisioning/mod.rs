@@ -21,6 +21,9 @@ pub enum LogicalResource {
     GraphShard(ShardId),
     PropertyIndex(IndexClusterId),
     VectorIndex(VectorIndexId),
+    /// The deployment's Router canister. A singleton per deployment (issued once during the
+    /// bootstrap handover by the Account as trust subject); no payload id.
+    Router,
     // Future: TextIndex(...), Procedure(...)
 }
 
@@ -50,6 +53,10 @@ impl Storable for LogicalResource {
                 out.push(2u8);
                 out.extend_from_slice(&vector.to_le_bytes());
             }
+            LogicalResource::Router => {
+                out.push(3u8);
+                out.extend_from_slice(&[0u8; 4]);
+            }
         }
         out
     }
@@ -62,6 +69,7 @@ impl Storable for LogicalResource {
             0 => LogicalResource::GraphShard(ShardId::from_le_bytes(raw)),
             1 => LogicalResource::PropertyIndex(IndexClusterId::from_le_bytes(raw)),
             2 => LogicalResource::VectorIndex(VectorIndexId::from_le_bytes(raw)),
+            3 => LogicalResource::Router,
             other => panic!("unknown LogicalResource variant {other}"),
         }
     }

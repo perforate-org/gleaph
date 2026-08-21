@@ -234,6 +234,7 @@ type CreatedResource = record {
 // A provisionable resource within a deployment. The variant is the discriminator (it doubles
 // as the resource kind); the inner nat32 is a shared newtype (ShardId or IndexClusterId).
 type LogicalResource = variant {
+  Router;
   PropertyIndex : nat32;
   VectorIndex : nat32;
   GraphShard : nat32;
